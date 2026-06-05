@@ -1,0 +1,28 @@
+name: codex-visual-studio-extension-policy
+version: "0.1"
+enforcement: warn
+fetch_failure: warn
+dependencies:
+  allow:
+    - github/awesome-copilot
+    - tfsugjp/skills-visual-studio-extension
+    - tfsugjp/skills
+    - github/awesome-copilot-api-architect
+    - github.com/github/awesome-copilot
+    - github.com/tfsugjp/skills
+    - github/awesome-copilot/agents/api-architect.agent.md
+    - tfsugjp/skills/.github/agents/visual-studio-extension.agent.md
+  max_depth: 25
+  require_pinned_constraint: false
+mcp:
+  allow: []
+  transport:
+    allow:
+      - http
+      - streamable-http
+      - stdio
+  self_defined: warn
+  trust_transitive: false
+security:
+  audit:
+    on_install: warn

@@ -1,0 +1,34 @@
+lockfile_version: '1'
+generated_at: '2026-06-05T07:54:08.817736+00:00'
+apm_version: 0.18.0
+dependencies:
+- repo_url: github/awesome-copilot
+  host: github.com
+  resolved_commit: 880b059b6203fd209cd6f0c25fdb77d9279fcce0
+  virtual_path: agents/api-architect.agent.md
+  is_virtual: true
+  package_type: apm_package
+  deployed_files:
+  - .claude/agents/api-architect.md
+  - .codex/agents/api-architect.toml
+  - .github/agents/api-architect.agent.md
+  deployed_file_hashes:
+    .claude/agents/api-architect.md: sha256:0a503c0c0d18b1e78645262e12d70857978f14463e1bbb1db8fc80451ed50e41
+    .codex/agents/api-architect.toml: sha256:a067567cb324a19484096a72d29f85bc00affebb74a07a6be8b2908c18f22e85
+    .github/agents/api-architect.agent.md: sha256:0a503c0c0d18b1e78645262e12d70857978f14463e1bbb1db8fc80451ed50e41
+  content_hash: sha256:9737dd83c02900b1f1f4ed0ca6aeb438f90a1d36d20272f83cf4d52fe270e2b1
+- repo_url: tfsugjp/skills
+  host: github.com
+  resolved_commit: 5c42e2a48ee6578a839d5b0e81a3e62cc4c58994
+  virtual_path: .github/agents/visual-studio-extension.agent.md
+  is_virtual: true
+  package_type: apm_package
+  deployed_files:
+  - .claude/agents/visual-studio-extension.md
+  - .codex/agents/visual-studio-extension.toml
+  - .github/agents/visual-studio-extension.agent.md
+  deployed_file_hashes:
+    .claude/agents/visual-studio-extension.md: sha256:4fecc8b590db8d14dfe8a556c9d009084725dacf72317af8c296b903286e392e
+    .codex/agents/visual-studio-extension.toml: sha256:d5e310221d592e351f51b80e3f38ef697e35465c2187dacf7e24f25546a1825c
+    .github/agents/visual-studio-extension.agent.md: sha256:4fecc8b590db8d14dfe8a556c9d009084725dacf72317af8c296b903286e392e
+  content_hash: sha256:ec11d708363b257446aa512725c3e662bc785625453d63cbff752bab3e857d9e

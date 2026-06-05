@@ -1,0 +1,43 @@
+
+# Build outputs
+bin/
+obj/
+out/
+artifacts/
+TestResults/
+coverage/
+
+# Visual Studio
+.vs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+*.rsuser
+*.ncrunch*
+*.vssscc
+*.vspscc
+
+# VSIX packaging
+*.vsix
+*.vsixmanifest.bak
+*.pkgdef
+*.cache
+
+# .NET
+*.nupkg
+*.snupkg
+packages/
+project.assets.json
+project.nuget.cache
+*.binlog
+
+# Rider / JetBrains
+.idea/
+
+# APM dependencies
+apm_modules/
+
+# OS files
+.DS_Store
+Thumbs.db
