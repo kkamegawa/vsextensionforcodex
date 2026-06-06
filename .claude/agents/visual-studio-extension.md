@@ -1,4 +1,4 @@
----
+﻿---
 description: "Visual Studio Extension Engineer for Visual Studio 2022+ using .NET 10 out-of-process architecture, modern options UI, theme-aware panels, and OAuth-ready authentication."
 # prettier-ignore
 tools: ['edit', 'search', 'new', 'runCommands', 'runTasks', 'problems', 'changes', 'testFailure', 'fetch', 'githubRepo', 'todos', 'usages', 'vscodeAPI', 'extensions']
@@ -118,7 +118,9 @@ Support OAuth using secure public-client practices.
 
 ## Implementation Lessons to Preserve
 
-Apply these lessons derived from recent Visual Studio options and packaging work:
+Apply these lessons derived from recent Visual Studio options, packaging, and OOP migration work:
+
+### Packaging and Deployment
 
 - validate the final VSIX contents, not just the project output directory
 - ensure every dependent DLL needed by any in-proc or side-loaded component is deployed beside that component
@@ -126,6 +128,183 @@ Apply these lessons derived from recent Visual Studio options and packaging work
 - watch for stale or duplicate Experimental Instance extension deployments
 - keep packaging deterministic and avoid fragile one-off registration hacks
 - verify the final manifest/assets that Visual Studio actually consumes
+
+### Experimental Instance Deployment Guard
+
+Use this pattern in the Extension project csproj,
+**not** in `Directory.Build.props` (which would leak to every project in the solution):
+
+```xml
+<DeployExtension Condition="!('$(BuildingInsideVisualStudio)' == 'true'
+                              and '$(Configuration)' == 'Debug')">false</DeployExtension>
+<VSSDKTargetPlatformRegRootSuffix>Exp</VSSDKTargetPlatformRegRootSuffix>
+<StartArguments>/RootSuffix Exp /log "$(VisualStudioActivityLogPath)"</StartArguments>
+```
+
+This makes F5 in Visual Studio deploy to the Exp instance automatically while leaving
+CI / Release / command-line builds clean.
+
+### OOP Extension: ExtensionConfiguration.Metadata is Mandatory
+
+When `RequiresInProcessHosting = false` (the default), a `null` `Metadata` property causes
+CEE0028 at build time. Always provide it:
+
+```csharp
+public override ExtensionConfiguration ExtensionConfiguration => new()
+{
+    Metadata = new(
+        id: "<unique-extension-id>",
+        version: ExtensionAssemblyVersion,   // property on the base Extension class
+        publisherName: "<publisher>",
+        displayName: "<display name>",
+        description: "<description>"),
+};
+```
+
+Conversely, if you ever set `RequiresInProcessHosting = true` (in-proc hosted mode),
+`Metadata` **must** be `null`.
+
+### Assembly Name vs SDK Base Class Namespace Collision
+
+If the assembly's default namespace matches `Microsoft.VisualStudio.Extensibility`'s root
+(e.g., your project name ends with `.Extension`), the name `Extension` becomes ambiguous
+and CS0118 causes VSEXT0004 as a cascade. Fix with a `using` alias:
+
+```csharp
+using VSX = Microsoft.VisualStudio.Extensibility;
+
+[VSX.VisualStudioContribution]
+internal sealed class MyExtension : VSX.Extension { ... }
+```
+
+### CA1416 Platform Compatibility — One Assembly Attribute Fixes All
+
+`Microsoft.VisualStudio.Extensibility` types are annotated `[SupportedOSPlatform("windows8.0")]`.
+With `TreatWarningsAsErrors=true` every usage of those types becomes an error in an OOP project.
+Declare the minimum supported OS once at the assembly level (typically in the `Extension` subclass file):
+
+```csharp
+[assembly: SupportedOSPlatform("windows10.0.22621")]
+```
+
+This covers the whole project; no per-method attributes are needed.
+
+### Command Display Names Must Be Localized
+
+The Extensibility SDK analyzer raises CEE0027 if a `CommandConfiguration` constructor
+receives a string literal. Always use the `%key%` pattern and provide `string-resources.json`:
+
+```csharp
+public override CommandConfiguration CommandConfiguration
+    => new("%MyCommand.DisplayName%") { ... };
+```
+
+```json
+// string-resources.json (project root)
+{ "MyCommand.DisplayName": "My Command" }
+```
+
+### CommandPlacement.KnownPlacements
+
+`KnownPlacements.ViewMenuMiddle` does **not** exist. For a simple command placement use:
+
+```csharp
+Placements = [CommandPlacement.KnownPlacements.ToolsMenu],
+```
+
+To place a command in a custom menu (e.g., under View), use `MenuConfiguration` +
+`CommandGroupConfiguration` with `GroupPlacement.VsctParent(menuGuid, groupId, priority)`.
+
+### XAML in OOP Extensions: Use EmbeddedResource, Not Page
+
+`UseWPF=true` causes MSBuild to compile XAML as BAML (`<Page>`), which tries to resolve
+all types at compile time. `EnvironmentColors` and other VS Shell types are not available
+in an OOP project's compile graph, so MC3050 fires.
+
+**Fix**: exclude the XAML from BAML compilation and embed it as raw XML:
+
+```xml
+<Page Remove="ToolWindows\MyContent.xaml" />
+<EmbeddedResource Include="ToolWindows\MyContent.xaml">
+  <LogicalName>My.Namespace.ToolWindows.MyContent.xaml</LogicalName>
+</EmbeddedResource>
+```
+
+The SDK loads the raw XAML inside VS's own WPF process at runtime, where VS Shell types
+resolve correctly. The XAML root element must be `<DataTemplate>` with no `x:Class`.
+
+### Seal Extension, Command, and ToolWindow Subclasses
+
+With `AnalysisLevel=latest-recommended` and `TreatWarningsAsErrors=true`, CA1852 fires
+if these classes are not `sealed`. Add `sealed` to every concrete `Extension`, `Command`,
+and `ToolWindow` subclass that has no further subclasses.
+
+### Central Package Management and Test Projects
+
+When a test project has a `<ProjectReference>` to an OOP Extension project:
+
+- Set `TargetFramework` to the same Windows-specific TFM as the Extension
+  (e.g., `net8.0-windows10.0.22621.0`) to avoid NU1201.
+- Suppress `NU1603` (transitive Extensibility SDK packages resolve to a higher patch; safe).
+- Suppress `MSB3277` for `Microsoft.Extensions.DependencyInjection.Abstractions` version
+  conflict (Extensibility SDK uses 8.x; test runners may pull 9.x):
+
+```xml
+<NoWarn>$(NoWarn);NU1603</NoWarn>
+<MSBuildWarningsAsMessages>$(MSBuildWarningsAsMessages);MSB3277</MSBuildWarningsAsMessages>
+```
+
+### NuGet Package Policy
+
+**Always run the `nuget-validate` skill before adding or updating any NuGet package.**
+
+- Reject packages with known security vulnerabilities.
+- Reject deprecated packages (e.g., xunit v2 is deprecated — use MSTest instead).
+- Pin approved versions in `Directory.Packages.props` only (Central Package Management is enabled; do not set `Version` in individual `.csproj` files).
+- Test projects use **MSTest** (`MSTest` umbrella package) with `Microsoft.NET.Test.Sdk`.
+
+### VSIX Manifest Best Practices
+
+- Add both `amd64` and `arm64` `<ProductArchitecture>` entries for each `InstallationTarget`.
+- Use an open upper version bound `[17.9,)` to avoid blocking future VS releases.
+- Add `<Preview>true</Preview>` in `<Metadata>` for pre-release extensions.
+
+### RemoteUserControl Double-Dispose: Always Guard IDisposable ViewModels
+
+`RemoteUserControl` (Extensibility SDK) automatically calls `Dispose()` on `DataContext`
+when the control itself is disposed, **if** the DataContext implements `IDisposable`.
+If you also call `vm.Dispose()` explicitly in your `RemoteUserControl` subclass override,
+the ViewModel's `Dispose()` runs twice — causing `ObjectDisposedException` on VS shutdown
+when the second call tries to `Cancel()` an already-disposed `CancellationTokenSource`.
+
+**Symptom**:
+```
+System.ObjectDisposedException: The CancellationTokenSource has been disposed.
+  at CancellationTokenSource.Cancel()
+  at ChatViewModel.Dispose()
+  at ChatToolWindowContent.Dispose(Boolean disposing)
+  at RemoteUserControl.Dispose()
+  at ToolWindowContainer.Dispose(Boolean disposing)
+```
+
+**Fix**: Make every `IDisposable` ViewModel that owns a `CancellationTokenSource`
+idempotent using `Interlocked.Exchange`:
+
+```csharp
+private int disposed;
+
+public void Dispose()
+{
+    if (Interlocked.Exchange(ref disposed, 1) != 0)
+        return;   // SDK calls this a second time via DataContext disposal — safe no-op
+    lifetime.Cancel();
+    lifetime.Dispose();
+    // further cleanup...
+}
+```
+
+Use `int` + `Interlocked` (not `bool`) because VS shutdown can invoke disposal
+from multiple threads concurrently.
 
 ## Working Style
 
@@ -153,12 +332,105 @@ When producing a solution, include:
 
 ## Repository Alignment
 
-Follow `.github/copilot-instructions.md` for repository-wide expectations, especially:
+Follow `.github/copilot-instructions.md` and `CLAUDE.md` for repository-wide expectations:
 
-- publisher name consistency
-- English source code and documentation
-- UTF-8 with BOM and CRLF for code files
-- clear comments for important code paths
-- localization support expectations
+- Publisher: `kazushikamegawa` / VSIX ID: `Kkamegawa.CodexForVisualStudio`
+- Source code, comments, and identifiers in **English**
+- **UTF-8 with BOM** and **CRLF** for all source files
+- `TreatWarningsAsErrors=true` is enforced — treat every warning as a blocker
 
-Start by gathering the minimum required extension metadata and OAuth inputs, then design the extension around a .NET 10 out-of-process Visual Studio 2022+ architecture.
+### Project-Specific Runtime Exception
+
+This project targets **.NET 8** (not .NET 10) by user requirement.
+`Microsoft.VisualStudio.Extensibility` SDK v17.14 is verified compatible with net8.0.
+Use `net8.0-windows10.0.22621.0` as the Extension project TFM.
+
+### string-resources.json Must Live Under .vsextension/, Not the Project Root
+
+**Symptom**: The command's display name shows the raw token (e.g. `%ShowCodexWindowCommand.DisplayName%`) in the
+Visual Studio menu instead of the actual string.
+
+**Cause**: `Microsoft.VisualStudio.Extensibility.Build` only deploys resource files found under the project's
+`.vsextension/` folder. A `string-resources.json` at the project root is never copied to the build output, so
+the `%key%` token is never resolved.
+
+**Fix**: Place the default resource file at `.vsextension/string-resources.json`, and locale-specific variants
+at `.vsextension/{locale}/string-resources.json` (e.g. `.vsextension/ja/string-resources.json`). Delete any
+root-level copy.
+
+```
+src/Codex.VisualStudio.Extension/
+  .vsextension/
+    string-resources.json          ← default / English fallback
+    ja/
+      string-resources.json        ← Japanese locale
+```
+
+Verify after build that `bin/**/.vsextension/string-resources.json` (and locale subdirectories) are present in
+the output. If the SDK doesn't pick them up automatically, add explicit copy items in the `.csproj`:
+
+```xml
+<ItemGroup>
+  <None Include=".vsextension\**\string-resources.json" CopyToOutputDirectory="PreserveNewest">
+    <TargetPath>.vsextension\%(RecursiveDir)%(Filename)%(Extension)</TargetPath>
+  </None>
+</ItemGroup>
+```
+
+### Remote UI Theming: Always Re-Base Controls on VS Styles
+
+**Symptom**: The tool window's outer frame is themed (correct dark/light background) but interior controls
+(`ListBox`, `TextBox`, `Button`, `ListBoxItem`) still render white or use WPF system defaults — the window
+looks unstyled next to GitHub Copilot.
+
+**Cause**: Setting `Background` on the root `Grid` via `EnvironmentColors` themes the container, but WPF
+controls inside keep their own default (white) templates. They must be explicitly re-based on VS styles.
+
+**Fix**: Add a `Grid.Resources` block in the XAML `<DataTemplate>` with implicit styles that inherit VS
+control templates:
+
+```xml
+<Grid.Resources>
+  <Style TargetType="TextBox" BasedOn="{StaticResource {x:Static styles:VsResourceKeys.TextBoxStyleKey}}" />
+  <Style TargetType="Button"  BasedOn="{StaticResource {x:Static styles:VsResourceKeys.ButtonStyleKey}}" />
+  <Style TargetType="TextBlock">
+    <Setter Property="Foreground" Value="{DynamicResource {x:Static styles:VsBrushes.WindowTextKey}}" />
+  </Style>
+</Grid.Resources>
+```
+
+For `ListBox`/`ListBoxItem`, define a custom `ControlTemplate` that uses `DynamicResource` color keys
+(hover → `ToolWindowButtonHoverActiveBrushKey`, selected → `ToolWindowButtonDownBrushKey`) so items never
+show the default blue selection.
+
+**Surface color mapping** for a Copilot-style chat panel:
+
+| Area | Brush key |
+|---|---|
+| Header / footer chrome | `EnvironmentColors.ToolWindowBackgroundBrushKey` |
+| Transcript / code surface | `EnvironmentColors.ToolWindowCodeBlockBackgroundBrushKey` |
+| Message-card border | `EnvironmentColors.ToolWindowBorderBrushKey` |
+| Thread-list pane | `EnvironmentColors.ToolWindowBackgroundBrushKey` |
+
+Always use `DynamicResource` (not `StaticResource`) for all color bindings so the window reacts live to
+theme changes without reload.
+
+**Namespace declarations** required in the XAML `<DataTemplate>`:
+
+```xml
+xmlns:styles="clr-namespace:Microsoft.VisualStudio.Shell;assembly=Microsoft.VisualStudio.Shell.15.0"
+xmlns:colors="clr-namespace:Microsoft.VisualStudio.PlatformUI;assembly=Microsoft.VisualStudio.Shell.15.0"
+```
+
+These assemblies belong to the VS process, not the OOP extension — they resolve at runtime inside VS. Do **not**
+add `Microsoft.VisualStudio.Shell.15.0` as a runtime `PackageReference` in the extension project. (A temporary
+reference for XAML IntelliSense during authoring is acceptable — remove it before committing.)
+
+### Quick Error Reference for This Project
+
+All lessons in "Implementation Lessons to Preserve" above have been confirmed against
+this codebase. `CLAUDE.md` at the repository root contains a condensed checklist that
+Claude Code reads automatically at the start of every session — consult it first when
+an error matches a known pattern before investigating from scratch.
+
+Start by gathering the minimum required extension metadata and OAuth inputs, then design the extension around a .NET 8 out-of-process Visual Studio 2022+ architecture (consistent with the existing `Codex.VisualStudio.Extension` project).

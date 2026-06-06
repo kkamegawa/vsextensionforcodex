@@ -23,11 +23,11 @@ Visual Studio 拡張機能（チャットツールウィンドウ + インライ
 
 | 項目 | 決定 | 備考 |
 |------|------|------|
-| 拡張本体ランタイム | **.NET 8** | ユーザー要件。エージェント標準（.NET 10 out-of-proc）から意図的に逸脱 |
-| in-process コンポーネント | **.NET Framework 4.7.2 許容** | VSSDK 依存の機能ギャップを埋める場合のみ |
+| 拡張本体ランタイム | **.NET 8** (OOP) | `Microsoft.VisualStudio.Extensibility` SDK、net8.0-windows10.0.22621.0 |
+| in-process コンポーネント | **.NET Framework 4.7.2 許容** | 差分ビュー等 VSSDK 依存機能のみ（現在はプレースホルダ） |
 | 言語 | **C#** | — |
-| 対象 IDE | Visual Studio 2022 (17.x) 以降 | — |
-| 拡張モデル | VisualStudio.Extensibility (out-of-proc) を第一候補、機能ギャップは VSSDK in-proc で補完 | エージェント方針に準拠 |
+| 対象 IDE | Visual Studio 2022 (17.x) 以降 | arm64 + amd64 |
+| 拡張モデル | **VisualStudio.Extensibility OOP 実装済み** | `CodexExtension : Extension`、コマンド・ツールウィンドウを同 SDK で実装 |
 | Codex 連携 | `codex app-server` を spawn、stdio で JSON-RPC 2.0 (JSONL) | WebSocket/Unix socket は将来検討 |
 | UI | Remote UI / WPF（テーマ対応、`EnvironmentColors`・`VsResourceKeys`） | 色のハードコード禁止 |
 | 設定 | 新 Unified Settings 体験 | レガシー `DialogPage` 単独は避ける |
@@ -35,50 +35,58 @@ Visual Studio 拡張機能（チャットツールウィンドウ + インライ
 
 ### 標準からの逸脱（明記）
 
-- エージェント定義は **.NET 10 out-of-proc** を既定とするが、本件は **.NET 8 / .NET Framework 4.7.2** を
-  採用する。理由：ユーザー要件。VisualStudio.Extensibility の .NET 8 対応範囲を Phase 0 で検証し、
-  ギャップは in-proc (.NET Framework 4.7.2) フォールバックで対応する。
+- エージェント定義は **.NET 10 out-of-proc** を既定とするが、本件は **.NET 8** を採用する。
+  理由：ユーザー要件。`Microsoft.VisualStudio.Extensibility` SDK v17.14 の .NET 8 対応は検証済み。
+  VSSDK 依存の in-proc 機能（差分ビュー等）が必要になった場合のみ .NET Framework 4.7.2 フォールバックを使う。
 
 ## 4. アーキテクチャ
 
+### プロセス構成（実装済み）
+
 ```
-┌───────────────────────────────────────────────────────────────┐
-│ Visual Studio 2022+                                             │
-│                                                               │
-│  UI Layer                                                      │
-│  ┌──────────────────┐   ┌──────────────────────────────────┐ │
-│  │ Chat ToolWindow   │   │ Inline Completion Provider        │ │
-│  │ (WPF / Remote UI) │   │ (IAsyncCompletionSource 等)       │ │
-│  └────────┬─────────┘   └────────────────┬─────────────────┘ │
-│           │                              │                    │
-│  Presentation Layer                       │                    │
-│  ┌────────▼──────────────────────────────▼─────────────────┐ │
-│  │ ChatViewModel / StreamingBuffer / CommandSuggestion      │ │
-│  └────────┬─────────────────────────────────────────────────┘ │
-│           │                                                    │
-│  Application Layer                                             │
-│  ┌────────▼─────────────────────────────────────────────────┐ │
-│  │ CodexSessionService / SlashCommandService /               │ │
-│  │ ApprovalWorkflowService / WorkspaceContextService          │ │
-│  └────────┬─────────────────────────────────────────────────┘ │
-│           │                                                    │
-│  Security Layer                                                │
-│  ┌────────▼─────────────────────────────────────────────────┐ │
-│  │ ApprovalPolicyEngine / PathAccessPolicy /                 │ │
-│  │ SecretRedactor / AuditLogService                          │ │
-│  └────────┬─────────────────────────────────────────────────┘ │
-│           │                                                    │
-│  Protocol Layer                                                │
-│  ┌────────▼─────────────────────────────────────────────────┐ │
-│  │ AppServerClient / JsonRpcDispatcher /                     │ │
-│  │ SchemaVersionGuard / CodexProcessHost                     │ │
-│  └────────────────────────┬──────────────────────────────────┘ │
-└───────────────────────────┼────────────────────────────────────┘
-                            │ stdin/stdout (JSONL)
-                  ┌─────────▼──────────┐
-                  │ codex app-server   │  ← ローカル Codex app
-                  │ (サブプロセス)      │
-                  └────────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│ Visual Studio 2022+ (devenv.exe)                             │
+│  ┌───────────────────────────────────────────────────────┐  │
+│  │ Codex.VisualStudio.Package (net472, in-proc)          │  │
+│  │  ・将来の差分ビュー等 VSSDK 依存機能用プレースホルダ  │  │
+│  └───────────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────┘
+          ↑ OOP ホスト接続（名前付きパイプ + StreamJsonRpc）
+┌─────────────────────────────────────────────────────────────┐
+│ Codex.VisualStudio.Extension (net8.0-windows, OOP プロセス) │
+│                                                             │
+│  UI Layer                                                   │
+│  ┌──────────────────┐   ┌───────────────────────────────┐  │
+│  │ CodexToolWindow  │   │ Inline Completion（将来）      │  │
+│  │ (Remote UI)      │   │                               │  │
+│  └────────┬─────────┘   └────────────────┬──────────────┘  │
+│           │                              │                  │
+│  Presentation Layer                                         │
+│  ┌────────▼─────────────────────────────▼──────────────┐   │
+│  │ ChatViewModel / StreamingBuffer / CommandSuggestion  │   │
+│  └────────┬────────────────────────────────────────────┘   │
+│           │                                                 │
+│  Application / Security / Protocol Layers                   │
+│  ┌────────▼────────────────────────────────────────────┐   │
+│  │ CodexSessionService / ApprovalPolicyEngine /         │   │
+│  │ AppServerClient / JsonRpcDispatcher / SecretRedactor │   │
+│  └────────┬────────────────────────────────────────────┘   │
+└───────────┼─────────────────────────────────────────────────┘
+            │ stdin/stdout (JSONL)
+  ┌─────────▼──────────┐
+  │ codex app-server   │  ← ローカル Codex app
+  │ (サブプロセス)      │
+  └────────────────────┘
+```
+
+### レイヤ詳細（ロジカル）
+
+```
+UI Layer          ChatToolWindowContent (RemoteUserControl) + ChatToolWindowContent.xaml
+Presentation      ChatViewModel / StreamingBuffer / CommandSuggestion
+Application       CodexSessionService / SlashCommandService / ApprovalWorkflowService / WorkspaceContextService
+Security          ApprovalPolicyEngine / PathAccessPolicy / SecretRedactor / AuditLogService
+Protocol          AppServerClient / JsonRpcDispatcher / SchemaVersionGuard / CodexProcessHost
 ```
 
 ### 主要コンポーネント

@@ -1,0 +1,16 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <AssemblyName>Codex.VisualStudio.Worker</AssemblyName>
+    <RootNamespace>Codex.VisualStudio.Worker</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../Codex.AppServer.Protocol/Codex.AppServer.Protocol.csproj" />
+    <ProjectReference Include="../Codex.VisualStudio.Contracts/Codex.VisualStudio.Contracts.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="StreamJsonRpc" />
+  </ItemGroup>
+</Project>
+

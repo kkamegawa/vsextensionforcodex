@@ -1,4 +1,4 @@
-
+﻿
 # Build outputs
 bin/
 obj/
@@ -10,6 +10,7 @@ coverage/
 # Visual Studio
 .vs/
 *.user
+Directory.Build.user.props
 *.suo
 *.userosscache
 *.sln.docstates
@@ -21,6 +22,7 @@ coverage/
 # VSIX packaging
 *.vsix
 *.vsixmanifest.bak
+src/Codex.VisualStudio.Package/extension.vsixmanifest
 *.pkgdef
 *.cache
 

@@ -1,0 +1,8 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <AssemblyName>Codex.AppServer.Protocol</AssemblyName>
+    <RootNamespace>Codex.AppServer.Protocol</RootNamespace>
+  </PropertyGroup>
+</Project>
+

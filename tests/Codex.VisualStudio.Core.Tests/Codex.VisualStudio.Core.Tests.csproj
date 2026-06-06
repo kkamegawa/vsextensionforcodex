@@ -1,0 +1,17 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+    <NoWarn>$(NoWarn);CA1707;CA1861</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/Codex.AppServer.Protocol/Codex.AppServer.Protocol.csproj" />
+    <ProjectReference Include="../../src/Codex.VisualStudio.Contracts/Codex.VisualStudio.Contracts.csproj" />
+    <ProjectReference Include="../../src/Codex.VisualStudio.Worker/Codex.VisualStudio.Worker.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="MSTest" />
+  </ItemGroup>
+</Project>

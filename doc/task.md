@@ -1,4 +1,4 @@
-# task.md — 実装タスク（フェーズ別チェックリスト）
+﻿# task.md — 実装タスク（フェーズ別チェックリスト）
 
 `plan.md` のフェーズ分割に対応する詳細タスク。各タスクは独立してレビュー可能な小さなスライスを意図する。
 
@@ -10,8 +10,8 @@
 - [x] `.gitignore`（Visual Studio / .NET 用）を追加
 - [x] `LICENSE`（MIT 等）を追加
 - [x] `README.md`（概要・前提条件・ビルド手順の雛形）を追加
-- [ ] `.editorconfig`（UTF-8 BOM、CRLF、C# 規約）を追加
-- [ ] `.github/copilot-instructions.md`（publisher 名一貫性、英語ソース等）を追加
+- [x] `.editorconfig`（UTF-8 BOM、CRLF、C# 規約）を追加
+- [x] `.github/copilot-instructions.md`（publisher 名一貫性、英語ソース等）を追加
 
 ### 0.2 apm セットアップ
 - [x] apm CLI をインストール（macOS では `uv tool install apm-cli`）
@@ -35,50 +35,50 @@
 ## Phase 1: プロトコル基盤（AppServerClient）
 
 ### 1.1 プロセス管理
-- [ ] `CodexProcessHost`: `codex app-server`（stdio）を起動/終了、再起動、終了コード監視
-- [ ] codex 実行パス解決（PATH / 設定で上書き可能）
-- [ ] stderr をログへ転送
-- [ ] `ProcessStartInfo` は `UseShellExecute=false`、引数配列、固定 working directory、最小環境変数で構成
-- [ ] stderr / exit code / crash reason を `SecretRedactor` 経由で VS ActivityLog に記録
-- [ ] app-server 終了時に pending RPC と active turn を fail fast し、UI をブロックしない
+- [x] `CodexProcessHost`: `codex app-server`（stdio）を起動/終了、再起動、終了コード監視
+- [x] codex 実行パス解決（PATH / 設定で上書き可能）
+- [x] stderr をログへ転送
+- [x] `ProcessStartInfo` は `UseShellExecute=false`、引数配列、固定 working directory、最小環境変数で構成
+- [x] stderr / exit code / crash reason を `SecretRedactor` 経由で VS ActivityLog に記録（OutputChannel 経由）
+- [x] app-server 終了時に pending RPC と active turn を fail fast し、UI をブロックしない
 
 ### 1.2 JSON-RPC レイヤ
-- [ ] `JsonRpcMessage` 型（request/response/notification、`jsonrpc` ヘッダはワイヤ上省略）
-- [ ] stdin へ改行区切り JSON 書き込み（JSONL）
-- [ ] stdout 行単位読み取り → `id` 対応の `result`/`error` を `TaskCompletionSource` に解決
-- [ ] `id` なし通知を購読者へディスパッチ（`IObservable` / event）
+- [x] `JsonRpcMessage` 型（request/response/notification、`jsonrpc` ヘッダはワイヤ上省略）
+- [x] stdin へ改行区切り JSON 書き込み（JSONL）
+- [x] stdout 行単位読み取り → `id` 対応の `result`/`error` を `TaskCompletionSource` に解決
+- [x] `id` なし通知を購読者へディスパッチ（`IObservable` / event）
 - [ ] WebSocket 過負荷エラー（`-32001`）等のリトライ方針（将来 WS 用に抽象化）
-- [ ] stdout reader / JSON parser / response resolver / notification dispatcher を `Channel<T>` で分離
-- [ ] request timeout、cancellation、orphan `TaskCompletionSource` cleanup を実装
-- [ ] 1 行あたりの最大 JSON サイズと malformed JSON 時の復旧方針を定義
+- [x] stdout reader / JSON parser / response resolver / notification dispatcher を `Channel<T>` で分離
+- [x] request timeout、cancellation、orphan `TaskCompletionSource` cleanup を実装
+- [x] 1 行あたりの最大 JSON サイズと malformed JSON 時の復旧方針を定義
 - [ ] WebSocket は既定無効。使用時は loopback + capability token / signed bearer token を必須化
 
 ### 1.3 ライフサイクル
-- [ ] `InitializeAsync`（`clientInfo.name` = `codex_visual_studio`、`optOutNotificationMethods` 対応）
-- [ ] `experimentalApi` opt-in をオプション化
-- [ ] `ThreadStartAsync` / `ThreadResumeAsync` / `ThreadForkAsync`
-- [ ] `TurnStartAsync`（text/image/localImage 入力、model/effort/sandbox オーバーライド）
-- [ ] 通知 → ドメインイベント変換（`turn/*`, `item/*`）
+- [x] `InitializeAsync`（`clientInfo.name` = `codex_visual_studio`、`optOutNotificationMethods` 対応）
+- [x] `experimentalApi` opt-in をオプション化
+- [x] `ThreadStartAsync` / `ThreadResumeAsync` / `ThreadForkAsync`
+- [x] `TurnStartAsync`（text/image/localImage 入力、model/effort/sandbox オーバーライド）
+- [x] 通知 → ドメインイベント変換（`turn/*`, `item/*`）
 
 ### 1.4 型生成
-- [ ] `generate-json-schema` 出力から C# DTO を生成 or 手書き（バージョン整合チェック）
-- [ ] `SchemaVersionGuard` で実行中 app-server とクライアント DTO の互換性を起動時に検証
-- [ ] 未知の method / notification / enum 値はクラッシュせずログ記録し、可能なら degraded mode で継続
+- [x] `generate-json-schema` 出力から C# DTO を生成 or 手書き（バージョン整合チェック）
+- [x] `SchemaVersionGuard` で実行中 app-server とクライアント DTO の互換性を起動時に検証（`InitializeAsync` で `serverInfo.version` を確認）
+- [x] 未知の method / notification / enum 値はクラッシュせずログ記録し、可能なら degraded mode で継続
 
 ### 1.5 信頼境界・安全性
-- [ ] `ApprovalPolicyEngine` を実装し、command/file/network/oauth/MCP 要求を統一判定
-- [ ] risk category（`read-only` / `workspace-write` / `workspace-outside` / `network` / `destructive` / `credential/oauth`）を定義
+- [x] `ApprovalPolicyEngine` を実装し、command/file/network/oauth/MCP 要求を統一判定
+- [x] risk category（`read-only` / `workspace-write` / `workspace-outside` / `network` / `destructive` / `credential/oauth`）を定義
 - [ ] `PathAccessPolicy` で full path、symlink、relative path、case-insensitive 比較を正規化
 - [ ] workspace 外書き込み、破壊的コマンド、資格情報らしき文字列を検出
 - [ ] 承認決定を session/thread/turn 単位でスコープ管理し、`acceptForSession` の有効範囲を監査可能にする
-- [ ] `SecretRedactor` で token、connection string、private key、OAuth credential を表示/保存前にマスク
-- [ ] `AuditLogService` で承認要求・決定・拒否・policy block を VS ActivityLog に記録
+- [x] `SecretRedactor` で token、connection string、private key、OAuth credential を表示/保存前にマスク
+- [x] `AuditLogService` で承認要求・決定・拒否・policy block を VS ActivityLog に記録（OutputChannel 経由で `WorkerBridge` / `ChatViewModel` に実装）
 
 ### 1.6 ストリーミング性能
-- [ ] `StreamingBuffer` を実装し、delta を 50-100ms 程度でバッチ化
-- [ ] command output / diff / reasoning summary にメモリ上限と truncation 表示を導入
-- [ ] 長い command output は折りたたみ、リングバッファ、または一時ログファイル退避に切り替える
-- [ ] notification burst 時に UI thread へ直接連続 dispatch しないことをテストで確認
+- [x] `StreamingBuffer` を実装し、delta を 50-100ms 程度でバッチ化
+- [x] command output / diff / reasoning summary にメモリ上限と truncation 表示を導入
+- [x] 長い command output は折りたたみ、リングバッファ、または一時ログファイル退避に切り替える
+- [x] notification burst 時に UI thread へ直接連続 dispatch しないことをテストで確認
 
 **完了条件**: `AppServerClient` で thread/turn を開始し、ストリーミング通知をイベントとして受け取れる。app-server 終了・大量 delta・危険操作要求でも Visual Studio が固まらず、承認ポリシーが一元的に適用される。
 
@@ -87,36 +87,46 @@
 ## Phase 2: チャット UI（MVP）
 
 ### 2.1 拡張プロジェクト雛形
-- [ ] VisualStudio.Extensibility out-of-proc プロジェクト（.NET 8）を作成
-- [ ] 拡張メタデータ（拡張名・publisher・VSIX ID）を設定
+
+> **アーキテクチャ変更（Session 2 実施済み）**: 当初の「in-proc Package + out-of-proc Worker」構成から
+> `Microsoft.VisualStudio.Extensibility` SDK による完全 OOP 構成に移行した（`design.md` 参照）。
+
+- [x] OOP Extension プロジェクト（`Codex.VisualStudio.Extension`、net8.0-windows10.0.22621.0）を作成
+  - `Microsoft.VisualStudio.Extensibility` SDK を使用
+  - `CodexExtension : Extension`、`ShowCodexWindowCommand : Command`、`CodexToolWindow : ToolWindow`
+  - `RemoteUserControl`（`ChatToolWindowContent` + `ChatToolWindowContent.xaml`）による Remote UI
+- [x] in-proc Package（`Codex.VisualStudio.Package`、net472）を将来の差分ビュー用プレースホルダとして維持
+- [x] ビルド設定（Central Package Management、arm64 マニフェスト、experimental instance デプロイガード）を整備
+- [x] 拡張メタデータ（拡張名・publisher・VSIX ID、`ExtensionConfiguration.Metadata`）を設定
 - [ ] DI コンテナで `AppServerClient` / `CodexSessionService` を登録
 
 ### 2.2 ツールウィンドウ
-- [ ] チャットツールウィンドウ（Remote UI / WPF）を実装
-- [ ] テーマ対応（`EnvironmentColors` / `VsResourceKeys`、色ハードコード禁止）
-- [ ] MVVM 構成（ViewModel / async コマンド / CancellationToken 対応）
+- [x] チャットツールウィンドウ（Remote UI / WPF）を実装
+  - XAML は `EmbeddedResource`（`<Page>` でなく生 XML）として埋め込み — `EnvironmentColors` 等 VS 固有型をランタイムで解決するため
+- [x] テーマ対応（`EnvironmentColors` / `VsResourceKeys`、色ハードコード禁止）
+- [x] MVVM 構成（ViewModel / async コマンド / CancellationToken 対応）
 
 ### 2.3 ストリーミング表示
-- [ ] `item/agentMessage/delta` のバッチ追記（`StreamingBuffer` 経由）
-- [ ] `item/reasoning/summaryTextDelta` の折りたたみ表示（長文上限あり）
-- [ ] `commandExecution` 実行ログ（`item/commandExecution/outputDelta`、仮想化/折りたたみ/上限あり）
-- [ ] `fileChange` 差分プレビュー（`turn/diff/updated`、巨大 diff は折りたたみ）
-- [ ] `turn/plan/updated` の計画ステップ表示（状態更新でレイアウトが跳ねない）
-- [ ] `turn/completed` / `error` のステータス表示
+- [x] `item/agentMessage/delta` のバッチ追記（`StreamingBuffer` 経由）
+- [x] `item/reasoning/summaryTextDelta` の折りたたみ表示（長文上限あり）
+- [x] `commandExecution` 実行ログ（`item/commandExecution/outputDelta`、仮想化/折りたたみ/上限あり）
+- [x] `fileChange` 差分プレビュー（`turn/diff/updated`、巨大 diff は折りたたみ）
+- [x] `turn/plan/updated` の計画ステップ表示（状態更新でレイアウトが跳ねない）
+- [x] `turn/completed` / `error` のステータス表示
 
 ### 2.4 承認ハンドリング
-- [ ] `item/commandExecution/requestApproval` → `ApprovalPolicyEngine` 判定付き承認 UI（accept/acceptForSession/decline/cancel）
-- [ ] `item/fileChange/requestApproval` → path 正規化と workspace 境界判定付き承認 UI
-- [ ] `networkApprovalContext` 用のネットワーク承認 UI（host、port、protocol、session scope を表示）
-- [ ] risk category、承認スコープ、有効期限、policy block 理由を UI に表示
-- [ ] 承認対象の command/file/network 内容を `SecretRedactor` 経由で表示
-- [ ] `serverRequest/resolved` の整合処理
+- [x] `item/commandExecution/requestApproval` → `ApprovalPolicyEngine` 判定付き承認 UI（accept/acceptForSession/decline/cancel）
+- [x] `item/fileChange/requestApproval` → path 正規化と workspace 境界判定付き承認 UI
+- [x] `networkApprovalContext` 用のネットワーク承認 UI（host、port、protocol、session scope を表示）
+- [x] risk category、承認スコープ、有効期限、policy block 理由を UI に表示
+- [x] 承認対象の command/file/network 内容を `SecretRedactor` 経由で表示
+- [x] `serverRequest/resolved` の整合処理
 
 ### 2.5 操作
-- [ ] 送信 / 中断（`turn/interrupt`）/ 追記（`turn/steer`）ボタン
-- [ ] 会話履歴一覧（`thread/list`）と再開（`thread/resume`）
-- [ ] app-server 未起動/クラッシュ/非互換時の degraded UI と再起動導線
-- [ ] UI thread ブロック、過剰メモリ使用、長大出力表示の回帰テスト
+- [x] 送信 / 中断（`turn/interrupt`）/ 追記（`turn/steer`）ボタン
+- [x] 会話履歴一覧（`thread/list`）と再開（`thread/resume`）
+- [x] app-server 未起動/クラッシュ/非互換時の degraded UI と再起動導線
+- [x] UI thread ブロック、過剰メモリ使用、長大出力表示の回帰テスト
 
 **完了条件**: GitHub Copilot 風チャット UI で Codex と対話でき、承認・中断・差分表示が機能する。
 

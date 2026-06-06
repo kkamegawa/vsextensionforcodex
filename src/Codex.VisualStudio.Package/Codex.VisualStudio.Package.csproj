@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net472</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <AssemblyName>Codex.VisualStudio.Package</AssemblyName>
+    <RootNamespace>Codex.VisualStudio.Package</RootNamespace>
+    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+    <!-- In-proc shim: does not create a VSIX or pkgdef on its own.
+         Reserved for future in-proc features (diff views, etc.) requiring net472. -->
+    <CreateVsixContainer>false</CreateVsixContainer>
+    <GeneratePkgDefFile>false</GeneratePkgDefFile>
+    <DeployExtension>false</DeployExtension>
+  </PropertyGroup>
+</Project>

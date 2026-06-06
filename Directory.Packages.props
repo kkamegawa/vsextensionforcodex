@@ -1,0 +1,19 @@
+<Project>
+  <PropertyGroup>
+    <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageVersion Include="StreamJsonRpc" Version="2.25.25" />
+    <PackageVersion Include="Markdig" Version="1.2.0" />
+    <!-- Traditional VSSDK (in-proc package) -->
+    <PackageVersion Include="Microsoft.VisualStudio.SDK" Version="17.14.40265" />
+    <PackageVersion Include="Microsoft.VSSDK.BuildTools" Version="17.14.2142" />
+    <!-- OOP Extensibility SDK -->
+    <PackageVersion Include="Microsoft.VisualStudio.Extensibility" Version="17.14.2098" />
+    <PackageVersion Include="Microsoft.VisualStudio.Extensibility.Sdk" Version="17.14.40608" />
+    <PackageVersion Include="Microsoft.VisualStudio.Extensibility.Build" Version="17.14.40608" />
+    <!-- Test -->
+    <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="18.6.0" />
+    <PackageVersion Include="MSTest" Version="4.2.3" />
+  </ItemGroup>
+</Project>

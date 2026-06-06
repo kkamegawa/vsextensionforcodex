@@ -1,10 +1,10 @@
-# Codex for Visual Studio
+﻿# Codex for Visual Studio
 
 A Visual Studio 2022+ extension project for running the local Codex app server from inside Visual Studio.
 
 The planned extension starts `codex app-server` as a local subprocess and communicates with it through newline-delimited JSON-RPC over stdio. The product goal is a Copilot-like Visual Studio experience: a chat tool window, streaming responses, approval-aware command and file-change handling, slash commands, and later editor integrations such as inline completion.
 
-This repository is currently in planning and bootstrap stage. The architecture and implementation checklist live in:
+This repository now contains the Phase 0 through Phase 2.5 implementation foundation. The architecture and implementation checklist live in:
 
 - [doc/plan.md](doc/plan.md)
 - [doc/task.md](doc/task.md)
@@ -23,12 +23,18 @@ Completed:
 - Repository bootstrap documents.
 - APM manifest, policy, lockfile, and generated agent files.
 - Agent targets for Codex, GitHub Copilot, and Claude.
+- Hybrid Visual Studio extension with a .NET Framework 4.7.2 WPF tool window and a .NET 8 worker.
+- Named-pipe StreamJsonRpc contracts between Visual Studio and the worker.
+- JSONL app-server process host, bidirectional JSON-RPC, thread/turn lifecycle, approvals, redaction, path policy, and bounded streaming.
+- Chat MVVM, history, send/steer/interrupt, approvals, degraded/restart state, and safe text rendering.
+- Fake app-server plus Core and UI unit tests.
+- VSIX packaging that includes the worker and its dependencies.
 
-Not started:
+Not yet validated:
 
-- Visual Studio extension project scaffold.
-- `codex app-server` C# protocol proof of concept.
-- Windows-only Visual Studio build and VSIX validation.
+- Experimental Instance installation and interactive UI testing.
+- A live local `codex app-server` handshake in this sandboxed environment.
+- Generated-schema compatibility tests against the locally installed Codex version.
 
 This repository can be prepared on macOS, but the Visual Studio extension itself is expected to be built and validated on Windows with Visual Studio 2022.
 
@@ -40,13 +46,66 @@ For agent asset setup:
 - `uv`
 - Microsoft APM CLI installed with `uv tool install apm-cli`
 
-For extension development later:
+For extension development:
 
 - Windows
 - Visual Studio 2022 17.x or later
 - .NET 8 SDK
 - Visual Studio extensibility workload
 - Local Codex CLI with `codex app-server`
+
+## Build And Test
+
+Restore and build the solution:
+
+```powershell
+dotnet restore CodexForVisualStudio.slnx
+dotnet build CodexForVisualStudio.slnx --no-restore
+```
+
+Run the unit tests:
+
+```powershell
+dotnet test tests/Codex.VisualStudio.Core.Tests/Codex.VisualStudio.Core.Tests.csproj
+dotnet test tests/Codex.VisualStudio.Ui.Tests/Codex.VisualStudio.Ui.Tests.csproj
+```
+
+The generated VSIX is:
+
+```text
+src/Codex.VisualStudio.Package/bin/Debug/net472/Codex.VisualStudio.Package.vsix
+```
+
+See [doc/implementation.md](doc/implementation.md) for the implemented boundaries and remaining validation work.
+
+## Debug In Visual Studio
+
+Debug builds do not deploy the extension by default. This avoids silently modifying any installed Visual Studio instance. To explicitly enable Experimental Instance deployment on one development machine, first create an ignored `Directory.Build.user.props` file:
+
+```xml
+<Project>
+  <PropertyGroup>
+    <DeployToExperimentalInstance>true</DeployToExperimentalInstance>
+  </PropertyGroup>
+</Project>
+```
+
+Remove that file, or set the property to `false`, to stop deployment. Command-line `dotnet build` always creates the VSIX without deploying it.
+
+1. Open `CodexForVisualStudio.slnx` in Visual Studio.
+2. Set `Codex.VisualStudio.Package` as the startup project.
+3. Create `Directory.Build.user.props` as shown above.
+4. Select the `Debug` configuration and press `F5`.
+5. A Visual Studio Experimental Instance starts with `/RootSuffix Exp`.
+6. In the Experimental Instance, open `View > Codex`.
+
+The .NET 8 worker is a child process named `Codex.VisualStudio.Worker.exe`. Visual Studio does not automatically attach the .NET Framework package debugger to this .NET 8 child process. To debug worker code, use `Debug > Attach to Process`, select `Codex.VisualStudio.Worker.exe`, and choose the managed .NET Core code type.
+
+To reset a broken Experimental Instance, close it and run:
+
+```powershell
+& "C:\Program Files\Microsoft Visual Studio\18\Enterprise\VSSDK\VisualStudioIntegration\Tools\Bin\CreateExpInstance.exe" /Reset /VSInstance=18.0 /RootSuffix=Exp
+```
 
 ## Agent Setup
 

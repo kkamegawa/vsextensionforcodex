@@ -1,0 +1,16 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Codex.AppServer.Protocol/Codex.AppServer.Protocol.csproj" />
+    <Project Path="src/Codex.VisualStudio.Contracts/Codex.VisualStudio.Contracts.csproj" />
+    <Project Path="src/Codex.VisualStudio.Worker/Codex.VisualStudio.Worker.csproj" />
+    <Project Path="src/Codex.AppServer.Fake/Codex.AppServer.Fake.csproj" />
+    <Project Path="src/Codex.VisualStudio.Extension/Codex.VisualStudio.Extension.csproj">
+      <Deploy Solution="Debug|*" />
+    </Project>
+    <Project Path="src/Codex.VisualStudio.Package/Codex.VisualStudio.Package.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Codex.VisualStudio.Core.Tests/Codex.VisualStudio.Core.Tests.csproj" />
+    <Project Path="tests/Codex.VisualStudio.Ui.Tests/Codex.VisualStudio.Ui.Tests.csproj" />
+  </Folder>
+</Solution>

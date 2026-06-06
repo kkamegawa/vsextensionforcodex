@@ -1,0 +1,11 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>netstandard2.0</TargetFramework>
+    <AssemblyName>Codex.VisualStudio.Contracts</AssemblyName>
+    <RootNamespace>Codex.VisualStudio.Contracts</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="StreamJsonRpc" />
+  </ItemGroup>
+</Project>
+

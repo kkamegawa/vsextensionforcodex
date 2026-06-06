@@ -1,0 +1,481 @@
+<DataTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+              xmlns:styles="clr-namespace:Microsoft.VisualStudio.Shell;assembly=Microsoft.VisualStudio.Shell.15.0"
+              xmlns:colors="clr-namespace:Microsoft.VisualStudio.PlatformUI;assembly=Microsoft.VisualStudio.Shell.15.0">
+  <!-- Root grid inherits VS tool window theming. VS Shell resources resolve at runtime inside
+       VS's WPF process; the XAML is embedded raw (not compiled to BAML) for this purpose.
+       'styles' -> VsResourceKeys/VsBrushes, 'colors' -> EnvironmentColors. All colors use
+       DynamicResource so they react live to theme changes. Buttons use fully custom round
+       templates to match the GitHub Copilot visual style while remaining VS-theme-aware. -->
+  <Grid MinWidth="520"
+        MinHeight="360"
+        Background="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBackgroundBrushKey}}"
+        TextElement.Foreground="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowTextBrushKey}}">
+    <Grid.Resources>
+      <BooleanToVisibilityConverter x:Key="BoolToVis" />
+      <Style TargetType="TextBlock">
+        <Setter Property="Foreground" Value="{DynamicResource {x:Static styles:VsBrushes.WindowTextKey}}" />
+        <Setter Property="TextOptions.TextFormattingMode" Value="Display" />
+      </Style>
+
+      <!-- ── Rounded secondary button (outlined ghost style) ── -->
+      <Style x:Key="RoundButtonStyle" TargetType="Button">
+        <Setter Property="Background" Value="{DynamicResource {x:Static colors:EnvironmentColors.SystemButtonFaceBrushKey}}" />
+        <Setter Property="Foreground" Value="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowTextBrushKey}}" />
+        <Setter Property="BorderBrush" Value="{DynamicResource {x:Static colors:EnvironmentColors.SystemButtonFaceBrushKey}}" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="Padding" Value="14,6" />
+        <Setter Property="Cursor" Value="Hand" />
+        <Setter Property="Template">
+          <Setter.Value>
+            <ControlTemplate TargetType="Button">
+              <Border x:Name="Bd"
+                      Background="{TemplateBinding Background}"
+                      BorderBrush="{TemplateBinding BorderBrush}"
+                      BorderThickness="{TemplateBinding BorderThickness}"
+                      CornerRadius="14"
+                      Padding="{TemplateBinding Padding}"
+                      SnapsToDevicePixels="True">
+                <ContentPresenter HorizontalAlignment="Center"
+                                  VerticalAlignment="Center"
+                                  TextElement.Foreground="{TemplateBinding Foreground}" />
+              </Border>
+              <ControlTemplate.Triggers>
+                <Trigger Property="IsPressed" Value="True">
+                  <Setter TargetName="Bd" Property="Background"
+                          Value="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowButtonDownBrushKey}}" />
+                </Trigger>
+                <Trigger Property="IsEnabled" Value="False">
+                  <Setter TargetName="Bd" Property="Opacity" Value="0.38" />
+                </Trigger>
+              </ControlTemplate.Triggers>
+            </ControlTemplate>
+          </Setter.Value>
+        </Setter>
+      </Style>
+
+      <!-- ── Rounded primary button (accent fill – Send / Steer) ── -->
+      <Style x:Key="PrimaryRoundButtonStyle" TargetType="Button">
+        <Setter Property="Background" Value="{DynamicResource {x:Static SystemColors.HighlightBrushKey}}" />
+        <Setter Property="Foreground" Value="{DynamicResource {x:Static SystemColors.HighlightTextBrushKey}}" />
+        <Setter Property="BorderThickness" Value="0" />
+        <Setter Property="Padding" Value="18,7" />
+        <Setter Property="FontWeight" Value="SemiBold" />
+        <Setter Property="Cursor" Value="Hand" />
+        <Setter Property="Template">
+          <Setter.Value>
+            <ControlTemplate TargetType="Button">
+              <Border x:Name="Bd"
+                      Background="{TemplateBinding Background}"
+                      CornerRadius="14"
+                      Padding="{TemplateBinding Padding}"
+                      SnapsToDevicePixels="True">
+                <ContentPresenter HorizontalAlignment="Center"
+                                  VerticalAlignment="Center"
+                                  TextElement.Foreground="{TemplateBinding Foreground}" />
+              </Border>
+              <ControlTemplate.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                  <Setter TargetName="Bd" Property="Opacity" Value="0.85" />
+                </Trigger>
+                <Trigger Property="IsPressed" Value="True">
+                  <Setter TargetName="Bd" Property="Opacity" Value="0.70" />
+                </Trigger>
+                <Trigger Property="IsEnabled" Value="False">
+                  <Setter TargetName="Bd" Property="Opacity" Value="0.38" />
+                </Trigger>
+              </ControlTemplate.Triggers>
+            </ControlTemplate>
+          </Setter.Value>
+        </Setter>
+      </Style>
+
+      <!-- ── Small secondary button (header toolbar: New / Restart / Load more) ── -->
+      <Style x:Key="SmallRoundButtonStyle" TargetType="Button" BasedOn="{StaticResource RoundButtonStyle}">
+        <Setter Property="Padding" Value="10,3" />
+        <Setter Property="FontSize" Value="11" />
+      </Style>
+
+      <!-- Selectable list rows (thread history): themed hover/selection, no default blue. -->
+      <Style x:Key="SelectableRowStyle" TargetType="ListBoxItem">
+        <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+        <Setter Property="Padding" Value="6,4" />
+        <Setter Property="Margin" Value="0,1" />
+        <Setter Property="Background" Value="Transparent" />
+        <Setter Property="Foreground" Value="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowTextBrushKey}}" />
+        <Setter Property="Template">
+          <Setter.Value>
+            <ControlTemplate TargetType="ListBoxItem">
+              <Border x:Name="Bd"
+                      Background="{TemplateBinding Background}"
+                      Padding="{TemplateBinding Padding}"
+                      CornerRadius="4"
+                      SnapsToDevicePixels="True">
+                <ContentPresenter HorizontalAlignment="Stretch" VerticalAlignment="Center" />
+              </Border>
+              <ControlTemplate.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                  <Setter TargetName="Bd" Property="Background"
+                          Value="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowButtonHoverActiveBrushKey}}" />
+                </Trigger>
+                <Trigger Property="IsSelected" Value="True">
+                  <Setter TargetName="Bd" Property="Background"
+                          Value="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowButtonDownBrushKey}}" />
+                </Trigger>
+              </ControlTemplate.Triggers>
+            </ControlTemplate>
+          </Setter.Value>
+        </Setter>
+      </Style>
+
+      <!-- Message rows: plain stretch container, no selection chrome. -->
+      <Style x:Key="MessageRowStyle" TargetType="ListBoxItem">
+        <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+        <Setter Property="Background" Value="Transparent" />
+        <Setter Property="Template">
+          <Setter.Value>
+            <ControlTemplate TargetType="ListBoxItem">
+              <ContentPresenter HorizontalAlignment="Stretch" />
+            </ControlTemplate>
+          </Setter.Value>
+        </Setter>
+      </Style>
+    </Grid.Resources>
+
+    <Grid.RowDefinitions>
+      <RowDefinition Height="Auto" />
+      <RowDefinition Height="*" />
+      <RowDefinition Height="Auto" />
+    </Grid.RowDefinitions>
+
+    <!-- Header / status bar -->
+    <Border Grid.Row="0"
+            Padding="10,8"
+            Background="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBackgroundBrushKey}}"
+            BorderThickness="0,0,0,1"
+            BorderBrush="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBorderBrushKey}}">
+      <DockPanel>
+        <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
+          <Button Margin="4,0,0,0" Content="New" Command="{Binding NewThreadCommand}"
+                  Style="{StaticResource SmallRoundButtonStyle}" />
+          <Button Margin="4,0,0,0" Content="Restart" Command="{Binding RestartCommand}"
+                  Style="{StaticResource SmallRoundButtonStyle}" />
+        </StackPanel>
+        <StackPanel VerticalAlignment="Center">
+          <TextBlock FontWeight="SemiBold" Text="{Binding Status.State}" />
+          <TextBlock Opacity="0.72" Text="{Binding Status.Message}" TextTrimming="CharacterEllipsis" />
+        </StackPanel>
+      </DockPanel>
+    </Border>
+
+    <!-- Body: thread history (left) + transcript (right) -->
+    <Grid Grid.Row="1">
+      <Grid.ColumnDefinitions>
+        <ColumnDefinition Width="200" />
+        <ColumnDefinition Width="*" />
+      </Grid.ColumnDefinitions>
+
+      <!-- Thread history -->
+      <DockPanel Grid.Column="0"
+                 Background="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBackgroundBrushKey}}">
+        <Button DockPanel.Dock="Bottom" Margin="8,6" Content="Load more"
+                Command="{Binding LoadMoreCommand}"
+                Style="{StaticResource SmallRoundButtonStyle}" />
+        <ListBox Margin="6,6,3,0"
+                 Background="Transparent"
+                 BorderThickness="0"
+                 Foreground="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowTextBrushKey}}"
+                 ItemsSource="{Binding Threads}"
+                 SelectedItem="{Binding SelectedThread}"
+                 ItemContainerStyle="{StaticResource SelectableRowStyle}"
+                 ScrollViewer.CanContentScroll="True"
+                 VirtualizingPanel.IsVirtualizing="True">
+          <ListBox.ItemTemplate>
+            <DataTemplate>
+              <StackPanel>
+                <TextBlock FontWeight="SemiBold" Text="{Binding Preview}" TextTrimming="CharacterEllipsis" />
+                <TextBlock Opacity="0.65" FontSize="10" Text="{Binding Cwd}" TextTrimming="CharacterEllipsis" />
+              </StackPanel>
+            </DataTemplate>
+          </ListBox.ItemTemplate>
+        </ListBox>
+      </DockPanel>
+
+      <!-- Transcript: editor-like surface -->
+      <Grid Grid.Column="1"
+            Background="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowCodeBlockBackgroundBrushKey}}">
+        <Grid.RowDefinitions>
+          <RowDefinition Height="*" />
+          <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+        <ListBox Grid.Row="0"
+                 Margin="0"
+                 Padding="10"
+                 Background="Transparent"
+                 BorderThickness="0"
+                 HorizontalContentAlignment="Stretch"
+                 ItemsSource="{Binding Items}"
+                 ItemContainerStyle="{StaticResource MessageRowStyle}"
+                 ScrollViewer.CanContentScroll="True"
+                 VirtualizingPanel.IsVirtualizing="True"
+                 VirtualizingPanel.VirtualizationMode="Recycling">
+          <ListBox.ItemTemplate>
+            <DataTemplate>
+              <Border Margin="0,0,0,8" Padding="10" CornerRadius="8"
+                      BorderThickness="1"
+                      BorderBrush="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBorderBrushKey}}">
+                <Border.Style>
+                  <Style TargetType="Border">
+                    <Setter Property="Background" Value="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBackgroundBrushKey}}" />
+                    <Style.Triggers>
+                      <!-- Command output and diff use the code-block (darker) background. -->
+                      <DataTrigger Binding="{Binding IsCommandItem}" Value="True">
+                        <Setter Property="Background" Value="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowCodeBlockBackgroundBrushKey}}" />
+                      </DataTrigger>
+                      <DataTrigger Binding="{Binding IsDiffItem}" Value="True">
+                        <Setter Property="Background" Value="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowCodeBlockBackgroundBrushKey}}" />
+                      </DataTrigger>
+                    </Style.Triggers>
+                  </Style>
+                </Border.Style>
+                <StackPanel>
+                  <TextBlock FontWeight="SemiBold" Opacity="0.85" Text="{Binding Role}" />
+
+                  <!-- Collapse toggle button — visible only for reasoning items. -->
+                  <Button Margin="0,4,0,0"
+                          Content="{Binding CollapseButtonText}"
+                          Command="{Binding ToggleCollapseCommand}"
+                          HorizontalAlignment="Left">
+                    <Button.Style>
+                      <Style TargetType="Button">
+                        <Setter Property="Visibility" Value="Collapsed" />
+                        <Setter Property="Background" Value="{DynamicResource {x:Static colors:EnvironmentColors.SystemButtonFaceBrushKey}}" />
+                        <Setter Property="Foreground" Value="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowTextBrushKey}}" />
+                        <Setter Property="BorderBrush" Value="{DynamicResource {x:Static colors:EnvironmentColors.SystemButtonFaceBrushKey}}" />
+                        <Setter Property="BorderThickness" Value="1" />
+                        <Setter Property="Padding" Value="10,3" />
+                        <Setter Property="FontSize" Value="11" />
+                        <Setter Property="Cursor" Value="Hand" />
+                        <Style.Triggers>
+                          <DataTrigger Binding="{Binding IsReasoningItem}" Value="True">
+                            <Setter Property="Visibility" Value="Visible" />
+                          </DataTrigger>
+                        </Style.Triggers>
+                      </Style>
+                    </Button.Style>
+                  </Button>
+
+                  <!-- Main text content: plain, monospace (command/diff), or hidden (plan/collapsed reasoning). -->
+                  <TextBlock Margin="0,4,0,0" TextWrapping="Wrap" Text="{Binding Text}">
+                    <TextBlock.Style>
+                      <Style TargetType="TextBlock">
+                        <Setter Property="Foreground" Value="{DynamicResource {x:Static styles:VsBrushes.WindowTextKey}}" />
+                        <Setter Property="TextOptions.TextFormattingMode" Value="Display" />
+                        <Setter Property="Visibility" Value="Visible" />
+                        <Style.Triggers>
+                          <!-- Plan items use a structured step list instead. -->
+                          <DataTrigger Binding="{Binding IsPlanItem}" Value="True">
+                            <Setter Property="Visibility" Value="Collapsed" />
+                          </DataTrigger>
+                          <!-- Collapsed reasoning hides its full text. -->
+                          <MultiDataTrigger>
+                            <MultiDataTrigger.Conditions>
+                              <Condition Binding="{Binding IsReasoningItem}" Value="True" />
+                              <Condition Binding="{Binding IsCollapsed}" Value="True" />
+                            </MultiDataTrigger.Conditions>
+                            <Setter Property="Visibility" Value="Collapsed" />
+                          </MultiDataTrigger>
+                          <!-- Command output rendered in monospace. -->
+                          <DataTrigger Binding="{Binding IsCommandItem}" Value="True">
+                            <Setter Property="FontFamily" Value="Consolas, Courier New, monospace" />
+                            <Setter Property="FontSize" Value="11" />
+                          </DataTrigger>
+                          <!-- Diff rendered in monospace. -->
+                          <DataTrigger Binding="{Binding IsDiffItem}" Value="True">
+                            <Setter Property="FontFamily" Value="Consolas, Courier New, monospace" />
+                            <Setter Property="FontSize" Value="11" />
+                          </DataTrigger>
+                        </Style.Triggers>
+                      </Style>
+                    </TextBlock.Style>
+                  </TextBlock>
+
+                  <!-- Plan step list — shown only for PlanUpdated items. -->
+                  <ItemsControl Margin="0,4,0,0" MinHeight="0" ItemsSource="{Binding PlanSteps}">
+                    <ItemsControl.Style>
+                      <Style TargetType="ItemsControl">
+                        <Setter Property="Visibility" Value="Collapsed" />
+                        <Style.Triggers>
+                          <DataTrigger Binding="{Binding IsPlanItem}" Value="True">
+                            <Setter Property="Visibility" Value="Visible" />
+                          </DataTrigger>
+                        </Style.Triggers>
+                      </Style>
+                    </ItemsControl.Style>
+                    <ItemsControl.ItemTemplate>
+                      <DataTemplate>
+                        <TextBlock Margin="0,2" Text="{Binding}" TextWrapping="Wrap"
+                                   Foreground="{DynamicResource {x:Static styles:VsBrushes.WindowTextKey}}"
+                                   TextOptions.TextFormattingMode="Display" />
+                      </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                  </ItemsControl>
+
+                  <!-- Truncation notice — shown when output was cut due to size limit. -->
+                  <TextBlock Margin="0,6,0,0" FontSize="11" Opacity="0.6"
+                             Text="Output truncated; full output is stored in a temporary file.">
+                    <TextBlock.Style>
+                      <Style TargetType="TextBlock">
+                        <Setter Property="Foreground" Value="{DynamicResource {x:Static styles:VsBrushes.WindowTextKey}}" />
+                        <Setter Property="Visibility" Value="Collapsed" />
+                        <Style.Triggers>
+                          <DataTrigger Binding="{Binding IsTruncated}" Value="True">
+                            <Setter Property="Visibility" Value="Visible" />
+                          </DataTrigger>
+                        </Style.Triggers>
+                      </Style>
+                    </TextBlock.Style>
+                  </TextBlock>
+                </StackPanel>
+              </Border>
+            </DataTemplate>
+          </ListBox.ItemTemplate>
+        </ListBox>
+
+        <!-- Pending approvals -->
+        <ItemsControl Grid.Row="1" Margin="10,0,10,10" ItemsSource="{Binding Approvals}">
+          <ItemsControl.ItemTemplate>
+            <DataTemplate>
+              <Border Padding="12" Margin="0,0,0,8" CornerRadius="8"
+                      Background="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBackgroundBrushKey}}"
+                      BorderThickness="1"
+                      BorderBrush="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBorderBrushKey}}">
+                <Border.Style>
+                  <Style TargetType="Border">
+                    <Setter Property="Opacity" Value="1" />
+                    <Style.Triggers>
+                      <!-- Policy-blocked approvals are dimmed since no user action is possible. -->
+                      <DataTrigger Binding="{Binding IsPolicyBlocked}" Value="True">
+                        <Setter Property="Opacity" Value="0.6" />
+                      </DataTrigger>
+                    </Style.Triggers>
+                  </Style>
+                </Border.Style>
+                <StackPanel>
+                  <TextBlock FontWeight="Bold" Text="{Binding Risk}" />
+                  <TextBlock Margin="0,4,0,0" Text="{Binding DisplayText}" TextWrapping="Wrap" />
+                  <TextBlock Margin="0,4,0,0" Opacity="0.8" Text="{Binding Reason}" TextWrapping="Wrap" />
+
+                  <!-- Network-specific context (host and port). -->
+                  <StackPanel Margin="0,4,0,0" Orientation="Horizontal"
+                              Visibility="{Binding IsNetworkApproval, Converter={StaticResource BoolToVis}}">
+                    <TextBlock Text="Host: " FontWeight="SemiBold" />
+                    <TextBlock Text="{Binding NetworkHost}" Margin="0,0,12,0" />
+                    <TextBlock Text="Port: " FontWeight="SemiBold" />
+                    <TextBlock Text="{Binding NetworkPort}" />
+                  </StackPanel>
+
+                  <!-- Policy-block reason (shown when a managed policy auto-declined). -->
+                  <TextBlock Margin="0,4,0,0" TextWrapping="Wrap" FontStyle="Italic"
+                             Text="{Binding PolicyBlockReason, StringFormat='Policy blocked: {0}'}">
+                    <TextBlock.Style>
+                      <Style TargetType="TextBlock">
+                        <Setter Property="Foreground" Value="{DynamicResource {x:Static styles:VsBrushes.WindowTextKey}}" />
+                        <Setter Property="Visibility" Value="Collapsed" />
+                        <Style.Triggers>
+                          <DataTrigger Binding="{Binding IsPolicyBlocked}" Value="True">
+                            <Setter Property="Visibility" Value="Visible" />
+                          </DataTrigger>
+                        </Style.Triggers>
+                      </Style>
+                    </TextBlock.Style>
+                  </TextBlock>
+
+                  <!-- Decision buttons — shown only for decisions the server allows. -->
+                  <StackPanel Margin="0,10,0,0" Orientation="Horizontal">
+                    <Button Margin="0,0,6,0" Content="Accept" Command="{Binding AcceptCommand}"
+                            Style="{StaticResource RoundButtonStyle}" Padding="12,5"
+                            Visibility="{Binding ShowAccept, Converter={StaticResource BoolToVis}}" />
+                    <Button Margin="0,0,6,0" Content="Accept for session" Command="{Binding AcceptForSessionCommand}"
+                            Style="{StaticResource RoundButtonStyle}" Padding="12,5"
+                            Visibility="{Binding ShowAcceptForSession, Converter={StaticResource BoolToVis}}" />
+                    <Button Margin="0,0,6,0" Content="Decline" Command="{Binding DeclineCommand}"
+                            Style="{StaticResource RoundButtonStyle}" Padding="12,5"
+                            Visibility="{Binding ShowDecline, Converter={StaticResource BoolToVis}}" />
+                    <Button Content="Cancel" Command="{Binding CancelCommand}"
+                            Style="{StaticResource RoundButtonStyle}" Padding="12,5"
+                            Visibility="{Binding ShowCancel, Converter={StaticResource BoolToVis}}" />
+                  </StackPanel>
+                </StackPanel>
+              </Border>
+            </DataTemplate>
+          </ItemsControl.ItemTemplate>
+        </ItemsControl>
+      </Grid>
+    </Grid>
+
+    <!-- Composer -->
+    <Border Grid.Row="2"
+            Padding="10"
+            Background="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBackgroundBrushKey}}"
+            BorderThickness="0,1,0,0"
+            BorderBrush="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBorderBrushKey}}">
+      <Grid>
+        <Grid.RowDefinitions>
+          <RowDefinition Height="Auto" />
+          <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <!-- Rounded textarea wrapper -->
+        <Border Grid.Row="0"
+                CornerRadius="10"
+                BorderBrush="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBorderBrushKey}}"
+                BorderThickness="1"
+                Background="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowCodeBlockBackgroundBrushKey}}">
+          <TextBox MinHeight="54"
+                   MaxHeight="160"
+                   AcceptsReturn="True"
+                   VerticalScrollBarVisibility="Auto"
+                   Foreground="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowTextBrushKey}}"
+                   CaretBrush="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowTextBrushKey}}"
+                   SelectionBrush="{DynamicResource {x:Static SystemColors.HighlightBrushKey}}"
+                   Text="{Binding ComposerText, UpdateSourceTrigger=PropertyChanged}">
+            <TextBox.Style>
+              <Style TargetType="TextBox">
+                <Setter Property="Background" Value="Transparent" />
+                <Setter Property="BorderThickness" Value="0" />
+                <Setter Property="Padding" Value="10,8" />
+                <Setter Property="Template">
+                  <Setter.Value>
+                    <ControlTemplate TargetType="TextBox">
+                      <ScrollViewer x:Name="PART_ContentHost"
+                                    Margin="{TemplateBinding Padding}"
+                                    Background="Transparent"
+                                    VerticalScrollBarVisibility="{TemplateBinding ScrollViewer.VerticalScrollBarVisibility}"
+                                    HorizontalScrollBarVisibility="Disabled" />
+                    </ControlTemplate>
+                  </Setter.Value>
+                </Setter>
+              </Style>
+            </TextBox.Style>
+          </TextBox>
+        </Border>
+
+        <!-- Action row: Interrupt (left) · Send / Steer (right) -->
+        <StackPanel Grid.Row="1"
+                    Margin="0,8,0,0"
+                    Orientation="Horizontal"
+                    HorizontalAlignment="Right">
+          <Button Margin="0,0,8,0"
+                  Content="Interrupt"
+                  Command="{Binding InterruptCommand}"
+                  Style="{StaticResource RoundButtonStyle}"
+                  Padding="14,6" />
+          <Button Content="{Binding SendButtonText}"
+                  Command="{Binding SendCommand}"
+                  Style="{StaticResource PrimaryRoundButtonStyle}" />
+        </StackPanel>
+      </Grid>
+    </Border>
+  </Grid>
+</DataTemplate>

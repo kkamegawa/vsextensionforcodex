@@ -8,6 +8,5 @@ target:
   - claude
 dependencies:
   apm:
-    - tfsugjp/skills/.github/agents/visual-studio-extension.agent.md
     - github/awesome-copilot/agents/api-architect.agent.md
   mcp: []
