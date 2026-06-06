@@ -35,6 +35,11 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="../Codex.VisualStudio.Contracts/Codex.VisualStudio.Contracts.csproj" />
+    <!-- Build-order dependency only: Worker (and transitively Protocol) must be built
+         before BuildCodexWorker fires, or Protocol's ref assembly won't exist yet. -->
+    <ProjectReference Include="../Codex.VisualStudio.Worker/Codex.VisualStudio.Worker.csproj"
+                      ReferenceOutputAssembly="false"
+                      SkipGetTargetFrameworkProperties="true" />
   </ItemGroup>
   <ItemGroup>
     <!-- Exclude from BAML compilation: must be raw XML so VS-specific DynamicResource
