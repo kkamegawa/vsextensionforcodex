@@ -23,13 +23,16 @@ internal sealed class CodexToolWindow : ToolWindow
 
     public override async Task InitializeAsync(CancellationToken cancellationToken)
     {
+        ExtensionDiagnostics.Write("Codex tool window initialization starting");
         outputChannel = await this.Extensibility.Views().Output
             .CreateOutputChannelAsync("Codex", cancellationToken)
             .ConfigureAwait(false);
+        ExtensionDiagnostics.Write("Codex Output channel created");
     }
 
     public override Task<IRemoteUserControl> GetContentAsync(CancellationToken cancellationToken)
     {
+        ExtensionDiagnostics.Write("Codex tool window content requested");
         content ??= new ChatToolWindowContent(outputChannel);
         return Task.FromResult<IRemoteUserControl>(content);
     }

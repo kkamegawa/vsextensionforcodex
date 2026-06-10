@@ -46,21 +46,49 @@ public sealed class PathAccessPolicy : IPathAccessPolicy
     {
         try
         {
-            string normalizedPath = Normalize(path);
-            string normalizedRoot = Normalize(workspaceRoot);
+            string normalizedRoot = Normalize(workspaceRoot, Environment.CurrentDirectory);
+            string normalizedPath = Normalize(path, normalizedRoot);
             bool isWithin = normalizedPath.Equals(normalizedRoot, StringComparison.OrdinalIgnoreCase)
                 || normalizedPath.StartsWith(normalizedRoot + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
             return new PathAccessResult(normalizedPath, isWithin, true, isWithin ? null : "The path is outside the workspace.");
         }
-        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException or IOException or UnauthorizedAccessException)
         {
             return new PathAccessResult(path, false, false, ex.Message);
         }
     }
 
-    private static string Normalize(string path)
+    private static string Normalize(string path, string basePath)
     {
-        return Path.TrimEndingDirectorySeparator(Path.GetFullPath(path));
+        string fullPath = Path.GetFullPath(path, basePath);
+        string root = Path.GetPathRoot(fullPath) ?? throw new ArgumentException("The path has no root.", nameof(path));
+        string current = root;
+        string remainder = fullPath[root.Length..];
+        foreach (string segment in remainder.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar))
+        {
+            if (string.IsNullOrEmpty(segment))
+            {
+                continue;
+            }
+
+            string candidate = Path.Combine(current, segment);
+            FileSystemInfo? info = Directory.Exists(candidate)
+                ? new DirectoryInfo(candidate)
+                : File.Exists(candidate)
+                    ? new FileInfo(candidate)
+                    : null;
+            if (info is not null && info.LinkTarget is not null)
+            {
+                FileSystemInfo? target = info.ResolveLinkTarget(returnFinalTarget: true);
+                current = target?.FullName ?? candidate;
+            }
+            else
+            {
+                current = candidate;
+            }
+        }
+
+        return Path.TrimEndingDirectorySeparator(Path.GetFullPath(current));
     }
 }
 
@@ -102,7 +130,7 @@ public sealed partial class ApprovalPolicyEngine : IApprovalPolicyEngine
                 null);
         }
 
-        if (CredentialRegex().IsMatch(command ?? string.Empty))
+        if (CredentialRegex().IsMatch(command ?? string.Empty) || SecretValueRegex().IsMatch(command ?? string.Empty))
         {
             return new ApprovalPolicyResult(ApprovalRiskCategory.CredentialOAuth, "credential", false, null);
         }
@@ -137,6 +165,104 @@ public sealed partial class ApprovalPolicyEngine : IApprovalPolicyEngine
     [GeneratedRegex(@"(?i)\b(rm\s+-rf|del\s+/[fsq]|remove-item\b.*-recurse|format\b|git\s+reset\s+--hard|git\s+clean\s+-[a-z]*f|drop\s+(database|table))\b")]
     private static partial Regex DestructiveRegex();
 
-    [GeneratedRegex(@"(?i)\b(oauth|login|credential|token|client[_-]?secret|password)\b")]
+    [GeneratedRegex(@"(?i)\b(oauth|login|credential|token|client[_-]?secret|password|api[_-]?key|authorization)\b")]
     private static partial Regex CredentialRegex();
+
+    [GeneratedRegex(@"(?i)(?:sk-[a-z0-9_-]{16,}|gh[pousr]_[a-z0-9]{20,}|authorization\s*:\s*(?:bearer|basic)\s+\S+)")]
+    private static partial Regex SecretValueRegex();
+}
+
+public sealed record ApprovalGrant(
+    string RiskKey,
+    ApprovalScope Scope,
+    string? ThreadId,
+    string? TurnId,
+    DateTimeOffset CreatedAt);
+
+public sealed class ApprovalGrantStore
+{
+    private readonly List<ApprovalGrant> grants = [];
+    private readonly object gate = new();
+
+    public void Add(ApprovalRequest request, ApprovalScope scope)
+    {
+        if (scope == ApprovalScope.Once)
+        {
+            return;
+        }
+
+        lock (gate)
+        {
+            grants.RemoveAll(item => item.RiskKey.Equals(request.RiskKey, StringComparison.OrdinalIgnoreCase)
+                && item.Scope == scope
+                && item.ThreadId == ScopeThreadId(request, scope)
+                && item.TurnId == ScopeTurnId(request, scope));
+            grants.Add(new ApprovalGrant(
+                request.RiskKey,
+                scope,
+                ScopeThreadId(request, scope),
+                ScopeTurnId(request, scope),
+                DateTimeOffset.UtcNow));
+        }
+    }
+
+    public bool IsApproved(ApprovalRequest request)
+        => FindApproval(request) is not null;
+
+    public ApprovalGrant? FindApproval(ApprovalRequest request)
+    {
+        lock (gate)
+        {
+            return grants.LastOrDefault(item =>
+                item.RiskKey.Equals(request.RiskKey, StringComparison.OrdinalIgnoreCase)
+                && item.Scope switch
+                {
+                    ApprovalScope.Session => true,
+                    ApprovalScope.Thread => item.ThreadId == request.ThreadId,
+                    ApprovalScope.Turn => item.ThreadId == request.ThreadId && item.TurnId == request.TurnId,
+                    _ => false,
+                });
+        }
+    }
+
+    public void EndTurn(string? threadId, string? turnId)
+    {
+        lock (gate)
+        {
+            grants.RemoveAll(item => item.Scope == ApprovalScope.Turn
+                && item.ThreadId == threadId
+                && item.TurnId == turnId);
+        }
+    }
+
+    public void EndThread(string? threadId)
+    {
+        lock (gate)
+        {
+            grants.RemoveAll(item => item.ThreadId == threadId
+                && item.Scope is ApprovalScope.Thread or ApprovalScope.Turn);
+        }
+    }
+
+    public void Clear()
+    {
+        lock (gate)
+        {
+            grants.Clear();
+        }
+    }
+
+    public IReadOnlyList<ApprovalGrant> Snapshot()
+    {
+        lock (gate)
+        {
+            return grants.ToArray();
+        }
+    }
+
+    private static string? ScopeThreadId(ApprovalRequest request, ApprovalScope scope)
+        => scope is ApprovalScope.Thread or ApprovalScope.Turn ? request.ThreadId : null;
+
+    private static string? ScopeTurnId(ApprovalRequest request, ApprovalScope scope)
+        => scope == ApprovalScope.Turn ? request.TurnId : null;
 }

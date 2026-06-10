@@ -62,6 +62,19 @@ public sealed class JsonLineRpcConnectionTests
         await harness.WriteServerLineAsync(JsonSerializer.Serialize(new { id, result = new { late = true } }));
     }
 
+    [TestMethod]
+    public async Task Dispose_ToleratesAlreadyClosedStreams()
+    {
+        var input = new MemoryStream();
+        var output = new MemoryStream();
+        var connection = new JsonLineRpcConnection(input, output);
+        await connection.StartAsync(CancellationToken.None);
+        input.Dispose();
+        output.Dispose();
+
+        await connection.DisposeAsync();
+    }
+
     private sealed class RpcHarness : IAsyncDisposable
     {
         private readonly Pipe clientToServer = new();

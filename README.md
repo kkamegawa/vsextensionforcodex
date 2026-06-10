@@ -27,14 +27,17 @@ Completed:
 - Named-pipe StreamJsonRpc contracts between Visual Studio and the worker.
 - JSONL app-server process host, bidirectional JSON-RPC, thread/turn lifecycle, approvals, redaction, path policy, and bounded streaming.
 - Chat MVVM, history, send/steer/interrupt, approvals, degraded/restart state, and safe text rendering.
+- Account status display and ChatGPT browser sign-in initiation without handling credentials in the extension.
+- A runnable app-server PoC plus build-time protocol schema generation from the local Codex CLI.
+- Loopback/token-gated future WebSocket policy, overload retry policy, resolved-path boundaries, and scoped approval grants.
 - Fake app-server plus Core and UI unit tests.
 - VSIX packaging that includes the worker and its dependencies.
 
-Not yet validated:
+Validated locally:
 
-- Experimental Instance installation and interactive UI testing.
-- A live local `codex app-server` handshake in this sandboxed environment.
-- Generated-schema compatibility tests against the locally installed Codex version.
+- Visual Studio Enterprise 2026 18.7 loads the .NET 8 OOP tool window in an Experimental Instance.
+- The C# PoC completed `initialize`/`initialized`/`thread/start`/`turn/start` against a live local app-server.
+- Protocol schemas were validated against local `codex-cli 0.139.0`.
 
 This repository can be prepared on macOS, but the Visual Studio extension itself is expected to be built and validated on Windows with Visual Studio 2022.
 
@@ -63,12 +66,38 @@ dotnet restore CodexForVisualStudio.slnx
 dotnet build CodexForVisualStudio.slnx --no-restore
 ```
 
+`schemas/` contains generated output from the Apache-2.0-licensed Codex CLI and is intentionally
+excluded from this MIT-licensed repository.
+When `schemas/codex_app_server_protocol.schemas.json` is missing, building
+`Codex.AppServer.Protocol` on Windows automatically runs:
+
+```powershell
+codex app-server generate-json-schema --out schemas
+```
+
+The build prefers `CODEX_PATH` when it is set, then an executable `codex` from `PATH`, and then
+the Codex desktop app's local executable cache. Set `CODEX_PATH` when automatic discovery cannot
+find an executable Codex CLI:
+
+```powershell
+$env:CODEX_PATH = "C:\path\to\codex.exe"
+dotnet build CodexForVisualStudio.slnx --no-restore
+```
+
 Run the unit tests:
 
 ```powershell
 dotnet test tests/Codex.VisualStudio.Core.Tests/Codex.VisualStudio.Core.Tests.csproj
 dotnet test tests/Codex.VisualStudio.Ui.Tests/Codex.VisualStudio.Ui.Tests.csproj
 ```
+
+Regenerate schemas manually and run the live app-server PoC:
+
+```powershell
+dotnet run --project src/Codex.AppServer.Poc/Codex.AppServer.Poc.csproj -- --schema-out schemas --cwd .
+```
+
+When Codex is installed through WindowsApps, its execution alias may be blocked for child processes. Pass `--codex <path-to-standalone-codex.exe>` in that environment.
 
 The generated VSIX is:
 

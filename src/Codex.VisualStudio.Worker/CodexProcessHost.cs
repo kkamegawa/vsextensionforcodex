@@ -30,11 +30,13 @@ public sealed class CodexProcessHost : ICodexProcessHost
         "TMP",
         "HOME",
         "CODEX_HOME",
+        "CODEX_PATH",
         "OPENAI_API_KEY",
     ];
 
     private readonly ISecretRedactor redactor;
     private Process? process;
+    private int? processId;
 
     public CodexProcessHost(ISecretRedactor redactor)
     {
@@ -45,17 +47,18 @@ public sealed class CodexProcessHost : ICodexProcessHost
 
     public event EventHandler<int>? Exited;
 
-    public int? ProcessId => process?.HasExited == false ? process.Id : null;
+    public int? ProcessId => processId;
 
     public IJsonRpcConnection? Connection { get; private set; }
 
     public async Task StartAsync(string codexPath, string workingDirectory, CancellationToken cancellationToken)
     {
         await StopAsync(cancellationToken).ConfigureAwait(false);
+        string resolvedCodexPath = CodexExecutableResolver.Resolve(codexPath);
 
         var startInfo = new ProcessStartInfo
         {
-            FileName = codexPath,
+            FileName = resolvedCodexPath,
             WorkingDirectory = Directory.Exists(workingDirectory) ? workingDirectory : Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
             UseShellExecute = false,
             RedirectStandardInput = true,
@@ -74,15 +77,29 @@ public sealed class CodexProcessHost : ICodexProcessHost
             }
         }
 
-        process = new Process { StartInfo = startInfo, EnableRaisingEvents = true };
-        process.Exited += OnExited;
-        if (!process.Start())
+        var startedProcess = new Process { StartInfo = startInfo };
+        WorkerDiagnostics.Write("codex app-server process start requested");
+        try
         {
-            throw new InvalidOperationException("Failed to start codex app-server.");
+            if (!startedProcess.Start())
+            {
+                throw new InvalidOperationException("Failed to start codex app-server.");
+            }
+        }
+        catch (Exception ex)
+        {
+            startedProcess.Dispose();
+            WorkerDiagnostics.Write("codex app-server process start failed", ex);
+            throw;
         }
 
-        _ = Task.Run(() => ReadStandardErrorAsync(process, cancellationToken), CancellationToken.None);
-        Connection = new JsonLineRpcConnection(process.StandardOutput.BaseStream, process.StandardInput.BaseStream);
+        process = startedProcess;
+        processId = startedProcess.Id;
+        startedProcess.EnableRaisingEvents = true;
+        startedProcess.Exited += OnExited;
+        WorkerDiagnostics.Write($"codex app-server process started pid={processId}");
+        _ = Task.Run(() => ReadStandardErrorAsync(startedProcess, cancellationToken), CancellationToken.None);
+        Connection = new JsonLineRpcConnection(startedProcess.StandardOutput.BaseStream, startedProcess.StandardInput.BaseStream);
         await Connection.StartAsync(cancellationToken).ConfigureAwait(false);
     }
 
@@ -96,6 +113,7 @@ public sealed class CodexProcessHost : ICodexProcessHost
 
         Process? current = process;
         process = null;
+        processId = null;
         if (current is null)
         {
             return;
@@ -149,7 +167,18 @@ public sealed class CodexProcessHost : ICodexProcessHost
     {
         if (sender is Process source)
         {
-            Exited?.Invoke(this, source.ExitCode);
+            int exitCode;
+            try
+            {
+                exitCode = source.ExitCode;
+            }
+            catch (InvalidOperationException)
+            {
+                exitCode = -1;
+            }
+
+            processId = null;
+            Exited?.Invoke(this, exitCode);
         }
     }
 }

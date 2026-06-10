@@ -70,6 +70,8 @@ public sealed class ViewModelTests
         var vm = new ApprovalViewModel(request, (_, _) => Task.CompletedTask);
 
         Assert.IsTrue(vm.ShowAccept);
+        Assert.IsFalse(vm.ShowAcceptForTurn);
+        Assert.IsFalse(vm.ShowAcceptForThread);
         Assert.IsFalse(vm.ShowAcceptForSession);
         Assert.IsFalse(vm.ShowDecline);
         Assert.IsTrue(vm.ShowCancel);
@@ -176,5 +178,38 @@ public sealed class ViewModelTests
         Assert.IsFalse(item.IsDiffItem);
         Assert.IsFalse(item.IsPlanItem);
         Assert.IsFalse(item.IsCollapsed);
+    }
+
+    [TestMethod]
+    public void AccountPanelViewModel_MapsAccountStatesToDisplayText()
+    {
+        var viewModel = new AccountPanelViewModel();
+
+        viewModel.Update(new AccountStatus { State = AccountState.SignedOut });
+        Assert.AreEqual("Not signed in", viewModel.DisplayText);
+        Assert.IsTrue(viewModel.ShowSignIn);
+        Assert.IsTrue(viewModel.ShowAction);
+        Assert.AreEqual("Sign in", viewModel.ActionText);
+
+        viewModel.Update(new AccountStatus { State = AccountState.SigningIn });
+        Assert.AreEqual("Signing in...", viewModel.DisplayText);
+        Assert.IsFalse(viewModel.ShowSignIn);
+        Assert.IsFalse(viewModel.ShowAction);
+
+        viewModel.Update(new AccountStatus { State = AccountState.SignedIn, PlanType = "plus" });
+        Assert.AreEqual("Signed in \u00b7 plus", viewModel.DisplayText);
+        Assert.IsFalse(viewModel.ShowSignIn);
+        Assert.IsTrue(viewModel.ShowAction);
+        Assert.IsTrue(viewModel.IsSignedIn);
+        Assert.AreEqual("Sign out", viewModel.ActionText);
+
+        viewModel.Update(new AccountStatus { State = AccountState.Unavailable });
+        Assert.AreEqual("Account status unavailable", viewModel.DisplayText);
+        Assert.IsTrue(viewModel.ShowSignIn);
+        Assert.IsTrue(viewModel.ShowAction);
+        Assert.AreEqual("Sign in", viewModel.ActionText);
+
+        viewModel.Update(new AccountStatus { State = AccountState.Unavailable, Message = "Could not open the default browser." });
+        Assert.AreEqual("Account status unavailable \u00b7 Could not open the default browser.", viewModel.DisplayText);
     }
 }

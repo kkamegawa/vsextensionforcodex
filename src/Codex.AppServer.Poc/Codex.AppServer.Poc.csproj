@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <AssemblyName>Codex.AppServer.Poc</AssemblyName>
+    <RootNamespace>Codex.AppServer.Poc</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../Codex.AppServer.Protocol/Codex.AppServer.Protocol.csproj" />
+  </ItemGroup>
+</Project>

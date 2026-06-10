@@ -117,9 +117,27 @@ public sealed class JsonLineRpcConnection : IJsonRpcConnection
         catch (OperationCanceledException)
         {
         }
+        catch (Exception) when (Volatile.Read(ref closed) != 0)
+        {
+            // Disposal is best-effort after a process crash or externally closed stdio stream.
+        }
 
-        reader.Dispose();
-        writer.Dispose();
+        try
+        {
+            reader.Dispose();
+        }
+        catch (ObjectDisposedException)
+        {
+        }
+
+        try
+        {
+            writer.Dispose();
+        }
+        catch (ObjectDisposedException)
+        {
+        }
+
         lifetime.Dispose();
     }
 

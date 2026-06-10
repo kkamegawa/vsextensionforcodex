@@ -66,6 +66,221 @@ public sealed class CodexSessionServiceTests
         Assert.IsTrue(threw, "Expected InvalidOperationException for stale turn.");
     }
 
+    [TestMethod]
+    public async Task AccountReadMapsSignedOutAndSignedInWithoutPersonalInformation()
+    {
+        bool signedIn = false;
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "account/read"
+                ? signedIn
+                    ? JsonSerializer.SerializeToElement(new { account = new { type = "chatgpt", email = "secret@example.com", planType = "plus" } })
+                    : JsonSerializer.SerializeToElement(new { account = (object?)null, requiresOpenaiAuth = true })
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        AccountStatus signedOut = await service.GetAccountStatusAsync(CancellationToken.None);
+        signedIn = true;
+        AccountStatus signedInStatus = await service.GetAccountStatusAsync(CancellationToken.None);
+
+        Assert.AreEqual(AccountState.SignedOut, signedOut.State);
+        Assert.AreEqual(AccountState.SignedIn, signedInStatus.State);
+        Assert.AreEqual("plus", signedInStatus.PlanType);
+    }
+
+    [TestMethod]
+    public async Task AccountReadAllowsMissingPlanAndUnknownFields()
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "account/read"
+                ? JsonSerializer.SerializeToElement(new { account = new { type = "future", unknown = 42 } })
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        AccountStatus status = await service.GetAccountStatusAsync(CancellationToken.None);
+
+        Assert.AreEqual(AccountState.SignedIn, status.State);
+        Assert.IsNull(status.PlanType);
+    }
+
+    [TestMethod]
+    public async Task LoginStartUsesChatgptAndRejectsInsecureUrl()
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "account/login/start"
+                ? JsonSerializer.SerializeToElement(new { type = "chatgpt", loginId = "login-1", authUrl = "http://example.com/login" })
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        StartAccountLoginResult result = await service.StartAccountLoginAsync(CancellationToken.None);
+
+        RecordedRequest request = connection.Requests.Single(item => item.Method == "account/login/start");
+        JsonElement parameters = JsonSerializer.SerializeToElement(request.Parameters);
+        Assert.AreEqual("chatgpt", parameters.GetProperty("type").GetString());
+        Assert.AreEqual(AccountState.Unavailable, result.Status.State);
+        Assert.IsNull(result.AuthUrl);
+    }
+
+    [TestMethod]
+    public async Task LoginStartReturnsSecureChatgptBrowserUrl()
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "account/login/start"
+                ? JsonSerializer.SerializeToElement(new { type = "chatgpt", loginId = "login-1", authUrl = "https://example.com/login" })
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        StartAccountLoginResult result = await service.StartAccountLoginAsync(CancellationToken.None);
+
+        Assert.AreEqual(AccountState.SigningIn, result.Status.State);
+        Assert.AreEqual("login-1", result.LoginId);
+        Assert.AreEqual("https://example.com/login", result.AuthUrl);
+    }
+
+    [TestMethod]
+    public async Task LoginStartContinuesWhenAccountStatusObserverFails()
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "account/login/start"
+                ? JsonSerializer.SerializeToElement(new { type = "chatgpt", loginId = "login-1", authUrl = "https://example.com/login" })
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        await using var service = CreateService();
+        service.AccountStatusChanged += (_, _) => throw new InvalidOperationException("observer failed");
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        StartAccountLoginResult result = await service.StartAccountLoginAsync(CancellationToken.None);
+
+        Assert.AreEqual(AccountState.SigningIn, result.Status.State);
+        Assert.IsTrue(connection.Requests.Any(item => item.Method == "account/login/start"));
+    }
+
+    [TestMethod]
+    public async Task LogoutRequestsAccountLogoutAndRefreshesSignedOutStatus()
+    {
+        bool signedIn = true;
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) =>
+            {
+                if (method == "account/logout")
+                {
+                    signedIn = false;
+                    return JsonSerializer.SerializeToElement(new { });
+                }
+
+                return method == "account/read"
+                    ? JsonSerializer.SerializeToElement(new
+                    {
+                        account = signedIn ? new { type = "chatgpt", planType = "plus" } : null,
+                        requiresOpenaiAuth = true,
+                    })
+                    : JsonSerializer.SerializeToElement(new { });
+            },
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        AccountStatus result = await service.LogoutAccountAsync(CancellationToken.None);
+
+        Assert.AreEqual(AccountState.SignedOut, result.State);
+        CollectionAssert.AreEqual(
+            new[] { "initialize", "account/logout", "account/read" },
+            connection.Requests.Select(item => item.Method).ToArray());
+    }
+
+    [TestMethod]
+    public async Task AccountNotificationsRefreshStatus()
+    {
+        int reads = 0;
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) =>
+            {
+                if (method == "account/read")
+                {
+                    reads++;
+                    return JsonSerializer.SerializeToElement(new { account = new { type = "chatgpt", planType = "pro" } });
+                }
+
+                return JsonSerializer.SerializeToElement(new { });
+            },
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        await connection.EmitNotificationAsync("account/login/completed", new { loginId = "login-1", success = true });
+        await connection.EmitNotificationAsync("account/updated", new { authMode = "chatgpt", planType = "pro" });
+
+        Assert.AreEqual(2, reads);
+    }
+
+    [TestMethod]
+    public async Task AccountReadFailureReturnsUnavailable()
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "account/read"
+                ? throw new InvalidOperationException("unsupported")
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        AccountStatus status = await service.GetAccountStatusAsync(CancellationToken.None);
+
+        Assert.AreEqual(AccountState.Unavailable, status.State);
+    }
+
+    [TestMethod]
+    public async Task ScopedApproval_EmitsGrantAndAutoApprovalAuditRecords()
+    {
+        var connection = new RecordingConnection();
+        await using var service = CreateService();
+        var audit = new List<ApprovalAuditRecord>();
+        service.ApprovalAuditRecorded += (record, _) =>
+        {
+            audit.Add(record);
+            return Task.CompletedTask;
+        };
+        service.ApprovalRequested += (request, cancellationToken) => service.ResolveApprovalAsync(
+            new ResolveApprovalRequest
+            {
+                RequestId = request.RequestId,
+                Decision = ApprovalDecision.AcceptForThread,
+            },
+            cancellationToken);
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+        string cwd = Options().WorkingDirectory;
+
+        await connection.EmitRequestAsync(
+            "approval-1",
+            "item/commandExecution/requestApproval",
+            new { command = "dotnet build", cwd, threadId = "thread-1", turnId = "turn-1" });
+        await connection.EmitRequestAsync(
+            "approval-2",
+            "item/commandExecution/requestApproval",
+            new { command = "dotnet build", cwd, threadId = "thread-1", turnId = "turn-2" });
+
+        Assert.AreEqual(2, audit.Count);
+        Assert.AreEqual(ApprovalAuditAction.GrantCreated, audit[0].Action);
+        Assert.AreEqual(ApprovalScope.Thread, audit[0].Scope);
+        Assert.AreEqual(ApprovalAuditAction.AutoApproved, audit[1].Action);
+        Assert.AreEqual(ApprovalScope.Thread, audit[1].Scope);
+    }
+
     private static CodexSessionService CreateService()
         => new(new ApprovalPolicyEngine(new PathAccessPolicy()), new SecretRedactor());
 
@@ -77,17 +292,9 @@ public sealed class CodexSessionServiceTests
 
     private sealed class RecordingConnection : IJsonRpcConnection
     {
-        public event Func<JsonRpcMessage, CancellationToken, Task>? NotificationReceived
-        {
-            add { }
-            remove { }
-        }
+        public event Func<JsonRpcMessage, CancellationToken, Task>? NotificationReceived;
 
-        public event Func<JsonRpcMessage, CancellationToken, Task<JsonElement>>? RequestReceived
-        {
-            add { }
-            remove { }
-        }
+        public event Func<JsonRpcMessage, CancellationToken, Task<JsonElement>>? RequestReceived;
 
         public event EventHandler<Exception?>? Closed
         {
@@ -109,6 +316,26 @@ public sealed class CodexSessionServiceTests
 
         public Task SendNotificationAsync(string method, object? parameters, CancellationToken cancellationToken)
             => Task.CompletedTask;
+
+        public Task EmitNotificationAsync(string method, object parameters)
+            => NotificationReceived?.Invoke(
+                new JsonRpcMessage
+                {
+                    Method = method,
+                    Params = JsonSerializer.SerializeToElement(parameters),
+                },
+                CancellationToken.None) ?? Task.CompletedTask;
+
+        public Task<JsonElement> EmitRequestAsync(string id, string method, object parameters)
+            => RequestReceived?.Invoke(
+                new JsonRpcMessage
+                {
+                    Id = JsonSerializer.SerializeToElement(id),
+                    Method = method,
+                    Params = JsonSerializer.SerializeToElement(parameters),
+                },
+                CancellationToken.None)
+                ?? Task.FromResult(JsonSerializer.SerializeToElement(new { }));
 
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }

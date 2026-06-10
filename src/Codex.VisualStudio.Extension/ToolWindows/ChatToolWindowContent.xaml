@@ -14,7 +14,7 @@
     <Grid.Resources>
       <BooleanToVisibilityConverter x:Key="BoolToVis" />
       <Style TargetType="TextBlock">
-        <Setter Property="Foreground" Value="{DynamicResource {x:Static styles:VsBrushes.WindowTextKey}}" />
+        <Setter Property="Foreground" Value="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowTextBrushKey}}" />
         <Setter Property="TextOptions.TextFormattingMode" Value="Display" />
       </Style>
 
@@ -156,6 +156,11 @@
             BorderBrush="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBorderBrushKey}}">
       <DockPanel>
         <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
+          <TextBlock Margin="0,0,8,0" VerticalAlignment="Center" Opacity="0.8"
+                     Text="{Binding Account.DisplayText}" />
+          <Button Margin="0,0,4,0" Content="{Binding Account.ActionText}" Command="{Binding AccountCommand}"
+                  Style="{StaticResource SmallRoundButtonStyle}"
+                  Visibility="{Binding Account.ShowAction, Converter={StaticResource BoolToVis}}" />
           <Button Margin="4,0,0,0" Content="New" Command="{Binding NewThreadCommand}"
                   Style="{StaticResource SmallRoundButtonStyle}" />
           <Button Margin="4,0,0,0" Content="Restart" Command="{Binding RestartCommand}"
@@ -396,6 +401,12 @@
                     <Button Margin="0,0,6,0" Content="Accept" Command="{Binding AcceptCommand}"
                             Style="{StaticResource RoundButtonStyle}" Padding="12,5"
                             Visibility="{Binding ShowAccept, Converter={StaticResource BoolToVis}}" />
+                    <Button Margin="0,0,6,0" Content="Accept for turn" Command="{Binding AcceptForTurnCommand}"
+                            Style="{StaticResource RoundButtonStyle}" Padding="12,5"
+                            Visibility="{Binding ShowAcceptForTurn, Converter={StaticResource BoolToVis}}" />
+                    <Button Margin="0,0,6,0" Content="Accept for thread" Command="{Binding AcceptForThreadCommand}"
+                            Style="{StaticResource RoundButtonStyle}" Padding="12,5"
+                            Visibility="{Binding ShowAcceptForThread, Converter={StaticResource BoolToVis}}" />
                     <Button Margin="0,0,6,0" Content="Accept for session" Command="{Binding AcceptForSessionCommand}"
                             Style="{StaticResource RoundButtonStyle}" Padding="12,5"
                             Visibility="{Binding ShowAcceptForSession, Converter={StaticResource BoolToVis}}" />

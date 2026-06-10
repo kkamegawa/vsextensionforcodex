@@ -4,6 +4,7 @@
     <Project Path="src/Codex.VisualStudio.Contracts/Codex.VisualStudio.Contracts.csproj" />
     <Project Path="src/Codex.VisualStudio.Worker/Codex.VisualStudio.Worker.csproj" />
     <Project Path="src/Codex.AppServer.Fake/Codex.AppServer.Fake.csproj" />
+    <Project Path="src/Codex.AppServer.Poc/Codex.AppServer.Poc.csproj" />
     <Project Path="src/Codex.VisualStudio.Extension/Codex.VisualStudio.Extension.csproj">
       <Deploy Solution="Debug|*" />
     </Project>

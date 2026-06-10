@@ -4,7 +4,7 @@ namespace Codex.VisualStudio.Contracts;
 
 public static class ContractVersions
 {
-    public const int Current = 1;
+    public const int Current = 5;
 }
 
 public enum WorkerConnectionState
@@ -15,6 +15,15 @@ public enum WorkerConnectionState
     Busy,
     WaitingForApproval,
     Degraded,
+}
+
+public enum AccountState
+{
+    Checking,
+    SignedOut,
+    SigningIn,
+    SignedIn,
+    Unavailable,
 }
 
 public enum ConversationEventKind
@@ -45,9 +54,25 @@ public enum ApprovalRiskCategory
 public enum ApprovalDecision
 {
     Accept,
+    AcceptForTurn,
+    AcceptForThread,
     AcceptForSession,
     Decline,
     Cancel,
+}
+
+public enum ApprovalScope
+{
+    Once,
+    Turn,
+    Thread,
+    Session,
+}
+
+public enum ApprovalAuditAction
+{
+    GrantCreated,
+    AutoApproved,
 }
 
 public sealed class WorkerOptions
@@ -76,6 +101,24 @@ public sealed class WorkerStatus
     public string? TurnId { get; set; }
 
     public int? ProcessId { get; set; }
+}
+
+public sealed class AccountStatus
+{
+    public AccountState State { get; set; } = AccountState.Checking;
+
+    public string? PlanType { get; set; }
+
+    public string? Message { get; set; }
+}
+
+public sealed class StartAccountLoginResult
+{
+    public AccountStatus Status { get; set; } = new();
+
+    public string? LoginId { get; set; }
+
+    public string? AuthUrl { get; set; }
 }
 
 public sealed class ThreadSummary
@@ -172,10 +215,30 @@ public sealed class ResolveApprovalRequest
     public ApprovalDecision Decision { get; set; }
 }
 
+public sealed class ApprovalAuditRecord
+{
+    public string RequestId { get; set; } = string.Empty;
+
+    public ApprovalAuditAction Action { get; set; }
+
+    public ApprovalRiskCategory Risk { get; set; }
+
+    public ApprovalScope Scope { get; set; }
+
+    public string DisplayText { get; set; } = string.Empty;
+
+    public string? ThreadId { get; set; }
+
+    public string? TurnId { get; set; }
+}
+
 public interface ICodexWorkerObserver
 {
     [JsonRpcMethod("observer/stateChanged")]
     Task OnStateChangedAsync(WorkerStatus status, CancellationToken cancellationToken);
+
+    [JsonRpcMethod("observer/accountChanged")]
+    Task OnAccountChangedAsync(AccountStatus status, CancellationToken cancellationToken);
 
     [JsonRpcMethod("observer/conversationEvent")]
     Task OnConversationEventAsync(ConversationEvent conversationEvent, CancellationToken cancellationToken);
@@ -185,6 +248,9 @@ public interface ICodexWorkerObserver
 
     [JsonRpcMethod("observer/approvalResolved")]
     Task OnApprovalResolvedAsync(string requestId, CancellationToken cancellationToken);
+
+    [JsonRpcMethod("observer/approvalAudit")]
+    Task OnApprovalAuditAsync(ApprovalAuditRecord record, CancellationToken cancellationToken);
 }
 
 public interface ICodexWorkerClient
@@ -197,6 +263,15 @@ public interface ICodexWorkerClient
 
     [JsonRpcMethod("worker/status")]
     Task<WorkerStatus> GetStatusAsync(CancellationToken cancellationToken);
+
+    [JsonRpcMethod("worker/account/status")]
+    Task<AccountStatus> GetAccountStatusAsync(CancellationToken cancellationToken);
+
+    [JsonRpcMethod("worker/account/login/start")]
+    Task<StartAccountLoginResult> StartAccountLoginAsync(CancellationToken cancellationToken);
+
+    [JsonRpcMethod("worker/account/logout")]
+    Task<AccountStatus> LogoutAccountAsync(CancellationToken cancellationToken);
 
     [JsonRpcMethod("worker/thread/start")]
     Task<ThreadSummary> StartThreadAsync(CancellationToken cancellationToken);

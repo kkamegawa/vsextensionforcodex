@@ -3,6 +3,7 @@
 long nextThread = 1;
 long nextTurn = 1;
 var threads = new List<object>();
+bool signedIn = false;
 
 while (await Console.In.ReadLineAsync().ConfigureAwait(false) is { } line)
 {
@@ -23,6 +24,13 @@ while (await Console.In.ReadLineAsync().ConfigureAwait(false) is { } line)
         "turn/start" => StartTurn(root),
         "turn/steer" => new { turnId = root.GetProperty("params").GetProperty("expectedTurnId").GetString() },
         "turn/interrupt" => new { },
+        "account/read" => new
+        {
+            account = signedIn ? new { type = "chatgpt", planType = "plus" } : null,
+            requiresOpenaiAuth = true,
+        },
+        "account/login/start" => StartLogin(),
+        "account/logout" => Logout(),
         _ => new { },
     };
     await WriteAsync(new { id = JsonSerializer.Deserialize<object>(id.GetRawText()), result }).ConfigureAwait(false);
@@ -49,6 +57,25 @@ object StartTurn(JsonElement request)
         await WriteAsync(new { method = "turn/completed", @params = new { threadId, turnId, turn = new { id = turnId, status = "completed" } } }).ConfigureAwait(false);
     });
     return new { turn = new { id = turnId, status = "inProgress" } };
+}
+
+object StartLogin()
+{
+    string loginId = $"fake-login-{Guid.NewGuid():N}";
+    _ = Task.Run(async () =>
+    {
+        await Task.Delay(100).ConfigureAwait(false);
+        signedIn = true;
+        await WriteAsync(new { method = "account/login/completed", @params = new { loginId, success = true } }).ConfigureAwait(false);
+        await WriteAsync(new { method = "account/updated", @params = new { authMode = "chatgpt", planType = "plus" } }).ConfigureAwait(false);
+    });
+    return new { type = "chatgpt", loginId, authUrl = "https://example.com/codex-login" };
+}
+
+object Logout()
+{
+    signedIn = false;
+    return new { };
 }
 
 static Task WriteAsync(object value) => Console.Out.WriteLineAsync(JsonSerializer.Serialize(value));

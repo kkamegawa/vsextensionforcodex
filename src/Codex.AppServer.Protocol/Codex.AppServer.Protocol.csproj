@@ -3,6 +3,15 @@
     <TargetFramework>net8.0</TargetFramework>
     <AssemblyName>Codex.AppServer.Protocol</AssemblyName>
     <RootNamespace>Codex.AppServer.Protocol</RootNamespace>
+    <CodexSchemaDirectory>$([System.IO.Path]::GetFullPath('$(MSBuildProjectDirectory)/../../schemas'))</CodexSchemaDirectory>
+    <CodexSchemaSentinel>$(CodexSchemaDirectory)/codex_app_server_protocol.schemas.json</CodexSchemaSentinel>
+    <CodexSchemaGeneratorScript>$([System.IO.Path]::GetFullPath('$(MSBuildProjectDirectory)/../../scripts/generate-schemas.ps1'))</CodexSchemaGeneratorScript>
   </PropertyGroup>
+
+  <Target Name="GenerateCodexSchemas"
+          BeforeTargets="BeforeBuild"
+          Condition="'$(OS)' == 'Windows_NT' and !Exists('$(CodexSchemaSentinel)')">
+    <Exec Command="powershell -NoProfile -ExecutionPolicy Bypass -File &quot;$(CodexSchemaGeneratorScript)&quot; -OutputDirectory &quot;$(CodexSchemaDirectory)&quot; -CodexPath &quot;$(CODEX_PATH)&quot;" />
+  </Target>
 </Project>
 

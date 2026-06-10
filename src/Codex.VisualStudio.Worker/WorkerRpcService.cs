@@ -1,5 +1,6 @@
 ﻿using Codex.VisualStudio.Contracts;
 using StreamJsonRpc;
+using System.Diagnostics;
 
 namespace Codex.VisualStudio.Worker;
 
@@ -11,6 +12,7 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
     private WorkerOptions? options;
     private JsonRpc? clientRpc;
     private WorkerStatus status = new() { State = WorkerConnectionState.Disconnected, Message = "Worker is disconnected." };
+    private AccountStatus accountStatus = new();
 
     public WorkerRpcService(ISecretRedactor redactor, ICodexProcessHost processHost, ICodexSessionService session)
     {
@@ -22,13 +24,12 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
             Kind = ConversationEventKind.Error,
             Text = text,
         }, CancellationToken.None);
-        processHost.Exited += (_, exitCode) => _ = SetStatusAsync(
-            WorkerConnectionState.Degraded,
-            $"codex app-server exited with code {exitCode}.",
-            CancellationToken.None);
+        processHost.Exited += (_, exitCode) => _ = OnProcessExitedAsync(exitCode);
         session.ConversationEventReceived += PublishEventAsync;
         session.ApprovalRequested += PublishApprovalAsync;
         session.ApprovalResolved += PublishApprovalResolvedAsync;
+        session.AccountStatusChanged += PublishAccountStatusAsync;
+        session.ApprovalAuditRecorded += PublishApprovalAuditAsync;
     }
 
     public void AttachClient(JsonRpc rpc)
@@ -38,6 +39,7 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
 
     public async Task<WorkerStatus> ConnectAsync(WorkerOptions options, CancellationToken cancellationToken)
     {
+        WorkerDiagnostics.Write("worker connect RPC received");
         if (options.ContractVersion != ContractVersions.Current)
         {
             throw new InvalidOperationException($"Unsupported contract version {options.ContractVersion}.");
@@ -47,12 +49,21 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
         await SetStatusAsync(WorkerConnectionState.Connecting, "Starting codex app-server...", cancellationToken).ConfigureAwait(false);
         try
         {
+            WorkerDiagnostics.Write("worker starting codex app-server");
             await processHost.StartAsync(options.CodexPath, options.WorkingDirectory, cancellationToken).ConfigureAwait(false);
+            WorkerDiagnostics.Write("worker initializing codex app-server");
             await session.InitializeAsync(processHost.Connection!, options, cancellationToken).ConfigureAwait(false);
+            WorkerDiagnostics.Write("worker reading account status");
+            accountStatus = await session.GetAccountStatusAsync(cancellationToken).ConfigureAwait(false);
+            WorkerDiagnostics.Write("worker connect completed");
             return await SetStatusAsync(WorkerConnectionState.Ready, "Connected to codex app-server.", cancellationToken).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
+            WorkerDiagnostics.Write("worker connect failed", ex);
+            await PublishAccountStatusAsync(
+                new AccountStatus { State = AccountState.Unavailable },
+                CancellationToken.None).ConfigureAwait(false);
             return await SetStatusAsync(WorkerConnectionState.Degraded, redactor.Redact(ex.Message), cancellationToken).ConfigureAwait(false);
         }
     }
@@ -69,6 +80,61 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
     }
 
     public Task<WorkerStatus> GetStatusAsync(CancellationToken cancellationToken) => Task.FromResult(CloneStatus());
+
+    public Task<AccountStatus> GetAccountStatusAsync(CancellationToken cancellationToken)
+        => Task.FromResult(CloneAccountStatus());
+
+    public async Task<StartAccountLoginResult> StartAccountLoginAsync(CancellationToken cancellationToken)
+    {
+        WorkerDiagnostics.Write("worker login RPC received");
+        try
+        {
+            StartAccountLoginResult result = await session.StartAccountLoginAsync(cancellationToken).ConfigureAwait(false);
+            if (result.Status.State != AccountState.SigningIn)
+            {
+                WorkerDiagnostics.Write($"worker login RPC completed state={result.Status.State}");
+                return result;
+            }
+
+            try
+            {
+                WorkerDiagnostics.Write("default browser launch starting");
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName = result.AuthUrl!,
+                    UseShellExecute = true,
+                });
+                WorkerDiagnostics.Write("default browser launch requested");
+                return result;
+            }
+            catch (Exception ex)
+            {
+                WorkerDiagnostics.Write("default browser launch failed", ex);
+                return await AccountLoginUnavailableAsync(
+                    "Could not open the default browser.",
+                    CancellationToken.None).ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            WorkerDiagnostics.Write("worker login RPC failed", ex);
+            return await AccountLoginUnavailableAsync(
+                "Codex Worker could not start ChatGPT sign-in.",
+                CancellationToken.None).ConfigureAwait(false);
+        }
+    }
+
+    public async Task<AccountStatus> LogoutAccountAsync(CancellationToken cancellationToken)
+    {
+        WorkerDiagnostics.Write("worker logout RPC received");
+        AccountStatus result = await session.LogoutAccountAsync(cancellationToken).ConfigureAwait(false);
+        WorkerDiagnostics.Write($"worker logout RPC completed state={result.State}");
+        return result;
+    }
 
     public async Task<ThreadSummary> StartThreadAsync(CancellationToken cancellationToken)
     {
@@ -165,6 +231,56 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
         }
     }
 
+    private async Task PublishAccountStatusAsync(AccountStatus value, CancellationToken cancellationToken)
+    {
+        accountStatus = value;
+        if (clientRpc is not null)
+        {
+            try
+            {
+                await clientRpc.NotifyWithParameterObjectAsync("observer/accountChanged", new { status = value }).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+            }
+            catch (Exception ex)
+            {
+                WorkerDiagnostics.Write("account status observer notification failed", ex);
+                // Account notifications are advisory and must never break chat or sign-in RPCs.
+            }
+        }
+    }
+
+    private async Task<StartAccountLoginResult> AccountLoginUnavailableAsync(string message, CancellationToken cancellationToken)
+    {
+        var unavailable = new AccountStatus
+        {
+            State = AccountState.Unavailable,
+            Message = message,
+        };
+        await PublishAccountStatusAsync(unavailable, cancellationToken).ConfigureAwait(false);
+        return new StartAccountLoginResult { Status = unavailable };
+    }
+
+    private async Task PublishApprovalAuditAsync(ApprovalAuditRecord record, CancellationToken cancellationToken)
+    {
+        if (clientRpc is not null)
+        {
+            await clientRpc.NotifyWithParameterObjectAsync("observer/approvalAudit", new { record }).ConfigureAwait(false);
+        }
+    }
+
+    private async Task OnProcessExitedAsync(int exitCode)
+    {
+        await PublishAccountStatusAsync(
+            new AccountStatus { State = AccountState.Unavailable },
+            CancellationToken.None).ConfigureAwait(false);
+        await SetStatusAsync(
+            WorkerConnectionState.Degraded,
+            $"codex app-server exited with code {exitCode}.",
+            CancellationToken.None).ConfigureAwait(false);
+    }
+
     private void UpdateSessionIds()
     {
         status.ThreadId = session.ActiveThreadId;
@@ -179,5 +295,12 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
         ThreadId = status.ThreadId,
         TurnId = status.TurnId,
         ProcessId = status.ProcessId,
+    };
+
+    private AccountStatus CloneAccountStatus() => new()
+    {
+        State = accountStatus.State,
+        PlanType = accountStatus.PlanType,
+        Message = accountStatus.Message,
     };
 }

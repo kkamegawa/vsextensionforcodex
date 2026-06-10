@@ -4,6 +4,7 @@ bin/
 obj/
 out/
 artifacts/
+schemas/
 TestResults/
 coverage/
 

@@ -23,10 +23,10 @@
 - [x] `apm audit --ci --policy apm-policy.yml` で lockfile・allowlist・drift を検証
 
 ### 0.3 codex app-server 疎通 PoC
-- [ ] ローカルに `codex` CLI が存在することを確認（`codex --version`）
-- [ ] `codex app-server generate-json-schema --out ./schemas` でスキーマ取得
-- [ ] 最小 C# コンソールで `codex app-server` を spawn → `initialize`/`initialized`/`thread/start`/`turn/start` 往復を確認
-- [ ] VisualStudio.Extensibility の **.NET 8** 実機対応範囲を検証し、機能ギャップを記録
+- [x] ローカルに `codex` CLI が存在することを確認（`codex --version`）
+- [x] `codex app-server generate-json-schema --out ./schemas` でスキーマ取得
+- [x] 最小 C# コンソールで `codex app-server` を spawn → `initialize`/`initialized`/`thread/start`/`turn/start` 往復を確認
+- [x] VisualStudio.Extensibility の **.NET 8** 実機対応範囲を検証し、機能ギャップを記録
 
 **完了条件**: 公開リポジトリが初期化され、apm でエージェントが導入でき、C# から app-server と最小往復ができる。
 
@@ -47,11 +47,11 @@
 - [x] stdin へ改行区切り JSON 書き込み（JSONL）
 - [x] stdout 行単位読み取り → `id` 対応の `result`/`error` を `TaskCompletionSource` に解決
 - [x] `id` なし通知を購読者へディスパッチ（`IObservable` / event）
-- [ ] WebSocket 過負荷エラー（`-32001`）等のリトライ方針（将来 WS 用に抽象化）
+- [x] WebSocket 過負荷エラー（`-32001`）等のリトライ方針（将来 WS 用に抽象化）
 - [x] stdout reader / JSON parser / response resolver / notification dispatcher を `Channel<T>` で分離
 - [x] request timeout、cancellation、orphan `TaskCompletionSource` cleanup を実装
 - [x] 1 行あたりの最大 JSON サイズと malformed JSON 時の復旧方針を定義
-- [ ] WebSocket は既定無効。使用時は loopback + capability token / signed bearer token を必須化
+- [x] WebSocket は既定無効。使用時は loopback + capability token / signed bearer token を必須化
 
 ### 1.3 ライフサイクル
 - [x] `InitializeAsync`（`clientInfo.name` = `codex_visual_studio`、`optOutNotificationMethods` 対応）
@@ -68,9 +68,9 @@
 ### 1.5 信頼境界・安全性
 - [x] `ApprovalPolicyEngine` を実装し、command/file/network/oauth/MCP 要求を統一判定
 - [x] risk category（`read-only` / `workspace-write` / `workspace-outside` / `network` / `destructive` / `credential/oauth`）を定義
-- [ ] `PathAccessPolicy` で full path、symlink、relative path、case-insensitive 比較を正規化
-- [ ] workspace 外書き込み、破壊的コマンド、資格情報らしき文字列を検出
-- [ ] 承認決定を session/thread/turn 単位でスコープ管理し、`acceptForSession` の有効範囲を監査可能にする
+- [x] `PathAccessPolicy` で full path、symlink、relative path、case-insensitive 比較を正規化
+- [x] workspace 外書き込み、破壊的コマンド、資格情報らしき文字列を検出
+- [x] 承認決定を session/thread/turn 単位でスコープ管理し、`acceptForSession` の有効範囲を監査可能にする
 - [x] `SecretRedactor` で token、connection string、private key、OAuth credential を表示/保存前にマスク
 - [x] `AuditLogService` で承認要求・決定・拒否・policy block を VS ActivityLog に記録（OutputChannel 経由で `WorkerBridge` / `ChatViewModel` に実装）
 
@@ -126,6 +126,7 @@
 - [x] 送信 / 中断（`turn/interrupt`）/ 追記（`turn/steer`）ボタン
 - [x] 会話履歴一覧（`thread/list`）と再開（`thread/resume`）
 - [x] app-server 未起動/クラッシュ/非互換時の degraded UI と再起動導線
+- [x] `account/read` によるログイン状態表示と `account/login/start` による ChatGPT ブラウザ認証導線
 - [x] UI thread ブロック、過剰メモリ使用、長大出力表示の回帰テスト
 
 **完了条件**: GitHub Copilot 風チャット UI で Codex と対話でき、承認・中断・差分表示が機能する。

@@ -13,11 +13,21 @@ public interface ICodexSessionService : IAsyncDisposable
 
     event Func<string, CancellationToken, Task>? ApprovalResolved;
 
+    event Func<AccountStatus, CancellationToken, Task>? AccountStatusChanged;
+
+    event Func<ApprovalAuditRecord, CancellationToken, Task>? ApprovalAuditRecorded;
+
     string? ActiveThreadId { get; }
 
     string? ActiveTurnId { get; }
 
     Task InitializeAsync(IJsonRpcConnection connection, WorkerOptions options, CancellationToken cancellationToken);
+
+    Task<AccountStatus> GetAccountStatusAsync(CancellationToken cancellationToken);
+
+    Task<StartAccountLoginResult> StartAccountLoginAsync(CancellationToken cancellationToken);
+
+    Task<AccountStatus> LogoutAccountAsync(CancellationToken cancellationToken);
 
     Task<ThreadSummary> StartThreadAsync(CancellationToken cancellationToken);
 
@@ -41,7 +51,7 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
     private readonly IApprovalPolicyEngine approvalPolicy;
     private readonly ISecretRedactor redactor;
     private readonly ConcurrentDictionary<string, PendingApproval> pendingApprovals = new();
-    private readonly HashSet<string> sessionApprovals = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ApprovalGrantStore approvalGrants = new();
     private IJsonRpcConnection? connection;
     private WorkerOptions options = new();
     private StreamingBuffer? streamingBuffer;
@@ -58,6 +68,10 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
 
     public event Func<string, CancellationToken, Task>? ApprovalResolved;
 
+    public event Func<AccountStatus, CancellationToken, Task>? AccountStatusChanged;
+
+    public event Func<ApprovalAuditRecord, CancellationToken, Task>? ApprovalAuditRecorded;
+
     public string? ActiveThreadId { get; private set; }
 
     public string? ActiveTurnId { get; private set; }
@@ -70,7 +84,7 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         }
 
         pendingApprovals.Clear();
-        sessionApprovals.Clear();
+        approvalGrants.Clear();
         this.connection = connection;
         this.options = options;
         connection.NotificationReceived += OnNotificationAsync;
@@ -115,6 +129,109 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         ThreadSummary summary = ReadThread(result.GetProperty("thread"));
         ActiveThreadId = summary.Id;
         return summary;
+    }
+
+    public async Task<AccountStatus> GetAccountStatusAsync(CancellationToken cancellationToken)
+    {
+        var checking = new AccountStatus { State = AccountState.Checking };
+        await EmitAccountStatusAsync(checking, cancellationToken).ConfigureAwait(false);
+        try
+        {
+            JsonElement result = await RequireConnection().SendRequestAsync(
+                "account/read",
+                new { refreshToken = false },
+                TimeSpan.FromSeconds(15),
+                cancellationToken).ConfigureAwait(false);
+            AccountStatus status = ReadAccountStatus(result);
+            WorkerDiagnostics.Write($"account status read completed state={status.State} plan={status.PlanType ?? "none"}");
+            await EmitAccountStatusAsync(status, cancellationToken).ConfigureAwait(false);
+            return status;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            var status = new AccountStatus
+            {
+                State = AccountState.Unavailable,
+                Message = "Codex could not read the account status.",
+            };
+            await EmitAccountStatusAsync(status, CancellationToken.None).ConfigureAwait(false);
+            return status;
+        }
+    }
+
+    public async Task<StartAccountLoginResult> StartAccountLoginAsync(CancellationToken cancellationToken)
+    {
+        WorkerDiagnostics.Write("app-server login request starting");
+        var signingIn = new AccountStatus { State = AccountState.SigningIn };
+        await EmitAccountStatusAsync(signingIn, cancellationToken).ConfigureAwait(false);
+        try
+        {
+            JsonElement result = await RequireConnection().SendRequestAsync(
+                "account/login/start",
+                new { type = "chatgpt" },
+                TimeSpan.FromSeconds(15),
+                cancellationToken).ConfigureAwait(false);
+            string? loginId = GetString(result, "loginId");
+            string? authUrl = GetString(result, "authUrl");
+            if (!string.Equals(GetString(result, "type"), "chatgpt", StringComparison.Ordinal)
+                || string.IsNullOrWhiteSpace(loginId)
+                || !IsSecureAbsoluteUrl(authUrl))
+            {
+                var unavailable = new AccountStatus
+                {
+                    State = AccountState.Unavailable,
+                    Message = "Codex returned an invalid ChatGPT sign-in response.",
+                };
+                await EmitAccountStatusAsync(unavailable, CancellationToken.None).ConfigureAwait(false);
+                WorkerDiagnostics.Write("app-server login response rejected");
+                return new StartAccountLoginResult { Status = unavailable };
+            }
+
+            WorkerDiagnostics.Write("app-server login response accepted");
+            return new StartAccountLoginResult
+            {
+                Status = signingIn,
+                LoginId = loginId,
+                AuthUrl = authUrl,
+            };
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            WorkerDiagnostics.Write("app-server login request failed", ex);
+            var unavailable = new AccountStatus
+            {
+                State = AccountState.Unavailable,
+                Message = "Codex could not start ChatGPT sign-in.",
+            };
+            await EmitAccountStatusAsync(unavailable, CancellationToken.None).ConfigureAwait(false);
+            return new StartAccountLoginResult { Status = unavailable };
+        }
+    }
+
+    public async Task<AccountStatus> LogoutAccountAsync(CancellationToken cancellationToken)
+    {
+        WorkerDiagnostics.Write("app-server logout request starting");
+        try
+        {
+            await RequireConnection().SendRequestAsync(
+                "account/logout",
+                new { },
+                TimeSpan.FromSeconds(15),
+                cancellationToken).ConfigureAwait(false);
+            WorkerDiagnostics.Write("app-server logout request completed");
+            return await GetAccountStatusAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            WorkerDiagnostics.Write("app-server logout request failed", ex);
+            var unavailable = new AccountStatus
+            {
+                State = AccountState.Unavailable,
+                Message = "Codex could not sign out.",
+            };
+            await EmitAccountStatusAsync(unavailable, CancellationToken.None).ConfigureAwait(false);
+            return unavailable;
+        }
     }
 
     public async Task<ThreadSummary> ResumeThreadAsync(string threadId, CancellationToken cancellationToken)
@@ -186,20 +303,28 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
             cancellationToken).ConfigureAwait(false);
     }
 
-    public Task ResolveApprovalAsync(ResolveApprovalRequest request, CancellationToken cancellationToken)
+    public async Task ResolveApprovalAsync(ResolveApprovalRequest request, CancellationToken cancellationToken)
     {
         if (!pendingApprovals.TryRemove(request.RequestId, out PendingApproval? pending))
         {
-            return Task.CompletedTask;
+            return;
         }
 
-        if (request.Decision == ApprovalDecision.AcceptForSession)
+        ApprovalScope scope = request.Decision switch
         {
-            sessionApprovals.Add(pending.Request.RiskKey);
+            ApprovalDecision.AcceptForTurn => ApprovalScope.Turn,
+            ApprovalDecision.AcceptForThread => ApprovalScope.Thread,
+            ApprovalDecision.AcceptForSession => ApprovalScope.Session,
+            _ => ApprovalScope.Once,
+        };
+        approvalGrants.Add(pending.Request, scope);
+        if (scope != ApprovalScope.Once)
+        {
+            await EmitApprovalAuditAsync(pending.Request, ApprovalAuditAction.GrantCreated, scope, cancellationToken).ConfigureAwait(false);
         }
 
         pending.Completion.TrySetResult(ToWireDecision(request.Decision));
-        return EmitApprovalResolvedAsync(request.RequestId, cancellationToken);
+        await EmitApprovalResolvedAsync(request.RequestId, cancellationToken).ConfigureAwait(false);
     }
 
     public async ValueTask DisposeAsync()
@@ -227,8 +352,9 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
             return ApprovalResponse("decline");
         }
 
-        if (sessionApprovals.Contains(request.RiskKey))
+        if (approvalGrants.FindApproval(request) is { } grant)
         {
+            await EmitApprovalAuditAsync(request, ApprovalAuditAction.AutoApproved, grant.Scope, cancellationToken).ConfigureAwait(false);
             return ApprovalResponse("accept");
         }
 
@@ -278,7 +404,12 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         }
         else if (method == "turn/completed")
         {
+            approvalGrants.EndTurn(threadId, ActiveTurnId ?? turnId);
             ActiveTurnId = null;
+        }
+        else if (method == "thread/closed")
+        {
+            approvalGrants.EndThread(threadId);
         }
 
         if (method == "serverRequest/resolved")
@@ -290,6 +421,12 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
                 await EmitApprovalResolvedAsync(requestId, cancellationToken).ConfigureAwait(false);
             }
 
+            return;
+        }
+
+        if (method is "account/login/completed" or "account/updated")
+        {
+            await GetAccountStatusAsync(cancellationToken).ConfigureAwait(false);
             return;
         }
 
@@ -353,7 +490,15 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
             PolicyBlockReason = policy.BlockReason,
             AvailableDecisions = policy.IsBlocked
                 ? Array.Empty<ApprovalDecision>()
-                : new[] { ApprovalDecision.Accept, ApprovalDecision.AcceptForSession, ApprovalDecision.Decline, ApprovalDecision.Cancel },
+                :
+                [
+                    ApprovalDecision.Accept,
+                    ApprovalDecision.AcceptForTurn,
+                    ApprovalDecision.AcceptForThread,
+                    ApprovalDecision.AcceptForSession,
+                    ApprovalDecision.Decline,
+                    ApprovalDecision.Cancel,
+                ],
         };
     }
 
@@ -369,6 +514,71 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
 
     private Task EmitApprovalResolvedAsync(string requestId, CancellationToken cancellationToken)
         => ApprovalResolved?.Invoke(requestId, cancellationToken) ?? Task.CompletedTask;
+
+    private async Task EmitAccountStatusAsync(AccountStatus status, CancellationToken cancellationToken)
+    {
+        if (AccountStatusChanged is null)
+        {
+            return;
+        }
+
+        try
+        {
+            await AccountStatusChanged(status, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            WorkerDiagnostics.Write("account status observer failed", ex);
+        }
+    }
+
+    private Task EmitApprovalAuditAsync(
+        ApprovalRequest request,
+        ApprovalAuditAction action,
+        ApprovalScope scope,
+        CancellationToken cancellationToken)
+        => ApprovalAuditRecorded?.Invoke(
+            new ApprovalAuditRecord
+            {
+                RequestId = request.RequestId,
+                Action = action,
+                Risk = request.Risk,
+                Scope = scope,
+                DisplayText = request.DisplayText,
+                ThreadId = request.ThreadId,
+                TurnId = request.TurnId,
+            },
+            cancellationToken) ?? Task.CompletedTask;
+
+    private static AccountStatus ReadAccountStatus(JsonElement result)
+    {
+        if (!result.TryGetProperty("account", out JsonElement account)
+            || account.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)
+        {
+            return new AccountStatus { State = AccountState.SignedOut };
+        }
+
+        string? planType = NormalizePlanType(GetString(account, "planType")
+            ?? GetString(account, "chatgptPlanType")
+            ?? GetString(result, "planType")
+            ?? GetString(result, "chatgptPlanType"));
+        return new AccountStatus
+        {
+            State = AccountState.SignedIn,
+            PlanType = planType,
+        };
+    }
+
+    private static bool IsSecureAbsoluteUrl(string? value)
+        => Uri.TryCreate(value, UriKind.Absolute, out Uri? uri)
+        && string.Equals(uri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase);
+
+    private static string? NormalizePlanType(string? value)
+        => !string.IsNullOrWhiteSpace(value)
+        && value.Length <= 64
+        && value.All(character => char.IsAsciiLetterOrDigit(character) || character is '_' or '-')
+            ? value
+            : null;
 
     private static ThreadSummary ReadThread(JsonElement thread) => new()
     {
@@ -388,6 +598,8 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
     private static string ToWireDecision(ApprovalDecision decision) => decision switch
     {
         ApprovalDecision.Accept => "accept",
+        ApprovalDecision.AcceptForTurn => "accept",
+        ApprovalDecision.AcceptForThread => "accept",
         ApprovalDecision.AcceptForSession => "acceptForSession",
         ApprovalDecision.Decline => "decline",
         _ => "cancel",

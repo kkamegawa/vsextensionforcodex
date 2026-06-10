@@ -27,6 +27,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         this.outputChannel = outputChannel;
         bridge = new WorkerBridge(outputChannel);
         bridge.StateChanged += OnStateChangedAsync;
+        bridge.AccountChanged += OnAccountChangedAsync;
         bridge.ConversationEventReceived += OnConversationEventAsync;
         bridge.ApprovalRequested += OnApprovalRequestedAsync;
         bridge.ApprovalResolved += OnApprovalResolvedAsync;
@@ -36,6 +37,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         LoadMoreCommand = new AsyncCommand(LoadMoreAsync, () => initialized && nextCursor is not null);
         SendCommand = new AsyncCommand(SendAsync, CanSend);
         InterruptCommand = new AsyncCommand(InterruptAsync, () => Status.TurnId is not null);
+        AccountCommand = new AsyncCommand(ExecuteAccountActionAsync, CanExecuteAccountAction);
         _ = ConnectAsync();
     }
 
@@ -44,6 +46,8 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     public ObservableCollection<ChatItemViewModel> Items { get; } = new();
 
     public ObservableCollection<ApprovalViewModel> Approvals { get; } = new();
+
+    public AccountPanelViewModel Account { get; } = new();
 
     public WorkerStatus Status
     {
@@ -102,6 +106,8 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
     public AsyncCommand InterruptCommand { get; }
 
+    public AsyncCommand AccountCommand { get; }
+
     public void Dispose()
     {
         if (Interlocked.Exchange(ref disposed, 1) != 0)
@@ -114,11 +120,36 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
     private async Task ConnectAsync()
     {
-        WorkerStatus result = await bridge.ConnectAsync(Environment.CurrentDirectory, lifetime.Token).ConfigureAwait(false);
+        WorkerStatus result;
+        try
+        {
+            result = await bridge.ConnectAsync(Environment.CurrentDirectory, lifetime.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+        {
+            return;
+        }
+        catch (Exception ex)
+        {
+            ExtensionDiagnostics.Write("Initial Worker connection failed", ex);
+            result = new WorkerStatus
+            {
+                State = WorkerConnectionState.Degraded,
+                Message = "Could not connect to the Codex Worker. See diagnostics.log.",
+            };
+        }
+
         await OnUiAsync(() => Status = result).ConfigureAwait(false);
         if (result.State == WorkerConnectionState.Ready)
         {
             initialized = true;
+            AccountStatus accountStatus = await bridge.GetAccountStatusAsync(lifetime.Token).ConfigureAwait(false);
+            ExtensionDiagnostics.Write($"Initial account status received state={accountStatus.State} plan={accountStatus.PlanType ?? "none"}");
+            await OnUiAsync(() =>
+            {
+                Account.Update(accountStatus);
+                AccountCommand.RaiseCanExecuteChanged();
+            }).ConfigureAwait(false);
             await LoadMoreAsync().ConfigureAwait(false);
         }
     }
@@ -129,6 +160,13 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         await OnUiAsync(() => Status = result).ConfigureAwait(false);
         if (result.State == WorkerConnectionState.Ready)
         {
+            AccountStatus accountStatus = await bridge.GetAccountStatusAsync(lifetime.Token).ConfigureAwait(false);
+            ExtensionDiagnostics.Write($"Restart account status received state={accountStatus.State} plan={accountStatus.PlanType ?? "none"}");
+            await OnUiAsync(() =>
+            {
+                Account.Update(accountStatus);
+                AccountCommand.RaiseCanExecuteChanged();
+            }).ConfigureAwait(false);
             await ReloadThreadsAsync().ConfigureAwait(false);
         }
     }
@@ -220,6 +258,16 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     private Task OnStateChangedAsync(WorkerStatus value)
         => OnUiAsync(() => Status = value);
 
+    private Task OnAccountChangedAsync(AccountStatus value)
+    {
+        ExtensionDiagnostics.Write($"Account status notification received state={value.State} plan={value.PlanType ?? "none"}");
+        return OnUiAsync(() =>
+        {
+            Account.Update(value);
+            AccountCommand.RaiseCanExecuteChanged();
+        });
+    }
+
     private Task OnConversationEventAsync(ConversationEvent value)
         => OnUiAsync(() =>
         {
@@ -281,6 +329,91 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         await bridge.ResolveApprovalAsync(new ResolveApprovalRequest { RequestId = requestId, Decision = decision }, lifetime.Token).ConfigureAwait(false);
     }
 
+    private async Task SignInAsync()
+    {
+        await ExtensionDiagnostics.WriteOutputAsync(outputChannel, "[CODEX AUTH] Extension login command started.").ConfigureAwait(false);
+        try
+        {
+            StartAccountLoginResult result = await bridge.StartAccountLoginAsync(lifetime.Token).ConfigureAwait(false);
+            await OnUiAsync(() =>
+            {
+                Account.Update(result.Status);
+                AccountCommand.RaiseCanExecuteChanged();
+            }).ConfigureAwait(false);
+            await ExtensionDiagnostics.WriteOutputAsync(
+                outputChannel,
+                $"[CODEX AUTH] Extension login command completed state={result.Status.State}.").ConfigureAwait(false);
+            if (result.Status.State == AccountState.Unavailable)
+            {
+                await ExtensionDiagnostics.WriteOutputAsync(
+                    outputChannel,
+                    $"[CODEX] Sign in failed: {result.Status.Message ?? "Unknown error."}").ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+        {
+        }
+        catch (Exception ex)
+        {
+            var unavailable = new AccountStatus
+            {
+                State = AccountState.Unavailable,
+                Message = "Codex Worker did not complete the sign-in request.",
+            };
+            await OnUiAsync(() =>
+            {
+                Account.Update(unavailable);
+                AccountCommand.RaiseCanExecuteChanged();
+            }).ConfigureAwait(false);
+            await ExtensionDiagnostics.WriteOutputAsync(
+                outputChannel,
+                $"[CODEX] Sign in RPC failed ({ex.GetType().Name}).").ConfigureAwait(false);
+        }
+    }
+
+    private async Task SignOutAsync()
+    {
+        await ExtensionDiagnostics.WriteOutputAsync(outputChannel, "[CODEX AUTH] Extension logout command started.").ConfigureAwait(false);
+        try
+        {
+            AccountStatus result = await bridge.LogoutAccountAsync(lifetime.Token).ConfigureAwait(false);
+            await OnUiAsync(() =>
+            {
+                Account.Update(result);
+                AccountCommand.RaiseCanExecuteChanged();
+            }).ConfigureAwait(false);
+            await ExtensionDiagnostics.WriteOutputAsync(
+                outputChannel,
+                $"[CODEX AUTH] Extension logout command completed state={result.State}.").ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+        {
+        }
+        catch (Exception ex)
+        {
+            var unavailable = new AccountStatus
+            {
+                State = AccountState.Unavailable,
+                Message = "Codex Worker did not complete the sign-out request.",
+            };
+            await OnUiAsync(() =>
+            {
+                Account.Update(unavailable);
+                AccountCommand.RaiseCanExecuteChanged();
+            }).ConfigureAwait(false);
+            await ExtensionDiagnostics.WriteOutputAsync(
+                outputChannel,
+                $"[CODEX] Sign out RPC failed ({ex.GetType().Name}).").ConfigureAwait(false);
+        }
+    }
+
+    private Task ExecuteAccountActionAsync()
+        => Account.IsSignedIn ? SignOutAsync() : SignInAsync();
+
+    private bool CanExecuteAccountAction()
+        => (Status.State is WorkerConnectionState.Ready or WorkerConnectionState.Busy or WorkerConnectionState.WaitingForApproval)
+        && Account.ShowAction;
+
     private bool CanSend()
         => !string.IsNullOrWhiteSpace(ComposerText)
         && Status.State is WorkerConnectionState.Ready or WorkerConnectionState.Busy or WorkerConnectionState.WaitingForApproval;
@@ -293,6 +426,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         LoadMoreCommand.RaiseCanExecuteChanged();
         SendCommand.RaiseCanExecuteChanged();
         InterruptCommand.RaiseCanExecuteChanged();
+        AccountCommand.RaiseCanExecuteChanged();
     }
 
     // In the OOP extension process, Application.Current is null so the null-conditional
@@ -307,6 +441,40 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
         action();
         return Task.CompletedTask;
+    }
+}
+
+public sealed class AccountPanelViewModel : ObservableObject
+{
+    private AccountStatus status = new();
+
+    public string DisplayText => status.State switch
+    {
+        AccountState.SignedOut => "Not signed in",
+        AccountState.SigningIn => "Signing in...",
+        AccountState.SignedIn when !string.IsNullOrWhiteSpace(status.PlanType) => $"Signed in \u00b7 {status.PlanType}",
+        AccountState.SignedIn => "Signed in",
+        AccountState.Unavailable when !string.IsNullOrWhiteSpace(status.Message) => $"Account status unavailable \u00b7 {status.Message}",
+        AccountState.Unavailable => "Account status unavailable",
+        _ => "Checking account...",
+    };
+
+    public bool ShowSignIn => status.State is AccountState.SignedOut or AccountState.Unavailable;
+
+    public bool IsSignedIn => status.State == AccountState.SignedIn;
+
+    public bool ShowAction => status.State is AccountState.SignedOut or AccountState.SignedIn or AccountState.Unavailable;
+
+    public string ActionText => IsSignedIn ? "Sign out" : "Sign in";
+
+    public void Update(AccountStatus value)
+    {
+        status = value;
+        OnPropertyChanged(nameof(DisplayText));
+        OnPropertyChanged(nameof(ShowSignIn));
+        OnPropertyChanged(nameof(IsSignedIn));
+        OnPropertyChanged(nameof(ShowAction));
+        OnPropertyChanged(nameof(ActionText));
     }
 }
 
@@ -426,6 +594,8 @@ public sealed class ApprovalViewModel : ObservableObject
         PolicyBlockReason = request.PolicyBlockReason;
 
         ShowAccept = request.AvailableDecisions.Contains(ApprovalDecision.Accept);
+        ShowAcceptForTurn = request.AvailableDecisions.Contains(ApprovalDecision.AcceptForTurn);
+        ShowAcceptForThread = request.AvailableDecisions.Contains(ApprovalDecision.AcceptForThread);
         ShowAcceptForSession = request.AvailableDecisions.Contains(ApprovalDecision.AcceptForSession);
         ShowDecline = request.AvailableDecisions.Contains(ApprovalDecision.Decline);
         ShowCancel = request.AvailableDecisions.Contains(ApprovalDecision.Cancel);
@@ -440,6 +610,8 @@ public sealed class ApprovalViewModel : ObservableObject
         }
 
         AcceptCommand = new AsyncCommand(() => ResolveOnceAsync(ApprovalDecision.Accept), () => CanResolve);
+        AcceptForTurnCommand = new AsyncCommand(() => ResolveOnceAsync(ApprovalDecision.AcceptForTurn), () => CanResolve);
+        AcceptForThreadCommand = new AsyncCommand(() => ResolveOnceAsync(ApprovalDecision.AcceptForThread), () => CanResolve);
         AcceptForSessionCommand = new AsyncCommand(() => ResolveOnceAsync(ApprovalDecision.AcceptForSession), () => CanResolve);
         DeclineCommand = new AsyncCommand(() => ResolveOnceAsync(ApprovalDecision.Decline), () => CanResolve);
         CancelCommand = new AsyncCommand(() => ResolveOnceAsync(ApprovalDecision.Cancel), () => CanResolve);
@@ -461,6 +633,10 @@ public sealed class ApprovalViewModel : ObservableObject
 
     public bool ShowAcceptForSession { get; }
 
+    public bool ShowAcceptForTurn { get; }
+
+    public bool ShowAcceptForThread { get; }
+
     public bool ShowDecline { get; }
 
     public bool ShowCancel { get; }
@@ -479,6 +655,8 @@ public sealed class ApprovalViewModel : ObservableObject
             if (SetProperty(ref isResolved, value))
             {
                 AcceptCommand.RaiseCanExecuteChanged();
+                AcceptForTurnCommand.RaiseCanExecuteChanged();
+                AcceptForThreadCommand.RaiseCanExecuteChanged();
                 AcceptForSessionCommand.RaiseCanExecuteChanged();
                 DeclineCommand.RaiseCanExecuteChanged();
                 CancelCommand.RaiseCanExecuteChanged();
@@ -491,6 +669,10 @@ public sealed class ApprovalViewModel : ObservableObject
     public AsyncCommand AcceptCommand { get; }
 
     public AsyncCommand AcceptForSessionCommand { get; }
+
+    public AsyncCommand AcceptForTurnCommand { get; }
+
+    public AsyncCommand AcceptForThreadCommand { get; }
 
     public AsyncCommand DeclineCommand { get; }
 
@@ -557,6 +739,10 @@ public sealed class AsyncCommand : ICommand
         try
         {
             await execute().ConfigureAwait(true);
+        }
+        catch (Exception ex)
+        {
+            ExtensionDiagnostics.Write("Async command execution failed", ex);
         }
         finally
         {
