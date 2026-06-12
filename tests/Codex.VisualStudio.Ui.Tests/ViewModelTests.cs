@@ -224,7 +224,8 @@ public sealed class ViewModelTests
     public void ChatToolWindowXaml_UsesTopLevelAccountBindings()
     {
         const string resourceName = "Codex.VisualStudio.Extension.ToolWindows.ChatToolWindowContent.xaml";
-        using Stream stream = typeof(ChatViewModel).Assembly.GetManifestResourceStream(resourceName)!;
+        using Stream? stream = typeof(ChatViewModel).Assembly.GetManifestResourceStream(resourceName);
+        Assert.IsNotNull(stream, $"Embedded resource '{resourceName}' not found.");
         using var reader = new StreamReader(stream);
         string xaml = reader.ReadToEnd();
 
@@ -255,7 +256,8 @@ public sealed class ViewModelTests
     public void ChatToolWindowXaml_EveryBindingRoot_IsSerializableDataMember()
     {
         const string resourceName = "Codex.VisualStudio.Extension.ToolWindows.ChatToolWindowContent.xaml";
-        using Stream stream = typeof(ChatViewModel).Assembly.GetManifestResourceStream(resourceName)!;
+        using Stream? stream = typeof(ChatViewModel).Assembly.GetManifestResourceStream(resourceName);
+        Assert.IsNotNull(stream, $"Embedded resource '{resourceName}' not found.");
         using var reader = new StreamReader(stream);
         string xaml = reader.ReadToEnd();
 

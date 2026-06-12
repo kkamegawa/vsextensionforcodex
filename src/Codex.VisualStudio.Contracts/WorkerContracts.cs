@@ -91,8 +91,8 @@ public sealed class WorkerOptions
 
 // DataContract/DataMember are required by Remote UI: the VS-side data context proxy only
 // replicates DataMember properties of DataContract types. Every public property must stay
-// a DataMember because Newtonsoft.Json (worker RPC) switches to opt-in mode once the type
-// carries DataContract.
+// a DataMember, since adding DataContract without it would drop that property from both
+// the Remote UI proxy and the StreamJsonRpc payload.
 [DataContract]
 public sealed class WorkerStatus
 {
