@@ -156,11 +156,9 @@
             BorderBrush="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBorderBrushKey}}">
       <DockPanel>
         <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
-          <TextBlock Margin="0,0,8,0" VerticalAlignment="Center" Opacity="0.8"
-                     Text="{Binding Account.DisplayText}" />
-          <Button Margin="0,0,4,0" Content="{Binding Account.ActionText}" Command="{Binding AccountCommand}"
+          <Button Margin="0,0,4,0" Content="{Binding AccountActionText}" Command="{Binding AccountCommand}"
                   Style="{StaticResource SmallRoundButtonStyle}"
-                  Visibility="{Binding Account.ShowAction, Converter={StaticResource BoolToVis}}" />
+                  Visibility="{Binding ShowAccountAction, Converter={StaticResource BoolToVis}}" />
           <Button Margin="4,0,0,0" Content="New" Command="{Binding NewThreadCommand}"
                   Style="{StaticResource SmallRoundButtonStyle}" />
           <Button Margin="4,0,0,0" Content="Restart" Command="{Binding RestartCommand}"
@@ -169,6 +167,7 @@
         <StackPanel VerticalAlignment="Center">
           <TextBlock FontWeight="SemiBold" Text="{Binding Status.State}" />
           <TextBlock Opacity="0.72" Text="{Binding Status.Message}" TextTrimming="CharacterEllipsis" />
+          <TextBlock Opacity="0.8" Text="{Binding AccountDisplayText}" TextTrimming="CharacterEllipsis" />
         </StackPanel>
       </DockPanel>
     </Border>

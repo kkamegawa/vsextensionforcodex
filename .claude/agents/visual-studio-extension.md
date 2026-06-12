@@ -426,6 +426,47 @@ These assemblies belong to the VS process, not the OOP extension — they resolv
 add `Microsoft.VisualStudio.Shell.15.0` as a runtime `PackageReference` in the extension project. (A temporary
 reference for XAML IntelliSense during authoring is acceptable — remove it before committing.)
 
+### Remote UI Data Context: [DataContract]/[DataMember] and IAsyncCommand Are Mandatory
+
+**Symptom**: The tool window renders, but every data-bound value is missing — bound TextBlocks
+stay blank, a Button with bound `Content` renders as a tiny empty pill (looks like a dark blob
+in dark theme), while buttons with literal `Content="New"` display normally. No build error,
+no runtime exception in the extension process.
+
+**Cause**: Remote UI serializes the data context to a proxy in the VS process
+(`DataContextSerializerOptions` in `Microsoft.VisualStudio.Extensibility.Framework`):
+
+- A class **without `[DataContract]` serializes as an EMPTY object** (`WriteMapHeader(0)`).
+  Every binding to its properties fails silently.
+- Only properties marked `[DataMember]` are replicated to the proxy.
+- A property value implementing `System.Windows.Input.ICommand` but **not**
+  `Microsoft.VisualStudio.Extensibility.UI.IAsyncCommand` throws
+  `NotSupportedException("ICommand is not supported, please implement ... IAsyncCommand instead")`
+  during data context serialization — which kills the whole `SetDataContextAsync` call.
+- Enums serialize as their `ToString()` value, so `{Binding Status.State}` shows the enum name.
+
+**Fix**: Mark every XAML-bound type `[DataContract]` and every bound property `[DataMember]`
+(including types in referenced contract assemblies, e.g. `WorkerStatus`, `ThreadSummary`).
+Commands must implement `IAsyncCommand`; to keep a local `ICommand` implementation, implement
+both and raise `PropertyChanged("CanExecute")` whenever executability changes — the proxy
+listens to that to drive `Button.IsEnabled`. Caution: once a type has `[DataContract]`,
+Newtonsoft.Json (StreamJsonRpc worker RPC) switches to opt-in serialization, so mark **all**
+RPC-visible properties of shared contract types as `[DataMember]`.
+
+**`IAsyncCommand.CanExecute` must be a PUBLIC property, never an explicit interface
+implementation.** `NotificationsDispatcher.HandleNotifyPropertyChanged` resolves the changed
+property with `sender.GetType().GetProperty(name)` (which cannot see explicit implementations)
+and throws `ArgumentException` on failure. That exception unwinds synchronously into the
+StreamJsonRpc dispatch loop of whatever notification triggered the change — all further
+notifications and responses on that connection silently stop being dispatched, and the tool
+window freezes at its last rendered state (e.g. stuck on "Connecting") with no error anywhere.
+Implement `ICommand.CanExecute(object?)` explicitly instead, and keep VM state mutations behind
+a guard that catches and logs (see `ChatViewModel.OnUiAsync`).
+
+Regression tests: `ViewModelTests.RemoteUiContextTypes_AreDataContracts`,
+`ChatToolWindowXaml_EveryBindingRoot_IsSerializableDataMember`,
+`DataMemberCommands_ImplementIAsyncCommand`.
+
 ### Quick Error Reference for This Project
 
 All lessons in "Implementation Lessons to Preserve" above have been confirmed against

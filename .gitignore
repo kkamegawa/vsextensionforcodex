@@ -44,3 +44,5 @@ apm_modules/
 # OS files
 .DS_Store
 Thumbs.db
+src/Codex.AppServer.Fake/Codex.AppServer.Fake.csproj.lscache
+*.lscache

@@ -1,4 +1,5 @@
-﻿using StreamJsonRpc;
+﻿using System.Runtime.Serialization;
+using StreamJsonRpc;
 
 namespace Codex.VisualStudio.Contracts;
 
@@ -88,18 +89,29 @@ public sealed class WorkerOptions
     public bool ExperimentalApi { get; set; }
 }
 
+// DataContract/DataMember are required by Remote UI: the VS-side data context proxy only
+// replicates DataMember properties of DataContract types. Every public property must stay
+// a DataMember, since adding DataContract without it would drop that property from both
+// the Remote UI proxy and the StreamJsonRpc payload.
+[DataContract]
 public sealed class WorkerStatus
 {
+    [DataMember]
     public int ContractVersion { get; set; } = ContractVersions.Current;
 
+    [DataMember]
     public WorkerConnectionState State { get; set; }
 
+    [DataMember]
     public string Message { get; set; } = string.Empty;
 
+    [DataMember]
     public string? ThreadId { get; set; }
 
+    [DataMember]
     public string? TurnId { get; set; }
 
+    [DataMember]
     public int? ProcessId { get; set; }
 }
 
@@ -121,14 +133,20 @@ public sealed class StartAccountLoginResult
     public string? AuthUrl { get; set; }
 }
 
+// DataContract/DataMember required by Remote UI (bound in the thread-history list).
+[DataContract]
 public sealed class ThreadSummary
 {
+    [DataMember]
     public string Id { get; set; } = string.Empty;
 
+    [DataMember]
     public string? Preview { get; set; }
 
+    [DataMember]
     public string? Cwd { get; set; }
 
+    [DataMember]
     public long? UpdatedAt { get; set; }
 }
 
