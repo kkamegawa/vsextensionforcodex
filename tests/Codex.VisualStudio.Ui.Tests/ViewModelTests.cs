@@ -1,5 +1,12 @@
+using System.IO;
+using System.Reflection;
+using System.Runtime.Serialization;
+using System.Text.RegularExpressions;
+using System.Windows.Input;
 using Codex.VisualStudio.Contracts;
 using Codex.VisualStudio.Extension;
+using Microsoft.VisualStudio.Extensibility.UI;
+using AsyncCommand = Codex.VisualStudio.Extension.AsyncCommand;
 
 namespace Codex.VisualStudio.Ui.Tests;
 
@@ -211,5 +218,115 @@ public sealed class ViewModelTests
 
         viewModel.Update(new AccountStatus { State = AccountState.Unavailable, Message = "Could not open the default browser." });
         Assert.AreEqual("Account status unavailable \u00b7 Could not open the default browser.", viewModel.DisplayText);
+    }
+
+    [TestMethod]
+    public void ChatToolWindowXaml_UsesTopLevelAccountBindings()
+    {
+        const string resourceName = "Codex.VisualStudio.Extension.ToolWindows.ChatToolWindowContent.xaml";
+        using Stream stream = typeof(ChatViewModel).Assembly.GetManifestResourceStream(resourceName)!;
+        using var reader = new StreamReader(stream);
+        string xaml = reader.ReadToEnd();
+
+        Assert.IsTrue(xaml.Contains("{Binding AccountActionText}", StringComparison.Ordinal));
+        Assert.IsTrue(xaml.Contains("{Binding ShowAccountAction,", StringComparison.Ordinal));
+        Assert.IsTrue(xaml.Contains("{Binding AccountDisplayText}", StringComparison.Ordinal));
+        Assert.IsFalse(xaml.Contains("{Binding Account.", StringComparison.Ordinal));
+    }
+
+    // Remote UI replicates only [DataMember] properties of [DataContract] types into the
+    // VS-side data context proxy; a type without the attributes serializes as an empty
+    // object and every binding to it fails silently (blank text, empty button content).
+    private static readonly Type[] RemoteUiContextTypes =
+        [typeof(ChatViewModel), typeof(ChatItemViewModel), typeof(ApprovalViewModel), typeof(WorkerStatus), typeof(ThreadSummary)];
+
+    [TestMethod]
+    public void RemoteUiContextTypes_AreDataContracts()
+    {
+        foreach (Type type in RemoteUiContextTypes)
+        {
+            Assert.IsNotNull(
+                type.GetCustomAttribute<DataContractAttribute>(),
+                $"{type.Name} is bound by ChatToolWindowContent.xaml and must be [DataContract] for Remote UI.");
+        }
+    }
+
+    [TestMethod]
+    public void ChatToolWindowXaml_EveryBindingRoot_IsSerializableDataMember()
+    {
+        const string resourceName = "Codex.VisualStudio.Extension.ToolWindows.ChatToolWindowContent.xaml";
+        using Stream stream = typeof(ChatViewModel).Assembly.GetManifestResourceStream(resourceName)!;
+        using var reader = new StreamReader(stream);
+        string xaml = reader.ReadToEnd();
+
+        var dataMemberNames = new HashSet<string>(StringComparer.Ordinal);
+        foreach (Type type in RemoteUiContextTypes)
+        {
+            foreach (PropertyInfo property in type.GetProperties(BindingFlags.Instance | BindingFlags.Public))
+            {
+                if (property.GetCustomAttribute<DataMemberAttribute>() is not null)
+                    dataMemberNames.Add(property.Name);
+            }
+        }
+
+        // First path segment of every {Binding Foo...} expression ({Binding} alone has no name).
+        foreach (Match match in Regex.Matches(xaml, @"\{Binding\s+([A-Za-z_]\w*)"))
+        {
+            string root = match.Groups[1].Value;
+            Assert.IsTrue(
+                dataMemberNames.Contains(root),
+                $"XAML binds '{root}' but no Remote UI context type exposes it as a [DataMember] property.");
+        }
+    }
+
+    [TestMethod]
+    public void AsyncCommand_CanExecute_IsResolvableViaPublicReflection()
+    {
+        // NotificationsDispatcher.HandleNotifyPropertyChanged resolves the changed property
+        // with sender.GetType().GetProperty(name) and THROWS when the lookup fails. An
+        // explicit interface implementation of IAsyncCommand.CanExecute is invisible to that
+        // lookup; the resulting ArgumentException froze the worker RPC dispatch loop.
+        var command = new AsyncCommand(() => Task.CompletedTask);
+
+        PropertyInfo? property = command.GetType().GetProperty("CanExecute");
+        Assert.IsNotNull(property, "AsyncCommand.CanExecute must be a public property.");
+        Assert.AreEqual(typeof(bool), property!.PropertyType);
+        Assert.IsTrue((bool)property.GetValue(command)!);
+    }
+
+    [TestMethod]
+    public void AsyncCommand_RaiseCanExecuteChanged_RaisesPropertyChangedForCanExecute()
+    {
+        bool gate = false;
+        var command = new AsyncCommand(() => Task.CompletedTask, () => gate);
+        string? raisedProperty = null;
+        command.PropertyChanged += (_, e) => raisedProperty = e.PropertyName;
+
+        gate = true;
+        command.RaiseCanExecuteChanged();
+
+        Assert.AreEqual("CanExecute", raisedProperty);
+        Assert.IsTrue(command.CanExecute);
+    }
+
+    [TestMethod]
+    public void DataMemberCommands_ImplementIAsyncCommand()
+    {
+        // Remote UI rejects plain ICommand values at serialization time
+        // ("ICommand is not supported, please implement IAsyncCommand instead").
+        foreach (Type type in RemoteUiContextTypes)
+        {
+            foreach (PropertyInfo property in type.GetProperties(BindingFlags.Instance | BindingFlags.Public))
+            {
+                if (property.GetCustomAttribute<DataMemberAttribute>() is null)
+                    continue;
+                if (!typeof(ICommand).IsAssignableFrom(property.PropertyType))
+                    continue;
+
+                Assert.IsTrue(
+                    typeof(IAsyncCommand).IsAssignableFrom(property.PropertyType),
+                    $"{type.Name}.{property.Name} is a serialized command and must implement IAsyncCommand for Remote UI.");
+            }
+        }
     }
 }

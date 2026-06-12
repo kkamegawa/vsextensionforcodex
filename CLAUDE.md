@@ -16,6 +16,20 @@ It contains project-specific rules and a complete checklist of known build error
 (CEE0028, CS0118, CA1416, double-dispose, XAML embedding, etc.).
 Consult it before writing or modifying any code under `src/` or `tests/`.
 
+## When working on WPF / XAML / MVVM code
+
+Use the **`wpf`** sub-agent defined in `.claude/agents/wpf.md` — but **only when the
+project is confirmed to be WPF**, since MAUI, WinUI 3, and UWP also use XAML.
+WPF evidence: `<UseWPF>true</UseWPF>` in the `.csproj`, WPF assembly references
+(`PresentationFramework` etc.), or Visual Studio Remote UI `DataTemplate` XAML
+(this repository's tool windows qualify). Do not use it for MAUI (`UseMaui`),
+WinUI 3 (`UseWinUI` / `Microsoft.WindowsAppSDK`), or UWP projects.
+
+It covers data binding, MVVM (CommunityToolkit.Mvvm), Dispatcher/threading,
+virtualization, freezables, resources, and accessibility — all grounded in
+Microsoft Learn guidance. For anything VSIX/SDK-specific (theming, packaging,
+SDK build errors), defer to the `visual-studio-extension` agent above.
+
 ## NuGet Packages
 
 Before adding or updating any NuGet package:

@@ -1,14 +1,21 @@
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
+using System.Runtime.Serialization;
 using System.Text.RegularExpressions;
 using System.Windows;
 using System.Windows.Input;
 using Codex.VisualStudio.Contracts;
 using Microsoft.VisualStudio.Extensibility.Documents;
+using VSUI = Microsoft.VisualStudio.Extensibility.UI;
 
 namespace Codex.VisualStudio.Extension;
 
+// Remote UI serializes the data context to a proxy in the VS process. Only DataMember
+// properties of DataContract types reach that proxy — a class without the attributes is
+// serialized as an EMPTY object and every binding to it silently fails (buttons with bound
+// Content render as empty pills, bound text stays blank).
+[DataContract]
 public sealed class ChatViewModel : ObservableObject, IDisposable
 {
     private readonly WorkerBridge bridge;
@@ -41,14 +48,28 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         _ = ConnectAsync();
     }
 
+    [DataMember]
     public ObservableCollection<ThreadSummary> Threads { get; } = new();
 
+    [DataMember]
     public ObservableCollection<ChatItemViewModel> Items { get; } = new();
 
+    [DataMember]
     public ObservableCollection<ApprovalViewModel> Approvals { get; } = new();
 
+    // Intentionally NOT a DataMember: the XAML binds the flattened Account* properties below.
     public AccountPanelViewModel Account { get; } = new();
 
+    [DataMember]
+    public string AccountDisplayText => Account.DisplayText;
+
+    [DataMember]
+    public bool ShowAccountAction => Account.ShowAction;
+
+    [DataMember]
+    public string AccountActionText => Account.ActionText;
+
+    [DataMember]
     public WorkerStatus Status
     {
         get => status;
@@ -64,6 +85,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         }
     }
 
+    [DataMember]
     public ThreadSummary? SelectedThread
     {
         get => selectedThread;
@@ -76,6 +98,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         }
     }
 
+    [DataMember]
     public string ComposerText
     {
         get => composerText;
@@ -92,20 +115,27 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
     public bool IsTurnActive => Status.TurnId is not null;
 
+    [DataMember]
     public string SendButtonText => IsTurnActive ? "Steer" : "Send";
 
     public AsyncCommand ConnectCommand { get; }
 
+    [DataMember]
     public AsyncCommand RestartCommand { get; }
 
+    [DataMember]
     public AsyncCommand NewThreadCommand { get; }
 
+    [DataMember]
     public AsyncCommand LoadMoreCommand { get; }
 
+    [DataMember]
     public AsyncCommand SendCommand { get; }
 
+    [DataMember]
     public AsyncCommand InterruptCommand { get; }
 
+    [DataMember]
     public AsyncCommand AccountCommand { get; }
 
     public void Dispose()
@@ -147,8 +177,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             ExtensionDiagnostics.Write($"Initial account status received state={accountStatus.State} plan={accountStatus.PlanType ?? "none"}");
             await OnUiAsync(() =>
             {
-                Account.Update(accountStatus);
-                AccountCommand.RaiseCanExecuteChanged();
+                UpdateAccount(accountStatus);
             }).ConfigureAwait(false);
             await LoadMoreAsync().ConfigureAwait(false);
         }
@@ -164,8 +193,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             ExtensionDiagnostics.Write($"Restart account status received state={accountStatus.State} plan={accountStatus.PlanType ?? "none"}");
             await OnUiAsync(() =>
             {
-                Account.Update(accountStatus);
-                AccountCommand.RaiseCanExecuteChanged();
+                UpdateAccount(accountStatus);
             }).ConfigureAwait(false);
             await ReloadThreadsAsync().ConfigureAwait(false);
         }
@@ -263,8 +291,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         ExtensionDiagnostics.Write($"Account status notification received state={value.State} plan={value.PlanType ?? "none"}");
         return OnUiAsync(() =>
         {
-            Account.Update(value);
-            AccountCommand.RaiseCanExecuteChanged();
+            UpdateAccount(value);
         });
     }
 
@@ -337,8 +364,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             StartAccountLoginResult result = await bridge.StartAccountLoginAsync(lifetime.Token).ConfigureAwait(false);
             await OnUiAsync(() =>
             {
-                Account.Update(result.Status);
-                AccountCommand.RaiseCanExecuteChanged();
+                UpdateAccount(result.Status);
             }).ConfigureAwait(false);
             await ExtensionDiagnostics.WriteOutputAsync(
                 outputChannel,
@@ -362,8 +388,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             };
             await OnUiAsync(() =>
             {
-                Account.Update(unavailable);
-                AccountCommand.RaiseCanExecuteChanged();
+                UpdateAccount(unavailable);
             }).ConfigureAwait(false);
             await ExtensionDiagnostics.WriteOutputAsync(
                 outputChannel,
@@ -379,8 +404,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             AccountStatus result = await bridge.LogoutAccountAsync(lifetime.Token).ConfigureAwait(false);
             await OnUiAsync(() =>
             {
-                Account.Update(result);
-                AccountCommand.RaiseCanExecuteChanged();
+                UpdateAccount(result);
             }).ConfigureAwait(false);
             await ExtensionDiagnostics.WriteOutputAsync(
                 outputChannel,
@@ -398,8 +422,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             };
             await OnUiAsync(() =>
             {
-                Account.Update(unavailable);
-                AccountCommand.RaiseCanExecuteChanged();
+                UpdateAccount(unavailable);
             }).ConfigureAwait(false);
             await ExtensionDiagnostics.WriteOutputAsync(
                 outputChannel,
@@ -413,6 +436,15 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     private bool CanExecuteAccountAction()
         => (Status.State is WorkerConnectionState.Ready or WorkerConnectionState.Busy or WorkerConnectionState.WaitingForApproval)
         && Account.ShowAction;
+
+    private void UpdateAccount(AccountStatus value)
+    {
+        Account.Update(value);
+        OnPropertyChanged(nameof(AccountDisplayText));
+        OnPropertyChanged(nameof(ShowAccountAction));
+        OnPropertyChanged(nameof(AccountActionText));
+        AccountCommand.RaiseCanExecuteChanged();
+    }
 
     private bool CanSend()
         => !string.IsNullOrWhiteSpace(ComposerText)
@@ -439,7 +471,19 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             return dispatcher.InvokeAsync(action).Task;
         }
 
-        action();
+        try
+        {
+            action();
+        }
+        catch (Exception ex)
+        {
+            // These updates run inline on the StreamJsonRpc dispatch thread. A synchronous
+            // throw (e.g. from a Remote UI change-notification subscriber) would unwind into
+            // the dispatch loop and silently stop all further worker notifications and
+            // responses — the tool window then freezes at its last rendered state.
+            ExtensionDiagnostics.Write("UI state update failed", ex);
+        }
+
         return Task.CompletedTask;
     }
 }
@@ -478,6 +522,7 @@ public sealed class AccountPanelViewModel : ObservableObject
     }
 }
 
+[DataContract]
 public sealed class ChatItemViewModel : ObservableObject
 {
     private string text;
@@ -498,18 +543,21 @@ public sealed class ChatItemViewModel : ObservableObject
         });
     }
 
+    [DataMember]
     public string Role { get; }
 
     public ConversationEventKind Kind { get; }
 
     public string? ItemId { get; set; }
 
+    [DataMember]
     public string Text
     {
         get => text;
         set => SetProperty(ref text, value);
     }
 
+    [DataMember]
     public bool IsTruncated
     {
         get => isTruncated;
@@ -522,6 +570,7 @@ public sealed class ChatItemViewModel : ObservableObject
         set => SetProperty(ref overflowFile, value);
     }
 
+    [DataMember]
     public bool IsCollapsed
     {
         get => isCollapsed;
@@ -532,16 +581,23 @@ public sealed class ChatItemViewModel : ObservableObject
         }
     }
 
+    [DataMember]
     public string CollapseButtonText => isCollapsed ? "▶ Reasoning" : "▼ Reasoning";
 
     // Computed kind helpers — used by XAML DataTriggers (bool avoids enum reference in remote XAML).
+    [DataMember]
     public bool IsReasoningItem => Kind == ConversationEventKind.ReasoningSummaryDelta;
+    [DataMember]
     public bool IsCommandItem => Kind == ConversationEventKind.CommandOutputDelta;
+    [DataMember]
     public bool IsDiffItem => Kind == ConversationEventKind.DiffUpdated;
+    [DataMember]
     public bool IsPlanItem => Kind == ConversationEventKind.PlanUpdated;
 
+    [DataMember]
     public ObservableCollection<string> PlanSteps { get; } = [];
 
+    [DataMember]
     public AsyncCommand ToggleCollapseCommand { get; }
 
     public void UpdatePlanSteps(IReadOnlyList<string> steps)
@@ -577,6 +633,7 @@ public sealed class ChatItemViewModel : ObservableObject
     }
 }
 
+[DataContract]
 public sealed class ApprovalViewModel : ObservableObject
 {
     private readonly Func<string, ApprovalDecision, Task> resolver;
@@ -619,32 +676,46 @@ public sealed class ApprovalViewModel : ObservableObject
 
     public string RequestId { get; }
 
+    [DataMember]
     public string DisplayText { get; }
 
+    [DataMember]
     public string? Reason { get; }
 
+    [DataMember]
     public ApprovalRiskCategory Risk { get; }
 
+    [DataMember]
     public bool IsPolicyBlocked { get; }
 
+    [DataMember]
     public string? PolicyBlockReason { get; }
 
+    [DataMember]
     public bool ShowAccept { get; }
 
+    [DataMember]
     public bool ShowAcceptForSession { get; }
 
+    [DataMember]
     public bool ShowAcceptForTurn { get; }
 
+    [DataMember]
     public bool ShowAcceptForThread { get; }
 
+    [DataMember]
     public bool ShowDecline { get; }
 
+    [DataMember]
     public bool ShowCancel { get; }
 
+    [DataMember]
     public bool IsNetworkApproval { get; }
 
+    [DataMember]
     public string? NetworkHost { get; }
 
+    [DataMember]
     public string? NetworkPort { get; }
 
     public bool IsResolved
@@ -666,16 +737,22 @@ public sealed class ApprovalViewModel : ObservableObject
 
     public bool CanResolve => !IsResolved && !IsPolicyBlocked;
 
+    [DataMember]
     public AsyncCommand AcceptCommand { get; }
 
+    [DataMember]
     public AsyncCommand AcceptForSessionCommand { get; }
 
+    [DataMember]
     public AsyncCommand AcceptForTurnCommand { get; }
 
+    [DataMember]
     public AsyncCommand AcceptForThreadCommand { get; }
 
+    [DataMember]
     public AsyncCommand DeclineCommand { get; }
 
+    [DataMember]
     public AsyncCommand CancelCommand { get; }
 
     public void MarkResolved() => IsResolved = true;
@@ -712,8 +789,15 @@ public abstract class ObservableObject : INotifyPropertyChanged
         => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
 }
 
-public sealed class AsyncCommand : ICommand
+// Remote UI rejects plain ICommand values at serialization time ("ICommand is not supported,
+// please implement Microsoft.VisualStudio.Extensibility.UI.IAsyncCommand instead"), so this
+// command implements IAsyncCommand for the VS-side proxy and keeps ICommand for local WPF use
+// and unit tests. The proxy reads the IAsyncCommand.CanExecute property and listens to
+// INotifyPropertyChanged("CanExecute") to drive Button.IsEnabled across the process boundary.
+public sealed class AsyncCommand : ICommand, VSUI.IAsyncCommand, INotifyPropertyChanged
 {
+    private static readonly PropertyChangedEventArgs CanExecuteChangedArgs = new(nameof(CanExecute));
+
     private readonly Func<Task> execute;
     private readonly Func<bool>? canExecute;
     private int running;
@@ -726,7 +810,16 @@ public sealed class AsyncCommand : ICommand
 
     public event EventHandler? CanExecuteChanged;
 
-    public bool CanExecute(object? parameter) => Volatile.Read(ref running) == 0 && (canExecute?.Invoke() ?? true);
+    public event PropertyChangedEventHandler? PropertyChanged;
+
+    // CanExecute must be a PUBLIC property (not an explicit interface implementation):
+    // when PropertyChanged("CanExecute") fires, the SDK's NotificationsDispatcher resolves
+    // it via GetType().GetProperty("CanExecute") and THROWS ArgumentException when the
+    // lookup fails — the exception unwinds into the StreamJsonRpc dispatch loop and
+    // silently stops all further worker notifications (tool window freezes mid-state).
+    public bool CanExecute => Volatile.Read(ref running) == 0 && (canExecute?.Invoke() ?? true);
+
+    bool ICommand.CanExecute(object? parameter) => CanExecute;
 
     public async void Execute(object? parameter)
     {
@@ -751,5 +844,32 @@ public sealed class AsyncCommand : ICommand
         }
     }
 
-    public void RaiseCanExecuteChanged() => CanExecuteChanged?.Invoke(this, EventArgs.Empty);
+    async Task VSUI.IAsyncCommand.ExecuteAsync(object? parameter, Microsoft.VisualStudio.Extensibility.IClientContext clientContext, CancellationToken cancellationToken)
+    {
+        if (Interlocked.Exchange(ref running, 1) != 0)
+        {
+            return;
+        }
+
+        RaiseCanExecuteChanged();
+        try
+        {
+            await execute().ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            ExtensionDiagnostics.Write("Async command execution failed", ex);
+        }
+        finally
+        {
+            Interlocked.Exchange(ref running, 0);
+            RaiseCanExecuteChanged();
+        }
+    }
+
+    public void RaiseCanExecuteChanged()
+    {
+        CanExecuteChanged?.Invoke(this, EventArgs.Empty);
+        PropertyChanged?.Invoke(this, CanExecuteChangedArgs);
+    }
 }
