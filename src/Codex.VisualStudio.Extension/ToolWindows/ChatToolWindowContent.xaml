@@ -450,6 +450,13 @@
                    CaretBrush="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowTextBrushKey}}"
                    SelectionBrush="{DynamicResource {x:Static SystemColors.HighlightBrushKey}}"
                    Text="{Binding ComposerText, UpdateSourceTrigger=PropertyChanged}">
+            <!-- Ctrl+Enter submits the prompt (same path as the Send/Steer button).
+                 Plain Enter still inserts a newline because AcceptsReturn="True" and the
+                 gesture is scoped to this composer TextBox only. KeyBinding honours
+                 SendCommand.CanExecute, so it is a no-op on empty/disabled input. -->
+            <TextBox.InputBindings>
+              <KeyBinding Gesture="Ctrl+Enter" Command="{Binding SendCommand}" />
+            </TextBox.InputBindings>
             <TextBox.Style>
               <Style TargetType="TextBox">
                 <Setter Property="Background" Value="Transparent" />

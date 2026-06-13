@@ -235,6 +235,30 @@ public sealed class ViewModelTests
         Assert.IsFalse(xaml.Contains("{Binding Account.", StringComparison.Ordinal));
     }
 
+    [TestMethod]
+    public void ChatToolWindowXaml_ComposerBindsCtrlEnterToSendCommand()
+    {
+        // Issue #5: Ctrl+Enter must submit the composer message via the same SendCommand
+        // path as the Send/Steer button, while plain Enter keeps inserting a newline
+        // (AcceptsReturn="True"). KeyBinding honours SendCommand.CanExecute, so it is a
+        // no-op on empty/disabled input.
+        const string resourceName = "Codex.VisualStudio.Extension.ToolWindows.ChatToolWindowContent.xaml";
+        using Stream? stream = typeof(ChatViewModel).Assembly.GetManifestResourceStream(resourceName);
+        Assert.IsNotNull(stream, $"Embedded resource '{resourceName}' not found.");
+        using var reader = new StreamReader(stream);
+        string xaml = reader.ReadToEnd();
+
+        Assert.IsTrue(
+            Regex.IsMatch(
+                xaml,
+                @"<KeyBinding\s+Gesture=""Ctrl\+Enter""\s+Command=""\{Binding\s+SendCommand\}""",
+                RegexOptions.IgnoreCase),
+            "Composer TextBox must bind Ctrl+Enter to SendCommand via a KeyBinding.");
+        Assert.IsTrue(
+            xaml.Contains("AcceptsReturn=\"True\"", StringComparison.Ordinal),
+            "Composer TextBox must keep AcceptsReturn=\"True\" so plain Enter inserts a newline.");
+    }
+
     // Remote UI replicates only [DataMember] properties of [DataContract] types into the
     // VS-side data context proxy; a type without the attributes serializes as an empty
     // object and every binding to it fails silently (blank text, empty button content).
