@@ -124,6 +124,7 @@
 
 ### 2.5 操作
 - [x] 送信 / 中断（`turn/interrupt`）/ 追記（`turn/steer`）ボタン
+- [x] コンポーザーの Ctrl+Enter で送信（`SendCommand`、Enter 単独は改行を維持）(#5)
 - [x] 会話履歴一覧（`thread/list`）と再開（`thread/resume`）
 - [x] app-server 未起動/クラッシュ/非互換時の degraded UI と再起動導線
 - [x] `account/read` によるログイン状態表示と `account/login/start` による ChatGPT ブラウザ認証導線

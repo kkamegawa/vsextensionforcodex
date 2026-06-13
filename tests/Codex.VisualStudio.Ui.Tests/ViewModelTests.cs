@@ -3,6 +3,7 @@ using System.Reflection;
 using System.Runtime.Serialization;
 using System.Text.RegularExpressions;
 using System.Windows.Input;
+using System.Xml.Linq;
 using Codex.VisualStudio.Contracts;
 using Codex.VisualStudio.Extension;
 using Microsoft.VisualStudio.Extensibility.UI;
@@ -233,6 +234,46 @@ public sealed class ViewModelTests
         Assert.IsTrue(xaml.Contains("{Binding ShowAccountAction,", StringComparison.Ordinal));
         Assert.IsTrue(xaml.Contains("{Binding AccountDisplayText}", StringComparison.Ordinal));
         Assert.IsFalse(xaml.Contains("{Binding Account.", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    public void ChatToolWindowXaml_ComposerBindsCtrlEnterToSendCommand()
+    {
+        // Issue #5: Ctrl+Enter must submit the composer message via the same SendCommand
+        // path as the Send/Steer button, while plain Enter keeps inserting a newline
+        // (AcceptsReturn="True"). KeyBinding honours SendCommand.CanExecute, so it is a
+        // no-op on empty/disabled input.
+        const string resourceName = "Codex.VisualStudio.Extension.ToolWindows.ChatToolWindowContent.xaml";
+        using Stream? stream = typeof(ChatViewModel).Assembly.GetManifestResourceStream(resourceName);
+        Assert.IsNotNull(stream, $"Embedded resource '{resourceName}' not found.");
+        XDocument doc = XDocument.Load(stream);
+        XNamespace presentation = "http://schemas.microsoft.com/winfx/2006/xaml/presentation";
+
+        // Locate the composer specifically (the TextBox bound to ComposerText), so the
+        // assertions can't be satisfied by some other TextBox/KeyBinding elsewhere.
+        XElement? composer = doc
+            .Descendants(presentation + "TextBox")
+            .SingleOrDefault(tb => (tb.Attribute("Text")?.Value ?? string.Empty)
+                .Contains("ComposerText", StringComparison.Ordinal));
+        Assert.IsNotNull(composer, "Could not find the composer TextBox bound to ComposerText.");
+
+        // Plain Enter must keep inserting a newline.
+        Assert.AreEqual(
+            "True",
+            composer!.Attribute("AcceptsReturn")?.Value,
+            "Composer TextBox must keep AcceptsReturn=\"True\" so plain Enter inserts a newline.");
+
+        // Ctrl+Enter (scoped to the composer via TextBox.InputBindings) invokes SendCommand.
+        // Attribute values are matched case-sensitively (XAML is case-sensitive).
+        XElement? keyBinding = composer
+            .Element(presentation + "TextBox.InputBindings")?
+            .Elements(presentation + "KeyBinding")
+            .SingleOrDefault(kb => kb.Attribute("Gesture")?.Value == "Ctrl+Enter");
+        Assert.IsNotNull(keyBinding, "Composer TextBox.InputBindings must contain a Ctrl+Enter KeyBinding.");
+        Assert.AreEqual(
+            "{Binding SendCommand}",
+            keyBinding!.Attribute("Command")?.Value,
+            "The Ctrl+Enter KeyBinding must invoke SendCommand.");
     }
 
     // Remote UI replicates only [DataMember] properties of [DataContract] types into the
