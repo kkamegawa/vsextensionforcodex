@@ -1,4 +1,4 @@
-using System.IO;
+﻿using System.IO;
 using System.Reflection;
 using System.Runtime.Serialization;
 using System.Text.RegularExpressions;
@@ -24,6 +24,8 @@ public sealed class ViewModelTests
         [ApprovalDecision.Accept, ApprovalDecision.Decline];
 
     private static readonly ApprovalDecision[] NoDecisions = [];
+
+    private static readonly string[] ExpectedModes = ["Agent", "Chat"];
     [TestMethod]
     public async Task ApprovalViewModel_ResolvesOnlyOnce()
     {
@@ -239,10 +241,11 @@ public sealed class ViewModelTests
     [TestMethod]
     public void ChatToolWindowXaml_ComposerBindsCtrlEnterToSendCommand()
     {
-        // Issue #5: Ctrl+Enter must submit the composer message via the same SendCommand
-        // path as the Send/Steer button, while plain Enter keeps inserting a newline
-        // (AcceptsReturn="True"). KeyBinding honours SendCommand.CanExecute, so it is a
-        // no-op on empty/disabled input.
+        // Regression: the redesigned composer uses an icon Send button (not IsDefault), so the
+        // only keyboard send affordance is a Ctrl+Enter KeyBinding, while plain Enter keeps
+        // inserting a newline (AcceptsReturn="True"). KeyBinding honours SendCommand.CanExecute,
+        // so it is a no-op on empty/disabled input. Lock the gesture wiring so it cannot
+        // silently disappear again.
         const string resourceName = "Codex.VisualStudio.Extension.ToolWindows.ChatToolWindowContent.xaml";
         using Stream? stream = typeof(ChatViewModel).Assembly.GetManifestResourceStream(resourceName);
         Assert.IsNotNull(stream, $"Embedded resource '{resourceName}' not found.");
@@ -268,8 +271,8 @@ public sealed class ViewModelTests
         XElement? keyBinding = composer
             .Element(presentation + "TextBox.InputBindings")?
             .Elements(presentation + "KeyBinding")
-            .SingleOrDefault(kb => kb.Attribute("Gesture")?.Value == "Ctrl+Enter");
-        Assert.IsNotNull(keyBinding, "Composer TextBox.InputBindings must contain a Ctrl+Enter KeyBinding.");
+            .SingleOrDefault(kb => kb.Attribute("Key")?.Value == "Return" && kb.Attribute("Modifiers")?.Value == "Control");
+        Assert.IsNotNull(keyBinding, "Composer TextBox.InputBindings must contain a Ctrl+Enter (Key=Return, Modifiers=Control) KeyBinding.");
         Assert.AreEqual(
             "{Binding SendCommand}",
             keyBinding!.Attribute("Command")?.Value,
@@ -280,7 +283,7 @@ public sealed class ViewModelTests
     // VS-side data context proxy; a type without the attributes serializes as an empty
     // object and every binding to it fails silently (blank text, empty button content).
     private static readonly Type[] RemoteUiContextTypes =
-        [typeof(ChatViewModel), typeof(ChatItemViewModel), typeof(ApprovalViewModel), typeof(WorkerStatus), typeof(ThreadSummary)];
+        [typeof(ChatViewModel), typeof(ChatItemViewModel), typeof(ApprovalViewModel), typeof(SuggestionChip), typeof(WorkerStatus), typeof(ThreadSummary)];
 
     [TestMethod]
     public void RemoteUiContextTypes_AreDataContracts()
@@ -350,6 +353,109 @@ public sealed class ViewModelTests
 
         Assert.AreEqual("CanExecute", raisedProperty);
         Assert.IsTrue(command.CanExecute);
+    }
+
+    [TestMethod]
+    public async Task SuggestionChip_UseCommand_InvokesCallbackWithText()
+    {
+        string? captured = null;
+        var chip = new SuggestionChip("Write unit tests for this file", text =>
+        {
+            captured = text;
+            return Task.CompletedTask;
+        });
+
+        chip.UseCommand.Execute(null);
+        await Task.Delay(50);
+
+        Assert.AreEqual("Write unit tests for this file", chip.Text);
+        Assert.AreEqual("Write unit tests for this file", captured);
+    }
+
+    [TestMethod]
+    public void ChatViewModel_NewInstance_SeedsWelcomeState()
+    {
+        // Construction fires a fire-and-forget ConnectAsync; the worker exe is absent from the
+        // test output so it fails fast and is caught (no process, no hang). We only assert the
+        // synchronously-seeded welcome-state members here.
+        using var vm = new ChatViewModel();
+
+        Assert.IsTrue(vm.IsThreadEmpty);
+        Assert.IsTrue(vm.IsComposerEmpty);
+        Assert.IsFalse(vm.IsHistoryOpen);
+        Assert.AreEqual(3, vm.Suggestions.Count);
+        Assert.IsTrue(vm.Models.Count > 0);
+        Assert.AreEqual(vm.Models[0], vm.SelectedModel);
+        CollectionAssert.AreEqual(ExpectedModes, vm.Modes);
+        Assert.AreEqual("Agent", vm.SelectedMode);
+    }
+
+    [TestMethod]
+    public void ChatViewModel_IsThreadEmpty_TracksItems()
+    {
+        using var vm = new ChatViewModel();
+        Assert.IsTrue(vm.IsThreadEmpty);
+
+        vm.Items.Add(new ChatItemViewModel("You", "hello", ConversationEventKind.ItemStarted));
+        Assert.IsFalse(vm.IsThreadEmpty);
+
+        vm.Items.Clear();
+        Assert.IsTrue(vm.IsThreadEmpty);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_ToggleHistoryCommand_TogglesIsHistoryOpen()
+    {
+        using var vm = new ChatViewModel();
+        Assert.IsFalse(vm.IsHistoryOpen);
+
+        vm.ToggleHistoryCommand.Execute(null);
+        await Task.Delay(50);
+        Assert.IsTrue(vm.IsHistoryOpen);
+
+        vm.ToggleHistoryCommand.Execute(null);
+        await Task.Delay(50);
+        Assert.IsFalse(vm.IsHistoryOpen);
+    }
+
+    [TestMethod]
+    public void ChatViewModel_TypingComposerText_DoesNotEchoComposerTextPropertyChanged()
+    {
+        // Regression: the binding-driven (user-typing) setter must NOT raise PropertyChanged for
+        // ComposerText. In Remote UI that notification is echoed back to the TextBox across the
+        // process boundary and resets the caret to position 0 on every keystroke. IsComposerEmpty
+        // must still update so the "Ask Codex" placeholder hides.
+        using var vm = new ChatViewModel();
+        var raised = new List<string?>();
+        vm.PropertyChanged += (_, e) => raised.Add(e.PropertyName);
+
+        vm.ComposerText = "hello";
+
+        Assert.AreEqual("hello", vm.ComposerText);
+        Assert.IsFalse(
+            raised.Contains("ComposerText"),
+            "Typing must not echo ComposerText PropertyChanged (would reset the caret in Remote UI).");
+        Assert.IsTrue(raised.Contains("IsComposerEmpty"), "Placeholder visibility must still update.");
+        Assert.IsFalse(vm.IsComposerEmpty);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_SuggestionChip_RaisesComposerTextPropertyChanged()
+    {
+        // The programmatic path (suggestion chip / clear-after-send) DOES notify ComposerText so
+        // the TextBox reflects the new value; the caret-reset concern does not apply off the
+        // typing path.
+        using var vm = new ChatViewModel();
+        var raised = new List<string?>();
+        vm.PropertyChanged += (_, e) => raised.Add(e.PropertyName);
+
+        vm.Suggestions[0].UseCommand.Execute(null);
+        await Task.Delay(50);
+
+        Assert.AreEqual(vm.Suggestions[0].Text, vm.ComposerText);
+        Assert.IsTrue(
+            raised.Contains("ComposerText"),
+            "Programmatic composer updates must notify so the TextBox reflects the new value.");
     }
 
     [TestMethod]
