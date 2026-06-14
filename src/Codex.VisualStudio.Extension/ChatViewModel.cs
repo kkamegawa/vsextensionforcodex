@@ -1,4 +1,4 @@
-using System.Collections.ObjectModel;
+﻿using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
 using System.Runtime.Serialization;
@@ -28,6 +28,9 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     private string composerText = string.Empty;
     private string? nextCursor;
     private bool initialized;
+    private bool isHistoryOpen;
+    private string? selectedModel;
+    private string selectedMode = "Agent";
 
     public ChatViewModel(OutputChannel? outputChannel = null)
     {
@@ -38,6 +41,9 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         bridge.ConversationEventReceived += OnConversationEventAsync;
         bridge.ApprovalRequested += OnApprovalRequestedAsync;
         bridge.ApprovalResolved += OnApprovalResolvedAsync;
+        // The welcome/empty state is driven by IsThreadEmpty; keep it in sync with every
+        // mutation of Items (Add/Clear from any call site) via a single subscription.
+        Items.CollectionChanged += (_, _) => OnPropertyChanged(nameof(IsThreadEmpty));
         ConnectCommand = new AsyncCommand(ConnectAsync, () => Status.State is WorkerConnectionState.Disconnected or WorkerConnectionState.Degraded);
         RestartCommand = new AsyncCommand(RestartAsync, () => Status.State == WorkerConnectionState.Degraded);
         NewThreadCommand = new AsyncCommand(NewThreadAsync, () => Status.State == WorkerConnectionState.Ready);
@@ -45,6 +51,27 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         SendCommand = new AsyncCommand(SendAsync, CanSend);
         InterruptCommand = new AsyncCommand(InterruptAsync, () => Status.TurnId is not null);
         AccountCommand = new AsyncCommand(ExecuteAccountActionAsync, CanExecuteAccountAction);
+        ToggleHistoryCommand = new AsyncCommand(() =>
+        {
+            IsHistoryOpen = !IsHistoryOpen;
+            return Task.CompletedTask;
+        });
+        AttachCommand = new AsyncCommand(AttachStubAsync);
+
+        // Suggestion chips for the empty state. Selecting one populates the composer; the
+        // user then presses Send. Keeps behavior simple and avoids needing editor context.
+        Suggestions =
+        [
+            new SuggestionChip("Review this code for bugs and edge cases", UseSuggestionAsync),
+            new SuggestionChip("Fix all errors in the active document", UseSuggestionAsync),
+            new SuggestionChip("Write unit tests for this file", UseSuggestionAsync),
+        ];
+
+        // TODO(issue): replace these placeholders by querying codex app-server for the
+        // available models. There is no backend RPC for this yet, so the picker is a stub.
+        Models = ["gpt-5-codex", "gpt-5"];
+        selectedModel = Models[0];
+
         _ = ConnectAsync();
     }
 
@@ -106,13 +133,59 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         {
             if (SetProperty(ref composerText, value))
             {
+                OnPropertyChanged(nameof(IsComposerEmpty));
                 RaiseCommandStates();
             }
         }
     }
 
+    // True when the active thread has no transcript items — drives the centered welcome state.
+    [DataMember]
+    public bool IsThreadEmpty => Items.Count == 0;
+
+    // True when the composer is empty — drives the "Ask Codex" placeholder overlay
+    // (WPF TextBox has no native placeholder, and custom converters cannot be used because
+    // they would not resolve inside VS's WPF process).
+    [DataMember]
+    public bool IsComposerEmpty => string.IsNullOrEmpty(composerText);
+
+    // Two-way bound to the thread-history Popup.IsOpen.
+    [DataMember]
+    public bool IsHistoryOpen
+    {
+        get => isHistoryOpen;
+        set => SetProperty(ref isHistoryOpen, value);
+    }
+
+    [DataMember]
+    public ObservableCollection<SuggestionChip> Suggestions { get; }
+
+    // TODO(issue): populate from codex app-server available models (no backend RPC yet).
+    [DataMember]
+    public ObservableCollection<string> Models { get; }
+
+    [DataMember]
+    public string? SelectedModel
+    {
+        get => selectedModel;
+        set => SetProperty(ref selectedModel, value);
+    }
+
+    // TODO(issue): the agent/chat mode has no backend effect yet — this is a UI stub.
+    [DataMember]
+    public ObservableCollection<string> Modes { get; } = ["Agent", "Chat"];
+
+    [DataMember]
+    public string SelectedMode
+    {
+        get => selectedMode;
+        set => SetProperty(ref selectedMode, value);
+    }
+
     public bool IsDegraded => Status.State == WorkerConnectionState.Degraded;
 
+    // Bound by the composer to show the Interrupt button only while a turn is active.
+    [DataMember]
     public bool IsTurnActive => Status.TurnId is not null;
 
     [DataMember]
@@ -137,6 +210,12 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
     [DataMember]
     public AsyncCommand AccountCommand { get; }
+
+    [DataMember]
+    public AsyncCommand ToggleHistoryCommand { get; }
+
+    [DataMember]
+    public AsyncCommand AttachCommand { get; }
 
     public void Dispose()
     {
@@ -269,6 +348,21 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 new SteerTurnRequest { ThreadId = SelectedThread.Id, ExpectedTurnId = Status.TurnId, Text = text },
                 lifetime.Token).ConfigureAwait(false);
         }
+    }
+
+    private Task UseSuggestionAsync(string text)
+    {
+        ComposerText = text;
+        return Task.CompletedTask;
+    }
+
+    // TODO(issue): wire to a real file/context attach picker. Stubbed for now so the
+    // composer + button is present without a backend dependency.
+    private async Task AttachStubAsync()
+    {
+        await ExtensionDiagnostics.WriteOutputAsync(
+            outputChannel,
+            "[CODEX] Attach is not implemented yet.").ConfigureAwait(false);
     }
 
     private Task InterruptAsync()
@@ -520,6 +614,25 @@ public sealed class AccountPanelViewModel : ObservableObject
         OnPropertyChanged(nameof(ShowAction));
         OnPropertyChanged(nameof(ActionText));
     }
+}
+
+// A clickable suggestion shown in the empty/welcome state. Selecting it populates the
+// composer with its text (the user then presses Send). [DataContract]/[DataMember] are
+// required so Remote UI replicates Text and the command into the VS-side proxy.
+[DataContract]
+public sealed class SuggestionChip
+{
+    public SuggestionChip(string text, Func<string, Task> use)
+    {
+        Text = text;
+        UseCommand = new AsyncCommand(() => use(text));
+    }
+
+    [DataMember]
+    public string Text { get; }
+
+    [DataMember]
+    public AsyncCommand UseCommand { get; }
 }
 
 [DataContract]

@@ -1,4 +1,4 @@
-using System.IO;
+﻿using System.IO;
 using System.Reflection;
 using System.Runtime.Serialization;
 using System.Text.RegularExpressions;
@@ -23,6 +23,8 @@ public sealed class ViewModelTests
         [ApprovalDecision.Accept, ApprovalDecision.Decline];
 
     private static readonly ApprovalDecision[] NoDecisions = [];
+
+    private static readonly string[] ExpectedModes = ["Agent", "Chat"];
     [TestMethod]
     public async Task ApprovalViewModel_ResolvesOnlyOnce()
     {
@@ -239,7 +241,7 @@ public sealed class ViewModelTests
     // VS-side data context proxy; a type without the attributes serializes as an empty
     // object and every binding to it fails silently (blank text, empty button content).
     private static readonly Type[] RemoteUiContextTypes =
-        [typeof(ChatViewModel), typeof(ChatItemViewModel), typeof(ApprovalViewModel), typeof(WorkerStatus), typeof(ThreadSummary)];
+        [typeof(ChatViewModel), typeof(ChatItemViewModel), typeof(ApprovalViewModel), typeof(SuggestionChip), typeof(WorkerStatus), typeof(ThreadSummary)];
 
     [TestMethod]
     public void RemoteUiContextTypes_AreDataContracts()
@@ -309,6 +311,69 @@ public sealed class ViewModelTests
 
         Assert.AreEqual("CanExecute", raisedProperty);
         Assert.IsTrue(command.CanExecute);
+    }
+
+    [TestMethod]
+    public async Task SuggestionChip_UseCommand_InvokesCallbackWithText()
+    {
+        string? captured = null;
+        var chip = new SuggestionChip("Write unit tests for this file", text =>
+        {
+            captured = text;
+            return Task.CompletedTask;
+        });
+
+        chip.UseCommand.Execute(null);
+        await Task.Delay(50);
+
+        Assert.AreEqual("Write unit tests for this file", chip.Text);
+        Assert.AreEqual("Write unit tests for this file", captured);
+    }
+
+    [TestMethod]
+    public void ChatViewModel_NewInstance_SeedsWelcomeState()
+    {
+        // Construction fires a fire-and-forget ConnectAsync; the worker exe is absent from the
+        // test output so it fails fast and is caught (no process, no hang). We only assert the
+        // synchronously-seeded welcome-state members here.
+        using var vm = new ChatViewModel();
+
+        Assert.IsTrue(vm.IsThreadEmpty);
+        Assert.IsTrue(vm.IsComposerEmpty);
+        Assert.IsFalse(vm.IsHistoryOpen);
+        Assert.AreEqual(3, vm.Suggestions.Count);
+        Assert.IsTrue(vm.Models.Count > 0);
+        Assert.AreEqual(vm.Models[0], vm.SelectedModel);
+        CollectionAssert.AreEqual(ExpectedModes, vm.Modes);
+        Assert.AreEqual("Agent", vm.SelectedMode);
+    }
+
+    [TestMethod]
+    public void ChatViewModel_IsThreadEmpty_TracksItems()
+    {
+        using var vm = new ChatViewModel();
+        Assert.IsTrue(vm.IsThreadEmpty);
+
+        vm.Items.Add(new ChatItemViewModel("You", "hello", ConversationEventKind.ItemStarted));
+        Assert.IsFalse(vm.IsThreadEmpty);
+
+        vm.Items.Clear();
+        Assert.IsTrue(vm.IsThreadEmpty);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_ToggleHistoryCommand_TogglesIsHistoryOpen()
+    {
+        using var vm = new ChatViewModel();
+        Assert.IsFalse(vm.IsHistoryOpen);
+
+        vm.ToggleHistoryCommand.Execute(null);
+        await Task.Delay(50);
+        Assert.IsTrue(vm.IsHistoryOpen);
+
+        vm.ToggleHistoryCommand.Execute(null);
+        await Task.Delay(50);
+        Assert.IsFalse(vm.IsHistoryOpen);
     }
 
     [TestMethod]
