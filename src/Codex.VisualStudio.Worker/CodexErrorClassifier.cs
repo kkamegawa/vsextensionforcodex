@@ -14,12 +14,12 @@ internal static class CodexErrorClassifier
         "stream disconnected before completion",
         "error sending request for url",
         "transport channel closed",
-        "failed to refresh available models",
     ];
 
     public const string NetworkFailureMessage =
-        "Cannot reach chatgpt.com. Check your network connection or proxy settings " +
-        "(HTTP_PROXY / HTTPS_PROXY). See the Codex output window for details.";
+        "Cannot reach chatgpt.com. Check your network connection or proxy/TLS settings " +
+        "(HTTP_PROXY / HTTPS_PROXY / ALL_PROXY / NO_PROXY / SSL_CERT_FILE / NODE_EXTRA_CA_CERTS). " +
+        "See the Codex output window for details.";
 
     public static bool IsNetworkFailure(string? line)
     {
