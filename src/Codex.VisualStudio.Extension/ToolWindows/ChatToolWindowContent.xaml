@@ -580,6 +580,12 @@
                      CaretBrush="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowTextBrushKey}}"
                      SelectionBrush="{DynamicResource {x:Static SystemColors.HighlightBrushKey}}"
                      Text="{Binding ComposerText, UpdateSourceTrigger=PropertyChanged}">
+              <!-- Ctrl+Enter sends (or steers). Enter is reserved for newlines because
+                   AcceptsReturn is true. KeyBinding is a declarative command binding, the
+                   Remote UI-supported way to map a gesture to a data-context command. -->
+              <TextBox.InputBindings>
+                <KeyBinding Key="Return" Modifiers="Control" Command="{Binding SendCommand}" />
+              </TextBox.InputBindings>
               <TextBox.Style>
                 <Style TargetType="TextBox">
                   <Setter Property="Background" Value="Transparent" />

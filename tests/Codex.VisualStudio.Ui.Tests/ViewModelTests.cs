@@ -237,6 +237,23 @@ public sealed class ViewModelTests
         Assert.IsFalse(xaml.Contains("{Binding Account.", StringComparison.Ordinal));
     }
 
+    [TestMethod]
+    public void ChatToolWindowXaml_BindsCtrlEnterToSendCommand()
+    {
+        // Regression: the redesigned composer uses an icon Send button (not IsDefault), so the
+        // only keyboard send affordance is a Ctrl+Enter KeyBinding. Enter inserts a newline
+        // (AcceptsReturn). Lock the gesture wiring so it cannot silently disappear again.
+        const string resourceName = "Codex.VisualStudio.Extension.ToolWindows.ChatToolWindowContent.xaml";
+        using Stream? stream = typeof(ChatViewModel).Assembly.GetManifestResourceStream(resourceName);
+        Assert.IsNotNull(stream, $"Embedded resource '{resourceName}' not found.");
+        using var reader = new StreamReader(stream);
+        string xaml = reader.ReadToEnd();
+
+        Assert.IsTrue(
+            Regex.IsMatch(xaml, @"<KeyBinding\b[^>]*\bKey=""Return""[^>]*\bModifiers=""Control""[^>]*\bCommand=""\{Binding SendCommand\}"""),
+            "Composer must bind Ctrl+Enter (Key=Return, Modifiers=Control) to SendCommand.");
+    }
+
     // Remote UI replicates only [DataMember] properties of [DataContract] types into the
     // VS-side data context proxy; a type without the attributes serializes as an empty
     // object and every binding to it fails silently (blank text, empty button content).
