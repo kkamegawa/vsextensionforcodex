@@ -135,14 +135,36 @@ Use this pattern in the Extension project csproj,
 **not** in `Directory.Build.props` (which would leak to every project in the solution):
 
 ```xml
-<DeployExtension Condition="!('$(BuildingInsideVisualStudio)' == 'true'
-                              and '$(Configuration)' == 'Debug')">false</DeployExtension>
+<DeployExtension Condition="'$(BuildingInsideVisualStudio)' == 'true'
+                            and '$(Configuration)' == 'Debug'">true</DeployExtension>
 <VSSDKTargetPlatformRegRootSuffix>Exp</VSSDKTargetPlatformRegRootSuffix>
-<StartArguments>/RootSuffix Exp /log "$(VisualStudioActivityLogPath)"</StartArguments>
 ```
 
 This makes F5 in Visual Studio deploy to the Exp instance automatically while leaving
 CI / Release / command-line builds clean.
+
+**`DeployExtension` must be set to `true` explicitly for the F5 case.** The VsSDK target
+`DeployVsixExtensionFiles` runs only under `Condition="'$(DeployExtension)'=='true' and
+'$(CreateVsixContainer)'=='true'"`, and `Microsoft.VsSDK.targets` defaults an *unset*
+`DeployExtension` to `false`. A guard written as
+`Condition="!(... insideVS and Debug)">false` only ever sets the value to `false` (or leaves
+it unset → false); it never produces `true`, so the extension is **never deployed** and never
+appears in any menu. Verify with:
+`dotnet msbuild <proj> -getProperty:DeployExtension -p:BuildingInsideVisualStudio=true -p:Configuration=Debug`
+→ must print `true`.
+
+**Do NOT set `StartAction`/`StartProgram`/`StartArguments` for an out-of-process extension.**
+The VS IDE provides the F5 launch (build → deploy to Exp → launch `devenv /RootSuffix Exp` →
+attach to the ServiceHub host) for `VisualStudio.Extensibility` projects automatically.
+Setting `StartAction=Program` + `StartProgram=$(DevEnvDir)devenv.exe` overrides that with a
+plain external-program launch, bypassing deploy/attach. `VSSDKTargetPlatformRegRootSuffix=Exp`
+supplies the `RootSuffix` the deploy target needs (it also defaults to `Exp` in
+`Microsoft.VisualStudio.Sdk.Common.targets`).
+
+After F5, when the managed debugger attaches to the mixed-mode `devenv.exe`, a benign
+`LoaderLock` MDA may break. It is .NET Framework debugger noise from VS's own native
+components, not an extension bug — Continue, or clear **Break When Thrown** for `LoaderLock`
+under **Debug → Windows → Exception Settings → Managed Debugging Assistants**.
 
 ### OOP Extension: ExtensionConfiguration.Metadata is Mandatory
 
