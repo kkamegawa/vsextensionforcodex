@@ -32,6 +32,30 @@ public sealed class CodexProcessHost : ICodexProcessHost
         "CODEX_HOME",
         "CODEX_PATH",
         "OPENAI_API_KEY",
+
+        // Proxy configuration. Without these, codex attempts a direct connection
+        // and corporate DNS refuses to resolve chatgpt.com (WSANO_RECOVERY,
+        // os error 11003). Windows environment lookups are case-insensitive, so
+        // the upper-case names also match a user's lower-case http_proxy etc.
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "NO_PROXY",
+
+        // Corporate TLS/CA bundles for proxies that perform TLS interception.
+        "SSL_CERT_FILE",
+        "SSL_CERT_DIR",
+        "REQUESTS_CA_BUNDLE",
+        "NODE_EXTRA_CA_CERTS",
+
+        // Essential Windows system variables that native networking and TLS
+        // (schannel) rely on once the inherited environment is cleared.
+        "SystemRoot",
+        "windir",
+        "SystemDrive",
+        "ComSpec",
+        "PROCESSOR_ARCHITECTURE",
+        "NUMBER_OF_PROCESSORS",
     ];
 
     private readonly ISecretRedactor redactor;
@@ -67,15 +91,7 @@ public sealed class CodexProcessHost : ICodexProcessHost
             CreateNoWindow = true,
         };
         startInfo.ArgumentList.Add("app-server");
-        startInfo.Environment.Clear();
-        foreach (string name in EnvironmentAllowList)
-        {
-            string? value = Environment.GetEnvironmentVariable(name);
-            if (!string.IsNullOrEmpty(value))
-            {
-                startInfo.Environment[name] = value;
-            }
-        }
+        PopulateChildEnvironment(startInfo.Environment);
 
         var startedProcess = new Process { StartInfo = startInfo };
         WorkerDiagnostics.Write("codex app-server process start requested");
@@ -141,6 +157,22 @@ public sealed class CodexProcessHost : ICodexProcessHost
     public async ValueTask DisposeAsync()
     {
         await StopAsync(CancellationToken.None).ConfigureAwait(false);
+    }
+
+    // Rebuilds the child environment from a curated allow-list rather than
+    // inheriting the full parent environment, so secrets are not leaked into
+    // codex while still forwarding the proxy, TLS, and system variables it needs.
+    internal static void PopulateChildEnvironment(IDictionary<string, string?> target)
+    {
+        target.Clear();
+        foreach (string name in EnvironmentAllowList)
+        {
+            string? value = Environment.GetEnvironmentVariable(name);
+            if (!string.IsNullOrEmpty(value))
+            {
+                target[name] = value;
+            }
+        }
     }
 
     private async Task ReadStandardErrorAsync(Process source, CancellationToken cancellationToken)
