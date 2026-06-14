@@ -131,12 +131,39 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         get => composerText;
         set
         {
-            if (SetProperty(ref composerText, value))
+            if (composerText == value)
             {
-                OnPropertyChanged(nameof(IsComposerEmpty));
-                RaiseCommandStates();
+                return;
             }
+
+            composerText = value;
+
+            // Deliberately do NOT raise PropertyChanged for ComposerText on this binding-driven
+            // (user-typing) path. The data context is replicated to a proxy in a separate process,
+            // so the notification is echoed back to the TextBox asynchronously — outside WPF's
+            // synchronous "transfer" window that normally suppresses a binding's own echo — which
+            // re-assigns TextBox.Text and snaps the caret to position 0 on every keystroke. The
+            // TextBox already holds this value, so the echo is redundant. Programmatic changes go
+            // through SetComposerText, which DOES notify so the TextBox reflects the new value.
+            OnPropertyChanged(nameof(IsComposerEmpty));
+            RaiseCommandStates();
         }
+    }
+
+    // Replaces the composer text from code (clear-after-send, suggestion chips). Unlike the
+    // binding-driven setter this raises PropertyChanged for ComposerText so the TextBox updates;
+    // the caret-reset concern does not apply because the user is not mid-typing here.
+    private void SetComposerText(string value)
+    {
+        if (composerText == value)
+        {
+            return;
+        }
+
+        composerText = value;
+        OnPropertyChanged(nameof(ComposerText));
+        OnPropertyChanged(nameof(IsComposerEmpty));
+        RaiseCommandStates();
     }
 
     // True when the active thread has no transcript items — drives the centered welcome state.
@@ -326,7 +353,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     private async Task SendAsync()
     {
         string text = ComposerText;
-        await OnUiAsync(() => ComposerText = string.Empty).ConfigureAwait(false);
+        await OnUiAsync(() => SetComposerText(string.Empty)).ConfigureAwait(false);
         if (SelectedThread is null)
         {
             await NewThreadAsync().ConfigureAwait(false);
@@ -352,7 +379,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
     private Task UseSuggestionAsync(string text)
     {
-        ComposerText = text;
+        SetComposerText(text);
         return Task.CompletedTask;
     }
 

@@ -377,6 +377,46 @@ public sealed class ViewModelTests
     }
 
     [TestMethod]
+    public void ChatViewModel_TypingComposerText_DoesNotEchoComposerTextPropertyChanged()
+    {
+        // Regression: the binding-driven (user-typing) setter must NOT raise PropertyChanged for
+        // ComposerText. In Remote UI that notification is echoed back to the TextBox across the
+        // process boundary and resets the caret to position 0 on every keystroke. IsComposerEmpty
+        // must still update so the "Ask Codex" placeholder hides.
+        using var vm = new ChatViewModel();
+        var raised = new List<string?>();
+        vm.PropertyChanged += (_, e) => raised.Add(e.PropertyName);
+
+        vm.ComposerText = "hello";
+
+        Assert.AreEqual("hello", vm.ComposerText);
+        Assert.IsFalse(
+            raised.Contains("ComposerText"),
+            "Typing must not echo ComposerText PropertyChanged (would reset the caret in Remote UI).");
+        Assert.IsTrue(raised.Contains("IsComposerEmpty"), "Placeholder visibility must still update.");
+        Assert.IsFalse(vm.IsComposerEmpty);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_SuggestionChip_RaisesComposerTextPropertyChanged()
+    {
+        // The programmatic path (suggestion chip / clear-after-send) DOES notify ComposerText so
+        // the TextBox reflects the new value; the caret-reset concern does not apply off the
+        // typing path.
+        using var vm = new ChatViewModel();
+        var raised = new List<string?>();
+        vm.PropertyChanged += (_, e) => raised.Add(e.PropertyName);
+
+        vm.Suggestions[0].UseCommand.Execute(null);
+        await Task.Delay(50);
+
+        Assert.AreEqual(vm.Suggestions[0].Text, vm.ComposerText);
+        Assert.IsTrue(
+            raised.Contains("ComposerText"),
+            "Programmatic composer updates must notify so the TextBox reflects the new value.");
+    }
+
+    [TestMethod]
     public void DataMemberCommands_ImplementIAsyncCommand()
     {
         // Remote UI rejects plain ICommand values at serialization time
