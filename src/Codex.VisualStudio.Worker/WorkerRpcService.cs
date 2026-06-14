@@ -13,17 +13,14 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
     private JsonRpc? clientRpc;
     private WorkerStatus status = new() { State = WorkerConnectionState.Disconnected, Message = "Worker is disconnected." };
     private AccountStatus accountStatus = new();
+    private int networkFailureReported;
 
     public WorkerRpcService(ISecretRedactor redactor, ICodexProcessHost processHost, ICodexSessionService session)
     {
         this.redactor = redactor;
         this.processHost = processHost;
         this.session = session;
-        processHost.StandardErrorReceived += (_, text) => _ = PublishEventAsync(new ConversationEvent
-        {
-            Kind = ConversationEventKind.Error,
-            Text = text,
-        }, CancellationToken.None);
+        processHost.StandardErrorReceived += (_, text) => _ = OnStandardErrorReceivedAsync(text);
         processHost.Exited += (_, exitCode) => _ = OnProcessExitedAsync(exitCode);
         session.ConversationEventReceived += PublishEventAsync;
         session.ApprovalRequested += PublishApprovalAsync;
@@ -46,6 +43,7 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
         }
 
         this.options = options;
+        Interlocked.Exchange(ref networkFailureReported, 0);
         await SetStatusAsync(WorkerConnectionState.Connecting, "Starting codex app-server...", cancellationToken).ConfigureAwait(false);
         try
         {
@@ -192,6 +190,34 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
         }
 
         return CloneStatus();
+    }
+
+    private async Task OnStandardErrorReceivedAsync(string text)
+    {
+        // Forward the raw (already redacted) line to the transcript and output
+        // log, preserving existing behavior.
+        await PublishEventAsync(
+            new ConversationEvent { Kind = ConversationEventKind.Error, Text = text },
+            CancellationToken.None).ConfigureAwait(false);
+
+        // On the first network/DNS failure, surface a single actionable message
+        // and mark the connection degraded instead of flooding the transcript
+        // with repeated low-level errors.
+        if (CodexErrorClassifier.IsNetworkFailure(text)
+            && Interlocked.CompareExchange(ref networkFailureReported, 1, 0) == 0)
+        {
+            await SetStatusAsync(
+                WorkerConnectionState.Degraded,
+                CodexErrorClassifier.NetworkFailureMessage,
+                CancellationToken.None).ConfigureAwait(false);
+            await PublishEventAsync(
+                new ConversationEvent
+                {
+                    Kind = ConversationEventKind.Error,
+                    Text = CodexErrorClassifier.NetworkFailureMessage,
+                },
+                CancellationToken.None).ConfigureAwait(false);
+        }
     }
 
     private async Task PublishEventAsync(ConversationEvent conversationEvent, CancellationToken cancellationToken)

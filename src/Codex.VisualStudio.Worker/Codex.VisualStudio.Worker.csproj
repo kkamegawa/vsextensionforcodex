@@ -12,5 +12,8 @@
   <ItemGroup>
     <PackageReference Include="StreamJsonRpc" />
   </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="Codex.VisualStudio.Core.Tests" />
+  </ItemGroup>
 </Project>
 
