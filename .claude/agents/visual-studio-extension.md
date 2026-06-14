@@ -131,18 +131,36 @@ Apply these lessons derived from recent Visual Studio options, packaging, and OO
 
 ### Experimental Instance Deployment Guard
 
-Use this pattern in the Extension project csproj,
-**not** in `Directory.Build.props` (which would leak to every project in the solution):
+For an out-of-process `VisualStudio.Extensibility` project, do **not** add any legacy VsSDK
+deploy properties to the Extension project csproj — not `DeployExtension`,
+`CreateVsixContainer`, `IncludeAssemblyInVSIXContainer`, `IncludeDebugSymbolsInVSIXContainer`,
+nor `VSSDKTargetPlatformRegRootSuffix`. The official VS 2026 OOP extensibility project
+template references only `Microsoft.VisualStudio.Extensibility.Sdk` and
+`Microsoft.VisualStudio.Extensibility.Build`; the `.Build` package adds the
+`ProjectCapability Include="ExtensibilityProjectExtension"`, which is what makes the IDE own
+F5 build → deploy to Exp → launch `devenv /RootSuffix Exp` → attach to the ServiceHub host,
+plus registration/discovery in Manage Extensions.
 
-```xml
-<DeployExtension Condition="!('$(BuildingInsideVisualStudio)' == 'true'
-                              and '$(Configuration)' == 'Debug')">false</DeployExtension>
-<VSSDKTargetPlatformRegRootSuffix>Exp</VSSDKTargetPlatformRegRootSuffix>
-<StartArguments>/RootSuffix Exp /log "$(VisualStudioActivityLogPath)"</StartArguments>
-```
+**Why not the old `DeployExtension=true` + `VSSDKTargetPlatformRegRootSuffix=Exp` pattern:**
+forcing those legacy properties routes deployment through the VsSDK
+`DeployVsixExtensionFiles` target, which copies the extension into a
+`publisher\name\version` nested folder layout. VS 2026's extension scanner does **not**
+index that layout for OOP extensions — the extension is deployed to disk but never appears
+in Manage Extensions or any menu (`ExtensionMetadataCache.mpack` has zero hits for it, vs.
+hundreds for an IDE-deployed extension). Removing all of these properties and letting the
+`ExtensibilityProjectExtension` capability drive deployment is the fix; `CreateVsixContainer`
+already defaults to `true` via the SDK, so CLI/CI `.vsix` packaging is unaffected.
 
-This makes F5 in Visual Studio deploy to the Exp instance automatically while leaving
-CI / Release / command-line builds clean.
+**Do NOT set `StartAction`/`StartProgram`/`StartArguments` for an out-of-process extension.**
+The VS IDE provides the F5 launch (build → deploy to Exp → launch `devenv /RootSuffix Exp` →
+attach to the ServiceHub host) for `VisualStudio.Extensibility` projects automatically.
+Setting `StartAction=Program` + `StartProgram=$(DevEnvDir)devenv.exe` overrides that with a
+plain external-program launch, bypassing deploy/attach entirely.
+
+After F5, when the managed debugger attaches to the mixed-mode `devenv.exe`, a benign
+`LoaderLock` MDA may break. It is .NET Framework debugger noise from VS's own native
+components, not an extension bug — Continue, or clear **Break When Thrown** for `LoaderLock`
+under **Debug → Windows → Exception Settings → Managed Debugging Assistants**.
 
 ### OOP Extension: ExtensionConfiguration.Metadata is Mandatory
 

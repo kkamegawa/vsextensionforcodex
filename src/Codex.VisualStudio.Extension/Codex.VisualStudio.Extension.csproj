@@ -7,17 +7,16 @@
     <AssemblyName>Codex.VisualStudio.Extension</AssemblyName>
     <RootNamespace>Codex.VisualStudio.Extension</RootNamespace>
     <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
-    <IncludeAssemblyInVSIXContainer>true</IncludeAssemblyInVSIXContainer>
-    <IncludeDebugSymbolsInVSIXContainer>false</IncludeDebugSymbolsInVSIXContainer>
-    <CreateVsixContainer>true</CreateVsixContainer>
-    <!-- Deploy to experimental instance only when building inside VS in Debug mode -->
-    <DeployExtension Condition="!('$(BuildingInsideVisualStudio)' == 'true' and '$(Configuration)' == 'Debug')">false</DeployExtension>
-    <VSSDKTargetPlatformRegRootSuffix>Exp</VSSDKTargetPlatformRegRootSuffix>
-    <StartAction>Program</StartAction>
-    <StartProgram>$(DevEnvDir)devenv.exe</StartProgram>
-    <VisualStudioActivityLogPath>$([System.IO.Path]::Combine('$(APPDATA)', 'Microsoft', 'VisualStudio', 'CodexForVisualStudio-Exp-ActivityLog.xml'))</VisualStudioActivityLogPath>
-    <StartArguments>/RootSuffix $(VSSDKTargetPlatformRegRootSuffix) /log &quot;$(VisualStudioActivityLogPath)&quot;</StartArguments>
-    <StartWorkingDirectory>$(DevEnvDir)</StartWorkingDirectory>
+    <!-- Out-of-process VisualStudio.Extensibility extension: do NOT add legacy VSSDK deploy
+         properties (CreateVsixContainer / DeployExtension / IncludeAssemblyInVSIXContainer /
+         VSSDKTargetPlatformRegRootSuffix / StartAction / StartProgram / StartArguments).
+         The official VS 2026 OOP project template references only the .Sdk and .Build packages;
+         F5 build, deploy, registration and debugger attach are driven by the IDE through the
+         'ExtensibilityProjectExtension' project capability added by Microsoft.VisualStudio.
+         Extensibility.Build. Forcing DeployExtension=true routed deployment through the legacy
+         VsSDK DeployVsixExtensionFiles target, which copies to a publisher/name/version folder
+         layout that VS 2026 does not discover, so the extension never appeared in Manage
+         Extensions or any menu. The SDK already defaults CreateVsixContainer to true for CI. -->
     <DebugType>portable</DebugType>
     <DebugSymbols>true</DebugSymbols>
     <NoWarn>$(NoWarn);VSEXTPREVIEW_OUTPUTWINDOW;VSTHRD001;VSTHRD100</NoWarn>
