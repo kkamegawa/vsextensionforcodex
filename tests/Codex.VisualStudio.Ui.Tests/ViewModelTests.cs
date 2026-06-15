@@ -391,6 +391,22 @@ public sealed class ViewModelTests
     }
 
     [TestMethod]
+    [DataRow("my-app", "my_app")]
+    [DataRow("123", "_123")]
+    [DataRow("---", "App")]
+    [DataRow("valid_Name9", "valid_Name9")]
+    public void ProjectScaffolder_GetProjectName_ReturnsIdentifierLikeName(string folderName, string expected)
+    {
+        MethodInfo? getProjectName = typeof(ProjectScaffolder).GetMethod(
+            "GetProjectName",
+            BindingFlags.NonPublic | BindingFlags.Static);
+
+        Assert.IsNotNull(getProjectName);
+        string rootDirectory = Path.Combine(Path.GetTempPath(), folderName);
+        Assert.AreEqual(expected, getProjectName.Invoke(null, [rootDirectory]));
+    }
+
+    [TestMethod]
     public void ChatViewModel_IsThreadEmpty_TracksItems()
     {
         using var vm = new ChatViewModel();

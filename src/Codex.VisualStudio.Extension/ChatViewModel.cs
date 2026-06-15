@@ -374,10 +374,22 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
         try
         {
-            WorkerStatus result;
             try
             {
                 await projectScaffolder.EnsureScaffoldAsync(workingDirectory, lifetime.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+            {
+                return false;
+            }
+            catch (Exception ex)
+            {
+                ExtensionDiagnostics.Write("Project scaffolding failed; continuing with Worker connection", ex);
+            }
+
+            WorkerStatus result;
+            try
+            {
                 result = await bridge.ConnectAsync(workingDirectory, lifetime.Token).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (lifetime.IsCancellationRequested)

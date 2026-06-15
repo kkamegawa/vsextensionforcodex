@@ -10,8 +10,8 @@ namespace Codex.VisualStudio.Extension;
 
 /// <summary>
 /// The choices presented when no working directory could be determined from the open
-/// solution/folder or a remembered value. <see cref="None"/> is returned when the user
-/// dismisses the prompt without choosing.
+/// solution/folder. <see cref="None"/> is returned when the user dismisses the prompt without
+/// choosing.
 /// </summary>
 public enum WorkingDirectoryChoice
 {
