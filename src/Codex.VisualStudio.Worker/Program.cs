@@ -3,6 +3,15 @@ using Codex.VisualStudio.Contracts;
 using Codex.VisualStudio.Worker;
 using StreamJsonRpc;
 
+// Hide the console window immediately. The worker is started with a console
+// (instead of CREATE_NO_WINDOW) so that codex app-server and its cmd.exe
+// children inherit a console and don't each pop up their own window; that
+// inherited console must stay hidden. See HiddenConsole and CodexProcessHost.
+if (OperatingSystem.IsWindows())
+{
+    HiddenConsole.Hide();
+}
+
 if (args.Length != 2 || !string.Equals(args[0], "--pipe", StringComparison.Ordinal))
 {
     Console.Error.WriteLine("Usage: Codex.VisualStudio.Worker --pipe <name>");

@@ -4,6 +4,8 @@
     <TargetFramework>net8.0</TargetFramework>
     <AssemblyName>Codex.VisualStudio.Worker</AssemblyName>
     <RootNamespace>Codex.VisualStudio.Worker</RootNamespace>
+    <!-- Required by LibraryImport-generated marshalling code (HiddenConsole). -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../Codex.AppServer.Protocol/Codex.AppServer.Protocol.csproj" />
