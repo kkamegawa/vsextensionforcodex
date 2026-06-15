@@ -13,6 +13,7 @@ public sealed class WorkerBridge : ICodexWorkerObserver, IAsyncDisposable
     private Process? process;
     private NamedPipeClientStream? pipe;
     private JsonRpc? rpc;
+    private ProcessJobObject? jobObject;
 
     public WorkerBridge(OutputChannel? outputChannel = null)
     {
@@ -158,11 +159,16 @@ public sealed class WorkerBridge : ICodexWorkerObserver, IAsyncDisposable
         pipe?.Dispose();
         if (process is not null && !process.HasExited)
         {
-            process.Kill();
+            // Kill the worker together with its descendants (codex app-server and any
+            // cmd.exe processes it spawned) on the normal shutdown path. The job object
+            // assigned in StartWorkerAsync is the safety net for abnormal termination.
+            process.Kill(entireProcessTree: true);
             await Task.Run(() => process.WaitForExit()).ConfigureAwait(false);
         }
 
         process?.Dispose();
+        jobObject?.Dispose();
+        jobObject = null;
     }
 
     private async Task StartWorkerAsync(CancellationToken cancellationToken)
@@ -176,10 +182,30 @@ public sealed class WorkerBridge : ICodexWorkerObserver, IAsyncDisposable
             FileName = workerPath,
             Arguments = $"--pipe {pipeName}",
             UseShellExecute = false,
-            CreateNoWindow = true,
+
+            // The worker keeps a console (instead of CREATE_NO_WINDOW) but it is hidden via
+            // WindowStyle. This gives codex app-server - and the cmd.exe processes it spawns -
+            // a console to inherit, so the OS does not allocate a new visible console window
+            // for each of them. Codex.VisualStudio.Worker also hides its console window at
+            // startup as a defensive measure (see HiddenConsole).
+            CreateNoWindow = false,
+            WindowStyle = ProcessWindowStyle.Hidden,
             RedirectStandardError = true,
         }) ?? throw new InvalidOperationException("Failed to start the Codex worker.");
         ExtensionDiagnostics.Write($"Worker process started pid={process.Id}");
+
+        // Assign the worker (and, implicitly, every descendant process it spawns - codex
+        // app-server and any cmd.exe processes) to a job object with
+        // JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE. This guarantees the whole process tree is
+        // terminated when the extension process exits or is force-closed, even if the
+        // graceful shutdown in DisposeAsync never runs.
+        jobObject = ProcessJobObject.CreateKillOnCloseJob();
+        if (jobObject is not null && !jobObject.Assign(process))
+        {
+            ExtensionDiagnostics.Write("Failed to assign worker process to job object");
+            jobObject.Dispose();
+            jobObject = null;
+        }
         _ = ReadWorkerDiagnosticsAsync(process);
         pipe = new NamedPipeClientStream(".", pipeName, PipeDirection.InOut, PipeOptions.Asynchronous);
         await Task.Run(() => pipe.Connect(15_000), cancellationToken).ConfigureAwait(false);
