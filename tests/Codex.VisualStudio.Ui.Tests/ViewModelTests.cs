@@ -234,7 +234,7 @@ public sealed class ViewModelTests
 
         Assert.IsTrue(xaml.Contains("{Binding AccountActionText}", StringComparison.Ordinal));
         Assert.IsTrue(xaml.Contains("{Binding ShowAccountAction,", StringComparison.Ordinal));
-        Assert.IsTrue(xaml.Contains("{Binding AccountDisplayText}", StringComparison.Ordinal));
+        Assert.IsTrue(xaml.Contains("{Binding StatusDetailText}", StringComparison.Ordinal));
         Assert.IsFalse(xaml.Contains("{Binding Account.", StringComparison.Ordinal));
     }
 
@@ -388,6 +388,22 @@ public sealed class ViewModelTests
         Assert.AreEqual(vm.Models[0], vm.SelectedModel);
         CollectionAssert.AreEqual(ExpectedModes, vm.Modes);
         Assert.AreEqual("Agent", vm.SelectedMode);
+    }
+
+    [TestMethod]
+    [DataRow("my-app", "my_app")]
+    [DataRow("123", "_123")]
+    [DataRow("---", "App")]
+    [DataRow("valid_Name9", "valid_Name9")]
+    public void ProjectScaffolder_GetProjectName_ReturnsIdentifierLikeName(string folderName, string expected)
+    {
+        MethodInfo? getProjectName = typeof(ProjectScaffolder).GetMethod(
+            "GetProjectName",
+            BindingFlags.NonPublic | BindingFlags.Static);
+
+        Assert.IsNotNull(getProjectName);
+        string rootDirectory = Path.Combine(Path.GetTempPath(), folderName);
+        Assert.AreEqual(expected, getProjectName.Invoke(null, [rootDirectory]));
     }
 
     [TestMethod]

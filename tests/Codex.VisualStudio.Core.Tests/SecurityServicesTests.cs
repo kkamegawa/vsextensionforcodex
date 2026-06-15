@@ -118,6 +118,55 @@ public sealed class SecurityServicesTests
     }
 
     [TestMethod]
+    public void ApprovalPolicy_BlocksFileWriteUnderProtectedDirectory()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            Assert.Inconclusive("This test uses Windows-specific protected paths.");
+        }
+
+        string root = Path.Combine(Path.GetTempPath(), "CodexVsTests", "Workspace");
+        var protectedPolicy = new ProtectedDirectoryPolicy(new[] { @"C:\Program Files" });
+        var policy = new ApprovalPolicyEngine(new PathAccessPolicy(), protectedPolicy);
+
+        ApprovalPolicyResult result = policy.EvaluateFile(@"C:\Program Files\PowerShell\7\hello.cs", root);
+
+        Assert.IsTrue(result.IsBlocked);
+        Assert.AreEqual(ApprovalRiskCategory.WorkspaceOutside, result.Risk);
+    }
+
+    [TestMethod]
+    public void ApprovalPolicy_BlocksCommandWithCwdUnderProtectedDirectory()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            Assert.Inconclusive("This test uses a Windows-specific protected cwd.");
+        }
+
+        string root = Path.Combine(Path.GetTempPath(), "CodexVsTests", "Workspace");
+        var protectedPolicy = new ProtectedDirectoryPolicy(new[] { @"C:\Program Files" });
+        var policy = new ApprovalPolicyEngine(new PathAccessPolicy(), protectedPolicy);
+
+        ApprovalPolicyResult result = policy.EvaluateCommand("echo hi", @"C:\Program Files\PowerShell\7", root, null, null);
+
+        Assert.IsTrue(result.IsBlocked);
+        Assert.AreEqual(ApprovalRiskCategory.WorkspaceOutside, result.Risk);
+    }
+
+    [TestMethod]
+    public void ApprovalPolicy_DoesNotBlockNonProtectedWorkspaceFile()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "CodexVsTests", "Workspace");
+        var protectedPolicy = new ProtectedDirectoryPolicy(new[] { @"C:\Program Files" });
+        var policy = new ApprovalPolicyEngine(new PathAccessPolicy(), protectedPolicy);
+
+        ApprovalPolicyResult result = policy.EvaluateFile(Path.Combine(root, "hello.cs"), root);
+
+        Assert.IsFalse(result.IsBlocked);
+        Assert.AreEqual(ApprovalRiskCategory.WorkspaceWrite, result.Risk);
+    }
+
+    [TestMethod]
     public void ApprovalGrantStore_EnforcesTurnThreadAndSessionScopes()
     {
         var store = new ApprovalGrantStore();
