@@ -148,12 +148,12 @@ public sealed partial class ApprovalPolicyEngine : IApprovalPolicyEngine
         }
 
         string effectiveCwd = cwd ?? workspaceRoot;
-        if (protectedDirectoryPolicy.IsProtected(effectiveCwd))
+        PathAccessResult cwdResult = pathPolicy.Evaluate(effectiveCwd, workspaceRoot);
+        if (protectedDirectoryPolicy.IsProtected(cwdResult.NormalizedPath))
         {
-            return new ApprovalPolicyResult(ApprovalRiskCategory.WorkspaceOutside, $"cwd:{effectiveCwd}", true, "The path is an OS-protected directory.");
+            return new ApprovalPolicyResult(ApprovalRiskCategory.WorkspaceOutside, $"cwd:{cwdResult.NormalizedPath}", true, "The path is an OS-protected directory.");
         }
 
-        PathAccessResult cwdResult = pathPolicy.Evaluate(effectiveCwd, workspaceRoot);
         if (!cwdResult.IsValid || !cwdResult.IsWithinWorkspace)
         {
             return new ApprovalPolicyResult(ApprovalRiskCategory.WorkspaceOutside, $"cwd:{cwdResult.NormalizedPath}", true, cwdResult.Reason);
@@ -165,12 +165,12 @@ public sealed partial class ApprovalPolicyEngine : IApprovalPolicyEngine
     public ApprovalPolicyResult EvaluateFile(string? path, string workspaceRoot)
     {
         string effectivePath = path ?? string.Empty;
-        if (protectedDirectoryPolicy.IsProtected(effectivePath))
+        PathAccessResult result = pathPolicy.Evaluate(effectivePath, workspaceRoot);
+        if (protectedDirectoryPolicy.IsProtected(result.NormalizedPath))
         {
-            return new ApprovalPolicyResult(ApprovalRiskCategory.WorkspaceOutside, $"file:{effectivePath}", true, "The path is an OS-protected directory.");
+            return new ApprovalPolicyResult(ApprovalRiskCategory.WorkspaceOutside, $"file:{result.NormalizedPath}", true, "The path is an OS-protected directory.");
         }
 
-        PathAccessResult result = pathPolicy.Evaluate(effectivePath, workspaceRoot);
         if (!result.IsValid)
         {
             return new ApprovalPolicyResult(ApprovalRiskCategory.WorkspaceOutside, $"file:{path}", true, result.Reason);

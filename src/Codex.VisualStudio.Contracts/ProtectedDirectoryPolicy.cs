@@ -111,14 +111,39 @@ public sealed class ProtectedDirectoryPolicy : IProtectedDirectoryPolicy
     {
         try
         {
-            string full = Path.GetFullPath(path);
-            string trimmed = full.TrimEnd('\\', '/');
-            return trimmed.Length == 0 ? full : trimmed;
+            string candidate = path;
+            if (candidate.StartsWith(@"\\?\UNC\", StringComparison.OrdinalIgnoreCase))
+            {
+                candidate = @"\\" + candidate.Substring(8);
+            }
+            else if (candidate.StartsWith(@"\\?\", StringComparison.OrdinalIgnoreCase))
+            {
+                candidate = candidate.Substring(4);
+            }
+
+            string full = Path.GetFullPath(candidate);
+            return TrimEndingDirectorySeparator(full);
         }
         catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
         {
             return null;
         }
+    }
+
+    /// <summary>
+    /// Trims a single trailing directory separator, unless the path is already a bare drive
+    /// or UNC root (e.g. <c>C:\</c> or <c>\\server\share\</c>), to avoid turning a root into a
+    /// drive-relative path.
+    /// </summary>
+    private static string TrimEndingDirectorySeparator(string path)
+    {
+        string root = Path.GetPathRoot(path) ?? string.Empty;
+        if (path.Length > root.Length && (path[path.Length - 1] == '\\' || path[path.Length - 1] == '/'))
+        {
+            return path.Substring(0, path.Length - 1);
+        }
+
+        return path;
     }
 
     private static bool IsDriveRoot(string normalized)

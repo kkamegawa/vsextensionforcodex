@@ -45,6 +45,15 @@ public sealed class ProtectedDirectoryPolicyTests
     }
 
     [TestMethod]
+    public void IsProtected_StripsExtendedLengthPrefixes()
+    {
+        var policy = new ProtectedDirectoryPolicy(new[] { @"C:\Windows" });
+
+        Assert.IsTrue(policy.IsProtected(@"\\?\C:\Windows\System32"));
+        Assert.IsTrue(policy.IsProtected(@"\\?\C:\Windows"));
+    }
+
+    [TestMethod]
     public void GetDefaultProtectedRoots_IncludesWindowsAndProgramFiles()
     {
         string[] roots = ProtectedDirectoryPolicy.GetDefaultProtectedRoots().ToArray();

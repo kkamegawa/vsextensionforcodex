@@ -183,7 +183,20 @@ public sealed class WorkspaceDirectoryResolver : IWorkspaceDirectoryResolver
             InputPromptOptions.Default with { Title = "Codex Working Directory", DefaultText = GetDocumentsDirectory() },
             cancellationToken).ConfigureAwait(false);
 
-        return string.IsNullOrWhiteSpace(path) ? null : Path.GetFullPath(path);
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return null;
+        }
+
+        try
+        {
+            return Path.GetFullPath(path);
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            ExtensionDiagnostics.Write($"The entered working directory \"{path}\" is not a valid path", ex);
+            return null;
+        }
     }
 
     private static string GetDocumentsDirectory()
