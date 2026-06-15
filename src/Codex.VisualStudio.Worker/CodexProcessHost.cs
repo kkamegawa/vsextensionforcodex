@@ -88,7 +88,14 @@ public sealed class CodexProcessHost : ICodexProcessHost
             RedirectStandardInput = true,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
-            CreateNoWindow = true,
+
+            // CREATE_NO_WINDOW leaves codex without any console, so when it spawns cmd.exe
+            // to run shell commands, Windows allocates a new visible console window for each
+            // one. Instead, let codex inherit this worker's (hidden) console - see
+            // HiddenConsole and the worker startup in WorkerBridge - so its cmd.exe children
+            // inherit that same hidden console and never pop up a window.
+            CreateNoWindow = false,
+            WindowStyle = ProcessWindowStyle.Hidden,
         };
         startInfo.ArgumentList.Add("app-server");
         PopulateChildEnvironment(startInfo.Environment);

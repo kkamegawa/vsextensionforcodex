@@ -19,6 +19,8 @@
          Extensions or any menu. The SDK already defaults CreateVsixContainer to true for CI. -->
     <DebugType>portable</DebugType>
     <DebugSymbols>true</DebugSymbols>
+    <!-- Required by LibraryImport-generated marshalling code (ProcessJobObject). -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <NoWarn>$(NoWarn);VSEXTPREVIEW_OUTPUTWINDOW;VSTHRD001;VSTHRD100</NoWarn>
   </PropertyGroup>
   <ItemGroup>
