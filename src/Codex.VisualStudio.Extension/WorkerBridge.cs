@@ -224,13 +224,25 @@ public sealed class WorkerBridge : ICodexWorkerObserver, IAsyncDisposable
             jobObject = null;
         }
         _ = ReadWorkerDiagnosticsAsync(process);
-        pipe = new NamedPipeClientStream(".", pipeName, PipeDirection.InOut, PipeOptions.Asynchronous);
-        await Task.Run(() => pipe.Connect(15_000), cancellationToken).ConfigureAwait(false);
-        ExtensionDiagnostics.Write("Worker pipe connected");
-        rpc = new JsonRpc(pipe);
-        rpc.AddLocalRpcTarget<ICodexWorkerObserver>(this, null);
-        rpc.StartListening();
-        ExtensionDiagnostics.Write("Worker RPC listening");
+        try
+        {
+            pipe = new NamedPipeClientStream(".", pipeName, PipeDirection.InOut, PipeOptions.Asynchronous);
+            await Task.Run(() => pipe.Connect(15_000), cancellationToken).ConfigureAwait(false);
+            ExtensionDiagnostics.Write("Worker pipe connected");
+            rpc = new JsonRpc(pipe);
+            rpc.AddLocalRpcTarget<ICodexWorkerObserver>(this, null);
+            rpc.StartListening();
+            ExtensionDiagnostics.Write("Worker RPC listening");
+        }
+        catch (Exception ex)
+        {
+            // Connecting to the worker or starting RPC failed after the process (and its
+            // job object) were already created. Tear down the partially-started worker so
+            // it doesn't linger, then surface the failure to the caller.
+            ExtensionDiagnostics.Write("Worker pipe/RPC setup failed; disposing partially-started worker", ex);
+            await DisposeAsync().ConfigureAwait(false);
+            throw;
+        }
     }
 
     private async Task ReadWorkerDiagnosticsAsync(Process source)
