@@ -4,7 +4,7 @@ using System.Runtime.Versioning;
 namespace Codex.VisualStudio.Worker;
 
 /// <summary>
-/// Ensures this process has a console window that is hidden from the user.
+/// Hides this process's console window from the user, if it has one.
 /// </summary>
 /// <remarks>
 /// The worker is launched by <c>WorkerBridge</c> with a console (instead of

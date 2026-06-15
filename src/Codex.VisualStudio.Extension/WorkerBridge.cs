@@ -157,13 +157,30 @@ public sealed class WorkerBridge : ICodexWorkerObserver, IAsyncDisposable
     {
         rpc?.Dispose();
         pipe?.Dispose();
-        if (process is not null && !process.HasExited)
+        if (process is not null)
         {
-            // Kill the worker together with its descendants (codex app-server and any
-            // cmd.exe processes it spawned) on the normal shutdown path. The job object
-            // assigned in StartWorkerAsync is the safety net for abnormal termination.
-            process.Kill(entireProcessTree: true);
-            await Task.Run(() => process.WaitForExit()).ConfigureAwait(false);
+            try
+            {
+                if (!process.HasExited)
+                {
+                    // Kill the worker together with its descendants (codex app-server and any
+                    // cmd.exe processes it spawned) on the normal shutdown path. The job object
+                    // assigned in StartWorkerAsync is the safety net for abnormal termination.
+                    process.Kill(entireProcessTree: true);
+                    await Task.Run(() => process.WaitForExit()).ConfigureAwait(false);
+                }
+            }
+            catch (InvalidOperationException ex)
+            {
+                // The process exited between the HasExited check and Kill/WaitForExit.
+                ExtensionDiagnostics.Write("Worker process already exited during disposal", ex);
+            }
+            catch (System.ComponentModel.Win32Exception ex)
+            {
+                // Kill failed (e.g. the process was already terminating). Disposal must
+                // continue so the process handle and job object are still released.
+                ExtensionDiagnostics.Write("Failed to kill worker process during disposal", ex);
+            }
         }
 
         process?.Dispose();
