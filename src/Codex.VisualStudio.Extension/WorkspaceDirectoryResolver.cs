@@ -2,6 +2,7 @@
 using Codex.VisualStudio.Contracts;
 using Microsoft.VisualStudio.Extensibility;
 using Microsoft.VisualStudio.Extensibility.Shell;
+using Microsoft.VisualStudio.Extensibility.Shell.FileDialog;
 using Microsoft.VisualStudio.ProjectSystem.Query;
 using Microsoft.Win32;
 
@@ -31,31 +32,42 @@ public interface IWorkspaceDirectoryResolver
     /// should not connect to Codex in that case.
     /// </summary>
     Task<string?> ResolveAsync(CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Resolves the working directory from the currently open solution/folder only, without
+    /// prompting the user. Returns <see langword="null"/> if no solution/folder is open or
+    /// its directory is not usable — callers should treat that as "not yet connected" rather
+    /// than showing a prompt.
+    /// </summary>
+    Task<string?> TryResolveFromWorkspaceAsync(CancellationToken cancellationToken);
 }
 
 /// <summary>
-/// Resolves the working directory in the following order: the open solution's folder, a
-/// remembered choice from a previous session, or a folder the user picks via a VS prompt.
-/// Any candidate that is an OS-protected directory is rejected — this is the extension-side
-/// half of the defense-in-depth that keeps Codex out of protected folders (the worker also
-/// hard-blocks operations targeting such directories).
+/// Resolves the working directory from the open solution's folder, or a folder the user picks
+/// via a VS prompt. The choice is never persisted — the user is asked again on every session
+/// that has no solution/folder open. Any candidate that is an OS-protected directory is
+/// rejected — this is the extension-side half of the defense-in-depth that keeps Codex out of
+/// protected folders (the worker also hard-blocks operations targeting such directories).
 /// </summary>
 public sealed class WorkspaceDirectoryResolver : IWorkspaceDirectoryResolver
 {
     private const int MaxPromptAttempts = 3;
 
     private readonly VisualStudioExtensibility? extensibility;
-    private readonly IWorkspaceDirectoryStore store;
     private readonly IProtectedDirectoryPolicy protectedDirectoryPolicy;
 
     public WorkspaceDirectoryResolver(
         VisualStudioExtensibility? extensibility,
-        IWorkspaceDirectoryStore store,
         IProtectedDirectoryPolicy? protectedDirectoryPolicy = null)
     {
         this.extensibility = extensibility;
-        this.store = store;
         this.protectedDirectoryPolicy = protectedDirectoryPolicy ?? new ProtectedDirectoryPolicy();
+    }
+
+    public async Task<string?> TryResolveFromWorkspaceAsync(CancellationToken cancellationToken)
+    {
+        string? solutionDirectory = await TryGetSolutionDirectoryAsync(cancellationToken).ConfigureAwait(false);
+        return solutionDirectory is not null && IsUsable(solutionDirectory) ? solutionDirectory : null;
     }
 
     public async Task<string?> ResolveAsync(CancellationToken cancellationToken)
@@ -64,12 +76,6 @@ public sealed class WorkspaceDirectoryResolver : IWorkspaceDirectoryResolver
         if (solutionDirectory is not null && IsUsable(solutionDirectory))
         {
             return solutionDirectory;
-        }
-
-        string? remembered = store.GetLastDirectory();
-        if (remembered is not null && IsUsable(remembered))
-        {
-            return remembered;
         }
 
         return await PromptForDirectoryAsync(cancellationToken).ConfigureAwait(false);
@@ -85,20 +91,56 @@ public sealed class WorkspaceDirectoryResolver : IWorkspaceDirectoryResolver
             return null;
         }
 
+        // A regular solution (.sln) exposes both Directory and Path. An Open Folder workspace
+        // has no .sln, so the solution snapshot's Path is empty — fall back to the first open
+        // project's directory in that case. Querying both Path and Directory up front lets us
+        // use Directory directly when present (more reliable than deriving it from Path).
         try
         {
             IQueryResults<ISolutionSnapshot> solutions = await extensibility.Workspaces().QuerySolutionAsync(
-                solution => solution.With(s => s.Path),
+                solution => solution.With(s => s.Path).With(s => s.Directory),
                 cancellationToken).ConfigureAwait(false);
             ISolutionSnapshot? solution = solutions.FirstOrDefault();
-            if (solution?.Path is { Length: > 0 } solutionPath)
+            if (solution is not null)
             {
-                return Path.GetDirectoryName(solutionPath);
+                if (solution.Directory is { Length: > 0 } solutionDirectory)
+                {
+                    return solutionDirectory;
+                }
+
+                if (solution.Path is { Length: > 0 } solutionPath)
+                {
+                    return Path.GetDirectoryName(solutionPath);
+                }
             }
         }
         catch (Exception ex)
         {
             ExtensionDiagnostics.Write("Querying the open solution for its directory failed", ex);
+        }
+
+        // Open Folder mode (or a solution snapshot without a usable directory): use the
+        // directory of the first open project.
+        try
+        {
+            IQueryResults<IProjectSnapshot> projects = await extensibility.Workspaces().QueryProjectsAsync(
+                project => project.With(p => p.Path),
+                cancellationToken).ConfigureAwait(false);
+            foreach (IProjectSnapshot project in projects)
+            {
+                if (project.Path is { Length: > 0 } projectPath)
+                {
+                    string? projectDirectory = Path.GetDirectoryName(projectPath);
+                    if (projectDirectory is { Length: > 0 })
+                    {
+                        return projectDirectory;
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            ExtensionDiagnostics.Write("Querying open projects for a working directory failed", ex);
         }
 
         return null;
@@ -164,7 +206,6 @@ public sealed class WorkspaceDirectoryResolver : IWorkspaceDirectoryResolver
                 continue;
             }
 
-            store.SetLastDirectory(candidate);
             return candidate;
         }
 
@@ -178,9 +219,12 @@ public sealed class WorkspaceDirectoryResolver : IWorkspaceDirectoryResolver
             return null;
         }
 
-        string? path = await extensibility.Shell().ShowPromptAsync(
-            "Enter the folder Codex should use as its working directory:",
-            InputPromptOptions.Default with { Title = "Codex Working Directory", DefaultText = GetDocumentsDirectory() },
+        string? path = await extensibility.Shell().ShowOpenFolderDialogAsync(
+            new FolderDialogOptions
+            {
+                Title = "Codex Working Directory",
+                InitialDirectory = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
+            },
             cancellationToken).ConfigureAwait(false);
 
         if (string.IsNullOrWhiteSpace(path))
@@ -194,7 +238,7 @@ public sealed class WorkspaceDirectoryResolver : IWorkspaceDirectoryResolver
         }
         catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
         {
-            ExtensionDiagnostics.Write($"The entered working directory \"{path}\" is not a valid path", ex);
+            ExtensionDiagnostics.Write($"The selected working directory \"{path}\" is not a valid path", ex);
             return null;
         }
     }

@@ -26,6 +26,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     private readonly WorkspaceDirectoryResolver workspaceDirectoryResolver;
     private readonly ProjectScaffolder projectScaffolder;
     private int disposed;
+    private int connecting;
     private WorkerStatus status = new() { State = WorkerConnectionState.Disconnected, Message = "Open Codex to connect." };
     private ThreadSummary? selectedThread;
     private string composerText = string.Empty;
@@ -38,7 +39,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     public ChatViewModel(OutputChannel? outputChannel = null, VisualStudioExtensibility? extensibility = null)
     {
         this.outputChannel = outputChannel;
-        workspaceDirectoryResolver = new WorkspaceDirectoryResolver(extensibility, new WorkspaceDirectoryStore());
+        workspaceDirectoryResolver = new WorkspaceDirectoryResolver(extensibility);
         projectScaffolder = new ProjectScaffolder(extensibility);
         bridge = new WorkerBridge(outputChannel);
         bridge.StateChanged += OnStateChangedAsync;
@@ -77,7 +78,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         Models = ["gpt-5-codex", "gpt-5"];
         selectedModel = Models[0];
 
-        _ = ConnectAsync();
+        _ = TryAutoConnectAsync();
     }
 
     [DataMember]
@@ -92,8 +93,13 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     // Intentionally NOT a DataMember: the XAML binds the flattened Account* properties below.
     public AccountPanelViewModel Account { get; } = new();
 
+    // Shown beneath the connection status. Before the first connection attempt the account
+    // has never been checked, so showing "Checking account..." would look like a stuck
+    // loading state; show the connection status's own guidance message instead.
     [DataMember]
-    public string AccountDisplayText => Account.DisplayText;
+    public string StatusDetailText => Status.State == WorkerConnectionState.Disconnected && Account.State == AccountState.Checking
+        ? Status.Message
+        : Account.DisplayText;
 
     [DataMember]
     public bool ShowAccountAction => Account.ShowAction;
@@ -113,6 +119,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 OnPropertyChanged(nameof(IsDegraded));
                 OnPropertyChanged(nameof(IsTurnActive));
                 OnPropertyChanged(nameof(SendButtonText));
+                OnPropertyChanged(nameof(StatusDetailText));
             }
         }
     }
@@ -259,50 +266,152 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         _ = Task.Run(async () => await bridge.DisposeAsync().ConfigureAwait(false));
     }
 
-    private async Task ConnectAsync()
+    /// <summary>
+    /// Started once on construction. Watches for a solution/folder to be open and connects
+    /// automatically using its directory — no prompt, no persisted directory. The tool window
+    /// is restored from the previous layout on VS startup, usually BEFORE a solution finishes
+    /// loading, so a single resolve attempt almost always finds nothing; we poll until a
+    /// workspace appears. Polling stops as soon as we connect, the user connects another way
+    /// (Send/Connect moves us out of <see cref="WorkerConnectionState.Disconnected"/>), or the
+    /// view model is disposed. When no solution/folder is ever opened the window simply stays
+    /// Disconnected and the working-directory prompt is deferred to the user's first send (see
+    /// <see cref="SendAsync"/>, which calls the interactive <see cref="ConnectAsync"/>).
+    /// </summary>
+    private async Task TryAutoConnectAsync()
     {
-        WorkerStatus result;
-        try
+        bool announced = false;
+        while (!lifetime.IsCancellationRequested)
         {
-            string? workingDirectory = await workspaceDirectoryResolver.ResolveAsync(lifetime.Token).ConfigureAwait(false);
-            if (workingDirectory is null)
+            // Once any connect path has moved us past Disconnected, stop watching.
+            if (Status.State != WorkerConnectionState.Disconnected)
             {
-                await OnUiAsync(() => Status = new WorkerStatus
-                {
-                    State = WorkerConnectionState.Disconnected,
-                    Message = "No working directory was chosen. Click Connect to choose one.",
-                }).ConfigureAwait(false);
                 return;
             }
 
-            await projectScaffolder.EnsureScaffoldAsync(workingDirectory, lifetime.Token).ConfigureAwait(false);
-            result = await bridge.ConnectAsync(workingDirectory, lifetime.Token).ConfigureAwait(false);
+            string? workingDirectory;
+            try
+            {
+                workingDirectory = await workspaceDirectoryResolver.TryResolveFromWorkspaceAsync(lifetime.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+            {
+                return;
+            }
+
+            if (workingDirectory is not null)
+            {
+                ExtensionDiagnostics.Write($"Auto-connect workspace resolution: \"{workingDirectory}\"");
+                await ConnectWithDirectoryAsync(workingDirectory).ConfigureAwait(false);
+                return;
+            }
+
+            if (!announced)
+            {
+                announced = true;
+                ExtensionDiagnostics.Write("Auto-connect workspace resolution: no solution/folder open (watching for one)");
+                await OnUiAsync(() => Status = new WorkerStatus
+                {
+                    State = WorkerConnectionState.Disconnected,
+                    Message = "Open a solution or folder, or type a message to choose a working directory.",
+                }).ConfigureAwait(false);
+            }
+
+            try
+            {
+                await Task.Delay(TimeSpan.FromSeconds(2), lifetime.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                return;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Interactive connect: resolves the working directory, prompting the user for one if no
+    /// solution/folder is open. Used by <see cref="ConnectCommand"/> and lazily by
+    /// <see cref="SendAsync"/> before the first send. Returns <see langword="true"/> if the
+    /// connection reached <see cref="WorkerConnectionState.Ready"/>.
+    /// </summary>
+    private async Task<bool> ConnectAsync()
+    {
+        string? workingDirectory;
+        try
+        {
+            workingDirectory = await workspaceDirectoryResolver.ResolveAsync(lifetime.Token).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
         {
-            return;
-        }
-        catch (Exception ex)
-        {
-            ExtensionDiagnostics.Write("Initial Worker connection failed", ex);
-            result = new WorkerStatus
-            {
-                State = WorkerConnectionState.Degraded,
-                Message = "Could not connect to the Codex Worker. See diagnostics.log.",
-            };
+            return false;
         }
 
-        await OnUiAsync(() => Status = result).ConfigureAwait(false);
-        if (result.State == WorkerConnectionState.Ready)
+        if (workingDirectory is null)
         {
-            initialized = true;
-            AccountStatus accountStatus = await bridge.GetAccountStatusAsync(lifetime.Token).ConfigureAwait(false);
-            ExtensionDiagnostics.Write($"Initial account status received state={accountStatus.State} plan={accountStatus.PlanType ?? "none"}");
-            await OnUiAsync(() =>
+            await OnUiAsync(() => Status = new WorkerStatus
             {
-                UpdateAccount(accountStatus);
+                State = WorkerConnectionState.Disconnected,
+                Message = "No working directory was chosen. Click Connect to choose one.",
             }).ConfigureAwait(false);
-            await LoadMoreAsync().ConfigureAwait(false);
+            return false;
+        }
+
+        return await ConnectWithDirectoryAsync(workingDirectory).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Scaffolds (if needed) and connects the worker to <paramref name="workingDirectory"/>,
+    /// then loads account status and threads once ready. Returns <see langword="true"/> if the
+    /// connection reached <see cref="WorkerConnectionState.Ready"/>.
+    /// </summary>
+    private async Task<bool> ConnectWithDirectoryAsync(string workingDirectory)
+    {
+        // The auto-connect watcher and a user-initiated Send/Connect can both reach here; the
+        // guard ensures only one connect attempt runs at a time so we never spawn two workers.
+        if (Interlocked.CompareExchange(ref connecting, 1, 0) != 0)
+        {
+            return false;
+        }
+
+        try
+        {
+            WorkerStatus result;
+            try
+            {
+                await projectScaffolder.EnsureScaffoldAsync(workingDirectory, lifetime.Token).ConfigureAwait(false);
+                result = await bridge.ConnectAsync(workingDirectory, lifetime.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+            {
+                return false;
+            }
+            catch (Exception ex)
+            {
+                ExtensionDiagnostics.Write("Initial Worker connection failed", ex);
+                result = new WorkerStatus
+                {
+                    State = WorkerConnectionState.Degraded,
+                    Message = "Could not connect to the Codex Worker. See diagnostics.log.",
+                };
+            }
+
+            await OnUiAsync(() => Status = result).ConfigureAwait(false);
+            if (result.State == WorkerConnectionState.Ready)
+            {
+                initialized = true;
+                AccountStatus accountStatus = await bridge.GetAccountStatusAsync(lifetime.Token).ConfigureAwait(false);
+                ExtensionDiagnostics.Write($"Initial account status received state={accountStatus.State} plan={accountStatus.PlanType ?? "none"}");
+                await OnUiAsync(() =>
+                {
+                    UpdateAccount(accountStatus);
+                }).ConfigureAwait(false);
+                await LoadMoreAsync().ConfigureAwait(false);
+            }
+
+            return result.State == WorkerConnectionState.Ready;
+        }
+        finally
+        {
+            Interlocked.Exchange(ref connecting, 0);
         }
     }
 
@@ -369,6 +478,19 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
     private async Task SendAsync()
     {
+        if (Status.State is not (WorkerConnectionState.Ready or WorkerConnectionState.Busy or WorkerConnectionState.WaitingForApproval))
+        {
+            // Not connected yet: this is the user's first send with no solution/folder open.
+            // Resolve (prompting for a working directory if needed) and connect before
+            // sending. Leave the composer text intact if the user cancels the prompt or the
+            // connection fails, so nothing is lost.
+            bool connected = await ConnectAsync().ConfigureAwait(false);
+            if (!connected)
+            {
+                return;
+            }
+        }
+
         string text = ComposerText;
         await OnUiAsync(() => SetComposerText(string.Empty)).ConfigureAwait(false);
         if (SelectedThread is null)
@@ -578,15 +700,20 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     private void UpdateAccount(AccountStatus value)
     {
         Account.Update(value);
-        OnPropertyChanged(nameof(AccountDisplayText));
+        OnPropertyChanged(nameof(StatusDetailText));
         OnPropertyChanged(nameof(ShowAccountAction));
         OnPropertyChanged(nameof(AccountActionText));
         AccountCommand.RaiseCanExecuteChanged();
     }
 
+    // Disconnected is allowed so the user can send with no solution/folder open: SendAsync
+    // performs a lazy interactive connect (prompting for a working directory) before sending.
+    // Connecting and Degraded are excluded — Connecting is transient and Degraded requires
+    // Restart.
     private bool CanSend()
         => !string.IsNullOrWhiteSpace(ComposerText)
-        && Status.State is WorkerConnectionState.Ready or WorkerConnectionState.Busy or WorkerConnectionState.WaitingForApproval;
+        && Status.State is WorkerConnectionState.Ready or WorkerConnectionState.Busy
+            or WorkerConnectionState.WaitingForApproval or WorkerConnectionState.Disconnected;
 
     private void RaiseCommandStates()
     {
@@ -629,6 +756,8 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 public sealed class AccountPanelViewModel : ObservableObject
 {
     private AccountStatus status = new();
+
+    public AccountState State => status.State;
 
     public string DisplayText => status.State switch
     {

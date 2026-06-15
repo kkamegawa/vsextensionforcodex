@@ -234,7 +234,7 @@ public sealed class ViewModelTests
 
         Assert.IsTrue(xaml.Contains("{Binding AccountActionText}", StringComparison.Ordinal));
         Assert.IsTrue(xaml.Contains("{Binding ShowAccountAction,", StringComparison.Ordinal));
-        Assert.IsTrue(xaml.Contains("{Binding AccountDisplayText}", StringComparison.Ordinal));
+        Assert.IsTrue(xaml.Contains("{Binding StatusDetailText}", StringComparison.Ordinal));
         Assert.IsFalse(xaml.Contains("{Binding Account.", StringComparison.Ordinal));
     }
 
