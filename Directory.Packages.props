@@ -10,6 +10,7 @@
     <PackageVersion Include="Microsoft.VSSDK.BuildTools" Version="17.14.2142" />
     <!-- OOP Extensibility SDK -->
     <PackageVersion Include="Microsoft.VisualStudio.Extensibility" Version="17.14.2098" />
+    <PackageVersion Include="Microsoft.VisualStudio.ProjectSystem.Query" Version="17.14.145" />
     <PackageVersion Include="Microsoft.VisualStudio.Extensibility.Sdk" Version="17.14.40608" />
     <PackageVersion Include="Microsoft.VisualStudio.Extensibility.Build" Version="17.14.40608" />
     <!-- Test -->

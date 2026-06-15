@@ -6,6 +6,7 @@ using System.Text.RegularExpressions;
 using System.Windows;
 using System.Windows.Input;
 using Codex.VisualStudio.Contracts;
+using Microsoft.VisualStudio.Extensibility;
 using Microsoft.VisualStudio.Extensibility.Documents;
 using VSUI = Microsoft.VisualStudio.Extensibility.UI;
 
@@ -22,6 +23,8 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     private readonly OutputChannel? outputChannel;
     private readonly SafeMarkdownService markdown = new();
     private readonly CancellationTokenSource lifetime = new();
+    private readonly WorkspaceDirectoryResolver workspaceDirectoryResolver;
+    private readonly ProjectScaffolder projectScaffolder;
     private int disposed;
     private WorkerStatus status = new() { State = WorkerConnectionState.Disconnected, Message = "Open Codex to connect." };
     private ThreadSummary? selectedThread;
@@ -32,9 +35,11 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     private string? selectedModel;
     private string selectedMode = "Agent";
 
-    public ChatViewModel(OutputChannel? outputChannel = null)
+    public ChatViewModel(OutputChannel? outputChannel = null, VisualStudioExtensibility? extensibility = null)
     {
         this.outputChannel = outputChannel;
+        workspaceDirectoryResolver = new WorkspaceDirectoryResolver(extensibility, new WorkspaceDirectoryStore());
+        projectScaffolder = new ProjectScaffolder(extensibility);
         bridge = new WorkerBridge(outputChannel);
         bridge.StateChanged += OnStateChangedAsync;
         bridge.AccountChanged += OnAccountChangedAsync;
@@ -259,7 +264,19 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         WorkerStatus result;
         try
         {
-            result = await bridge.ConnectAsync(Environment.CurrentDirectory, lifetime.Token).ConfigureAwait(false);
+            string? workingDirectory = await workspaceDirectoryResolver.ResolveAsync(lifetime.Token).ConfigureAwait(false);
+            if (workingDirectory is null)
+            {
+                await OnUiAsync(() => Status = new WorkerStatus
+                {
+                    State = WorkerConnectionState.Disconnected,
+                    Message = "No working directory was chosen. Click Connect to choose one.",
+                }).ConfigureAwait(false);
+                return;
+            }
+
+            await projectScaffolder.EnsureScaffoldAsync(workingDirectory, lifetime.Token).ConfigureAwait(false);
+            result = await bridge.ConnectAsync(workingDirectory, lifetime.Token).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
         {

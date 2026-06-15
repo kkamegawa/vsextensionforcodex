@@ -33,7 +33,7 @@ internal sealed class CodexToolWindow : ToolWindow
     public override Task<IRemoteUserControl> GetContentAsync(CancellationToken cancellationToken)
     {
         ExtensionDiagnostics.Write("Codex tool window content requested");
-        content ??= new ChatToolWindowContent(outputChannel);
+        content ??= new ChatToolWindowContent(outputChannel, this.Extensibility);
         return Task.FromResult<IRemoteUserControl>(content);
     }
 

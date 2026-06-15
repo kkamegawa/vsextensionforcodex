@@ -108,10 +108,17 @@ public interface IApprovalPolicyEngine
 public sealed partial class ApprovalPolicyEngine : IApprovalPolicyEngine
 {
     private readonly IPathAccessPolicy pathPolicy;
+    private readonly IProtectedDirectoryPolicy protectedDirectoryPolicy;
 
     public ApprovalPolicyEngine(IPathAccessPolicy pathPolicy)
+        : this(pathPolicy, new ProtectedDirectoryPolicy())
+    {
+    }
+
+    public ApprovalPolicyEngine(IPathAccessPolicy pathPolicy, IProtectedDirectoryPolicy protectedDirectoryPolicy)
     {
         this.pathPolicy = pathPolicy;
+        this.protectedDirectoryPolicy = protectedDirectoryPolicy;
     }
 
     public ApprovalPolicyResult EvaluateCommand(
@@ -140,7 +147,13 @@ public sealed partial class ApprovalPolicyEngine : IApprovalPolicyEngine
             return new ApprovalPolicyResult(ApprovalRiskCategory.Destructive, $"destructive:{command}", false, null);
         }
 
-        PathAccessResult cwdResult = pathPolicy.Evaluate(cwd ?? workspaceRoot, workspaceRoot);
+        string effectiveCwd = cwd ?? workspaceRoot;
+        if (protectedDirectoryPolicy.IsProtected(effectiveCwd))
+        {
+            return new ApprovalPolicyResult(ApprovalRiskCategory.WorkspaceOutside, $"cwd:{effectiveCwd}", true, "The path is an OS-protected directory.");
+        }
+
+        PathAccessResult cwdResult = pathPolicy.Evaluate(effectiveCwd, workspaceRoot);
         if (!cwdResult.IsValid || !cwdResult.IsWithinWorkspace)
         {
             return new ApprovalPolicyResult(ApprovalRiskCategory.WorkspaceOutside, $"cwd:{cwdResult.NormalizedPath}", true, cwdResult.Reason);
@@ -151,7 +164,13 @@ public sealed partial class ApprovalPolicyEngine : IApprovalPolicyEngine
 
     public ApprovalPolicyResult EvaluateFile(string? path, string workspaceRoot)
     {
-        PathAccessResult result = pathPolicy.Evaluate(path ?? string.Empty, workspaceRoot);
+        string effectivePath = path ?? string.Empty;
+        if (protectedDirectoryPolicy.IsProtected(effectivePath))
+        {
+            return new ApprovalPolicyResult(ApprovalRiskCategory.WorkspaceOutside, $"file:{effectivePath}", true, "The path is an OS-protected directory.");
+        }
+
+        PathAccessResult result = pathPolicy.Evaluate(effectivePath, workspaceRoot);
         if (!result.IsValid)
         {
             return new ApprovalPolicyResult(ApprovalRiskCategory.WorkspaceOutside, $"file:{path}", true, result.Reason);
