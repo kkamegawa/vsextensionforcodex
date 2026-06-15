@@ -83,20 +83,21 @@ public sealed class ProjectScaffolder : IProjectScaffolder
     }
 
     /// <summary>
-    /// Looks for an existing <c>.sln</c>/<c>.slnx</c> directly under <paramref name="rootDirectory"/>
-    /// or under its <c>src</c> subfolder (the layout this scaffolder creates).
+    /// Looks for an existing <c>.sln</c>/<c>.slnx</c>/<c>.csproj</c> directly under
+    /// <paramref name="rootDirectory"/> or under its <c>src</c> subfolder (the layout this
+    /// scaffolder creates).
     /// </summary>
     internal static bool HasExistingSolutionOrProject(string rootDirectory)
     {
         try
         {
-            if (HasMatchingFile(rootDirectory, "*.slnx") || HasMatchingFile(rootDirectory, "*.sln"))
+            if (HasMatchingFile(rootDirectory, "*.slnx") || HasMatchingFile(rootDirectory, "*.sln") || HasMatchingFile(rootDirectory, "*.csproj"))
             {
                 return true;
             }
 
             string srcDirectory = Path.Combine(rootDirectory, "src");
-            return HasMatchingFile(srcDirectory, "*.slnx") || HasMatchingFile(srcDirectory, "*.sln");
+            return HasMatchingFile(srcDirectory, "*.slnx") || HasMatchingFile(srcDirectory, "*.sln") || HasMatchingFile(srcDirectory, "*.csproj");
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {

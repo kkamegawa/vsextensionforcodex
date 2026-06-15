@@ -120,6 +120,11 @@ public sealed class SecurityServicesTests
     [TestMethod]
     public void ApprovalPolicy_BlocksFileWriteUnderProtectedDirectory()
     {
+        if (!OperatingSystem.IsWindows())
+        {
+            Assert.Inconclusive("This test uses Windows-specific protected paths.");
+        }
+
         string root = Path.Combine(Path.GetTempPath(), "CodexVsTests", "Workspace");
         var protectedPolicy = new ProtectedDirectoryPolicy(new[] { @"C:\Program Files" });
         var policy = new ApprovalPolicyEngine(new PathAccessPolicy(), protectedPolicy);
@@ -133,6 +138,11 @@ public sealed class SecurityServicesTests
     [TestMethod]
     public void ApprovalPolicy_BlocksCommandWithCwdUnderProtectedDirectory()
     {
+        if (!OperatingSystem.IsWindows())
+        {
+            Assert.Inconclusive("This test uses a Windows-specific protected cwd.");
+        }
+
         string root = Path.Combine(Path.GetTempPath(), "CodexVsTests", "Workspace");
         var protectedPolicy = new ProtectedDirectoryPolicy(new[] { @"C:\Program Files" });
         var policy = new ApprovalPolicyEngine(new PathAccessPolicy(), protectedPolicy);

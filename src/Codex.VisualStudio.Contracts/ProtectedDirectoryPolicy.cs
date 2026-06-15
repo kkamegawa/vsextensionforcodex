@@ -86,7 +86,6 @@ public sealed class ProtectedDirectoryPolicy : IProtectedDirectoryPolicy
             Environment.SpecialFolder.ProgramFilesX86,
             Environment.SpecialFolder.CommonProgramFiles,
             Environment.SpecialFolder.CommonProgramFilesX86,
-            Environment.SpecialFolder.ProgramFiles,
             Environment.SpecialFolder.CommonApplicationData,
         };
 

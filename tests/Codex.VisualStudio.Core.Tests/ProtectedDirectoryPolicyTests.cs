@@ -5,6 +5,15 @@ namespace Codex.VisualStudio.Core.Tests;
 [TestClass]
 public sealed class ProtectedDirectoryPolicyTests
 {
+    [TestInitialize]
+    public void EnsureWindows()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            Assert.Inconclusive("This test suite uses Windows-specific paths and special folders.");
+        }
+    }
+
     [TestMethod]
     [DataRow(@"C:\Program Files\PowerShell\7")]
     [DataRow(@"C:\Program Files\PowerShell\7\hello.cs")]
