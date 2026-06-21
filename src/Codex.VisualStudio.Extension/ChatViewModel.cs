@@ -556,7 +556,47 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     }
 
     private Task OnStateChangedAsync(WorkerStatus value)
-        => OnUiAsync(() => Status = value);
+        => OnUiAsync(() =>
+        {
+            WorkerConnectionState previous = Status.State;
+            Status = value;
+            if (value.State == previous)
+            {
+                return;
+            }
+
+            // Connection open/close/degraded transitions are diagnostics, not transcript content —
+            // log them to the Output channel (issue #17). The status chip in the panel header still
+            // reflects the current state through the Status binding.
+            string? connectionLine = value.State switch
+            {
+                WorkerConnectionState.Connecting => "[connection] Connecting to codex app-server...",
+                WorkerConnectionState.Ready => "[connection] Connected to codex app-server.",
+                WorkerConnectionState.Degraded => $"[connection] Connection degraded: {value.Message}",
+                WorkerConnectionState.Disconnected => $"[connection] Disconnected: {value.Message}",
+                _ => null,
+            };
+            if (connectionLine is not null)
+            {
+                _ = ExtensionDiagnostics.WriteOutputAsync(outputChannel, connectionLine);
+            }
+
+            // Surface the worker's curated, user-actionable message (network failure, connect
+            // failure, app-server exit) in the panel as a concise error item — never raw JSON. The
+            // worker only sets Degraded with such a message, so this is the panel's actionable-error
+            // path now that raw Error events are routed to Output.
+            if (value.State == WorkerConnectionState.Degraded && !string.IsNullOrWhiteSpace(value.Message))
+            {
+                string errorText = markdown.ToSafeText(value.Message);
+                ChatItemViewModel? last = Items.LastOrDefault();
+                if (last is null
+                    || last.Kind != ConversationEventKind.Error
+                    || !string.Equals(last.Text, errorText, StringComparison.Ordinal))
+                {
+                    Items.Add(new ChatItemViewModel("Error", errorText, ConversationEventKind.Error));
+                }
+            }
+        });
 
     private Task OnAccountChangedAsync(AccountStatus value)
     {
@@ -585,19 +625,29 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 return;
             }
 
+            // Only user-facing Codex content reaches the panel. Lifecycle, protocol, error, and
+            // unknown events — and any user-facing kind that arrived without rendered Text (carrying
+            // only raw/structured PayloadJson) — are routed to the Output channel so the transcript
+            // never shows raw JSON or internal event names. See issue #17.
+            if (!ConversationEventPresentation.IsPanelContent(value.Kind) || string.IsNullOrEmpty(value.Text))
+            {
+                _ = ExtensionDiagnostics.WriteOutputAsync(outputChannel, ConversationEventPresentation.FormatDiagnostic(value));
+                return;
+            }
+
+            string text = value.Text; // Non-null below: guarded by IsNullOrEmpty above.
             string role = value.Kind switch
             {
                 ConversationEventKind.AgentMessageDelta => "Codex",
                 ConversationEventKind.ReasoningSummaryDelta => "Reasoning",
                 ConversationEventKind.CommandOutputDelta => "Command",
                 ConversationEventKind.DiffUpdated => "Diff",
-                ConversationEventKind.Error => "Error",
                 _ => "Codex",
             };
             ChatItemViewModel? existing = Items.LastOrDefault(item => item.ItemId == value.ItemId && item.Kind == value.Kind);
             if (existing is null)
             {
-                Items.Add(new ChatItemViewModel(role, markdown.ToSafeText(value.Text ?? value.PayloadJson ?? string.Empty), value.Kind)
+                Items.Add(new ChatItemViewModel(role, markdown.ToSafeText(text), value.Kind)
                 {
                     ItemId = value.ItemId,
                     IsTruncated = value.Truncated,
@@ -606,7 +656,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             }
             else
             {
-                existing.Text += markdown.ToSafeText(value.Text ?? string.Empty);
+                existing.Text += markdown.ToSafeText(text);
                 existing.IsTruncated |= value.Truncated;
                 existing.OverflowFile = value.OverflowFile ?? existing.OverflowFile;
             }

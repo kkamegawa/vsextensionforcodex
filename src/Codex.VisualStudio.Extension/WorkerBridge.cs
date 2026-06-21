@@ -121,21 +121,13 @@ public sealed class WorkerBridge : ICodexWorkerObserver, IAsyncDisposable
         => rpc!.InvokeWithCancellationAsync("worker/approval/resolve", new object[] { request }, cancellationToken);
 
     public Task OnStateChangedAsync(WorkerStatus status, CancellationToken cancellationToken)
-    {
-        if (status.State == WorkerConnectionState.Degraded)
-            _ = log?.WriteLineAsync($"[CODEX] Worker degraded: {status.Message}");
-        return StateChanged?.Invoke(status) ?? Task.CompletedTask;
-    }
+        => StateChanged?.Invoke(status) ?? Task.CompletedTask;
 
     public Task OnAccountChangedAsync(AccountStatus status, CancellationToken cancellationToken)
         => AccountChanged?.Invoke(status) ?? Task.CompletedTask;
 
     public Task OnConversationEventAsync(ConversationEvent conversationEvent, CancellationToken cancellationToken)
-    {
-        if (conversationEvent.Kind == ConversationEventKind.Error)
-            _ = log?.WriteLineAsync($"[CODEX ERROR] {conversationEvent.Text}");
-        return ConversationEventReceived?.Invoke(conversationEvent) ?? Task.CompletedTask;
-    }
+        => ConversationEventReceived?.Invoke(conversationEvent) ?? Task.CompletedTask;
 
     public Task OnApprovalRequestedAsync(ApprovalRequest approval, CancellationToken cancellationToken)
     {

@@ -191,6 +191,72 @@ public sealed class ViewModelTests
     }
 
     [TestMethod]
+    [DataRow(ConversationEventKind.AgentMessageDelta, true)]
+    [DataRow(ConversationEventKind.ReasoningSummaryDelta, true)]
+    [DataRow(ConversationEventKind.CommandOutputDelta, true)]
+    [DataRow(ConversationEventKind.DiffUpdated, true)]
+    [DataRow(ConversationEventKind.PlanUpdated, true)]
+    [DataRow(ConversationEventKind.ItemStarted, false)]
+    [DataRow(ConversationEventKind.ItemCompleted, false)]
+    [DataRow(ConversationEventKind.TurnStarted, false)]
+    [DataRow(ConversationEventKind.TurnCompleted, false)]
+    [DataRow(ConversationEventKind.Error, false)]
+    [DataRow(ConversationEventKind.Unknown, false)]
+    public void ConversationEventPresentation_IsPanelContent_SeparatesUserFacingFromDiagnostic(
+        ConversationEventKind kind, bool expected)
+    {
+        // Regression guard (issue #17): only user-facing Codex content reaches the panel; lifecycle,
+        // protocol, error, and unknown events are diagnostic and must be routed to the Output channel.
+        Assert.AreEqual(expected, ConversationEventPresentation.IsPanelContent(kind));
+    }
+
+    [TestMethod]
+    public void ConversationEventPresentation_IsPanelContent_ExactlyFiveUserFacingKinds()
+    {
+        // If a new ConversationEventKind is added, force a deliberate panel/diagnostic decision
+        // rather than silently inheriting the diagnostic default.
+        int panelKinds = Enum.GetValues<ConversationEventKind>()
+            .Count(ConversationEventPresentation.IsPanelContent);
+        Assert.AreEqual(5, panelKinds);
+    }
+
+    [TestMethod]
+    public void ConversationEventPresentation_FormatDiagnostic_Error_IsSingleLineWithText()
+    {
+        var value = new ConversationEvent
+        {
+            Kind = ConversationEventKind.Error,
+            Text = "boom\r\nsecond line",
+        };
+
+        string line = ConversationEventPresentation.FormatDiagnostic(value);
+
+        Assert.IsTrue(line.StartsWith("[codex-error]", StringComparison.Ordinal));
+        Assert.IsTrue(line.Contains("boom", StringComparison.Ordinal));
+        Assert.IsFalse(line.Contains('\n'), "A diagnostic must occupy a single Output line.");
+        Assert.IsFalse(line.Contains('\r'), "A diagnostic must occupy a single Output line.");
+    }
+
+    [TestMethod]
+    public void ConversationEventPresentation_FormatDiagnostic_Lifecycle_IncludesKindAndIds()
+    {
+        var value = new ConversationEvent
+        {
+            Kind = ConversationEventKind.TurnCompleted,
+            ThreadId = "t1",
+            TurnId = "u1",
+            PayloadJson = """{"turn":"done"}""",
+        };
+
+        string line = ConversationEventPresentation.FormatDiagnostic(value);
+
+        Assert.IsTrue(line.StartsWith("[event]", StringComparison.Ordinal));
+        Assert.IsTrue(line.Contains("TurnCompleted", StringComparison.Ordinal));
+        Assert.IsTrue(line.Contains("thread=t1", StringComparison.Ordinal));
+        Assert.IsTrue(line.Contains("turn=u1", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
     public void AccountPanelViewModel_MapsAccountStatesToDisplayText()
     {
         var viewModel = new AccountPanelViewModel();
