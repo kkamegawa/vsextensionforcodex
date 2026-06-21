@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Codex.VisualStudio.Worker;
 
 namespace Codex.VisualStudio.Core.Tests;
@@ -75,5 +76,60 @@ public sealed class CodexProcessHostTests
         string resolved = CodexExecutableResolver.Resolve(executable);
 
         Assert.AreEqual(Path.GetFullPath(executable), resolved);
+    }
+
+    [TestMethod]
+    public void ResolverFindsPathLauncherWrapperWhenExeIsUnavailable()
+    {
+        string tempDirectory = Path.Combine(Path.GetTempPath(), "codex-resolver-tests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempDirectory);
+        string launcherPath = Path.Combine(tempDirectory, "codex.cmd");
+        File.WriteAllText(launcherPath, "@echo off");
+
+        string? originalPath = Environment.GetEnvironmentVariable("PATH");
+        string? originalCodexPath = Environment.GetEnvironmentVariable("CODEX_PATH");
+        try
+        {
+            Environment.SetEnvironmentVariable("CODEX_PATH", null);
+            Environment.SetEnvironmentVariable("PATH", tempDirectory);
+
+            string resolved = CodexExecutableResolver.Resolve("codex");
+
+            Assert.AreEqual(Path.GetFullPath(launcherPath), resolved);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("PATH", originalPath);
+            Environment.SetEnvironmentVariable("CODEX_PATH", originalCodexPath);
+            Directory.Delete(tempDirectory, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public void CreateStartInfoUsesHiddenCmdStartupForScriptLauncher()
+    {
+        string wrapperPath = @"C:\tools\codex.cmd";
+
+        ProcessStartInfo info = CodexProcessHost.CreateStartInfo(wrapperPath, Path.GetTempPath());
+
+        Assert.IsTrue(info.FileName.EndsWith("cmd.exe", StringComparison.OrdinalIgnoreCase));
+        Assert.AreEqual(4, info.ArgumentList.Count);
+        Assert.AreEqual("/d", info.ArgumentList[0]);
+        Assert.AreEqual("/s", info.ArgumentList[1]);
+        Assert.AreEqual("/c", info.ArgumentList[2]);
+        Assert.AreEqual($"\"\"{wrapperPath}\" app-server\"", info.ArgumentList[3]);
+        Assert.IsTrue(info.CreateNoWindow);
+    }
+
+    [TestMethod]
+    public void CreateStartInfoKeepsInheritedHiddenConsoleBehaviorForExecutable()
+    {
+        string executablePath = @"C:\tools\codex.exe";
+
+        ProcessStartInfo info = CodexProcessHost.CreateStartInfo(executablePath, Path.GetTempPath());
+
+        Assert.AreEqual(executablePath, info.FileName);
+        CollectionAssert.AreEqual(new[] { "app-server" }, info.ArgumentList.ToArray());
+        Assert.IsFalse(info.CreateNoWindow);
     }
 }

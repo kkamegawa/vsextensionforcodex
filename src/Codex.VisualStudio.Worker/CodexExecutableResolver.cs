@@ -2,6 +2,12 @@ namespace Codex.VisualStudio.Worker;
 
 public static class CodexExecutableResolver
 {
+    private static readonly string[] CodexScriptPathCandidates =
+    [
+        "codex.cmd",
+        "codex.bat",
+    ];
+
     public static string Resolve(string requestedPath)
     {
         string? configured = Environment.GetEnvironmentVariable("CODEX_PATH");
@@ -13,20 +19,23 @@ public static class CodexExecutableResolver
 
         if (!string.Equals(requestedPath, "codex", StringComparison.OrdinalIgnoreCase))
         {
+            if (TryResolveCommandFromPath(requestedPath, out string resolvedConfigured))
+            {
+                WorkerDiagnostics.Write("codex executable resolved from Worker options PATH lookup");
+                return resolvedConfigured;
+            }
+
             WorkerDiagnostics.Write(IsUsableFile(requestedPath)
                 ? "codex executable resolved from Worker options"
                 : "configured codex executable does not exist");
             return requestedPath;
         }
 
-        foreach (string directory in GetPathDirectories())
+        if (TryResolveOnPath(["codex.exe"], out string pathResolvedCandidate)
+            || TryResolveOnPath(CodexScriptPathCandidates, out pathResolvedCandidate))
         {
-            string candidate = Path.Combine(directory, "codex.exe");
-            if (IsUsableFile(candidate) && !IsWindowsAppsPath(candidate))
-            {
-                WorkerDiagnostics.Write("codex executable resolved from PATH");
-                return Path.GetFullPath(candidate);
-            }
+            WorkerDiagnostics.Write("codex executable resolved from PATH");
+            return pathResolvedCandidate;
         }
 
         string localBin = Path.Combine(
@@ -55,6 +64,50 @@ public static class CodexExecutableResolver
         => (Environment.GetEnvironmentVariable("PATH") ?? string.Empty)
             .Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .Where(Directory.Exists);
+
+    private static bool TryResolveCommandFromPath(string requestedCommand, out string resolvedPath)
+    {
+        resolvedPath = string.Empty;
+        if (string.IsNullOrWhiteSpace(requestedCommand))
+        {
+            return false;
+        }
+
+        if (requestedCommand.IndexOfAny([Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar]) >= 0
+            || Path.IsPathRooted(requestedCommand))
+        {
+            return false;
+        }
+
+        if (Path.HasExtension(requestedCommand))
+        {
+            return TryResolveOnPath([requestedCommand], out resolvedPath);
+        }
+
+        IEnumerable<string> pathExt = (Environment.GetEnvironmentVariable("PATHEXT") ?? ".COM;.EXE;.BAT;.CMD")
+            .Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        IEnumerable<string> candidateFileNames = pathExt.Select(ext => $"{requestedCommand}{ext}");
+        return TryResolveOnPath(candidateFileNames, out resolvedPath);
+    }
+
+    private static bool TryResolveOnPath(IEnumerable<string> candidateFileNames, out string resolvedPath)
+    {
+        foreach (string directory in GetPathDirectories())
+        {
+            foreach (string fileName in candidateFileNames)
+            {
+                string candidate = Path.Combine(directory, fileName);
+                if (IsUsableFile(candidate) && !IsWindowsAppsPath(candidate))
+                {
+                    resolvedPath = Path.GetFullPath(candidate);
+                    return true;
+                }
+            }
+        }
+
+        resolvedPath = string.Empty;
+        return false;
+    }
 
     private static bool IsUsableFile(string? path)
     {
