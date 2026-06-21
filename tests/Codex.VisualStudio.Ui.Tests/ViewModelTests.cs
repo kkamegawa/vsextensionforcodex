@@ -50,6 +50,8 @@ public sealed class ViewModelTests
 
         Assert.AreEqual(1, calls);
         Assert.IsTrue(viewModel.IsResolved);
+        StringAssert.Contains(viewModel.Summary, "Accepted");
+        Assert.IsFalse(viewModel.IsExpanded);
     }
 
     [TestMethod]
@@ -124,6 +126,134 @@ public sealed class ViewModelTests
         Assert.IsFalse(vm.ShowDecline);
         Assert.IsFalse(vm.ShowCancel);
         Assert.IsFalse(vm.CanResolve);
+    }
+
+    [TestMethod]
+    public async Task ApprovalViewModel_ResolvedState_CollapsesAndCanExpand()
+    {
+        var request = new ApprovalRequest
+        {
+            RequestId = "req-5",
+            Risk = ApprovalRiskCategory.WorkspaceWrite,
+            DisplayText = "write file",
+            AvailableDecisions = AcceptDeclineCancel,
+        };
+        var vm = new ApprovalViewModel(request, (_, _) => Task.CompletedTask);
+
+        vm.AcceptCommand.Execute(null);
+        await Task.Delay(50);
+
+        Assert.IsTrue(vm.IsResolved);
+        Assert.IsFalse(vm.IsExpanded);
+        Assert.IsTrue(vm.CanToggleExpanded);
+        StringAssert.Contains(vm.Summary, "Accepted");
+
+        vm.ToggleExpandedCommand.Execute(null);
+        await Task.Delay(50);
+
+        Assert.IsTrue(vm.IsExpanded);
+    }
+
+    [TestMethod]
+    public void ApprovalViewModel_MarkResolved_UsesGenericResolutionSummary()
+    {
+        var vm = new ApprovalViewModel(
+            new ApprovalRequest
+            {
+                RequestId = "req-6",
+                Risk = ApprovalRiskCategory.ReadOnly,
+                DisplayText = "read file",
+                AvailableDecisions = AcceptDeclineCancel,
+            },
+            (_, _) => Task.CompletedTask);
+
+        vm.MarkResolved();
+
+        Assert.IsTrue(vm.IsResolved);
+        StringAssert.Contains(vm.Summary, "Resolved");
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_ApprovalRequests_AreQueuedOutsideTranscript()
+    {
+        using var vm = new ChatViewModel();
+
+        await InvokeApprovalRequestedAsync(vm, CreateApprovalRequest("req-queue-1", "first"));
+        await InvokeApprovalRequestedAsync(vm, CreateApprovalRequest("req-queue-2", "second"));
+
+        Assert.AreEqual(0, vm.Items.Count, "Approval requests must not be appended to the transcript.");
+        Assert.IsNotNull(vm.ActiveApproval);
+        Assert.AreEqual("req-queue-1", vm.ActiveApproval!.RequestId);
+        Assert.IsTrue(vm.HasPendingApproval);
+        Assert.AreEqual(1, vm.PendingApprovalCount);
+        Assert.IsTrue(vm.HasQueuedApprovals);
+        Assert.AreEqual("1 approval waiting", vm.ApprovalQueueText);
+        Assert.IsFalse(vm.ShowWelcomeState, "The welcome overlay must not cover an active approval.");
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_RespondingToActiveApproval_RemovesAndPromotesNext()
+    {
+        using var vm = new ChatViewModel();
+
+        await InvokeApprovalRequestedAsync(vm, CreateApprovalRequest("req-active-1", "first"));
+        await InvokeApprovalRequestedAsync(vm, CreateApprovalRequest("req-active-2", "second"));
+
+        vm.ActiveApproval!.AcceptCommand.Execute(null);
+        await Task.Delay(100);
+
+        Assert.IsNotNull(vm.ActiveApproval);
+        Assert.AreEqual("req-active-2", vm.ActiveApproval!.RequestId);
+        Assert.AreEqual(0, vm.PendingApprovalCount);
+        Assert.IsFalse(vm.HasQueuedApprovals);
+        Assert.AreEqual(0, vm.Items.Count);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_ApprovalResolved_RemovesActiveOrQueuedIdempotently()
+    {
+        using var vm = new ChatViewModel();
+
+        await InvokeApprovalRequestedAsync(vm, CreateApprovalRequest("req-resolve-1", "first"));
+        await InvokeApprovalRequestedAsync(vm, CreateApprovalRequest("req-resolve-2", "second"));
+        await InvokeApprovalRequestedAsync(vm, CreateApprovalRequest("req-resolve-3", "third"));
+
+        await InvokeApprovalResolvedAsync(vm, "req-resolve-2");
+
+        Assert.AreEqual("req-resolve-1", vm.ActiveApproval!.RequestId);
+        Assert.AreEqual(1, vm.PendingApprovalCount);
+
+        await InvokeApprovalResolvedAsync(vm, "req-resolve-1");
+
+        Assert.AreEqual("req-resolve-3", vm.ActiveApproval!.RequestId);
+        Assert.AreEqual(0, vm.PendingApprovalCount);
+
+        await InvokeApprovalResolvedAsync(vm, "req-resolve-1");
+        await InvokeApprovalResolvedAsync(vm, "unknown-request");
+
+        Assert.AreEqual("req-resolve-3", vm.ActiveApproval!.RequestId);
+        Assert.AreEqual(0, vm.PendingApprovalCount);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_ApprovalQueue_DoesNotChangeTranscriptAutoFollow()
+    {
+        using var vm = new ChatViewModel();
+        MethodInfo? appendTranscriptRow = typeof(ChatViewModel).GetMethod(
+            "AppendTranscriptRow",
+            BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.IsNotNull(appendTranscriptRow);
+
+        var first = TranscriptRowViewModel.CreateChat(new ChatItemViewModel("Codex", "first", ConversationEventKind.AgentMessageDelta));
+        var second = TranscriptRowViewModel.CreateChat(new ChatItemViewModel("Codex", "second", ConversationEventKind.AgentMessageDelta));
+        appendTranscriptRow!.Invoke(vm, [first]);
+        appendTranscriptRow.Invoke(vm, [second]);
+        vm.SelectedTranscriptRow = first;
+
+        await InvokeApprovalRequestedAsync(vm, CreateApprovalRequest("req-follow-1", "approval"));
+        await InvokeApprovalResolvedAsync(vm, "req-follow-1");
+
+        Assert.AreSame(first, vm.SelectedTranscriptRow);
     }
 
     [TestMethod]
@@ -235,6 +365,9 @@ public sealed class ViewModelTests
         Assert.IsTrue(xaml.Contains("{Binding AccountActionText}", StringComparison.Ordinal));
         Assert.IsTrue(xaml.Contains("{Binding ShowAccountAction,", StringComparison.Ordinal));
         Assert.IsTrue(xaml.Contains("{Binding StatusDetailText}", StringComparison.Ordinal));
+        Assert.IsFalse(xaml.Contains("{Binding Approvals}", StringComparison.Ordinal));
+        Assert.IsFalse(xaml.Contains("ApprovalTranscriptRowTemplate", StringComparison.Ordinal));
+        Assert.IsFalse(xaml.Contains("IsApprovalRow", StringComparison.Ordinal));
         Assert.IsFalse(xaml.Contains("{Binding Account.", StringComparison.Ordinal));
     }
 
@@ -283,7 +416,7 @@ public sealed class ViewModelTests
     // VS-side data context proxy; a type without the attributes serializes as an empty
     // object and every binding to it fails silently (blank text, empty button content).
     private static readonly Type[] RemoteUiContextTypes =
-        [typeof(ChatViewModel), typeof(ChatItemViewModel), typeof(ApprovalViewModel), typeof(SuggestionChip), typeof(WorkerStatus), typeof(ThreadSummary)];
+        [typeof(ChatViewModel), typeof(TranscriptRowViewModel), typeof(ChatItemViewModel), typeof(ApprovalViewModel), typeof(SuggestionChip), typeof(WorkerStatus), typeof(ThreadSummary)];
 
     [TestMethod]
     public void RemoteUiContextTypes_AreDataContracts()
@@ -381,6 +514,12 @@ public sealed class ViewModelTests
         using var vm = new ChatViewModel();
 
         Assert.IsTrue(vm.IsThreadEmpty);
+        Assert.IsTrue(vm.ShowWelcomeState);
+        Assert.IsNull(vm.ActiveApproval);
+        Assert.IsFalse(vm.HasPendingApproval);
+        Assert.AreEqual(0, vm.PendingApprovalCount);
+        Assert.IsFalse(vm.HasQueuedApprovals);
+        Assert.AreEqual(string.Empty, vm.ApprovalQueueText);
         Assert.IsTrue(vm.IsComposerEmpty);
         Assert.IsFalse(vm.IsHistoryOpen);
         Assert.AreEqual(3, vm.Suggestions.Count);
@@ -412,11 +551,36 @@ public sealed class ViewModelTests
         using var vm = new ChatViewModel();
         Assert.IsTrue(vm.IsThreadEmpty);
 
-        vm.Items.Add(new ChatItemViewModel("You", "hello", ConversationEventKind.ItemStarted));
+        vm.Items.Add(TranscriptRowViewModel.CreateChat(new ChatItemViewModel("You", "hello", ConversationEventKind.ItemStarted)));
         Assert.IsFalse(vm.IsThreadEmpty);
 
         vm.Items.Clear();
         Assert.IsTrue(vm.IsThreadEmpty);
+    }
+
+    [TestMethod]
+    public void ChatViewModel_TranscriptAutoFollow_StopsWhenUserSelectsOlderRow()
+    {
+        using var vm = new ChatViewModel();
+        MethodInfo? appendTranscriptRow = typeof(ChatViewModel).GetMethod(
+            "AppendTranscriptRow",
+            BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.IsNotNull(appendTranscriptRow);
+
+        var first = TranscriptRowViewModel.CreateChat(new ChatItemViewModel("Codex", "first", ConversationEventKind.AgentMessageDelta));
+        var second = TranscriptRowViewModel.CreateChat(new ChatItemViewModel("Codex", "second", ConversationEventKind.AgentMessageDelta));
+        var third = TranscriptRowViewModel.CreateChat(new ChatItemViewModel("Codex", "third", ConversationEventKind.AgentMessageDelta));
+
+        appendTranscriptRow!.Invoke(vm, [first]);
+        appendTranscriptRow.Invoke(vm, [second]);
+        Assert.AreSame(second, vm.SelectedTranscriptRow);
+
+        // Simulate the user reviewing older transcript content.
+        vm.SelectedTranscriptRow = first;
+        appendTranscriptRow.Invoke(vm, [third]);
+
+        // Auto-follow must stay disabled while reading older rows.
+        Assert.AreSame(first, vm.SelectedTranscriptRow);
     }
 
     [TestMethod]
@@ -493,5 +657,32 @@ public sealed class ViewModelTests
                     $"{type.Name}.{property.Name} is a serialized command and must implement IAsyncCommand for Remote UI.");
             }
         }
+    }
+
+    private static ApprovalRequest CreateApprovalRequest(string requestId, string displayText)
+        => new()
+        {
+            RequestId = requestId,
+            Risk = ApprovalRiskCategory.WorkspaceWrite,
+            DisplayText = displayText,
+            AvailableDecisions = AcceptDeclineCancel,
+        };
+
+    private static async Task InvokeApprovalRequestedAsync(ChatViewModel vm, ApprovalRequest request)
+    {
+        MethodInfo? method = typeof(ChatViewModel).GetMethod(
+            "OnApprovalRequestedAsync",
+            BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.IsNotNull(method);
+        await (Task)method!.Invoke(vm, [request])!;
+    }
+
+    private static async Task InvokeApprovalResolvedAsync(ChatViewModel vm, string requestId)
+    {
+        MethodInfo? method = typeof(ChatViewModel).GetMethod(
+            "OnApprovalResolvedAsync",
+            BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.IsNotNull(method);
+        await (Task)method!.Invoke(vm, [requestId])!;
     }
 }

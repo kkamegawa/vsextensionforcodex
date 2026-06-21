@@ -23,6 +23,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     private readonly OutputChannel? outputChannel;
     private readonly SafeMarkdownService markdown = new();
     private readonly CancellationTokenSource lifetime = new();
+    private readonly Queue<ApprovalViewModel> approvalQueue = new();
     private readonly WorkspaceDirectoryResolver workspaceDirectoryResolver;
     private readonly ProjectScaffolder projectScaffolder;
     private int disposed;
@@ -33,8 +34,11 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     private string? nextCursor;
     private bool initialized;
     private bool isHistoryOpen;
+    private bool shouldAutoFollowTranscript = true;
     private string? selectedModel;
     private string selectedMode = "Agent";
+    private TranscriptRowViewModel? selectedTranscriptRow;
+    private ApprovalViewModel? activeApproval;
 
     public ChatViewModel(OutputChannel? outputChannel = null, VisualStudioExtensibility? extensibility = null)
     {
@@ -47,9 +51,13 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         bridge.ConversationEventReceived += OnConversationEventAsync;
         bridge.ApprovalRequested += OnApprovalRequestedAsync;
         bridge.ApprovalResolved += OnApprovalResolvedAsync;
-        // The welcome/empty state is driven by IsThreadEmpty; keep it in sync with every
-        // mutation of Items (Add/Clear from any call site) via a single subscription.
-        Items.CollectionChanged += (_, _) => OnPropertyChanged(nameof(IsThreadEmpty));
+        // The welcome/empty state is driven by transcript and approval state; keep it in sync
+        // with every mutation of Items (Add/Clear from any call site) via a single subscription.
+        Items.CollectionChanged += (_, _) =>
+        {
+            OnPropertyChanged(nameof(IsThreadEmpty));
+            OnPropertyChanged(nameof(ShowWelcomeState));
+        };
         ConnectCommand = new AsyncCommand(ConnectAsync, () => Status.State is WorkerConnectionState.Disconnected or WorkerConnectionState.Degraded);
         RestartCommand = new AsyncCommand(RestartAsync, () => Status.State == WorkerConnectionState.Degraded);
         NewThreadCommand = new AsyncCommand(NewThreadAsync, () => Status.State == WorkerConnectionState.Ready);
@@ -85,10 +93,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     public ObservableCollection<ThreadSummary> Threads { get; } = new();
 
     [DataMember]
-    public ObservableCollection<ChatItemViewModel> Items { get; } = new();
-
-    [DataMember]
-    public ObservableCollection<ApprovalViewModel> Approvals { get; } = new();
+    public ObservableCollection<TranscriptRowViewModel> Items { get; } = new();
 
     // Intentionally NOT a DataMember: the XAML binds the flattened Account* properties below.
     public AccountPanelViewModel Account { get; } = new();
@@ -182,6 +187,42 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     [DataMember]
     public bool IsThreadEmpty => Items.Count == 0;
 
+    // True when the welcome/empty state should be displayed. Approval cards live outside the
+    // transcript, but they still suppress the welcome overlay so the card remains readable.
+    [DataMember]
+    public bool ShowWelcomeState => IsThreadEmpty && ActiveApproval is null;
+
+    [DataMember]
+    public ApprovalViewModel? ActiveApproval
+    {
+        get => activeApproval;
+        private set
+        {
+            if (SetProperty(ref activeApproval, value))
+            {
+                OnPropertyChanged(nameof(HasPendingApproval));
+                OnPropertyChanged(nameof(ShowWelcomeState));
+            }
+        }
+    }
+
+    [DataMember]
+    public bool HasPendingApproval => ActiveApproval is not null;
+
+    [DataMember]
+    public int PendingApprovalCount => approvalQueue.Count;
+
+    [DataMember]
+    public bool HasQueuedApprovals => PendingApprovalCount > 0;
+
+    [DataMember]
+    public string ApprovalQueueText => PendingApprovalCount switch
+    {
+        0 => string.Empty,
+        1 => "1 approval waiting",
+        _ => $"{PendingApprovalCount} approvals waiting",
+    };
+
     // True when the composer is empty — drives the "Ask Codex" placeholder overlay
     // (WPF TextBox has no native placeholder, and custom converters cannot be used because
     // they would not resolve inside VS's WPF process).
@@ -194,6 +235,19 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     {
         get => isHistoryOpen;
         set => SetProperty(ref isHistoryOpen, value);
+    }
+
+    [DataMember]
+    public TranscriptRowViewModel? SelectedTranscriptRow
+    {
+        get => selectedTranscriptRow;
+        set
+        {
+            if (SetProperty(ref selectedTranscriptRow, value))
+            {
+                shouldAutoFollowTranscript = value is null || ReferenceEquals(value, Items.LastOrDefault());
+            }
+        }
     }
 
     [DataMember]
@@ -451,7 +505,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             Threads.Insert(0, thread);
             selectedThread = thread;
             OnPropertyChanged(nameof(SelectedThread));
-            Items.Clear();
+            ClearTranscript();
         }).ConfigureAwait(false);
     }
 
@@ -463,7 +517,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         }
 
         await bridge.ResumeThreadAsync(thread.Id, lifetime.Token).ConfigureAwait(false);
-        await OnUiAsync(Items.Clear).ConfigureAwait(false);
+        await OnUiAsync(ClearTranscript).ConfigureAwait(false);
     }
 
     private async Task LoadMoreAsync()
@@ -517,7 +571,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
         if (Status.TurnId is null)
         {
-            await OnUiAsync(() => Items.Add(new ChatItemViewModel("You", markdown.ToSafeText(text), ConversationEventKind.ItemStarted))).ConfigureAwait(false);
+            await OnUiAsync(() => AppendTranscriptRow(TranscriptRowViewModel.CreateChat(new ChatItemViewModel("You", markdown.ToSafeText(text), ConversationEventKind.ItemStarted)))).ConfigureAwait(false);
             await bridge.StartTurnAsync(new StartTurnRequest { ThreadId = SelectedThread.Id, Text = text }, lifetime.Token).ConfigureAwait(false);
         }
         else
@@ -573,12 +627,14 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             // Plan events carry a full replacement payload — handle separately to avoid text append.
             if (value.Kind == ConversationEventKind.PlanUpdated)
             {
-                ChatItemViewModel? planItem = Items.LastOrDefault(item => item.ItemId == value.ItemId && item.Kind == value.Kind);
+                ChatItemViewModel? planItem = Items
+                    .Select(item => item.ChatItem)
+                    .LastOrDefault(item => item is not null && item.ItemId == value.ItemId && item.Kind == value.Kind);
                 IReadOnlyList<string> steps = ChatItemViewModel.ParsePlanSteps(value.PayloadJson);
                 if (planItem is null)
                 {
                     planItem = new ChatItemViewModel("Plan", string.Empty, ConversationEventKind.PlanUpdated) { ItemId = value.ItemId };
-                    Items.Add(planItem);
+                    AppendTranscriptRow(TranscriptRowViewModel.CreateChat(planItem));
                 }
 
                 planItem.UpdatePlanSteps(steps);
@@ -594,15 +650,17 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 ConversationEventKind.Error => "Error",
                 _ => "Codex",
             };
-            ChatItemViewModel? existing = Items.LastOrDefault(item => item.ItemId == value.ItemId && item.Kind == value.Kind);
+            ChatItemViewModel? existing = Items
+                .Select(item => item.ChatItem)
+                .LastOrDefault(item => item is not null && item.ItemId == value.ItemId && item.Kind == value.Kind);
             if (existing is null)
             {
-                Items.Add(new ChatItemViewModel(role, markdown.ToSafeText(value.Text ?? value.PayloadJson ?? string.Empty), value.Kind)
+                AppendTranscriptRow(TranscriptRowViewModel.CreateChat(new ChatItemViewModel(role, markdown.ToSafeText(value.Text ?? value.PayloadJson ?? string.Empty), value.Kind)
                 {
                     ItemId = value.ItemId,
                     IsTruncated = value.Truncated,
                     OverflowFile = value.OverflowFile,
-                });
+                }));
             }
             else
             {
@@ -613,18 +671,34 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         });
 
     private Task OnApprovalRequestedAsync(ApprovalRequest value)
-        => OnUiAsync(() => Approvals.Add(new ApprovalViewModel(value, ResolveApprovalAsync)));
+        => OnUiAsync(() =>
+        {
+            if (IsApprovalTracked(value.RequestId))
+            {
+                return;
+            }
+
+            var approval = new ApprovalViewModel(value, ResolveApprovalAsync);
+            if (ActiveApproval is null)
+            {
+                ActiveApproval = approval;
+                return;
+            }
+
+            approvalQueue.Enqueue(approval);
+            RaiseApprovalQueueProperties();
+        });
 
     private Task OnApprovalResolvedAsync(string requestId)
         => OnUiAsync(() =>
         {
-            ApprovalViewModel? approval = Approvals.FirstOrDefault(item => item.RequestId == requestId);
-            approval?.MarkResolved();
+            RemoveApproval(requestId);
         });
 
     private async Task ResolveApprovalAsync(string requestId, ApprovalDecision decision)
     {
         _ = outputChannel?.WriteLineAsync($"[AUDIT] Approval resolved: {requestId} → {decision}");
+        await OnUiAsync(() => RemoveApproval(requestId)).ConfigureAwait(false);
         await bridge.ResolveApprovalAsync(new ResolveApprovalRequest { RequestId = requestId, Decision = decision }, lifetime.Token).ConfigureAwait(false);
     }
 
@@ -736,6 +810,83 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         SendCommand.RaiseCanExecuteChanged();
         InterruptCommand.RaiseCanExecuteChanged();
         AccountCommand.RaiseCanExecuteChanged();
+    }
+
+    private void ClearTranscript()
+    {
+        Items.Clear();
+        SelectedTranscriptRow = null;
+        shouldAutoFollowTranscript = true;
+        ClearApprovals();
+    }
+
+    private void AppendTranscriptRow(TranscriptRowViewModel row)
+    {
+        Items.Add(row);
+        if (shouldAutoFollowTranscript)
+        {
+            SelectedTranscriptRow = row;
+        }
+    }
+
+    private bool IsApprovalTracked(string requestId)
+        => ActiveApproval?.RequestId == requestId || approvalQueue.Any(approval => approval.RequestId == requestId);
+
+    private bool RemoveApproval(string requestId)
+    {
+        if (ActiveApproval?.RequestId == requestId)
+        {
+            PromoteNextApproval();
+            return true;
+        }
+
+        if (approvalQueue.Count == 0 || !approvalQueue.Any(approval => approval.RequestId == requestId))
+        {
+            return false;
+        }
+
+        var remaining = new Queue<ApprovalViewModel>(approvalQueue.Count - 1);
+        while (approvalQueue.Count > 0)
+        {
+            ApprovalViewModel approval = approvalQueue.Dequeue();
+            if (approval.RequestId != requestId)
+            {
+                remaining.Enqueue(approval);
+            }
+        }
+
+        while (remaining.Count > 0)
+        {
+            approvalQueue.Enqueue(remaining.Dequeue());
+        }
+
+        RaiseApprovalQueueProperties();
+        return true;
+    }
+
+    private void PromoteNextApproval()
+    {
+        ActiveApproval = approvalQueue.Count == 0 ? null : approvalQueue.Dequeue();
+        RaiseApprovalQueueProperties();
+    }
+
+    private void ClearApprovals()
+    {
+        if (ActiveApproval is null && approvalQueue.Count == 0)
+        {
+            return;
+        }
+
+        approvalQueue.Clear();
+        ActiveApproval = null;
+        RaiseApprovalQueueProperties();
+    }
+
+    private void RaiseApprovalQueueProperties()
+    {
+        OnPropertyChanged(nameof(PendingApprovalCount));
+        OnPropertyChanged(nameof(HasQueuedApprovals));
+        OnPropertyChanged(nameof(ApprovalQueueText));
     }
 
     // In the OOP extension process, Application.Current is null so the null-conditional
@@ -932,10 +1083,40 @@ public sealed class ChatItemViewModel : ObservableObject
 }
 
 [DataContract]
+public sealed class TranscriptRowViewModel
+{
+    private TranscriptRowViewModel(ChatItemViewModel? chatItem, ApprovalViewModel? approval)
+    {
+        ChatItem = chatItem;
+        Approval = approval;
+    }
+
+    public static TranscriptRowViewModel CreateChat(ChatItemViewModel item)
+        => new(item, null);
+
+    public static TranscriptRowViewModel CreateApproval(ApprovalViewModel approval)
+        => new(null, approval);
+
+    [DataMember]
+    public ChatItemViewModel? ChatItem { get; }
+
+    [DataMember]
+    public ApprovalViewModel? Approval { get; }
+
+    [DataMember]
+    public bool IsChatRow => ChatItem is not null;
+
+    [DataMember]
+    public bool IsApprovalRow => Approval is not null;
+}
+
+[DataContract]
 public sealed class ApprovalViewModel : ObservableObject
 {
     private readonly Func<string, ApprovalDecision, Task> resolver;
     private bool isResolved;
+    private bool isExpanded;
+    private string resolutionText = "Pending";
     private int resolving;
 
     public ApprovalViewModel(ApprovalRequest request, Func<string, ApprovalDecision, Task> resolver)
@@ -970,6 +1151,15 @@ public sealed class ApprovalViewModel : ObservableObject
         AcceptForSessionCommand = new AsyncCommand(() => ResolveOnceAsync(ApprovalDecision.AcceptForSession), () => CanResolve);
         DeclineCommand = new AsyncCommand(() => ResolveOnceAsync(ApprovalDecision.Decline), () => CanResolve);
         CancelCommand = new AsyncCommand(() => ResolveOnceAsync(ApprovalDecision.Cancel), () => CanResolve);
+        ToggleExpandedCommand = new AsyncCommand(() =>
+        {
+            if (CanToggleExpanded)
+            {
+                IsExpanded = !IsExpanded;
+            }
+
+            return Task.CompletedTask;
+        }, () => CanToggleExpanded);
     }
 
     public string RequestId { get; }
@@ -1016,6 +1206,7 @@ public sealed class ApprovalViewModel : ObservableObject
     [DataMember]
     public string? NetworkPort { get; }
 
+    [DataMember]
     public bool IsResolved
     {
         get => isResolved;
@@ -1029,11 +1220,52 @@ public sealed class ApprovalViewModel : ObservableObject
                 AcceptForSessionCommand.RaiseCanExecuteChanged();
                 DeclineCommand.RaiseCanExecuteChanged();
                 CancelCommand.RaiseCanExecuteChanged();
+                ToggleExpandedCommand.RaiseCanExecuteChanged();
+                OnPropertyChanged(nameof(Summary));
+                OnPropertyChanged(nameof(ExpandButtonText));
+                OnPropertyChanged(nameof(CanToggleExpanded));
             }
         }
     }
 
     public bool CanResolve => !IsResolved && !IsPolicyBlocked;
+
+    [DataMember]
+    public bool IsExpanded
+    {
+        get => isExpanded;
+        private set
+        {
+            if (SetProperty(ref isExpanded, value))
+            {
+                OnPropertyChanged(nameof(ExpandButtonText));
+            }
+        }
+    }
+
+    [DataMember]
+    public string Summary => IsResolved
+        ? $"{Risk}: {DisplayText} \u00b7 {ResolutionText}"
+        : $"{Risk}: {DisplayText}";
+
+    [DataMember]
+    public string ResolutionText
+    {
+        get => resolutionText;
+        private set
+        {
+            if (SetProperty(ref resolutionText, value))
+            {
+                OnPropertyChanged(nameof(Summary));
+            }
+        }
+    }
+
+    [DataMember]
+    public bool CanToggleExpanded => IsResolved;
+
+    [DataMember]
+    public string ExpandButtonText => IsExpanded ? "Hide details" : "Show details";
 
     [DataMember]
     public AsyncCommand AcceptCommand { get; }
@@ -1053,7 +1285,20 @@ public sealed class ApprovalViewModel : ObservableObject
     [DataMember]
     public AsyncCommand CancelCommand { get; }
 
-    public void MarkResolved() => IsResolved = true;
+    [DataMember]
+    public AsyncCommand ToggleExpandedCommand { get; }
+
+    public void MarkResolved()
+    {
+        if (IsResolved)
+        {
+            return;
+        }
+
+        ResolutionText = "Resolved";
+        IsResolved = true;
+        IsExpanded = false;
+    }
 
     private async Task ResolveOnceAsync(ApprovalDecision decision)
     {
@@ -1062,8 +1307,20 @@ public sealed class ApprovalViewModel : ObservableObject
             return;
         }
 
-        IsResolved = true;
+        string resolution = decision switch
+        {
+            ApprovalDecision.Accept => "Accepted",
+            ApprovalDecision.AcceptForTurn => "Accepted for turn",
+            ApprovalDecision.AcceptForThread => "Accepted for thread",
+            ApprovalDecision.AcceptForSession => "Accepted for session",
+            ApprovalDecision.Decline => "Declined",
+            ApprovalDecision.Cancel => "Canceled",
+            _ => "Resolved",
+        };
         await resolver(RequestId, decision).ConfigureAwait(false);
+        ResolutionText = resolution;
+        IsResolved = true;
+        IsExpanded = false;
     }
 }
 
