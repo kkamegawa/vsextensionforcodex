@@ -174,6 +174,32 @@ public sealed class ViewModelTests
     }
 
     [TestMethod]
+    public void ApprovalViewModel_Summary_DoesNotRepeatLongDisplayText()
+    {
+        string longDisplayText = string.Join(
+            Environment.NewLine,
+            Enumerable.Repeat("public static void Main(string[] args) { }", 120));
+        var vm = new ApprovalViewModel(
+            new ApprovalRequest
+            {
+                RequestId = "req-summary",
+                Risk = ApprovalRiskCategory.WorkspaceWrite,
+                DisplayText = longDisplayText,
+                AvailableDecisions = AcceptDeclineCancel,
+            },
+            (_, _) => Task.CompletedTask);
+
+        Assert.IsFalse(
+            vm.Summary.Contains(longDisplayText, StringComparison.Ordinal),
+            "Approval summary should stay compact and must not duplicate full source output.");
+        StringAssert.Contains(vm.Summary, "approval");
+
+        vm.MarkResolved();
+        Assert.IsFalse(vm.Summary.Contains(longDisplayText, StringComparison.Ordinal));
+        StringAssert.Contains(vm.Summary, "Resolved");
+    }
+
+    [TestMethod]
     public async Task ChatViewModel_ApprovalRequests_AreQueuedOutsideTranscript()
     {
         using var vm = new ChatViewModel();
@@ -410,6 +436,43 @@ public sealed class ViewModelTests
             "{Binding SendCommand}",
             keyBinding!.Attribute("Command")?.Value,
             "The Ctrl+Enter KeyBinding must invoke SendCommand.");
+    }
+
+    [TestMethod]
+    public void ChatToolWindowXaml_ActiveApprovalDetails_AreBoundedAndScrollable()
+    {
+        const string resourceName = "Codex.VisualStudio.Extension.ToolWindows.ChatToolWindowContent.xaml";
+        using Stream? stream = typeof(ChatViewModel).Assembly.GetManifestResourceStream(resourceName);
+        Assert.IsNotNull(stream, $"Embedded resource '{resourceName}' not found.");
+        XDocument doc = XDocument.Load(stream);
+        XNamespace presentation = "http://schemas.microsoft.com/winfx/2006/xaml/presentation";
+
+        XElement? displayText = doc
+            .Descendants(presentation + "TextBlock")
+            .SingleOrDefault(tb => string.Equals(
+                tb.Attribute("Text")?.Value,
+                "{Binding ActiveApproval.DisplayText}",
+                StringComparison.Ordinal));
+        Assert.IsNotNull(displayText, "Could not find ActiveApproval.DisplayText TextBlock.");
+
+        XElement? detailsScrollViewer = displayText!
+            .Ancestors(presentation + "ScrollViewer")
+            .FirstOrDefault();
+        Assert.IsNotNull(detailsScrollViewer, "Approval details must be wrapped in a ScrollViewer.");
+        Assert.AreEqual("Auto", detailsScrollViewer!.Attribute("VerticalScrollBarVisibility")?.Value);
+        Assert.AreEqual("Auto", detailsScrollViewer.Attribute("HorizontalScrollBarVisibility")?.Value);
+        Assert.AreEqual("220", detailsScrollViewer.Attribute("MaxHeight")?.Value);
+
+        XElement? acceptButton = doc
+            .Descendants(presentation + "Button")
+            .SingleOrDefault(btn => string.Equals(
+                btn.Attribute("Command")?.Value,
+                "{Binding ActiveApproval.AcceptCommand}",
+                StringComparison.Ordinal));
+        Assert.IsNotNull(acceptButton, "Could not find ActiveApproval.AcceptCommand button.");
+        Assert.IsNull(
+            acceptButton!.Ancestors(presentation + "ScrollViewer").FirstOrDefault(),
+            "Approval decision buttons must remain outside the details ScrollViewer.");
     }
 
     // Remote UI replicates only [DataMember] properties of [DataContract] types into the

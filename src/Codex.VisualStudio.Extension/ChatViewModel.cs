@@ -1245,8 +1245,8 @@ public sealed class ApprovalViewModel : ObservableObject
 
     [DataMember]
     public string Summary => IsResolved
-        ? $"{Risk}: {DisplayText} \u00b7 {ResolutionText}"
-        : $"{Risk}: {DisplayText}";
+        ? $"{Risk} approval \u00b7 {ResolutionText}"
+        : $"{Risk} approval";
 
     [DataMember]
     public string ResolutionText
