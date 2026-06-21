@@ -19,7 +19,7 @@ public static class CodexExecutableResolver
 
         if (!string.Equals(requestedPath, "codex", StringComparison.OrdinalIgnoreCase))
         {
-            if (TryResolveCommandFromPath(requestedPath, out string? resolvedConfigured))
+            if (TryResolveCommandFromPath(requestedPath, out string resolvedConfigured))
             {
                 WorkerDiagnostics.Write("codex executable resolved from Worker options PATH lookup");
                 return resolvedConfigured;
@@ -31,7 +31,7 @@ public static class CodexExecutableResolver
             return requestedPath;
         }
 
-        if (TryResolveOnPath(["codex.exe"], out string? pathResolvedCandidate)
+        if (TryResolveOnPath(["codex.exe"], out string pathResolvedCandidate)
             || TryResolveOnPath(CodexScriptPathCandidates, out pathResolvedCandidate))
         {
             WorkerDiagnostics.Write("codex executable resolved from PATH");

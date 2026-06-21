@@ -345,9 +345,73 @@
                VirtualizingPanel.VirtualizationMode="Recycling">
         <ListBox.Resources>
           <DataTemplate x:Key="ChatTranscriptRowTemplate">
+            <!-- Single-cell Grid lets chat and approval rows share the same space; only one
+                 is visible at a time because IsChatRow and IsApprovalRow are mutually exclusive. -->
+            <Grid>
+
+            <!-- ── Approval row ── -->
             <Border Margin="0,0,0,8" Padding="10" CornerRadius="8"
                     BorderThickness="1"
-                    BorderBrush="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBorderBrushKey}}">
+                    BorderBrush="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBorderBrushKey}}"
+                    Background="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBackgroundBrushKey}}"
+                    Visibility="{Binding IsApprovalRow, Converter={StaticResource BoolToVis}}">
+              <StackPanel>
+                <!-- Summary + expand/collapse toggle (only for resolved approvals) -->
+                <DockPanel LastChildFill="True">
+                  <Button DockPanel.Dock="Right"
+                          Margin="8,0,0,0"
+                          Padding="8,2"
+                          FontSize="11"
+                          Content="{Binding Approval.ExpandButtonText}"
+                          Command="{Binding Approval.ToggleExpandedCommand}"
+                          Visibility="{Binding Approval.CanToggleExpanded, Converter={StaticResource BoolToVis}}" />
+                  <TextBlock FontWeight="SemiBold"
+                             Text="{Binding Approval.Summary}"
+                             TextTrimming="CharacterEllipsis"
+                             VerticalAlignment="Center" />
+                </DockPanel>
+
+                <!-- Detail block: always visible for pending, visible when expanded for resolved -->
+                <Border Margin="0,6,0,0"
+                        Padding="8"
+                        BorderThickness="1"
+                        CornerRadius="6"
+                        Background="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowCodeBlockBackgroundBrushKey}}"
+                        BorderBrush="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBorderBrushKey}}"
+                        Visibility="{Binding Approval.IsDetailVisible, Converter={StaticResource BoolToVis}}">
+                  <StackPanel>
+                    <TextBlock FontWeight="Bold" Text="{Binding Approval.Risk}" />
+                    <TextBlock Margin="0,4,0,0"
+                               FontFamily="Consolas, Courier New"
+                               Text="{Binding Approval.DisplayText}"
+                               TextWrapping="NoWrap" />
+                    <TextBlock Margin="0,4,0,0"
+                               Opacity="0.8"
+                               Text="{Binding Approval.Reason}"
+                               TextWrapping="Wrap" />
+                    <StackPanel Margin="0,4,0,0"
+                                Orientation="Horizontal"
+                                Visibility="{Binding Approval.IsNetworkApproval, Converter={StaticResource BoolToVis}}">
+                      <TextBlock Text="Host: " FontWeight="SemiBold" />
+                      <TextBlock Text="{Binding Approval.NetworkHost}" Margin="0,0,12,0" />
+                      <TextBlock Text="Port: " FontWeight="SemiBold" />
+                      <TextBlock Text="{Binding Approval.NetworkPort}" />
+                    </StackPanel>
+                    <TextBlock Margin="0,4,0,0"
+                               FontStyle="Italic"
+                               Text="{Binding Approval.PolicyBlockReason, StringFormat='Policy blocked: {0}'}"
+                               TextWrapping="Wrap"
+                               Visibility="{Binding Approval.IsPolicyBlocked, Converter={StaticResource BoolToVis}}" />
+                  </StackPanel>
+                </Border>
+              </StackPanel>
+            </Border>
+
+            <!-- ── Chat row ── -->
+            <Border Margin="0,0,0,8" Padding="10" CornerRadius="8"
+                    BorderThickness="1"
+                    BorderBrush="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBorderBrushKey}}"
+                    Visibility="{Binding IsChatRow, Converter={StaticResource BoolToVis}}">
               <Border.Style>
                 <Style TargetType="Border">
                   <Setter Property="Background" Value="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBackgroundBrushKey}}" />
@@ -462,6 +526,8 @@
                 </TextBlock>
               </StackPanel>
             </Border>
+
+            </Grid>
           </DataTemplate>
 
         </ListBox.Resources>

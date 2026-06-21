@@ -679,6 +679,8 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             }
 
             var approval = new ApprovalViewModel(value, ResolveApprovalAsync);
+            AppendTranscriptRow(TranscriptRowViewModel.CreateApproval(approval));
+
             if (ActiveApproval is null)
             {
                 ActiveApproval = approval;
@@ -836,6 +838,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     {
         if (ActiveApproval?.RequestId == requestId)
         {
+            ActiveApproval.MarkResolved();
             PromoteNextApproval();
             return true;
         }
@@ -852,6 +855,10 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             if (approval.RequestId != requestId)
             {
                 remaining.Enqueue(approval);
+            }
+            else
+            {
+                approval.MarkResolved();
             }
         }
 
@@ -1224,6 +1231,7 @@ public sealed class ApprovalViewModel : ObservableObject
                 OnPropertyChanged(nameof(Summary));
                 OnPropertyChanged(nameof(ExpandButtonText));
                 OnPropertyChanged(nameof(CanToggleExpanded));
+                OnPropertyChanged(nameof(IsDetailVisible));
             }
         }
     }
@@ -1239,6 +1247,7 @@ public sealed class ApprovalViewModel : ObservableObject
             if (SetProperty(ref isExpanded, value))
             {
                 OnPropertyChanged(nameof(ExpandButtonText));
+                OnPropertyChanged(nameof(IsDetailVisible));
             }
         }
     }
@@ -1263,6 +1272,9 @@ public sealed class ApprovalViewModel : ObservableObject
 
     [DataMember]
     public bool CanToggleExpanded => IsResolved;
+
+    [DataMember]
+    public bool IsDetailVisible => !IsResolved || IsExpanded;
 
     [DataMember]
     public string ExpandButtonText => IsExpanded ? "Hide details" : "Show details";
@@ -1317,10 +1329,18 @@ public sealed class ApprovalViewModel : ObservableObject
             ApprovalDecision.Cancel => "Canceled",
             _ => "Resolved",
         };
-        await resolver(RequestId, decision).ConfigureAwait(false);
-        ResolutionText = resolution;
-        IsResolved = true;
-        IsExpanded = false;
+        try
+        {
+            await resolver(RequestId, decision).ConfigureAwait(false);
+            ResolutionText = resolution;
+            IsResolved = true;
+            IsExpanded = false;
+        }
+        catch
+        {
+            Interlocked.Exchange(ref resolving, 0);
+            throw;
+        }
     }
 }
 
