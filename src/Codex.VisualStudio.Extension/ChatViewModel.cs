@@ -2,6 +2,7 @@
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
 using System.Runtime.Serialization;
+using System.Text;
 using System.Text.RegularExpressions;
 using System.Windows;
 using System.Windows.Input;
@@ -25,6 +26,11 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     private readonly CancellationTokenSource lifetime = new();
     private readonly WorkspaceDirectoryResolver workspaceDirectoryResolver;
     private readonly ProjectScaffolder projectScaffolder;
+    private readonly ExtensionSettings settings = ExtensionSettings.Load();
+    private readonly Queue<UserInputViewModel> userInputQueue = new();
+    private readonly Dictionary<string, StringBuilder> agentRawText = new(StringComparer.Ordinal);
+    private UserInputViewModel? activeUserInput;
+    private string? lastAgentItemId;
     private int disposed;
     private int connecting;
     private WorkerStatus status = new() { State = WorkerConnectionState.Disconnected, Message = "Open Codex to connect." };
@@ -47,6 +53,8 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         bridge.ConversationEventReceived += OnConversationEventAsync;
         bridge.ApprovalRequested += OnApprovalRequestedAsync;
         bridge.ApprovalResolved += OnApprovalResolvedAsync;
+        bridge.UserInputRequested += OnUserInputRequestedAsync;
+        bridge.UserInputResolved += OnUserInputResolvedAsync;
         // The welcome/empty state is driven by IsThreadEmpty; keep it in sync with every
         // mutation of Items (Add/Clear from any call site) via a single subscription.
         Items.CollectionChanged += (_, _) => OnPropertyChanged(nameof(IsThreadEmpty));
@@ -89,6 +97,55 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
     [DataMember]
     public ObservableCollection<ApprovalViewModel> Approvals { get; } = new();
+
+    // Interactive choices are shown one at a time, Claude Code-style: a single active card pinned
+    // above the composer, with the rest held in a FIFO queue. This keeps a burst of choice prompts
+    // from filling/scrolling the panel.
+    [DataMember]
+    public UserInputViewModel? ActiveUserInput
+    {
+        get => activeUserInput;
+        private set
+        {
+            if (SetProperty(ref activeUserInput, value))
+            {
+                OnPropertyChanged(nameof(HasActiveUserInput));
+                OnPropertyChanged(nameof(UserInputQueueText));
+            }
+        }
+    }
+
+    [DataMember]
+    public bool HasActiveUserInput => ActiveUserInput is not null;
+
+    [DataMember]
+    public string UserInputQueueText => userInputQueue.Count switch
+    {
+        0 => string.Empty,
+        1 => "1 choice waiting",
+        _ => $"{userInputQueue.Count} choices waiting",
+    };
+
+    // Opt-in "Choices": surface codex's confirmation/choice prompts as a selection card. codex only
+    // emits the structured request_user_input tool in Plan mode, so in Agent mode this drives the
+    // prose detector (TryDetectChoicePrompt) — a purely client-side concern, so no reconnect is needed.
+    // The flag is still sent at the next connect so the structured path also works if Plan mode is used.
+    [DataMember]
+    public bool ExperimentalApiEnabled
+    {
+        get => settings.ExperimentalApiEnabled;
+        set
+        {
+            if (settings.ExperimentalApiEnabled == value)
+            {
+                return;
+            }
+
+            settings.ExperimentalApiEnabled = value;
+            settings.Save();
+            OnPropertyChanged();
+        }
+    }
 
     // Intentionally NOT a DataMember: the XAML binds the flattened Account* properties below.
     public AccountPanelViewModel Account { get; } = new();
@@ -390,7 +447,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             WorkerStatus result;
             try
             {
-                result = await bridge.ConnectAsync(workingDirectory, lifetime.Token).ConfigureAwait(false);
+                result = await bridge.ConnectAsync(workingDirectory, settings.ExperimentalApiEnabled, lifetime.Token).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
             {
@@ -490,6 +547,20 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
     private async Task SendAsync()
     {
+        // Typing a normal message supersedes a still-pending prose-detected choice card (the user
+        // chose to answer in their own words instead of picking an option).
+        if (ActiveUserInput?.IsSynthetic == true)
+        {
+            await OnUiAsync(() => RemoveUserInput(ActiveUserInput!.RequestId)).ConfigureAwait(false);
+        }
+
+        await SendMessageAsync(ComposerText, clearComposer: true).ConfigureAwait(false);
+    }
+
+    // Core send path, shared by the composer (clearComposer: true) and the synthetic-choice resolver
+    // (clearComposer: false), which sends the picked option text as the next turn.
+    private async Task SendMessageAsync(string text, bool clearComposer)
+    {
         if (Status.State is not (WorkerConnectionState.Ready or WorkerConnectionState.Busy or WorkerConnectionState.WaitingForApproval))
         {
             // Not connected yet: this is the user's first send with no solution/folder open.
@@ -503,8 +574,16 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             }
         }
 
-        string text = ComposerText;
-        await OnUiAsync(() => SetComposerText(string.Empty)).ConfigureAwait(false);
+        if (clearComposer)
+        {
+            await OnUiAsync(() => SetComposerText(string.Empty)).ConfigureAwait(false);
+        }
+
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return;
+        }
+
         if (SelectedThread is null)
         {
             await NewThreadAsync().ConfigureAwait(false);
@@ -625,6 +704,22 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 return;
             }
 
+            // Track the agent message text across a turn so a completed message can be scanned for a
+            // prose choice prompt (codex doesn't emit the structured tool in Agent mode).
+            switch (value.Kind)
+            {
+                case ConversationEventKind.TurnStarted:
+                    agentRawText.Clear();
+                    lastAgentItemId = null;
+                    break;
+                case ConversationEventKind.AgentMessageDelta when !string.IsNullOrEmpty(value.Text) && value.ItemId is not null:
+                    AppendAgentRaw(value.ItemId, value.Text);
+                    break;
+                case ConversationEventKind.TurnCompleted:
+                    TryDetectChoicePrompt();
+                    break;
+            }
+
             // Only user-facing Codex content reaches the panel. Lifecycle, protocol, error, and
             // unknown events — and any user-facing kind that arrived without rendered Text (carrying
             // only raw/structured PayloadJson) — are routed to the Output channel so the transcript
@@ -676,6 +771,117 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     {
         _ = outputChannel?.WriteLineAsync($"[AUDIT] Approval resolved: {requestId} → {decision}");
         await bridge.ResolveApprovalAsync(new ResolveApprovalRequest { RequestId = requestId, Decision = decision }, lifetime.Token).ConfigureAwait(false);
+    }
+
+    private Task OnUserInputRequestedAsync(UserInputRequest value)
+        => OnUiAsync(() => EnqueueUserInput(new UserInputViewModel(value, ResolveUserInputAsync, markdown)));
+
+    // Shared by the structured (server-request) path and the prose-detection path: show one card,
+    // queue the rest.
+    private void EnqueueUserInput(UserInputViewModel userInput)
+    {
+        if (ActiveUserInput is null)
+        {
+            ActiveUserInput = userInput;
+        }
+        else
+        {
+            userInputQueue.Enqueue(userInput);
+            OnPropertyChanged(nameof(UserInputQueueText));
+        }
+    }
+
+    private Task OnUserInputResolvedAsync(string requestId)
+        => OnUiAsync(() => RemoveUserInput(requestId));
+
+    // Idempotent: the worker emits userInputResolved twice (from ResolveUserInputAsync and from the
+    // request handler after it returns), so a repeat call for an already-removed id is a no-op.
+    private void RemoveUserInput(string requestId)
+    {
+        if (ActiveUserInput?.RequestId == requestId)
+        {
+            ActiveUserInput.MarkResolved();
+            ActiveUserInput = userInputQueue.Count > 0 ? userInputQueue.Dequeue() : null;
+            OnPropertyChanged(nameof(UserInputQueueText));
+            return;
+        }
+
+        // Resolved/cancelled while still queued: drop it without promoting.
+        if (userInputQueue.Any(item => item.RequestId == requestId))
+        {
+            UserInputViewModel[] remaining = userInputQueue.Where(item => item.RequestId != requestId).ToArray();
+            userInputQueue.Clear();
+            foreach (UserInputViewModel item in remaining)
+            {
+                userInputQueue.Enqueue(item);
+            }
+
+            OnPropertyChanged(nameof(UserInputQueueText));
+        }
+    }
+
+    // Structured choice (real item/tool/requestUserInput server request): answer it via RPC.
+    private Task ResolveUserInputAsync(string requestId, IReadOnlyDictionary<string, string[]> answers)
+        => bridge.ResolveUserInputAsync(
+            new ResolveUserInputRequest
+            {
+                RequestId = requestId,
+                Answers = answers.ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal),
+            },
+            lifetime.Token);
+
+    // Prose-detected choice: there is no pending server request, so the picked option is sent as the
+    // next turn (it also shows in the transcript as the user's message), then the card is removed.
+    private async Task ResolveSyntheticUserInputAsync(string requestId, IReadOnlyDictionary<string, string[]> answers)
+    {
+        string? choice = answers.Values.SelectMany(values => values).FirstOrDefault();
+        await OnUiAsync(() => RemoveUserInput(requestId)).ConfigureAwait(false);
+        if (!string.IsNullOrWhiteSpace(choice))
+        {
+            await SendMessageAsync(choice!, clearComposer: false).ConfigureAwait(false);
+        }
+    }
+
+    // Accumulate the raw (pre-markdown-stripping) agent text per item so a completed message can be
+    // inspected for a choice prompt. Gated on the opt-in toggle so detection is off by default.
+    private void AppendAgentRaw(string itemId, string rawChunk)
+    {
+        if (!settings.ExperimentalApiEnabled)
+        {
+            return;
+        }
+
+        lastAgentItemId = itemId;
+        if (!agentRawText.TryGetValue(itemId, out StringBuilder? builder))
+        {
+            builder = new StringBuilder();
+            agentRawText[itemId] = builder;
+        }
+
+        // Choice prompts are small; cap accumulation so a long message can't grow memory unbounded.
+        if (builder.Length < 16 * 1024)
+        {
+            builder.Append(rawChunk);
+        }
+    }
+
+    // On turn completion (codex is now waiting for the user), promote a detected choice prompt in the
+    // last agent message into the same single-card selection UI.
+    private void TryDetectChoicePrompt()
+    {
+        if (!settings.ExperimentalApiEnabled || lastAgentItemId is null)
+        {
+            return;
+        }
+
+        agentRawText.TryGetValue(lastAgentItemId, out StringBuilder? builder);
+        string raw = builder?.ToString() ?? string.Empty;
+        agentRawText.Clear();
+        lastAgentItemId = null;
+        if (ChoicePromptParser.TryParse(raw, out UserInputRequest synthesized))
+        {
+            EnqueueUserInput(new UserInputViewModel(synthesized, ResolveSyntheticUserInputAsync, markdown) { IsSynthetic = true });
+        }
     }
 
     private async Task SignInAsync()
@@ -1115,6 +1321,153 @@ public sealed class ApprovalViewModel : ObservableObject
         IsResolved = true;
         await resolver(RequestId, decision).ConfigureAwait(false);
     }
+}
+
+// An interactive choice prompt (request_user_input) surfaced as a card with one radio group per
+// question and a Submit button. [DataContract]/[DataMember] are required so Remote UI replicates
+// the questions, options, and command into the VS-side proxy.
+[DataContract]
+public sealed class UserInputViewModel : ObservableObject
+{
+    private readonly Func<string, IReadOnlyDictionary<string, string[]>, Task> resolver;
+    private bool isResolved;
+    private int resolving;
+
+    public UserInputViewModel(
+        UserInputRequest request,
+        Func<string, IReadOnlyDictionary<string, string[]>, Task> resolver,
+        SafeMarkdownService markdown)
+    {
+        this.resolver = resolver;
+        RequestId = request.RequestId;
+        Questions = new ObservableCollection<UserInputQuestionViewModel>(
+            request.Questions.Select(question => new UserInputQuestionViewModel(question, markdown)));
+        SubmitCommand = new AsyncCommand(SubmitOnceAsync, () => CanSubmit);
+    }
+
+    public string RequestId { get; }
+
+    // True when synthesized from a detected prose choice (no pending server request); drives
+    // ChatViewModel's "send the picked option as the next turn" resolution path.
+    public bool IsSynthetic { get; init; }
+
+    [DataMember]
+    public ObservableCollection<UserInputQuestionViewModel> Questions { get; }
+
+    [DataMember]
+    public AsyncCommand SubmitCommand { get; }
+
+    [DataMember]
+    public bool IsResolved
+    {
+        get => isResolved;
+        private set
+        {
+            if (SetProperty(ref isResolved, value))
+                SubmitCommand.RaiseCanExecuteChanged();
+        }
+    }
+
+    public bool CanSubmit => !IsResolved;
+
+    public void MarkResolved() => IsResolved = true;
+
+    private async Task SubmitOnceAsync()
+    {
+        if (Interlocked.Exchange(ref resolving, 1) != 0 || !CanSubmit)
+        {
+            return;
+        }
+
+        IsResolved = true;
+        var answers = new Dictionary<string, string[]>(StringComparer.Ordinal);
+        foreach (UserInputQuestionViewModel question in Questions)
+        {
+            if (question.SelectedLabel is { } label)
+            {
+                answers[question.Id] = [label];
+            }
+        }
+
+        await resolver(RequestId, answers).ConfigureAwait(false);
+    }
+}
+
+[DataContract]
+public sealed class UserInputQuestionViewModel : ObservableObject
+{
+    public UserInputQuestionViewModel(UserInputQuestion question, SafeMarkdownService markdown)
+    {
+        Id = question.Id;
+        Header = markdown.ToSafeText(question.Header);
+        Question = markdown.ToSafeText(question.Question);
+        Options = new ObservableCollection<UserInputOptionViewModel>(
+            question.Options.Select(option => new UserInputOptionViewModel(option, markdown, OnOptionSelected)));
+    }
+
+    // Not a DataMember: used only to key the answer sent back to the app-server.
+    public string Id { get; }
+
+    [DataMember]
+    public string Header { get; }
+
+    [DataMember]
+    public string Question { get; }
+
+    [DataMember]
+    public ObservableCollection<UserInputOptionViewModel> Options { get; }
+
+    // The verbatim (unsanitized) label of the selected option, echoed back to the app-server.
+    public string? SelectedLabel => Options.FirstOrDefault(option => option.IsSelected)?.Label;
+
+    // Single-select: selecting one option clears the rest of this question's group.
+    private void OnOptionSelected(UserInputOptionViewModel selected)
+    {
+        foreach (UserInputOptionViewModel option in Options)
+        {
+            if (!ReferenceEquals(option, selected))
+                option.SetSelectedSilently(false);
+        }
+    }
+}
+
+[DataContract]
+public sealed class UserInputOptionViewModel : ObservableObject
+{
+    private readonly Action<UserInputOptionViewModel> onSelected;
+    private bool isSelected;
+
+    public UserInputOptionViewModel(UserInputOption option, SafeMarkdownService markdown, Action<UserInputOptionViewModel> onSelected)
+    {
+        this.onSelected = onSelected;
+        // Label is echoed back verbatim so it matches the server's option; DisplayLabel is the
+        // sanitized text actually rendered.
+        Label = option.Label;
+        DisplayLabel = markdown.ToSafeText(option.Label);
+        Description = markdown.ToSafeText(option.Description);
+    }
+
+    // Not a DataMember: the raw value, never rendered, only submitted back to the app-server.
+    public string Label { get; }
+
+    [DataMember]
+    public string DisplayLabel { get; }
+
+    [DataMember]
+    public string Description { get; }
+
+    [DataMember]
+    public bool IsSelected
+    {
+        get => isSelected;
+        set
+        {
+            if (SetProperty(ref isSelected, value) && value)
+                onSelected(this);
+        }
+    }
+
+    internal void SetSelectedSilently(bool value) => SetProperty(ref isSelected, value, nameof(IsSelected));
 }
 
 public abstract class ObservableObject : INotifyPropertyChanged

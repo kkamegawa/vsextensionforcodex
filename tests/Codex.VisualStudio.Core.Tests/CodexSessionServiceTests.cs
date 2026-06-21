@@ -8,6 +8,8 @@ namespace Codex.VisualStudio.Core.Tests;
 [TestClass]
 public sealed class CodexSessionServiceTests
 {
+    private static readonly string[] CreativeOnly = ["Creative"];
+
     [TestMethod]
     public async Task ThreadListUsesPagingAndAllSupportedSources()
     {
@@ -279,6 +281,69 @@ public sealed class CodexSessionServiceTests
         Assert.AreEqual(ApprovalScope.Thread, audit[0].Scope);
         Assert.AreEqual(ApprovalAuditAction.AutoApproved, audit[1].Action);
         Assert.AreEqual(ApprovalScope.Thread, audit[1].Scope);
+    }
+
+    [TestMethod]
+    public async Task UserInputRequest_ParsesQuestionsAndReturnsValidatedSelectedLabel()
+    {
+        var connection = new RecordingConnection();
+        await using var service = CreateService();
+        UserInputRequest? captured = null;
+        service.UserInputRequested += (request, cancellationToken) =>
+        {
+            captured = request;
+
+            // Simulate the user picking the second option, plus an invalid label that must be filtered.
+            return service.ResolveUserInputAsync(
+                new ResolveUserInputRequest
+                {
+                    RequestId = request.RequestId,
+                    Answers = new Dictionary<string, string[]>
+                    {
+                        [request.Questions[0].Id] = [request.Questions[0].Options[1].Label, "not-an-option"],
+                    },
+                },
+                cancellationToken);
+        };
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        JsonElement result = await connection.EmitRequestAsync(
+            "ui-1",
+            "tool/requestUserInput",
+            new
+            {
+                itemId = "item-1",
+                threadId = "thread-1",
+                turnId = "turn-1",
+                questions = new[]
+                {
+                    new
+                    {
+                        id = "q1",
+                        header = "Direction",
+                        question = "Which portfolio style?",
+                        options = new[]
+                        {
+                            new { label = "Sharp", description = "Black/white/red" },
+                            new { label = "Creative", description = "Bold visuals" },
+                        },
+                    },
+                },
+            });
+
+        Assert.IsNotNull(captured);
+        Assert.AreEqual(1, captured!.Questions.Count);
+        Assert.AreEqual(2, captured.Questions[0].Options.Count);
+
+        // Response shape: { answers: { <id>: { answers: [<label>] } } } with only valid, single-select labels.
+        string[] selected = result
+            .GetProperty("answers")
+            .GetProperty("q1")
+            .GetProperty("answers")
+            .EnumerateArray()
+            .Select(item => item.GetString()!)
+            .ToArray();
+        CollectionAssert.AreEqual(CreativeOnly, selected);
     }
 
     private static CodexSessionService CreateService()

@@ -257,6 +257,7 @@
       <RowDefinition Height="Auto" />
       <RowDefinition Height="*" />
       <RowDefinition Height="Auto" />
+      <RowDefinition Height="Auto" />
     </Grid.RowDefinitions>
 
     <!-- Slim icon toolbar: status (left) · account + history flyout + new + restart (right) -->
@@ -572,8 +573,82 @@
       </ItemsControl>
     </Grid>
 
-    <!-- Composer: rounded container with textarea + action row (attach · mode · model · send) -->
+    <!-- Active interactive choice (request_user_input): a single bounded card pinned just above the
+         composer. Only one shows at a time; further prompts are queued and counted by
+         UserInputQueueText so a burst never fills or scrolls the panel. -->
     <Border Grid.Row="2"
+            Margin="10,0,10,10"
+            Padding="12"
+            CornerRadius="8"
+            Background="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBackgroundBrushKey}}"
+            BorderThickness="1"
+            BorderBrush="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBorderBrushKey}}"
+            Visibility="{Binding HasActiveUserInput, Converter={StaticResource BoolToVis}}">
+      <Grid>
+        <Grid.RowDefinitions>
+          <RowDefinition Height="Auto" />
+          <RowDefinition Height="Auto" />
+          <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <!-- Queue summary header (e.g. "2 choices waiting"); collapses when none are queued. -->
+        <TextBlock Grid.Row="0" FontSize="11" Opacity="0.7" Margin="0,0,0,6"
+                   Text="{Binding UserInputQueueText}">
+          <TextBlock.Style>
+            <Style TargetType="TextBlock">
+              <Setter Property="Foreground" Value="{DynamicResource {x:Static styles:VsBrushes.WindowTextKey}}" />
+              <Setter Property="Visibility" Value="Visible" />
+              <Style.Triggers>
+                <DataTrigger Binding="{Binding UserInputQueueText}" Value="">
+                  <Setter Property="Visibility" Value="Collapsed" />
+                </DataTrigger>
+              </Style.Triggers>
+            </Style>
+          </TextBlock.Style>
+        </TextBlock>
+
+        <!-- Questions scroll WITHIN the card (bounded height) so the card never grows the panel. -->
+        <ScrollViewer Grid.Row="1" MaxHeight="240" VerticalScrollBarVisibility="Auto">
+          <ItemsControl ItemsSource="{Binding ActiveUserInput.Questions}">
+            <ItemsControl.ItemTemplate>
+              <DataTemplate>
+                <StackPanel Margin="0,0,0,8">
+                  <TextBlock FontWeight="Bold" Text="{Binding Header}" TextWrapping="Wrap" />
+                  <TextBlock Margin="0,2,0,0" Text="{Binding Question}" TextWrapping="Wrap" />
+
+                  <!-- Options as a single-select radio group -->
+                  <ItemsControl Margin="0,6,0,0" ItemsSource="{Binding Options}">
+                    <ItemsControl.ItemTemplate>
+                      <DataTemplate>
+                        <!-- Single-select is enforced by the view model (selecting one clears its
+                             siblings); IsChecked is two-way so the choice flows back. -->
+                        <RadioButton Margin="0,2"
+                                     IsChecked="{Binding IsSelected, Mode=TwoWay}">
+                          <StackPanel>
+                            <TextBlock Text="{Binding DisplayLabel}" TextWrapping="Wrap" />
+                            <TextBlock Text="{Binding Description}" TextWrapping="Wrap"
+                                       FontSize="11" Opacity="0.7" />
+                          </StackPanel>
+                        </RadioButton>
+                      </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                  </ItemsControl>
+                </StackPanel>
+              </DataTemplate>
+            </ItemsControl.ItemTemplate>
+          </ItemsControl>
+        </ScrollViewer>
+
+        <!-- Submit — disabled once answered (the card is removed on resolve and the next promoted). -->
+        <WrapPanel Grid.Row="2" Margin="0,8,0,0">
+          <Button Content="Submit" Command="{Binding ActiveUserInput.SubmitCommand}"
+                  Style="{StaticResource RoundButtonStyle}" Padding="12,5" />
+        </WrapPanel>
+      </Grid>
+    </Border>
+
+    <!-- Composer: rounded container with textarea + action row (attach · mode · model · send) -->
+    <Border Grid.Row="3"
             Padding="10"
             Background="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBackgroundBrushKey}}"
             BorderThickness="0,1,0,0"
@@ -640,6 +715,11 @@
             <ComboBox DockPanel.Dock="Left" Margin="6,0,0,0" Width="124" VerticalAlignment="Center"
                       ToolTip="Model"
                       ItemsSource="{Binding Models}" SelectedItem="{Binding SelectedModel}" />
+            <CheckBox DockPanel.Dock="Left" Margin="8,0,0,0" VerticalAlignment="Center"
+                      Content="Choices"
+                      ToolTip="Show codex's confirmation/choice prompts as a selection card at the bottom"
+                      Foreground="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowTextBrushKey}}"
+                      IsChecked="{Binding ExperimentalApiEnabled, Mode=TwoWay}" />
 
             <Button DockPanel.Dock="Right" Content="&#xE724;" ToolTip="{Binding SendButtonText}"
                     Command="{Binding SendCommand}"

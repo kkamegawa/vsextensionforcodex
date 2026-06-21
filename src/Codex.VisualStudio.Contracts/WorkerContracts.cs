@@ -5,7 +5,7 @@ namespace Codex.VisualStudio.Contracts;
 
 public static class ContractVersions
 {
-    public const int Current = 5;
+    public const int Current = 6;
 }
 
 public enum WorkerConnectionState
@@ -250,6 +250,48 @@ public sealed class ApprovalAuditRecord
     public string? TurnId { get; set; }
 }
 
+// Plain classes (no [DataContract]) so StreamJsonRpc/Newtonsoft serializes every public
+// property by default, matching ApprovalRequest. These cross only the worker RPC boundary;
+// the Remote-UI-bound types are the UserInput*ViewModel classes in the Extension project.
+public sealed class UserInputRequest
+{
+    public string RequestId { get; set; } = string.Empty;
+
+    public string ThreadId { get; set; } = string.Empty;
+
+    public string TurnId { get; set; } = string.Empty;
+
+    public string? ItemId { get; set; }
+
+    public IReadOnlyList<UserInputQuestion> Questions { get; set; } = Array.Empty<UserInputQuestion>();
+}
+
+public sealed class UserInputQuestion
+{
+    public string Id { get; set; } = string.Empty;
+
+    public string Header { get; set; } = string.Empty;
+
+    public string Question { get; set; } = string.Empty;
+
+    public IReadOnlyList<UserInputOption> Options { get; set; } = Array.Empty<UserInputOption>();
+}
+
+public sealed class UserInputOption
+{
+    public string Label { get; set; } = string.Empty;
+
+    public string Description { get; set; } = string.Empty;
+}
+
+public sealed class ResolveUserInputRequest
+{
+    public string RequestId { get; set; } = string.Empty;
+
+    // Maps each question id to the labels the user selected. Single-select answers carry one entry.
+    public IDictionary<string, string[]> Answers { get; set; } = new Dictionary<string, string[]>();
+}
+
 public interface ICodexWorkerObserver
 {
     [JsonRpcMethod("observer/stateChanged")]
@@ -269,6 +311,12 @@ public interface ICodexWorkerObserver
 
     [JsonRpcMethod("observer/approvalAudit")]
     Task OnApprovalAuditAsync(ApprovalAuditRecord record, CancellationToken cancellationToken);
+
+    [JsonRpcMethod("observer/userInputRequested")]
+    Task OnUserInputRequestedAsync(UserInputRequest request, CancellationToken cancellationToken);
+
+    [JsonRpcMethod("observer/userInputResolved")]
+    Task OnUserInputResolvedAsync(string requestId, CancellationToken cancellationToken);
 }
 
 public interface ICodexWorkerClient
@@ -311,4 +359,7 @@ public interface ICodexWorkerClient
 
     [JsonRpcMethod("worker/approval/resolve")]
     Task ResolveApprovalAsync(ResolveApprovalRequest request, CancellationToken cancellationToken);
+
+    [JsonRpcMethod("worker/userInput/resolve")]
+    Task ResolveUserInputAsync(ResolveUserInputRequest request, CancellationToken cancellationToken);
 }

@@ -6,7 +6,7 @@
     <Project Path="src/Codex.AppServer.Fake/Codex.AppServer.Fake.csproj" />
     <Project Path="src/Codex.AppServer.Poc/Codex.AppServer.Poc.csproj" />
     <Project Path="src/Codex.VisualStudio.Extension/Codex.VisualStudio.Extension.csproj">
-      <Deploy Solution="Debug|*" />
+      <Deploy />
     </Project>
     <Project Path="src/Codex.VisualStudio.Package/Codex.VisualStudio.Package.csproj" />
   </Folder>

@@ -30,7 +30,11 @@ public sealed class WorkerBridge : ICodexWorkerObserver, IAsyncDisposable
 
     public event Func<string, Task>? ApprovalResolved;
 
-    public async Task<WorkerStatus> ConnectAsync(string workingDirectory, CancellationToken cancellationToken)
+    public event Func<UserInputRequest, Task>? UserInputRequested;
+
+    public event Func<string, Task>? UserInputResolved;
+
+    public async Task<WorkerStatus> ConnectAsync(string workingDirectory, bool experimentalApi, CancellationToken cancellationToken)
     {
         ExtensionDiagnostics.Write("Worker connect invocation starting");
         if (rpc is null)
@@ -47,7 +51,7 @@ public sealed class WorkerBridge : ICodexWorkerObserver, IAsyncDisposable
                     CodexPath = "codex",
                     WorkingDirectory = workingDirectory,
                     ExtensionVersion = "0.1.0",
-                    ExperimentalApi = false,
+                    ExperimentalApi = experimentalApi,
                 },
             },
             cancellationToken).ConfigureAwait(false);
@@ -120,6 +124,9 @@ public sealed class WorkerBridge : ICodexWorkerObserver, IAsyncDisposable
     public Task ResolveApprovalAsync(ResolveApprovalRequest request, CancellationToken cancellationToken)
         => rpc!.InvokeWithCancellationAsync("worker/approval/resolve", new object[] { request }, cancellationToken);
 
+    public Task ResolveUserInputAsync(ResolveUserInputRequest request, CancellationToken cancellationToken)
+        => rpc!.InvokeWithCancellationAsync("worker/userInput/resolve", new object[] { request }, cancellationToken);
+
     public Task OnStateChangedAsync(WorkerStatus status, CancellationToken cancellationToken)
         => StateChanged?.Invoke(status) ?? Task.CompletedTask;
 
@@ -137,6 +144,12 @@ public sealed class WorkerBridge : ICodexWorkerObserver, IAsyncDisposable
 
     public Task OnApprovalResolvedAsync(string requestId, CancellationToken cancellationToken)
         => ApprovalResolved?.Invoke(requestId) ?? Task.CompletedTask;
+
+    public Task OnUserInputRequestedAsync(UserInputRequest request, CancellationToken cancellationToken)
+        => UserInputRequested?.Invoke(request) ?? Task.CompletedTask;
+
+    public Task OnUserInputResolvedAsync(string requestId, CancellationToken cancellationToken)
+        => UserInputResolved?.Invoke(requestId) ?? Task.CompletedTask;
 
     public Task OnApprovalAuditAsync(ApprovalAuditRecord record, CancellationToken cancellationToken)
     {

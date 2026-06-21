@@ -26,6 +26,7 @@ public sealed class ViewModelTests
     private static readonly ApprovalDecision[] NoDecisions = [];
 
     private static readonly string[] ExpectedModes = ["Agent", "Chat"];
+    private static readonly string[] CreativeOnly = ["Creative"];
     [TestMethod]
     public async Task ApprovalViewModel_ResolvesOnlyOnce()
     {
@@ -50,6 +51,132 @@ public sealed class ViewModelTests
 
         Assert.AreEqual(1, calls);
         Assert.IsTrue(viewModel.IsResolved);
+    }
+
+    [TestMethod]
+    public async Task UserInputViewModel_SingleSelect_SubmitsSelectedRawLabel()
+    {
+        string? capturedRequestId = null;
+        IReadOnlyDictionary<string, string[]>? capturedAnswers = null;
+        var request = new UserInputRequest
+        {
+            RequestId = "ui-1",
+            Questions =
+            [
+                new UserInputQuestion
+                {
+                    Id = "q1",
+                    Header = "Direction",
+                    Question = "Which style?",
+                    Options =
+                    [
+                        new UserInputOption { Label = "Sharp", Description = "d1" },
+                        new UserInputOption { Label = "Creative", Description = "d2" },
+                    ],
+                },
+            ],
+        };
+        var vm = new UserInputViewModel(
+            request,
+            (id, answers) =>
+            {
+                capturedRequestId = id;
+                capturedAnswers = answers;
+                return Task.CompletedTask;
+            },
+            new SafeMarkdownService());
+
+        UserInputOptionViewModel first = vm.Questions[0].Options[0];
+        UserInputOptionViewModel second = vm.Questions[0].Options[1];
+        first.IsSelected = true;
+        second.IsSelected = true; // selecting the second clears the first (single-select)
+
+        Assert.IsFalse(first.IsSelected);
+        Assert.IsTrue(second.IsSelected);
+
+        vm.SubmitCommand.Execute(null);
+        await Task.Delay(50);
+
+        Assert.AreEqual("ui-1", capturedRequestId);
+        Assert.IsNotNull(capturedAnswers);
+        CollectionAssert.AreEqual(CreativeOnly, capturedAnswers!["q1"]);
+        Assert.IsTrue(vm.IsResolved);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_UserInputQueue_ShowsOneActiveCardAtATime()
+    {
+        using var vm = new ChatViewModel();
+        MethodInfo requested = typeof(ChatViewModel).GetMethod(
+            "OnUserInputRequestedAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
+        MethodInfo resolved = typeof(ChatViewModel).GetMethod(
+            "OnUserInputResolvedAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
+
+        await (Task)requested.Invoke(vm, [MakeUserInputRequest("ui-1")])!;
+        Assert.IsTrue(vm.HasActiveUserInput);
+        Assert.AreEqual("ui-1", vm.ActiveUserInput!.RequestId);
+        Assert.AreEqual(string.Empty, vm.UserInputQueueText);
+
+        // Second request is queued, not shown — the active card stays put.
+        await (Task)requested.Invoke(vm, [MakeUserInputRequest("ui-2")])!;
+        Assert.AreEqual("ui-1", vm.ActiveUserInput!.RequestId);
+        Assert.AreEqual("1 choice waiting", vm.UserInputQueueText);
+
+        // Resolving the active one promotes the queued one.
+        await (Task)resolved.Invoke(vm, ["ui-1"])!;
+        Assert.AreEqual("ui-2", vm.ActiveUserInput!.RequestId);
+        Assert.AreEqual(string.Empty, vm.UserInputQueueText);
+
+        // Resolving the last clears the card; a duplicate resolve is a no-op.
+        await (Task)resolved.Invoke(vm, ["ui-2"])!;
+        Assert.IsFalse(vm.HasActiveUserInput);
+        await (Task)resolved.Invoke(vm, ["ui-2"])!;
+        Assert.IsFalse(vm.HasActiveUserInput);
+    }
+
+    private static UserInputRequest MakeUserInputRequest(string requestId) => new()
+    {
+        RequestId = requestId,
+        Questions =
+        [
+            new UserInputQuestion
+            {
+                Id = "q1",
+                Header = "Direction",
+                Question = "Which style?",
+                Options = [new UserInputOption { Label = "Sharp", Description = "d1" }],
+            },
+        ],
+    };
+
+    [TestMethod]
+    public void ChoicePromptParser_DetectsQuestionWithNumberedOptions()
+    {
+        string text = string.Join('\n',
+            "次のどれで進めますか？",
+            "1. **シャープな開発者ポートフォリオ**: 黒/白/赤",
+            "2. クリエイティブ寄りポートフォリオ",
+            "3. 企業/コンサル寄りポートフォリオ");
+
+        bool ok = ChoicePromptParser.TryParse(text, out UserInputRequest request);
+
+        Assert.IsTrue(ok);
+        Assert.AreEqual(1, request.Questions.Count);
+        Assert.AreEqual(3, request.Questions[0].Options.Count);
+        // Inline markdown is stripped from the echoed label.
+        Assert.AreEqual("シャープな開発者ポートフォリオ: 黒/白/赤", request.Questions[0].Options[0].Label);
+        Assert.IsTrue(request.Questions[0].Question.EndsWith('？'));
+        Assert.IsTrue(request.RequestId.StartsWith("choice-", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    [DataRow("Here are the steps:\n1. Build\n2. Test\n3. Ship", DisplayName = "numbered list without a question")]
+    [DataRow("Which one?\n1. Only one option", DisplayName = "question with a single option")]
+    [DataRow("Just a sentence with no list?", DisplayName = "question without options")]
+    [DataRow("", DisplayName = "empty")]
+    public void ChoicePromptParser_RejectsNonChoiceText(string text)
+    {
+        Assert.IsFalse(ChoicePromptParser.TryParse(text, out _));
     }
 
     [TestMethod]
@@ -349,7 +476,11 @@ public sealed class ViewModelTests
     // VS-side data context proxy; a type without the attributes serializes as an empty
     // object and every binding to it fails silently (blank text, empty button content).
     private static readonly Type[] RemoteUiContextTypes =
-        [typeof(ChatViewModel), typeof(ChatItemViewModel), typeof(ApprovalViewModel), typeof(SuggestionChip), typeof(WorkerStatus), typeof(ThreadSummary)];
+        [
+            typeof(ChatViewModel), typeof(ChatItemViewModel), typeof(ApprovalViewModel),
+            typeof(UserInputViewModel), typeof(UserInputQuestionViewModel), typeof(UserInputOptionViewModel),
+            typeof(SuggestionChip), typeof(WorkerStatus), typeof(ThreadSummary),
+        ];
 
     [TestMethod]
     public void RemoteUiContextTypes_AreDataContracts()

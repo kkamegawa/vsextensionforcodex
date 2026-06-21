@@ -27,6 +27,8 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
         session.ApprovalResolved += PublishApprovalResolvedAsync;
         session.AccountStatusChanged += PublishAccountStatusAsync;
         session.ApprovalAuditRecorded += PublishApprovalAuditAsync;
+        session.UserInputRequested += PublishUserInputAsync;
+        session.UserInputResolved += PublishUserInputResolvedAsync;
     }
 
     public void AttachClient(JsonRpc rpc)
@@ -168,6 +170,9 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
     public Task ResolveApprovalAsync(ResolveApprovalRequest request, CancellationToken cancellationToken)
         => session.ResolveApprovalAsync(request, cancellationToken);
 
+    public Task ResolveUserInputAsync(ResolveUserInputRequest request, CancellationToken cancellationToken)
+        => session.ResolveUserInputAsync(request, cancellationToken);
+
     public async ValueTask DisposeAsync()
     {
         await session.DisposeAsync().ConfigureAwait(false);
@@ -254,6 +259,24 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
         if (clientRpc is not null)
         {
             await clientRpc.NotifyWithParameterObjectAsync("observer/approvalResolved", new { requestId }).ConfigureAwait(false);
+        }
+    }
+
+    private async Task PublishUserInputAsync(UserInputRequest request, CancellationToken cancellationToken)
+    {
+        await SetStatusAsync(WorkerConnectionState.WaitingForApproval, "Waiting for input.", cancellationToken).ConfigureAwait(false);
+        if (clientRpc is not null)
+        {
+            await clientRpc.NotifyWithParameterObjectAsync("observer/userInputRequested", new { request }).ConfigureAwait(false);
+        }
+    }
+
+    private async Task PublishUserInputResolvedAsync(string requestId, CancellationToken cancellationToken)
+    {
+        await SetStatusAsync(WorkerConnectionState.Busy, "Turn in progress.", cancellationToken).ConfigureAwait(false);
+        if (clientRpc is not null)
+        {
+            await clientRpc.NotifyWithParameterObjectAsync("observer/userInputResolved", new { requestId }).ConfigureAwait(false);
         }
     }
 
