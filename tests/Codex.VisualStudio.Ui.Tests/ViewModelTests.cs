@@ -134,6 +134,53 @@ public sealed class ViewModelTests
         Assert.IsFalse(vm.HasActiveUserInput);
     }
 
+    [TestMethod]
+    public async Task ChatViewModel_ApprovalQueue_ShowsOneActiveCardAtATime()
+    {
+        using var vm = new ChatViewModel();
+        MethodInfo requested = typeof(ChatViewModel).GetMethod(
+            "OnApprovalRequestedAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
+        MethodInfo resolved = typeof(ChatViewModel).GetMethod(
+            "OnApprovalResolvedAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
+
+        await (Task)requested.Invoke(vm, [MakeApprovalRequest("req-1")])!;
+        Assert.IsTrue(vm.HasActiveApproval);
+        Assert.AreEqual("req-1", vm.ActiveApproval!.RequestId);
+        Assert.AreEqual(string.Empty, vm.ApprovalQueueText);
+
+        // Concurrent prompts are queued, not stacked: the active card stays put and the rest are counted.
+        await (Task)requested.Invoke(vm, [MakeApprovalRequest("req-2")])!;
+        Assert.AreEqual("req-1", vm.ActiveApproval!.RequestId);
+        Assert.AreEqual("1 approval waiting", vm.ApprovalQueueText);
+
+        await (Task)requested.Invoke(vm, [MakeApprovalRequest("req-3")])!;
+        Assert.AreEqual("2 approvals waiting", vm.ApprovalQueueText);
+
+        // Resolving the active one promotes the next queued prompt.
+        await (Task)resolved.Invoke(vm, ["req-1"])!;
+        Assert.AreEqual("req-2", vm.ActiveApproval!.RequestId);
+        Assert.AreEqual("1 approval waiting", vm.ApprovalQueueText);
+
+        // A prompt resolved while still queued is dropped without becoming active.
+        await (Task)resolved.Invoke(vm, ["req-3"])!;
+        Assert.AreEqual("req-2", vm.ActiveApproval!.RequestId);
+        Assert.AreEqual(string.Empty, vm.ApprovalQueueText);
+
+        // Resolving the last clears the card; a duplicate resolve is a no-op.
+        await (Task)resolved.Invoke(vm, ["req-2"])!;
+        Assert.IsFalse(vm.HasActiveApproval);
+        await (Task)resolved.Invoke(vm, ["req-2"])!;
+        Assert.IsFalse(vm.HasActiveApproval);
+    }
+
+    private static ApprovalRequest MakeApprovalRequest(string requestId) => new()
+    {
+        RequestId = requestId,
+        Risk = ApprovalRiskCategory.ReadOnly,
+        DisplayText = "apply change",
+        AvailableDecisions = AcceptDeclineCancel,
+    };
+
     private static UserInputRequest MakeUserInputRequest(string requestId) => new()
     {
         RequestId = requestId,
@@ -192,6 +239,60 @@ public sealed class ViewModelTests
         Assert.IsFalse(text.Contains('\x1b'));
         Assert.IsFalse(text.Contains('\x00'));
         Assert.IsTrue(text.Contains("safe", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    public void SafeMarkdown_JapaneseSoftBreak_NoSpaceBetweenCharacters()
+    {
+        var service = new SafeMarkdownService();
+
+        string text = service.ToSafeText("こんにちは\n今日は良い天気ですね");
+
+        Assert.IsFalse(text.Contains("こんにちは 今日は", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    public void SafeMarkdown_LatinSoftBreak_PreservesWordBoundary()
+    {
+        var service = new SafeMarkdownService();
+
+        string text = service.ToSafeText("Hello\nworld");
+
+        Assert.IsTrue(text.Contains("Hello", StringComparison.Ordinal));
+        Assert.IsTrue(text.Contains("world", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    public void SafeMarkdown_DoubleParagraphBreak_PreservesSeparation()
+    {
+        var service = new SafeMarkdownService();
+
+        string text = service.ToSafeText("First paragraph\n\nSecond paragraph");
+
+        Assert.IsTrue(text.Contains("First paragraph", StringComparison.Ordinal));
+        Assert.IsTrue(text.Contains("Second paragraph", StringComparison.Ordinal));
+        Assert.IsTrue(text.Contains('\n'));
+    }
+
+    [TestMethod]
+    public void SafeMarkdown_FencedCodeBlock_PreservesInternalNewlines()
+    {
+        var service = new SafeMarkdownService();
+
+        string text = service.ToSafeText("Intro\n\n```\nfoo()\nbar()\n```\n\nOutro");
+
+        Assert.IsTrue(text.Contains("foo()\nbar()", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    public void SafeMarkdown_MixedCjkAndLatin_PreservesBoundarySpace()
+    {
+        var service = new SafeMarkdownService();
+
+        string text = service.ToSafeText("API の 使い方");
+
+        Assert.IsTrue(text.Contains("API の", StringComparison.Ordinal));
+        Assert.IsTrue(text.Contains("の使い方", StringComparison.Ordinal));
     }
 
     [TestMethod]
@@ -315,6 +416,165 @@ public sealed class ViewModelTests
         Assert.IsFalse(item.IsDiffItem);
         Assert.IsFalse(item.IsPlanItem);
         Assert.IsFalse(item.IsCollapsed);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_AgentMessageDelta_MultipleChunks_NoArtificialNewlines()
+    {
+        using var vm = new ChatViewModel();
+
+        await RaiseConversationEventAsync(vm, new ConversationEvent { Kind = ConversationEventKind.TurnStarted });
+        await RaiseConversationEventAsync(vm, new ConversationEvent
+        {
+            Kind = ConversationEventKind.AgentMessageDelta,
+            ItemId = "agent-1",
+            Text = "作る前に Product Design の",
+        });
+        await RaiseConversationEventAsync(vm, new ConversationEvent
+        {
+            Kind = ConversationEventKind.AgentMessageDelta,
+            ItemId = "agent-1",
+            Text = "確認が必要です。",
+        });
+
+        string text = SingleConversationItem(vm, "agent-1", ConversationEventKind.AgentMessageDelta).Text.TrimEnd('\r', '\n');
+        Assert.IsFalse(text.Contains('\n'));
+        Assert.IsFalse(text.Contains('\r'));
+        Assert.IsTrue(text.Contains("Product Design の確認", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_AgentMessageDelta_FullTextRerendered_NotAppended()
+    {
+        using var vm = new ChatViewModel();
+
+        await RaiseConversationEventAsync(vm, new ConversationEvent { Kind = ConversationEventKind.TurnStarted });
+        await RaiseConversationEventAsync(vm, new ConversationEvent
+        {
+            Kind = ConversationEventKind.AgentMessageDelta,
+            ItemId = "agent-2",
+            Text = "Hello ",
+        });
+        await RaiseConversationEventAsync(vm, new ConversationEvent
+        {
+            Kind = ConversationEventKind.AgentMessageDelta,
+            ItemId = "agent-2",
+            Text = "world",
+        });
+
+        string text = SingleConversationItem(vm, "agent-2", ConversationEventKind.AgentMessageDelta).Text.TrimEnd('\r', '\n');
+        Assert.AreEqual("Hello world", text);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_AgentMessageDelta_JapaneseFragments_NoInterCharacterSpace()
+    {
+        using var vm = new ChatViewModel();
+
+        await RaiseConversationEventAsync(vm, new ConversationEvent { Kind = ConversationEventKind.TurnStarted });
+        await RaiseConversationEventAsync(vm, new ConversationEvent
+        {
+            Kind = ConversationEventKind.AgentMessageDelta,
+            ItemId = "agent-3",
+            Text = "こんにちは",
+        });
+        await RaiseConversationEventAsync(vm, new ConversationEvent
+        {
+            Kind = ConversationEventKind.AgentMessageDelta,
+            ItemId = "agent-3",
+            Text = "今日は",
+        });
+
+        string text = SingleConversationItem(vm, "agent-3", ConversationEventKind.AgentMessageDelta).Text.TrimEnd('\r', '\n');
+        Assert.IsTrue(text.Contains("こんにちは今日は", StringComparison.Ordinal));
+        Assert.IsFalse(text.Contains("こんにちは\n今日は", StringComparison.Ordinal));
+        Assert.IsFalse(text.Contains("こんにちは 今日は", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_AgentAndReasoningDeltas_WithSameItemId_DoNotShareAccumulator()
+    {
+        using var vm = new ChatViewModel();
+
+        await RaiseConversationEventAsync(vm, new ConversationEvent { Kind = ConversationEventKind.TurnStarted });
+        await RaiseConversationEventAsync(vm, new ConversationEvent
+        {
+            Kind = ConversationEventKind.AgentMessageDelta,
+            ItemId = "shared-item",
+            Text = "Answer ",
+        });
+        await RaiseConversationEventAsync(vm, new ConversationEvent
+        {
+            Kind = ConversationEventKind.ReasoningSummaryDelta,
+            ItemId = "shared-item",
+            Text = "Thought ",
+        });
+        await RaiseConversationEventAsync(vm, new ConversationEvent
+        {
+            Kind = ConversationEventKind.AgentMessageDelta,
+            ItemId = "shared-item",
+            Text = "done",
+        });
+        await RaiseConversationEventAsync(vm, new ConversationEvent
+        {
+            Kind = ConversationEventKind.ReasoningSummaryDelta,
+            ItemId = "shared-item",
+            Text = "complete",
+        });
+
+        string agentText = SingleConversationItem(vm, "shared-item", ConversationEventKind.AgentMessageDelta).Text.TrimEnd('\r', '\n');
+        string reasoningText = SingleConversationItem(vm, "shared-item", ConversationEventKind.ReasoningSummaryDelta).Text.TrimEnd('\r', '\n');
+        Assert.AreEqual("Answer done", agentText);
+        Assert.AreEqual("Thought complete", reasoningText);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_CommandOutputDelta_PreservesNewlines()
+    {
+        using var vm = new ChatViewModel();
+
+        await RaiseConversationEventAsync(vm, new ConversationEvent
+        {
+            Kind = ConversationEventKind.CommandOutputDelta,
+            ItemId = "command-1",
+            Text = "line1\n",
+        });
+        await RaiseConversationEventAsync(vm, new ConversationEvent
+        {
+            Kind = ConversationEventKind.CommandOutputDelta,
+            ItemId = "command-1",
+            Text = "line2\n",
+        });
+
+        string text = SingleConversationItem(vm, "command-1", ConversationEventKind.CommandOutputDelta).Text;
+        Assert.IsTrue(text.Contains('\n'));
+        Assert.IsTrue(text.Contains("line1", StringComparison.Ordinal));
+        Assert.IsTrue(text.Contains("line2", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_TurnStarted_ClearsItemRawText()
+    {
+        using var vm = new ChatViewModel();
+
+        await RaiseConversationEventAsync(vm, new ConversationEvent { Kind = ConversationEventKind.TurnStarted });
+        await RaiseConversationEventAsync(vm, new ConversationEvent
+        {
+            Kind = ConversationEventKind.AgentMessageDelta,
+            ItemId = "agent-reset",
+            Text = "First",
+        });
+        await RaiseConversationEventAsync(vm, new ConversationEvent { Kind = ConversationEventKind.TurnCompleted });
+        await RaiseConversationEventAsync(vm, new ConversationEvent { Kind = ConversationEventKind.TurnStarted });
+        await RaiseConversationEventAsync(vm, new ConversationEvent
+        {
+            Kind = ConversationEventKind.AgentMessageDelta,
+            ItemId = "agent-reset",
+            Text = "Second",
+        });
+
+        string text = SingleConversationItem(vm, "agent-reset", ConversationEventKind.AgentMessageDelta).Text.TrimEnd('\r', '\n');
+        Assert.AreEqual("Second", text);
     }
 
     [TestMethod]
@@ -691,4 +951,20 @@ public sealed class ViewModelTests
             }
         }
     }
+
+    private static Task RaiseConversationEventAsync(ChatViewModel viewModel, ConversationEvent value)
+    {
+        MethodInfo method = typeof(ChatViewModel).GetMethod(
+            "OnConversationEventAsync",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("Could not find OnConversationEventAsync.");
+
+        return (Task)method.Invoke(viewModel, [value])!;
+    }
+
+    private static ChatItemViewModel SingleConversationItem(
+        ChatViewModel viewModel,
+        string itemId,
+        ConversationEventKind kind)
+        => viewModel.Items.Single(item => item.ItemId == itemId && item.Kind == kind);
 }
