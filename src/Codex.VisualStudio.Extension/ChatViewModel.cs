@@ -28,8 +28,11 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     private readonly ProjectScaffolder projectScaffolder;
     private readonly ExtensionSettings settings = ExtensionSettings.Load();
     private readonly Queue<UserInputViewModel> userInputQueue = new();
+    private readonly Queue<ApprovalViewModel> approvalQueue = new();
     private readonly Dictionary<string, StringBuilder> agentRawText = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, StringBuilder> itemRawText = new(StringComparer.Ordinal);
     private UserInputViewModel? activeUserInput;
+    private ApprovalViewModel? activeApproval;
     private string? lastAgentItemId;
     private int disposed;
     private int connecting;
@@ -95,8 +98,33 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     [DataMember]
     public ObservableCollection<ChatItemViewModel> Items { get; } = new();
 
+    // Approval prompts are shown one at a time, matching the interactive choice card: a single
+    // active card pinned above the composer, with the rest held in a FIFO queue. A burst of
+    // concurrent prompts never stacks up and pushes the transcript out of view.
     [DataMember]
-    public ObservableCollection<ApprovalViewModel> Approvals { get; } = new();
+    public ApprovalViewModel? ActiveApproval
+    {
+        get => activeApproval;
+        private set
+        {
+            if (SetProperty(ref activeApproval, value))
+            {
+                OnPropertyChanged(nameof(HasActiveApproval));
+                OnPropertyChanged(nameof(ApprovalQueueText));
+            }
+        }
+    }
+
+    [DataMember]
+    public bool HasActiveApproval => ActiveApproval is not null;
+
+    [DataMember]
+    public string ApprovalQueueText => approvalQueue.Count switch
+    {
+        0 => string.Empty,
+        1 => "1 approval waiting",
+        _ => $"{approvalQueue.Count} approvals waiting",
+    };
 
     // Interactive choices are shown one at a time, Claude Code-style: a single active card pinned
     // above the composer, with the rest held in a FIFO queue. This keeps a burst of choice prompts
@@ -710,6 +738,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             {
                 case ConversationEventKind.TurnStarted:
                     agentRawText.Clear();
+                    itemRawText.Clear();
                     lastAgentItemId = null;
                     break;
                 case ConversationEventKind.AgentMessageDelta when !string.IsNullOrEmpty(value.Text) && value.ItemId is not null:
@@ -717,6 +746,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                     break;
                 case ConversationEventKind.TurnCompleted:
                     TryDetectChoicePrompt();
+                    itemRawText.Clear();
                     break;
             }
 
@@ -739,10 +769,14 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 ConversationEventKind.DiffUpdated => "Diff",
                 _ => "Codex",
             };
+            bool renderFromAccumulatedText = ShouldRenderFromAccumulatedText(value.Kind);
+            string renderedText = renderFromAccumulatedText
+                ? RenderAccumulatedText(value, text)
+                : markdown.ToSafeText(text);
             ChatItemViewModel? existing = Items.LastOrDefault(item => item.ItemId == value.ItemId && item.Kind == value.Kind);
             if (existing is null)
             {
-                Items.Add(new ChatItemViewModel(role, markdown.ToSafeText(text), value.Kind)
+                Items.Add(new ChatItemViewModel(role, renderedText, value.Kind)
                 {
                     ItemId = value.ItemId,
                     IsTruncated = value.Truncated,
@@ -751,21 +785,73 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             }
             else
             {
-                existing.Text += markdown.ToSafeText(text);
+                existing.Text = renderFromAccumulatedText ? renderedText : existing.Text + renderedText;
                 existing.IsTruncated |= value.Truncated;
                 existing.OverflowFile = value.OverflowFile ?? existing.OverflowFile;
             }
         });
 
+    private string RenderAccumulatedText(ConversationEvent value, string text)
+    {
+        string key = string.Concat(value.Kind.ToString(), ":", value.ItemId ?? string.Empty);
+        if (!itemRawText.TryGetValue(key, out StringBuilder? rawText))
+        {
+            rawText = new StringBuilder();
+            itemRawText[key] = rawText;
+        }
+
+        rawText.Append(text);
+        return markdown.ToSafeText(rawText.ToString());
+    }
+
+    private static bool ShouldRenderFromAccumulatedText(ConversationEventKind kind)
+        => kind is ConversationEventKind.AgentMessageDelta or ConversationEventKind.ReasoningSummaryDelta;
+
     private Task OnApprovalRequestedAsync(ApprovalRequest value)
-        => OnUiAsync(() => Approvals.Add(new ApprovalViewModel(value, ResolveApprovalAsync)));
+        => OnUiAsync(() => EnqueueApproval(new ApprovalViewModel(value, ResolveApprovalAsync)));
+
+    // Show one approval card, queue the rest. Concurrent requestApproval prompts must not stack up
+    // and push the transcript out of view.
+    private void EnqueueApproval(ApprovalViewModel approval)
+    {
+        if (ActiveApproval is null)
+        {
+            ActiveApproval = approval;
+        }
+        else
+        {
+            approvalQueue.Enqueue(approval);
+            OnPropertyChanged(nameof(ApprovalQueueText));
+        }
+    }
 
     private Task OnApprovalResolvedAsync(string requestId)
-        => OnUiAsync(() =>
+        => OnUiAsync(() => RemoveApproval(requestId));
+
+    // Idempotent, mirroring RemoveUserInput: a repeat resolve for an already-removed id is a no-op.
+    private void RemoveApproval(string requestId)
+    {
+        if (ActiveApproval?.RequestId == requestId)
         {
-            ApprovalViewModel? approval = Approvals.FirstOrDefault(item => item.RequestId == requestId);
-            approval?.MarkResolved();
-        });
+            ActiveApproval.MarkResolved();
+            ActiveApproval = approvalQueue.Count > 0 ? approvalQueue.Dequeue() : null;
+            OnPropertyChanged(nameof(ApprovalQueueText));
+            return;
+        }
+
+        // Resolved/cancelled while still queued: drop it without promoting.
+        if (approvalQueue.Any(item => item.RequestId == requestId))
+        {
+            ApprovalViewModel[] remaining = approvalQueue.Where(item => item.RequestId != requestId).ToArray();
+            approvalQueue.Clear();
+            foreach (ApprovalViewModel item in remaining)
+            {
+                approvalQueue.Enqueue(item);
+            }
+
+            OnPropertyChanged(nameof(ApprovalQueueText));
+        }
+    }
 
     private async Task ResolveApprovalAsync(string requestId, ApprovalDecision decision)
     {

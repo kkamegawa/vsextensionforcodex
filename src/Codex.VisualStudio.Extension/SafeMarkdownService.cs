@@ -14,7 +14,8 @@ public sealed class SafeMarkdownService
         string withoutAnsi = AnsiEscape.Replace(value ?? string.Empty, string.Empty);
         string withoutHtml = HtmlTag.Replace(withoutAnsi, string.Empty);
         string withoutControlCharacters = ControlCharacters.Replace(withoutHtml, string.Empty);
-        return Markdown.ToPlainText(withoutControlCharacters, pipeline);
+        string plainText = Markdown.ToPlainText(withoutControlCharacters, pipeline);
+        return CjkSpace.Replace(plainText, string.Empty);
     }
 
     private static readonly Regex ControlCharacters = new(
@@ -27,5 +28,9 @@ public sealed class SafeMarkdownService
 
     private static readonly Regex HtmlTag = new(
         @"<[^>]+>",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
+    private static readonly Regex CjkSpace = new(
+        @"(?<=[\u2E80-\u9FFF\uF900-\uFAFF\uFF00-\uFFEF\u3000-\u303F]) (?=[\u2E80-\u9FFF\uF900-\uFAFF\uFF00-\uFFEF\u3000-\u303F])",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
 }
