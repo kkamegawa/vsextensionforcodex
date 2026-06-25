@@ -114,6 +114,10 @@ public sealed class WorkspaceDirectoryResolver : IWorkspaceDirectoryResolver
                 }
             }
         }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
         catch (Exception ex)
         {
             ExtensionDiagnostics.Write("Querying the open solution for its directory failed", ex);
@@ -137,6 +141,10 @@ public sealed class WorkspaceDirectoryResolver : IWorkspaceDirectoryResolver
                     }
                 }
             }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
         }
         catch (Exception ex)
         {

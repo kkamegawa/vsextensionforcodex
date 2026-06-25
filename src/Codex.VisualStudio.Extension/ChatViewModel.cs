@@ -726,11 +726,13 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     // Disconnected is allowed so the user can send with no solution/folder open: SendAsync
     // performs a lazy interactive connect (prompting for a working directory) before sending.
     // Connecting and Degraded are excluded — Connecting is transient and Degraded requires
-    // Restart.
+    // Restart. Disconnected is also gated on connecting == 0: if ConnectWithDirectoryAsync has
+    // already started (and will reject a second attempt), disable Send until that attempt settles.
     private bool CanSend()
         => !string.IsNullOrWhiteSpace(ComposerText)
-        && Status.State is WorkerConnectionState.Ready or WorkerConnectionState.Busy
-            or WorkerConnectionState.WaitingForApproval or WorkerConnectionState.Disconnected;
+        && (Status.State is WorkerConnectionState.Ready or WorkerConnectionState.Busy
+                or WorkerConnectionState.WaitingForApproval
+            || (Status.State is WorkerConnectionState.Disconnected && Volatile.Read(ref connecting) == 0));
 
     private void RaiseCommandStates()
     {

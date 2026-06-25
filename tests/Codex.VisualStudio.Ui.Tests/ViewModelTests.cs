@@ -127,7 +127,7 @@ public sealed class ViewModelTests
     }
 
     [TestMethod]
-    public async Task ApprovalViewModel_Accept_SetsApprovedVerdictAndHidesButtons()
+    public void ApprovalViewModel_Accept_SetsApprovedVerdictAndHidesButtons()
     {
         var vm = new ApprovalViewModel(
             new ApprovalRequest
@@ -140,7 +140,6 @@ public sealed class ViewModelTests
             (_, _) => Task.CompletedTask);
 
         vm.AcceptCommand.Execute(null);
-        await Task.Delay(100);
 
         Assert.IsTrue(vm.IsResolved);
         Assert.IsFalse(vm.ShowDecisionButtons, "Buttons must collapse once the choice is made.");
