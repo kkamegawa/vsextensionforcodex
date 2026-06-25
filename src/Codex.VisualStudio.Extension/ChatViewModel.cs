@@ -87,9 +87,6 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     [DataMember]
     public ObservableCollection<ChatItemViewModel> Items { get; } = new();
 
-    [DataMember]
-    public ObservableCollection<ApprovalViewModel> Approvals { get; } = new();
-
     // Intentionally NOT a DataMember: the XAML binds the flattened Account* properties below.
     public AccountPanelViewModel Account { get; } = new();
 
@@ -601,14 +598,34 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         });
 
     private Task OnApprovalRequestedAsync(ApprovalRequest value)
-        => OnUiAsync(() => Approvals.Add(new ApprovalViewModel(value, ResolveApprovalAsync)));
+        => OnUiAsync(() => ApplyApprovalRequested(value));
 
     private Task OnApprovalResolvedAsync(string requestId)
-        => OnUiAsync(() =>
+        => OnUiAsync(() => ApplyApprovalResolved(requestId));
+
+    // Adds the approval as an inline transcript entry, in document order, so the prompt appears
+    // where it occurred instead of in a separate stacking panel. Internal so unit tests can drive
+    // it without spinning up the worker; the private handler above marshals to the UI thread.
+    internal void ApplyApprovalRequested(ApprovalRequest request)
+        => Items.Add(new ChatItemViewModel(new ApprovalViewModel(request, ResolveApprovalAsync)));
+
+    // Transforms the inline card in place (no removal) so the choice never stacks. Idempotent: a
+    // user click already resolved it optimistically and the worker may notify more than once.
+    internal void ApplyApprovalResolved(string requestId)
+        => FindApproval(requestId)?.MarkResolved();
+
+    private ApprovalViewModel? FindApproval(string requestId)
+    {
+        foreach (ChatItemViewModel item in Items)
         {
-            ApprovalViewModel? approval = Approvals.FirstOrDefault(item => item.RequestId == requestId);
-            approval?.MarkResolved();
-        });
+            if (item.Approval is { } approval && string.Equals(approval.RequestId, requestId, StringComparison.Ordinal))
+            {
+                return approval;
+            }
+        }
+
+        return null;
+    }
 
     private async Task ResolveApprovalAsync(string requestId, ApprovalDecision decision)
     {
@@ -829,6 +846,15 @@ public sealed class ChatItemViewModel : ObservableObject
         });
     }
 
+    // Hosts an approval prompt inline in the transcript, in document order. While pending the
+    // entry shows the decision buttons; on resolution it transforms in place to show the verdict.
+    public ChatItemViewModel(ApprovalViewModel approval)
+        : this("Approval", string.Empty, ConversationEventKind.ItemCompleted)
+    {
+        Approval = approval;
+        IsApprovalItem = true;
+    }
+
     [DataMember]
     public string Role { get; }
 
@@ -879,6 +905,20 @@ public sealed class ChatItemViewModel : ObservableObject
     public bool IsDiffItem => Kind == ConversationEventKind.DiffUpdated;
     [DataMember]
     public bool IsPlanItem => Kind == ConversationEventKind.PlanUpdated;
+
+    // True when this transcript entry is an inline approval card (composes an ApprovalViewModel).
+    [DataMember]
+    public bool IsApprovalItem { get; }
+
+    // Inverse of IsApprovalItem — drives the ordinary-message sub-tree's visibility (Remote UI
+    // has no inverse-bool converter, so the flag is precomputed here).
+    [DataMember]
+    public bool IsNormalMessageItem => !IsApprovalItem;
+
+    // The hosted approval for an inline approval entry; null for ordinary messages. ApprovalViewModel
+    // is [DataContract], so nested Approval.* bindings replicate through the Remote UI proxy.
+    [DataMember]
+    public ApprovalViewModel? Approval { get; }
 
     [DataMember]
     public ObservableCollection<string> PlanSteps { get; } = [];
@@ -1004,6 +1044,7 @@ public sealed class ApprovalViewModel : ObservableObject
     [DataMember]
     public string? NetworkPort { get; }
 
+    [DataMember]
     public bool IsResolved
     {
         get => isResolved;
@@ -1017,9 +1058,32 @@ public sealed class ApprovalViewModel : ObservableObject
                 AcceptForSessionCommand.RaiseCanExecuteChanged();
                 DeclineCommand.RaiseCanExecuteChanged();
                 CancelCommand.RaiseCanExecuteChanged();
+                OnPropertyChanged(nameof(ShowDecisionButtons));
+                OnPropertyChanged(nameof(ResultText));
             }
         }
     }
+
+    // The decision buttons show while pending; once resolved they collapse and the verdict
+    // (ResultText) takes their place — the inline card transforms in place in the transcript.
+    [DataMember]
+    public bool ShowDecisionButtons => !IsResolved;
+
+    // Terse outcome shown after resolution. The command is already shown as DisplayText, so this
+    // is a fixed verdict string and carries no dynamic (untrusted) text — no SafeMarkdownService
+    // pass is required.
+    [DataMember]
+    public string ResultText => Decision switch
+    {
+        ApprovalDecision.Accept or ApprovalDecision.AcceptForTurn
+            or ApprovalDecision.AcceptForThread or ApprovalDecision.AcceptForSession => "✓ Approved",
+        ApprovalDecision.Decline => "✗ Declined",
+        _ => "Cancelled",
+    };
+
+    // The user's choice, captured on click so the verdict renders correctly even before the
+    // worker confirms. Stays null for externally-resolved approvals (timeout / cancel).
+    public ApprovalDecision? Decision { get; private set; }
 
     public bool CanResolve => !IsResolved && !IsPolicyBlocked;
 
@@ -1041,7 +1105,19 @@ public sealed class ApprovalViewModel : ObservableObject
     [DataMember]
     public AsyncCommand CancelCommand { get; }
 
-    public void MarkResolved() => IsResolved = true;
+    // Confirmation path (worker → observer/approvalResolved). Idempotent: a user click already
+    // set IsResolved (and Decision) optimistically, and the worker can emit the resolution more
+    // than once for one request. An external resolution (timeout / cancel) arrives here with no
+    // prior decision, so the verdict falls back to "Cancelled".
+    public void MarkResolved()
+    {
+        if (IsResolved)
+        {
+            return;
+        }
+
+        IsResolved = true;
+    }
 
     private async Task ResolveOnceAsync(ApprovalDecision decision)
     {
@@ -1050,6 +1126,9 @@ public sealed class ApprovalViewModel : ObservableObject
             return;
         }
 
+        // Capture the choice before flipping IsResolved so the in-place verdict is correct
+        // immediately, without waiting for the worker's confirmation round-trip.
+        Decision = decision;
         IsResolved = true;
         await resolver(RequestId, decision).ConfigureAwait(false);
     }

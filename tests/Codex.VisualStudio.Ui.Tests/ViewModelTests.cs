@@ -127,6 +127,111 @@ public sealed class ViewModelTests
     }
 
     [TestMethod]
+    public async Task ApprovalViewModel_Accept_SetsApprovedVerdictAndHidesButtons()
+    {
+        var vm = new ApprovalViewModel(
+            new ApprovalRequest
+            {
+                RequestId = "req-accept",
+                Risk = ApprovalRiskCategory.WorkspaceWrite,
+                DisplayText = "dotnet build",
+                AvailableDecisions = AcceptDeclineCancel,
+            },
+            (_, _) => Task.CompletedTask);
+
+        vm.AcceptCommand.Execute(null);
+        await Task.Delay(100);
+
+        Assert.IsTrue(vm.IsResolved);
+        Assert.IsFalse(vm.ShowDecisionButtons, "Buttons must collapse once the choice is made.");
+        Assert.AreEqual(ApprovalDecision.Accept, vm.Decision);
+        Assert.IsTrue(vm.ResultText.Contains("Approved", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    public void ApprovalViewModel_ExternalResolve_ShowsCancelledVerdict()
+    {
+        var vm = new ApprovalViewModel(
+            new ApprovalRequest
+            {
+                RequestId = "req-ext",
+                Risk = ApprovalRiskCategory.ReadOnly,
+                DisplayText = "read file",
+                AvailableDecisions = AcceptDeclineCancel,
+            },
+            (_, _) => Task.CompletedTask);
+
+        // No prior user click: the worker resolved it (timeout / cancel).
+        vm.MarkResolved();
+
+        Assert.IsTrue(vm.IsResolved);
+        Assert.IsFalse(vm.ShowDecisionButtons);
+        Assert.IsNull(vm.Decision);
+        Assert.AreEqual("Cancelled", vm.ResultText);
+
+        // Idempotent: a second emission for the same request must not throw or change the verdict.
+        vm.MarkResolved();
+        Assert.AreEqual("Cancelled", vm.ResultText);
+    }
+
+    [TestMethod]
+    public void ChatViewModel_ApprovalRequested_AddsInlineApprovalItem()
+    {
+        using var vm = new ChatViewModel();
+        vm.ApplyApprovalRequested(new ApprovalRequest
+        {
+            RequestId = "req-inline",
+            Risk = ApprovalRiskCategory.WorkspaceWrite,
+            DisplayText = "dotnet build",
+            AvailableDecisions = AcceptDeclineCancel,
+        });
+
+        Assert.AreEqual(1, vm.Items.Count);
+        ChatItemViewModel item = vm.Items[0];
+        Assert.IsTrue(item.IsApprovalItem);
+        Assert.IsFalse(item.IsNormalMessageItem);
+        Assert.IsNotNull(item.Approval);
+        Assert.AreEqual("req-inline", item.Approval!.RequestId);
+        Assert.IsFalse(vm.IsThreadEmpty);
+    }
+
+    [TestMethod]
+    public void ChatViewModel_ApprovalResolved_TransformsInPlace()
+    {
+        using var vm = new ChatViewModel();
+        vm.ApplyApprovalRequested(new ApprovalRequest
+        {
+            RequestId = "req-inline-2",
+            Risk = ApprovalRiskCategory.WorkspaceWrite,
+            DisplayText = "dotnet build",
+            AvailableDecisions = AcceptDeclineCancel,
+        });
+
+        vm.ApplyApprovalResolved("req-inline-2");
+
+        // The card stays in place (no stacking, no removal) and flips to its resolved state.
+        Assert.AreEqual(1, vm.Items.Count);
+        Assert.IsTrue(vm.Items[0].IsApprovalItem);
+        Assert.IsTrue(vm.Items[0].Approval!.IsResolved);
+    }
+
+    [TestMethod]
+    public void ChatToolWindowXaml_RendersApprovalsInline()
+    {
+        const string resourceName = "Codex.VisualStudio.Extension.ToolWindows.ChatToolWindowContent.xaml";
+        using Stream? stream = typeof(ChatViewModel).Assembly.GetManifestResourceStream(resourceName);
+        Assert.IsNotNull(stream, $"Embedded resource '{resourceName}' not found.");
+        using var reader = new StreamReader(stream);
+        string xaml = reader.ReadToEnd();
+
+        // Approvals now render inline in the transcript via nested Approval.* bindings...
+        Assert.IsTrue(xaml.Contains("{Binding Approval.AcceptCommand}", StringComparison.Ordinal));
+        Assert.IsTrue(xaml.Contains("{Binding Approval.ResultText}", StringComparison.Ordinal));
+        // ...and the separate stacking approvals panel is gone.
+        Assert.IsFalse(xaml.Contains("{Binding Approvals}", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
     public void ChatItemViewModel_ReasoningItem_StartsCollapsed()
     {
         var item = new ChatItemViewModel("Reasoning", "some reasoning text", ConversationEventKind.ReasoningSummaryDelta);

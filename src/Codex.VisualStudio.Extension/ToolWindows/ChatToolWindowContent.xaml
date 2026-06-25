@@ -327,14 +327,9 @@
       </DockPanel>
     </Border>
 
-    <!-- Body: full-width transcript with a centered welcome overlay, plus pending approvals -->
+    <!-- Body: full-width transcript (approvals render inline as cards) with a centered welcome overlay -->
     <Grid Grid.Row="1"
           Background="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowCodeBlockBackgroundBrushKey}}">
-      <Grid.RowDefinitions>
-        <RowDefinition Height="*" />
-        <RowDefinition Height="Auto" />
-      </Grid.RowDefinitions>
-
       <Grid Grid.Row="0">
         <!-- Transcript -->
         <ListBox Margin="0"
@@ -366,7 +361,13 @@
                     </Style.Triggers>
                   </Style>
                 </Border.Style>
-                <StackPanel>
+                <!-- Theme the whole card's text here: in Remote UI the ancestor implicit TextBlock
+                     style and the root Grid's inherited foreground do not reach into this serialized
+                     DataTemplate, so text without an explicit Foreground falls back to default black.
+                     Setting it on the card root lets every descendant TextBlock inherit a themed color. -->
+                <StackPanel TextElement.Foreground="{DynamicResource {x:Static styles:VsBrushes.WindowTextKey}}">
+                  <!-- Ordinary message content — collapsed for inline approval entries. -->
+                  <StackPanel Visibility="{Binding IsNormalMessageItem, Converter={StaticResource BoolToVis}}">
                   <TextBlock FontWeight="SemiBold" Opacity="0.85" Text="{Binding Role}" />
 
                   <!-- Collapse toggle button — visible only for reasoning items. -->
@@ -464,6 +465,68 @@
                       </Style>
                     </TextBlock.Style>
                   </TextBlock>
+                  </StackPanel>
+
+                  <!-- Inline approval card — shown only for approval entries; transforms in place on resolution. -->
+                  <StackPanel Visibility="{Binding IsApprovalItem, Converter={StaticResource BoolToVis}}">
+                    <TextBlock FontWeight="Bold" Text="{Binding Approval.Risk}" />
+                    <TextBlock Margin="0,4,0,0" Text="{Binding Approval.DisplayText}" TextWrapping="Wrap" />
+                    <TextBlock Margin="0,4,0,0" Opacity="0.8" Text="{Binding Approval.Reason}" TextWrapping="Wrap" />
+
+                    <!-- Network-specific context (host and port). -->
+                    <StackPanel Margin="0,4,0,0" Orientation="Horizontal"
+                                Visibility="{Binding Approval.IsNetworkApproval, Converter={StaticResource BoolToVis}}">
+                      <TextBlock Text="Host: " FontWeight="SemiBold" />
+                      <TextBlock Text="{Binding Approval.NetworkHost}" Margin="0,0,12,0" />
+                      <TextBlock Text="Port: " FontWeight="SemiBold" />
+                      <TextBlock Text="{Binding Approval.NetworkPort}" />
+                    </StackPanel>
+
+                    <!-- Policy-block reason (defensive; policy-blocked requests are auto-declined upstream). -->
+                    <TextBlock Margin="0,4,0,0" TextWrapping="Wrap" FontStyle="Italic"
+                               Text="{Binding Approval.PolicyBlockReason, StringFormat='Policy blocked: {0}'}">
+                      <TextBlock.Style>
+                        <Style TargetType="TextBlock">
+                          <Setter Property="Foreground" Value="{DynamicResource {x:Static styles:VsBrushes.WindowTextKey}}" />
+                          <Setter Property="Visibility" Value="Collapsed" />
+                          <Style.Triggers>
+                            <DataTrigger Binding="{Binding Approval.IsPolicyBlocked}" Value="True">
+                              <Setter Property="Visibility" Value="Visible" />
+                            </DataTrigger>
+                          </Style.Triggers>
+                        </Style>
+                      </TextBlock.Style>
+                    </TextBlock>
+
+                    <!-- Decision buttons — shown while pending, hidden once the choice is made. -->
+                    <StackPanel Margin="0,10,0,0" Orientation="Horizontal"
+                                Visibility="{Binding Approval.ShowDecisionButtons, Converter={StaticResource BoolToVis}}">
+                      <Button Margin="0,0,6,0" Content="Accept" Command="{Binding Approval.AcceptCommand}"
+                              Style="{StaticResource RoundButtonStyle}" Padding="12,5"
+                              Visibility="{Binding Approval.ShowAccept, Converter={StaticResource BoolToVis}}" />
+                      <Button Margin="0,0,6,0" Content="Accept for turn" Command="{Binding Approval.AcceptForTurnCommand}"
+                              Style="{StaticResource RoundButtonStyle}" Padding="12,5"
+                              Visibility="{Binding Approval.ShowAcceptForTurn, Converter={StaticResource BoolToVis}}" />
+                      <Button Margin="0,0,6,0" Content="Accept for thread" Command="{Binding Approval.AcceptForThreadCommand}"
+                              Style="{StaticResource RoundButtonStyle}" Padding="12,5"
+                              Visibility="{Binding Approval.ShowAcceptForThread, Converter={StaticResource BoolToVis}}" />
+                      <Button Margin="0,0,6,0" Content="Accept for session" Command="{Binding Approval.AcceptForSessionCommand}"
+                              Style="{StaticResource RoundButtonStyle}" Padding="12,5"
+                              Visibility="{Binding Approval.ShowAcceptForSession, Converter={StaticResource BoolToVis}}" />
+                      <Button Margin="0,0,6,0" Content="Decline" Command="{Binding Approval.DeclineCommand}"
+                              Style="{StaticResource RoundButtonStyle}" Padding="12,5"
+                              Visibility="{Binding Approval.ShowDecline, Converter={StaticResource BoolToVis}}" />
+                      <Button Content="Cancel" Command="{Binding Approval.CancelCommand}"
+                              Style="{StaticResource RoundButtonStyle}" Padding="12,5"
+                              Visibility="{Binding Approval.ShowCancel, Converter={StaticResource BoolToVis}}" />
+                    </StackPanel>
+
+                    <!-- Verdict — replaces the buttons in place once the user chooses. -->
+                    <TextBlock Margin="0,10,0,0" FontWeight="SemiBold"
+                               Foreground="{DynamicResource {x:Static styles:VsBrushes.WindowTextKey}}"
+                               Text="{Binding Approval.ResultText}"
+                               Visibility="{Binding Approval.IsResolved, Converter={StaticResource BoolToVis}}" />
+                  </StackPanel>
                 </StackPanel>
               </Border>
             </DataTemplate>
@@ -494,82 +557,6 @@
           </ItemsControl>
         </StackPanel>
       </Grid>
-
-      <!-- Pending approvals -->
-      <ItemsControl Grid.Row="1" Margin="10,0,10,10" ItemsSource="{Binding Approvals}">
-        <ItemsControl.ItemTemplate>
-          <DataTemplate>
-            <Border Padding="12" Margin="0,0,0,8" CornerRadius="8"
-                    Background="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBackgroundBrushKey}}"
-                    BorderThickness="1"
-                    BorderBrush="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBorderBrushKey}}">
-              <Border.Style>
-                <Style TargetType="Border">
-                  <Setter Property="Opacity" Value="1" />
-                  <Style.Triggers>
-                    <!-- Policy-blocked approvals are dimmed since no user action is possible. -->
-                    <DataTrigger Binding="{Binding IsPolicyBlocked}" Value="True">
-                      <Setter Property="Opacity" Value="0.6" />
-                    </DataTrigger>
-                  </Style.Triggers>
-                </Style>
-              </Border.Style>
-              <StackPanel>
-                <TextBlock FontWeight="Bold" Text="{Binding Risk}" />
-                <TextBlock Margin="0,4,0,0" Text="{Binding DisplayText}" TextWrapping="Wrap" />
-                <TextBlock Margin="0,4,0,0" Opacity="0.8" Text="{Binding Reason}" TextWrapping="Wrap" />
-
-                <!-- Network-specific context (host and port). -->
-                <StackPanel Margin="0,4,0,0" Orientation="Horizontal"
-                            Visibility="{Binding IsNetworkApproval, Converter={StaticResource BoolToVis}}">
-                  <TextBlock Text="Host: " FontWeight="SemiBold" />
-                  <TextBlock Text="{Binding NetworkHost}" Margin="0,0,12,0" />
-                  <TextBlock Text="Port: " FontWeight="SemiBold" />
-                  <TextBlock Text="{Binding NetworkPort}" />
-                </StackPanel>
-
-                <!-- Policy-block reason (shown when a managed policy auto-declined). -->
-                <TextBlock Margin="0,4,0,0" TextWrapping="Wrap" FontStyle="Italic"
-                           Text="{Binding PolicyBlockReason, StringFormat='Policy blocked: {0}'}">
-                  <TextBlock.Style>
-                    <Style TargetType="TextBlock">
-                      <Setter Property="Foreground" Value="{DynamicResource {x:Static styles:VsBrushes.WindowTextKey}}" />
-                      <Setter Property="Visibility" Value="Collapsed" />
-                      <Style.Triggers>
-                        <DataTrigger Binding="{Binding IsPolicyBlocked}" Value="True">
-                          <Setter Property="Visibility" Value="Visible" />
-                        </DataTrigger>
-                      </Style.Triggers>
-                    </Style>
-                  </TextBlock.Style>
-                </TextBlock>
-
-                <!-- Decision buttons — shown only for decisions the server allows. -->
-                <StackPanel Margin="0,10,0,0" Orientation="Horizontal">
-                  <Button Margin="0,0,6,0" Content="Accept" Command="{Binding AcceptCommand}"
-                          Style="{StaticResource RoundButtonStyle}" Padding="12,5"
-                          Visibility="{Binding ShowAccept, Converter={StaticResource BoolToVis}}" />
-                  <Button Margin="0,0,6,0" Content="Accept for turn" Command="{Binding AcceptForTurnCommand}"
-                          Style="{StaticResource RoundButtonStyle}" Padding="12,5"
-                          Visibility="{Binding ShowAcceptForTurn, Converter={StaticResource BoolToVis}}" />
-                  <Button Margin="0,0,6,0" Content="Accept for thread" Command="{Binding AcceptForThreadCommand}"
-                          Style="{StaticResource RoundButtonStyle}" Padding="12,5"
-                          Visibility="{Binding ShowAcceptForThread, Converter={StaticResource BoolToVis}}" />
-                  <Button Margin="0,0,6,0" Content="Accept for session" Command="{Binding AcceptForSessionCommand}"
-                          Style="{StaticResource RoundButtonStyle}" Padding="12,5"
-                          Visibility="{Binding ShowAcceptForSession, Converter={StaticResource BoolToVis}}" />
-                  <Button Margin="0,0,6,0" Content="Decline" Command="{Binding DeclineCommand}"
-                          Style="{StaticResource RoundButtonStyle}" Padding="12,5"
-                          Visibility="{Binding ShowDecline, Converter={StaticResource BoolToVis}}" />
-                  <Button Content="Cancel" Command="{Binding CancelCommand}"
-                          Style="{StaticResource RoundButtonStyle}" Padding="12,5"
-                          Visibility="{Binding ShowCancel, Converter={StaticResource BoolToVis}}" />
-                </StackPanel>
-              </StackPanel>
-            </Border>
-          </DataTemplate>
-        </ItemsControl.ItemTemplate>
-      </ItemsControl>
     </Grid>
 
     <!-- Composer: rounded container with textarea + action row (attach · mode · model · send) -->
