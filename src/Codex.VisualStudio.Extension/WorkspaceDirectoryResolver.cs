@@ -10,8 +10,8 @@ namespace Codex.VisualStudio.Extension;
 
 /// <summary>
 /// The choices presented when no working directory could be determined from the open
-/// solution/folder. <see cref="None"/> is returned when the user dismisses the prompt without
-/// choosing.
+/// solution/folder or a remembered value. <see cref="None"/> is returned when the user
+/// dismisses the prompt without choosing.
 /// </summary>
 public enum WorkingDirectoryChoice
 {
@@ -114,6 +114,10 @@ public sealed class WorkspaceDirectoryResolver : IWorkspaceDirectoryResolver
                 }
             }
         }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
         catch (Exception ex)
         {
             ExtensionDiagnostics.Write("Querying the open solution for its directory failed", ex);
@@ -137,6 +141,10 @@ public sealed class WorkspaceDirectoryResolver : IWorkspaceDirectoryResolver
                     }
                 }
             }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
         }
         catch (Exception ex)
         {
