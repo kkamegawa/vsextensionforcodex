@@ -16,77 +16,86 @@ public sealed class SafeMarkdownService
     {
         string withoutControlCharacters = Sanitize(value);
         string plainText = Markdown.ToPlainText(withoutControlCharacters, pipeline);
-        return CjkSpace.Replace(plainText, string.Empty);
+        return CjkSpace.Replace(StripHtmlTags(plainText), string.Empty);
     }
 
     public IReadOnlyList<ChatBlockViewModel> ToBlocks(string value)
+        => ToSafeTextAndBlocks(value).Blocks;
+
+    public SafeMarkdownRenderResult ToSafeTextAndBlocks(string value)
     {
         string safeMarkdown = Sanitize(value);
         if (string.IsNullOrWhiteSpace(safeMarkdown))
         {
-            return [];
+            return new(string.Empty, []);
         }
 
         MarkdownDocument document = Markdown.Parse(safeMarkdown, pipeline);
         var blocks = new List<ChatBlockViewModel>();
+        var safeTextBuilder = new StringBuilder();
         foreach (Block block in document)
         {
-            AppendBlock(block, blocks, 0);
+            AppendBlock(block, blocks, 0, safeTextBuilder);
         }
 
         if (blocks.Count == 0)
         {
-            string fallback = NormalizeText(Markdown.ToPlainText(safeMarkdown, pipeline));
+            string fallback = NormalizeText(StripHtmlTags(Markdown.ToPlainText(safeMarkdown, pipeline)));
             if (!string.IsNullOrWhiteSpace(fallback))
             {
                 blocks.Add(ChatBlockViewModel.Paragraph(fallback));
+                AppendSafeTextSegment(safeTextBuilder, fallback);
             }
         }
 
-        return blocks;
+        return new(CjkSpace.Replace(safeTextBuilder.ToString(), string.Empty), blocks);
     }
 
     private static string Sanitize(string value)
     {
         string withoutAnsi = AnsiEscape.Replace(value ?? string.Empty, string.Empty);
-        string withoutHtml = HtmlTag.Replace(withoutAnsi, string.Empty);
-        return ControlCharacters.Replace(withoutHtml, string.Empty);
+        return ControlCharacters.Replace(withoutAnsi, string.Empty);
     }
 
-    private static void AppendBlock(Block block, List<ChatBlockViewModel> blocks, int listDepth)
+    private static void AppendBlock(Block block, List<ChatBlockViewModel> blocks, int listDepth, StringBuilder safeTextBuilder)
     {
         switch (block)
         {
             case HeadingBlock heading:
-                AddTextBlock(blocks, ChatBlockViewModel.Heading(NormalizeText(ExtractInlineText(heading.Inline)), heading.Level));
+                AddTextBlock(blocks, ChatBlockViewModel.Heading(
+                    NormalizeText(StripHtmlTags(ExtractInlineText(heading.Inline))),
+                    heading.Level),
+                    safeTextBuilder);
                 break;
             case ParagraphBlock paragraph:
                 AddTextBlock(blocks, listDepth > 0
-                    ? ChatBlockViewModel.ListItem(NormalizeText(ExtractInlineText(paragraph.Inline)))
-                    : ChatBlockViewModel.Paragraph(NormalizeText(ExtractInlineText(paragraph.Inline))));
+                    ? ChatBlockViewModel.ListItem(NormalizeText(StripHtmlTags(ExtractInlineText(paragraph.Inline))))
+                    : ChatBlockViewModel.Paragraph(NormalizeText(StripHtmlTags(ExtractInlineText(paragraph.Inline)))),
+                    safeTextBuilder);
                 break;
             case FencedCodeBlock fenced:
-                AddCodeBlock(blocks, GetCodeText(fenced), fenced.Info);
+                AddCodeBlock(blocks, GetCodeText(fenced), fenced.Info, safeTextBuilder);
                 break;
             case CodeBlock code:
-                AddCodeBlock(blocks, GetCodeText(code), string.Empty);
+                AddCodeBlock(blocks, GetCodeText(code), string.Empty, safeTextBuilder);
                 break;
             case ThematicBreakBlock:
                 blocks.Add(ChatBlockViewModel.Separator());
+                AppendSafeTextSegment(safeTextBuilder, string.Empty);
                 break;
             case ListBlock list:
-                AppendList(list, blocks, listDepth + 1);
+                AppendList(list, blocks, listDepth + 1, safeTextBuilder);
                 break;
             case ContainerBlock container:
                 foreach (Block child in container)
                 {
-                    AppendBlock(child, blocks, listDepth);
+                    AppendBlock(child, blocks, listDepth, safeTextBuilder);
                 }
                 break;
         }
     }
 
-    private static void AppendList(ListBlock list, List<ChatBlockViewModel> blocks, int listDepth)
+    private static void AppendList(ListBlock list, List<ChatBlockViewModel> blocks, int listDepth, StringBuilder safeTextBuilder)
     {
         foreach (Block item in list)
         {
@@ -94,29 +103,31 @@ public sealed class SafeMarkdownService
             {
                 foreach (Block child in listItem)
                 {
-                    AppendBlock(child, blocks, listDepth);
+                    AppendBlock(child, blocks, listDepth, safeTextBuilder);
                 }
             }
             else
             {
-                AppendBlock(item, blocks, listDepth);
+                AppendBlock(item, blocks, listDepth, safeTextBuilder);
             }
         }
     }
 
-    private static void AddTextBlock(List<ChatBlockViewModel> blocks, ChatBlockViewModel block)
+    private static void AddTextBlock(List<ChatBlockViewModel> blocks, ChatBlockViewModel block, StringBuilder safeTextBuilder)
     {
         if (!string.IsNullOrWhiteSpace(block.Text))
         {
             blocks.Add(block);
+            AppendSafeTextSegment(safeTextBuilder, block.Text);
         }
     }
 
-    private static void AddCodeBlock(List<ChatBlockViewModel> blocks, string code, string? language)
+    private static void AddCodeBlock(List<ChatBlockViewModel> blocks, string code, string? language, StringBuilder safeTextBuilder)
     {
         if (!string.IsNullOrEmpty(code))
         {
             blocks.Add(ChatBlockViewModel.CodeBlock(code, NormalizeLanguage(language)));
+            AppendSafeTextSegment(safeTextBuilder, code);
         }
     }
 
@@ -130,9 +141,16 @@ public sealed class SafeMarkdownService
     }
 
     private static string NormalizeLanguage(string? value)
-        => string.IsNullOrWhiteSpace(value)
-            ? string.Empty
-            : ControlCharacters.Replace(value.Trim(), string.Empty);
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return string.Empty;
+        }
+
+        string normalized = ControlCharacters.Replace(value, string.Empty).Trim();
+        int firstWhitespace = normalized.IndexOfAny(LanguageWhitespace);
+        return firstWhitespace >= 0 ? normalized[..firstWhitespace] : normalized;
+    }
 
     private static string NormalizeLineEndings(string value)
         => value.Replace("\r\n", "\n").Replace('\r', '\n');
@@ -148,6 +166,22 @@ public sealed class SafeMarkdownService
         AppendInlineText(inline.FirstChild, builder);
         return builder.ToString();
     }
+
+    private static void AppendSafeTextSegment(StringBuilder builder, string segment)
+    {
+        if (builder.Length > 0)
+        {
+            builder.Append('\n');
+        }
+
+        if (!string.IsNullOrWhiteSpace(segment))
+        {
+            builder.Append(segment);
+        }
+    }
+
+    private static string StripHtmlTags(string value)
+        => HtmlTag.Replace(value, string.Empty);
 
     private static void AppendInlineText(Inline? inline, StringBuilder builder)
     {
@@ -189,4 +223,8 @@ public sealed class SafeMarkdownService
     private static readonly Regex CjkSpace = new(
         @"(?<=[\u2E80-\u9FFF\uF900-\uFAFF\uFF00-\uFFEF\u3000-\u303F]) (?=[\u2E80-\u9FFF\uF900-\uFAFF\uFF00-\uFFEF\u3000-\u303F])",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
+    private static readonly char[] LanguageWhitespace = [' ', '\t', '\r', '\n'];
 }
+
+public readonly record struct SafeMarkdownRenderResult(string Text, IReadOnlyList<ChatBlockViewModel> Blocks);

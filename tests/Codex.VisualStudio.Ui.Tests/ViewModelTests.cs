@@ -340,6 +340,50 @@ public sealed class ViewModelTests
     }
 
     [TestMethod]
+    public void SafeMarkdown_ToBlocks_FencedCode_PreservesAngleBrackets()
+    {
+        var service = new SafeMarkdownService();
+
+        IReadOnlyList<ChatBlockViewModel> blocks = service.ToBlocks("```csharp\nList<int> values = [];\n```");
+
+        ChatBlockViewModel code = blocks.Single(block => block.IsCodeBlock);
+        Assert.AreEqual("List<int> values = [];", code.Code);
+    }
+
+    [TestMethod]
+    public void SafeMarkdown_ToBlocks_StripsHtmlTagsFromHeadingParagraphAndList()
+    {
+        var service = new SafeMarkdownService();
+
+        IReadOnlyList<ChatBlockViewModel> blocks = service.ToBlocks(string.Join('\n',
+            "# Heading <script>alert(1)</script>",
+            "",
+            "Paragraph with <b>bold</b> and <i>markup</i>",
+            "",
+            "- item <span>one</span>"));
+
+        ChatBlockViewModel heading = blocks.Single(block => block.IsHeading);
+        ChatBlockViewModel paragraph = blocks.Single(block => block.IsParagraph);
+        ChatBlockViewModel listItem = blocks.Single(block => block.IsListItem);
+
+        Assert.AreEqual("Heading alert(1)", heading.Text);
+        Assert.AreEqual("Paragraph with bold and markup", paragraph.Text);
+        Assert.AreEqual("• item one", listItem.Text);
+        Assert.IsFalse(string.Concat(blocks.Select(block => block.Text)).Contains('<'));
+    }
+
+    [TestMethod]
+    public void SafeMarkdown_ToBlocks_FencedCodeLanguage_UsesOnlyFirstInfoToken()
+    {
+        var service = new SafeMarkdownService();
+
+        IReadOnlyList<ChatBlockViewModel> blocks = service.ToBlocks("```csharp hl_lines=\"1\"\nConsole.WriteLine(\"hi\");\n```");
+
+        ChatBlockViewModel code = blocks.Single(block => block.IsCodeBlock);
+        Assert.AreEqual("csharp", code.Language);
+    }
+
+    [TestMethod]
     public void ApprovalViewModel_AvailableDecisions_ControlButtonVisibility()
     {
         var request = new ApprovalRequest
@@ -598,6 +642,8 @@ public sealed class ViewModelTests
         ChatBlockViewModel code = item.Blocks.Single(block => block.IsCodeBlock);
         Assert.AreEqual("bash", code.Language);
         Assert.AreEqual("echo hi", code.Code);
+        Assert.IsTrue(item.Text.Contains("Paragraph text", StringComparison.Ordinal));
+        Assert.IsTrue(item.Text.Contains("echo hi", StringComparison.Ordinal));
     }
 
     [TestMethod]

@@ -775,8 +775,9 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             if (renderFromAccumulatedText)
             {
                 string rawText = AppendAccumulatedText(value, text);
-                renderedText = markdown.ToSafeText(rawText);
-                renderedBlocks = markdown.ToBlocks(rawText);
+                SafeMarkdownRenderResult rendered = markdown.ToSafeTextAndBlocks(rawText);
+                renderedText = rendered.Text;
+                renderedBlocks = rendered.Blocks;
             }
             else
             {
