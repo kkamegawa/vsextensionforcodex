@@ -346,6 +346,7 @@
                  ItemsSource="{Binding Items}"
                  ItemContainerStyle="{StaticResource MessageRowStyle}"
                  ScrollViewer.CanContentScroll="True"
+                 ScrollViewer.HorizontalScrollBarVisibility="Disabled"
                  VirtualizingPanel.IsVirtualizing="True"
                  VirtualizingPanel.VirtualizationMode="Recycling">
           <ListBox.ItemTemplate>
@@ -394,7 +395,153 @@
                     </Button.Style>
                   </Button>
 
-                  <!-- Main text content: plain, monospace (command/diff), or hidden (plan/collapsed reasoning). -->
+                  <!-- Structured agent/reasoning content. Prose wraps in the panel; code blocks scroll horizontally. -->
+                  <ItemsControl Margin="0,4,0,0"
+                                HorizontalAlignment="Stretch"
+                                ItemsSource="{Binding Blocks}"
+                                AutomationProperties.Name="Message blocks">
+                    <ItemsControl.Style>
+                      <Style TargetType="ItemsControl">
+                        <Setter Property="Visibility" Value="Collapsed" />
+                        <Style.Triggers>
+                          <DataTrigger Binding="{Binding UsesBlockRendering}" Value="True">
+                            <Setter Property="Visibility" Value="Visible" />
+                          </DataTrigger>
+                          <MultiDataTrigger>
+                            <MultiDataTrigger.Conditions>
+                              <Condition Binding="{Binding IsReasoningItem}" Value="True" />
+                              <Condition Binding="{Binding IsCollapsed}" Value="True" />
+                            </MultiDataTrigger.Conditions>
+                            <Setter Property="Visibility" Value="Collapsed" />
+                          </MultiDataTrigger>
+                        </Style.Triggers>
+                      </Style>
+                    </ItemsControl.Style>
+                    <ItemsControl.ItemContainerStyle>
+                      <Style TargetType="ContentPresenter">
+                        <Setter Property="HorizontalAlignment" Value="Stretch" />
+                      </Style>
+                    </ItemsControl.ItemContainerStyle>
+                    <ItemsControl.ItemTemplate>
+                      <DataTemplate>
+                        <Grid Margin="0,2,0,2" HorizontalAlignment="Stretch">
+                          <TextBlock Text="{Binding Text}" TextWrapping="Wrap">
+                            <TextBlock.Style>
+                              <Style TargetType="TextBlock">
+                                <Setter Property="Visibility" Value="Collapsed" />
+                                <Setter Property="Foreground" Value="{DynamicResource {x:Static styles:VsBrushes.WindowTextKey}}" />
+                                <Setter Property="TextOptions.TextFormattingMode" Value="Display" />
+                                <Setter Property="FontWeight" Value="SemiBold" />
+                                <Setter Property="FontSize" Value="13" />
+                                <Setter Property="Margin" Value="0,6,0,2" />
+                                <Style.Triggers>
+                                  <DataTrigger Binding="{Binding IsHeading}" Value="True">
+                                    <Setter Property="Visibility" Value="Visible" />
+                                  </DataTrigger>
+                                  <DataTrigger Binding="{Binding IsH1}" Value="True">
+                                    <Setter Property="FontSize" Value="18" />
+                                    <Setter Property="Margin" Value="0,8,0,4" />
+                                  </DataTrigger>
+                                  <DataTrigger Binding="{Binding IsH2}" Value="True">
+                                    <Setter Property="FontSize" Value="15" />
+                                  </DataTrigger>
+                                  <DataTrigger Binding="{Binding IsH3}" Value="True">
+                                    <Setter Property="FontSize" Value="13" />
+                                  </DataTrigger>
+                                </Style.Triggers>
+                              </Style>
+                            </TextBlock.Style>
+                          </TextBlock>
+
+                          <TextBlock Text="{Binding Text}" TextWrapping="Wrap">
+                            <TextBlock.Style>
+                              <Style TargetType="TextBlock">
+                                <Setter Property="Visibility" Value="Collapsed" />
+                                <Setter Property="Foreground" Value="{DynamicResource {x:Static styles:VsBrushes.WindowTextKey}}" />
+                                <Setter Property="TextOptions.TextFormattingMode" Value="Display" />
+                                <Style.Triggers>
+                                  <DataTrigger Binding="{Binding IsParagraph}" Value="True">
+                                    <Setter Property="Visibility" Value="Visible" />
+                                  </DataTrigger>
+                                </Style.Triggers>
+                              </Style>
+                            </TextBlock.Style>
+                          </TextBlock>
+
+                          <TextBlock Margin="12,0,0,0" Text="{Binding Text}" TextWrapping="Wrap">
+                            <TextBlock.Style>
+                              <Style TargetType="TextBlock">
+                                <Setter Property="Visibility" Value="Collapsed" />
+                                <Setter Property="Foreground" Value="{DynamicResource {x:Static styles:VsBrushes.WindowTextKey}}" />
+                                <Setter Property="TextOptions.TextFormattingMode" Value="Display" />
+                                <Style.Triggers>
+                                  <DataTrigger Binding="{Binding IsListItem}" Value="True">
+                                    <Setter Property="Visibility" Value="Visible" />
+                                  </DataTrigger>
+                                </Style.Triggers>
+                              </Style>
+                            </TextBlock.Style>
+                          </TextBlock>
+
+                          <Separator Margin="0,6,0,6">
+                            <Separator.Style>
+                              <Style TargetType="Separator">
+                                <Setter Property="Visibility" Value="Collapsed" />
+                                <Style.Triggers>
+                                  <DataTrigger Binding="{Binding IsSeparator}" Value="True">
+                                    <Setter Property="Visibility" Value="Visible" />
+                                  </DataTrigger>
+                                </Style.Triggers>
+                              </Style>
+                            </Separator.Style>
+                          </Separator>
+
+                          <Border CornerRadius="4" Padding="8,6" Margin="0,4,0,4"
+                                  Background="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowCodeBlockBackgroundBrushKey}}"
+                                  BorderThickness="1"
+                                  BorderBrush="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBorderBrushKey}}">
+                            <Border.Style>
+                              <Style TargetType="Border">
+                                <Setter Property="Visibility" Value="Collapsed" />
+                                <Style.Triggers>
+                                  <DataTrigger Binding="{Binding IsCodeBlock}" Value="True">
+                                    <Setter Property="Visibility" Value="Visible" />
+                                  </DataTrigger>
+                                </Style.Triggers>
+                              </Style>
+                            </Border.Style>
+                            <StackPanel>
+                              <TextBlock FontSize="10" Opacity="0.65" Margin="0,0,0,4"
+                                         Text="{Binding Language}"
+                                         Foreground="{DynamicResource {x:Static styles:VsBrushes.WindowTextKey}}">
+                                <TextBlock.Style>
+                                  <Style TargetType="TextBlock">
+                                    <Setter Property="Visibility" Value="Visible" />
+                                    <Style.Triggers>
+                                      <DataTrigger Binding="{Binding Language}" Value="">
+                                        <Setter Property="Visibility" Value="Collapsed" />
+                                      </DataTrigger>
+                                    </Style.Triggers>
+                                  </Style>
+                                </TextBlock.Style>
+                              </TextBlock>
+                              <ScrollViewer HorizontalScrollBarVisibility="Auto"
+                                            VerticalScrollBarVisibility="Disabled"
+                                            AutomationProperties.Name="{Binding CodeBlockAutomationName}">
+                                <TextBlock FontFamily="Consolas, Courier New, monospace"
+                                           FontSize="11"
+                                           Text="{Binding Code}"
+                                           TextWrapping="NoWrap"
+                                           Foreground="{DynamicResource {x:Static styles:VsBrushes.WindowTextKey}}" />
+                              </ScrollViewer>
+                            </StackPanel>
+                          </Border>
+                        </Grid>
+                      </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                  </ItemsControl>
+
+                  <!-- Main text content: plain, monospace (command/diff), or hidden (plan/block rendering/collapsed reasoning). -->
                   <TextBlock Margin="0,4,0,0" TextWrapping="Wrap" Text="{Binding Text}">
                     <TextBlock.Style>
                       <Style TargetType="TextBlock">
@@ -404,6 +551,10 @@
                         <Style.Triggers>
                           <!-- Plan items use a structured step list instead. -->
                           <DataTrigger Binding="{Binding IsPlanItem}" Value="True">
+                            <Setter Property="Visibility" Value="Collapsed" />
+                          </DataTrigger>
+                          <!-- Agent/reasoning items use the structured block renderer above. -->
+                          <DataTrigger Binding="{Binding UsesBlockRendering}" Value="True">
                             <Setter Property="Visibility" Value="Collapsed" />
                           </DataTrigger>
                           <!-- Collapsed reasoning hides its full text. -->
