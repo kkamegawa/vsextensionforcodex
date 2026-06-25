@@ -80,24 +80,7 @@ public sealed class CodexProcessHost : ICodexProcessHost
         await StopAsync(cancellationToken).ConfigureAwait(false);
         string resolvedCodexPath = CodexExecutableResolver.Resolve(codexPath);
 
-        var startInfo = new ProcessStartInfo
-        {
-            FileName = resolvedCodexPath,
-            WorkingDirectory = Directory.Exists(workingDirectory) ? workingDirectory : Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-            UseShellExecute = false,
-            RedirectStandardInput = true,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-
-            // CREATE_NO_WINDOW leaves codex without any console, so when it spawns cmd.exe
-            // to run shell commands, Windows allocates a new visible console window for each
-            // one. Instead, let codex inherit this worker's (hidden) console - see
-            // HiddenConsole and the worker startup in WorkerBridge - so its cmd.exe children
-            // inherit that same hidden console and never pop up a window.
-            CreateNoWindow = false,
-            WindowStyle = ProcessWindowStyle.Hidden,
-        };
-        startInfo.ArgumentList.Add("app-server");
+        ProcessStartInfo startInfo = CreateStartInfo(resolvedCodexPath, workingDirectory);
         PopulateChildEnvironment(startInfo.Environment);
 
         var startedProcess = new Process { StartInfo = startInfo };
@@ -182,6 +165,57 @@ public sealed class CodexProcessHost : ICodexProcessHost
         }
     }
 
+    internal static ProcessStartInfo CreateStartInfo(string resolvedCodexPath, string workingDirectory)
+    {
+        bool isCommandScript = IsCommandScript(resolvedCodexPath);
+        string effectiveWorkingDirectory = Directory.Exists(workingDirectory)
+            ? workingDirectory
+            : Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+
+        var startInfo = new ProcessStartInfo
+        {
+            WorkingDirectory = effectiveWorkingDirectory,
+            UseShellExecute = false,
+            RedirectStandardInput = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            WindowStyle = ProcessWindowStyle.Hidden,
+        };
+
+        if (isCommandScript)
+        {
+            startInfo.FileName = Environment.GetEnvironmentVariable("ComSpec") ?? "cmd.exe";
+            startInfo.ArgumentList.Add("/d");
+            startInfo.ArgumentList.Add("/s");
+            startInfo.ArgumentList.Add("/c");
+            startInfo.ArgumentList.Add($"\"\"{resolvedCodexPath}\" app-server\"");
+
+            // For script launchers (cmd/bat), force cmd.exe to run without creating
+            // a visible console window. codex.exe direct launch keeps inherited hidden
+            // console behavior to preserve child shell command execution semantics.
+            startInfo.CreateNoWindow = true;
+            WorkerDiagnostics.Write("codex launcher script detected; using hidden command interpreter startup");
+        }
+        else
+        {
+            startInfo.FileName = resolvedCodexPath;
+            startInfo.ArgumentList.Add("app-server");
+
+            // CREATE_NO_WINDOW leaves codex without any console, so when it spawns cmd.exe
+            // to run shell commands, Windows allocates a new visible console window for each
+            // one. Instead, let codex inherit this worker's (hidden) console - see
+            // HiddenConsole and the worker startup in WorkerBridge - so its cmd.exe children
+            // inherit that same hidden console and never pop up a window.
+            startInfo.CreateNoWindow = false;
+        }
+
+        return startInfo;
+    }
+
+    internal static bool IsCommandScript(string path)
+        => string.Equals(Path.GetExtension(path), ".cmd", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(Path.GetExtension(path), ".bat", StringComparison.OrdinalIgnoreCase);
+
     private async Task ReadStandardErrorAsync(Process source, CancellationToken cancellationToken)
     {
         try
@@ -221,4 +255,3 @@ public sealed class CodexProcessHost : ICodexProcessHost
         }
     }
 }
-

@@ -167,8 +167,15 @@ public sealed class ProjectScaffolder : IProjectScaffolder
             return "App";
         }
 
-        char[] chars = folderName.Select(c => char.IsLetterOrDigit(c) || c is '_' or '-' ? c : '_').ToArray();
-        string sanitized = new string(chars).Trim('_', '-');
-        return sanitized.Length == 0 ? "App" : sanitized;
+        char[] chars = folderName.Select(c => char.IsLetterOrDigit(c) || c == '_' ? c : '_').ToArray();
+        string sanitized = new(chars);
+        if (!sanitized.Any(char.IsLetterOrDigit))
+        {
+            return "App";
+        }
+
+        return char.IsLetter(sanitized[0]) || sanitized[0] == '_'
+            ? sanitized
+            : $"_{sanitized}";
     }
 }
