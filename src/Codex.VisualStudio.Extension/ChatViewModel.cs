@@ -770,28 +770,49 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 _ => "Codex",
             };
             bool renderFromAccumulatedText = ShouldRenderFromAccumulatedText(value.Kind);
-            string renderedText = renderFromAccumulatedText
-                ? RenderAccumulatedText(value, text)
-                : markdown.ToSafeText(text);
+            string renderedText;
+            IReadOnlyList<ChatBlockViewModel> renderedBlocks = [];
+            if (renderFromAccumulatedText)
+            {
+                string rawText = AppendAccumulatedText(value, text);
+                renderedText = markdown.ToSafeText(rawText);
+                renderedBlocks = markdown.ToBlocks(rawText);
+            }
+            else
+            {
+                renderedText = markdown.ToSafeText(text);
+            }
+
             ChatItemViewModel? existing = Items.LastOrDefault(item => item.ItemId == value.ItemId && item.Kind == value.Kind);
             if (existing is null)
             {
-                Items.Add(new ChatItemViewModel(role, renderedText, value.Kind)
+                var item = new ChatItemViewModel(role, renderedText, value.Kind)
                 {
                     ItemId = value.ItemId,
                     IsTruncated = value.Truncated,
                     OverflowFile = value.OverflowFile,
-                });
+                };
+                if (renderFromAccumulatedText)
+                {
+                    item.UpdateBlocks(renderedBlocks);
+                }
+
+                Items.Add(item);
             }
             else
             {
                 existing.Text = renderFromAccumulatedText ? renderedText : existing.Text + renderedText;
+                if (renderFromAccumulatedText)
+                {
+                    existing.UpdateBlocks(renderedBlocks);
+                }
+
                 existing.IsTruncated |= value.Truncated;
                 existing.OverflowFile = value.OverflowFile ?? existing.OverflowFile;
             }
         });
 
-    private string RenderAccumulatedText(ConversationEvent value, string text)
+    private string AppendAccumulatedText(ConversationEvent value, string text)
     {
         string key = string.Concat(value.Kind.ToString(), ":", value.ItemId ?? string.Empty);
         if (!itemRawText.TryGetValue(key, out StringBuilder? rawText))
@@ -801,7 +822,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         }
 
         rawText.Append(text);
-        return markdown.ToSafeText(rawText.ToString());
+        return rawText.ToString();
     }
 
     private static bool ShouldRenderFromAccumulatedText(ConversationEventKind kind)
@@ -1235,6 +1256,12 @@ public sealed class ChatItemViewModel : ObservableObject
     public bool IsPlanItem => Kind == ConversationEventKind.PlanUpdated;
 
     [DataMember]
+    public bool UsesBlockRendering => Kind is ConversationEventKind.AgentMessageDelta or ConversationEventKind.ReasoningSummaryDelta;
+
+    [DataMember]
+    public ObservableCollection<ChatBlockViewModel> Blocks { get; } = [];
+
+    [DataMember]
     public ObservableCollection<string> PlanSteps { get; } = [];
 
     [DataMember]
@@ -1245,6 +1272,25 @@ public sealed class ChatItemViewModel : ObservableObject
         PlanSteps.Clear();
         foreach (string step in steps)
             PlanSteps.Add("• " + step);
+    }
+
+    public void UpdateBlocks(IReadOnlyList<ChatBlockViewModel> blocks)
+    {
+        int sharedCount = Math.Min(Blocks.Count, blocks.Count);
+        for (int index = 0; index < sharedCount; index++)
+        {
+            Blocks[index].CopyFrom(blocks[index]);
+        }
+
+        while (Blocks.Count > blocks.Count)
+        {
+            Blocks.RemoveAt(Blocks.Count - 1);
+        }
+
+        for (int index = Blocks.Count; index < blocks.Count; index++)
+        {
+            Blocks.Add(blocks[index]);
+        }
     }
 
     // Matches a JSON string property: "fieldName":"value" (handles \" and \\ escapes inside value).
@@ -1270,6 +1316,163 @@ public sealed class ChatItemViewModel : ObservableObject
             }
         }
         return [];
+    }
+}
+
+[DataContract]
+public sealed class ChatBlockViewModel : ObservableObject
+{
+    private string text = string.Empty;
+    private string code = string.Empty;
+    private string language = string.Empty;
+    private bool isParagraph;
+    private bool isHeading;
+    private bool isCodeBlock;
+    private bool isListItem;
+    private bool isSeparator;
+    private bool isH1;
+    private bool isH2;
+    private bool isH3;
+
+    [DataMember]
+    public string Text
+    {
+        get => text;
+        set => SetProperty(ref text, value);
+    }
+
+    [DataMember]
+    public string Code
+    {
+        get => code;
+        set => SetProperty(ref code, value);
+    }
+
+    [DataMember]
+    public string Language
+    {
+        get => language;
+        set
+        {
+            if (SetProperty(ref language, value))
+            {
+                OnPropertyChanged(nameof(CodeBlockAutomationName));
+            }
+        }
+    }
+
+    [DataMember]
+    public bool IsParagraph
+    {
+        get => isParagraph;
+        set => SetProperty(ref isParagraph, value);
+    }
+
+    [DataMember]
+    public bool IsHeading
+    {
+        get => isHeading;
+        set => SetProperty(ref isHeading, value);
+    }
+
+    [DataMember]
+    public bool IsCodeBlock
+    {
+        get => isCodeBlock;
+        set
+        {
+            if (SetProperty(ref isCodeBlock, value))
+            {
+                OnPropertyChanged(nameof(CodeBlockAutomationName));
+            }
+        }
+    }
+
+    [DataMember]
+    public bool IsListItem
+    {
+        get => isListItem;
+        set => SetProperty(ref isListItem, value);
+    }
+
+    [DataMember]
+    public bool IsSeparator
+    {
+        get => isSeparator;
+        set => SetProperty(ref isSeparator, value);
+    }
+
+    [DataMember]
+    public bool IsH1
+    {
+        get => isH1;
+        set => SetProperty(ref isH1, value);
+    }
+
+    [DataMember]
+    public bool IsH2
+    {
+        get => isH2;
+        set => SetProperty(ref isH2, value);
+    }
+
+    [DataMember]
+    public bool IsH3
+    {
+        get => isH3;
+        set => SetProperty(ref isH3, value);
+    }
+
+    [DataMember]
+    public string CodeBlockAutomationName
+        => string.IsNullOrWhiteSpace(Language) ? "Code block" : $"Code block: {Language}";
+
+    public static ChatBlockViewModel Paragraph(string text) => new()
+    {
+        Text = text,
+        IsParagraph = true,
+    };
+
+    public static ChatBlockViewModel Heading(string text, int level) => new()
+    {
+        Text = text,
+        IsHeading = true,
+        IsH1 = level <= 1,
+        IsH2 = level == 2,
+        IsH3 = level >= 3,
+    };
+
+    public static ChatBlockViewModel CodeBlock(string code, string language) => new()
+    {
+        Code = code,
+        Language = language,
+        IsCodeBlock = true,
+    };
+
+    public static ChatBlockViewModel ListItem(string text) => new()
+    {
+        Text = string.Concat("• ", text),
+        IsListItem = true,
+    };
+
+    public static ChatBlockViewModel Separator() => new()
+    {
+        IsSeparator = true,
+    };
+
+    public void CopyFrom(ChatBlockViewModel other)
+    {
+        Text = other.Text;
+        Code = other.Code;
+        Language = other.Language;
+        IsParagraph = other.IsParagraph;
+        IsHeading = other.IsHeading;
+        IsCodeBlock = other.IsCodeBlock;
+        IsListItem = other.IsListItem;
+        IsSeparator = other.IsSeparator;
+        IsH1 = other.IsH1;
+        IsH2 = other.IsH2;
+        IsH3 = other.IsH3;
     }
 }
 

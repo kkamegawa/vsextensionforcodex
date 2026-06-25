@@ -296,6 +296,50 @@ public sealed class ViewModelTests
     }
 
     [TestMethod]
+    public void SafeMarkdown_ToBlocks_PreservesMarkdownStructure()
+    {
+        var service = new SafeMarkdownService();
+
+        IReadOnlyList<ChatBlockViewModel> blocks = service.ToBlocks(string.Join('\n',
+            "# Heading",
+            "",
+            "Intro **bold** text",
+            "",
+            "- First",
+            "- Second",
+            "",
+            "```csharp",
+            "Console.WriteLine(\"hi\");",
+            "Next();",
+            "```",
+            "",
+            "---"));
+
+        Assert.IsTrue(blocks.Any(block => block.IsHeading && block.IsH1 && block.Text == "Heading"));
+        Assert.IsTrue(blocks.Any(block => block.IsParagraph && block.Text == "Intro bold text"));
+        Assert.AreEqual(2, blocks.Count(block => block.IsListItem));
+        ChatBlockViewModel code = blocks.Single(block => block.IsCodeBlock);
+        Assert.AreEqual("csharp", code.Language);
+        Assert.IsTrue(code.Code.Contains("Console.WriteLine", StringComparison.Ordinal));
+        Assert.IsTrue(code.Code.Contains('\n'));
+        Assert.IsTrue(blocks.Any(block => block.IsSeparator));
+    }
+
+    [TestMethod]
+    public void SafeMarkdown_ToBlocks_RemovesHtmlAnsiAndControlCharacters()
+    {
+        var service = new SafeMarkdownService();
+
+        IReadOnlyList<ChatBlockViewModel> blocks = service.ToBlocks("<script>bad()</script> **safe** \x1b[31mred\x1b[0m \x00");
+
+        string combined = string.Concat(blocks.Select(block => block.Text + block.Code));
+        Assert.IsFalse(combined.Contains("<script>", StringComparison.Ordinal));
+        Assert.IsFalse(combined.Contains('\x1b'));
+        Assert.IsFalse(combined.Contains('\x00'));
+        Assert.IsTrue(combined.Contains("safe", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
     public void ApprovalViewModel_AvailableDecisions_ControlButtonVisibility()
     {
         var request = new ApprovalRequest
@@ -529,6 +573,53 @@ public sealed class ViewModelTests
     }
 
     [TestMethod]
+    public async Task ChatViewModel_AgentMessageDelta_PopulatesStructuredBlocks()
+    {
+        using var vm = new ChatViewModel();
+
+        await RaiseConversationEventAsync(vm, new ConversationEvent { Kind = ConversationEventKind.TurnStarted });
+        await RaiseConversationEventAsync(vm, new ConversationEvent
+        {
+            Kind = ConversationEventKind.AgentMessageDelta,
+            ItemId = "agent-blocks",
+            Text = "# Title\n\nParagraph ",
+        });
+        await RaiseConversationEventAsync(vm, new ConversationEvent
+        {
+            Kind = ConversationEventKind.AgentMessageDelta,
+            ItemId = "agent-blocks",
+            Text = "text\n\n```bash\necho hi\n```",
+        });
+
+        ChatItemViewModel item = SingleConversationItem(vm, "agent-blocks", ConversationEventKind.AgentMessageDelta);
+        Assert.IsTrue(item.UsesBlockRendering);
+        Assert.IsTrue(item.Blocks.Any(block => block.IsHeading && block.Text == "Title"));
+        Assert.IsTrue(item.Blocks.Any(block => block.IsParagraph && block.Text == "Paragraph text"));
+        ChatBlockViewModel code = item.Blocks.Single(block => block.IsCodeBlock);
+        Assert.AreEqual("bash", code.Language);
+        Assert.AreEqual("echo hi", code.Code);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_ReasoningSummaryDelta_PopulatesStructuredBlocksButStartsCollapsed()
+    {
+        using var vm = new ChatViewModel();
+
+        await RaiseConversationEventAsync(vm, new ConversationEvent
+        {
+            Kind = ConversationEventKind.ReasoningSummaryDelta,
+            ItemId = "reasoning-blocks",
+            Text = "## Why\n\nBecause.",
+        });
+
+        ChatItemViewModel item = SingleConversationItem(vm, "reasoning-blocks", ConversationEventKind.ReasoningSummaryDelta);
+        Assert.IsTrue(item.UsesBlockRendering);
+        Assert.IsTrue(item.IsCollapsed);
+        Assert.IsTrue(item.Blocks.Any(block => block.IsHeading && block.IsH2 && block.Text == "Why"));
+        Assert.IsTrue(item.Blocks.Any(block => block.IsParagraph && block.Text == "Because."));
+    }
+
+    [TestMethod]
     public async Task ChatViewModel_CommandOutputDelta_PreservesNewlines()
     {
         using var vm = new ChatViewModel();
@@ -550,6 +641,8 @@ public sealed class ViewModelTests
         Assert.IsTrue(text.Contains('\n'));
         Assert.IsTrue(text.Contains("line1", StringComparison.Ordinal));
         Assert.IsTrue(text.Contains("line2", StringComparison.Ordinal));
+        Assert.IsFalse(SingleConversationItem(vm, "command-1", ConversationEventKind.CommandOutputDelta).UsesBlockRendering);
+        Assert.AreEqual(0, SingleConversationItem(vm, "command-1", ConversationEventKind.CommandOutputDelta).Blocks.Count);
     }
 
     [TestMethod]
@@ -737,7 +830,7 @@ public sealed class ViewModelTests
     // object and every binding to it fails silently (blank text, empty button content).
     private static readonly Type[] RemoteUiContextTypes =
         [
-            typeof(ChatViewModel), typeof(ChatItemViewModel), typeof(ApprovalViewModel),
+            typeof(ChatViewModel), typeof(ChatItemViewModel), typeof(ChatBlockViewModel), typeof(ApprovalViewModel),
             typeof(UserInputViewModel), typeof(UserInputQuestionViewModel), typeof(UserInputOptionViewModel),
             typeof(SuggestionChip), typeof(WorkerStatus), typeof(ThreadSummary),
         ];
