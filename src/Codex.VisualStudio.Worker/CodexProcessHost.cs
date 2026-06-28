@@ -54,6 +54,13 @@ public sealed class CodexProcessHost : ICodexProcessHost
         "windir",
         "SystemDrive",
         "ComSpec",
+
+        // PATHEXT lists the extensions Windows treats as executable (.EXE;.CMD;.BAT;...).
+        // Without it, command resolution cannot find script-based launchers: when codex on
+        // PATH is a shim (e.g. a mise shim that internally runs `mise x -- codex app-server`),
+        // the inner lookup fails to resolve codex.cmd / the real binary and the launcher exits
+        // with "cannot find binary path" (app-server exit code 1).
+        "PATHEXT",
         "PROCESSOR_ARCHITECTURE",
         "NUMBER_OF_PROCESSORS",
     ];
