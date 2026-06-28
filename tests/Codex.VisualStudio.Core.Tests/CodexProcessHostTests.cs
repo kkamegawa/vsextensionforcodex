@@ -48,6 +48,30 @@ public sealed class CodexProcessHostTests
     }
 
     [TestMethod]
+    public void PopulateChildEnvironmentForwardsPathExt()
+    {
+        // PATHEXT must be forwarded so Windows can resolve script-based launchers (.cmd/.bat)
+        // such as the mise shim that codex is invoked through; without it the launcher fails
+        // with "cannot find binary path" and the app-server exits with code 1.
+        const string pathExtName = "PATHEXT";
+        string? original = Environment.GetEnvironmentVariable(pathExtName);
+        try
+        {
+            Environment.SetEnvironmentVariable(pathExtName, ".COM;.EXE;.BAT;.CMD");
+            var target = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+
+            CodexProcessHost.PopulateChildEnvironment(target);
+
+            Assert.IsTrue(target.TryGetValue(pathExtName, out string? value), "PATHEXT must be forwarded to the child environment.");
+            Assert.AreEqual(".COM;.EXE;.BAT;.CMD", value);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(pathExtName, original);
+        }
+    }
+
+    [TestMethod]
     public void PopulateChildEnvironmentDoesNotForwardArbitrarySecrets()
     {
         const string secretName = "SOME_UNRELATED_SECRET";
