@@ -25,7 +25,7 @@ internal sealed class CodexToolWindow : ToolWindow
     {
         ExtensionDiagnostics.Write("Codex tool window initialization starting");
         outputChannel = await this.Extensibility.Views().Output
-            .CreateOutputChannelAsync("Codex", cancellationToken)
+            .CreateOutputChannelAsync("Codex Diagnostics", cancellationToken)
             .ConfigureAwait(false);
         ExtensionDiagnostics.Write("Codex Output channel created");
     }

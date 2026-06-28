@@ -26,6 +26,7 @@ public sealed class ViewModelTests
     private static readonly ApprovalDecision[] NoDecisions = [];
 
     private static readonly string[] ExpectedModes = ["Agent", "Chat"];
+    private static readonly string[] CreativeOnly = ["Creative"];
     [TestMethod]
     public async Task ApprovalViewModel_ResolvesOnlyOnce()
     {
@@ -50,8 +51,179 @@ public sealed class ViewModelTests
 
         Assert.AreEqual(1, calls);
         Assert.IsTrue(viewModel.IsResolved);
-        StringAssert.Contains(viewModel.Summary, "Accepted");
-        Assert.IsFalse(viewModel.IsExpanded);
+    }
+
+    [TestMethod]
+    public async Task UserInputViewModel_SingleSelect_SubmitsSelectedRawLabel()
+    {
+        string? capturedRequestId = null;
+        IReadOnlyDictionary<string, string[]>? capturedAnswers = null;
+        var request = new UserInputRequest
+        {
+            RequestId = "ui-1",
+            Questions =
+            [
+                new UserInputQuestion
+                {
+                    Id = "q1",
+                    Header = "Direction",
+                    Question = "Which style?",
+                    Options =
+                    [
+                        new UserInputOption { Label = "Sharp", Description = "d1" },
+                        new UserInputOption { Label = "Creative", Description = "d2" },
+                    ],
+                },
+            ],
+        };
+        var vm = new UserInputViewModel(
+            request,
+            (id, answers) =>
+            {
+                capturedRequestId = id;
+                capturedAnswers = answers;
+                return Task.CompletedTask;
+            },
+            new SafeMarkdownService());
+
+        UserInputOptionViewModel first = vm.Questions[0].Options[0];
+        UserInputOptionViewModel second = vm.Questions[0].Options[1];
+        first.IsSelected = true;
+        second.IsSelected = true; // selecting the second clears the first (single-select)
+
+        Assert.IsFalse(first.IsSelected);
+        Assert.IsTrue(second.IsSelected);
+
+        vm.SubmitCommand.Execute(null);
+        await Task.Delay(50);
+
+        Assert.AreEqual("ui-1", capturedRequestId);
+        Assert.IsNotNull(capturedAnswers);
+        CollectionAssert.AreEqual(CreativeOnly, capturedAnswers!["q1"]);
+        Assert.IsTrue(vm.IsResolved);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_UserInputQueue_ShowsOneActiveCardAtATime()
+    {
+        using var vm = new ChatViewModel();
+        MethodInfo requested = typeof(ChatViewModel).GetMethod(
+            "OnUserInputRequestedAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
+        MethodInfo resolved = typeof(ChatViewModel).GetMethod(
+            "OnUserInputResolvedAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
+
+        await (Task)requested.Invoke(vm, [MakeUserInputRequest("ui-1")])!;
+        Assert.IsTrue(vm.HasActiveUserInput);
+        Assert.AreEqual("ui-1", vm.ActiveUserInput!.RequestId);
+        Assert.AreEqual(string.Empty, vm.UserInputQueueText);
+
+        // Second request is queued, not shown — the active card stays put.
+        await (Task)requested.Invoke(vm, [MakeUserInputRequest("ui-2")])!;
+        Assert.AreEqual("ui-1", vm.ActiveUserInput!.RequestId);
+        Assert.AreEqual("1 choice waiting", vm.UserInputQueueText);
+
+        // Resolving the active one promotes the queued one.
+        await (Task)resolved.Invoke(vm, ["ui-1"])!;
+        Assert.AreEqual("ui-2", vm.ActiveUserInput!.RequestId);
+        Assert.AreEqual(string.Empty, vm.UserInputQueueText);
+
+        // Resolving the last clears the card; a duplicate resolve is a no-op.
+        await (Task)resolved.Invoke(vm, ["ui-2"])!;
+        Assert.IsFalse(vm.HasActiveUserInput);
+        await (Task)resolved.Invoke(vm, ["ui-2"])!;
+        Assert.IsFalse(vm.HasActiveUserInput);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_ApprovalQueue_ShowsOneActiveCardAtATime()
+    {
+        using var vm = new ChatViewModel();
+        MethodInfo requested = typeof(ChatViewModel).GetMethod(
+            "OnApprovalRequestedAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
+        MethodInfo resolved = typeof(ChatViewModel).GetMethod(
+            "OnApprovalResolvedAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
+
+        await (Task)requested.Invoke(vm, [MakeApprovalRequest("req-1")])!;
+        Assert.IsTrue(vm.HasActiveApproval);
+        Assert.AreEqual("req-1", vm.ActiveApproval!.RequestId);
+        Assert.AreEqual(string.Empty, vm.ApprovalQueueText);
+
+        // Concurrent prompts are queued, not stacked: the active card stays put and the rest are counted.
+        await (Task)requested.Invoke(vm, [MakeApprovalRequest("req-2")])!;
+        Assert.AreEqual("req-1", vm.ActiveApproval!.RequestId);
+        Assert.AreEqual("1 approval waiting", vm.ApprovalQueueText);
+
+        await (Task)requested.Invoke(vm, [MakeApprovalRequest("req-3")])!;
+        Assert.AreEqual("2 approvals waiting", vm.ApprovalQueueText);
+
+        // Resolving the active one promotes the next queued prompt.
+        await (Task)resolved.Invoke(vm, ["req-1"])!;
+        Assert.AreEqual("req-2", vm.ActiveApproval!.RequestId);
+        Assert.AreEqual("1 approval waiting", vm.ApprovalQueueText);
+
+        // A prompt resolved while still queued is dropped without becoming active.
+        await (Task)resolved.Invoke(vm, ["req-3"])!;
+        Assert.AreEqual("req-2", vm.ActiveApproval!.RequestId);
+        Assert.AreEqual(string.Empty, vm.ApprovalQueueText);
+
+        // Resolving the last clears the card; a duplicate resolve is a no-op.
+        await (Task)resolved.Invoke(vm, ["req-2"])!;
+        Assert.IsFalse(vm.HasActiveApproval);
+        await (Task)resolved.Invoke(vm, ["req-2"])!;
+        Assert.IsFalse(vm.HasActiveApproval);
+    }
+
+    private static ApprovalRequest MakeApprovalRequest(string requestId) => new()
+    {
+        RequestId = requestId,
+        Risk = ApprovalRiskCategory.ReadOnly,
+        DisplayText = "apply change",
+        AvailableDecisions = AcceptDeclineCancel,
+    };
+
+    private static UserInputRequest MakeUserInputRequest(string requestId) => new()
+    {
+        RequestId = requestId,
+        Questions =
+        [
+            new UserInputQuestion
+            {
+                Id = "q1",
+                Header = "Direction",
+                Question = "Which style?",
+                Options = [new UserInputOption { Label = "Sharp", Description = "d1" }],
+            },
+        ],
+    };
+
+    [TestMethod]
+    public void ChoicePromptParser_DetectsQuestionWithNumberedOptions()
+    {
+        string text = string.Join('\n',
+            "次のどれで進めますか？",
+            "1. **シャープな開発者ポートフォリオ**: 黒/白/赤",
+            "2. クリエイティブ寄りポートフォリオ",
+            "3. 企業/コンサル寄りポートフォリオ");
+
+        bool ok = ChoicePromptParser.TryParse(text, out UserInputRequest request);
+
+        Assert.IsTrue(ok);
+        Assert.AreEqual(1, request.Questions.Count);
+        Assert.AreEqual(3, request.Questions[0].Options.Count);
+        // Inline markdown is stripped from the echoed label.
+        Assert.AreEqual("シャープな開発者ポートフォリオ: 黒/白/赤", request.Questions[0].Options[0].Label);
+        Assert.IsTrue(request.Questions[0].Question.EndsWith('？'));
+        Assert.IsTrue(request.RequestId.StartsWith("choice-", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    [DataRow("Here are the steps:\n1. Build\n2. Test\n3. Ship", DisplayName = "numbered list without a question")]
+    [DataRow("Which one?\n1. Only one option", DisplayName = "question with a single option")]
+    [DataRow("Just a sentence with no list?", DisplayName = "question without options")]
+    [DataRow("", DisplayName = "empty")]
+    public void ChoicePromptParser_RejectsNonChoiceText(string text)
+    {
+        Assert.IsFalse(ChoicePromptParser.TryParse(text, out _));
     }
 
     [TestMethod]
@@ -67,6 +239,148 @@ public sealed class ViewModelTests
         Assert.IsFalse(text.Contains('\x1b'));
         Assert.IsFalse(text.Contains('\x00'));
         Assert.IsTrue(text.Contains("safe", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    public void SafeMarkdown_JapaneseSoftBreak_NoSpaceBetweenCharacters()
+    {
+        var service = new SafeMarkdownService();
+
+        string text = service.ToSafeText("こんにちは\n今日は良い天気ですね");
+
+        Assert.IsFalse(text.Contains("こんにちは 今日は", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    public void SafeMarkdown_LatinSoftBreak_PreservesWordBoundary()
+    {
+        var service = new SafeMarkdownService();
+
+        string text = service.ToSafeText("Hello\nworld");
+
+        Assert.IsTrue(text.Contains("Hello", StringComparison.Ordinal));
+        Assert.IsTrue(text.Contains("world", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    public void SafeMarkdown_DoubleParagraphBreak_PreservesSeparation()
+    {
+        var service = new SafeMarkdownService();
+
+        string text = service.ToSafeText("First paragraph\n\nSecond paragraph");
+
+        Assert.IsTrue(text.Contains("First paragraph", StringComparison.Ordinal));
+        Assert.IsTrue(text.Contains("Second paragraph", StringComparison.Ordinal));
+        Assert.IsTrue(text.Contains('\n'));
+    }
+
+    [TestMethod]
+    public void SafeMarkdown_FencedCodeBlock_PreservesInternalNewlines()
+    {
+        var service = new SafeMarkdownService();
+
+        string text = service.ToSafeText("Intro\n\n```\nfoo()\nbar()\n```\n\nOutro");
+
+        Assert.IsTrue(text.Contains("foo()\nbar()", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    public void SafeMarkdown_MixedCjkAndLatin_PreservesBoundarySpace()
+    {
+        var service = new SafeMarkdownService();
+
+        string text = service.ToSafeText("API の 使い方");
+
+        Assert.IsTrue(text.Contains("API の", StringComparison.Ordinal));
+        Assert.IsTrue(text.Contains("の使い方", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    public void SafeMarkdown_ToBlocks_PreservesMarkdownStructure()
+    {
+        var service = new SafeMarkdownService();
+
+        IReadOnlyList<ChatBlockViewModel> blocks = service.ToBlocks(string.Join('\n',
+            "# Heading",
+            "",
+            "Intro **bold** text",
+            "",
+            "- First",
+            "- Second",
+            "",
+            "```csharp",
+            "Console.WriteLine(\"hi\");",
+            "Next();",
+            "```",
+            "",
+            "---"));
+
+        Assert.IsTrue(blocks.Any(block => block.IsHeading && block.IsH1 && block.Text == "Heading"));
+        Assert.IsTrue(blocks.Any(block => block.IsParagraph && block.Text == "Intro bold text"));
+        Assert.AreEqual(2, blocks.Count(block => block.IsListItem));
+        ChatBlockViewModel code = blocks.Single(block => block.IsCodeBlock);
+        Assert.AreEqual("csharp", code.Language);
+        Assert.IsTrue(code.Code.Contains("Console.WriteLine", StringComparison.Ordinal));
+        Assert.IsTrue(code.Code.Contains('\n'));
+        Assert.IsTrue(blocks.Any(block => block.IsSeparator));
+    }
+
+    [TestMethod]
+    public void SafeMarkdown_ToBlocks_RemovesHtmlAnsiAndControlCharacters()
+    {
+        var service = new SafeMarkdownService();
+
+        IReadOnlyList<ChatBlockViewModel> blocks = service.ToBlocks("<script>bad()</script> **safe** \x1b[31mred\x1b[0m \x00");
+
+        string combined = string.Concat(blocks.Select(block => block.Text + block.Code));
+        Assert.IsFalse(combined.Contains("<script>", StringComparison.Ordinal));
+        Assert.IsFalse(combined.Contains('\x1b'));
+        Assert.IsFalse(combined.Contains('\x00'));
+        Assert.IsTrue(combined.Contains("safe", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    public void SafeMarkdown_ToBlocks_FencedCode_PreservesAngleBrackets()
+    {
+        var service = new SafeMarkdownService();
+
+        IReadOnlyList<ChatBlockViewModel> blocks = service.ToBlocks("```csharp\nList<int> values = [];\n```");
+
+        ChatBlockViewModel code = blocks.Single(block => block.IsCodeBlock);
+        Assert.AreEqual("List<int> values = [];", code.Code);
+    }
+
+    [TestMethod]
+    public void SafeMarkdown_ToBlocks_StripsHtmlTagsFromHeadingParagraphAndList()
+    {
+        var service = new SafeMarkdownService();
+
+        IReadOnlyList<ChatBlockViewModel> blocks = service.ToBlocks(string.Join('\n',
+            "# Heading <script>alert(1)</script>",
+            "",
+            "Paragraph with <b>bold</b> and <i>markup</i>",
+            "",
+            "- item <span>one</span>"));
+
+        ChatBlockViewModel heading = blocks.Single(block => block.IsHeading);
+        ChatBlockViewModel paragraph = blocks.Single(block => block.IsParagraph);
+        ChatBlockViewModel listItem = blocks.Single(block => block.IsListItem);
+
+        Assert.AreEqual("Heading alert(1)", heading.Text);
+        Assert.AreEqual("Paragraph with bold and markup", paragraph.Text);
+        Assert.AreEqual("• item one", listItem.Text);
+        Assert.IsFalse(string.Concat(blocks.Select(block => block.Text)).Contains('<'));
+    }
+
+    [TestMethod]
+    public void SafeMarkdown_ToBlocks_FencedCodeLanguage_UsesOnlyFirstInfoToken()
+    {
+        var service = new SafeMarkdownService();
+
+        IReadOnlyList<ChatBlockViewModel> blocks = service.ToBlocks("```csharp hl_lines=\"1\"\nConsole.WriteLine(\"hi\");\n```");
+
+        ChatBlockViewModel code = blocks.Single(block => block.IsCodeBlock);
+        Assert.AreEqual("csharp", code.Language);
     }
 
     [TestMethod]
@@ -126,160 +440,6 @@ public sealed class ViewModelTests
         Assert.IsFalse(vm.ShowDecline);
         Assert.IsFalse(vm.ShowCancel);
         Assert.IsFalse(vm.CanResolve);
-    }
-
-    [TestMethod]
-    public async Task ApprovalViewModel_ResolvedState_CollapsesAndCanExpand()
-    {
-        var request = new ApprovalRequest
-        {
-            RequestId = "req-5",
-            Risk = ApprovalRiskCategory.WorkspaceWrite,
-            DisplayText = "write file",
-            AvailableDecisions = AcceptDeclineCancel,
-        };
-        var vm = new ApprovalViewModel(request, (_, _) => Task.CompletedTask);
-
-        vm.AcceptCommand.Execute(null);
-        await Task.Delay(50);
-
-        Assert.IsTrue(vm.IsResolved);
-        Assert.IsFalse(vm.IsExpanded);
-        Assert.IsTrue(vm.CanToggleExpanded);
-        StringAssert.Contains(vm.Summary, "Accepted");
-
-        vm.ToggleExpandedCommand.Execute(null);
-        await Task.Delay(50);
-
-        Assert.IsTrue(vm.IsExpanded);
-    }
-
-    [TestMethod]
-    public void ApprovalViewModel_MarkResolved_UsesGenericResolutionSummary()
-    {
-        var vm = new ApprovalViewModel(
-            new ApprovalRequest
-            {
-                RequestId = "req-6",
-                Risk = ApprovalRiskCategory.ReadOnly,
-                DisplayText = "read file",
-                AvailableDecisions = AcceptDeclineCancel,
-            },
-            (_, _) => Task.CompletedTask);
-
-        vm.MarkResolved();
-
-        Assert.IsTrue(vm.IsResolved);
-        StringAssert.Contains(vm.Summary, "Resolved");
-    }
-
-    [TestMethod]
-    public void ApprovalViewModel_Summary_DoesNotRepeatLongDisplayText()
-    {
-        string longDisplayText = string.Join(
-            Environment.NewLine,
-            Enumerable.Repeat("public static void Main(string[] args) { }", 120));
-        var vm = new ApprovalViewModel(
-            new ApprovalRequest
-            {
-                RequestId = "req-summary",
-                Risk = ApprovalRiskCategory.WorkspaceWrite,
-                DisplayText = longDisplayText,
-                AvailableDecisions = AcceptDeclineCancel,
-            },
-            (_, _) => Task.CompletedTask);
-
-        Assert.IsFalse(
-            vm.Summary.Contains(longDisplayText, StringComparison.Ordinal),
-            "Approval summary should stay compact and must not duplicate full source output.");
-        StringAssert.Contains(vm.Summary, "approval");
-
-        vm.MarkResolved();
-        Assert.IsFalse(vm.Summary.Contains(longDisplayText, StringComparison.Ordinal));
-        StringAssert.Contains(vm.Summary, "Resolved");
-    }
-
-    [TestMethod]
-    public async Task ChatViewModel_ApprovalRequests_AreQueuedOutsideTranscript()
-    {
-        using var vm = new ChatViewModel();
-
-        await InvokeApprovalRequestedAsync(vm, CreateApprovalRequest("req-queue-1", "first"));
-        await InvokeApprovalRequestedAsync(vm, CreateApprovalRequest("req-queue-2", "second"));
-
-        Assert.AreEqual(0, vm.Items.Count, "Approval requests must not be appended to the transcript.");
-        Assert.IsNotNull(vm.ActiveApproval);
-        Assert.AreEqual("req-queue-1", vm.ActiveApproval!.RequestId);
-        Assert.IsTrue(vm.HasPendingApproval);
-        Assert.AreEqual(1, vm.PendingApprovalCount);
-        Assert.IsTrue(vm.HasQueuedApprovals);
-        Assert.AreEqual("1 approval waiting", vm.ApprovalQueueText);
-        Assert.IsFalse(vm.ShowWelcomeState, "The welcome overlay must not cover an active approval.");
-    }
-
-    [TestMethod]
-    public async Task ChatViewModel_RespondingToActiveApproval_RemovesAndPromotesNext()
-    {
-        using var vm = new ChatViewModel();
-
-        await InvokeApprovalRequestedAsync(vm, CreateApprovalRequest("req-active-1", "first"));
-        await InvokeApprovalRequestedAsync(vm, CreateApprovalRequest("req-active-2", "second"));
-
-        vm.ActiveApproval!.AcceptCommand.Execute(null);
-        await Task.Delay(100);
-
-        Assert.IsNotNull(vm.ActiveApproval);
-        Assert.AreEqual("req-active-2", vm.ActiveApproval!.RequestId);
-        Assert.AreEqual(0, vm.PendingApprovalCount);
-        Assert.IsFalse(vm.HasQueuedApprovals);
-        Assert.AreEqual(0, vm.Items.Count);
-    }
-
-    [TestMethod]
-    public async Task ChatViewModel_ApprovalResolved_RemovesActiveOrQueuedIdempotently()
-    {
-        using var vm = new ChatViewModel();
-
-        await InvokeApprovalRequestedAsync(vm, CreateApprovalRequest("req-resolve-1", "first"));
-        await InvokeApprovalRequestedAsync(vm, CreateApprovalRequest("req-resolve-2", "second"));
-        await InvokeApprovalRequestedAsync(vm, CreateApprovalRequest("req-resolve-3", "third"));
-
-        await InvokeApprovalResolvedAsync(vm, "req-resolve-2");
-
-        Assert.AreEqual("req-resolve-1", vm.ActiveApproval!.RequestId);
-        Assert.AreEqual(1, vm.PendingApprovalCount);
-
-        await InvokeApprovalResolvedAsync(vm, "req-resolve-1");
-
-        Assert.AreEqual("req-resolve-3", vm.ActiveApproval!.RequestId);
-        Assert.AreEqual(0, vm.PendingApprovalCount);
-
-        await InvokeApprovalResolvedAsync(vm, "req-resolve-1");
-        await InvokeApprovalResolvedAsync(vm, "unknown-request");
-
-        Assert.AreEqual("req-resolve-3", vm.ActiveApproval!.RequestId);
-        Assert.AreEqual(0, vm.PendingApprovalCount);
-    }
-
-    [TestMethod]
-    public async Task ChatViewModel_ApprovalQueue_DoesNotChangeTranscriptAutoFollow()
-    {
-        using var vm = new ChatViewModel();
-        MethodInfo? appendTranscriptRow = typeof(ChatViewModel).GetMethod(
-            "AppendTranscriptRow",
-            BindingFlags.Instance | BindingFlags.NonPublic);
-        Assert.IsNotNull(appendTranscriptRow);
-
-        var first = TranscriptRowViewModel.CreateChat(new ChatItemViewModel("Codex", "first", ConversationEventKind.AgentMessageDelta));
-        var second = TranscriptRowViewModel.CreateChat(new ChatItemViewModel("Codex", "second", ConversationEventKind.AgentMessageDelta));
-        appendTranscriptRow!.Invoke(vm, [first]);
-        appendTranscriptRow.Invoke(vm, [second]);
-        vm.SelectedTranscriptRow = first;
-
-        await InvokeApprovalRequestedAsync(vm, CreateApprovalRequest("req-follow-1", "approval"));
-        await InvokeApprovalResolvedAsync(vm, "req-follow-1");
-
-        Assert.AreSame(first, vm.SelectedTranscriptRow);
     }
 
     [TestMethod]
@@ -347,6 +507,282 @@ public sealed class ViewModelTests
     }
 
     [TestMethod]
+    public async Task ChatViewModel_AgentMessageDelta_MultipleChunks_NoArtificialNewlines()
+    {
+        using var vm = new ChatViewModel();
+
+        await RaiseConversationEventAsync(vm, new ConversationEvent { Kind = ConversationEventKind.TurnStarted });
+        await RaiseConversationEventAsync(vm, new ConversationEvent
+        {
+            Kind = ConversationEventKind.AgentMessageDelta,
+            ItemId = "agent-1",
+            Text = "作る前に Product Design の",
+        });
+        await RaiseConversationEventAsync(vm, new ConversationEvent
+        {
+            Kind = ConversationEventKind.AgentMessageDelta,
+            ItemId = "agent-1",
+            Text = "確認が必要です。",
+        });
+
+        string text = SingleConversationItem(vm, "agent-1", ConversationEventKind.AgentMessageDelta).Text.TrimEnd('\r', '\n');
+        Assert.IsFalse(text.Contains('\n'));
+        Assert.IsFalse(text.Contains('\r'));
+        Assert.IsTrue(text.Contains("Product Design の確認", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_AgentMessageDelta_FullTextRerendered_NotAppended()
+    {
+        using var vm = new ChatViewModel();
+
+        await RaiseConversationEventAsync(vm, new ConversationEvent { Kind = ConversationEventKind.TurnStarted });
+        await RaiseConversationEventAsync(vm, new ConversationEvent
+        {
+            Kind = ConversationEventKind.AgentMessageDelta,
+            ItemId = "agent-2",
+            Text = "Hello ",
+        });
+        await RaiseConversationEventAsync(vm, new ConversationEvent
+        {
+            Kind = ConversationEventKind.AgentMessageDelta,
+            ItemId = "agent-2",
+            Text = "world",
+        });
+
+        string text = SingleConversationItem(vm, "agent-2", ConversationEventKind.AgentMessageDelta).Text.TrimEnd('\r', '\n');
+        Assert.AreEqual("Hello world", text);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_AgentMessageDelta_JapaneseFragments_NoInterCharacterSpace()
+    {
+        using var vm = new ChatViewModel();
+
+        await RaiseConversationEventAsync(vm, new ConversationEvent { Kind = ConversationEventKind.TurnStarted });
+        await RaiseConversationEventAsync(vm, new ConversationEvent
+        {
+            Kind = ConversationEventKind.AgentMessageDelta,
+            ItemId = "agent-3",
+            Text = "こんにちは",
+        });
+        await RaiseConversationEventAsync(vm, new ConversationEvent
+        {
+            Kind = ConversationEventKind.AgentMessageDelta,
+            ItemId = "agent-3",
+            Text = "今日は",
+        });
+
+        string text = SingleConversationItem(vm, "agent-3", ConversationEventKind.AgentMessageDelta).Text.TrimEnd('\r', '\n');
+        Assert.IsTrue(text.Contains("こんにちは今日は", StringComparison.Ordinal));
+        Assert.IsFalse(text.Contains("こんにちは\n今日は", StringComparison.Ordinal));
+        Assert.IsFalse(text.Contains("こんにちは 今日は", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_AgentAndReasoningDeltas_WithSameItemId_DoNotShareAccumulator()
+    {
+        using var vm = new ChatViewModel();
+
+        await RaiseConversationEventAsync(vm, new ConversationEvent { Kind = ConversationEventKind.TurnStarted });
+        await RaiseConversationEventAsync(vm, new ConversationEvent
+        {
+            Kind = ConversationEventKind.AgentMessageDelta,
+            ItemId = "shared-item",
+            Text = "Answer ",
+        });
+        await RaiseConversationEventAsync(vm, new ConversationEvent
+        {
+            Kind = ConversationEventKind.ReasoningSummaryDelta,
+            ItemId = "shared-item",
+            Text = "Thought ",
+        });
+        await RaiseConversationEventAsync(vm, new ConversationEvent
+        {
+            Kind = ConversationEventKind.AgentMessageDelta,
+            ItemId = "shared-item",
+            Text = "done",
+        });
+        await RaiseConversationEventAsync(vm, new ConversationEvent
+        {
+            Kind = ConversationEventKind.ReasoningSummaryDelta,
+            ItemId = "shared-item",
+            Text = "complete",
+        });
+
+        string agentText = SingleConversationItem(vm, "shared-item", ConversationEventKind.AgentMessageDelta).Text.TrimEnd('\r', '\n');
+        string reasoningText = SingleConversationItem(vm, "shared-item", ConversationEventKind.ReasoningSummaryDelta).Text.TrimEnd('\r', '\n');
+        Assert.AreEqual("Answer done", agentText);
+        Assert.AreEqual("Thought complete", reasoningText);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_AgentMessageDelta_PopulatesStructuredBlocks()
+    {
+        using var vm = new ChatViewModel();
+
+        await RaiseConversationEventAsync(vm, new ConversationEvent { Kind = ConversationEventKind.TurnStarted });
+        await RaiseConversationEventAsync(vm, new ConversationEvent
+        {
+            Kind = ConversationEventKind.AgentMessageDelta,
+            ItemId = "agent-blocks",
+            Text = "# Title\n\nParagraph ",
+        });
+        await RaiseConversationEventAsync(vm, new ConversationEvent
+        {
+            Kind = ConversationEventKind.AgentMessageDelta,
+            ItemId = "agent-blocks",
+            Text = "text\n\n```bash\necho hi\n```",
+        });
+
+        ChatItemViewModel item = SingleConversationItem(vm, "agent-blocks", ConversationEventKind.AgentMessageDelta);
+        Assert.IsTrue(item.UsesBlockRendering);
+        Assert.IsTrue(item.Blocks.Any(block => block.IsHeading && block.Text == "Title"));
+        Assert.IsTrue(item.Blocks.Any(block => block.IsParagraph && block.Text == "Paragraph text"));
+        ChatBlockViewModel code = item.Blocks.Single(block => block.IsCodeBlock);
+        Assert.AreEqual("bash", code.Language);
+        Assert.AreEqual("echo hi", code.Code);
+        Assert.IsTrue(item.Text.Contains("Paragraph text", StringComparison.Ordinal));
+        Assert.IsTrue(item.Text.Contains("echo hi", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_ReasoningSummaryDelta_PopulatesStructuredBlocksButStartsCollapsed()
+    {
+        using var vm = new ChatViewModel();
+
+        await RaiseConversationEventAsync(vm, new ConversationEvent
+        {
+            Kind = ConversationEventKind.ReasoningSummaryDelta,
+            ItemId = "reasoning-blocks",
+            Text = "## Why\n\nBecause.",
+        });
+
+        ChatItemViewModel item = SingleConversationItem(vm, "reasoning-blocks", ConversationEventKind.ReasoningSummaryDelta);
+        Assert.IsTrue(item.UsesBlockRendering);
+        Assert.IsTrue(item.IsCollapsed);
+        Assert.IsTrue(item.Blocks.Any(block => block.IsHeading && block.IsH2 && block.Text == "Why"));
+        Assert.IsTrue(item.Blocks.Any(block => block.IsParagraph && block.Text == "Because."));
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_CommandOutputDelta_PreservesNewlines()
+    {
+        using var vm = new ChatViewModel();
+
+        await RaiseConversationEventAsync(vm, new ConversationEvent
+        {
+            Kind = ConversationEventKind.CommandOutputDelta,
+            ItemId = "command-1",
+            Text = "line1\n",
+        });
+        await RaiseConversationEventAsync(vm, new ConversationEvent
+        {
+            Kind = ConversationEventKind.CommandOutputDelta,
+            ItemId = "command-1",
+            Text = "line2\n",
+        });
+
+        string text = SingleConversationItem(vm, "command-1", ConversationEventKind.CommandOutputDelta).Text;
+        Assert.IsTrue(text.Contains('\n'));
+        Assert.IsTrue(text.Contains("line1", StringComparison.Ordinal));
+        Assert.IsTrue(text.Contains("line2", StringComparison.Ordinal));
+        Assert.IsFalse(SingleConversationItem(vm, "command-1", ConversationEventKind.CommandOutputDelta).UsesBlockRendering);
+        Assert.AreEqual(0, SingleConversationItem(vm, "command-1", ConversationEventKind.CommandOutputDelta).Blocks.Count);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_TurnStarted_ClearsItemRawText()
+    {
+        using var vm = new ChatViewModel();
+
+        await RaiseConversationEventAsync(vm, new ConversationEvent { Kind = ConversationEventKind.TurnStarted });
+        await RaiseConversationEventAsync(vm, new ConversationEvent
+        {
+            Kind = ConversationEventKind.AgentMessageDelta,
+            ItemId = "agent-reset",
+            Text = "First",
+        });
+        await RaiseConversationEventAsync(vm, new ConversationEvent { Kind = ConversationEventKind.TurnCompleted });
+        await RaiseConversationEventAsync(vm, new ConversationEvent { Kind = ConversationEventKind.TurnStarted });
+        await RaiseConversationEventAsync(vm, new ConversationEvent
+        {
+            Kind = ConversationEventKind.AgentMessageDelta,
+            ItemId = "agent-reset",
+            Text = "Second",
+        });
+
+        string text = SingleConversationItem(vm, "agent-reset", ConversationEventKind.AgentMessageDelta).Text.TrimEnd('\r', '\n');
+        Assert.AreEqual("Second", text);
+    }
+
+    [TestMethod]
+    [DataRow(ConversationEventKind.AgentMessageDelta, true)]
+    [DataRow(ConversationEventKind.ReasoningSummaryDelta, true)]
+    [DataRow(ConversationEventKind.CommandOutputDelta, true)]
+    [DataRow(ConversationEventKind.DiffUpdated, true)]
+    [DataRow(ConversationEventKind.PlanUpdated, true)]
+    [DataRow(ConversationEventKind.ItemStarted, false)]
+    [DataRow(ConversationEventKind.ItemCompleted, false)]
+    [DataRow(ConversationEventKind.TurnStarted, false)]
+    [DataRow(ConversationEventKind.TurnCompleted, false)]
+    [DataRow(ConversationEventKind.Error, false)]
+    [DataRow(ConversationEventKind.Unknown, false)]
+    public void ConversationEventPresentation_IsPanelContent_SeparatesUserFacingFromDiagnostic(
+        ConversationEventKind kind, bool expected)
+    {
+        // Regression guard (issue #17): only user-facing Codex content reaches the panel; lifecycle,
+        // protocol, error, and unknown events are diagnostic and must be routed to the Output channel.
+        Assert.AreEqual(expected, ConversationEventPresentation.IsPanelContent(kind));
+    }
+
+    [TestMethod]
+    public void ConversationEventPresentation_IsPanelContent_ExactlyFiveUserFacingKinds()
+    {
+        // If a new ConversationEventKind is added, force a deliberate panel/diagnostic decision
+        // rather than silently inheriting the diagnostic default.
+        int panelKinds = Enum.GetValues<ConversationEventKind>()
+            .Count(ConversationEventPresentation.IsPanelContent);
+        Assert.AreEqual(5, panelKinds);
+    }
+
+    [TestMethod]
+    public void ConversationEventPresentation_FormatDiagnostic_Error_IsSingleLineWithText()
+    {
+        var value = new ConversationEvent
+        {
+            Kind = ConversationEventKind.Error,
+            Text = "boom\r\nsecond line",
+        };
+
+        string line = ConversationEventPresentation.FormatDiagnostic(value);
+
+        Assert.IsTrue(line.StartsWith("[codex-error]", StringComparison.Ordinal));
+        Assert.IsTrue(line.Contains("boom", StringComparison.Ordinal));
+        Assert.IsFalse(line.Contains('\n'), "A diagnostic must occupy a single Output line.");
+        Assert.IsFalse(line.Contains('\r'), "A diagnostic must occupy a single Output line.");
+    }
+
+    [TestMethod]
+    public void ConversationEventPresentation_FormatDiagnostic_Lifecycle_IncludesKindAndIds()
+    {
+        var value = new ConversationEvent
+        {
+            Kind = ConversationEventKind.TurnCompleted,
+            ThreadId = "t1",
+            TurnId = "u1",
+            PayloadJson = """{"turn":"done"}""",
+        };
+
+        string line = ConversationEventPresentation.FormatDiagnostic(value);
+
+        Assert.IsTrue(line.StartsWith("[event]", StringComparison.Ordinal));
+        Assert.IsTrue(line.Contains("TurnCompleted", StringComparison.Ordinal));
+        Assert.IsTrue(line.Contains("thread=t1", StringComparison.Ordinal));
+        Assert.IsTrue(line.Contains("turn=u1", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
     public void AccountPanelViewModel_MapsAccountStatesToDisplayText()
     {
         var viewModel = new AccountPanelViewModel();
@@ -391,9 +827,6 @@ public sealed class ViewModelTests
         Assert.IsTrue(xaml.Contains("{Binding AccountActionText}", StringComparison.Ordinal));
         Assert.IsTrue(xaml.Contains("{Binding ShowAccountAction,", StringComparison.Ordinal));
         Assert.IsTrue(xaml.Contains("{Binding StatusDetailText}", StringComparison.Ordinal));
-        Assert.IsFalse(xaml.Contains("{Binding Approvals}", StringComparison.Ordinal));
-        Assert.IsFalse(xaml.Contains("ApprovalTranscriptRowTemplate", StringComparison.Ordinal));
-        Assert.IsFalse(xaml.Contains("IsApprovalRow", StringComparison.Ordinal));
         Assert.IsFalse(xaml.Contains("{Binding Account.", StringComparison.Ordinal));
     }
 
@@ -438,6 +871,27 @@ public sealed class ViewModelTests
             "The Ctrl+Enter KeyBinding must invoke SendCommand.");
     }
 
+    // Remote UI replicates only [DataMember] properties of [DataContract] types into the
+    // VS-side data context proxy; a type without the attributes serializes as an empty
+    // object and every binding to it fails silently (blank text, empty button content).
+    private static readonly Type[] RemoteUiContextTypes =
+        [
+            typeof(ChatViewModel), typeof(ChatItemViewModel), typeof(ChatBlockViewModel), typeof(ApprovalViewModel),
+            typeof(UserInputViewModel), typeof(UserInputQuestionViewModel), typeof(UserInputOptionViewModel),
+            typeof(SuggestionChip), typeof(WorkerStatus), typeof(ThreadSummary),
+        ];
+
+    [TestMethod]
+    public void RemoteUiContextTypes_AreDataContracts()
+    {
+        foreach (Type type in RemoteUiContextTypes)
+        {
+            Assert.IsNotNull(
+                type.GetCustomAttribute<DataContractAttribute>(),
+                $"{type.Name} is bound by ChatToolWindowContent.xaml and must be [DataContract] for Remote UI.");
+        }
+    }
+
     [TestMethod]
     public void ChatToolWindowXaml_ActiveApprovalDetails_AreBoundedAndScrollable()
     {
@@ -473,23 +927,6 @@ public sealed class ViewModelTests
         Assert.IsNull(
             acceptButton!.Ancestors(presentation + "ScrollViewer").FirstOrDefault(),
             "Approval decision buttons must remain outside the details ScrollViewer.");
-    }
-
-    // Remote UI replicates only [DataMember] properties of [DataContract] types into the
-    // VS-side data context proxy; a type without the attributes serializes as an empty
-    // object and every binding to it fails silently (blank text, empty button content).
-    private static readonly Type[] RemoteUiContextTypes =
-        [typeof(ChatViewModel), typeof(TranscriptRowViewModel), typeof(ChatItemViewModel), typeof(ApprovalViewModel), typeof(SuggestionChip), typeof(WorkerStatus), typeof(ThreadSummary)];
-
-    [TestMethod]
-    public void RemoteUiContextTypes_AreDataContracts()
-    {
-        foreach (Type type in RemoteUiContextTypes)
-        {
-            Assert.IsNotNull(
-                type.GetCustomAttribute<DataContractAttribute>(),
-                $"{type.Name} is bound by ChatToolWindowContent.xaml and must be [DataContract] for Remote UI.");
-        }
     }
 
     [TestMethod]
@@ -577,12 +1014,6 @@ public sealed class ViewModelTests
         using var vm = new ChatViewModel();
 
         Assert.IsTrue(vm.IsThreadEmpty);
-        Assert.IsTrue(vm.ShowWelcomeState);
-        Assert.IsNull(vm.ActiveApproval);
-        Assert.IsFalse(vm.HasPendingApproval);
-        Assert.AreEqual(0, vm.PendingApprovalCount);
-        Assert.IsFalse(vm.HasQueuedApprovals);
-        Assert.AreEqual(string.Empty, vm.ApprovalQueueText);
         Assert.IsTrue(vm.IsComposerEmpty);
         Assert.IsFalse(vm.IsHistoryOpen);
         Assert.AreEqual(3, vm.Suggestions.Count);
@@ -614,36 +1045,11 @@ public sealed class ViewModelTests
         using var vm = new ChatViewModel();
         Assert.IsTrue(vm.IsThreadEmpty);
 
-        vm.Items.Add(TranscriptRowViewModel.CreateChat(new ChatItemViewModel("You", "hello", ConversationEventKind.ItemStarted)));
+        vm.Items.Add(new ChatItemViewModel("You", "hello", ConversationEventKind.ItemStarted));
         Assert.IsFalse(vm.IsThreadEmpty);
 
         vm.Items.Clear();
         Assert.IsTrue(vm.IsThreadEmpty);
-    }
-
-    [TestMethod]
-    public void ChatViewModel_TranscriptAutoFollow_StopsWhenUserSelectsOlderRow()
-    {
-        using var vm = new ChatViewModel();
-        MethodInfo? appendTranscriptRow = typeof(ChatViewModel).GetMethod(
-            "AppendTranscriptRow",
-            BindingFlags.Instance | BindingFlags.NonPublic);
-        Assert.IsNotNull(appendTranscriptRow);
-
-        var first = TranscriptRowViewModel.CreateChat(new ChatItemViewModel("Codex", "first", ConversationEventKind.AgentMessageDelta));
-        var second = TranscriptRowViewModel.CreateChat(new ChatItemViewModel("Codex", "second", ConversationEventKind.AgentMessageDelta));
-        var third = TranscriptRowViewModel.CreateChat(new ChatItemViewModel("Codex", "third", ConversationEventKind.AgentMessageDelta));
-
-        appendTranscriptRow!.Invoke(vm, [first]);
-        appendTranscriptRow.Invoke(vm, [second]);
-        Assert.AreSame(second, vm.SelectedTranscriptRow);
-
-        // Simulate the user reviewing older transcript content.
-        vm.SelectedTranscriptRow = first;
-        appendTranscriptRow.Invoke(vm, [third]);
-
-        // Auto-follow must stay disabled while reading older rows.
-        Assert.AreSame(first, vm.SelectedTranscriptRow);
     }
 
     [TestMethod]
@@ -722,30 +1128,19 @@ public sealed class ViewModelTests
         }
     }
 
-    private static ApprovalRequest CreateApprovalRequest(string requestId, string displayText)
-        => new()
-        {
-            RequestId = requestId,
-            Risk = ApprovalRiskCategory.WorkspaceWrite,
-            DisplayText = displayText,
-            AvailableDecisions = AcceptDeclineCancel,
-        };
-
-    private static async Task InvokeApprovalRequestedAsync(ChatViewModel vm, ApprovalRequest request)
+    private static Task RaiseConversationEventAsync(ChatViewModel viewModel, ConversationEvent value)
     {
-        MethodInfo? method = typeof(ChatViewModel).GetMethod(
-            "OnApprovalRequestedAsync",
-            BindingFlags.Instance | BindingFlags.NonPublic);
-        Assert.IsNotNull(method);
-        await (Task)method!.Invoke(vm, [request])!;
+        MethodInfo method = typeof(ChatViewModel).GetMethod(
+            "OnConversationEventAsync",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("Could not find OnConversationEventAsync.");
+
+        return (Task)method.Invoke(viewModel, [value])!;
     }
 
-    private static async Task InvokeApprovalResolvedAsync(ChatViewModel vm, string requestId)
-    {
-        MethodInfo? method = typeof(ChatViewModel).GetMethod(
-            "OnApprovalResolvedAsync",
-            BindingFlags.Instance | BindingFlags.NonPublic);
-        Assert.IsNotNull(method);
-        await (Task)method!.Invoke(vm, [requestId])!;
-    }
+    private static ChatItemViewModel SingleConversationItem(
+        ChatViewModel viewModel,
+        string itemId,
+        ConversationEventKind kind)
+        => viewModel.Items.Single(item => item.ItemId == itemId && item.Kind == kind);
 }

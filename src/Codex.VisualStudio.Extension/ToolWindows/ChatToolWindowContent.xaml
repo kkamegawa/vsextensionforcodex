@@ -328,339 +328,403 @@
       </DockPanel>
     </Border>
 
-    <!-- Body: full-width transcript with a centered welcome overlay -->
+    <!-- Body: full-width transcript with a centered welcome overlay, plus pending approvals -->
     <Grid Grid.Row="1"
           Background="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowCodeBlockBackgroundBrushKey}}">
-      <!-- Transcript -->
-      <ListBox Margin="0"
-               Padding="10"
-               Background="Transparent"
-               BorderThickness="0"
-               HorizontalContentAlignment="Stretch"
-               ItemsSource="{Binding Items}"
-               SelectedItem="{Binding SelectedTranscriptRow, Mode=TwoWay}"
-               ItemContainerStyle="{StaticResource MessageRowStyle}"
-               ScrollViewer.CanContentScroll="True"
-               VirtualizingPanel.IsVirtualizing="True"
-               VirtualizingPanel.VirtualizationMode="Recycling">
-        <ListBox.Resources>
-          <DataTemplate x:Key="ChatTranscriptRowTemplate">
-            <!-- Single-cell Grid lets chat and approval rows share the same space; only one
-                 is visible at a time because IsChatRow and IsApprovalRow are mutually exclusive. -->
-            <Grid>
+      <Grid.RowDefinitions>
+        <RowDefinition Height="*" />
+        <RowDefinition Height="Auto" />
+      </Grid.RowDefinitions>
 
-            <!-- ── Approval row ── -->
-            <Border Margin="0,0,0,8" Padding="10" CornerRadius="8"
-                    BorderThickness="1"
-                    BorderBrush="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBorderBrushKey}}"
-                    Background="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBackgroundBrushKey}}"
-                    Visibility="{Binding IsApprovalRow, Converter={StaticResource BoolToVis}}">
-              <StackPanel>
-                <!-- Summary + expand/collapse toggle (only for resolved approvals) -->
-                <DockPanel LastChildFill="True">
-                  <Button DockPanel.Dock="Right"
-                          Margin="8,0,0,0"
-                          Padding="8,2"
-                          FontSize="11"
-                          Content="{Binding Approval.ExpandButtonText}"
-                          Command="{Binding Approval.ToggleExpandedCommand}"
-                          Visibility="{Binding Approval.CanToggleExpanded, Converter={StaticResource BoolToVis}}" />
-                  <TextBlock FontWeight="SemiBold"
-                             Text="{Binding Approval.Summary}"
-                             TextTrimming="CharacterEllipsis"
-                             VerticalAlignment="Center" />
-                </DockPanel>
-
-                <!-- Detail block: always visible for pending, visible when expanded for resolved -->
-                <Border Margin="0,6,0,0"
-                        Padding="8"
-                        BorderThickness="1"
-                        CornerRadius="6"
-                        Background="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowCodeBlockBackgroundBrushKey}}"
-                        BorderBrush="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBorderBrushKey}}"
-                        Visibility="{Binding Approval.IsDetailVisible, Converter={StaticResource BoolToVis}}">
-                  <StackPanel>
-                    <TextBlock FontWeight="Bold" Text="{Binding Approval.Risk}" />
-                    <TextBlock Margin="0,4,0,0"
-                               FontFamily="Consolas, Courier New"
-                               Text="{Binding Approval.DisplayText}"
-                               TextWrapping="NoWrap" />
-                    <TextBlock Margin="0,4,0,0"
-                               Opacity="0.8"
-                               Text="{Binding Approval.Reason}"
-                               TextWrapping="Wrap" />
-                    <StackPanel Margin="0,4,0,0"
-                                Orientation="Horizontal"
-                                Visibility="{Binding Approval.IsNetworkApproval, Converter={StaticResource BoolToVis}}">
-                      <TextBlock Text="Host: " FontWeight="SemiBold" />
-                      <TextBlock Text="{Binding Approval.NetworkHost}" Margin="0,0,12,0" />
-                      <TextBlock Text="Port: " FontWeight="SemiBold" />
-                      <TextBlock Text="{Binding Approval.NetworkPort}" />
-                    </StackPanel>
-                    <TextBlock Margin="0,4,0,0"
-                               FontStyle="Italic"
-                               Text="{Binding Approval.PolicyBlockReason, StringFormat='Policy blocked: {0}'}"
-                               TextWrapping="Wrap"
-                               Visibility="{Binding Approval.IsPolicyBlocked, Converter={StaticResource BoolToVis}}" />
-                  </StackPanel>
-                </Border>
-              </StackPanel>
-            </Border>
-
-            <!-- ── Chat row ── -->
-            <Border Margin="0,0,0,8" Padding="10" CornerRadius="8"
-                    BorderThickness="1"
-                    BorderBrush="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBorderBrushKey}}"
-                    Visibility="{Binding IsChatRow, Converter={StaticResource BoolToVis}}">
-              <Border.Style>
-                <Style TargetType="Border">
-                  <Setter Property="Background" Value="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBackgroundBrushKey}}" />
-                  <Style.Triggers>
-                    <!-- Command output and diff use the code-block (darker) background. -->
-                    <DataTrigger Binding="{Binding ChatItem.IsCommandItem}" Value="True">
-                      <Setter Property="Background" Value="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowCodeBlockBackgroundBrushKey}}" />
-                    </DataTrigger>
-                    <DataTrigger Binding="{Binding ChatItem.IsDiffItem}" Value="True">
-                      <Setter Property="Background" Value="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowCodeBlockBackgroundBrushKey}}" />
-                    </DataTrigger>
-                  </Style.Triggers>
-                </Style>
-              </Border.Style>
-              <StackPanel>
-                <TextBlock FontWeight="SemiBold" Opacity="0.85" Text="{Binding ChatItem.Role}" />
-
-                <!-- Collapse toggle button — visible only for reasoning items. -->
-                <Button Margin="0,4,0,0"
-                        Content="{Binding ChatItem.CollapseButtonText}"
-                        Command="{Binding ChatItem.ToggleCollapseCommand}"
-                        HorizontalAlignment="Left">
-                  <Button.Style>
-                    <Style TargetType="Button">
-                      <Setter Property="Visibility" Value="Collapsed" />
-                      <Setter Property="Background" Value="{DynamicResource {x:Static colors:EnvironmentColors.SystemButtonFaceBrushKey}}" />
-                      <Setter Property="Foreground" Value="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowTextBrushKey}}" />
-                      <Setter Property="BorderBrush" Value="{DynamicResource {x:Static colors:EnvironmentColors.SystemButtonFaceBrushKey}}" />
-                      <Setter Property="BorderThickness" Value="1" />
-                      <Setter Property="Padding" Value="10,3" />
-                      <Setter Property="FontSize" Value="11" />
-                      <Setter Property="Cursor" Value="Hand" />
-                      <Style.Triggers>
-                        <DataTrigger Binding="{Binding ChatItem.IsReasoningItem}" Value="True">
-                          <Setter Property="Visibility" Value="Visible" />
-                        </DataTrigger>
-                      </Style.Triggers>
-                    </Style>
-                  </Button.Style>
-                </Button>
-
-                <!-- Main text content: plain, monospace (command/diff), or hidden (plan/collapsed reasoning). -->
-                <TextBlock Margin="0,4,0,0" TextWrapping="Wrap" Text="{Binding ChatItem.Text}">
-                  <TextBlock.Style>
-                    <Style TargetType="TextBlock">
-                      <Setter Property="Foreground" Value="{DynamicResource {x:Static styles:VsBrushes.WindowTextKey}}" />
-                      <Setter Property="TextOptions.TextFormattingMode" Value="Display" />
-                      <Setter Property="Visibility" Value="Visible" />
-                      <Style.Triggers>
-                        <!-- Plan items use a structured step list instead. -->
-                        <DataTrigger Binding="{Binding ChatItem.IsPlanItem}" Value="True">
-                          <Setter Property="Visibility" Value="Collapsed" />
-                        </DataTrigger>
-                        <!-- Collapsed reasoning hides its full text. -->
-                        <MultiDataTrigger>
-                          <MultiDataTrigger.Conditions>
-                            <Condition Binding="{Binding ChatItem.IsReasoningItem}" Value="True" />
-                            <Condition Binding="{Binding ChatItem.IsCollapsed}" Value="True" />
-                          </MultiDataTrigger.Conditions>
-                          <Setter Property="Visibility" Value="Collapsed" />
-                        </MultiDataTrigger>
-                        <!-- Command output rendered in monospace. -->
-                        <DataTrigger Binding="{Binding ChatItem.IsCommandItem}" Value="True">
-                          <Setter Property="FontFamily" Value="Consolas, Courier New, monospace" />
-                          <Setter Property="FontSize" Value="11" />
-                        </DataTrigger>
-                        <!-- Diff rendered in monospace. -->
-                        <DataTrigger Binding="{Binding ChatItem.IsDiffItem}" Value="True">
-                          <Setter Property="FontFamily" Value="Consolas, Courier New, monospace" />
-                          <Setter Property="FontSize" Value="11" />
-                        </DataTrigger>
-                      </Style.Triggers>
-                    </Style>
-                  </TextBlock.Style>
-                </TextBlock>
-
-                <!-- Plan step list — shown only for PlanUpdated items. -->
-                <ItemsControl Margin="0,4,0,0" MinHeight="0" ItemsSource="{Binding ChatItem.PlanSteps}">
-                  <ItemsControl.Style>
-                    <Style TargetType="ItemsControl">
-                      <Setter Property="Visibility" Value="Collapsed" />
-                      <Style.Triggers>
-                        <DataTrigger Binding="{Binding ChatItem.IsPlanItem}" Value="True">
-                          <Setter Property="Visibility" Value="Visible" />
-                        </DataTrigger>
-                      </Style.Triggers>
-                    </Style>
-                  </ItemsControl.Style>
-                  <ItemsControl.ItemTemplate>
-                    <DataTemplate>
-                      <TextBlock Margin="0,2" Text="{Binding}" TextWrapping="Wrap"
-                                 Foreground="{DynamicResource {x:Static styles:VsBrushes.WindowTextKey}}"
-                                 TextOptions.TextFormattingMode="Display" />
-                    </DataTemplate>
-                  </ItemsControl.ItemTemplate>
-                </ItemsControl>
-
-                <!-- Truncation notice — shown when output was cut due to size limit. -->
-                <TextBlock Margin="0,6,0,0" FontSize="11" Opacity="0.6"
-                           Text="Output truncated; full output is stored in a temporary file.">
-                  <TextBlock.Style>
-                    <Style TargetType="TextBlock">
-                      <Setter Property="Foreground" Value="{DynamicResource {x:Static styles:VsBrushes.WindowTextKey}}" />
-                      <Setter Property="Visibility" Value="Collapsed" />
-                      <Style.Triggers>
-                        <DataTrigger Binding="{Binding ChatItem.IsTruncated}" Value="True">
-                          <Setter Property="Visibility" Value="Visible" />
-                        </DataTrigger>
-                      </Style.Triggers>
-                    </Style>
-                  </TextBlock.Style>
-                </TextBlock>
-              </StackPanel>
-            </Border>
-
-            </Grid>
-          </DataTemplate>
-
-        </ListBox.Resources>
-        <ListBox.ItemTemplate>
-          <StaticResource ResourceKey="ChatTranscriptRowTemplate" />
-        </ListBox.ItemTemplate>
-      </ListBox>
-
-      <!-- Welcome / empty state — centered over the (empty) transcript. Hidden while an
-           approval card is active so the queue does not compete with the welcome overlay. -->
-      <StackPanel Visibility="{Binding ShowWelcomeState, Converter={StaticResource BoolToVis}}"
-                  VerticalAlignment="Center" HorizontalAlignment="Center"
-                  MaxWidth="380" Margin="24">
-        <TextBlock Text="&#xE943;" FontFamily="Segoe MDL2 Assets" FontSize="40"
-                   HorizontalAlignment="Center" Opacity="0.8" />
-        <TextBlock Text="Codex" FontSize="22" FontWeight="SemiBold"
-                   HorizontalAlignment="Center" Margin="0,8,0,0" />
-        <TextBlock Text="Codex can make mistakes. Review generated code and output before using it."
-                   TextWrapping="Wrap" TextAlignment="Center" Opacity="0.7" Margin="0,6,0,0" />
-        <TextBlock Text="Type # to add references &#xB7; / for commands"
-                   TextWrapping="Wrap" TextAlignment="Center" Opacity="0.6" Margin="0,4,0,14" />
-        <ItemsControl ItemsSource="{Binding Suggestions}">
-          <ItemsControl.ItemTemplate>
+      <Grid Grid.Row="0">
+        <!-- Transcript -->
+        <ListBox Margin="0"
+                 Padding="10"
+                 Background="Transparent"
+                 BorderThickness="0"
+                 HorizontalContentAlignment="Stretch"
+                 ItemsSource="{Binding Items}"
+                 ItemContainerStyle="{StaticResource MessageRowStyle}"
+                 ScrollViewer.CanContentScroll="True"
+                 ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                 VirtualizingPanel.IsVirtualizing="True"
+                 VirtualizingPanel.VirtualizationMode="Recycling">
+          <ListBox.ItemTemplate>
             <DataTemplate>
-              <Button Style="{StaticResource ChipButtonStyle}" Command="{Binding UseCommand}"
-                      HorizontalAlignment="Stretch">
-                <TextBlock Text="{Binding Text}" TextWrapping="Wrap" />
-              </Button>
+              <Border Margin="0,0,0,8" Padding="10" CornerRadius="8"
+                      BorderThickness="1"
+                      BorderBrush="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBorderBrushKey}}">
+                <Border.Style>
+                  <Style TargetType="Border">
+                    <Setter Property="Background" Value="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBackgroundBrushKey}}" />
+                    <Style.Triggers>
+                      <!-- Command output and diff use the code-block (darker) background. -->
+                      <DataTrigger Binding="{Binding IsCommandItem}" Value="True">
+                        <Setter Property="Background" Value="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowCodeBlockBackgroundBrushKey}}" />
+                      </DataTrigger>
+                      <DataTrigger Binding="{Binding IsDiffItem}" Value="True">
+                        <Setter Property="Background" Value="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowCodeBlockBackgroundBrushKey}}" />
+                      </DataTrigger>
+                    </Style.Triggers>
+                  </Style>
+                </Border.Style>
+                <StackPanel>
+                  <TextBlock FontWeight="SemiBold" Opacity="0.85" Text="{Binding Role}" />
+
+                  <!-- Collapse toggle button — visible only for reasoning items. -->
+                  <Button Margin="0,4,0,0"
+                          Content="{Binding CollapseButtonText}"
+                          Command="{Binding ToggleCollapseCommand}"
+                          HorizontalAlignment="Left">
+                    <Button.Style>
+                      <Style TargetType="Button">
+                        <Setter Property="Visibility" Value="Collapsed" />
+                        <Setter Property="Background" Value="{DynamicResource {x:Static colors:EnvironmentColors.SystemButtonFaceBrushKey}}" />
+                        <Setter Property="Foreground" Value="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowTextBrushKey}}" />
+                        <Setter Property="BorderBrush" Value="{DynamicResource {x:Static colors:EnvironmentColors.SystemButtonFaceBrushKey}}" />
+                        <Setter Property="BorderThickness" Value="1" />
+                        <Setter Property="Padding" Value="10,3" />
+                        <Setter Property="FontSize" Value="11" />
+                        <Setter Property="Cursor" Value="Hand" />
+                        <Style.Triggers>
+                          <DataTrigger Binding="{Binding IsReasoningItem}" Value="True">
+                            <Setter Property="Visibility" Value="Visible" />
+                          </DataTrigger>
+                        </Style.Triggers>
+                      </Style>
+                    </Button.Style>
+                  </Button>
+
+                  <!-- Structured agent/reasoning content. Prose wraps in the panel; code blocks scroll horizontally. -->
+                  <ItemsControl Margin="0,4,0,0"
+                                HorizontalAlignment="Stretch"
+                                ItemsSource="{Binding Blocks}"
+                                AutomationProperties.Name="Message blocks">
+                    <ItemsControl.Style>
+                      <Style TargetType="ItemsControl">
+                        <Setter Property="Visibility" Value="Collapsed" />
+                        <Style.Triggers>
+                          <DataTrigger Binding="{Binding UsesBlockRendering}" Value="True">
+                            <Setter Property="Visibility" Value="Visible" />
+                          </DataTrigger>
+                          <MultiDataTrigger>
+                            <MultiDataTrigger.Conditions>
+                              <Condition Binding="{Binding IsReasoningItem}" Value="True" />
+                              <Condition Binding="{Binding IsCollapsed}" Value="True" />
+                            </MultiDataTrigger.Conditions>
+                            <Setter Property="Visibility" Value="Collapsed" />
+                          </MultiDataTrigger>
+                        </Style.Triggers>
+                      </Style>
+                    </ItemsControl.Style>
+                    <ItemsControl.ItemContainerStyle>
+                      <Style TargetType="ContentPresenter">
+                        <Setter Property="HorizontalAlignment" Value="Stretch" />
+                      </Style>
+                    </ItemsControl.ItemContainerStyle>
+                    <ItemsControl.ItemTemplate>
+                      <DataTemplate>
+                        <Grid Margin="0,2,0,2" HorizontalAlignment="Stretch">
+                          <TextBlock Text="{Binding Text}" TextWrapping="Wrap">
+                            <TextBlock.Style>
+                              <Style TargetType="TextBlock">
+                                <Setter Property="Visibility" Value="Collapsed" />
+                                <Setter Property="Foreground" Value="{DynamicResource {x:Static styles:VsBrushes.WindowTextKey}}" />
+                                <Setter Property="TextOptions.TextFormattingMode" Value="Display" />
+                                <Setter Property="FontWeight" Value="SemiBold" />
+                                <Setter Property="FontSize" Value="13" />
+                                <Setter Property="Margin" Value="0,6,0,2" />
+                                <Style.Triggers>
+                                  <DataTrigger Binding="{Binding IsHeading}" Value="True">
+                                    <Setter Property="Visibility" Value="Visible" />
+                                  </DataTrigger>
+                                  <DataTrigger Binding="{Binding IsH1}" Value="True">
+                                    <Setter Property="FontSize" Value="18" />
+                                    <Setter Property="Margin" Value="0,8,0,4" />
+                                  </DataTrigger>
+                                  <DataTrigger Binding="{Binding IsH2}" Value="True">
+                                    <Setter Property="FontSize" Value="15" />
+                                  </DataTrigger>
+                                  <DataTrigger Binding="{Binding IsH3}" Value="True">
+                                    <Setter Property="FontSize" Value="13" />
+                                  </DataTrigger>
+                                </Style.Triggers>
+                              </Style>
+                            </TextBlock.Style>
+                          </TextBlock>
+
+                          <TextBlock Text="{Binding Text}" TextWrapping="Wrap">
+                            <TextBlock.Style>
+                              <Style TargetType="TextBlock">
+                                <Setter Property="Visibility" Value="Collapsed" />
+                                <Setter Property="Foreground" Value="{DynamicResource {x:Static styles:VsBrushes.WindowTextKey}}" />
+                                <Setter Property="TextOptions.TextFormattingMode" Value="Display" />
+                                <Style.Triggers>
+                                  <DataTrigger Binding="{Binding IsParagraph}" Value="True">
+                                    <Setter Property="Visibility" Value="Visible" />
+                                  </DataTrigger>
+                                </Style.Triggers>
+                              </Style>
+                            </TextBlock.Style>
+                          </TextBlock>
+
+                          <TextBlock Margin="12,0,0,0" Text="{Binding Text}" TextWrapping="Wrap">
+                            <TextBlock.Style>
+                              <Style TargetType="TextBlock">
+                                <Setter Property="Visibility" Value="Collapsed" />
+                                <Setter Property="Foreground" Value="{DynamicResource {x:Static styles:VsBrushes.WindowTextKey}}" />
+                                <Setter Property="TextOptions.TextFormattingMode" Value="Display" />
+                                <Style.Triggers>
+                                  <DataTrigger Binding="{Binding IsListItem}" Value="True">
+                                    <Setter Property="Visibility" Value="Visible" />
+                                  </DataTrigger>
+                                </Style.Triggers>
+                              </Style>
+                            </TextBlock.Style>
+                          </TextBlock>
+
+                          <Separator Margin="0,6,0,6">
+                            <Separator.Style>
+                              <Style TargetType="Separator">
+                                <Setter Property="Visibility" Value="Collapsed" />
+                                <Style.Triggers>
+                                  <DataTrigger Binding="{Binding IsSeparator}" Value="True">
+                                    <Setter Property="Visibility" Value="Visible" />
+                                  </DataTrigger>
+                                </Style.Triggers>
+                              </Style>
+                            </Separator.Style>
+                          </Separator>
+
+                          <Border CornerRadius="4" Padding="8,6" Margin="0,4,0,4"
+                                  Background="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowCodeBlockBackgroundBrushKey}}"
+                                  BorderThickness="1"
+                                  BorderBrush="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBorderBrushKey}}">
+                            <Border.Style>
+                              <Style TargetType="Border">
+                                <Setter Property="Visibility" Value="Collapsed" />
+                                <Style.Triggers>
+                                  <DataTrigger Binding="{Binding IsCodeBlock}" Value="True">
+                                    <Setter Property="Visibility" Value="Visible" />
+                                  </DataTrigger>
+                                </Style.Triggers>
+                              </Style>
+                            </Border.Style>
+                            <StackPanel>
+                              <TextBlock FontSize="10" Opacity="0.65" Margin="0,0,0,4"
+                                         Text="{Binding Language}"
+                                         Foreground="{DynamicResource {x:Static styles:VsBrushes.WindowTextKey}}">
+                                <TextBlock.Style>
+                                  <Style TargetType="TextBlock">
+                                    <Setter Property="Visibility" Value="Visible" />
+                                    <Style.Triggers>
+                                      <DataTrigger Binding="{Binding Language}" Value="">
+                                        <Setter Property="Visibility" Value="Collapsed" />
+                                      </DataTrigger>
+                                    </Style.Triggers>
+                                  </Style>
+                                </TextBlock.Style>
+                              </TextBlock>
+                              <ScrollViewer HorizontalScrollBarVisibility="Auto"
+                                            VerticalScrollBarVisibility="Disabled"
+                                            AutomationProperties.Name="{Binding CodeBlockAutomationName}">
+                                <TextBlock FontFamily="Consolas, Courier New, monospace"
+                                           FontSize="11"
+                                           Text="{Binding Code}"
+                                           TextWrapping="NoWrap"
+                                           Foreground="{DynamicResource {x:Static styles:VsBrushes.WindowTextKey}}" />
+                              </ScrollViewer>
+                            </StackPanel>
+                          </Border>
+                        </Grid>
+                      </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                  </ItemsControl>
+
+                  <!-- Main text content: plain, monospace (command/diff), or hidden (plan/block rendering/collapsed reasoning). -->
+                  <TextBlock Margin="0,4,0,0" TextWrapping="Wrap" Text="{Binding Text}">
+                    <TextBlock.Style>
+                      <Style TargetType="TextBlock">
+                        <Setter Property="Foreground" Value="{DynamicResource {x:Static styles:VsBrushes.WindowTextKey}}" />
+                        <Setter Property="TextOptions.TextFormattingMode" Value="Display" />
+                        <Setter Property="Visibility" Value="Visible" />
+                        <Style.Triggers>
+                          <!-- Plan items use a structured step list instead. -->
+                          <DataTrigger Binding="{Binding IsPlanItem}" Value="True">
+                            <Setter Property="Visibility" Value="Collapsed" />
+                          </DataTrigger>
+                          <!-- Agent/reasoning items use the structured block renderer above. -->
+                          <DataTrigger Binding="{Binding UsesBlockRendering}" Value="True">
+                            <Setter Property="Visibility" Value="Collapsed" />
+                          </DataTrigger>
+                          <!-- Collapsed reasoning hides its full text. -->
+                          <MultiDataTrigger>
+                            <MultiDataTrigger.Conditions>
+                              <Condition Binding="{Binding IsReasoningItem}" Value="True" />
+                              <Condition Binding="{Binding IsCollapsed}" Value="True" />
+                            </MultiDataTrigger.Conditions>
+                            <Setter Property="Visibility" Value="Collapsed" />
+                          </MultiDataTrigger>
+                          <!-- Command output rendered in monospace. -->
+                          <DataTrigger Binding="{Binding IsCommandItem}" Value="True">
+                            <Setter Property="FontFamily" Value="Consolas, Courier New, monospace" />
+                            <Setter Property="FontSize" Value="11" />
+                          </DataTrigger>
+                          <!-- Diff rendered in monospace. -->
+                          <DataTrigger Binding="{Binding IsDiffItem}" Value="True">
+                            <Setter Property="FontFamily" Value="Consolas, Courier New, monospace" />
+                            <Setter Property="FontSize" Value="11" />
+                          </DataTrigger>
+                        </Style.Triggers>
+                      </Style>
+                    </TextBlock.Style>
+                  </TextBlock>
+
+                  <!-- Plan step list — shown only for PlanUpdated items. -->
+                  <ItemsControl Margin="0,4,0,0" MinHeight="0" ItemsSource="{Binding PlanSteps}">
+                    <ItemsControl.Style>
+                      <Style TargetType="ItemsControl">
+                        <Setter Property="Visibility" Value="Collapsed" />
+                        <Style.Triggers>
+                          <DataTrigger Binding="{Binding IsPlanItem}" Value="True">
+                            <Setter Property="Visibility" Value="Visible" />
+                          </DataTrigger>
+                        </Style.Triggers>
+                      </Style>
+                    </ItemsControl.Style>
+                    <ItemsControl.ItemTemplate>
+                      <DataTemplate>
+                        <TextBlock Margin="0,2" Text="{Binding}" TextWrapping="Wrap"
+                                   Foreground="{DynamicResource {x:Static styles:VsBrushes.WindowTextKey}}"
+                                   TextOptions.TextFormattingMode="Display" />
+                      </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                  </ItemsControl>
+
+                  <!-- Truncation notice — shown when output was cut due to size limit. -->
+                  <TextBlock Margin="0,6,0,0" FontSize="11" Opacity="0.6"
+                             Text="Output truncated; full output is stored in a temporary file.">
+                    <TextBlock.Style>
+                      <Style TargetType="TextBlock">
+                        <Setter Property="Foreground" Value="{DynamicResource {x:Static styles:VsBrushes.WindowTextKey}}" />
+                        <Setter Property="Visibility" Value="Collapsed" />
+                        <Style.Triggers>
+                          <DataTrigger Binding="{Binding IsTruncated}" Value="True">
+                            <Setter Property="Visibility" Value="Visible" />
+                          </DataTrigger>
+                        </Style.Triggers>
+                      </Style>
+                    </TextBlock.Style>
+                  </TextBlock>
+                </StackPanel>
+              </Border>
             </DataTemplate>
-          </ItemsControl.ItemTemplate>
-        </ItemsControl>
-      </StackPanel>
-    </Grid>
+          </ListBox.ItemTemplate>
+        </ListBox>
 
-    <!-- Active approval: a single FIFO card outside the transcript. Additional approvals stay
-         queued and are summarized by ApprovalQueueText instead of filling the panel. -->
-    <Border Grid.Row="2"
-            Padding="12"
-            Background="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBackgroundBrushKey}}"
-            BorderThickness="0,1,0,0"
-            BorderBrush="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBorderBrushKey}}"
-            Visibility="{Binding HasPendingApproval, Converter={StaticResource BoolToVis}}">
-      <Border CornerRadius="8"
-              Padding="12"
-              BorderThickness="1"
+        <!-- Welcome / empty state — centered over the (empty) transcript. -->
+        <StackPanel Visibility="{Binding IsThreadEmpty, Converter={StaticResource BoolToVis}}"
+                    VerticalAlignment="Center" HorizontalAlignment="Center"
+                    MaxWidth="380" Margin="24">
+          <TextBlock Text="&#xE943;" FontFamily="Segoe MDL2 Assets" FontSize="40"
+                     HorizontalAlignment="Center" Opacity="0.8" />
+          <TextBlock Text="Codex" FontSize="22" FontWeight="SemiBold"
+                     HorizontalAlignment="Center" Margin="0,8,0,0" />
+          <TextBlock Text="Codex can make mistakes. Review generated code and output before using it."
+                     TextWrapping="Wrap" TextAlignment="Center" Opacity="0.7" Margin="0,6,0,0" />
+          <TextBlock Text="Type # to add references &#xB7; / for commands"
+                     TextWrapping="Wrap" TextAlignment="Center" Opacity="0.6" Margin="0,4,0,14" />
+          <ItemsControl ItemsSource="{Binding Suggestions}">
+            <ItemsControl.ItemTemplate>
+              <DataTemplate>
+                <Button Style="{StaticResource ChipButtonStyle}" Command="{Binding UseCommand}"
+                        HorizontalAlignment="Stretch">
+                  <TextBlock Text="{Binding Text}" TextWrapping="Wrap" />
+                </Button>
+              </DataTemplate>
+            </ItemsControl.ItemTemplate>
+          </ItemsControl>
+        </StackPanel>
+      </Grid>
+
+      <!-- Active approval prompt: a single bounded card pinned below the transcript and above the
+           composer. Only one approval shows at a time; concurrent prompts are queued in the view
+           model and counted by ApprovalQueueText, so a burst never stacks up and pushes the
+           transcript out of view. -->
+      <Border Grid.Row="1" Margin="10,0,10,10" Padding="12" CornerRadius="8"
               Background="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBackgroundBrushKey}}"
-              BorderBrush="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBorderBrushKey}}">
-        <Grid>
-          <Grid.RowDefinitions>
-            <RowDefinition Height="Auto" />
-            <RowDefinition Height="Auto" />
-            <RowDefinition Height="Auto" />
-          </Grid.RowDefinitions>
-
-          <DockPanel LastChildFill="True">
-            <TextBlock DockPanel.Dock="Right"
-                       Margin="12,0,0,0"
-                       Opacity="0.7"
-                       Text="{Binding ApprovalQueueText}"
-                       Visibility="{Binding HasQueuedApprovals, Converter={StaticResource BoolToVis}}" />
-            <TextBlock FontWeight="SemiBold"
-                       Text="{Binding ActiveApproval.Summary}"
-                       TextWrapping="NoWrap"
-                       TextTrimming="CharacterEllipsis" />
-          </DockPanel>
-
-          <Border Grid.Row="1"
-                  Margin="0,6,0,0"
-                  Padding="8"
-                  BorderThickness="1"
-                  CornerRadius="6"
-                  Background="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowCodeBlockBackgroundBrushKey}}"
-                  BorderBrush="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBorderBrushKey}}">
-            <Border.Style>
-              <Style TargetType="Border">
-                <Setter Property="Opacity" Value="1" />
+              BorderThickness="1"
+              BorderBrush="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBorderBrushKey}}"
+              Visibility="{Binding HasActiveApproval, Converter={StaticResource BoolToVis}}">
+        <Border.Style>
+          <Style TargetType="Border">
+            <Setter Property="Opacity" Value="1" />
+            <Style.Triggers>
+              <!-- Policy-blocked approvals are dimmed since no user action is possible. -->
+              <DataTrigger Binding="{Binding ActiveApproval.IsPolicyBlocked}" Value="True">
+                <Setter Property="Opacity" Value="0.6" />
+              </DataTrigger>
+            </Style.Triggers>
+          </Style>
+        </Border.Style>
+        <StackPanel>
+          <!-- Queue summary header (e.g. "2 approvals waiting"); collapses when none are queued. -->
+          <TextBlock FontSize="11" Opacity="0.7" Margin="0,0,0,6" Text="{Binding ApprovalQueueText}">
+            <TextBlock.Style>
+              <Style TargetType="TextBlock">
+                <Setter Property="Foreground" Value="{DynamicResource {x:Static styles:VsBrushes.WindowTextKey}}" />
+                <Setter Property="Visibility" Value="Visible" />
                 <Style.Triggers>
-                  <!-- Policy-blocked approvals are dimmed since no user action is possible. -->
-                  <DataTrigger Binding="{Binding ActiveApproval.IsPolicyBlocked}" Value="True">
-                    <Setter Property="Opacity" Value="0.6" />
+                  <DataTrigger Binding="{Binding ApprovalQueueText}" Value="">
+                    <Setter Property="Visibility" Value="Collapsed" />
                   </DataTrigger>
                 </Style.Triggers>
               </Style>
-            </Border.Style>
+            </TextBlock.Style>
+          </TextBlock>
 
-            <ScrollViewer MaxHeight="220"
-                          VerticalScrollBarVisibility="Auto"
-                          HorizontalScrollBarVisibility="Auto"
-                          CanContentScroll="True">
-              <StackPanel>
-                <TextBlock FontWeight="Bold" Text="{Binding ActiveApproval.Risk}" />
-                <TextBlock Margin="0,4,0,0"
-                           FontFamily="Consolas, Courier New"
-                           Text="{Binding ActiveApproval.DisplayText}"
-                           TextWrapping="NoWrap" />
-                <TextBlock Margin="0,4,0,0"
-                           Opacity="0.8"
-                           Text="{Binding ActiveApproval.Reason}"
-                           TextWrapping="Wrap" />
+          <!-- Card body bound to the single active approval. Details scroll within a bounded height
+               so a long command/diff can never grow the card past the composer. -->
+          <ScrollViewer MaxHeight="220"
+                        VerticalScrollBarVisibility="Auto"
+                        HorizontalScrollBarVisibility="Auto"
+                        CanContentScroll="True">
+            <StackPanel>
+              <TextBlock FontWeight="Bold" Text="{Binding ActiveApproval.Risk}" />
+              <TextBlock Margin="0,4,0,0" Text="{Binding ActiveApproval.DisplayText}" TextWrapping="Wrap" />
+              <TextBlock Margin="0,4,0,0" Opacity="0.8" Text="{Binding ActiveApproval.Reason}" TextWrapping="Wrap" />
 
-                <!-- Network-specific context (host and port). -->
-                <StackPanel Margin="0,4,0,0"
-                            Orientation="Horizontal"
-                            Visibility="{Binding ActiveApproval.IsNetworkApproval, Converter={StaticResource BoolToVis}}">
-                  <TextBlock Text="Host: " FontWeight="SemiBold" />
-                  <TextBlock Text="{Binding ActiveApproval.NetworkHost}" Margin="0,0,12,0" />
-                  <TextBlock Text="Port: " FontWeight="SemiBold" />
-                  <TextBlock Text="{Binding ActiveApproval.NetworkPort}" />
-                </StackPanel>
-
-                <!-- Policy-block reason (shown when a managed policy auto-declined). -->
-                <TextBlock Margin="0,4,0,0"
-                           FontStyle="Italic"
-                           Text="{Binding ActiveApproval.PolicyBlockReason, StringFormat='Policy blocked: {0}'}"
-                           TextWrapping="Wrap">
-                  <TextBlock.Style>
-                    <Style TargetType="TextBlock">
-                      <Setter Property="Foreground" Value="{DynamicResource {x:Static styles:VsBrushes.WindowTextKey}}" />
-                      <Setter Property="Visibility" Value="Collapsed" />
-                      <Style.Triggers>
-                        <DataTrigger Binding="{Binding ActiveApproval.IsPolicyBlocked}" Value="True">
-                          <Setter Property="Visibility" Value="Visible" />
-                        </DataTrigger>
-                      </Style.Triggers>
-                    </Style>
-                  </TextBlock.Style>
-                </TextBlock>
+              <!-- Network-specific context (host and port). -->
+              <StackPanel Margin="0,4,0,0" Orientation="Horizontal"
+                          Visibility="{Binding ActiveApproval.IsNetworkApproval, Converter={StaticResource BoolToVis}}">
+                <TextBlock Text="Host: " FontWeight="SemiBold" />
+                <TextBlock Text="{Binding ActiveApproval.NetworkHost}" Margin="0,0,12,0" />
+                <TextBlock Text="Port: " FontWeight="SemiBold" />
+                <TextBlock Text="{Binding ActiveApproval.NetworkPort}" />
               </StackPanel>
-            </ScrollViewer>
-          </Border>
 
-          <!-- Decision buttons — shown only for decisions the server allows. -->
-          <WrapPanel Grid.Row="2" Margin="0,10,0,0">
+              <!-- Policy-block reason (shown when a managed policy auto-declined). -->
+              <TextBlock Margin="0,4,0,0" TextWrapping="Wrap" FontStyle="Italic"
+                         Text="{Binding ActiveApproval.PolicyBlockReason, StringFormat='Policy blocked: {0}'}">
+                <TextBlock.Style>
+                  <Style TargetType="TextBlock">
+                    <Setter Property="Foreground" Value="{DynamicResource {x:Static styles:VsBrushes.WindowTextKey}}" />
+                    <Setter Property="Visibility" Value="Collapsed" />
+                    <Style.Triggers>
+                      <DataTrigger Binding="{Binding ActiveApproval.IsPolicyBlocked}" Value="True">
+                        <Setter Property="Visibility" Value="Visible" />
+                      </DataTrigger>
+                    </Style.Triggers>
+                  </Style>
+                </TextBlock.Style>
+              </TextBlock>
+            </StackPanel>
+          </ScrollViewer>
+
+          <!-- Decision buttons — shown only for decisions the server allows. They wrap so a full
+               set of choices never overflows the bounded card, and stay outside the details
+               ScrollViewer so they are always reachable. -->
+          <WrapPanel Margin="0,10,0,0">
             <Button Margin="0,0,6,6" Content="Accept" Command="{Binding ActiveApproval.AcceptCommand}"
                     Style="{StaticResource RoundButtonStyle}" Padding="12,5"
                     Visibility="{Binding ActiveApproval.ShowAccept, Converter={StaticResource BoolToVis}}" />
@@ -676,12 +740,86 @@
             <Button Margin="0,0,6,6" Content="Decline" Command="{Binding ActiveApproval.DeclineCommand}"
                     Style="{StaticResource RoundButtonStyle}" Padding="12,5"
                     Visibility="{Binding ActiveApproval.ShowDecline, Converter={StaticResource BoolToVis}}" />
-            <Button Margin="0,0,6,6" Content="Cancel" Command="{Binding ActiveApproval.CancelCommand}"
+            <Button Margin="0,0,0,6" Content="Cancel" Command="{Binding ActiveApproval.CancelCommand}"
                     Style="{StaticResource RoundButtonStyle}" Padding="12,5"
                     Visibility="{Binding ActiveApproval.ShowCancel, Converter={StaticResource BoolToVis}}" />
           </WrapPanel>
-        </Grid>
+        </StackPanel>
       </Border>
+    </Grid>
+
+    <!-- Active interactive choice (request_user_input): a single bounded card pinned just above the
+         composer. Only one shows at a time; further prompts are queued and counted by
+         UserInputQueueText so a burst never fills or scrolls the panel. -->
+    <Border Grid.Row="2"
+            Margin="10,0,10,10"
+            Padding="12"
+            CornerRadius="8"
+            Background="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBackgroundBrushKey}}"
+            BorderThickness="1"
+            BorderBrush="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBorderBrushKey}}"
+            Visibility="{Binding HasActiveUserInput, Converter={StaticResource BoolToVis}}">
+      <Grid>
+        <Grid.RowDefinitions>
+          <RowDefinition Height="Auto" />
+          <RowDefinition Height="Auto" />
+          <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <!-- Queue summary header (e.g. "2 choices waiting"); collapses when none are queued. -->
+        <TextBlock Grid.Row="0" FontSize="11" Opacity="0.7" Margin="0,0,0,6"
+                   Text="{Binding UserInputQueueText}">
+          <TextBlock.Style>
+            <Style TargetType="TextBlock">
+              <Setter Property="Foreground" Value="{DynamicResource {x:Static styles:VsBrushes.WindowTextKey}}" />
+              <Setter Property="Visibility" Value="Visible" />
+              <Style.Triggers>
+                <DataTrigger Binding="{Binding UserInputQueueText}" Value="">
+                  <Setter Property="Visibility" Value="Collapsed" />
+                </DataTrigger>
+              </Style.Triggers>
+            </Style>
+          </TextBlock.Style>
+        </TextBlock>
+
+        <!-- Questions scroll WITHIN the card (bounded height) so the card never grows the panel. -->
+        <ScrollViewer Grid.Row="1" MaxHeight="240" VerticalScrollBarVisibility="Auto">
+          <ItemsControl ItemsSource="{Binding ActiveUserInput.Questions}">
+            <ItemsControl.ItemTemplate>
+              <DataTemplate>
+                <StackPanel Margin="0,0,0,8">
+                  <TextBlock FontWeight="Bold" Text="{Binding Header}" TextWrapping="Wrap" />
+                  <TextBlock Margin="0,2,0,0" Text="{Binding Question}" TextWrapping="Wrap" />
+
+                  <!-- Options as a single-select radio group -->
+                  <ItemsControl Margin="0,6,0,0" ItemsSource="{Binding Options}">
+                    <ItemsControl.ItemTemplate>
+                      <DataTemplate>
+                        <!-- Single-select is enforced by the view model (selecting one clears its
+                             siblings); IsChecked is two-way so the choice flows back. -->
+                        <RadioButton Margin="0,2"
+                                     IsChecked="{Binding IsSelected, Mode=TwoWay}">
+                          <StackPanel>
+                            <TextBlock Text="{Binding DisplayLabel}" TextWrapping="Wrap" />
+                            <TextBlock Text="{Binding Description}" TextWrapping="Wrap"
+                                       FontSize="11" Opacity="0.7" />
+                          </StackPanel>
+                        </RadioButton>
+                      </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                  </ItemsControl>
+                </StackPanel>
+              </DataTemplate>
+            </ItemsControl.ItemTemplate>
+          </ItemsControl>
+        </ScrollViewer>
+
+        <!-- Submit — disabled once answered (the card is removed on resolve and the next promoted). -->
+        <WrapPanel Grid.Row="2" Margin="0,8,0,0">
+          <Button Content="Submit" Command="{Binding ActiveUserInput.SubmitCommand}"
+                  Style="{StaticResource RoundButtonStyle}" Padding="12,5" />
+        </WrapPanel>
+      </Grid>
     </Border>
 
     <!-- Composer: rounded container with textarea + action row (attach · mode · model · send) -->
@@ -752,6 +890,11 @@
             <ComboBox DockPanel.Dock="Left" Margin="6,0,0,0" Width="124" VerticalAlignment="Center"
                       ToolTip="Model"
                       ItemsSource="{Binding Models}" SelectedItem="{Binding SelectedModel}" />
+            <CheckBox DockPanel.Dock="Left" Margin="8,0,0,0" VerticalAlignment="Center"
+                      Content="Choices"
+                      ToolTip="Show codex's confirmation/choice prompts as a selection card at the bottom"
+                      Foreground="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowTextBrushKey}}"
+                      IsChecked="{Binding ExperimentalApiEnabled, Mode=TwoWay}" />
 
             <Button DockPanel.Dock="Right" Content="&#xE724;" ToolTip="{Binding SendButtonText}"
                     Command="{Binding SendCommand}"

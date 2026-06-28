@@ -17,6 +17,10 @@ public interface ICodexSessionService : IAsyncDisposable
 
     event Func<ApprovalAuditRecord, CancellationToken, Task>? ApprovalAuditRecorded;
 
+    event Func<UserInputRequest, CancellationToken, Task>? UserInputRequested;
+
+    event Func<string, CancellationToken, Task>? UserInputResolved;
+
     string? ActiveThreadId { get; }
 
     string? ActiveTurnId { get; }
@@ -42,6 +46,8 @@ public interface ICodexSessionService : IAsyncDisposable
     Task InterruptTurnAsync(InterruptTurnRequest request, CancellationToken cancellationToken);
 
     Task ResolveApprovalAsync(ResolveApprovalRequest request, CancellationToken cancellationToken);
+
+    Task ResolveUserInputAsync(ResolveUserInputRequest request, CancellationToken cancellationToken);
 }
 
 public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
@@ -51,6 +57,7 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
     private readonly IApprovalPolicyEngine approvalPolicy;
     private readonly ISecretRedactor redactor;
     private readonly ConcurrentDictionary<string, PendingApproval> pendingApprovals = new();
+    private readonly ConcurrentDictionary<string, PendingUserInput> pendingUserInputs = new();
     private readonly ApprovalGrantStore approvalGrants = new();
     private IJsonRpcConnection? connection;
     private WorkerOptions options = new();
@@ -71,6 +78,10 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
     public event Func<AccountStatus, CancellationToken, Task>? AccountStatusChanged;
 
     public event Func<ApprovalAuditRecord, CancellationToken, Task>? ApprovalAuditRecorded;
+
+    public event Func<UserInputRequest, CancellationToken, Task>? UserInputRequested;
+
+    public event Func<string, CancellationToken, Task>? UserInputResolved;
 
     public string? ActiveThreadId { get; private set; }
 
@@ -327,6 +338,119 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         await EmitApprovalResolvedAsync(request.RequestId, cancellationToken).ConfigureAwait(false);
     }
 
+    public async Task ResolveUserInputAsync(ResolveUserInputRequest request, CancellationToken cancellationToken)
+    {
+        if (!pendingUserInputs.TryRemove(request.RequestId, out PendingUserInput? pending))
+        {
+            return;
+        }
+
+        Dictionary<string, string[]> validated = ValidateAnswers(pending.Request, request.Answers);
+        pending.Completion.TrySetResult(validated);
+        await EmitUserInputResolvedAsync(request.RequestId, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<JsonElement> HandleUserInputRequestAsync(string requestId, JsonElement parameters, CancellationToken cancellationToken)
+    {
+        UserInputRequest request = CreateUserInputRequest(requestId, parameters);
+        var completion = new TaskCompletionSource<IReadOnlyDictionary<string, string[]>>(TaskCreationOptions.RunContinuationsAsynchronously);
+        pendingUserInputs[requestId] = new PendingUserInput(request, completion);
+        if (UserInputRequested is not null)
+        {
+            await UserInputRequested(request, cancellationToken).ConfigureAwait(false);
+        }
+
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(5));
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(timeout.Token, cancellationToken);
+        using CancellationTokenRegistration registration = linked.Token.Register(() => completion.TrySetResult(EmptyAnswers));
+        IReadOnlyDictionary<string, string[]> answers = await completion.Task.ConfigureAwait(false);
+        pendingUserInputs.TryRemove(requestId, out _);
+        await EmitUserInputResolvedAsync(requestId, CancellationToken.None).ConfigureAwait(false);
+        return UserInputResponse(answers);
+    }
+
+    private UserInputRequest CreateUserInputRequest(string requestId, JsonElement parameters)
+    {
+        var questions = new List<UserInputQuestion>();
+        if (parameters.ValueKind == JsonValueKind.Object
+            && parameters.TryGetProperty("questions", out JsonElement questionArray)
+            && questionArray.ValueKind == JsonValueKind.Array)
+        {
+            foreach (JsonElement question in questionArray.EnumerateArray())
+            {
+                if (question.ValueKind != JsonValueKind.Object)
+                {
+                    continue;
+                }
+
+                var options = new List<UserInputOption>();
+                if (question.TryGetProperty("options", out JsonElement optionArray)
+                    && optionArray.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (JsonElement option in optionArray.EnumerateArray())
+                    {
+                        if (option.ValueKind != JsonValueKind.Object)
+                        {
+                            continue;
+                        }
+
+                        options.Add(new UserInputOption
+                        {
+                            // The label is echoed back to the app-server verbatim, so it must stay
+                            // unredacted; the extension sanitizes it for display via SafeMarkdownService.
+                            Label = GetString(option, "label") ?? string.Empty,
+                            Description = redactor.Redact(GetString(option, "description")),
+                        });
+                    }
+                }
+
+                questions.Add(new UserInputQuestion
+                {
+                    Id = GetString(question, "id") ?? string.Empty,
+                    Header = redactor.Redact(GetString(question, "header")),
+                    Question = redactor.Redact(GetString(question, "question")),
+                    Options = options,
+                });
+            }
+        }
+
+        return new UserInputRequest
+        {
+            RequestId = requestId,
+            ThreadId = GetString(parameters, "threadId") ?? string.Empty,
+            TurnId = GetString(parameters, "turnId") ?? string.Empty,
+            ItemId = GetString(parameters, "itemId"),
+            Questions = questions,
+        };
+    }
+
+    // Only labels the server actually offered are echoed back; single-select keeps at most one.
+    // Questions without options (free text / secret) are out of scope and never answered.
+    private static Dictionary<string, string[]> ValidateAnswers(
+        UserInputRequest request,
+        IDictionary<string, string[]> answers)
+    {
+        var result = new Dictionary<string, string[]>(StringComparer.Ordinal);
+        foreach (UserInputQuestion question in request.Questions)
+        {
+            if (question.Options.Count == 0
+                || !answers.TryGetValue(question.Id, out string[]? selected)
+                || selected is null)
+            {
+                continue;
+            }
+
+            var allowed = new HashSet<string>(question.Options.Select(option => option.Label), StringComparer.Ordinal);
+            string[] valid = selected.Where(allowed.Contains).Take(1).ToArray();
+            if (valid.Length > 0)
+            {
+                result[question.Id] = valid;
+            }
+        }
+
+        return result;
+    }
+
     public async ValueTask DisposeAsync()
     {
         if (streamingBuffer is not null)
@@ -340,13 +464,29 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         }
 
         pendingApprovals.Clear();
+
+        foreach (PendingUserInput userInput in pendingUserInputs.Values)
+        {
+            userInput.Completion.TrySetResult(EmptyAnswers);
+        }
+
+        pendingUserInputs.Clear();
     }
 
     private async Task<JsonElement> OnServerRequestAsync(JsonRpcMessage message, CancellationToken cancellationToken)
     {
         string requestId = message.GetIdKey() ?? Guid.NewGuid().ToString("N");
         JsonElement parameters = message.Params ?? JsonSerializer.SerializeToElement(new { });
-        ApprovalRequest request = CreateApprovalRequest(requestId, message.Method ?? string.Empty, parameters);
+        string method = message.Method ?? string.Empty;
+
+        // Interactive choice prompts (request_user_input) are a distinct server request that
+        // carries questions/options and expects selected answers — not an approval decision.
+        if (IsUserInputRequest(method, parameters))
+        {
+            return await HandleUserInputRequestAsync(requestId, parameters, cancellationToken).ConfigureAwait(false);
+        }
+
+        ApprovalRequest request = CreateApprovalRequest(requestId, method, parameters);
         if (request.IsPolicyBlocked)
         {
             return ApprovalResponse("decline");
@@ -419,6 +559,11 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
             {
                 pending.Completion.TrySetResult("cancel");
                 await EmitApprovalResolvedAsync(requestId, cancellationToken).ConfigureAwait(false);
+            }
+            else if (requestId is not null && pendingUserInputs.TryRemove(requestId, out PendingUserInput? pendingInput))
+            {
+                pendingInput.Completion.TrySetResult(EmptyAnswers);
+                await EmitUserInputResolvedAsync(requestId, cancellationToken).ConfigureAwait(false);
             }
 
             return;
@@ -515,6 +660,9 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
     private Task EmitApprovalResolvedAsync(string requestId, CancellationToken cancellationToken)
         => ApprovalResolved?.Invoke(requestId, cancellationToken) ?? Task.CompletedTask;
 
+    private Task EmitUserInputResolvedAsync(string requestId, CancellationToken cancellationToken)
+        => UserInputResolved?.Invoke(requestId, cancellationToken) ?? Task.CompletedTask;
+
     private async Task EmitAccountStatusAsync(AccountStatus status, CancellationToken cancellationToken)
     {
         if (AccountStatusChanged is null)
@@ -608,6 +756,26 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
     private static JsonElement ApprovalResponse(string decision)
         => JsonSerializer.SerializeToElement(new { decision });
 
+    private static readonly IReadOnlyDictionary<string, string[]> EmptyAnswers =
+        new Dictionary<string, string[]>(StringComparer.Ordinal);
+
+    private static bool IsUserInputRequest(string method, JsonElement parameters)
+        => method.Contains("requestUserInput", StringComparison.OrdinalIgnoreCase)
+        || method.Contains("request_user_input", StringComparison.OrdinalIgnoreCase)
+        || (parameters.ValueKind == JsonValueKind.Object
+            && parameters.TryGetProperty("questions", out JsonElement questions)
+            && questions.ValueKind == JsonValueKind.Array);
+
+    // Shapes the result per ToolRequestUserInputResponse: { answers: { <id>: { answers: [...] } } }.
+    private static JsonElement UserInputResponse(IReadOnlyDictionary<string, string[]> answers)
+    {
+        var map = answers.ToDictionary(
+            pair => pair.Key,
+            pair => (object)new { answers = pair.Value },
+            StringComparer.Ordinal);
+        return JsonSerializer.SerializeToElement(new { answers = map });
+    }
+
     private static ConversationEventKind MapKind(string method) => method switch
     {
         "item/started" => ConversationEventKind.ItemStarted,
@@ -624,4 +792,8 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
     };
 
     private sealed record PendingApproval(ApprovalRequest Request, TaskCompletionSource<string> Completion);
+
+    private sealed record PendingUserInput(
+        UserInputRequest Request,
+        TaskCompletionSource<IReadOnlyDictionary<string, string[]>> Completion);
 }

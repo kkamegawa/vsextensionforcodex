@@ -27,6 +27,8 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
         session.ApprovalResolved += PublishApprovalResolvedAsync;
         session.AccountStatusChanged += PublishAccountStatusAsync;
         session.ApprovalAuditRecorded += PublishApprovalAuditAsync;
+        session.UserInputRequested += PublishUserInputAsync;
+        session.UserInputResolved += PublishUserInputResolvedAsync;
     }
 
     public void AttachClient(JsonRpc rpc)
@@ -155,7 +157,12 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
     {
         await SetStatusAsync(WorkerConnectionState.Busy, "Turn in progress.", cancellationToken).ConfigureAwait(false);
         string turnId = await session.StartTurnAsync(request, cancellationToken).ConfigureAwait(false);
-        UpdateSessionIds();
+
+        // Re-publish Busy now that the turn id is known. The first SetStatusAsync above ran before
+        // session.StartTurnAsync set ActiveTurnId, so the client received Busy with TurnId = null and
+        // IsTurnActive stayed false (the interrupt button never appeared). This second publish carries
+        // the turn id so the extension can show the interrupt button while the turn runs.
+        await SetStatusAsync(WorkerConnectionState.Busy, "Turn in progress.", cancellationToken).ConfigureAwait(false);
         return turnId;
     }
 
@@ -167,6 +174,9 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
 
     public Task ResolveApprovalAsync(ResolveApprovalRequest request, CancellationToken cancellationToken)
         => session.ResolveApprovalAsync(request, cancellationToken);
+
+    public Task ResolveUserInputAsync(ResolveUserInputRequest request, CancellationToken cancellationToken)
+        => session.ResolveUserInputAsync(request, cancellationToken);
 
     public async ValueTask DisposeAsync()
     {
@@ -254,6 +264,24 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
         if (clientRpc is not null)
         {
             await clientRpc.NotifyWithParameterObjectAsync("observer/approvalResolved", new { requestId }).ConfigureAwait(false);
+        }
+    }
+
+    private async Task PublishUserInputAsync(UserInputRequest request, CancellationToken cancellationToken)
+    {
+        await SetStatusAsync(WorkerConnectionState.WaitingForApproval, "Waiting for input.", cancellationToken).ConfigureAwait(false);
+        if (clientRpc is not null)
+        {
+            await clientRpc.NotifyWithParameterObjectAsync("observer/userInputRequested", new { request }).ConfigureAwait(false);
+        }
+    }
+
+    private async Task PublishUserInputResolvedAsync(string requestId, CancellationToken cancellationToken)
+    {
+        await SetStatusAsync(WorkerConnectionState.Busy, "Turn in progress.", cancellationToken).ConfigureAwait(false);
+        if (clientRpc is not null)
+        {
+            await clientRpc.NotifyWithParameterObjectAsync("observer/userInputResolved", new { requestId }).ConfigureAwait(false);
         }
     }
 

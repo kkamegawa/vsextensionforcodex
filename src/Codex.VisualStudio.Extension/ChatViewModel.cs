@@ -2,6 +2,7 @@
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
 using System.Runtime.Serialization;
+using System.Text;
 using System.Text.RegularExpressions;
 using System.Windows;
 using System.Windows.Input;
@@ -23,9 +24,16 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     private readonly OutputChannel? outputChannel;
     private readonly SafeMarkdownService markdown = new();
     private readonly CancellationTokenSource lifetime = new();
-    private readonly Queue<ApprovalViewModel> approvalQueue = new();
     private readonly WorkspaceDirectoryResolver workspaceDirectoryResolver;
     private readonly ProjectScaffolder projectScaffolder;
+    private readonly ExtensionSettings settings = ExtensionSettings.Load();
+    private readonly Queue<UserInputViewModel> userInputQueue = new();
+    private readonly Queue<ApprovalViewModel> approvalQueue = new();
+    private readonly Dictionary<string, StringBuilder> agentRawText = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, StringBuilder> itemRawText = new(StringComparer.Ordinal);
+    private UserInputViewModel? activeUserInput;
+    private ApprovalViewModel? activeApproval;
+    private string? lastAgentItemId;
     private int disposed;
     private int connecting;
     private WorkerStatus status = new() { State = WorkerConnectionState.Disconnected, Message = "Open Codex to connect." };
@@ -34,11 +42,8 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     private string? nextCursor;
     private bool initialized;
     private bool isHistoryOpen;
-    private bool shouldAutoFollowTranscript = true;
     private string? selectedModel;
     private string selectedMode = "Agent";
-    private TranscriptRowViewModel? selectedTranscriptRow;
-    private ApprovalViewModel? activeApproval;
 
     public ChatViewModel(OutputChannel? outputChannel = null, VisualStudioExtensibility? extensibility = null)
     {
@@ -51,13 +56,11 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         bridge.ConversationEventReceived += OnConversationEventAsync;
         bridge.ApprovalRequested += OnApprovalRequestedAsync;
         bridge.ApprovalResolved += OnApprovalResolvedAsync;
-        // The welcome/empty state is driven by transcript and approval state; keep it in sync
-        // with every mutation of Items (Add/Clear from any call site) via a single subscription.
-        Items.CollectionChanged += (_, _) =>
-        {
-            OnPropertyChanged(nameof(IsThreadEmpty));
-            OnPropertyChanged(nameof(ShowWelcomeState));
-        };
+        bridge.UserInputRequested += OnUserInputRequestedAsync;
+        bridge.UserInputResolved += OnUserInputResolvedAsync;
+        // The welcome/empty state is driven by IsThreadEmpty; keep it in sync with every
+        // mutation of Items (Add/Clear from any call site) via a single subscription.
+        Items.CollectionChanged += (_, _) => OnPropertyChanged(nameof(IsThreadEmpty));
         ConnectCommand = new AsyncCommand(ConnectAsync, () => Status.State is WorkerConnectionState.Disconnected or WorkerConnectionState.Degraded);
         RestartCommand = new AsyncCommand(RestartAsync, () => Status.State == WorkerConnectionState.Degraded);
         NewThreadCommand = new AsyncCommand(NewThreadAsync, () => Status.State == WorkerConnectionState.Ready);
@@ -93,7 +96,84 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     public ObservableCollection<ThreadSummary> Threads { get; } = new();
 
     [DataMember]
-    public ObservableCollection<TranscriptRowViewModel> Items { get; } = new();
+    public ObservableCollection<ChatItemViewModel> Items { get; } = new();
+
+    // Approval prompts are shown one at a time, matching the interactive choice card: a single
+    // active card pinned above the composer, with the rest held in a FIFO queue. A burst of
+    // concurrent prompts never stacks up and pushes the transcript out of view.
+    [DataMember]
+    public ApprovalViewModel? ActiveApproval
+    {
+        get => activeApproval;
+        private set
+        {
+            if (SetProperty(ref activeApproval, value))
+            {
+                OnPropertyChanged(nameof(HasActiveApproval));
+                OnPropertyChanged(nameof(ApprovalQueueText));
+            }
+        }
+    }
+
+    [DataMember]
+    public bool HasActiveApproval => ActiveApproval is not null;
+
+    [DataMember]
+    public string ApprovalQueueText => approvalQueue.Count switch
+    {
+        0 => string.Empty,
+        1 => "1 approval waiting",
+        _ => $"{approvalQueue.Count} approvals waiting",
+    };
+
+    // Interactive choices are shown one at a time, Claude Code-style: a single active card pinned
+    // above the composer, with the rest held in a FIFO queue. This keeps a burst of choice prompts
+    // from filling/scrolling the panel.
+    [DataMember]
+    public UserInputViewModel? ActiveUserInput
+    {
+        get => activeUserInput;
+        private set
+        {
+            if (SetProperty(ref activeUserInput, value))
+            {
+                OnPropertyChanged(nameof(HasActiveUserInput));
+                OnPropertyChanged(nameof(UserInputQueueText));
+            }
+        }
+    }
+
+    [DataMember]
+    public bool HasActiveUserInput => ActiveUserInput is not null;
+
+    [DataMember]
+    public string UserInputQueueText => userInputQueue.Count switch
+    {
+        0 => string.Empty,
+        1 => "1 choice waiting",
+        _ => $"{userInputQueue.Count} choices waiting",
+    };
+
+    // Opt-in "Choices": surface codex's confirmation/choice prompts as a selection card. codex only
+    // emits the structured request_user_input tool in Plan mode, so in Agent mode this drives the
+    // prose detector (TryDetectChoicePrompt) — a purely client-side concern, so no reconnect is needed.
+    // The flag is still sent at the next connect so the structured path also works if Plan mode is used.
+    [DataMember]
+    public bool ExperimentalApiEnabled
+    {
+        get => settings.ExperimentalApiEnabled;
+        set
+        {
+            if (settings.ExperimentalApiEnabled == value)
+            {
+                return;
+            }
+
+            settings.ExperimentalApiEnabled = value;
+            settings.Save();
+            OnPropertyChanged();
+        }
+    }
 
     // Intentionally NOT a DataMember: the XAML binds the flattened Account* properties below.
     public AccountPanelViewModel Account { get; } = new();
@@ -187,42 +267,6 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     [DataMember]
     public bool IsThreadEmpty => Items.Count == 0;
 
-    // True when the welcome/empty state should be displayed. Approval cards live outside the
-    // transcript, but they still suppress the welcome overlay so the card remains readable.
-    [DataMember]
-    public bool ShowWelcomeState => IsThreadEmpty && ActiveApproval is null;
-
-    [DataMember]
-    public ApprovalViewModel? ActiveApproval
-    {
-        get => activeApproval;
-        private set
-        {
-            if (SetProperty(ref activeApproval, value))
-            {
-                OnPropertyChanged(nameof(HasPendingApproval));
-                OnPropertyChanged(nameof(ShowWelcomeState));
-            }
-        }
-    }
-
-    [DataMember]
-    public bool HasPendingApproval => ActiveApproval is not null;
-
-    [DataMember]
-    public int PendingApprovalCount => approvalQueue.Count;
-
-    [DataMember]
-    public bool HasQueuedApprovals => PendingApprovalCount > 0;
-
-    [DataMember]
-    public string ApprovalQueueText => PendingApprovalCount switch
-    {
-        0 => string.Empty,
-        1 => "1 approval waiting",
-        _ => $"{PendingApprovalCount} approvals waiting",
-    };
-
     // True when the composer is empty — drives the "Ask Codex" placeholder overlay
     // (WPF TextBox has no native placeholder, and custom converters cannot be used because
     // they would not resolve inside VS's WPF process).
@@ -235,19 +279,6 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     {
         get => isHistoryOpen;
         set => SetProperty(ref isHistoryOpen, value);
-    }
-
-    [DataMember]
-    public TranscriptRowViewModel? SelectedTranscriptRow
-    {
-        get => selectedTranscriptRow;
-        set
-        {
-            if (SetProperty(ref selectedTranscriptRow, value))
-            {
-                shouldAutoFollowTranscript = value is null || ReferenceEquals(value, Items.LastOrDefault());
-            }
-        }
     }
 
     [DataMember]
@@ -444,7 +475,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             WorkerStatus result;
             try
             {
-                result = await bridge.ConnectAsync(workingDirectory, lifetime.Token).ConfigureAwait(false);
+                result = await bridge.ConnectAsync(workingDirectory, settings.ExperimentalApiEnabled, lifetime.Token).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
             {
@@ -505,7 +536,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             Threads.Insert(0, thread);
             selectedThread = thread;
             OnPropertyChanged(nameof(SelectedThread));
-            ClearTranscript();
+            Items.Clear();
         }).ConfigureAwait(false);
     }
 
@@ -517,7 +548,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         }
 
         await bridge.ResumeThreadAsync(thread.Id, lifetime.Token).ConfigureAwait(false);
-        await OnUiAsync(ClearTranscript).ConfigureAwait(false);
+        await OnUiAsync(Items.Clear).ConfigureAwait(false);
     }
 
     private async Task LoadMoreAsync()
@@ -544,6 +575,20 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
     private async Task SendAsync()
     {
+        // Typing a normal message supersedes a still-pending prose-detected choice card (the user
+        // chose to answer in their own words instead of picking an option).
+        if (ActiveUserInput?.IsSynthetic == true)
+        {
+            await OnUiAsync(() => RemoveUserInput(ActiveUserInput!.RequestId)).ConfigureAwait(false);
+        }
+
+        await SendMessageAsync(ComposerText, clearComposer: true).ConfigureAwait(false);
+    }
+
+    // Core send path, shared by the composer (clearComposer: true) and the synthetic-choice resolver
+    // (clearComposer: false), which sends the picked option text as the next turn.
+    private async Task SendMessageAsync(string text, bool clearComposer)
+    {
         if (Status.State is not (WorkerConnectionState.Ready or WorkerConnectionState.Busy or WorkerConnectionState.WaitingForApproval))
         {
             // Not connected yet: this is the user's first send with no solution/folder open.
@@ -557,8 +602,16 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             }
         }
 
-        string text = ComposerText;
-        await OnUiAsync(() => SetComposerText(string.Empty)).ConfigureAwait(false);
+        if (clearComposer)
+        {
+            await OnUiAsync(() => SetComposerText(string.Empty)).ConfigureAwait(false);
+        }
+
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return;
+        }
+
         if (SelectedThread is null)
         {
             await NewThreadAsync().ConfigureAwait(false);
@@ -571,7 +624,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
         if (Status.TurnId is null)
         {
-            await OnUiAsync(() => AppendTranscriptRow(TranscriptRowViewModel.CreateChat(new ChatItemViewModel("You", markdown.ToSafeText(text), ConversationEventKind.ItemStarted)))).ConfigureAwait(false);
+            await OnUiAsync(() => Items.Add(new ChatItemViewModel("You", markdown.ToSafeText(text), ConversationEventKind.ItemStarted))).ConfigureAwait(false);
             await bridge.StartTurnAsync(new StartTurnRequest { ThreadId = SelectedThread.Id, Text = text }, lifetime.Token).ConfigureAwait(false);
         }
         else
@@ -610,7 +663,47 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     }
 
     private Task OnStateChangedAsync(WorkerStatus value)
-        => OnUiAsync(() => Status = value);
+        => OnUiAsync(() =>
+        {
+            WorkerConnectionState previous = Status.State;
+            Status = value;
+            if (value.State == previous)
+            {
+                return;
+            }
+
+            // Connection open/close/degraded transitions are diagnostics, not transcript content —
+            // log them to the Output channel (issue #17). The status chip in the panel header still
+            // reflects the current state through the Status binding.
+            string? connectionLine = value.State switch
+            {
+                WorkerConnectionState.Connecting => "[connection] Connecting to codex app-server...",
+                WorkerConnectionState.Ready => "[connection] Connected to codex app-server.",
+                WorkerConnectionState.Degraded => $"[connection] Connection degraded: {value.Message}",
+                WorkerConnectionState.Disconnected => $"[connection] Disconnected: {value.Message}",
+                _ => null,
+            };
+            if (connectionLine is not null)
+            {
+                _ = ExtensionDiagnostics.WriteOutputAsync(outputChannel, connectionLine);
+            }
+
+            // Surface the worker's curated, user-actionable message (network failure, connect
+            // failure, app-server exit) in the panel as a concise error item — never raw JSON. The
+            // worker only sets Degraded with such a message, so this is the panel's actionable-error
+            // path now that raw Error events are routed to Output.
+            if (value.State == WorkerConnectionState.Degraded && !string.IsNullOrWhiteSpace(value.Message))
+            {
+                string errorText = markdown.ToSafeText(value.Message);
+                ChatItemViewModel? last = Items.LastOrDefault();
+                if (last is null
+                    || last.Kind != ConversationEventKind.Error
+                    || !string.Equals(last.Text, errorText, StringComparison.Ordinal))
+                {
+                    Items.Add(new ChatItemViewModel("Error", errorText, ConversationEventKind.Error));
+                }
+            }
+        });
 
     private Task OnAccountChangedAsync(AccountStatus value)
     {
@@ -627,81 +720,276 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             // Plan events carry a full replacement payload — handle separately to avoid text append.
             if (value.Kind == ConversationEventKind.PlanUpdated)
             {
-                ChatItemViewModel? planItem = Items
-                    .Select(item => item.ChatItem)
-                    .LastOrDefault(item => item is not null && item.ItemId == value.ItemId && item.Kind == value.Kind);
+                ChatItemViewModel? planItem = Items.LastOrDefault(item => item.ItemId == value.ItemId && item.Kind == value.Kind);
                 IReadOnlyList<string> steps = ChatItemViewModel.ParsePlanSteps(value.PayloadJson);
                 if (planItem is null)
                 {
                     planItem = new ChatItemViewModel("Plan", string.Empty, ConversationEventKind.PlanUpdated) { ItemId = value.ItemId };
-                    AppendTranscriptRow(TranscriptRowViewModel.CreateChat(planItem));
+                    Items.Add(planItem);
                 }
 
                 planItem.UpdatePlanSteps(steps);
                 return;
             }
 
+            // Track the agent message text across a turn so a completed message can be scanned for a
+            // prose choice prompt (codex doesn't emit the structured tool in Agent mode).
+            switch (value.Kind)
+            {
+                case ConversationEventKind.TurnStarted:
+                    agentRawText.Clear();
+                    itemRawText.Clear();
+                    lastAgentItemId = null;
+                    break;
+                case ConversationEventKind.AgentMessageDelta when !string.IsNullOrEmpty(value.Text) && value.ItemId is not null:
+                    AppendAgentRaw(value.ItemId, value.Text);
+                    break;
+                case ConversationEventKind.TurnCompleted:
+                    TryDetectChoicePrompt();
+                    itemRawText.Clear();
+                    break;
+            }
+
+            // Only user-facing Codex content reaches the panel. Lifecycle, protocol, error, and
+            // unknown events — and any user-facing kind that arrived without rendered Text (carrying
+            // only raw/structured PayloadJson) — are routed to the Output channel so the transcript
+            // never shows raw JSON or internal event names. See issue #17.
+            if (!ConversationEventPresentation.IsPanelContent(value.Kind) || string.IsNullOrEmpty(value.Text))
+            {
+                _ = ExtensionDiagnostics.WriteOutputAsync(outputChannel, ConversationEventPresentation.FormatDiagnostic(value));
+                return;
+            }
+
+            string text = value.Text; // Non-null below: guarded by IsNullOrEmpty above.
             string role = value.Kind switch
             {
                 ConversationEventKind.AgentMessageDelta => "Codex",
                 ConversationEventKind.ReasoningSummaryDelta => "Reasoning",
                 ConversationEventKind.CommandOutputDelta => "Command",
                 ConversationEventKind.DiffUpdated => "Diff",
-                ConversationEventKind.Error => "Error",
                 _ => "Codex",
             };
-            ChatItemViewModel? existing = Items
-                .Select(item => item.ChatItem)
-                .LastOrDefault(item => item is not null && item.ItemId == value.ItemId && item.Kind == value.Kind);
+            bool renderFromAccumulatedText = ShouldRenderFromAccumulatedText(value.Kind);
+            string renderedText;
+            IReadOnlyList<ChatBlockViewModel> renderedBlocks = [];
+            if (renderFromAccumulatedText)
+            {
+                string rawText = AppendAccumulatedText(value, text);
+                SafeMarkdownRenderResult rendered = markdown.ToSafeTextAndBlocks(rawText);
+                renderedText = rendered.Text;
+                renderedBlocks = rendered.Blocks;
+            }
+            else
+            {
+                renderedText = markdown.ToSafeText(text);
+            }
+
+            ChatItemViewModel? existing = Items.LastOrDefault(item => item.ItemId == value.ItemId && item.Kind == value.Kind);
             if (existing is null)
             {
-                AppendTranscriptRow(TranscriptRowViewModel.CreateChat(new ChatItemViewModel(role, markdown.ToSafeText(value.Text ?? value.PayloadJson ?? string.Empty), value.Kind)
+                var item = new ChatItemViewModel(role, renderedText, value.Kind)
                 {
                     ItemId = value.ItemId,
                     IsTruncated = value.Truncated,
                     OverflowFile = value.OverflowFile,
-                }));
+                };
+                if (renderFromAccumulatedText)
+                {
+                    item.UpdateBlocks(renderedBlocks);
+                }
+
+                Items.Add(item);
             }
             else
             {
-                existing.Text += markdown.ToSafeText(value.Text ?? string.Empty);
+                existing.Text = renderFromAccumulatedText ? renderedText : existing.Text + renderedText;
+                if (renderFromAccumulatedText)
+                {
+                    existing.UpdateBlocks(renderedBlocks);
+                }
+
                 existing.IsTruncated |= value.Truncated;
                 existing.OverflowFile = value.OverflowFile ?? existing.OverflowFile;
             }
         });
 
-    private Task OnApprovalRequestedAsync(ApprovalRequest value)
-        => OnUiAsync(() =>
+    private string AppendAccumulatedText(ConversationEvent value, string text)
+    {
+        string key = string.Concat(value.Kind.ToString(), ":", value.ItemId ?? string.Empty);
+        if (!itemRawText.TryGetValue(key, out StringBuilder? rawText))
         {
-            if (IsApprovalTracked(value.RequestId))
-            {
-                return;
-            }
+            rawText = new StringBuilder();
+            itemRawText[key] = rawText;
+        }
 
-            var approval = new ApprovalViewModel(value, ResolveApprovalAsync);
-            AppendTranscriptRow(TranscriptRowViewModel.CreateApproval(approval));
+        rawText.Append(text);
+        return rawText.ToString();
+    }
 
-            if (ActiveApproval is null)
-            {
-                ActiveApproval = approval;
-                return;
-            }
+    private static bool ShouldRenderFromAccumulatedText(ConversationEventKind kind)
+        => kind is ConversationEventKind.AgentMessageDelta or ConversationEventKind.ReasoningSummaryDelta;
 
+    private Task OnApprovalRequestedAsync(ApprovalRequest value)
+        => OnUiAsync(() => EnqueueApproval(new ApprovalViewModel(value, ResolveApprovalAsync)));
+
+    // Show one approval card, queue the rest. Concurrent requestApproval prompts must not stack up
+    // and push the transcript out of view.
+    private void EnqueueApproval(ApprovalViewModel approval)
+    {
+        if (ActiveApproval is null)
+        {
+            ActiveApproval = approval;
+        }
+        else
+        {
             approvalQueue.Enqueue(approval);
-            RaiseApprovalQueueProperties();
-        });
+            OnPropertyChanged(nameof(ApprovalQueueText));
+        }
+    }
 
     private Task OnApprovalResolvedAsync(string requestId)
-        => OnUiAsync(() =>
+        => OnUiAsync(() => RemoveApproval(requestId));
+
+    // Idempotent, mirroring RemoveUserInput: a repeat resolve for an already-removed id is a no-op.
+    private void RemoveApproval(string requestId)
+    {
+        if (ActiveApproval?.RequestId == requestId)
         {
-            RemoveApproval(requestId);
-        });
+            ActiveApproval.MarkResolved();
+            ActiveApproval = approvalQueue.Count > 0 ? approvalQueue.Dequeue() : null;
+            OnPropertyChanged(nameof(ApprovalQueueText));
+            return;
+        }
+
+        // Resolved/cancelled while still queued: drop it without promoting.
+        if (approvalQueue.Any(item => item.RequestId == requestId))
+        {
+            ApprovalViewModel[] remaining = approvalQueue.Where(item => item.RequestId != requestId).ToArray();
+            approvalQueue.Clear();
+            foreach (ApprovalViewModel item in remaining)
+            {
+                approvalQueue.Enqueue(item);
+            }
+
+            OnPropertyChanged(nameof(ApprovalQueueText));
+        }
+    }
 
     private async Task ResolveApprovalAsync(string requestId, ApprovalDecision decision)
     {
         _ = outputChannel?.WriteLineAsync($"[AUDIT] Approval resolved: {requestId} → {decision}");
-        await OnUiAsync(() => RemoveApproval(requestId)).ConfigureAwait(false);
         await bridge.ResolveApprovalAsync(new ResolveApprovalRequest { RequestId = requestId, Decision = decision }, lifetime.Token).ConfigureAwait(false);
+    }
+
+    private Task OnUserInputRequestedAsync(UserInputRequest value)
+        => OnUiAsync(() => EnqueueUserInput(new UserInputViewModel(value, ResolveUserInputAsync, markdown)));
+
+    // Shared by the structured (server-request) path and the prose-detection path: show one card,
+    // queue the rest.
+    private void EnqueueUserInput(UserInputViewModel userInput)
+    {
+        if (ActiveUserInput is null)
+        {
+            ActiveUserInput = userInput;
+        }
+        else
+        {
+            userInputQueue.Enqueue(userInput);
+            OnPropertyChanged(nameof(UserInputQueueText));
+        }
+    }
+
+    private Task OnUserInputResolvedAsync(string requestId)
+        => OnUiAsync(() => RemoveUserInput(requestId));
+
+    // Idempotent: the worker emits userInputResolved twice (from ResolveUserInputAsync and from the
+    // request handler after it returns), so a repeat call for an already-removed id is a no-op.
+    private void RemoveUserInput(string requestId)
+    {
+        if (ActiveUserInput?.RequestId == requestId)
+        {
+            ActiveUserInput.MarkResolved();
+            ActiveUserInput = userInputQueue.Count > 0 ? userInputQueue.Dequeue() : null;
+            OnPropertyChanged(nameof(UserInputQueueText));
+            return;
+        }
+
+        // Resolved/cancelled while still queued: drop it without promoting.
+        if (userInputQueue.Any(item => item.RequestId == requestId))
+        {
+            UserInputViewModel[] remaining = userInputQueue.Where(item => item.RequestId != requestId).ToArray();
+            userInputQueue.Clear();
+            foreach (UserInputViewModel item in remaining)
+            {
+                userInputQueue.Enqueue(item);
+            }
+
+            OnPropertyChanged(nameof(UserInputQueueText));
+        }
+    }
+
+    // Structured choice (real item/tool/requestUserInput server request): answer it via RPC.
+    private Task ResolveUserInputAsync(string requestId, IReadOnlyDictionary<string, string[]> answers)
+        => bridge.ResolveUserInputAsync(
+            new ResolveUserInputRequest
+            {
+                RequestId = requestId,
+                Answers = answers.ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal),
+            },
+            lifetime.Token);
+
+    // Prose-detected choice: there is no pending server request, so the picked option is sent as the
+    // next turn (it also shows in the transcript as the user's message), then the card is removed.
+    private async Task ResolveSyntheticUserInputAsync(string requestId, IReadOnlyDictionary<string, string[]> answers)
+    {
+        string? choice = answers.Values.SelectMany(values => values).FirstOrDefault();
+        await OnUiAsync(() => RemoveUserInput(requestId)).ConfigureAwait(false);
+        if (!string.IsNullOrWhiteSpace(choice))
+        {
+            await SendMessageAsync(choice!, clearComposer: false).ConfigureAwait(false);
+        }
+    }
+
+    // Accumulate the raw (pre-markdown-stripping) agent text per item so a completed message can be
+    // inspected for a choice prompt. Gated on the opt-in toggle so detection is off by default.
+    private void AppendAgentRaw(string itemId, string rawChunk)
+    {
+        if (!settings.ExperimentalApiEnabled)
+        {
+            return;
+        }
+
+        lastAgentItemId = itemId;
+        if (!agentRawText.TryGetValue(itemId, out StringBuilder? builder))
+        {
+            builder = new StringBuilder();
+            agentRawText[itemId] = builder;
+        }
+
+        // Choice prompts are small; cap accumulation so a long message can't grow memory unbounded.
+        if (builder.Length < 16 * 1024)
+        {
+            builder.Append(rawChunk);
+        }
+    }
+
+    // On turn completion (codex is now waiting for the user), promote a detected choice prompt in the
+    // last agent message into the same single-card selection UI.
+    private void TryDetectChoicePrompt()
+    {
+        if (!settings.ExperimentalApiEnabled || lastAgentItemId is null)
+        {
+            return;
+        }
+
+        agentRawText.TryGetValue(lastAgentItemId, out StringBuilder? builder);
+        string raw = builder?.ToString() ?? string.Empty;
+        agentRawText.Clear();
+        lastAgentItemId = null;
+        if (ChoicePromptParser.TryParse(raw, out UserInputRequest synthesized))
+        {
+            EnqueueUserInput(new UserInputViewModel(synthesized, ResolveSyntheticUserInputAsync, markdown) { IsSynthetic = true });
+        }
     }
 
     private async Task SignInAsync()
@@ -814,88 +1102,6 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         SendCommand.RaiseCanExecuteChanged();
         InterruptCommand.RaiseCanExecuteChanged();
         AccountCommand.RaiseCanExecuteChanged();
-    }
-
-    private void ClearTranscript()
-    {
-        Items.Clear();
-        SelectedTranscriptRow = null;
-        shouldAutoFollowTranscript = true;
-        ClearApprovals();
-    }
-
-    private void AppendTranscriptRow(TranscriptRowViewModel row)
-    {
-        Items.Add(row);
-        if (shouldAutoFollowTranscript)
-        {
-            SelectedTranscriptRow = row;
-        }
-    }
-
-    private bool IsApprovalTracked(string requestId)
-        => ActiveApproval?.RequestId == requestId || approvalQueue.Any(approval => approval.RequestId == requestId);
-
-    private bool RemoveApproval(string requestId)
-    {
-        if (ActiveApproval?.RequestId == requestId)
-        {
-            ActiveApproval.MarkResolved();
-            PromoteNextApproval();
-            return true;
-        }
-
-        if (approvalQueue.Count == 0 || !approvalQueue.Any(approval => approval.RequestId == requestId))
-        {
-            return false;
-        }
-
-        var remaining = new Queue<ApprovalViewModel>(approvalQueue.Count - 1);
-        while (approvalQueue.Count > 0)
-        {
-            ApprovalViewModel approval = approvalQueue.Dequeue();
-            if (approval.RequestId != requestId)
-            {
-                remaining.Enqueue(approval);
-            }
-            else
-            {
-                approval.MarkResolved();
-            }
-        }
-
-        while (remaining.Count > 0)
-        {
-            approvalQueue.Enqueue(remaining.Dequeue());
-        }
-
-        RaiseApprovalQueueProperties();
-        return true;
-    }
-
-    private void PromoteNextApproval()
-    {
-        ActiveApproval = approvalQueue.Count == 0 ? null : approvalQueue.Dequeue();
-        RaiseApprovalQueueProperties();
-    }
-
-    private void ClearApprovals()
-    {
-        if (ActiveApproval is null && approvalQueue.Count == 0)
-        {
-            return;
-        }
-
-        approvalQueue.Clear();
-        ActiveApproval = null;
-        RaiseApprovalQueueProperties();
-    }
-
-    private void RaiseApprovalQueueProperties()
-    {
-        OnPropertyChanged(nameof(PendingApprovalCount));
-        OnPropertyChanged(nameof(HasQueuedApprovals));
-        OnPropertyChanged(nameof(ApprovalQueueText));
     }
 
     // In the OOP extension process, Application.Current is null so the null-conditional
@@ -1053,6 +1259,12 @@ public sealed class ChatItemViewModel : ObservableObject
     public bool IsPlanItem => Kind == ConversationEventKind.PlanUpdated;
 
     [DataMember]
+    public bool UsesBlockRendering => Kind is ConversationEventKind.AgentMessageDelta or ConversationEventKind.ReasoningSummaryDelta;
+
+    [DataMember]
+    public ObservableCollection<ChatBlockViewModel> Blocks { get; } = [];
+
+    [DataMember]
     public ObservableCollection<string> PlanSteps { get; } = [];
 
     [DataMember]
@@ -1063,6 +1275,25 @@ public sealed class ChatItemViewModel : ObservableObject
         PlanSteps.Clear();
         foreach (string step in steps)
             PlanSteps.Add("• " + step);
+    }
+
+    public void UpdateBlocks(IReadOnlyList<ChatBlockViewModel> blocks)
+    {
+        int sharedCount = Math.Min(Blocks.Count, blocks.Count);
+        for (int index = 0; index < sharedCount; index++)
+        {
+            Blocks[index].CopyFrom(blocks[index]);
+        }
+
+        while (Blocks.Count > blocks.Count)
+        {
+            Blocks.RemoveAt(Blocks.Count - 1);
+        }
+
+        for (int index = Blocks.Count; index < blocks.Count; index++)
+        {
+            Blocks.Add(blocks[index]);
+        }
     }
 
     // Matches a JSON string property: "fieldName":"value" (handles \" and \\ escapes inside value).
@@ -1092,31 +1323,160 @@ public sealed class ChatItemViewModel : ObservableObject
 }
 
 [DataContract]
-public sealed class TranscriptRowViewModel
+public sealed class ChatBlockViewModel : ObservableObject
 {
-    private TranscriptRowViewModel(ChatItemViewModel? chatItem, ApprovalViewModel? approval)
+    private string text = string.Empty;
+    private string code = string.Empty;
+    private string language = string.Empty;
+    private bool isParagraph;
+    private bool isHeading;
+    private bool isCodeBlock;
+    private bool isListItem;
+    private bool isSeparator;
+    private bool isH1;
+    private bool isH2;
+    private bool isH3;
+
+    [DataMember]
+    public string Text
     {
-        ChatItem = chatItem;
-        Approval = approval;
+        get => text;
+        set => SetProperty(ref text, value);
     }
 
-    public static TranscriptRowViewModel CreateChat(ChatItemViewModel item)
-        => new(item, null);
-
-    public static TranscriptRowViewModel CreateApproval(ApprovalViewModel approval)
-        => new(null, approval);
+    [DataMember]
+    public string Code
+    {
+        get => code;
+        set => SetProperty(ref code, value);
+    }
 
     [DataMember]
-    public ChatItemViewModel? ChatItem { get; }
+    public string Language
+    {
+        get => language;
+        set
+        {
+            if (SetProperty(ref language, value))
+            {
+                OnPropertyChanged(nameof(CodeBlockAutomationName));
+            }
+        }
+    }
 
     [DataMember]
-    public ApprovalViewModel? Approval { get; }
+    public bool IsParagraph
+    {
+        get => isParagraph;
+        set => SetProperty(ref isParagraph, value);
+    }
 
     [DataMember]
-    public bool IsChatRow => ChatItem is not null;
+    public bool IsHeading
+    {
+        get => isHeading;
+        set => SetProperty(ref isHeading, value);
+    }
 
     [DataMember]
-    public bool IsApprovalRow => Approval is not null;
+    public bool IsCodeBlock
+    {
+        get => isCodeBlock;
+        set
+        {
+            if (SetProperty(ref isCodeBlock, value))
+            {
+                OnPropertyChanged(nameof(CodeBlockAutomationName));
+            }
+        }
+    }
+
+    [DataMember]
+    public bool IsListItem
+    {
+        get => isListItem;
+        set => SetProperty(ref isListItem, value);
+    }
+
+    [DataMember]
+    public bool IsSeparator
+    {
+        get => isSeparator;
+        set => SetProperty(ref isSeparator, value);
+    }
+
+    [DataMember]
+    public bool IsH1
+    {
+        get => isH1;
+        set => SetProperty(ref isH1, value);
+    }
+
+    [DataMember]
+    public bool IsH2
+    {
+        get => isH2;
+        set => SetProperty(ref isH2, value);
+    }
+
+    [DataMember]
+    public bool IsH3
+    {
+        get => isH3;
+        set => SetProperty(ref isH3, value);
+    }
+
+    [DataMember]
+    public string CodeBlockAutomationName
+        => string.IsNullOrWhiteSpace(Language) ? "Code block" : $"Code block: {Language}";
+
+    public static ChatBlockViewModel Paragraph(string text) => new()
+    {
+        Text = text,
+        IsParagraph = true,
+    };
+
+    public static ChatBlockViewModel Heading(string text, int level) => new()
+    {
+        Text = text,
+        IsHeading = true,
+        IsH1 = level <= 1,
+        IsH2 = level == 2,
+        IsH3 = level >= 3,
+    };
+
+    public static ChatBlockViewModel CodeBlock(string code, string language) => new()
+    {
+        Code = code,
+        Language = language,
+        IsCodeBlock = true,
+    };
+
+    public static ChatBlockViewModel ListItem(string text) => new()
+    {
+        Text = string.Concat("• ", text),
+        IsListItem = true,
+    };
+
+    public static ChatBlockViewModel Separator() => new()
+    {
+        IsSeparator = true,
+    };
+
+    public void CopyFrom(ChatBlockViewModel other)
+    {
+        Text = other.Text;
+        Code = other.Code;
+        Language = other.Language;
+        IsParagraph = other.IsParagraph;
+        IsHeading = other.IsHeading;
+        IsCodeBlock = other.IsCodeBlock;
+        IsListItem = other.IsListItem;
+        IsSeparator = other.IsSeparator;
+        IsH1 = other.IsH1;
+        IsH2 = other.IsH2;
+        IsH3 = other.IsH3;
+    }
 }
 
 [DataContract]
@@ -1124,8 +1484,6 @@ public sealed class ApprovalViewModel : ObservableObject
 {
     private readonly Func<string, ApprovalDecision, Task> resolver;
     private bool isResolved;
-    private bool isExpanded;
-    private string resolutionText = "Pending";
     private int resolving;
 
     public ApprovalViewModel(ApprovalRequest request, Func<string, ApprovalDecision, Task> resolver)
@@ -1160,15 +1518,6 @@ public sealed class ApprovalViewModel : ObservableObject
         AcceptForSessionCommand = new AsyncCommand(() => ResolveOnceAsync(ApprovalDecision.AcceptForSession), () => CanResolve);
         DeclineCommand = new AsyncCommand(() => ResolveOnceAsync(ApprovalDecision.Decline), () => CanResolve);
         CancelCommand = new AsyncCommand(() => ResolveOnceAsync(ApprovalDecision.Cancel), () => CanResolve);
-        ToggleExpandedCommand = new AsyncCommand(() =>
-        {
-            if (CanToggleExpanded)
-            {
-                IsExpanded = !IsExpanded;
-            }
-
-            return Task.CompletedTask;
-        }, () => CanToggleExpanded);
     }
 
     public string RequestId { get; }
@@ -1215,7 +1564,6 @@ public sealed class ApprovalViewModel : ObservableObject
     [DataMember]
     public string? NetworkPort { get; }
 
-    [DataMember]
     public bool IsResolved
     {
         get => isResolved;
@@ -1229,57 +1577,11 @@ public sealed class ApprovalViewModel : ObservableObject
                 AcceptForSessionCommand.RaiseCanExecuteChanged();
                 DeclineCommand.RaiseCanExecuteChanged();
                 CancelCommand.RaiseCanExecuteChanged();
-                ToggleExpandedCommand.RaiseCanExecuteChanged();
-                OnPropertyChanged(nameof(Summary));
-                OnPropertyChanged(nameof(ExpandButtonText));
-                OnPropertyChanged(nameof(CanToggleExpanded));
-                OnPropertyChanged(nameof(IsDetailVisible));
             }
         }
     }
 
     public bool CanResolve => !IsResolved && !IsPolicyBlocked;
-
-    [DataMember]
-    public bool IsExpanded
-    {
-        get => isExpanded;
-        private set
-        {
-            if (SetProperty(ref isExpanded, value))
-            {
-                OnPropertyChanged(nameof(ExpandButtonText));
-                OnPropertyChanged(nameof(IsDetailVisible));
-            }
-        }
-    }
-
-    [DataMember]
-    public string Summary => IsResolved
-        ? $"{Risk} approval \u00b7 {ResolutionText}"
-        : $"{Risk} approval";
-
-    [DataMember]
-    public string ResolutionText
-    {
-        get => resolutionText;
-        private set
-        {
-            if (SetProperty(ref resolutionText, value))
-            {
-                OnPropertyChanged(nameof(Summary));
-            }
-        }
-    }
-
-    [DataMember]
-    public bool CanToggleExpanded => IsResolved;
-
-    [DataMember]
-    public bool IsDetailVisible => !IsResolved || IsExpanded;
-
-    [DataMember]
-    public string ExpandButtonText => IsExpanded ? "Hide details" : "Show details";
 
     [DataMember]
     public AsyncCommand AcceptCommand { get; }
@@ -1299,20 +1601,7 @@ public sealed class ApprovalViewModel : ObservableObject
     [DataMember]
     public AsyncCommand CancelCommand { get; }
 
-    [DataMember]
-    public AsyncCommand ToggleExpandedCommand { get; }
-
-    public void MarkResolved()
-    {
-        if (IsResolved)
-        {
-            return;
-        }
-
-        ResolutionText = "Resolved";
-        IsResolved = true;
-        IsExpanded = false;
-    }
+    public void MarkResolved() => IsResolved = true;
 
     private async Task ResolveOnceAsync(ApprovalDecision decision)
     {
@@ -1321,29 +1610,156 @@ public sealed class ApprovalViewModel : ObservableObject
             return;
         }
 
-        string resolution = decision switch
+        IsResolved = true;
+        await resolver(RequestId, decision).ConfigureAwait(false);
+    }
+}
+
+// An interactive choice prompt (request_user_input) surfaced as a card with one radio group per
+// question and a Submit button. [DataContract]/[DataMember] are required so Remote UI replicates
+// the questions, options, and command into the VS-side proxy.
+[DataContract]
+public sealed class UserInputViewModel : ObservableObject
+{
+    private readonly Func<string, IReadOnlyDictionary<string, string[]>, Task> resolver;
+    private bool isResolved;
+    private int resolving;
+
+    public UserInputViewModel(
+        UserInputRequest request,
+        Func<string, IReadOnlyDictionary<string, string[]>, Task> resolver,
+        SafeMarkdownService markdown)
+    {
+        this.resolver = resolver;
+        RequestId = request.RequestId;
+        Questions = new ObservableCollection<UserInputQuestionViewModel>(
+            request.Questions.Select(question => new UserInputQuestionViewModel(question, markdown)));
+        SubmitCommand = new AsyncCommand(SubmitOnceAsync, () => CanSubmit);
+    }
+
+    public string RequestId { get; }
+
+    // True when synthesized from a detected prose choice (no pending server request); drives
+    // ChatViewModel's "send the picked option as the next turn" resolution path.
+    public bool IsSynthetic { get; init; }
+
+    [DataMember]
+    public ObservableCollection<UserInputQuestionViewModel> Questions { get; }
+
+    [DataMember]
+    public AsyncCommand SubmitCommand { get; }
+
+    [DataMember]
+    public bool IsResolved
+    {
+        get => isResolved;
+        private set
         {
-            ApprovalDecision.Accept => "Accepted",
-            ApprovalDecision.AcceptForTurn => "Accepted for turn",
-            ApprovalDecision.AcceptForThread => "Accepted for thread",
-            ApprovalDecision.AcceptForSession => "Accepted for session",
-            ApprovalDecision.Decline => "Declined",
-            ApprovalDecision.Cancel => "Canceled",
-            _ => "Resolved",
-        };
-        try
-        {
-            await resolver(RequestId, decision).ConfigureAwait(false);
-            ResolutionText = resolution;
-            IsResolved = true;
-            IsExpanded = false;
-        }
-        catch
-        {
-            Interlocked.Exchange(ref resolving, 0);
-            throw;
+            if (SetProperty(ref isResolved, value))
+                SubmitCommand.RaiseCanExecuteChanged();
         }
     }
+
+    public bool CanSubmit => !IsResolved;
+
+    public void MarkResolved() => IsResolved = true;
+
+    private async Task SubmitOnceAsync()
+    {
+        if (Interlocked.Exchange(ref resolving, 1) != 0 || !CanSubmit)
+        {
+            return;
+        }
+
+        IsResolved = true;
+        var answers = new Dictionary<string, string[]>(StringComparer.Ordinal);
+        foreach (UserInputQuestionViewModel question in Questions)
+        {
+            if (question.SelectedLabel is { } label)
+            {
+                answers[question.Id] = [label];
+            }
+        }
+
+        await resolver(RequestId, answers).ConfigureAwait(false);
+    }
+}
+
+[DataContract]
+public sealed class UserInputQuestionViewModel : ObservableObject
+{
+    public UserInputQuestionViewModel(UserInputQuestion question, SafeMarkdownService markdown)
+    {
+        Id = question.Id;
+        Header = markdown.ToSafeText(question.Header);
+        Question = markdown.ToSafeText(question.Question);
+        Options = new ObservableCollection<UserInputOptionViewModel>(
+            question.Options.Select(option => new UserInputOptionViewModel(option, markdown, OnOptionSelected)));
+    }
+
+    // Not a DataMember: used only to key the answer sent back to the app-server.
+    public string Id { get; }
+
+    [DataMember]
+    public string Header { get; }
+
+    [DataMember]
+    public string Question { get; }
+
+    [DataMember]
+    public ObservableCollection<UserInputOptionViewModel> Options { get; }
+
+    // The verbatim (unsanitized) label of the selected option, echoed back to the app-server.
+    public string? SelectedLabel => Options.FirstOrDefault(option => option.IsSelected)?.Label;
+
+    // Single-select: selecting one option clears the rest of this question's group.
+    private void OnOptionSelected(UserInputOptionViewModel selected)
+    {
+        foreach (UserInputOptionViewModel option in Options)
+        {
+            if (!ReferenceEquals(option, selected))
+                option.SetSelectedSilently(false);
+        }
+    }
+}
+
+[DataContract]
+public sealed class UserInputOptionViewModel : ObservableObject
+{
+    private readonly Action<UserInputOptionViewModel> onSelected;
+    private bool isSelected;
+
+    public UserInputOptionViewModel(UserInputOption option, SafeMarkdownService markdown, Action<UserInputOptionViewModel> onSelected)
+    {
+        this.onSelected = onSelected;
+        // Label is echoed back verbatim so it matches the server's option; DisplayLabel is the
+        // sanitized text actually rendered.
+        Label = option.Label;
+        DisplayLabel = markdown.ToSafeText(option.Label);
+        Description = markdown.ToSafeText(option.Description);
+    }
+
+    // Not a DataMember: the raw value, never rendered, only submitted back to the app-server.
+    public string Label { get; }
+
+    [DataMember]
+    public string DisplayLabel { get; }
+
+    [DataMember]
+    public string Description { get; }
+
+    [DataMember]
+    public bool IsSelected
+    {
+        get => isSelected;
+        set
+        {
+            if (SetProperty(ref isSelected, value) && value)
+                onSelected(this);
+        }
+    }
+
+    internal void SetSelectedSilently(bool value) => SetProperty(ref isSelected, value, nameof(IsSelected));
 }
 
 public abstract class ObservableObject : INotifyPropertyChanged
