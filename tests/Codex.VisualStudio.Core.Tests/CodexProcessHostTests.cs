@@ -72,6 +72,31 @@ public sealed class CodexProcessHostTests
     }
 
     [TestMethod]
+    public void PopulateChildEnvironmentForwardsXdgBaseDirectories()
+    {
+        // mise (and other XDG-aware tools) honor XDG_DATA_HOME to relocate where node and the
+        // codex npm package are installed. If it is cleared, mise looks in its default location,
+        // cannot find the real codex binary, and the launcher fails ("cannot find binary path")
+        // or re-resolves to its own shim and loops — app-server exits with code 1.
+        const string xdgDataHome = "XDG_DATA_HOME";
+        string? original = Environment.GetEnvironmentVariable(xdgDataHome);
+        try
+        {
+            Environment.SetEnvironmentVariable(xdgDataHome, @"C:\Users\test\.local\share");
+            var target = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+
+            CodexProcessHost.PopulateChildEnvironment(target);
+
+            Assert.IsTrue(target.TryGetValue(xdgDataHome, out string? value), "XDG_DATA_HOME must be forwarded to the child environment.");
+            Assert.AreEqual(@"C:\Users\test\.local\share", value);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(xdgDataHome, original);
+        }
+    }
+
+    [TestMethod]
     public void PopulateChildEnvironmentDoesNotForwardArbitrarySecrets()
     {
         const string secretName = "SOME_UNRELATED_SECRET";

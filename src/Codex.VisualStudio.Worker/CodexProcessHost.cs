@@ -48,6 +48,16 @@ public sealed class CodexProcessHost : ICodexProcessHost
         "REQUESTS_CA_BUNDLE",
         "NODE_EXTRA_CA_CERTS",
 
+        // XDG base directories. Tool managers such as mise honor these to relocate their
+        // config/data/state/cache (e.g. XDG_DATA_HOME repoints where node and the codex npm
+        // package are installed). If they are cleared, mise looks in its default location,
+        // fails to find the real codex binary, and the launcher either reports
+        // "cannot find binary path" or re-resolves to its own shim and loops.
+        "XDG_DATA_HOME",
+        "XDG_CONFIG_HOME",
+        "XDG_STATE_HOME",
+        "XDG_CACHE_HOME",
+
         // Essential Windows system variables that native networking and TLS
         // (schannel) rely on once the inherited environment is cleared.
         "SystemRoot",
