@@ -21,6 +21,15 @@ while (await Console.In.ReadLineAsync().ConfigureAwait(false) is { } line)
         "thread/start" => CreateThread(),
         "thread/resume" => new { thread = new { id = root.GetProperty("params").GetProperty("threadId").GetString(), preview = "Resumed fake thread" } },
         "thread/list" => new { data = threads, nextCursor = (string?)null },
+        "model/list" => new
+        {
+            models = new[]
+            {
+                new { id = "gpt-5-codex", displayName = "GPT-5 Codex" },
+                new { id = "gpt-5", displayName = "GPT-5" },
+            },
+            defaultModel = "gpt-5-codex",
+        },
         "turn/start" => StartTurn(root),
         "turn/steer" => new { turnId = root.GetProperty("params").GetProperty("expectedTurnId").GetString() },
         "turn/interrupt" => new { },
@@ -47,8 +56,12 @@ object CreateThread()
 
 object StartTurn(JsonElement request)
 {
-    string threadId = request.GetProperty("params").GetProperty("threadId").GetString() ?? string.Empty;
+    JsonElement parameters = request.GetProperty("params");
+    string threadId = parameters.GetProperty("threadId").GetString() ?? string.Empty;
+    string? model = GetOptionalString(parameters, "model");
+    string? profile = GetOptionalString(parameters, "profile");
     string turnId = $"fake-turn-{nextTurn++}";
+    Console.Error.WriteLine($"fake turn/start model={Sanitize(model) ?? "(default)"} profile={Sanitize(profile) ?? "(default)"}");
     _ = Task.Run(async () =>
     {
         await Task.Delay(25).ConfigureAwait(false);
@@ -76,6 +89,23 @@ object Logout()
 {
     signedIn = false;
     return new { };
+}
+
+static string? GetOptionalString(JsonElement element, string name)
+    => element.ValueKind == JsonValueKind.Object
+        && element.TryGetProperty(name, out JsonElement property)
+        && property.ValueKind == JsonValueKind.String
+            ? property.GetString()
+            : null;
+
+static string? Sanitize(string? value)
+{
+    if (string.IsNullOrEmpty(value))
+    {
+        return value;
+    }
+
+    return new string(value.Where(character => !char.IsControl(character)).Take(128).ToArray());
 }
 
 static Task WriteAsync(object value) => Console.Out.WriteLineAsync(JsonSerializer.Serialize(value));

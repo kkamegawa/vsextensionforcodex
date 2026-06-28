@@ -5,7 +5,7 @@ namespace Codex.VisualStudio.Contracts;
 
 public static class ContractVersions
 {
-    public const int Current = 6;
+    public const int Current = 7;
 }
 
 public enum WorkerConnectionState
@@ -157,11 +157,29 @@ public sealed class ThreadPage
     public string? NextCursor { get; set; }
 }
 
+public sealed class ModelInfo
+{
+    public string Id { get; set; } = string.Empty;
+
+    public string? DisplayName { get; set; }
+}
+
+public sealed class ListModelsResult
+{
+    public IReadOnlyList<ModelInfo> Models { get; set; } = Array.Empty<ModelInfo>();
+
+    public string? DefaultModel { get; set; }
+}
+
 public sealed class StartTurnRequest
 {
     public string ThreadId { get; set; } = string.Empty;
 
     public string Text { get; set; } = string.Empty;
+
+    public string? Model { get; set; }
+
+    public string? Profile { get; set; }
 }
 
 public sealed class SteerTurnRequest
@@ -347,6 +365,9 @@ public interface ICodexWorkerClient
 
     [JsonRpcMethod("worker/thread/list")]
     Task<ThreadPage> ListThreadsAsync(string? cursor, CancellationToken cancellationToken);
+
+    [JsonRpcMethod("worker/models/list")]
+    Task<ListModelsResult> ListModelsAsync(CancellationToken cancellationToken);
 
     [JsonRpcMethod("worker/turn/start")]
     Task<string> StartTurnAsync(StartTurnRequest request, CancellationToken cancellationToken);

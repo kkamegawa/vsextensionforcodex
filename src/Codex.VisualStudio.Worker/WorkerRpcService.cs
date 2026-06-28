@@ -153,6 +153,9 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
     public Task<ThreadPage> ListThreadsAsync(string? cursor, CancellationToken cancellationToken)
         => session.ListThreadsAsync(cursor, cancellationToken);
 
+    public Task<ListModelsResult> ListModelsAsync(CancellationToken cancellationToken)
+        => session.ListModelsAsync(cancellationToken);
+
     public async Task<string> StartTurnAsync(StartTurnRequest request, CancellationToken cancellationToken)
     {
         await SetStatusAsync(WorkerConnectionState.Busy, "Turn in progress.", cancellationToken).ConfigureAwait(false);

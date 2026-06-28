@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.IO;
 using System.IO.Pipes;
 using Codex.VisualStudio.Contracts;
@@ -7,7 +7,52 @@ using StreamJsonRpc;
 
 namespace Codex.VisualStudio.Extension;
 
-public sealed class WorkerBridge : ICodexWorkerObserver, IAsyncDisposable
+internal interface IWorkerBridge : IAsyncDisposable
+{
+    event Func<WorkerStatus, Task>? StateChanged;
+
+    event Func<AccountStatus, Task>? AccountChanged;
+
+    event Func<ConversationEvent, Task>? ConversationEventReceived;
+
+    event Func<ApprovalRequest, Task>? ApprovalRequested;
+
+    event Func<string, Task>? ApprovalResolved;
+
+    event Func<UserInputRequest, Task>? UserInputRequested;
+
+    event Func<string, Task>? UserInputResolved;
+
+    Task<WorkerStatus> ConnectAsync(string workingDirectory, bool experimentalApi, CancellationToken cancellationToken);
+
+    Task<WorkerStatus> RestartAsync(CancellationToken cancellationToken);
+
+    Task<AccountStatus> GetAccountStatusAsync(CancellationToken cancellationToken);
+
+    Task<StartAccountLoginResult> StartAccountLoginAsync(CancellationToken cancellationToken);
+
+    Task<AccountStatus> LogoutAccountAsync(CancellationToken cancellationToken);
+
+    Task<ThreadPage> ListThreadsAsync(string? cursor, CancellationToken cancellationToken);
+
+    Task<ListModelsResult> ListModelsAsync(CancellationToken cancellationToken);
+
+    Task<ThreadSummary> StartThreadAsync(CancellationToken cancellationToken);
+
+    Task<ThreadSummary> ResumeThreadAsync(string threadId, CancellationToken cancellationToken);
+
+    Task<string> StartTurnAsync(StartTurnRequest request, CancellationToken cancellationToken);
+
+    Task<string> SteerTurnAsync(SteerTurnRequest request, CancellationToken cancellationToken);
+
+    Task InterruptTurnAsync(InterruptTurnRequest request, CancellationToken cancellationToken);
+
+    Task ResolveApprovalAsync(ResolveApprovalRequest request, CancellationToken cancellationToken);
+
+    Task ResolveUserInputAsync(ResolveUserInputRequest request, CancellationToken cancellationToken);
+}
+
+public sealed class WorkerBridge : IWorkerBridge, ICodexWorkerObserver
 {
     private readonly OutputChannel? log;
     private Process? process;
@@ -105,6 +150,9 @@ public sealed class WorkerBridge : ICodexWorkerObserver, IAsyncDisposable
 
     public Task<ThreadPage> ListThreadsAsync(string? cursor, CancellationToken cancellationToken)
         => rpc!.InvokeWithCancellationAsync<ThreadPage>("worker/thread/list", new object?[] { cursor }, cancellationToken);
+
+    public Task<ListModelsResult> ListModelsAsync(CancellationToken cancellationToken)
+        => rpc!.InvokeWithCancellationAsync<ListModelsResult>("worker/models/list", Array.Empty<object>(), cancellationToken);
 
     public Task<ThreadSummary> StartThreadAsync(CancellationToken cancellationToken)
         => rpc!.InvokeWithCancellationAsync<ThreadSummary>("worker/thread/start", Array.Empty<object>(), cancellationToken);

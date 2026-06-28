@@ -1,13 +1,20 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using Codex.AppServer.Protocol;
 using Codex.VisualStudio.Contracts;
 using Codex.VisualStudio.Worker;
+using StreamJsonRpc;
 
 namespace Codex.VisualStudio.Core.Tests;
 
 [TestClass]
 public sealed class CodexSessionServiceTests
 {
+    private static readonly JsonSerializerOptions WireJsonOptions = new(JsonSerializerDefaults.Web)
+    {
+        DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
+    };
+
+    private static readonly string[] ExpectedModels = ["gpt-5-codex", "gpt-5"];
     private static readonly string[] CreativeOnly = ["Creative"];
 
     [TestMethod]
@@ -38,6 +45,123 @@ public sealed class CodexSessionServiceTests
             new[] { "cli", "vscode", "appServer" },
             parameters.GetProperty("sourceKinds").EnumerateArray().Select(item => item.GetString()).ToArray());
         Assert.AreEqual("next", page.NextCursor);
+    }
+
+    [TestMethod]
+    public async Task ListModelsReturnsModelsAndDefault()
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "model/list"
+                ? JsonSerializer.SerializeToElement(new
+                {
+                    models = new[]
+                    {
+                        new { id = "gpt-5-codex", displayName = "GPT-5 Codex" },
+                        new { id = "gpt-5", displayName = "GPT-5" },
+                    },
+                    defaultModel = "gpt-5",
+                })
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        ListModelsResult result = await service.ListModelsAsync(CancellationToken.None);
+
+        CollectionAssert.AreEqual(ExpectedModels, result.Models.Select(model => model.Id).ToArray());
+        Assert.AreEqual("GPT-5 Codex", result.Models[0].DisplayName);
+        Assert.AreEqual("gpt-5", result.DefaultModel);
+    }
+
+    [TestMethod]
+    public async Task ListModelsDropsMalformedAndDuplicateModels()
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "model/list"
+                ? JsonSerializer.SerializeToElement(new
+                {
+                    models = new object[]
+                    {
+                        new { id = "gpt-5-codex" },
+                        new { id = "gpt-5-codex" },
+                        new { id = "" },
+                        new { id = "bad\rmodel" },
+                        new { displayName = "No id" },
+                        new { id = "gpt-5" },
+                    },
+                    defaultModel = "missing",
+                })
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        ListModelsResult result = await service.ListModelsAsync(CancellationToken.None);
+
+        CollectionAssert.AreEqual(ExpectedModels, result.Models.Select(model => model.Id).ToArray());
+        Assert.IsNull(result.DefaultModel);
+    }
+
+    [TestMethod]
+    public async Task ListModelsReturnsEmptyWhenAppServerDoesNotSupportMethod()
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "model/list"
+                ? throw new JsonRpcRemoteException(-32601, "Method not found")
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        ListModelsResult result = await service.ListModelsAsync(CancellationToken.None);
+
+        Assert.AreEqual(0, result.Models.Count);
+        Assert.IsNull(result.DefaultModel);
+    }
+
+    [TestMethod]
+    public async Task StartTurnForwardsModelAndProfileWhenSet()
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "turn/start"
+                ? JsonSerializer.SerializeToElement(new { turn = new { id = "turn-1" } })
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        await service.StartTurnAsync(
+            new StartTurnRequest { ThreadId = "thread-1", Text = "hello", Model = "gpt-5", Profile = "chat" },
+            CancellationToken.None);
+
+        RecordedRequest request = connection.Requests.Single(item => item.Method == "turn/start");
+        JsonElement parameters = JsonSerializer.SerializeToElement(request.Parameters, WireJsonOptions);
+        Assert.AreEqual("gpt-5", parameters.GetProperty("model").GetString());
+        Assert.AreEqual("chat", parameters.GetProperty("profile").GetString());
+    }
+
+    [TestMethod]
+    public async Task StartTurnOmitsModelAndProfileWhenUnset()
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "turn/start"
+                ? JsonSerializer.SerializeToElement(new { turn = new { id = "turn-1" } })
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        await service.StartTurnAsync(new StartTurnRequest { ThreadId = "thread-1", Text = "hello" }, CancellationToken.None);
+
+        RecordedRequest request = connection.Requests.Single(item => item.Method == "turn/start");
+        JsonElement parameters = JsonSerializer.SerializeToElement(request.Parameters, WireJsonOptions);
+        Assert.IsFalse(parameters.TryGetProperty("model", out _));
+        Assert.IsFalse(parameters.TryGetProperty("profile", out _));
     }
 
     [TestMethod]

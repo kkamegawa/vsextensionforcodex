@@ -39,6 +39,8 @@ public interface ICodexSessionService : IAsyncDisposable
 
     Task<ThreadPage> ListThreadsAsync(string? cursor, CancellationToken cancellationToken);
 
+    Task<ListModelsResult> ListModelsAsync(CancellationToken cancellationToken);
+
     Task<string> StartTurnAsync(StartTurnRequest request, CancellationToken cancellationToken);
 
     Task<string> SteerTurnAsync(SteerTurnRequest request, CancellationToken cancellationToken);
@@ -275,11 +277,39 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         };
     }
 
+    public async Task<ListModelsResult> ListModelsAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            JsonElement result = await RequireConnection().SendRequestAsync(
+                "model/list",
+                new { },
+                TimeSpan.FromSeconds(15),
+                cancellationToken).ConfigureAwait(false);
+            return ReadModelsResult(result);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            WorkerDiagnostics.Write("app-server model list request failed; keeping fallback models", ex);
+            return new ListModelsResult();
+        }
+    }
+
     public async Task<string> StartTurnAsync(StartTurnRequest request, CancellationToken cancellationToken)
     {
         JsonElement result = await SendAsync(
             "turn/start",
-            new { threadId = request.ThreadId, input = new[] { new { type = "text", text = request.Text } } },
+            new
+            {
+                threadId = request.ThreadId,
+                input = new[] { new { type = "text", text = request.Text } },
+                model = request.Model,
+                profile = request.Profile,
+            },
             cancellationToken).ConfigureAwait(false);
         ActiveThreadId = request.ThreadId;
         ActiveTurnId = result.GetProperty("turn").GetProperty("id").GetString();
@@ -735,6 +765,56 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         Cwd = GetString(thread, "cwd"),
         UpdatedAt = thread.TryGetProperty("updatedAt", out JsonElement updated) && updated.TryGetInt64(out long value) ? value : null,
     };
+
+    private ListModelsResult ReadModelsResult(JsonElement result)
+    {
+        var models = new List<ModelInfo>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        if (result.TryGetProperty("models", out JsonElement modelArray)
+            && modelArray.ValueKind == JsonValueKind.Array)
+        {
+            foreach (JsonElement model in modelArray.EnumerateArray())
+            {
+                string? id = NormalizeModelId(GetString(model, "id"));
+                if (id is null || !seen.Add(id))
+                {
+                    continue;
+                }
+
+                string? displayName = GetString(model, "displayName");
+                models.Add(new ModelInfo
+                {
+                    Id = id,
+                    DisplayName = displayName is null ? null : redactor.Redact(displayName),
+                });
+            }
+        }
+
+        string? defaultModel = NormalizeModelId(GetString(result, "defaultModel"));
+        if (defaultModel is not null && !seen.Contains(defaultModel))
+        {
+            defaultModel = null;
+        }
+
+        return new ListModelsResult
+        {
+            Models = models,
+            DefaultModel = defaultModel,
+        };
+    }
+
+    private static string? NormalizeModelId(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        string trimmed = value.Trim();
+        return trimmed.Length <= 128 && trimmed.All(character => !char.IsControl(character))
+            ? trimmed
+            : null;
+    }
 
     private static string? GetString(JsonElement element, string name)
         => element.ValueKind == JsonValueKind.Object
