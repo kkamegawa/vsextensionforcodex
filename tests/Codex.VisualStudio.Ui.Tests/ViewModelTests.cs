@@ -893,6 +893,43 @@ public sealed class ViewModelTests
     }
 
     [TestMethod]
+    public void ChatToolWindowXaml_ActiveApprovalDetails_AreBoundedAndScrollable()
+    {
+        const string resourceName = "Codex.VisualStudio.Extension.ToolWindows.ChatToolWindowContent.xaml";
+        using Stream? stream = typeof(ChatViewModel).Assembly.GetManifestResourceStream(resourceName);
+        Assert.IsNotNull(stream, $"Embedded resource '{resourceName}' not found.");
+        XDocument doc = XDocument.Load(stream);
+        XNamespace presentation = "http://schemas.microsoft.com/winfx/2006/xaml/presentation";
+
+        XElement? displayText = doc
+            .Descendants(presentation + "TextBlock")
+            .SingleOrDefault(tb => string.Equals(
+                tb.Attribute("Text")?.Value,
+                "{Binding ActiveApproval.DisplayText}",
+                StringComparison.Ordinal));
+        Assert.IsNotNull(displayText, "Could not find ActiveApproval.DisplayText TextBlock.");
+
+        XElement? detailsScrollViewer = displayText!
+            .Ancestors(presentation + "ScrollViewer")
+            .FirstOrDefault();
+        Assert.IsNotNull(detailsScrollViewer, "Approval details must be wrapped in a ScrollViewer.");
+        Assert.AreEqual("Auto", detailsScrollViewer!.Attribute("VerticalScrollBarVisibility")?.Value);
+        Assert.AreEqual("Auto", detailsScrollViewer.Attribute("HorizontalScrollBarVisibility")?.Value);
+        Assert.AreEqual("220", detailsScrollViewer.Attribute("MaxHeight")?.Value);
+
+        XElement? acceptButton = doc
+            .Descendants(presentation + "Button")
+            .SingleOrDefault(btn => string.Equals(
+                btn.Attribute("Command")?.Value,
+                "{Binding ActiveApproval.AcceptCommand}",
+                StringComparison.Ordinal));
+        Assert.IsNotNull(acceptButton, "Could not find ActiveApproval.AcceptCommand button.");
+        Assert.IsNull(
+            acceptButton!.Ancestors(presentation + "ScrollViewer").FirstOrDefault(),
+            "Approval decision buttons must remain outside the details ScrollViewer.");
+    }
+
+    [TestMethod]
     public void ChatToolWindowXaml_EveryBindingRoot_IsSerializableDataMember()
     {
         const string resourceName = "Codex.VisualStudio.Extension.ToolWindows.ChatToolWindowContent.xaml";

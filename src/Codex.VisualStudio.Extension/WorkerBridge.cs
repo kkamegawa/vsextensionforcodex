@@ -205,12 +205,13 @@ public sealed class WorkerBridge : ICodexWorkerObserver, IAsyncDisposable
             Arguments = $"--pipe {pipeName}",
             UseShellExecute = false,
 
-            // The worker keeps a console (instead of CREATE_NO_WINDOW) but it is hidden via
-            // WindowStyle. This gives codex app-server - and the cmd.exe processes it spawns -
-            // a console to inherit, so the OS does not allocate a new visible console window
-            // for each of them. Codex.VisualStudio.Worker also hides its console window at
-            // startup as a defensive measure (see HiddenConsole).
-            CreateNoWindow = false,
+            // CREATE_NO_WINDOW gives the worker a console that has no window at all (rather
+            // than allocating a visible console and hiding it afterwards, which can flash or
+            // linger if the hide runs late). codex app-server - and the cmd.exe processes it
+            // spawns to run shell commands - inherit this windowless console, so the OS never
+            // allocates a new visible console window for any of them. Codex.VisualStudio.Worker
+            // also hides its console window at startup as a defensive measure (see HiddenConsole).
+            CreateNoWindow = true,
             WindowStyle = ProcessWindowStyle.Hidden,
             RedirectStandardError = true,
         }) ?? throw new InvalidOperationException("Failed to start the Codex worker.");
