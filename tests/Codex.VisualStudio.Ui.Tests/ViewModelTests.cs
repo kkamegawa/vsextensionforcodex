@@ -1062,16 +1062,25 @@ public sealed class ViewModelTests
     }
 
     [TestMethod]
-    [DataRow("Agent", null)]
-    [DataRow("Chat", "chat")]
-    [DataRow("Unknown", null)]
-    public void ChatViewModel_MapModeToProfile_MapsSupportedModes(string mode, string? expected)
+    [DataRow("Agent", "on-request")]
+    [DataRow("Chat", "never")]
+    [DataRow("Unknown", "on-request")]
+    public void ChatViewModel_MapModeToApprovalPolicy_MapsSupportedModes(string mode, string? expected)
     {
-        Assert.AreEqual(expected, ChatViewModel.MapModeToProfile(mode));
+        Assert.AreEqual(expected, ChatViewModel.MapModeToApprovalPolicy(mode));
     }
 
     [TestMethod]
-    public async Task ChatViewModel_SendMessage_PassesSelectedModelAndProfileToStartTurn()
+    [DataRow("Agent", "workspaceWrite")]
+    [DataRow("Chat", "readOnly")]
+    [DataRow("Unknown", "workspaceWrite")]
+    public void ChatViewModel_MapModeToSandbox_MapsSupportedModes(string mode, string? expected)
+    {
+        Assert.AreEqual(expected, ChatViewModel.MapModeToSandbox(mode));
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_SendMessage_PassesSelectedModelAndModeToStartTurn()
     {
         var bridge = new FakeWorkerBridge();
         using var vm = new ChatViewModel(bridge, autoConnect: false)
@@ -1088,11 +1097,12 @@ public sealed class ViewModelTests
         Assert.AreEqual("thread-1", bridge.LastStartTurnRequest!.ThreadId);
         Assert.AreEqual("hello", bridge.LastStartTurnRequest.Text);
         Assert.AreEqual("gpt-5", bridge.LastStartTurnRequest.Model);
-        Assert.AreEqual("chat", bridge.LastStartTurnRequest.Profile);
+        Assert.AreEqual("never", bridge.LastStartTurnRequest.ApprovalPolicy);
+        Assert.AreEqual("readOnly", bridge.LastStartTurnRequest.SandboxMode);
     }
 
     [TestMethod]
-    public async Task ChatViewModel_SendMessage_OmitsProfileForAgentMode()
+    public async Task ChatViewModel_SendMessage_UsesAgentPresetForAgentMode()
     {
         var bridge = new FakeWorkerBridge();
         using var vm = new ChatViewModel(bridge, autoConnect: false)
@@ -1107,7 +1117,8 @@ public sealed class ViewModelTests
 
         Assert.IsNotNull(bridge.LastStartTurnRequest);
         Assert.AreEqual("gpt-5-codex", bridge.LastStartTurnRequest!.Model);
-        Assert.IsNull(bridge.LastStartTurnRequest.Profile);
+        Assert.AreEqual("on-request", bridge.LastStartTurnRequest.ApprovalPolicy);
+        Assert.AreEqual("workspaceWrite", bridge.LastStartTurnRequest.SandboxMode);
     }
 
     [TestMethod]

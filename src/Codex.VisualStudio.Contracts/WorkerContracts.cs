@@ -179,7 +179,13 @@ public sealed class StartTurnRequest
 
     public string? Model { get; set; }
 
-    public string? Profile { get; set; }
+    // Per-turn approval policy override mapped from the Agent/Chat mode preset.
+    // Matches the codex app-server turn/start "approvalPolicy" field (for example "on-request" or "never").
+    public string? ApprovalPolicy { get; set; }
+
+    // Per-turn sandbox policy type override mapped from the Agent/Chat mode preset.
+    // Matches the codex app-server turn/start "sandboxPolicy.type" field (for example "workspaceWrite" or "readOnly").
+    public string? SandboxMode { get; set; }
 }
 
 public sealed class SteerTurnRequest

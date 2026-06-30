@@ -602,6 +602,9 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         catch (Exception ex)
         {
             ExtensionDiagnostics.Write("Model list refresh failed; keeping fallback models", ex);
+            await ExtensionDiagnostics.WriteOutputAsync(
+                outputChannel,
+                "[CODEX MODELS] Failed to query the app-server model list; keeping the built-in fallback models.").ConfigureAwait(false);
             return;
         }
 
@@ -612,8 +615,18 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             .ToArray();
         if (modelIds.Length == 0)
         {
+            await ExtensionDiagnostics.WriteOutputAsync(
+                outputChannel,
+                "[CODEX MODELS] The app-server returned no models; keeping the built-in fallback models.").ConfigureAwait(false);
             return;
         }
+
+        string defaultModelLabel = string.IsNullOrWhiteSpace(result.DefaultModel)
+            ? "(none reported)"
+            : result.DefaultModel!;
+        await ExtensionDiagnostics.WriteOutputAsync(
+            outputChannel,
+            $"[CODEX MODELS] Available models ({modelIds.Length}): {string.Join(", ", modelIds)}. Default: {defaultModelLabel}.").ConfigureAwait(false);
 
         await OnUiAsync(() =>
         {
@@ -697,7 +710,8 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                     ThreadId = SelectedThread.Id,
                     Text = text,
                     Model = SelectedModel,
-                    Profile = MapModeToProfile(SelectedMode),
+                    ApprovalPolicy = MapModeToApprovalPolicy(SelectedMode),
+                    SandboxMode = MapModeToSandbox(SelectedMode),
                 },
                 lifetime.Token).ConfigureAwait(false);
         }
@@ -715,8 +729,14 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         return Task.CompletedTask;
     }
 
-    internal static string? MapModeToProfile(string? mode)
-        => string.Equals(mode, "Chat", StringComparison.Ordinal) ? "chat" : null;
+    // Agent/Chat mode is a per-turn preset over the codex app-server approval policy and sandbox.
+    // Agent: standard agent capability (workspace-write sandbox, on-request approvals).
+    // Chat: conversation only (read-only sandbox, approvals never prompted so no edits run).
+    internal static string? MapModeToApprovalPolicy(string? mode)
+        => string.Equals(mode, "Chat", StringComparison.Ordinal) ? "never" : "on-request";
+
+    internal static string? MapModeToSandbox(string? mode)
+        => string.Equals(mode, "Chat", StringComparison.Ordinal) ? "readOnly" : "workspaceWrite";
 
     // TODO(issue): wire to a real file/context attach picker. Stubbed for now so the
     // composer + button is present without a backend dependency.

@@ -23,12 +23,12 @@ while (await Console.In.ReadLineAsync().ConfigureAwait(false) is { } line)
         "thread/list" => new { data = threads, nextCursor = (string?)null },
         "model/list" => new
         {
-            models = new[]
+            data = new[]
             {
-                new { id = "gpt-5-codex", displayName = "GPT-5 Codex" },
-                new { id = "gpt-5", displayName = "GPT-5" },
+                new { model = "gpt-5-codex", displayName = "GPT-5 Codex", isDefault = true, hidden = false },
+                new { model = "gpt-5", displayName = "GPT-5", isDefault = false, hidden = false },
             },
-            defaultModel = "gpt-5-codex",
+            nextCursor = (string?)null,
         },
         "turn/start" => StartTurn(root),
         "turn/steer" => new { turnId = root.GetProperty("params").GetProperty("expectedTurnId").GetString() },
@@ -59,9 +59,12 @@ object StartTurn(JsonElement request)
     JsonElement parameters = request.GetProperty("params");
     string threadId = parameters.GetProperty("threadId").GetString() ?? string.Empty;
     string? model = GetOptionalString(parameters, "model");
-    string? profile = GetOptionalString(parameters, "profile");
+    string? approvalPolicy = GetOptionalString(parameters, "approvalPolicy");
+    string? sandboxMode = parameters.TryGetProperty("sandboxPolicy", out JsonElement sandbox)
+        ? GetOptionalString(sandbox, "type")
+        : null;
     string turnId = $"fake-turn-{nextTurn++}";
-    Console.Error.WriteLine($"fake turn/start model={Sanitize(model) ?? "(default)"} profile={Sanitize(profile) ?? "(default)"}");
+    Console.Error.WriteLine($"fake turn/start model={Sanitize(model) ?? "(default)"} approvalPolicy={Sanitize(approvalPolicy) ?? "(default)"} sandbox={Sanitize(sandboxMode) ?? "(default)"}");
     _ = Task.Run(async () =>
     {
         await Task.Delay(25).ConfigureAwait(false);

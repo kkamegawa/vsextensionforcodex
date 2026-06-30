@@ -46,8 +46,8 @@ public sealed class WorkerRpcServiceTests
             Handler = method => method == "model/list"
                 ? JsonSerializer.SerializeToElement(new
                 {
-                    models = new[] { new { id = "gpt-5-codex" } },
-                    defaultModel = "gpt-5-codex",
+                    data = new[] { new { model = "gpt-5-codex", isDefault = true } },
+                    nextCursor = (string?)null,
                 })
                 : JsonSerializer.SerializeToElement(new { }),
         };

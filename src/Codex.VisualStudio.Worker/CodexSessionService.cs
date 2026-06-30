@@ -308,7 +308,8 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
                 threadId = request.ThreadId,
                 input = new[] { new { type = "text", text = request.Text } },
                 model = request.Model,
-                profile = request.Profile,
+                approvalPolicy = request.ApprovalPolicy,
+                sandboxPolicy = request.SandboxMode is null ? null : new { type = request.SandboxMode },
             },
             cancellationToken).ConfigureAwait(false);
         ActiveThreadId = request.ThreadId;
@@ -770,12 +771,27 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
     {
         var models = new List<ModelInfo>();
         var seen = new HashSet<string>(StringComparer.Ordinal);
-        if (result.TryGetProperty("models", out JsonElement modelArray)
+        string? defaultModel = null;
+
+        // The codex app-server model/list response uses "data"; tolerate a legacy "models" key as well.
+        if ((result.TryGetProperty("data", out JsonElement modelArray)
+                || result.TryGetProperty("models", out modelArray))
             && modelArray.ValueKind == JsonValueKind.Array)
         {
             foreach (JsonElement model in modelArray.EnumerateArray())
             {
-                string? id = NormalizeModelId(GetString(model, "id"));
+                if (model.ValueKind != JsonValueKind.Object)
+                {
+                    continue;
+                }
+
+                if (GetBool(model, "hidden") == true)
+                {
+                    continue;
+                }
+
+                // The "model" field carries the slug used for turn/start; fall back to "id" for older shapes.
+                string? id = NormalizeModelId(GetString(model, "model") ?? GetString(model, "id"));
                 if (id is null || !seen.Add(id))
                 {
                     continue;
@@ -787,14 +803,25 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
                     Id = id,
                     DisplayName = displayName is null ? null : redactor.Redact(displayName),
                 });
+
+                if (GetBool(model, "isDefault") == true)
+                {
+                    defaultModel = id;
+                }
             }
         }
 
-        string? defaultModel = NormalizeModelId(GetString(result, "defaultModel"));
-        if (defaultModel is not null && !seen.Contains(defaultModel))
+        // Fall back to a top-level "defaultModel" key when no entry was flagged as default.
+        if (defaultModel is null)
         {
-            defaultModel = null;
+            string? topLevelDefault = NormalizeModelId(GetString(result, "defaultModel"));
+            if (topLevelDefault is not null && seen.Contains(topLevelDefault))
+            {
+                defaultModel = topLevelDefault;
+            }
         }
+
+        WorkerDiagnostics.Write($"app-server model list parsed; count={models.Count} default={defaultModel ?? "(none)"}");
 
         return new ListModelsResult
         {
@@ -821,6 +848,13 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
             && element.TryGetProperty(name, out JsonElement property)
             && property.ValueKind == JsonValueKind.String
                 ? property.GetString()
+                : null;
+
+    private static bool? GetBool(JsonElement element, string name)
+        => element.ValueKind == JsonValueKind.Object
+            && element.TryGetProperty(name, out JsonElement property)
+            && (property.ValueKind == JsonValueKind.True || property.ValueKind == JsonValueKind.False)
+                ? property.GetBoolean()
                 : null;
 
     private static string ToWireDecision(ApprovalDecision decision) => decision switch

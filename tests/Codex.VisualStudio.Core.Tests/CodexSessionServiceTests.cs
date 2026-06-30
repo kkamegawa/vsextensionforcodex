@@ -55,12 +55,12 @@ public sealed class CodexSessionServiceTests
             Handler = (method, _) => method == "model/list"
                 ? JsonSerializer.SerializeToElement(new
                 {
-                    models = new[]
+                    data = new[]
                     {
-                        new { id = "gpt-5-codex", displayName = "GPT-5 Codex" },
-                        new { id = "gpt-5", displayName = "GPT-5" },
+                        new { model = "gpt-5-codex", displayName = "GPT-5 Codex", isDefault = false },
+                        new { model = "gpt-5", displayName = "GPT-5", isDefault = true },
                     },
-                    defaultModel = "gpt-5",
+                    nextCursor = (string?)null,
                 })
                 : JsonSerializer.SerializeToElement(new { }),
         };
@@ -75,21 +75,22 @@ public sealed class CodexSessionServiceTests
     }
 
     [TestMethod]
-    public async Task ListModelsDropsMalformedAndDuplicateModels()
+    public async Task ListModelsDropsMalformedHiddenAndDuplicateModels()
     {
         var connection = new RecordingConnection
         {
             Handler = (method, _) => method == "model/list"
                 ? JsonSerializer.SerializeToElement(new
                 {
-                    models = new object[]
+                    data = new object[]
                     {
-                        new { id = "gpt-5-codex" },
-                        new { id = "gpt-5-codex" },
-                        new { id = "" },
-                        new { id = "bad\rmodel" },
-                        new { displayName = "No id" },
-                        new { id = "gpt-5" },
+                        new { model = "gpt-5-codex" },
+                        new { model = "gpt-5-codex" },
+                        new { model = "" },
+                        new { model = "bad\rmodel" },
+                        new { model = "hidden-model", hidden = true },
+                        new { displayName = "No model id" },
+                        new { model = "gpt-5" },
                     },
                     defaultModel = "missing",
                 })
@@ -123,7 +124,7 @@ public sealed class CodexSessionServiceTests
     }
 
     [TestMethod]
-    public async Task StartTurnForwardsModelAndProfileWhenSet()
+    public async Task StartTurnForwardsModelAndModeOverridesWhenSet()
     {
         var connection = new RecordingConnection
         {
@@ -135,17 +136,25 @@ public sealed class CodexSessionServiceTests
         await service.InitializeAsync(connection, Options(), CancellationToken.None);
 
         await service.StartTurnAsync(
-            new StartTurnRequest { ThreadId = "thread-1", Text = "hello", Model = "gpt-5", Profile = "chat" },
+            new StartTurnRequest
+            {
+                ThreadId = "thread-1",
+                Text = "hello",
+                Model = "gpt-5",
+                ApprovalPolicy = "never",
+                SandboxMode = "readOnly",
+            },
             CancellationToken.None);
 
         RecordedRequest request = connection.Requests.Single(item => item.Method == "turn/start");
         JsonElement parameters = JsonSerializer.SerializeToElement(request.Parameters, WireJsonOptions);
         Assert.AreEqual("gpt-5", parameters.GetProperty("model").GetString());
-        Assert.AreEqual("chat", parameters.GetProperty("profile").GetString());
+        Assert.AreEqual("never", parameters.GetProperty("approvalPolicy").GetString());
+        Assert.AreEqual("readOnly", parameters.GetProperty("sandboxPolicy").GetProperty("type").GetString());
     }
 
     [TestMethod]
-    public async Task StartTurnOmitsModelAndProfileWhenUnset()
+    public async Task StartTurnOmitsModelAndModeOverridesWhenUnset()
     {
         var connection = new RecordingConnection
         {
@@ -161,7 +170,8 @@ public sealed class CodexSessionServiceTests
         RecordedRequest request = connection.Requests.Single(item => item.Method == "turn/start");
         JsonElement parameters = JsonSerializer.SerializeToElement(request.Parameters, WireJsonOptions);
         Assert.IsFalse(parameters.TryGetProperty("model", out _));
-        Assert.IsFalse(parameters.TryGetProperty("profile", out _));
+        Assert.IsFalse(parameters.TryGetProperty("approvalPolicy", out _));
+        Assert.IsFalse(parameters.TryGetProperty("sandboxPolicy", out _));
     }
 
     [TestMethod]
