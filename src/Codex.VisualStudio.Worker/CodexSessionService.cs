@@ -283,7 +283,9 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         {
             JsonElement result = await RequireConnection().SendRequestAsync(
                 "model/list",
-                new { },
+                // Include hidden models so the catalog default (which may be a hidden preset and
+                // is otherwise filtered out server-side) can still be surfaced in the picker.
+                new { includeHidden = true },
                 TimeSpan.FromSeconds(15),
                 cancellationToken).ConfigureAwait(false);
             return ReadModelsResult(result);
@@ -785,14 +787,25 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
                     continue;
                 }
 
+                // The "model" field carries the slug used for turn/start; fall back to "id" for older shapes.
+                string? id = NormalizeModelId(GetString(model, "model") ?? GetString(model, "id"));
+                if (id is null)
+                {
+                    continue;
+                }
+
+                // Capture the catalog default even when it is hidden, so the picker can still offer it.
+                if (defaultModel is null && GetBool(model, "isDefault") == true)
+                {
+                    defaultModel = id;
+                }
+
                 if (GetBool(model, "hidden") == true)
                 {
                     continue;
                 }
 
-                // The "model" field carries the slug used for turn/start; fall back to "id" for older shapes.
-                string? id = NormalizeModelId(GetString(model, "model") ?? GetString(model, "id"));
-                if (id is null || !seen.Add(id))
+                if (!seen.Add(id))
                 {
                     continue;
                 }
@@ -803,11 +816,6 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
                     Id = id,
                     DisplayName = displayName is null ? null : redactor.Redact(displayName),
                 });
-
-                if (GetBool(model, "isDefault") == true)
-                {
-                    defaultModel = id;
-                }
             }
         }
 

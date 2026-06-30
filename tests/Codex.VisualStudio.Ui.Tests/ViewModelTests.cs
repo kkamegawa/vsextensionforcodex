@@ -27,6 +27,7 @@ public sealed class ViewModelTests
 
     private static readonly string[] ExpectedModes = ["Agent", "Chat"];
     private static readonly string[] ExpectedWorkerModels = ["gpt-5-codex", "gpt-5"];
+    private static readonly string[] ExpectedModelsWithInjectedDefault = ["gpt-5.1-codex-max", "gpt-5-codex", "gpt-5"];
     private static readonly string[] CreativeOnly = ["Creative"];
     [TestMethod]
     public async Task ApprovalViewModel_ResolvesOnlyOnce()
@@ -1045,6 +1046,29 @@ public sealed class ViewModelTests
 
         CollectionAssert.AreEqual(ExpectedWorkerModels, vm.Models);
         Assert.AreEqual("gpt-5", vm.SelectedModel);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_PopulateModels_AddsDefaultModelMissingFromPickerList()
+    {
+        var bridge = new FakeWorkerBridge
+        {
+            ModelListResult = new ListModelsResult
+            {
+                Models =
+                [
+                    new ModelInfo { Id = "gpt-5-codex" },
+                    new ModelInfo { Id = "gpt-5" },
+                ],
+                DefaultModel = "gpt-5.1-codex-max",
+            },
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false);
+
+        await vm.PopulateModelsAsync();
+
+        CollectionAssert.AreEqual(ExpectedModelsWithInjectedDefault, vm.Models);
+        Assert.AreEqual("gpt-5.1-codex-max", vm.SelectedModel);
     }
 
     [TestMethod]

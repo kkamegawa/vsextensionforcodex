@@ -608,12 +608,23 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             return;
         }
 
-        string[] modelIds = result.Models
+        var modelIds = result.Models
             .Select(model => model.Id)
             .Where(static id => !string.IsNullOrWhiteSpace(id))
             .Distinct(StringComparer.Ordinal)
-            .ToArray();
-        if (modelIds.Length == 0)
+            .ToList();
+
+        // The catalog default may be a hidden preset that the picker list excludes. Make sure it is
+        // still offered (and pre-selected) by inserting it at the top of the dropdown when missing.
+        bool defaultInjected = false;
+        if (!string.IsNullOrWhiteSpace(result.DefaultModel)
+            && !modelIds.Contains(result.DefaultModel!, StringComparer.Ordinal))
+        {
+            modelIds.Insert(0, result.DefaultModel!);
+            defaultInjected = true;
+        }
+
+        if (modelIds.Count == 0)
         {
             await ExtensionDiagnostics.WriteOutputAsync(
                 outputChannel,
@@ -623,10 +634,12 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
         string defaultModelLabel = string.IsNullOrWhiteSpace(result.DefaultModel)
             ? "(none reported)"
-            : result.DefaultModel!;
+            : defaultInjected
+                ? $"{result.DefaultModel} (added to list)"
+                : result.DefaultModel!;
         await ExtensionDiagnostics.WriteOutputAsync(
             outputChannel,
-            $"[CODEX MODELS] Available models ({modelIds.Length}): {string.Join(", ", modelIds)}. Default: {defaultModelLabel}.").ConfigureAwait(false);
+            $"[CODEX MODELS] Available models ({modelIds.Count}): {string.Join(", ", modelIds)}. Default: {defaultModelLabel}.").ConfigureAwait(false);
 
         await OnUiAsync(() =>
         {

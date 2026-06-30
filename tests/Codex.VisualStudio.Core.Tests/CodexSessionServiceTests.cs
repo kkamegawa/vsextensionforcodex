@@ -106,6 +106,52 @@ public sealed class CodexSessionServiceTests
     }
 
     [TestMethod]
+    public async Task ListModelsCapturesHiddenDefaultButExcludesItFromVisibleList()
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "model/list"
+                ? JsonSerializer.SerializeToElement(new
+                {
+                    data = new[]
+                    {
+                        new { model = "gpt-5-codex", displayName = "GPT-5 Codex", isDefault = false, hidden = false },
+                        new { model = "gpt-5", displayName = "GPT-5", isDefault = false, hidden = false },
+                        new { model = "gpt-5.1-codex-max", displayName = "GPT-5.1 Codex Max", isDefault = true, hidden = true },
+                    },
+                    nextCursor = (string?)null,
+                })
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        ListModelsResult result = await service.ListModelsAsync(CancellationToken.None);
+
+        CollectionAssert.AreEqual(ExpectedModels, result.Models.Select(model => model.Id).ToArray());
+        Assert.AreEqual("gpt-5.1-codex-max", result.DefaultModel);
+    }
+
+    [TestMethod]
+    public async Task ListModelsRequestsHiddenModels()
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "model/list"
+                ? JsonSerializer.SerializeToElement(new { data = Array.Empty<object>(), nextCursor = (string?)null })
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        await service.ListModelsAsync(CancellationToken.None);
+
+        RecordedRequest request = connection.Requests.Single(item => item.Method == "model/list");
+        JsonElement parameters = JsonSerializer.SerializeToElement(request.Parameters);
+        Assert.IsTrue(parameters.GetProperty("includeHidden").GetBoolean());
+    }
+
+    [TestMethod]
     public async Task ListModelsReturnsEmptyWhenAppServerDoesNotSupportMethod()
     {
         var connection = new RecordingConnection

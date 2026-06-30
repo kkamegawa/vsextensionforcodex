@@ -25,8 +25,10 @@ while (await Console.In.ReadLineAsync().ConfigureAwait(false) is { } line)
         {
             data = new[]
             {
-                new { model = "gpt-5-codex", displayName = "GPT-5 Codex", isDefault = true, hidden = false },
+                new { model = "gpt-5-codex", displayName = "GPT-5 Codex", isDefault = false, hidden = false },
                 new { model = "gpt-5", displayName = "GPT-5", isDefault = false, hidden = false },
+                // Hidden catalog default: filtered from the picker server-side but surfaced via isDefault.
+                new { model = "gpt-5.1-codex-max", displayName = "GPT-5.1 Codex Max", isDefault = true, hidden = true },
             },
             nextCursor = (string?)null,
         },
