@@ -26,6 +26,8 @@ public sealed class ViewModelTests
     private static readonly ApprovalDecision[] NoDecisions = [];
 
     private static readonly string[] ExpectedModes = ["Agent", "Chat"];
+    private static readonly string[] ExpectedWorkerModels = ["gpt-5-codex", "gpt-5"];
+    private static readonly string[] ExpectedModelsWithInjectedDefault = ["gpt-5.1-codex-max", "gpt-5-codex", "gpt-5"];
     private static readonly string[] CreativeOnly = ["Creative"];
     [TestMethod]
     public async Task ApprovalViewModel_ResolvesOnlyOnce()
@@ -1024,6 +1026,126 @@ public sealed class ViewModelTests
     }
 
     [TestMethod]
+    public async Task ChatViewModel_PopulateModels_UsesWorkerModelsAndDefault()
+    {
+        var bridge = new FakeWorkerBridge
+        {
+            ModelListResult = new ListModelsResult
+            {
+                Models =
+                [
+                    new ModelInfo { Id = "gpt-5-codex" },
+                    new ModelInfo { Id = "gpt-5" },
+                ],
+                DefaultModel = "gpt-5",
+            },
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false);
+
+        await vm.PopulateModelsAsync();
+
+        CollectionAssert.AreEqual(ExpectedWorkerModels, vm.Models);
+        Assert.AreEqual("gpt-5", vm.SelectedModel);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_PopulateModels_AddsDefaultModelMissingFromPickerList()
+    {
+        var bridge = new FakeWorkerBridge
+        {
+            ModelListResult = new ListModelsResult
+            {
+                Models =
+                [
+                    new ModelInfo { Id = "gpt-5-codex" },
+                    new ModelInfo { Id = "gpt-5" },
+                ],
+                DefaultModel = "gpt-5.1-codex-max",
+            },
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false);
+
+        await vm.PopulateModelsAsync();
+
+        CollectionAssert.AreEqual(ExpectedModelsWithInjectedDefault, vm.Models);
+        Assert.AreEqual("gpt-5.1-codex-max", vm.SelectedModel);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_PopulateModels_KeepsFallbackSeedsWhenWorkerReturnsEmpty()
+    {
+        var bridge = new FakeWorkerBridge { ModelListResult = new ListModelsResult() };
+        using var vm = new ChatViewModel(bridge, autoConnect: false);
+        string[] originalModels = vm.Models.ToArray();
+        string? originalSelection = vm.SelectedModel;
+
+        await vm.PopulateModelsAsync();
+
+        CollectionAssert.AreEqual(originalModels, vm.Models);
+        Assert.AreEqual(originalSelection, vm.SelectedModel);
+    }
+
+    [TestMethod]
+    [DataRow("Agent", null)]
+    [DataRow("Chat", "never")]
+    [DataRow("Unknown", null)]
+    public void ChatViewModel_MapModeToApprovalPolicy_MapsSupportedModes(string mode, string? expected)
+    {
+        Assert.AreEqual(expected, ChatViewModel.MapModeToApprovalPolicy(mode));
+    }
+
+    [TestMethod]
+    [DataRow("Agent", null)]
+    [DataRow("Chat", "readOnly")]
+    [DataRow("Unknown", null)]
+    public void ChatViewModel_MapModeToSandbox_MapsSupportedModes(string mode, string? expected)
+    {
+        Assert.AreEqual(expected, ChatViewModel.MapModeToSandbox(mode));
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_SendMessage_PassesSelectedModelAndModeToStartTurn()
+    {
+        var bridge = new FakeWorkerBridge();
+        using var vm = new ChatViewModel(bridge, autoConnect: false)
+        {
+            SelectedThread = new ThreadSummary { Id = "thread-1" },
+            SelectedModel = "gpt-5",
+            SelectedMode = "Chat",
+        };
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready });
+
+        await SendMessageAsync(vm, "hello", clearComposer: false);
+
+        Assert.IsNotNull(bridge.LastStartTurnRequest);
+        Assert.AreEqual("thread-1", bridge.LastStartTurnRequest!.ThreadId);
+        Assert.AreEqual("hello", bridge.LastStartTurnRequest.Text);
+        Assert.AreEqual("gpt-5", bridge.LastStartTurnRequest.Model);
+        Assert.AreEqual("never", bridge.LastStartTurnRequest.ApprovalPolicy);
+        Assert.AreEqual("readOnly", bridge.LastStartTurnRequest.SandboxMode);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_SendMessage_UsesAgentPresetForAgentMode()
+    {
+        var bridge = new FakeWorkerBridge();
+        using var vm = new ChatViewModel(bridge, autoConnect: false)
+        {
+            SelectedThread = new ThreadSummary { Id = "thread-1" },
+            SelectedModel = "gpt-5-codex",
+            SelectedMode = "Agent",
+        };
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready });
+
+        await SendMessageAsync(vm, "hello", clearComposer: false);
+
+        Assert.IsNotNull(bridge.LastStartTurnRequest);
+        Assert.AreEqual("gpt-5-codex", bridge.LastStartTurnRequest!.Model);
+        Assert.IsNull(bridge.LastStartTurnRequest.ApprovalPolicy);
+        Assert.IsNull(bridge.LastStartTurnRequest.SandboxMode);
+    }
+
+    [TestMethod]
     [DataRow("my-app", "my_app")]
     [DataRow("123", "_123")]
     [DataRow("---", "App")]
@@ -1128,6 +1250,16 @@ public sealed class ViewModelTests
         }
     }
 
+    private static Task SendMessageAsync(ChatViewModel viewModel, string text, bool clearComposer)
+    {
+        MethodInfo method = typeof(ChatViewModel).GetMethod(
+            "SendMessageAsync",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("Could not find SendMessageAsync.");
+
+        return (Task)method.Invoke(viewModel, [text, clearComposer])!;
+    }
+
     private static Task RaiseConversationEventAsync(ChatViewModel viewModel, ConversationEvent value)
     {
         MethodInfo method = typeof(ChatViewModel).GetMethod(
@@ -1143,4 +1275,75 @@ public sealed class ViewModelTests
         string itemId,
         ConversationEventKind kind)
         => viewModel.Items.Single(item => item.ItemId == itemId && item.Kind == kind);
+
+    private sealed class FakeWorkerBridge : IWorkerBridge
+    {
+        public event Func<WorkerStatus, Task>? StateChanged;
+
+        public event Func<AccountStatus, Task>? AccountChanged { add { } remove { } }
+
+        public event Func<ConversationEvent, Task>? ConversationEventReceived { add { } remove { } }
+
+        public event Func<ApprovalRequest, Task>? ApprovalRequested { add { } remove { } }
+
+        public event Func<string, Task>? ApprovalResolved { add { } remove { } }
+
+        public event Func<UserInputRequest, Task>? UserInputRequested { add { } remove { } }
+
+        public event Func<string, Task>? UserInputResolved { add { } remove { } }
+
+        public ListModelsResult ModelListResult { get; set; } = new();
+
+        public StartTurnRequest? LastStartTurnRequest { get; private set; }
+
+        public Task PublishStateAsync(WorkerStatus status)
+            => StateChanged?.Invoke(status) ?? Task.CompletedTask;
+
+        public Task<WorkerStatus> ConnectAsync(string workingDirectory, bool experimentalApi, CancellationToken cancellationToken)
+            => Task.FromResult(new WorkerStatus { State = WorkerConnectionState.Ready });
+
+        public Task<WorkerStatus> RestartAsync(CancellationToken cancellationToken)
+            => Task.FromResult(new WorkerStatus { State = WorkerConnectionState.Ready });
+
+        public Task<AccountStatus> GetAccountStatusAsync(CancellationToken cancellationToken)
+            => Task.FromResult(new AccountStatus { State = AccountState.SignedIn });
+
+        public Task<StartAccountLoginResult> StartAccountLoginAsync(CancellationToken cancellationToken)
+            => Task.FromResult(new StartAccountLoginResult());
+
+        public Task<AccountStatus> LogoutAccountAsync(CancellationToken cancellationToken)
+            => Task.FromResult(new AccountStatus { State = AccountState.SignedOut });
+
+        public Task<ThreadPage> ListThreadsAsync(string? cursor, CancellationToken cancellationToken)
+            => Task.FromResult(new ThreadPage());
+
+        public Task<ListModelsResult> ListModelsAsync(CancellationToken cancellationToken)
+            => Task.FromResult(ModelListResult);
+
+        public Task<ThreadSummary> StartThreadAsync(CancellationToken cancellationToken)
+            => Task.FromResult(new ThreadSummary { Id = "thread-1" });
+
+        public Task<ThreadSummary> ResumeThreadAsync(string threadId, CancellationToken cancellationToken)
+            => Task.FromResult(new ThreadSummary { Id = threadId });
+
+        public Task<string> StartTurnAsync(StartTurnRequest request, CancellationToken cancellationToken)
+        {
+            LastStartTurnRequest = request;
+            return Task.FromResult("turn-1");
+        }
+
+        public Task<string> SteerTurnAsync(SteerTurnRequest request, CancellationToken cancellationToken)
+            => Task.FromResult(request.ExpectedTurnId);
+
+        public Task InterruptTurnAsync(InterruptTurnRequest request, CancellationToken cancellationToken)
+            => Task.CompletedTask;
+
+        public Task ResolveApprovalAsync(ResolveApprovalRequest request, CancellationToken cancellationToken)
+            => Task.CompletedTask;
+
+        public Task ResolveUserInputAsync(ResolveUserInputRequest request, CancellationToken cancellationToken)
+            => Task.CompletedTask;
+
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    }
 }

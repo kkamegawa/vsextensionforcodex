@@ -38,6 +38,32 @@ public sealed class WorkerRpcServiceTests
         Assert.AreEqual("turn-1", published.TurnId);
     }
 
+    [TestMethod]
+    public async Task ListModels_DelegatesToSession()
+    {
+        var connection = new StubConnection
+        {
+            Handler = method => method == "model/list"
+                ? JsonSerializer.SerializeToElement(new
+                {
+                    data = new[] { new { model = "gpt-5-codex", isDefault = true } },
+                    nextCursor = (string?)null,
+                })
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+
+        var session = new CodexSessionService(new ApprovalPolicyEngine(new PathAccessPolicy()), new SecretRedactor());
+        await session.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        await using var worker = new WorkerRpcService(new SecretRedactor(), new FakeProcessHost(), session);
+
+        ListModelsResult result = await worker.ListModelsAsync(CancellationToken.None);
+
+        Assert.AreEqual(1, result.Models.Count);
+        Assert.AreEqual("gpt-5-codex", result.Models[0].Id);
+        Assert.AreEqual("gpt-5-codex", result.DefaultModel);
+    }
+
     private static WorkerOptions Options() => new()
     {
         WorkingDirectory = Path.GetTempPath(),

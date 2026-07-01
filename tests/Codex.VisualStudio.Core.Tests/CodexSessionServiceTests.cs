@@ -1,13 +1,20 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using Codex.AppServer.Protocol;
 using Codex.VisualStudio.Contracts;
 using Codex.VisualStudio.Worker;
+using StreamJsonRpc;
 
 namespace Codex.VisualStudio.Core.Tests;
 
 [TestClass]
 public sealed class CodexSessionServiceTests
 {
+    private static readonly JsonSerializerOptions WireJsonOptions = new(JsonSerializerDefaults.Web)
+    {
+        DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
+    };
+
+    private static readonly string[] ExpectedModels = ["gpt-5-codex", "gpt-5"];
     private static readonly string[] CreativeOnly = ["Creative"];
 
     [TestMethod]
@@ -38,6 +45,179 @@ public sealed class CodexSessionServiceTests
             new[] { "cli", "vscode", "appServer" },
             parameters.GetProperty("sourceKinds").EnumerateArray().Select(item => item.GetString()).ToArray());
         Assert.AreEqual("next", page.NextCursor);
+    }
+
+    [TestMethod]
+    public async Task ListModelsReturnsModelsAndDefault()
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "model/list"
+                ? JsonSerializer.SerializeToElement(new
+                {
+                    data = new[]
+                    {
+                        new { model = "gpt-5-codex", displayName = "GPT-5 Codex", isDefault = false },
+                        new { model = "gpt-5", displayName = "GPT-5", isDefault = true },
+                    },
+                    nextCursor = (string?)null,
+                })
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        ListModelsResult result = await service.ListModelsAsync(CancellationToken.None);
+
+        CollectionAssert.AreEqual(ExpectedModels, result.Models.Select(model => model.Id).ToArray());
+        Assert.AreEqual("GPT-5 Codex", result.Models[0].DisplayName);
+        Assert.AreEqual("gpt-5", result.DefaultModel);
+    }
+
+    [TestMethod]
+    public async Task ListModelsDropsMalformedHiddenAndDuplicateModels()
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "model/list"
+                ? JsonSerializer.SerializeToElement(new
+                {
+                    data = new object[]
+                    {
+                        new { model = "gpt-5-codex" },
+                        new { model = "gpt-5-codex" },
+                        new { model = "" },
+                        new { model = "bad\rmodel" },
+                        new { model = "hidden-model", hidden = true },
+                        new { displayName = "No model id" },
+                        new { model = "gpt-5" },
+                    },
+                    defaultModel = "missing",
+                })
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        ListModelsResult result = await service.ListModelsAsync(CancellationToken.None);
+
+        CollectionAssert.AreEqual(ExpectedModels, result.Models.Select(model => model.Id).ToArray());
+        Assert.IsNull(result.DefaultModel);
+    }
+
+    [TestMethod]
+    public async Task ListModelsCapturesHiddenDefaultButExcludesItFromVisibleList()
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "model/list"
+                ? JsonSerializer.SerializeToElement(new
+                {
+                    data = new[]
+                    {
+                        new { model = "gpt-5-codex", displayName = "GPT-5 Codex", isDefault = false, hidden = false },
+                        new { model = "gpt-5", displayName = "GPT-5", isDefault = false, hidden = false },
+                        new { model = "gpt-5.1-codex-max", displayName = "GPT-5.1 Codex Max", isDefault = true, hidden = true },
+                    },
+                    nextCursor = (string?)null,
+                })
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        ListModelsResult result = await service.ListModelsAsync(CancellationToken.None);
+
+        CollectionAssert.AreEqual(ExpectedModels, result.Models.Select(model => model.Id).ToArray());
+        Assert.AreEqual("gpt-5.1-codex-max", result.DefaultModel);
+    }
+
+    [TestMethod]
+    public async Task ListModelsRequestsHiddenModels()
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "model/list"
+                ? JsonSerializer.SerializeToElement(new { data = Array.Empty<object>(), nextCursor = (string?)null })
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        await service.ListModelsAsync(CancellationToken.None);
+
+        RecordedRequest request = connection.Requests.Single(item => item.Method == "model/list");
+        JsonElement parameters = JsonSerializer.SerializeToElement(request.Parameters);
+        Assert.IsTrue(parameters.GetProperty("includeHidden").GetBoolean());
+    }
+
+    [TestMethod]
+    public async Task ListModelsReturnsEmptyWhenAppServerDoesNotSupportMethod()
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "model/list"
+                ? throw new JsonRpcRemoteException(-32601, "Method not found")
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        ListModelsResult result = await service.ListModelsAsync(CancellationToken.None);
+
+        Assert.AreEqual(0, result.Models.Count);
+        Assert.IsNull(result.DefaultModel);
+    }
+
+    [TestMethod]
+    public async Task StartTurnForwardsModelAndModeOverridesWhenSet()
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "turn/start"
+                ? JsonSerializer.SerializeToElement(new { turn = new { id = "turn-1" } })
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        await service.StartTurnAsync(
+            new StartTurnRequest
+            {
+                ThreadId = "thread-1",
+                Text = "hello",
+                Model = "gpt-5",
+                ApprovalPolicy = "never",
+                SandboxMode = "readOnly",
+            },
+            CancellationToken.None);
+
+        RecordedRequest request = connection.Requests.Single(item => item.Method == "turn/start");
+        JsonElement parameters = JsonSerializer.SerializeToElement(request.Parameters, WireJsonOptions);
+        Assert.AreEqual("gpt-5", parameters.GetProperty("model").GetString());
+        Assert.AreEqual("never", parameters.GetProperty("approvalPolicy").GetString());
+        Assert.AreEqual("readOnly", parameters.GetProperty("sandboxPolicy").GetProperty("type").GetString());
+    }
+
+    [TestMethod]
+    public async Task StartTurnOmitsModelAndModeOverridesWhenUnset()
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "turn/start"
+                ? JsonSerializer.SerializeToElement(new { turn = new { id = "turn-1" } })
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        await service.StartTurnAsync(new StartTurnRequest { ThreadId = "thread-1", Text = "hello" }, CancellationToken.None);
+
+        RecordedRequest request = connection.Requests.Single(item => item.Method == "turn/start");
+        JsonElement parameters = JsonSerializer.SerializeToElement(request.Parameters, WireJsonOptions);
+        Assert.IsFalse(parameters.TryGetProperty("model", out _));
+        Assert.IsFalse(parameters.TryGetProperty("approvalPolicy", out _));
+        Assert.IsFalse(parameters.TryGetProperty("sandboxPolicy", out _));
     }
 
     [TestMethod]

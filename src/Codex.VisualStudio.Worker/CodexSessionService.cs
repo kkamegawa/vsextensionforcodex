@@ -39,6 +39,8 @@ public interface ICodexSessionService : IAsyncDisposable
 
     Task<ThreadPage> ListThreadsAsync(string? cursor, CancellationToken cancellationToken);
 
+    Task<ListModelsResult> ListModelsAsync(CancellationToken cancellationToken);
+
     Task<string> StartTurnAsync(StartTurnRequest request, CancellationToken cancellationToken);
 
     Task<string> SteerTurnAsync(SteerTurnRequest request, CancellationToken cancellationToken);
@@ -275,11 +277,42 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         };
     }
 
+    public async Task<ListModelsResult> ListModelsAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            JsonElement result = await RequireConnection().SendRequestAsync(
+                "model/list",
+                // Include hidden models so the catalog default (which may be a hidden preset and
+                // is otherwise filtered out server-side) can still be surfaced in the picker.
+                new { includeHidden = true },
+                TimeSpan.FromSeconds(15),
+                cancellationToken).ConfigureAwait(false);
+            return ReadModelsResult(result);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            WorkerDiagnostics.Write("app-server model list request failed; keeping fallback models", ex);
+            return new ListModelsResult();
+        }
+    }
+
     public async Task<string> StartTurnAsync(StartTurnRequest request, CancellationToken cancellationToken)
     {
         JsonElement result = await SendAsync(
             "turn/start",
-            new { threadId = request.ThreadId, input = new[] { new { type = "text", text = request.Text } } },
+            new
+            {
+                threadId = request.ThreadId,
+                input = new[] { new { type = "text", text = request.Text } },
+                model = request.Model,
+                approvalPolicy = request.ApprovalPolicy,
+                sandboxPolicy = request.SandboxMode is null ? null : new { type = request.SandboxMode },
+            },
             cancellationToken).ConfigureAwait(false);
         ActiveThreadId = request.ThreadId;
         ActiveTurnId = result.GetProperty("turn").GetProperty("id").GetString();
@@ -736,11 +769,100 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         UpdatedAt = thread.TryGetProperty("updatedAt", out JsonElement updated) && updated.TryGetInt64(out long value) ? value : null,
     };
 
+    private ListModelsResult ReadModelsResult(JsonElement result)
+    {
+        var models = new List<ModelInfo>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        string? defaultModel = null;
+
+        // The codex app-server model/list response uses "data"; tolerate a legacy "models" key as well.
+        if ((result.TryGetProperty("data", out JsonElement modelArray)
+                || result.TryGetProperty("models", out modelArray))
+            && modelArray.ValueKind == JsonValueKind.Array)
+        {
+            foreach (JsonElement model in modelArray.EnumerateArray())
+            {
+                if (model.ValueKind != JsonValueKind.Object)
+                {
+                    continue;
+                }
+
+                // The "model" field carries the slug used for turn/start; fall back to "id" for older shapes.
+                string? id = NormalizeModelId(GetString(model, "model") ?? GetString(model, "id"));
+                if (id is null)
+                {
+                    continue;
+                }
+
+                // Capture the catalog default even when it is hidden, so the picker can still offer it.
+                if (defaultModel is null && GetBool(model, "isDefault") == true)
+                {
+                    defaultModel = id;
+                }
+
+                if (GetBool(model, "hidden") == true)
+                {
+                    continue;
+                }
+
+                if (!seen.Add(id))
+                {
+                    continue;
+                }
+
+                string? displayName = GetString(model, "displayName");
+                models.Add(new ModelInfo
+                {
+                    Id = id,
+                    DisplayName = displayName is null ? null : redactor.Redact(displayName),
+                });
+            }
+        }
+
+        // Fall back to a top-level "defaultModel" key when no entry was flagged as default.
+        if (defaultModel is null)
+        {
+            string? topLevelDefault = NormalizeModelId(GetString(result, "defaultModel"));
+            if (topLevelDefault is not null && seen.Contains(topLevelDefault))
+            {
+                defaultModel = topLevelDefault;
+            }
+        }
+
+        WorkerDiagnostics.Write($"app-server model list parsed; count={models.Count} default={defaultModel ?? "(none)"}");
+
+        return new ListModelsResult
+        {
+            Models = models,
+            DefaultModel = defaultModel,
+        };
+    }
+
+    private static string? NormalizeModelId(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        string trimmed = value.Trim();
+        return trimmed.Length <= 128 && trimmed.All(character => !char.IsControl(character))
+            ? trimmed
+            : null;
+    }
+
     private static string? GetString(JsonElement element, string name)
         => element.ValueKind == JsonValueKind.Object
             && element.TryGetProperty(name, out JsonElement property)
             && property.ValueKind == JsonValueKind.String
                 ? property.GetString()
+                : null;
+
+    private static bool? GetBool(JsonElement element, string name)
+        => element.ValueKind == JsonValueKind.Object
+            && element.TryGetProperty(name, out JsonElement property)
+            && (property.ValueKind == JsonValueKind.True || property.ValueKind == JsonValueKind.False)
+                ? property.GetBoolean()
                 : null;
 
     private static string ToWireDecision(ApprovalDecision decision) => decision switch

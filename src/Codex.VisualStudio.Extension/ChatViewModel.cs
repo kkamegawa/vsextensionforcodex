@@ -20,7 +20,7 @@ namespace Codex.VisualStudio.Extension;
 [DataContract]
 public sealed class ChatViewModel : ObservableObject, IDisposable
 {
-    private readonly WorkerBridge bridge;
+    private readonly IWorkerBridge bridge;
     private readonly OutputChannel? outputChannel;
     private readonly SafeMarkdownService markdown = new();
     private readonly CancellationTokenSource lifetime = new();
@@ -46,11 +46,20 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     private string selectedMode = "Agent";
 
     public ChatViewModel(OutputChannel? outputChannel = null, VisualStudioExtensibility? extensibility = null)
+        : this(new WorkerBridge(outputChannel), outputChannel, extensibility, autoConnect: true)
     {
+    }
+
+    internal ChatViewModel(
+        IWorkerBridge bridge,
+        OutputChannel? outputChannel = null,
+        VisualStudioExtensibility? extensibility = null,
+        bool autoConnect = true)
+    {
+        this.bridge = bridge;
         this.outputChannel = outputChannel;
         workspaceDirectoryResolver = new WorkspaceDirectoryResolver(extensibility);
         projectScaffolder = new ProjectScaffolder(extensibility);
-        bridge = new WorkerBridge(outputChannel);
         bridge.StateChanged += OnStateChangedAsync;
         bridge.AccountChanged += OnAccountChangedAsync;
         bridge.ConversationEventReceived += OnConversationEventAsync;
@@ -84,12 +93,13 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             new SuggestionChip("Write unit tests for this file", UseSuggestionAsync),
         ];
 
-        // TODO(issue): replace these placeholders by querying codex app-server for the
-        // available models. There is no backend RPC for this yet, so the picker is a stub.
         Models = ["gpt-5-codex", "gpt-5"];
         selectedModel = Models[0];
 
-        _ = TryAutoConnectAsync();
+        if (autoConnect)
+        {
+            _ = TryAutoConnectAsync();
+        }
     }
 
     [DataMember]
@@ -284,7 +294,6 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     [DataMember]
     public ObservableCollection<SuggestionChip> Suggestions { get; }
 
-    // TODO(issue): populate from codex app-server available models (no backend RPC yet).
     [DataMember]
     public ObservableCollection<string> Models { get; }
 
@@ -295,7 +304,6 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         set => SetProperty(ref selectedModel, value);
     }
 
-    // TODO(issue): the agent/chat mode has no backend effect yet — this is a UI stub.
     [DataMember]
     public ObservableCollection<string> Modes { get; } = ["Agent", "Chat"];
 
@@ -495,13 +503,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             if (result.State == WorkerConnectionState.Ready)
             {
                 initialized = true;
-                AccountStatus accountStatus = await bridge.GetAccountStatusAsync(lifetime.Token).ConfigureAwait(false);
-                ExtensionDiagnostics.Write($"Initial account status received state={accountStatus.State} plan={accountStatus.PlanType ?? "none"}");
-                await OnUiAsync(() =>
-                {
-                    UpdateAccount(accountStatus);
-                }).ConfigureAwait(false);
-                await LoadMoreAsync().ConfigureAwait(false);
+                await RefreshReadyStateAsync(reloadThreads: false).ConfigureAwait(false);
             }
 
             return result.State == WorkerConnectionState.Ready;
@@ -518,13 +520,26 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         await OnUiAsync(() => Status = result).ConfigureAwait(false);
         if (result.State == WorkerConnectionState.Ready)
         {
-            AccountStatus accountStatus = await bridge.GetAccountStatusAsync(lifetime.Token).ConfigureAwait(false);
-            ExtensionDiagnostics.Write($"Restart account status received state={accountStatus.State} plan={accountStatus.PlanType ?? "none"}");
-            await OnUiAsync(() =>
-            {
-                UpdateAccount(accountStatus);
-            }).ConfigureAwait(false);
+            await RefreshReadyStateAsync(reloadThreads: true).ConfigureAwait(false);
+        }
+    }
+
+    private async Task RefreshReadyStateAsync(bool reloadThreads)
+    {
+        AccountStatus accountStatus = await bridge.GetAccountStatusAsync(lifetime.Token).ConfigureAwait(false);
+        ExtensionDiagnostics.Write($"Account status received state={accountStatus.State} plan={accountStatus.PlanType ?? "none"}");
+        await OnUiAsync(() =>
+        {
+            UpdateAccount(accountStatus);
+        }).ConfigureAwait(false);
+        await PopulateModelsAsync().ConfigureAwait(false);
+        if (reloadThreads)
+        {
             await ReloadThreadsAsync().ConfigureAwait(false);
+        }
+        else
+        {
+            await LoadMoreAsync().ConfigureAwait(false);
         }
     }
 
@@ -571,6 +586,83 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         await OnUiAsync(Threads.Clear).ConfigureAwait(false);
         nextCursor = null;
         await LoadMoreAsync().ConfigureAwait(false);
+    }
+
+    internal async Task PopulateModelsAsync()
+    {
+        ListModelsResult result;
+        try
+        {
+            result = await bridge.ListModelsAsync(lifetime.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+        {
+            return;
+        }
+        catch (Exception ex)
+        {
+            ExtensionDiagnostics.Write("Model list refresh failed; keeping fallback models", ex);
+            await ExtensionDiagnostics.WriteOutputAsync(
+                outputChannel,
+                "[CODEX MODELS] Failed to query the app-server model list; keeping the built-in fallback models.").ConfigureAwait(false);
+            return;
+        }
+
+        var modelIds = result.Models
+            .Select(model => model.Id)
+            .Where(static id => !string.IsNullOrWhiteSpace(id))
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+
+        // The catalog default may be a hidden preset that the picker list excludes. Make sure it is
+        // still offered (and pre-selected) by inserting it at the top of the dropdown when missing.
+        bool defaultInjected = false;
+        if (!string.IsNullOrWhiteSpace(result.DefaultModel)
+            && !modelIds.Contains(result.DefaultModel!, StringComparer.Ordinal))
+        {
+            modelIds.Insert(0, result.DefaultModel!);
+            defaultInjected = true;
+        }
+
+        if (modelIds.Count == 0)
+        {
+            await ExtensionDiagnostics.WriteOutputAsync(
+                outputChannel,
+                "[CODEX MODELS] The app-server returned no models; keeping the built-in fallback models.").ConfigureAwait(false);
+            return;
+        }
+
+        string defaultModelLabel = string.IsNullOrWhiteSpace(result.DefaultModel)
+            ? "(none reported)"
+            : defaultInjected
+                ? $"{result.DefaultModel} (added to list)"
+                : result.DefaultModel!;
+        await ExtensionDiagnostics.WriteOutputAsync(
+            outputChannel,
+            $"[CODEX MODELS] Available models ({modelIds.Count}): {string.Join(", ", modelIds)}. Default: {defaultModelLabel}.").ConfigureAwait(false);
+
+        await OnUiAsync(() =>
+        {
+            string? previousSelection = SelectedModel;
+            Models.Clear();
+            foreach (string modelId in modelIds)
+            {
+                Models.Add(modelId);
+            }
+
+            if (result.DefaultModel is not null && Models.Contains(result.DefaultModel))
+            {
+                SelectedModel = result.DefaultModel;
+            }
+            else if (previousSelection is not null && Models.Contains(previousSelection))
+            {
+                SelectedModel = previousSelection;
+            }
+            else
+            {
+                SelectedModel = Models[0];
+            }
+        }).ConfigureAwait(false);
     }
 
     private async Task SendAsync()
@@ -625,7 +717,16 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         if (Status.TurnId is null)
         {
             await OnUiAsync(() => Items.Add(new ChatItemViewModel("You", markdown.ToSafeText(text), ConversationEventKind.ItemStarted))).ConfigureAwait(false);
-            await bridge.StartTurnAsync(new StartTurnRequest { ThreadId = SelectedThread.Id, Text = text }, lifetime.Token).ConfigureAwait(false);
+            await bridge.StartTurnAsync(
+                new StartTurnRequest
+                {
+                    ThreadId = SelectedThread.Id,
+                    Text = text,
+                    Model = SelectedModel,
+                    ApprovalPolicy = MapModeToApprovalPolicy(SelectedMode),
+                    SandboxMode = MapModeToSandbox(SelectedMode),
+                },
+                lifetime.Token).ConfigureAwait(false);
         }
         else
         {
@@ -640,6 +741,15 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         SetComposerText(text);
         return Task.CompletedTask;
     }
+
+    // Agent/Chat mode is a per-turn preset over the codex app-server approval policy and sandbox.
+    // Chat: conversation only (read-only sandbox, approvals never prompted so no edits run).
+    // Agent/unknown: omit the overrides so the app-server defaults apply to the turn.
+    internal static string? MapModeToApprovalPolicy(string? mode)
+        => string.Equals(mode, "Chat", StringComparison.Ordinal) ? "never" : null;
+
+    internal static string? MapModeToSandbox(string? mode)
+        => string.Equals(mode, "Chat", StringComparison.Ordinal) ? "readOnly" : null;
 
     // TODO(issue): wire to a real file/context attach picker. Stubbed for now so the
     // composer + button is present without a backend dependency.
