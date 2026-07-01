@@ -901,8 +901,8 @@
                       ToolTip="Model"
                       ItemsSource="{Binding Models}" SelectedItem="{Binding SelectedModel}" />
             <CheckBox DockPanel.Dock="Left" Margin="8,0,0,0" VerticalAlignment="Center"
-                      Content="Choices"
-                      ToolTip="Show codex's confirmation/choice prompts as a selection card at the bottom"
+                      Content="Experimental API"
+                      ToolTip="Enable codex experimental APIs for structured prompts after reconnect; natural-language confirmation cards are detected locally."
                       Foreground="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowTextBrushKey}}"
                       IsChecked="{Binding ExperimentalApiEnabled, Mode=TwoWay}" />
 

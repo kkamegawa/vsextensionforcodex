@@ -29,6 +29,7 @@ The publisher is `kazushikamegawa`. The VSIX identifier is `Kkamegawa.CodexForVi
 - Safe text rendering that removes HTML tags, ANSI escapes, and control characters
 - Structured block rendering for agent/reasoning markdown with ordered-list numbering and nested-list indentation (capped at two extra indent steps)
 - Result-only transcript lines after approval and choice resolution ("Accepted — <target>", "Selected — <option>"), sanitized through SafeMarkdownService
+- Local prose prompt detection for natural-language numbered choices and yes/no confirmation questions, independent of the experimental API toggle
 - Pixel-based transcript scrolling (VirtualizingPanel.ScrollUnit=Pixel) to avoid variable-height item jumps
 - VSIX packaging with PkgDef, WPF package dependencies, .NET 8 worker, and worker dependencies
 

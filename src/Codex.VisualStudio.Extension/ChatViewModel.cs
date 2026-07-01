@@ -33,7 +33,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     private readonly Dictionary<string, StringBuilder> itemRawText = new(StringComparer.Ordinal);
     private UserInputViewModel? activeUserInput;
     private ApprovalViewModel? activeApproval;
-    private string? lastAgentItemId;
+    private string? lastAgentRawKey;
     private int disposed;
     private int connecting;
     private WorkerStatus status = new() { State = WorkerConnectionState.Disconnected, Message = "Open Codex to connect." };
@@ -164,10 +164,9 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         _ => $"{userInputQueue.Count} choices waiting",
     };
 
-    // Opt-in "Choices": surface codex's confirmation/choice prompts as a selection card. codex only
-    // emits the structured request_user_input tool in Plan mode, so in Agent mode this drives the
-    // prose detector (TryDetectChoicePrompt) — a purely client-side concern, so no reconnect is needed.
-    // The flag is still sent at the next connect so the structured path also works if Plan mode is used.
+    // Opt-in structured API support. Natural-language confirmation/choice prompts are detected
+    // locally regardless of this flag; this setting only asks codex to expose experimental
+    // request_user_input APIs on the next connect.
     [DataMember]
     public bool ExperimentalApiEnabled
     {
@@ -849,10 +848,10 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 case ConversationEventKind.TurnStarted:
                     agentRawText.Clear();
                     itemRawText.Clear();
-                    lastAgentItemId = null;
+                    lastAgentRawKey = null;
                     break;
-                case ConversationEventKind.AgentMessageDelta when !string.IsNullOrEmpty(value.Text) && value.ItemId is not null:
-                    AppendAgentRaw(value.ItemId, value.Text);
+                case ConversationEventKind.AgentMessageDelta when !string.IsNullOrEmpty(value.Text):
+                    AppendAgentRaw(GetAgentRawKey(value), value.Text);
                     break;
                 case ConversationEventKind.TurnCompleted:
                     TryDetectChoicePrompt();
@@ -1110,19 +1109,15 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     }
 
     // Accumulate the raw (pre-markdown-stripping) agent text per item so a completed message can be
-    // inspected for a choice prompt. Gated on the opt-in toggle so detection is off by default.
-    private void AppendAgentRaw(string itemId, string rawChunk)
+    // inspected for a choice prompt. This is local-only; the experimental flag controls only server
+    // request_user_input capability negotiation.
+    private void AppendAgentRaw(string key, string rawChunk)
     {
-        if (!settings.ExperimentalApiEnabled)
-        {
-            return;
-        }
-
-        lastAgentItemId = itemId;
-        if (!agentRawText.TryGetValue(itemId, out StringBuilder? builder))
+        lastAgentRawKey = key;
+        if (!agentRawText.TryGetValue(key, out StringBuilder? builder))
         {
             builder = new StringBuilder();
-            agentRawText[itemId] = builder;
+            agentRawText[key] = builder;
         }
 
         // Choice prompts are small; cap accumulation so a long message can't grow memory unbounded.
@@ -1136,20 +1131,23 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     // last agent message into the same single-card selection UI.
     private void TryDetectChoicePrompt()
     {
-        if (!settings.ExperimentalApiEnabled || lastAgentItemId is null)
+        if (lastAgentRawKey is null)
         {
             return;
         }
 
-        agentRawText.TryGetValue(lastAgentItemId, out StringBuilder? builder);
+        agentRawText.TryGetValue(lastAgentRawKey, out StringBuilder? builder);
         string raw = builder?.ToString() ?? string.Empty;
         agentRawText.Clear();
-        lastAgentItemId = null;
+        lastAgentRawKey = null;
         if (ChoicePromptParser.TryParse(raw, out UserInputRequest synthesized))
         {
             EnqueueUserInput(new UserInputViewModel(synthesized, ResolveSyntheticUserInputAsync, markdown) { IsSynthetic = true });
         }
     }
+
+    private static string GetAgentRawKey(ConversationEvent value)
+        => value.ItemId ?? value.TurnId ?? "global-agent-message";
 
     private async Task SignInAsync()
     {
@@ -1875,8 +1873,8 @@ public sealed class UserInputQuestionViewModel : ObservableObject
     public UserInputQuestionViewModel(UserInputQuestion question, SafeMarkdownService markdown)
     {
         Id = question.Id;
-        Header = markdown.ToSafeText(question.Header);
-        Question = markdown.ToSafeText(question.Question);
+        Header = markdown.ToSafeText(question.Header).Trim();
+        Question = markdown.ToSafeText(question.Question).Trim();
         Options = new ObservableCollection<UserInputOptionViewModel>(
             question.Options.Select(option => new UserInputOptionViewModel(option, markdown, OnOptionSelected)));
     }
@@ -1919,8 +1917,8 @@ public sealed class UserInputOptionViewModel : ObservableObject
         // Label is echoed back verbatim so it matches the server's option; DisplayLabel is the
         // sanitized text actually rendered.
         Label = option.Label;
-        DisplayLabel = markdown.ToSafeText(option.Label);
-        Description = markdown.ToSafeText(option.Description);
+        DisplayLabel = markdown.ToSafeText(option.Label).Trim();
+        Description = markdown.ToSafeText(option.Description).Trim();
     }
 
     // Not a DataMember: the raw value, never rendered, only submitted back to the app-server.

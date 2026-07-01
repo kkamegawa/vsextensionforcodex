@@ -5,10 +5,10 @@ namespace Codex.VisualStudio.Extension;
 
 // Heuristic detector for choice-style prompts that codex writes as prose. In Agent/Default mode the
 // structured request_user_input tool is unavailable (codex only offers it in Plan mode), so the model
-// asks "which option?" as ordinary assistant text. This recognizes a question followed by a numbered
-// option list and synthesizes a single-question UserInputRequest, letting the same selection card be
-// reused. It is deliberately conservative — a question mark plus at least two numbered items — because
-// a false positive only adds a dismissible card.
+// asks "which option?" as ordinary assistant text. This recognizes either a question followed by a
+// numbered option list or a confirmation question and synthesizes a single-question UserInputRequest,
+// letting the same selection card be reused. It is deliberately conservative because a false positive
+// only adds a dismissible card.
 public static partial class ChoicePromptParser
 {
     private const int MaxOptions = 12;
@@ -29,6 +29,12 @@ public static partial class ChoicePromptParser
         }
 
         string[] lines = rawText.Replace("\r\n", "\n").Split('\n');
+        string? question = FindQuestionLine(lines);
+        if (question is null)
+        {
+            return false;
+        }
+
         var options = new List<UserInputOption>();
         foreach (string line in lines)
         {
@@ -45,12 +51,27 @@ public static partial class ChoicePromptParser
             }
         }
 
-        if (options.Count is < 2 or > MaxOptions)
+        if (options.Count is >= 2 and <= MaxOptions)
         {
-            return false;
+            request = CreateRequest(question, options);
+            return true;
         }
 
-        request = new UserInputRequest
+        if (options.Count == 0 && ConfirmationQuestion().IsMatch(rawText))
+        {
+            request = CreateRequest(question,
+            [
+                new UserInputOption { Label = "Yes", Description = string.Empty },
+                new UserInputOption { Label = "No", Description = string.Empty },
+            ]);
+            return true;
+        }
+
+        return false;
+    }
+
+    private static UserInputRequest CreateRequest(string question, IReadOnlyList<UserInputOption> options)
+        => new()
         {
             RequestId = "choice-" + Guid.NewGuid().ToString("N"),
             Questions =
@@ -59,13 +80,11 @@ public static partial class ChoicePromptParser
                 {
                     Id = "choice",
                     Header = string.Empty,
-                    Question = FindQuestionLine(lines) ?? "Select an option",
+                    Question = question,
                     Options = options,
                 },
             ],
         };
-        return true;
-    }
 
     // The last non-list line that ends with a question mark reads as the prompt.
     private static string? FindQuestionLine(string[] lines)
@@ -94,6 +113,9 @@ public static partial class ChoicePromptParser
 
     [GeneratedRegex(@"^\s*\d{1,2}[.)）、]\s+(.+?)\s*$")]
     private static partial Regex NumberedItem();
+
+    [GeneratedRegex(@"\b(?:proceed|continue|ok(?:ay)?\s+to|should\s+i|shall\s+i|do\s+you\s+want)\b|よいですか|いいですか|よろしいですか|進めて(?:よい|いい|もよい|もいい)|進めますか|続けますか", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex ConfirmationQuestion();
 
     [GeneratedRegex(@"[*_`]{1,2}([^*_`]+)[*_`]{1,2}")]
     private static partial Regex Emphasis();

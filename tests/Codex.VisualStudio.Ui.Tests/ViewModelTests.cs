@@ -219,6 +219,24 @@ public sealed class ViewModelTests
     }
 
     [TestMethod]
+    public void ChoicePromptParser_DetectsJapaneseConfirmationQuestion()
+    {
+        string text = string.Join('\n',
+            "既存プロジェクトに LICENSE がありませんでした。AGENTS.md の指示により、作業開始前に確認が必要です。",
+            "MIT ライセンスで進めてよいですか？",
+            "MIT 以外にする場合は、使用するライセンス名を指定してください。");
+
+        bool ok = ChoicePromptParser.TryParse(text, out UserInputRequest request);
+
+        Assert.IsTrue(ok);
+        Assert.AreEqual(1, request.Questions.Count);
+        Assert.AreEqual("MIT ライセンスで進めてよいですか？", request.Questions[0].Question);
+        Assert.AreEqual(2, request.Questions[0].Options.Count);
+        Assert.AreEqual("Yes", request.Questions[0].Options[0].Label);
+        Assert.AreEqual("No", request.Questions[0].Options[1].Label);
+    }
+
+    [TestMethod]
     [DataRow("Here are the steps:\n1. Build\n2. Test\n3. Ship", DisplayName = "numbered list without a question")]
     [DataRow("Which one?\n1. Only one option", DisplayName = "question with a single option")]
     [DataRow("Just a sentence with no list?", DisplayName = "question without options")]
@@ -226,6 +244,32 @@ public sealed class ViewModelTests
     public void ChoicePromptParser_RejectsNonChoiceText(string text)
     {
         Assert.IsFalse(ChoicePromptParser.TryParse(text, out _));
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_ProseConfirmationPrompt_ShowsCardWithoutExperimentalApi()
+    {
+        using var vm = new ChatViewModel(new FakeWorkerBridge(), autoConnect: false);
+        ExtensionSettings settings = GetSettings(vm);
+        settings.ExperimentalApiEnabled = false;
+
+        await RaiseConversationEventAsync(vm, new ConversationEvent { Kind = ConversationEventKind.TurnStarted });
+        await RaiseConversationEventAsync(vm, new ConversationEvent
+        {
+            Kind = ConversationEventKind.AgentMessageDelta,
+            Text = string.Join('\n',
+                "既存プロジェクトに LICENSE がありませんでした。",
+                "MIT ライセンスで進めてよいですか？",
+                "MIT 以外にする場合は、使用するライセンス名を指定してください。"),
+        });
+        await RaiseConversationEventAsync(vm, new ConversationEvent { Kind = ConversationEventKind.TurnCompleted });
+
+        Assert.IsTrue(vm.HasActiveUserInput);
+        Assert.IsNotNull(vm.ActiveUserInput);
+        Assert.IsTrue(vm.ActiveUserInput!.IsSynthetic);
+        Assert.AreEqual(2, vm.ActiveUserInput.Questions[0].Options.Count);
+        Assert.AreEqual("Yes", vm.ActiveUserInput.Questions[0].Options[0].DisplayLabel);
+        Assert.AreEqual("No", vm.ActiveUserInput.Questions[0].Options[1].DisplayLabel);
     }
 
     [TestMethod]
@@ -1398,6 +1442,16 @@ public sealed class ViewModelTests
             ?? throw new InvalidOperationException("Could not find OnConversationEventAsync.");
 
         return (Task)method.Invoke(viewModel, [value])!;
+    }
+
+    private static ExtensionSettings GetSettings(ChatViewModel viewModel)
+    {
+        FieldInfo field = typeof(ChatViewModel).GetField(
+            "settings",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("Could not find settings.");
+
+        return (ExtensionSettings)field.GetValue(viewModel)!;
     }
 
     private static ChatItemViewModel SingleConversationItem(
