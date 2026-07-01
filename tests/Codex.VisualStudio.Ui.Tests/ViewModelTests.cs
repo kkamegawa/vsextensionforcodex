@@ -1086,18 +1086,18 @@ public sealed class ViewModelTests
     }
 
     [TestMethod]
-    [DataRow("Agent", "on-request")]
+    [DataRow("Agent", null)]
     [DataRow("Chat", "never")]
-    [DataRow("Unknown", "on-request")]
+    [DataRow("Unknown", null)]
     public void ChatViewModel_MapModeToApprovalPolicy_MapsSupportedModes(string mode, string? expected)
     {
         Assert.AreEqual(expected, ChatViewModel.MapModeToApprovalPolicy(mode));
     }
 
     [TestMethod]
-    [DataRow("Agent", "workspaceWrite")]
+    [DataRow("Agent", null)]
     [DataRow("Chat", "readOnly")]
-    [DataRow("Unknown", "workspaceWrite")]
+    [DataRow("Unknown", null)]
     public void ChatViewModel_MapModeToSandbox_MapsSupportedModes(string mode, string? expected)
     {
         Assert.AreEqual(expected, ChatViewModel.MapModeToSandbox(mode));
@@ -1141,8 +1141,8 @@ public sealed class ViewModelTests
 
         Assert.IsNotNull(bridge.LastStartTurnRequest);
         Assert.AreEqual("gpt-5-codex", bridge.LastStartTurnRequest!.Model);
-        Assert.AreEqual("on-request", bridge.LastStartTurnRequest.ApprovalPolicy);
-        Assert.AreEqual("workspaceWrite", bridge.LastStartTurnRequest.SandboxMode);
+        Assert.IsNull(bridge.LastStartTurnRequest.ApprovalPolicy);
+        Assert.IsNull(bridge.LastStartTurnRequest.SandboxMode);
     }
 
     [TestMethod]

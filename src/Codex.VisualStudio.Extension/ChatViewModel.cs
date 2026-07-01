@@ -743,13 +743,13 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     }
 
     // Agent/Chat mode is a per-turn preset over the codex app-server approval policy and sandbox.
-    // Agent: standard agent capability (workspace-write sandbox, on-request approvals).
     // Chat: conversation only (read-only sandbox, approvals never prompted so no edits run).
+    // Agent/unknown: omit the overrides so the app-server defaults apply to the turn.
     internal static string? MapModeToApprovalPolicy(string? mode)
-        => string.Equals(mode, "Chat", StringComparison.Ordinal) ? "never" : "on-request";
+        => string.Equals(mode, "Chat", StringComparison.Ordinal) ? "never" : null;
 
     internal static string? MapModeToSandbox(string? mode)
-        => string.Equals(mode, "Chat", StringComparison.Ordinal) ? "readOnly" : "workspaceWrite";
+        => string.Equals(mode, "Chat", StringComparison.Ordinal) ? "readOnly" : null;
 
     // TODO(issue): wire to a real file/context attach picker. Stubbed for now so the
     // composer + button is present without a backend dependency.
