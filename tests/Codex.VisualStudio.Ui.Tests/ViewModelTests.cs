@@ -386,6 +386,60 @@ public sealed class ViewModelTests
     }
 
     [TestMethod]
+    public void SafeMarkdown_ToBlocks_OrderedList_NumbersItems()
+    {
+        var service = new SafeMarkdownService();
+
+        IReadOnlyList<ChatBlockViewModel> blocks = service.ToBlocks(string.Join('\n',
+            "1. First step",
+            "2. Second step",
+            "3. Third step"));
+
+        ChatBlockViewModel[] listItems = blocks.Where(block => block.IsListItem).ToArray();
+        Assert.AreEqual(3, listItems.Length);
+        Assert.AreEqual("1. First step", listItems[0].Text);
+        Assert.AreEqual("2. Second step", listItems[1].Text);
+        Assert.AreEqual("3. Third step", listItems[2].Text);
+        Assert.IsFalse(listItems.Any(block => block.IsNestedListItem || block.IsDeeplyNestedListItem));
+    }
+
+    [TestMethod]
+    public void SafeMarkdown_ToBlocks_NestedList_SetsIndentFlags()
+    {
+        var service = new SafeMarkdownService();
+
+        IReadOnlyList<ChatBlockViewModel> blocks = service.ToBlocks(string.Join('\n',
+            "- Top",
+            "  - Middle",
+            "    - Deep"));
+
+        ChatBlockViewModel top = blocks.Single(block => block.Text == "• Top");
+        ChatBlockViewModel middle = blocks.Single(block => block.Text == "• Middle");
+        ChatBlockViewModel deep = blocks.Single(block => block.Text == "• Deep");
+        Assert.IsFalse(top.IsNestedListItem);
+        Assert.IsFalse(top.IsDeeplyNestedListItem);
+        Assert.IsTrue(middle.IsNestedListItem);
+        Assert.IsFalse(middle.IsDeeplyNestedListItem);
+        Assert.IsFalse(deep.IsNestedListItem);
+        Assert.IsTrue(deep.IsDeeplyNestedListItem);
+    }
+
+    [TestMethod]
+    public void SafeMarkdown_ToBlocks_OrderedList_HonorsStartNumber()
+    {
+        var service = new SafeMarkdownService();
+
+        IReadOnlyList<ChatBlockViewModel> blocks = service.ToBlocks(string.Join('\n',
+            "4. Fourth",
+            "5. Fifth"));
+
+        ChatBlockViewModel[] listItems = blocks.Where(block => block.IsListItem).ToArray();
+        Assert.AreEqual(2, listItems.Length);
+        Assert.AreEqual("4. Fourth", listItems[0].Text);
+        Assert.AreEqual("5. Fifth", listItems[1].Text);
+    }
+
+    [TestMethod]
     public void ApprovalViewModel_AvailableDecisions_ControlButtonVisibility()
     {
         var request = new ApprovalRequest
@@ -442,6 +496,82 @@ public sealed class ViewModelTests
         Assert.IsFalse(vm.ShowDecline);
         Assert.IsFalse(vm.ShowCancel);
         Assert.IsFalse(vm.CanResolve);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_ApprovalDecision_AppendsResultOnlyTranscriptLine()
+    {
+        // Copilot Chat parity (issue #25): after the user decides, the approval card goes away
+        // (worker echo) and the transcript keeps a single sanitized result line.
+        using var vm = new ChatViewModel();
+        MethodInfo requested = typeof(ChatViewModel).GetMethod(
+            "OnApprovalRequestedAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
+        await (Task)requested.Invoke(vm, [new ApprovalRequest
+        {
+            RequestId = "req-decision",
+            Risk = ApprovalRiskCategory.Destructive,
+            DisplayText = "git reset --hard",
+            AvailableDecisions = AcceptDeclineCancel,
+        }])!;
+
+        vm.AppendDecisionResultItem("req-decision", ApprovalDecision.Accept);
+
+        ChatItemViewModel result = vm.Items.Single(item => item.Role == "Decision");
+        Assert.AreEqual(ConversationEventKind.ItemCompleted, result.Kind);
+        Assert.IsTrue(result.Text.Contains("Accepted", StringComparison.Ordinal));
+        Assert.IsTrue(result.Text.Contains("git reset --hard", StringComparison.Ordinal));
+        Assert.IsFalse(result.UsesBlockRendering);
+    }
+
+    [TestMethod]
+    public void ChatViewModel_UnknownApprovalId_AppendsDecisionWithoutDisplayText()
+    {
+        using var vm = new ChatViewModel();
+
+        vm.AppendDecisionResultItem("missing-request", ApprovalDecision.Decline);
+
+        ChatItemViewModel result = vm.Items.Single(item => item.Role == "Decision");
+        Assert.AreEqual("Declined", result.Text.Trim());
+    }
+
+    [TestMethod]
+    public void ChatViewModel_UserInputResult_AppendsSanitizedSelection()
+    {
+        using var vm = new ChatViewModel();
+        var answers = new Dictionary<string, string[]>(StringComparer.Ordinal)
+        {
+            ["q1"] = ["<b>Sharp</b> \x1b[31mstyle\x1b[0m"],
+        };
+
+        vm.AppendUserInputResultItem(answers);
+
+        ChatItemViewModel result = vm.Items.Single(item => item.Role == "Decision");
+        Assert.IsTrue(result.Text.Contains("Selected", StringComparison.Ordinal));
+        Assert.IsTrue(result.Text.Contains("Sharp style", StringComparison.Ordinal));
+        Assert.IsFalse(result.Text.Contains('<'));
+        Assert.IsFalse(result.Text.Contains('\x1b'));
+    }
+
+    [TestMethod]
+    public void ChatViewModel_UserInputResult_NoSelection_AppendsNothing()
+    {
+        using var vm = new ChatViewModel();
+
+        vm.AppendUserInputResultItem(new Dictionary<string, string[]>(StringComparer.Ordinal));
+
+        Assert.AreEqual(0, vm.Items.Count);
+    }
+
+    [TestMethod]
+    [DataRow(ApprovalDecision.Accept, "Accepted")]
+    [DataRow(ApprovalDecision.AcceptForTurn, "Accepted for turn")]
+    [DataRow(ApprovalDecision.AcceptForThread, "Accepted for thread")]
+    [DataRow(ApprovalDecision.AcceptForSession, "Accepted for session")]
+    [DataRow(ApprovalDecision.Decline, "Declined")]
+    [DataRow(ApprovalDecision.Cancel, "Cancelled")]
+    public void ChatViewModel_DescribeDecision_MapsEveryDecision(ApprovalDecision decision, string expected)
+    {
+        Assert.AreEqual(expected, ChatViewModel.DescribeDecision(decision));
     }
 
     [TestMethod]

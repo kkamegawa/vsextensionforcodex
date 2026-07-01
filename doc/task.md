@@ -113,6 +113,8 @@
 - [x] `fileChange` 差分プレビュー（`turn/diff/updated`、巨大 diff は折りたたみ）
 - [x] `turn/plan/updated` の計画ステップ表示（状態更新でレイアウトが跳ねない）
 - [x] `turn/completed` / `error` のステータス表示
+- [x] 順序付きリスト（`1.` 番号保持）・ネストリスト（深さ別インデント、2 段でキャップ）のブロック描画 (#25)
+- [x] トランスクリプトの `VirtualizingPanel.ScrollUnit=Pixel`（可変高アイテムのスクロール跳ね防止） (#25)
 
 ### 2.4 承認ハンドリング
 - [x] `item/commandExecution/requestApproval` → `ApprovalPolicyEngine` 判定付き承認 UI（accept/acceptForSession/decline/cancel）
@@ -121,6 +123,7 @@
 - [x] risk category、承認スコープ、有効期限、policy block 理由を UI に表示
 - [x] 承認対象の command/file/network 内容を `SecretRedactor` 経由で表示
 - [x] `serverRequest/resolved` の整合処理
+- [x] 承認/選択の解決後にカードを消し、結果のみの 1 行（"Accepted — <対象>" / "Selected — <選択肢>"）をトランスクリプトへ表示（Copilot Chat 準拠） (#25)
 
 ### 2.5 操作
 - [x] 送信 / 中断（`turn/interrupt`）/ 追記（`turn/steer`）ボタン

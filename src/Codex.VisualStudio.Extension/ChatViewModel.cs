@@ -988,8 +988,38 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     private async Task ResolveApprovalAsync(string requestId, ApprovalDecision decision)
     {
         _ = outputChannel?.WriteLineAsync($"[AUDIT] Approval resolved: {requestId} → {decision}");
+        // Copilot Chat parity: the card disappears (via the worker's approvalResolved echo) and the
+        // transcript keeps a single, safe result line so the outcome stays visible in context.
+        await OnUiAsync(() => AppendDecisionResultItem(requestId, decision)).ConfigureAwait(false);
         await bridge.ResolveApprovalAsync(new ResolveApprovalRequest { RequestId = requestId, Decision = decision }, lifetime.Token).ConfigureAwait(false);
     }
+
+    // Appends a result-only transcript line for a user-resolved approval. The DisplayText was
+    // already redacted by the worker, but it is still routed through SafeMarkdownService before
+    // display because everything shown in the panel must pass the same sanitization path.
+    // Internal: exercised directly by the UI test assembly (InternalsVisibleTo).
+    internal void AppendDecisionResultItem(string requestId, ApprovalDecision decision)
+    {
+        ApprovalViewModel? approval = ActiveApproval?.RequestId == requestId
+            ? ActiveApproval
+            : approvalQueue.FirstOrDefault(item => item.RequestId == requestId);
+        string summary = approval is null
+            ? DescribeDecision(decision)
+            : string.Concat(DescribeDecision(decision), " — ", approval.DisplayText);
+        Items.Add(new ChatItemViewModel("Decision", markdown.ToSafeText(summary), ConversationEventKind.ItemCompleted));
+    }
+
+    // Human-readable decision labels for the transcript result line.
+    internal static string DescribeDecision(ApprovalDecision decision) => decision switch
+    {
+        ApprovalDecision.Accept => "Accepted",
+        ApprovalDecision.AcceptForTurn => "Accepted for turn",
+        ApprovalDecision.AcceptForThread => "Accepted for thread",
+        ApprovalDecision.AcceptForSession => "Accepted for session",
+        ApprovalDecision.Decline => "Declined",
+        ApprovalDecision.Cancel => "Cancelled",
+        _ => decision.ToString(),
+    };
 
     private Task OnUserInputRequestedAsync(UserInputRequest value)
         => OnUiAsync(() => EnqueueUserInput(new UserInputViewModel(value, ResolveUserInputAsync, markdown)));
@@ -1038,15 +1068,34 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         }
     }
 
-    // Structured choice (real item/tool/requestUserInput server request): answer it via RPC.
-    private Task ResolveUserInputAsync(string requestId, IReadOnlyDictionary<string, string[]> answers)
-        => bridge.ResolveUserInputAsync(
+    // Structured choice (real item/tool/requestUserInput server request): answer it via RPC. The
+    // card is removed by the worker's userInputResolved echo; a result-only line keeps the picked
+    // option visible in the transcript (Copilot Chat parity), sanitized because option labels come
+    // from untrusted app-server data.
+    private async Task ResolveUserInputAsync(string requestId, IReadOnlyDictionary<string, string[]> answers)
+    {
+        await OnUiAsync(() => AppendUserInputResultItem(answers)).ConfigureAwait(false);
+        await bridge.ResolveUserInputAsync(
             new ResolveUserInputRequest
             {
                 RequestId = requestId,
                 Answers = answers.ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal),
             },
-            lifetime.Token);
+            lifetime.Token).ConfigureAwait(false);
+    }
+
+    // Internal: exercised directly by the UI test assembly (InternalsVisibleTo).
+    internal void AppendUserInputResultItem(IReadOnlyDictionary<string, string[]> answers)
+    {
+        string[] selections = answers.Values.SelectMany(values => values).ToArray();
+        if (selections.Length == 0)
+        {
+            return;
+        }
+
+        string summary = string.Concat("Selected — ", string.Join(", ", selections));
+        Items.Add(new ChatItemViewModel("Decision", markdown.ToSafeText(summary), ConversationEventKind.ItemCompleted));
+    }
 
     // Prose-detected choice: there is no pending server request, so the picked option is sent as the
     // next turn (it also shows in the transcript as the user's message), then the card is removed.
@@ -1442,6 +1491,8 @@ public sealed class ChatBlockViewModel : ObservableObject
     private bool isHeading;
     private bool isCodeBlock;
     private bool isListItem;
+    private bool isNestedListItem;
+    private bool isDeeplyNestedListItem;
     private bool isSeparator;
     private bool isH1;
     private bool isH2;
@@ -1508,6 +1559,23 @@ public sealed class ChatBlockViewModel : ObservableObject
         set => SetProperty(ref isListItem, value);
     }
 
+    // Precomputed indent flags (Remote UI cannot use value converters, so the XAML maps each
+    // flag to a fixed Margin via DataTriggers). Depth 2 gets one extra indent step; depth 3 and
+    // beyond are capped at a second step so pathological nesting can't push text off-panel.
+    [DataMember]
+    public bool IsNestedListItem
+    {
+        get => isNestedListItem;
+        set => SetProperty(ref isNestedListItem, value);
+    }
+
+    [DataMember]
+    public bool IsDeeplyNestedListItem
+    {
+        get => isDeeplyNestedListItem;
+        set => SetProperty(ref isDeeplyNestedListItem, value);
+    }
+
     [DataMember]
     public bool IsSeparator
     {
@@ -1562,10 +1630,14 @@ public sealed class ChatBlockViewModel : ObservableObject
         IsCodeBlock = true,
     };
 
-    public static ChatBlockViewModel ListItem(string text) => new()
+    public static ChatBlockViewModel ListItem(string text) => ListItem(text, "•", 1);
+
+    public static ChatBlockViewModel ListItem(string text, string marker, int depth) => new()
     {
-        Text = string.Concat("• ", text),
+        Text = string.IsNullOrEmpty(marker) ? text : string.Concat(marker, " ", text),
         IsListItem = true,
+        IsNestedListItem = depth == 2,
+        IsDeeplyNestedListItem = depth >= 3,
     };
 
     public static ChatBlockViewModel Separator() => new()
@@ -1582,6 +1654,8 @@ public sealed class ChatBlockViewModel : ObservableObject
         IsHeading = other.IsHeading;
         IsCodeBlock = other.IsCodeBlock;
         IsListItem = other.IsListItem;
+        IsNestedListItem = other.IsNestedListItem;
+        IsDeeplyNestedListItem = other.IsDeeplyNestedListItem;
         IsSeparator = other.IsSeparator;
         IsH1 = other.IsH1;
         IsH2 = other.IsH2;
