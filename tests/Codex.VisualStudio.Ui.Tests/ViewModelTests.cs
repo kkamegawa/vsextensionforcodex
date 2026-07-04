@@ -558,7 +558,7 @@ public sealed class ViewModelTests
             AvailableDecisions = AcceptDeclineCancel,
         }])!;
 
-        vm.AppendDecisionResultItem("req-decision", ApprovalDecision.Accept);
+        vm.AppendDecisionResultItem(vm.BuildDecisionSummary("req-decision", ApprovalDecision.Accept));
 
         ChatItemViewModel result = vm.Items.Single(item => item.Role == "Decision");
         Assert.AreEqual(ConversationEventKind.ItemCompleted, result.Kind);
@@ -572,7 +572,7 @@ public sealed class ViewModelTests
     {
         using var vm = new ChatViewModel();
 
-        vm.AppendDecisionResultItem("missing-request", ApprovalDecision.Decline);
+        vm.AppendDecisionResultItem(vm.BuildDecisionSummary("missing-request", ApprovalDecision.Decline));
 
         ChatItemViewModel result = vm.Items.Single(item => item.Role == "Decision");
         Assert.AreEqual("Declined", result.Text.Trim());
@@ -616,6 +616,101 @@ public sealed class ViewModelTests
     public void ChatViewModel_DescribeDecision_MapsEveryDecision(ApprovalDecision decision, string expected)
     {
         Assert.AreEqual(expected, ChatViewModel.DescribeDecision(decision));
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_ApprovalRpcFailure_DoesNotAppendTranscriptLine()
+    {
+        var bridge = new FakeWorkerBridge { ResolveApprovalException = new InvalidOperationException("disconnected") };
+        using var vm = new ChatViewModel(bridge, autoConnect: false);
+        MethodInfo requested = typeof(ChatViewModel).GetMethod(
+            "OnApprovalRequestedAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
+        await (Task)requested.Invoke(vm, [new ApprovalRequest
+        {
+            RequestId = "req-fail",
+            Risk = ApprovalRiskCategory.Destructive,
+            DisplayText = "git reset --hard",
+            AvailableDecisions = AcceptDeclineCancel,
+        }])!;
+
+        MethodInfo resolve = typeof(ChatViewModel).GetMethod(
+            "ResolveApprovalAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
+
+        InvalidOperationException? caught = null;
+        try
+        {
+            await (Task)resolve.Invoke(vm, ["req-fail", ApprovalDecision.Accept])!;
+        }
+        catch (InvalidOperationException ex)
+        {
+            caught = ex;
+        }
+
+        Assert.IsNotNull(caught);
+        Assert.IsFalse(vm.Items.Any(item => item.Role == "Decision"));
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_ApprovalRpcSuccess_AppendsTranscriptLineAfterResolve()
+    {
+        var bridge = new FakeWorkerBridge();
+        using var vm = new ChatViewModel(bridge, autoConnect: false);
+        MethodInfo requested = typeof(ChatViewModel).GetMethod(
+            "OnApprovalRequestedAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
+        await (Task)requested.Invoke(vm, [new ApprovalRequest
+        {
+            RequestId = "req-ok",
+            Risk = ApprovalRiskCategory.Destructive,
+            DisplayText = "git push --force",
+            AvailableDecisions = AcceptDeclineCancel,
+        }])!;
+
+        MethodInfo resolve = typeof(ChatViewModel).GetMethod(
+            "ResolveApprovalAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
+        await (Task)resolve.Invoke(vm, ["req-ok", ApprovalDecision.Accept])!;
+
+        ChatItemViewModel result = vm.Items.Single(item => item.Role == "Decision");
+        Assert.IsTrue(result.Text.Contains("Accepted", StringComparison.Ordinal));
+        Assert.IsTrue(result.Text.Contains("git push --force", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_UserInputRpcFailure_DoesNotAppendTranscriptLine()
+    {
+        var bridge = new FakeWorkerBridge { ResolveUserInputException = new InvalidOperationException("disconnected") };
+        using var vm = new ChatViewModel(bridge, autoConnect: false);
+        var answers = new Dictionary<string, string[]>(StringComparer.Ordinal) { ["q1"] = ["Yes"] };
+
+        MethodInfo resolve = typeof(ChatViewModel).GetMethod(
+            "ResolveUserInputAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
+
+        InvalidOperationException? caught = null;
+        try
+        {
+            await (Task)resolve.Invoke(vm, ["req-1", answers])!;
+        }
+        catch (InvalidOperationException ex)
+        {
+            caught = ex;
+        }
+
+        Assert.IsNotNull(caught);
+        Assert.IsFalse(vm.Items.Any(item => item.Role == "Decision"));
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_UserInputRpcSuccess_AppendsTranscriptLineAfterResolve()
+    {
+        var bridge = new FakeWorkerBridge();
+        using var vm = new ChatViewModel(bridge, autoConnect: false);
+        var answers = new Dictionary<string, string[]>(StringComparer.Ordinal) { ["q1"] = ["Yes"] };
+
+        MethodInfo resolve = typeof(ChatViewModel).GetMethod(
+            "ResolveUserInputAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
+        await (Task)resolve.Invoke(vm, ["req-1", answers])!;
+
+        ChatItemViewModel result = vm.Items.Single(item => item.Role == "Decision");
+        Assert.IsTrue(result.Text.Contains("Selected — Yes", StringComparison.Ordinal));
     }
 
     [TestMethod]
@@ -1480,6 +1575,10 @@ public sealed class ViewModelTests
 
         public StartTurnRequest? LastStartTurnRequest { get; private set; }
 
+        public Exception? ResolveApprovalException { get; set; }
+
+        public Exception? ResolveUserInputException { get; set; }
+
         public Task PublishStateAsync(WorkerStatus status)
             => StateChanged?.Invoke(status) ?? Task.CompletedTask;
 
@@ -1523,10 +1622,10 @@ public sealed class ViewModelTests
             => Task.CompletedTask;
 
         public Task ResolveApprovalAsync(ResolveApprovalRequest request, CancellationToken cancellationToken)
-            => Task.CompletedTask;
+            => ResolveApprovalException is not null ? Task.FromException(ResolveApprovalException) : Task.CompletedTask;
 
         public Task ResolveUserInputAsync(ResolveUserInputRequest request, CancellationToken cancellationToken)
-            => Task.CompletedTask;
+            => ResolveUserInputException is not null ? Task.FromException(ResolveUserInputException) : Task.CompletedTask;
 
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }

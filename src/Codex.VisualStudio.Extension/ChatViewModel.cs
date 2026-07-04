@@ -987,26 +987,34 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     private async Task ResolveApprovalAsync(string requestId, ApprovalDecision decision)
     {
         _ = outputChannel?.WriteLineAsync($"[AUDIT] Approval resolved: {requestId} → {decision}");
-        // Copilot Chat parity: the card disappears (via the worker's approvalResolved echo) and the
-        // transcript keeps a single, safe result line so the outcome stays visible in context.
-        await OnUiAsync(() => AppendDecisionResultItem(requestId, decision)).ConfigureAwait(false);
+        // The DisplayText lookup must happen before the RPC call: a concurrent approvalResolved
+        // echo from the worker can remove the card from the queue while the RPC is in flight.
+        string summary = BuildDecisionSummary(requestId, decision);
         await bridge.ResolveApprovalAsync(new ResolveApprovalRequest { RequestId = requestId, Decision = decision }, lifetime.Token).ConfigureAwait(false);
+        // Copilot Chat parity: the card disappears (via the worker's approvalResolved echo) and the
+        // transcript keeps a single, safe result line so the outcome stays visible in context. Only
+        // appended once the RPC has actually succeeded, so a failed resolve doesn't leave a
+        // misleading "Accepted" line for a decision the worker never received.
+        await OnUiAsync(() => AppendDecisionResultItem(summary)).ConfigureAwait(false);
     }
 
-    // Appends a result-only transcript line for a user-resolved approval. The DisplayText was
+    // Builds the result-only transcript summary for a user-resolved approval. The DisplayText was
     // already redacted by the worker, but it is still routed through SafeMarkdownService before
     // display because everything shown in the panel must pass the same sanitization path.
     // Internal: exercised directly by the UI test assembly (InternalsVisibleTo).
-    internal void AppendDecisionResultItem(string requestId, ApprovalDecision decision)
+    internal string BuildDecisionSummary(string requestId, ApprovalDecision decision)
     {
         ApprovalViewModel? approval = ActiveApproval?.RequestId == requestId
             ? ActiveApproval
             : approvalQueue.FirstOrDefault(item => item.RequestId == requestId);
-        string summary = approval is null
+        return approval is null
             ? DescribeDecision(decision)
             : string.Concat(DescribeDecision(decision), " — ", approval.DisplayText);
-        Items.Add(new ChatItemViewModel("Decision", markdown.ToSafeText(summary), ConversationEventKind.ItemCompleted));
     }
+
+    // Internal: exercised directly by the UI test assembly (InternalsVisibleTo).
+    internal void AppendDecisionResultItem(string summary)
+        => Items.Add(new ChatItemViewModel("Decision", markdown.ToSafeText(summary), ConversationEventKind.ItemCompleted));
 
     // Human-readable decision labels for the transcript result line.
     internal static string DescribeDecision(ApprovalDecision decision) => decision switch
@@ -1073,7 +1081,6 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     // from untrusted app-server data.
     private async Task ResolveUserInputAsync(string requestId, IReadOnlyDictionary<string, string[]> answers)
     {
-        await OnUiAsync(() => AppendUserInputResultItem(answers)).ConfigureAwait(false);
         await bridge.ResolveUserInputAsync(
             new ResolveUserInputRequest
             {
@@ -1081,6 +1088,9 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 Answers = answers.ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal),
             },
             lifetime.Token).ConfigureAwait(false);
+        // Appended only after the RPC succeeds, so a failed resolve doesn't leave a result line
+        // for a selection the worker never received.
+        await OnUiAsync(() => AppendUserInputResultItem(answers)).ConfigureAwait(false);
     }
 
     // Internal: exercised directly by the UI test assembly (InternalsVisibleTo).
