@@ -237,6 +237,21 @@ public sealed class ViewModelTests
     }
 
     [TestMethod]
+    public void ChoicePromptParser_ProceedMentionOutsideQuestionLine_DoesNotTriggerConfirmationCard()
+    {
+        // "proceed" appears in an earlier sentence, but the actual question is open-ended (not
+        // answerable with Yes/No). Only the extracted question line should be checked for
+        // confirmation keywords, not the whole message.
+        string text = string.Join('\n',
+            "I'll proceed with the fix now that you've confirmed the plan.",
+            "What time should the job run?");
+
+        bool ok = ChoicePromptParser.TryParse(text, out _);
+
+        Assert.IsFalse(ok);
+    }
+
+    [TestMethod]
     [DataRow("Here are the steps:\n1. Build\n2. Test\n3. Ship", DisplayName = "numbered list without a question")]
     [DataRow("Which one?\n1. Only one option", DisplayName = "question with a single option")]
     [DataRow("Just a sentence with no list?", DisplayName = "question without options")]

@@ -57,7 +57,7 @@ public static partial class ChoicePromptParser
             return true;
         }
 
-        if (options.Count == 0 && ConfirmationQuestion().IsMatch(rawText))
+        if (options.Count == 0 && ConfirmationQuestion().IsMatch(question))
         {
             request = CreateRequest(question,
             [
