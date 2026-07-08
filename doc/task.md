@@ -166,7 +166,8 @@
 ## Phase 4: 拡張機能・統合
 
 ### 4.1 モデル / 努力度
-- [ ] `model/list`（`includeHidden`）でモデルピッカー UI（キャッシュ + 明示 refresh）
+- [x] `model/list`（`includeHidden`）でモデルピッカー UI（`ChatViewModel.PopulateModelsAsync`、起動時 1 回ロード）
+- [ ] モデル一覧の明示的な再取得（refresh）コマンド
 - [ ] reasoning effort セレクタ、`supportsPersonality` 反映
 
 ### 4.2 インライン補完（任意）
