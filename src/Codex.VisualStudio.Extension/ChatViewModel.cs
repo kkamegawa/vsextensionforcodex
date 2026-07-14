@@ -33,7 +33,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     private readonly Dictionary<string, StringBuilder> itemRawText = new(StringComparer.Ordinal);
     private UserInputViewModel? activeUserInput;
     private ApprovalViewModel? activeApproval;
-    private string? lastAgentItemId;
+    private string? lastAgentRawKey;
     private int disposed;
     private int connecting;
     private WorkerStatus status = new() { State = WorkerConnectionState.Disconnected, Message = "Open Codex to connect." };
@@ -164,10 +164,9 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         _ => $"{userInputQueue.Count} choices waiting",
     };
 
-    // Opt-in "Choices": surface codex's confirmation/choice prompts as a selection card. codex only
-    // emits the structured request_user_input tool in Plan mode, so in Agent mode this drives the
-    // prose detector (TryDetectChoicePrompt) — a purely client-side concern, so no reconnect is needed.
-    // The flag is still sent at the next connect so the structured path also works if Plan mode is used.
+    // Opt-in structured API support. Natural-language confirmation/choice prompts are detected
+    // locally regardless of this flag; this setting only asks codex to expose experimental
+    // request_user_input APIs on the next connect.
     [DataMember]
     public bool ExperimentalApiEnabled
     {
@@ -849,10 +848,10 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 case ConversationEventKind.TurnStarted:
                     agentRawText.Clear();
                     itemRawText.Clear();
-                    lastAgentItemId = null;
+                    lastAgentRawKey = null;
                     break;
-                case ConversationEventKind.AgentMessageDelta when !string.IsNullOrEmpty(value.Text) && value.ItemId is not null:
-                    AppendAgentRaw(value.ItemId, value.Text);
+                case ConversationEventKind.AgentMessageDelta when !string.IsNullOrEmpty(value.Text):
+                    AppendAgentRaw(GetAgentRawKey(value), value.Text);
                     break;
                 case ConversationEventKind.TurnCompleted:
                     TryDetectChoicePrompt();
@@ -988,8 +987,46 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     private async Task ResolveApprovalAsync(string requestId, ApprovalDecision decision)
     {
         _ = outputChannel?.WriteLineAsync($"[AUDIT] Approval resolved: {requestId} → {decision}");
+        // The DisplayText lookup must happen before the RPC call: a concurrent approvalResolved
+        // echo from the worker can remove the card from the queue while the RPC is in flight.
+        string summary = BuildDecisionSummary(requestId, decision);
         await bridge.ResolveApprovalAsync(new ResolveApprovalRequest { RequestId = requestId, Decision = decision }, lifetime.Token).ConfigureAwait(false);
+        // Copilot Chat parity: the card disappears (via the worker's approvalResolved echo) and the
+        // transcript keeps a single, safe result line so the outcome stays visible in context. Only
+        // appended once the RPC has actually succeeded, so a failed resolve doesn't leave a
+        // misleading "Accepted" line for a decision the worker never received.
+        await OnUiAsync(() => AppendDecisionResultItem(summary)).ConfigureAwait(false);
     }
+
+    // Builds the result-only transcript summary for a user-resolved approval. The DisplayText was
+    // already redacted by the worker, but it is still routed through SafeMarkdownService before
+    // display because everything shown in the panel must pass the same sanitization path.
+    // Internal: exercised directly by the UI test assembly (InternalsVisibleTo).
+    internal string BuildDecisionSummary(string requestId, ApprovalDecision decision)
+    {
+        ApprovalViewModel? approval = ActiveApproval?.RequestId == requestId
+            ? ActiveApproval
+            : approvalQueue.FirstOrDefault(item => item.RequestId == requestId);
+        return approval is null
+            ? DescribeDecision(decision)
+            : string.Concat(DescribeDecision(decision), " — ", approval.DisplayText);
+    }
+
+    // Internal: exercised directly by the UI test assembly (InternalsVisibleTo).
+    internal void AppendDecisionResultItem(string summary)
+        => Items.Add(new ChatItemViewModel("Decision", markdown.ToSafeText(summary), ConversationEventKind.ItemCompleted));
+
+    // Human-readable decision labels for the transcript result line.
+    internal static string DescribeDecision(ApprovalDecision decision) => decision switch
+    {
+        ApprovalDecision.Accept => "Accepted",
+        ApprovalDecision.AcceptForTurn => "Accepted for turn",
+        ApprovalDecision.AcceptForThread => "Accepted for thread",
+        ApprovalDecision.AcceptForSession => "Accepted for session",
+        ApprovalDecision.Decline => "Declined",
+        ApprovalDecision.Cancel => "Cancelled",
+        _ => decision.ToString(),
+    };
 
     private Task OnUserInputRequestedAsync(UserInputRequest value)
         => OnUiAsync(() => EnqueueUserInput(new UserInputViewModel(value, ResolveUserInputAsync, markdown)));
@@ -1038,15 +1075,36 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         }
     }
 
-    // Structured choice (real item/tool/requestUserInput server request): answer it via RPC.
-    private Task ResolveUserInputAsync(string requestId, IReadOnlyDictionary<string, string[]> answers)
-        => bridge.ResolveUserInputAsync(
+    // Structured choice (real item/tool/requestUserInput server request): answer it via RPC. The
+    // card is removed by the worker's userInputResolved echo; a result-only line keeps the picked
+    // option visible in the transcript (Copilot Chat parity), sanitized because option labels come
+    // from untrusted app-server data.
+    private async Task ResolveUserInputAsync(string requestId, IReadOnlyDictionary<string, string[]> answers)
+    {
+        await bridge.ResolveUserInputAsync(
             new ResolveUserInputRequest
             {
                 RequestId = requestId,
                 Answers = answers.ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal),
             },
-            lifetime.Token);
+            lifetime.Token).ConfigureAwait(false);
+        // Appended only after the RPC succeeds, so a failed resolve doesn't leave a result line
+        // for a selection the worker never received.
+        await OnUiAsync(() => AppendUserInputResultItem(answers)).ConfigureAwait(false);
+    }
+
+    // Internal: exercised directly by the UI test assembly (InternalsVisibleTo).
+    internal void AppendUserInputResultItem(IReadOnlyDictionary<string, string[]> answers)
+    {
+        string[] selections = answers.Values.SelectMany(values => values).ToArray();
+        if (selections.Length == 0)
+        {
+            return;
+        }
+
+        string summary = string.Concat("Selected — ", string.Join(", ", selections));
+        Items.Add(new ChatItemViewModel("Decision", markdown.ToSafeText(summary), ConversationEventKind.ItemCompleted));
+    }
 
     // Prose-detected choice: there is no pending server request, so the picked option is sent as the
     // next turn (it also shows in the transcript as the user's message), then the card is removed.
@@ -1061,19 +1119,15 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     }
 
     // Accumulate the raw (pre-markdown-stripping) agent text per item so a completed message can be
-    // inspected for a choice prompt. Gated on the opt-in toggle so detection is off by default.
-    private void AppendAgentRaw(string itemId, string rawChunk)
+    // inspected for a choice prompt. This is local-only; the experimental flag controls only server
+    // request_user_input capability negotiation.
+    private void AppendAgentRaw(string key, string rawChunk)
     {
-        if (!settings.ExperimentalApiEnabled)
-        {
-            return;
-        }
-
-        lastAgentItemId = itemId;
-        if (!agentRawText.TryGetValue(itemId, out StringBuilder? builder))
+        lastAgentRawKey = key;
+        if (!agentRawText.TryGetValue(key, out StringBuilder? builder))
         {
             builder = new StringBuilder();
-            agentRawText[itemId] = builder;
+            agentRawText[key] = builder;
         }
 
         // Choice prompts are small; cap accumulation so a long message can't grow memory unbounded.
@@ -1087,20 +1141,23 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     // last agent message into the same single-card selection UI.
     private void TryDetectChoicePrompt()
     {
-        if (!settings.ExperimentalApiEnabled || lastAgentItemId is null)
+        if (lastAgentRawKey is null)
         {
             return;
         }
 
-        agentRawText.TryGetValue(lastAgentItemId, out StringBuilder? builder);
+        agentRawText.TryGetValue(lastAgentRawKey, out StringBuilder? builder);
         string raw = builder?.ToString() ?? string.Empty;
         agentRawText.Clear();
-        lastAgentItemId = null;
+        lastAgentRawKey = null;
         if (ChoicePromptParser.TryParse(raw, out UserInputRequest synthesized))
         {
             EnqueueUserInput(new UserInputViewModel(synthesized, ResolveSyntheticUserInputAsync, markdown) { IsSynthetic = true });
         }
     }
+
+    private static string GetAgentRawKey(ConversationEvent value)
+        => value.ItemId ?? value.TurnId ?? "global-agent-message";
 
     private async Task SignInAsync()
     {
@@ -1442,6 +1499,8 @@ public sealed class ChatBlockViewModel : ObservableObject
     private bool isHeading;
     private bool isCodeBlock;
     private bool isListItem;
+    private bool isNestedListItem;
+    private bool isDeeplyNestedListItem;
     private bool isSeparator;
     private bool isH1;
     private bool isH2;
@@ -1508,6 +1567,23 @@ public sealed class ChatBlockViewModel : ObservableObject
         set => SetProperty(ref isListItem, value);
     }
 
+    // Precomputed indent flags (Remote UI cannot use value converters, so the XAML maps each
+    // flag to a fixed Margin via DataTriggers). Depth 2 gets one extra indent step; depth 3 and
+    // beyond are capped at a second step so pathological nesting can't push text off-panel.
+    [DataMember]
+    public bool IsNestedListItem
+    {
+        get => isNestedListItem;
+        set => SetProperty(ref isNestedListItem, value);
+    }
+
+    [DataMember]
+    public bool IsDeeplyNestedListItem
+    {
+        get => isDeeplyNestedListItem;
+        set => SetProperty(ref isDeeplyNestedListItem, value);
+    }
+
     [DataMember]
     public bool IsSeparator
     {
@@ -1562,10 +1638,14 @@ public sealed class ChatBlockViewModel : ObservableObject
         IsCodeBlock = true,
     };
 
-    public static ChatBlockViewModel ListItem(string text) => new()
+    public static ChatBlockViewModel ListItem(string text) => ListItem(text, "•", 1);
+
+    public static ChatBlockViewModel ListItem(string text, string marker, int depth) => new()
     {
-        Text = string.Concat("• ", text),
+        Text = string.IsNullOrEmpty(marker) ? text : string.Concat(marker, " ", text),
         IsListItem = true,
+        IsNestedListItem = depth == 2,
+        IsDeeplyNestedListItem = depth >= 3,
     };
 
     public static ChatBlockViewModel Separator() => new()
@@ -1582,6 +1662,8 @@ public sealed class ChatBlockViewModel : ObservableObject
         IsHeading = other.IsHeading;
         IsCodeBlock = other.IsCodeBlock;
         IsListItem = other.IsListItem;
+        IsNestedListItem = other.IsNestedListItem;
+        IsDeeplyNestedListItem = other.IsDeeplyNestedListItem;
         IsSeparator = other.IsSeparator;
         IsH1 = other.IsH1;
         IsH2 = other.IsH2;
@@ -1801,8 +1883,8 @@ public sealed class UserInputQuestionViewModel : ObservableObject
     public UserInputQuestionViewModel(UserInputQuestion question, SafeMarkdownService markdown)
     {
         Id = question.Id;
-        Header = markdown.ToSafeText(question.Header);
-        Question = markdown.ToSafeText(question.Question);
+        Header = markdown.ToSafeText(question.Header).Trim();
+        Question = markdown.ToSafeText(question.Question).Trim();
         Options = new ObservableCollection<UserInputOptionViewModel>(
             question.Options.Select(option => new UserInputOptionViewModel(option, markdown, OnOptionSelected)));
     }
@@ -1845,8 +1927,8 @@ public sealed class UserInputOptionViewModel : ObservableObject
         // Label is echoed back verbatim so it matches the server's option; DisplayLabel is the
         // sanitized text actually rendered.
         Label = option.Label;
-        DisplayLabel = markdown.ToSafeText(option.Label);
-        Description = markdown.ToSafeText(option.Description);
+        DisplayLabel = markdown.ToSafeText(option.Label).Trim();
+        Description = markdown.ToSafeText(option.Description).Trim();
     }
 
     // Not a DataMember: the raw value, never rendered, only submitted back to the app-server.

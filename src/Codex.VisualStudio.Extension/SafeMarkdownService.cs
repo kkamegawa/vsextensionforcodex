@@ -69,7 +69,7 @@ public sealed class SafeMarkdownService
                 break;
             case ParagraphBlock paragraph:
                 AddTextBlock(blocks, listDepth > 0
-                    ? ChatBlockViewModel.ListItem(NormalizeText(StripHtmlTags(ExtractInlineText(paragraph.Inline))))
+                    ? ChatBlockViewModel.ListItem(NormalizeText(StripHtmlTags(ExtractInlineText(paragraph.Inline))), "•", listDepth)
                     : ChatBlockViewModel.Paragraph(NormalizeText(StripHtmlTags(ExtractInlineText(paragraph.Inline)))),
                     safeTextBuilder);
                 break;
@@ -101,9 +101,29 @@ public sealed class SafeMarkdownService
         {
             if (item is ListItemBlock listItem)
             {
+                // Ordered lists render their source number ("1.", "2."); unordered lists a bullet.
+                // Only the first paragraph of an item carries the marker; continuation paragraphs
+                // keep the indent without repeating it. Nested blocks recurse with the same depth
+                // so deeper ListBlocks bump the indent one level further.
+                string marker = list.IsOrdered
+                    ? string.Concat(listItem.Order.ToString(System.Globalization.CultureInfo.InvariantCulture), ".")
+                    : "•";
+                bool isFirstParagraph = true;
                 foreach (Block child in listItem)
                 {
-                    AppendBlock(child, blocks, listDepth, safeTextBuilder);
+                    if (child is ParagraphBlock paragraph)
+                    {
+                        AddTextBlock(blocks, ChatBlockViewModel.ListItem(
+                            NormalizeText(StripHtmlTags(ExtractInlineText(paragraph.Inline))),
+                            isFirstParagraph ? marker : string.Empty,
+                            listDepth),
+                            safeTextBuilder);
+                        isFirstParagraph = false;
+                    }
+                    else
+                    {
+                        AppendBlock(child, blocks, listDepth, safeTextBuilder);
+                    }
                 }
             }
             else

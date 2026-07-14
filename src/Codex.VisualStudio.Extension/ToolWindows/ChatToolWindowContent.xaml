@@ -348,7 +348,8 @@
                  ScrollViewer.CanContentScroll="True"
                  ScrollViewer.HorizontalScrollBarVisibility="Disabled"
                  VirtualizingPanel.IsVirtualizing="True"
-                 VirtualizingPanel.VirtualizationMode="Recycling">
+                 VirtualizingPanel.VirtualizationMode="Recycling"
+                 VirtualizingPanel.ScrollUnit="Pixel">
           <ListBox.ItemTemplate>
             <DataTemplate>
               <Border Margin="0,0,0,8" Padding="10" CornerRadius="8"
@@ -468,15 +469,24 @@
                             </TextBlock.Style>
                           </TextBlock>
 
-                          <TextBlock Margin="12,0,0,0" Text="{Binding Text}" TextWrapping="Wrap">
+                          <TextBlock Text="{Binding Text}" TextWrapping="Wrap">
                             <TextBlock.Style>
                               <Style TargetType="TextBlock">
                                 <Setter Property="Visibility" Value="Collapsed" />
+                                <Setter Property="Margin" Value="12,0,0,0" />
                                 <Setter Property="Foreground" Value="{DynamicResource {x:Static styles:VsBrushes.WindowTextKey}}" />
                                 <Setter Property="TextOptions.TextFormattingMode" Value="Display" />
                                 <Style.Triggers>
                                   <DataTrigger Binding="{Binding IsListItem}" Value="True">
                                     <Setter Property="Visibility" Value="Visible" />
+                                  </DataTrigger>
+                                  <!-- Nested list levels get a fixed extra indent step (converters are
+                                       unavailable in Remote UI, so each depth flag maps to a margin). -->
+                                  <DataTrigger Binding="{Binding IsNestedListItem}" Value="True">
+                                    <Setter Property="Margin" Value="28,0,0,0" />
+                                  </DataTrigger>
+                                  <DataTrigger Binding="{Binding IsDeeplyNestedListItem}" Value="True">
+                                    <Setter Property="Margin" Value="44,0,0,0" />
                                   </DataTrigger>
                                 </Style.Triggers>
                               </Style>
@@ -891,8 +901,8 @@
                       ToolTip="Model"
                       ItemsSource="{Binding Models}" SelectedItem="{Binding SelectedModel}" />
             <CheckBox DockPanel.Dock="Left" Margin="8,0,0,0" VerticalAlignment="Center"
-                      Content="Choices"
-                      ToolTip="Show codex's confirmation/choice prompts as a selection card at the bottom"
+                      Content="Experimental API"
+                      ToolTip="Enable codex experimental APIs for structured prompts after reconnect; natural-language confirmation cards are detected locally."
                       Foreground="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowTextBrushKey}}"
                       IsChecked="{Binding ExperimentalApiEnabled, Mode=TwoWay}" />
 

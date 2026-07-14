@@ -12,9 +12,9 @@ internal sealed class CodexExtension : VSX.Extension
     public override VSX.ExtensionConfiguration ExtensionConfiguration => new()
     {
         Metadata = new(
-            id: "CodexForVisualStudio.kkamegawa",
+            id: "Kkamegawa.CodexForVisualStudio",
             version: ExtensionAssemblyVersion,
-            publisherName: "kkamegawa",
+            publisherName: "kazushikamegawa",
             displayName: "Codex for Visual Studio",
             description: "AI coding assistant powered by OpenAI Codex."),
     };

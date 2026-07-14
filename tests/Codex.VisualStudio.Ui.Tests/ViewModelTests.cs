@@ -219,6 +219,39 @@ public sealed class ViewModelTests
     }
 
     [TestMethod]
+    public void ChoicePromptParser_DetectsJapaneseConfirmationQuestion()
+    {
+        string text = string.Join('\n',
+            "既存プロジェクトに LICENSE がありませんでした。AGENTS.md の指示により、作業開始前に確認が必要です。",
+            "MIT ライセンスで進めてよいですか？",
+            "MIT 以外にする場合は、使用するライセンス名を指定してください。");
+
+        bool ok = ChoicePromptParser.TryParse(text, out UserInputRequest request);
+
+        Assert.IsTrue(ok);
+        Assert.AreEqual(1, request.Questions.Count);
+        Assert.AreEqual("MIT ライセンスで進めてよいですか？", request.Questions[0].Question);
+        Assert.AreEqual(2, request.Questions[0].Options.Count);
+        Assert.AreEqual("Yes", request.Questions[0].Options[0].Label);
+        Assert.AreEqual("No", request.Questions[0].Options[1].Label);
+    }
+
+    [TestMethod]
+    public void ChoicePromptParser_ProceedMentionOutsideQuestionLine_DoesNotTriggerConfirmationCard()
+    {
+        // "proceed" appears in an earlier sentence, but the actual question is open-ended (not
+        // answerable with Yes/No). Only the extracted question line should be checked for
+        // confirmation keywords, not the whole message.
+        string text = string.Join('\n',
+            "I'll proceed with the fix now that you've confirmed the plan.",
+            "What time should the job run?");
+
+        bool ok = ChoicePromptParser.TryParse(text, out _);
+
+        Assert.IsFalse(ok);
+    }
+
+    [TestMethod]
     [DataRow("Here are the steps:\n1. Build\n2. Test\n3. Ship", DisplayName = "numbered list without a question")]
     [DataRow("Which one?\n1. Only one option", DisplayName = "question with a single option")]
     [DataRow("Just a sentence with no list?", DisplayName = "question without options")]
@@ -226,6 +259,32 @@ public sealed class ViewModelTests
     public void ChoicePromptParser_RejectsNonChoiceText(string text)
     {
         Assert.IsFalse(ChoicePromptParser.TryParse(text, out _));
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_ProseConfirmationPrompt_ShowsCardWithoutExperimentalApi()
+    {
+        using var vm = new ChatViewModel(new FakeWorkerBridge(), autoConnect: false);
+        ExtensionSettings settings = GetSettings(vm);
+        settings.ExperimentalApiEnabled = false;
+
+        await RaiseConversationEventAsync(vm, new ConversationEvent { Kind = ConversationEventKind.TurnStarted });
+        await RaiseConversationEventAsync(vm, new ConversationEvent
+        {
+            Kind = ConversationEventKind.AgentMessageDelta,
+            Text = string.Join('\n',
+                "既存プロジェクトに LICENSE がありませんでした。",
+                "MIT ライセンスで進めてよいですか？",
+                "MIT 以外にする場合は、使用するライセンス名を指定してください。"),
+        });
+        await RaiseConversationEventAsync(vm, new ConversationEvent { Kind = ConversationEventKind.TurnCompleted });
+
+        Assert.IsTrue(vm.HasActiveUserInput);
+        Assert.IsNotNull(vm.ActiveUserInput);
+        Assert.IsTrue(vm.ActiveUserInput!.IsSynthetic);
+        Assert.AreEqual(2, vm.ActiveUserInput.Questions[0].Options.Count);
+        Assert.AreEqual("Yes", vm.ActiveUserInput.Questions[0].Options[0].DisplayLabel);
+        Assert.AreEqual("No", vm.ActiveUserInput.Questions[0].Options[1].DisplayLabel);
     }
 
     [TestMethod]
@@ -386,6 +445,60 @@ public sealed class ViewModelTests
     }
 
     [TestMethod]
+    public void SafeMarkdown_ToBlocks_OrderedList_NumbersItems()
+    {
+        var service = new SafeMarkdownService();
+
+        IReadOnlyList<ChatBlockViewModel> blocks = service.ToBlocks(string.Join('\n',
+            "1. First step",
+            "2. Second step",
+            "3. Third step"));
+
+        ChatBlockViewModel[] listItems = blocks.Where(block => block.IsListItem).ToArray();
+        Assert.AreEqual(3, listItems.Length);
+        Assert.AreEqual("1. First step", listItems[0].Text);
+        Assert.AreEqual("2. Second step", listItems[1].Text);
+        Assert.AreEqual("3. Third step", listItems[2].Text);
+        Assert.IsFalse(listItems.Any(block => block.IsNestedListItem || block.IsDeeplyNestedListItem));
+    }
+
+    [TestMethod]
+    public void SafeMarkdown_ToBlocks_NestedList_SetsIndentFlags()
+    {
+        var service = new SafeMarkdownService();
+
+        IReadOnlyList<ChatBlockViewModel> blocks = service.ToBlocks(string.Join('\n',
+            "- Top",
+            "  - Middle",
+            "    - Deep"));
+
+        ChatBlockViewModel top = blocks.Single(block => block.Text == "• Top");
+        ChatBlockViewModel middle = blocks.Single(block => block.Text == "• Middle");
+        ChatBlockViewModel deep = blocks.Single(block => block.Text == "• Deep");
+        Assert.IsFalse(top.IsNestedListItem);
+        Assert.IsFalse(top.IsDeeplyNestedListItem);
+        Assert.IsTrue(middle.IsNestedListItem);
+        Assert.IsFalse(middle.IsDeeplyNestedListItem);
+        Assert.IsFalse(deep.IsNestedListItem);
+        Assert.IsTrue(deep.IsDeeplyNestedListItem);
+    }
+
+    [TestMethod]
+    public void SafeMarkdown_ToBlocks_OrderedList_HonorsStartNumber()
+    {
+        var service = new SafeMarkdownService();
+
+        IReadOnlyList<ChatBlockViewModel> blocks = service.ToBlocks(string.Join('\n',
+            "4. Fourth",
+            "5. Fifth"));
+
+        ChatBlockViewModel[] listItems = blocks.Where(block => block.IsListItem).ToArray();
+        Assert.AreEqual(2, listItems.Length);
+        Assert.AreEqual("4. Fourth", listItems[0].Text);
+        Assert.AreEqual("5. Fifth", listItems[1].Text);
+    }
+
+    [TestMethod]
     public void ApprovalViewModel_AvailableDecisions_ControlButtonVisibility()
     {
         var request = new ApprovalRequest
@@ -442,6 +555,177 @@ public sealed class ViewModelTests
         Assert.IsFalse(vm.ShowDecline);
         Assert.IsFalse(vm.ShowCancel);
         Assert.IsFalse(vm.CanResolve);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_ApprovalDecision_AppendsResultOnlyTranscriptLine()
+    {
+        // Copilot Chat parity (issue #25): after the user decides, the approval card goes away
+        // (worker echo) and the transcript keeps a single sanitized result line.
+        using var vm = new ChatViewModel();
+        MethodInfo requested = typeof(ChatViewModel).GetMethod(
+            "OnApprovalRequestedAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
+        await (Task)requested.Invoke(vm, [new ApprovalRequest
+        {
+            RequestId = "req-decision",
+            Risk = ApprovalRiskCategory.Destructive,
+            DisplayText = "git reset --hard",
+            AvailableDecisions = AcceptDeclineCancel,
+        }])!;
+
+        vm.AppendDecisionResultItem(vm.BuildDecisionSummary("req-decision", ApprovalDecision.Accept));
+
+        ChatItemViewModel result = vm.Items.Single(item => item.Role == "Decision");
+        Assert.AreEqual(ConversationEventKind.ItemCompleted, result.Kind);
+        Assert.IsTrue(result.Text.Contains("Accepted", StringComparison.Ordinal));
+        Assert.IsTrue(result.Text.Contains("git reset --hard", StringComparison.Ordinal));
+        Assert.IsFalse(result.UsesBlockRendering);
+    }
+
+    [TestMethod]
+    public void ChatViewModel_UnknownApprovalId_AppendsDecisionWithoutDisplayText()
+    {
+        using var vm = new ChatViewModel();
+
+        vm.AppendDecisionResultItem(vm.BuildDecisionSummary("missing-request", ApprovalDecision.Decline));
+
+        ChatItemViewModel result = vm.Items.Single(item => item.Role == "Decision");
+        Assert.AreEqual("Declined", result.Text.Trim());
+    }
+
+    [TestMethod]
+    public void ChatViewModel_UserInputResult_AppendsSanitizedSelection()
+    {
+        using var vm = new ChatViewModel();
+        var answers = new Dictionary<string, string[]>(StringComparer.Ordinal)
+        {
+            ["q1"] = ["<b>Sharp</b> \x1b[31mstyle\x1b[0m"],
+        };
+
+        vm.AppendUserInputResultItem(answers);
+
+        ChatItemViewModel result = vm.Items.Single(item => item.Role == "Decision");
+        Assert.IsTrue(result.Text.Contains("Selected", StringComparison.Ordinal));
+        Assert.IsTrue(result.Text.Contains("Sharp style", StringComparison.Ordinal));
+        Assert.IsFalse(result.Text.Contains('<'));
+        Assert.IsFalse(result.Text.Contains('\x1b'));
+    }
+
+    [TestMethod]
+    public void ChatViewModel_UserInputResult_NoSelection_AppendsNothing()
+    {
+        using var vm = new ChatViewModel();
+
+        vm.AppendUserInputResultItem(new Dictionary<string, string[]>(StringComparer.Ordinal));
+
+        Assert.AreEqual(0, vm.Items.Count);
+    }
+
+    [TestMethod]
+    [DataRow(ApprovalDecision.Accept, "Accepted")]
+    [DataRow(ApprovalDecision.AcceptForTurn, "Accepted for turn")]
+    [DataRow(ApprovalDecision.AcceptForThread, "Accepted for thread")]
+    [DataRow(ApprovalDecision.AcceptForSession, "Accepted for session")]
+    [DataRow(ApprovalDecision.Decline, "Declined")]
+    [DataRow(ApprovalDecision.Cancel, "Cancelled")]
+    public void ChatViewModel_DescribeDecision_MapsEveryDecision(ApprovalDecision decision, string expected)
+    {
+        Assert.AreEqual(expected, ChatViewModel.DescribeDecision(decision));
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_ApprovalRpcFailure_DoesNotAppendTranscriptLine()
+    {
+        var bridge = new FakeWorkerBridge { ResolveApprovalException = new InvalidOperationException("disconnected") };
+        using var vm = new ChatViewModel(bridge, autoConnect: false);
+        MethodInfo requested = typeof(ChatViewModel).GetMethod(
+            "OnApprovalRequestedAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
+        await (Task)requested.Invoke(vm, [new ApprovalRequest
+        {
+            RequestId = "req-fail",
+            Risk = ApprovalRiskCategory.Destructive,
+            DisplayText = "git reset --hard",
+            AvailableDecisions = AcceptDeclineCancel,
+        }])!;
+
+        MethodInfo resolve = typeof(ChatViewModel).GetMethod(
+            "ResolveApprovalAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
+
+        InvalidOperationException? caught = null;
+        try
+        {
+            await (Task)resolve.Invoke(vm, ["req-fail", ApprovalDecision.Accept])!;
+        }
+        catch (InvalidOperationException ex)
+        {
+            caught = ex;
+        }
+
+        Assert.IsNotNull(caught);
+        Assert.IsFalse(vm.Items.Any(item => item.Role == "Decision"));
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_ApprovalRpcSuccess_AppendsTranscriptLineAfterResolve()
+    {
+        var bridge = new FakeWorkerBridge();
+        using var vm = new ChatViewModel(bridge, autoConnect: false);
+        MethodInfo requested = typeof(ChatViewModel).GetMethod(
+            "OnApprovalRequestedAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
+        await (Task)requested.Invoke(vm, [new ApprovalRequest
+        {
+            RequestId = "req-ok",
+            Risk = ApprovalRiskCategory.Destructive,
+            DisplayText = "git push --force",
+            AvailableDecisions = AcceptDeclineCancel,
+        }])!;
+
+        MethodInfo resolve = typeof(ChatViewModel).GetMethod(
+            "ResolveApprovalAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
+        await (Task)resolve.Invoke(vm, ["req-ok", ApprovalDecision.Accept])!;
+
+        ChatItemViewModel result = vm.Items.Single(item => item.Role == "Decision");
+        Assert.IsTrue(result.Text.Contains("Accepted", StringComparison.Ordinal));
+        Assert.IsTrue(result.Text.Contains("git push --force", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_UserInputRpcFailure_DoesNotAppendTranscriptLine()
+    {
+        var bridge = new FakeWorkerBridge { ResolveUserInputException = new InvalidOperationException("disconnected") };
+        using var vm = new ChatViewModel(bridge, autoConnect: false);
+        var answers = new Dictionary<string, string[]>(StringComparer.Ordinal) { ["q1"] = ["Yes"] };
+
+        MethodInfo resolve = typeof(ChatViewModel).GetMethod(
+            "ResolveUserInputAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
+
+        InvalidOperationException? caught = null;
+        try
+        {
+            await (Task)resolve.Invoke(vm, ["req-1", answers])!;
+        }
+        catch (InvalidOperationException ex)
+        {
+            caught = ex;
+        }
+
+        Assert.IsNotNull(caught);
+        Assert.IsFalse(vm.Items.Any(item => item.Role == "Decision"));
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_UserInputRpcSuccess_AppendsTranscriptLineAfterResolve()
+    {
+        var bridge = new FakeWorkerBridge();
+        using var vm = new ChatViewModel(bridge, autoConnect: false);
+        var answers = new Dictionary<string, string[]>(StringComparer.Ordinal) { ["q1"] = ["Yes"] };
+
+        MethodInfo resolve = typeof(ChatViewModel).GetMethod(
+            "ResolveUserInputAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
+        await (Task)resolve.Invoke(vm, ["req-1", answers])!;
+
+        ChatItemViewModel result = vm.Items.Single(item => item.Role == "Decision");
+        Assert.IsTrue(result.Text.Contains("Selected — Yes", StringComparison.Ordinal));
     }
 
     [TestMethod]
@@ -1270,6 +1554,16 @@ public sealed class ViewModelTests
         return (Task)method.Invoke(viewModel, [value])!;
     }
 
+    private static ExtensionSettings GetSettings(ChatViewModel viewModel)
+    {
+        FieldInfo field = typeof(ChatViewModel).GetField(
+            "settings",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("Could not find settings.");
+
+        return (ExtensionSettings)field.GetValue(viewModel)!;
+    }
+
     private static ChatItemViewModel SingleConversationItem(
         ChatViewModel viewModel,
         string itemId,
@@ -1295,6 +1589,10 @@ public sealed class ViewModelTests
         public ListModelsResult ModelListResult { get; set; } = new();
 
         public StartTurnRequest? LastStartTurnRequest { get; private set; }
+
+        public Exception? ResolveApprovalException { get; set; }
+
+        public Exception? ResolveUserInputException { get; set; }
 
         public Task PublishStateAsync(WorkerStatus status)
             => StateChanged?.Invoke(status) ?? Task.CompletedTask;
@@ -1339,10 +1637,10 @@ public sealed class ViewModelTests
             => Task.CompletedTask;
 
         public Task ResolveApprovalAsync(ResolveApprovalRequest request, CancellationToken cancellationToken)
-            => Task.CompletedTask;
+            => ResolveApprovalException is not null ? Task.FromException(ResolveApprovalException) : Task.CompletedTask;
 
         public Task ResolveUserInputAsync(ResolveUserInputRequest request, CancellationToken cancellationToken)
-            => Task.CompletedTask;
+            => ResolveUserInputException is not null ? Task.FromException(ResolveUserInputException) : Task.CompletedTask;
 
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
