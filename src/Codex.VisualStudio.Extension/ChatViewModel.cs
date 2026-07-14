@@ -300,7 +300,20 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     public string? SelectedModel
     {
         get => selectedModel;
-        set => SetProperty(ref selectedModel, value);
+        set
+        {
+            // The VS-side ComboBox writes null back through the TwoWay SelectedItem binding
+            // whenever its ItemsSource momentarily invalidates the current selection. Remote UI
+            // delivers that write-back asynchronously, so it can arrive after a newer selection
+            // was already set here and would blank the picker. A null is never a valid user
+            // choice while models exist, so drop it.
+            if (value is null && Models.Count > 0)
+            {
+                return;
+            }
+
+            SetProperty(ref selectedModel, value);
+        }
     }
 
     [DataMember]
@@ -643,23 +656,39 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         await OnUiAsync(() =>
         {
             string? previousSelection = SelectedModel;
-            Models.Clear();
-            foreach (string modelId in modelIds)
+
+            // Merge in place instead of Clear+Add: with Remote UI, clearing the list would
+            // momentarily invalidate the VS-side ComboBox selection, whose TwoWay binding then
+            // asynchronously writes SelectedModel = null back and clobbers the selection set
+            // below. Add new entries first, move the selection to a surviving entry, and only
+            // then drop stale entries so the proxy-side selection never becomes invalid.
+            for (int i = 0; i < modelIds.Count; i++)
             {
-                Models.Add(modelId);
+                if (!Models.Contains(modelIds[i]))
+                {
+                    Models.Insert(Math.Min(i, Models.Count), modelIds[i]);
+                }
             }
 
             if (result.DefaultModel is not null && Models.Contains(result.DefaultModel))
             {
                 SelectedModel = result.DefaultModel;
             }
-            else if (previousSelection is not null && Models.Contains(previousSelection))
+            else if (previousSelection is not null && modelIds.Contains(previousSelection, StringComparer.Ordinal))
             {
                 SelectedModel = previousSelection;
             }
             else
             {
-                SelectedModel = Models[0];
+                SelectedModel = modelIds[0];
+            }
+
+            for (int i = Models.Count - 1; i >= 0; i--)
+            {
+                if (!modelIds.Contains(Models[i], StringComparer.Ordinal))
+                {
+                    Models.RemoveAt(i);
+                }
             }
         }).ConfigureAwait(false);
     }
