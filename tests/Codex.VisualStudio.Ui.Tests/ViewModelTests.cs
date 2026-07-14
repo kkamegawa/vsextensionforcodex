@@ -1,4 +1,5 @@
-﻿using System.IO;
+﻿using System.Collections.Specialized;
+using System.IO;
 using System.Reflection;
 using System.Runtime.Serialization;
 using System.Text.RegularExpressions;
@@ -28,6 +29,8 @@ public sealed class ViewModelTests
     private static readonly string[] ExpectedModes = ["Agent", "Chat"];
     private static readonly string[] ExpectedWorkerModels = ["gpt-5-codex", "gpt-5"];
     private static readonly string[] ExpectedModelsWithInjectedDefault = ["gpt-5.1-codex-max", "gpt-5-codex", "gpt-5"];
+    private static readonly string[] ExpectedRefreshedModels = ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini"];
+    private static readonly string[] ExpectedReorderedModels = ["gpt-5", "gpt-5-codex", "gpt-5-mini"];
     private static readonly string[] CreativeOnly = ["Creative"];
     [TestMethod]
     public async Task ApprovalViewModel_ResolvesOnlyOnce()
@@ -1367,6 +1370,115 @@ public sealed class ViewModelTests
 
         CollectionAssert.AreEqual(originalModels, vm.Models);
         Assert.AreEqual(originalSelection, vm.SelectedModel);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_PopulateModels_RefreshNeverInvalidatesSelection()
+    {
+        // Remote UI mirrors every collection change to a VS-process proxy where the TwoWay
+        // SelectedItem binding writes null back if the selection ever leaves the list. The
+        // refresh must therefore never reset the list, and whenever an entry is removed the
+        // current selection must already point at a surviving entry.
+        var bridge = new FakeWorkerBridge
+        {
+            ModelListResult = new ListModelsResult
+            {
+                Models =
+                [
+                    new ModelInfo { Id = "gpt-5.5" },
+                    new ModelInfo { Id = "gpt-5.4" },
+                    new ModelInfo { Id = "gpt-5.4-mini" },
+                ],
+                DefaultModel = "gpt-5.5",
+            },
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false);
+        var violations = new List<string>();
+        vm.Models.CollectionChanged += (_, e) =>
+        {
+            if (e.Action == NotifyCollectionChangedAction.Reset)
+            {
+                violations.Add("Reset raised");
+            }
+            else if (e.Action == NotifyCollectionChangedAction.Remove
+                && (vm.SelectedModel is null || !vm.Models.Contains(vm.SelectedModel)))
+            {
+                violations.Add($"Selection '{vm.SelectedModel}' invalid after removing '{e.OldItems![0]}'");
+            }
+        };
+
+        await vm.PopulateModelsAsync();
+
+        CollectionAssert.AreEqual(ExpectedRefreshedModels, vm.Models);
+        Assert.AreEqual("gpt-5.5", vm.SelectedModel);
+        Assert.AreEqual(0, violations.Count, string.Join("; ", violations));
+    }
+
+    [TestMethod]
+    public void ChatViewModel_SelectedModel_IgnoresNullWriteBackWhileModelsExist()
+    {
+        // The VS-side ComboBox can write null back through the TwoWay binding while the list
+        // is being refreshed; that late write-back must not blank a valid selection.
+        using var vm = new ChatViewModel(new FakeWorkerBridge(), autoConnect: false);
+        string? before = vm.SelectedModel;
+        Assert.IsNotNull(before);
+
+        vm.SelectedModel = null;
+
+        Assert.AreEqual(before, vm.SelectedModel);
+    }
+
+    [TestMethod]
+    public void ChatViewModel_SelectedModel_AllowsNullWhenCurrentSelectionAlreadyInvalid()
+    {
+        // If the current selection no longer exists in Models, a null is not a stale
+        // write-back to guard against -- it's a legitimate clear, and must go through so the
+        // VM does not get stuck holding a value the picker can no longer display.
+        using var vm = new ChatViewModel(new FakeWorkerBridge(), autoConnect: false);
+        vm.Models.Clear();
+        Assert.IsFalse(vm.Models.Contains(vm.SelectedModel!));
+
+        vm.SelectedModel = null;
+
+        Assert.IsNull(vm.SelectedModel);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_PopulateModels_ReordersExistingEntriesToMatchCatalogOrder()
+    {
+        // The merge must reorder entries that already exist in Models (not just insert new
+        // ones), so the dropdown order tracks the app-server catalog order across refreshes.
+        var bridge = new FakeWorkerBridge
+        {
+            ModelListResult = new ListModelsResult
+            {
+                Models =
+                [
+                    new ModelInfo { Id = "gpt-5-codex" },
+                    new ModelInfo { Id = "gpt-5" },
+                ],
+                DefaultModel = "gpt-5",
+            },
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false);
+        await vm.PopulateModelsAsync();
+        CollectionAssert.AreEqual(ExpectedWorkerModels, vm.Models);
+
+        bridge.ModelListResult = new ListModelsResult
+        {
+            Models =
+            [
+                new ModelInfo { Id = "gpt-5" },
+                new ModelInfo { Id = "gpt-5-codex" },
+                new ModelInfo { Id = "gpt-5-mini" },
+            ],
+            DefaultModel = "gpt-5",
+        };
+
+        await vm.PopulateModelsAsync();
+
+        CollectionAssert.AreEqual(ExpectedReorderedModels, vm.Models);
+        Assert.AreEqual("gpt-5", vm.SelectedModel);
     }
 
     [TestMethod]
