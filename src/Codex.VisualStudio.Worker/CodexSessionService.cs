@@ -279,6 +279,7 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
 
     public async Task<ListModelsResult> ListModelsAsync(CancellationToken cancellationToken)
     {
+        WorkerDiagnostics.Write("app-server model list request starting");
         try
         {
             JsonElement result = await RequireConnection().SendRequestAsync(
@@ -288,10 +289,13 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
                 new { includeHidden = true },
                 TimeSpan.FromSeconds(15),
                 cancellationToken).ConfigureAwait(false);
-            return ReadModelsResult(result);
+            ListModelsResult models = ReadModelsResult(result);
+            WorkerDiagnostics.Write($"app-server model list request completed count={models.Models.Count}");
+            return models;
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException ex)
         {
+            WorkerDiagnostics.Write("app-server model list request canceled", ex);
             throw;
         }
         catch (Exception ex)
