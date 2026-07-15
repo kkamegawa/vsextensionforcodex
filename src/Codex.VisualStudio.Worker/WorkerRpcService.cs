@@ -153,8 +153,26 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
     public Task<ThreadPage> ListThreadsAsync(string? cursor, CancellationToken cancellationToken)
         => session.ListThreadsAsync(cursor, cancellationToken);
 
-    public Task<ListModelsResult> ListModelsAsync(CancellationToken cancellationToken)
-        => session.ListModelsAsync(cancellationToken);
+    public async Task<ListModelsResult> ListModelsAsync(CancellationToken cancellationToken)
+    {
+        WorkerDiagnostics.Write("worker/models/list RPC received");
+        try
+        {
+            ListModelsResult result = await session.ListModelsAsync(cancellationToken).ConfigureAwait(false);
+            WorkerDiagnostics.Write($"worker/models/list RPC completed count={result.Models.Count}");
+            return result;
+        }
+        catch (OperationCanceledException ex)
+        {
+            WorkerDiagnostics.Write("worker/models/list RPC canceled", ex);
+            throw;
+        }
+        catch (Exception ex)
+        {
+            WorkerDiagnostics.Write("worker/models/list RPC failed", ex);
+            throw;
+        }
+    }
 
     public async Task<string> StartTurnAsync(StartTurnRequest request, CancellationToken cancellationToken)
     {

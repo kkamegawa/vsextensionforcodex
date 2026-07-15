@@ -54,6 +54,8 @@ internal interface IWorkerBridge : IAsyncDisposable
 
 public sealed class WorkerBridge : IWorkerBridge, ICodexWorkerObserver
 {
+    private static readonly TimeSpan ModelListTimeout = TimeSpan.FromSeconds(20);
+
     private readonly OutputChannel? log;
     private Process? process;
     private NamedPipeClientStream? pipe;
@@ -151,8 +153,36 @@ public sealed class WorkerBridge : IWorkerBridge, ICodexWorkerObserver
     public Task<ThreadPage> ListThreadsAsync(string? cursor, CancellationToken cancellationToken)
         => rpc!.InvokeWithCancellationAsync<ThreadPage>("worker/thread/list", new object?[] { cursor }, cancellationToken);
 
-    public Task<ListModelsResult> ListModelsAsync(CancellationToken cancellationToken)
-        => rpc!.InvokeWithCancellationAsync<ListModelsResult>("worker/models/list", Array.Empty<object>(), cancellationToken);
+    public async Task<ListModelsResult> ListModelsAsync(CancellationToken cancellationToken)
+    {
+        ExtensionDiagnostics.Write("worker/models/list invocation starting");
+        using var timeout = new CancellationTokenSource(ModelListTimeout);
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeout.Token);
+        try
+        {
+            ListModelsResult result = await RequireRpc().InvokeWithCancellationAsync<ListModelsResult>(
+                "worker/models/list",
+                Array.Empty<object>(),
+                linked.Token).ConfigureAwait(false);
+            ExtensionDiagnostics.Write($"worker/models/list invocation completed count={result.Models.Count}");
+            return result;
+        }
+        catch (OperationCanceledException ex) when (timeout.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+        {
+            ExtensionDiagnostics.Write("worker/models/list invocation timed out", ex);
+            throw new TimeoutException("The Codex Worker did not complete model discovery in time.", ex);
+        }
+        catch (OperationCanceledException ex) when (cancellationToken.IsCancellationRequested)
+        {
+            ExtensionDiagnostics.Write("worker/models/list invocation canceled", ex);
+            throw;
+        }
+        catch (Exception ex)
+        {
+            ExtensionDiagnostics.Write("worker/models/list invocation failed", ex);
+            throw;
+        }
+    }
 
     public Task<ThreadSummary> StartThreadAsync(CancellationToken cancellationToken)
         => rpc!.InvokeWithCancellationAsync<ThreadSummary>("worker/thread/start", Array.Empty<object>(), cancellationToken);

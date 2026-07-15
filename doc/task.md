@@ -167,6 +167,8 @@
 
 ### 4.1 モデル / 努力度
 - [x] `model/list`（`includeHidden`）でモデルピッカー UI（`ChatViewModel.PopulateModelsAsync`、起動時 1 回ロード）
+- [x] Load the startup model catalog before Remote UI account synchronization can block initialization (#39)
+- [x] Add bounded model discovery diagnostics across the extension, Worker RPC, and app-server request boundaries (#39)
 - [ ] モデル一覧の明示的な再取得（refresh）コマンド
 - [ ] reasoning effort セレクタ、`supportsPersonality` 反映
 

@@ -538,15 +538,19 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         }
     }
 
-    private async Task RefreshReadyStateAsync(bool reloadThreads)
+    internal async Task RefreshReadyStateAsync(bool reloadThreads)
     {
         AccountStatus accountStatus = await bridge.GetAccountStatusAsync(lifetime.Token).ConfigureAwait(false);
         ExtensionDiagnostics.Write($"Account status received state={accountStatus.State} plan={accountStatus.PlanType ?? "none"}");
+
+        // Model discovery must not wait on Remote UI account synchronization. Account updates
+        // raise several cross-process property and command notifications, and a delayed VS-side
+        // subscriber previously kept the picker on its built-in fallback entries indefinitely.
+        await PopulateModelsAsync().ConfigureAwait(false);
         await OnUiAsync(() =>
         {
             UpdateAccount(accountStatus);
         }).ConfigureAwait(false);
-        await PopulateModelsAsync().ConfigureAwait(false);
         if (reloadThreads)
         {
             await ReloadThreadsAsync().ConfigureAwait(false);
@@ -1313,15 +1317,16 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     // In the OOP extension process, Application.Current is null so the null-conditional
     // falls through to the inline call. RemoteUI marshals property/collection changes
     // to VS's UI thread automatically via its proxy mechanism.
-    private static Task OnUiAsync(Action action)
+    private static async Task OnUiAsync(Action action)
     {
-        if (Application.Current?.Dispatcher is { } dispatcher && !dispatcher.CheckAccess())
-        {
-            return dispatcher.InvokeAsync(action).Task;
-        }
-
         try
         {
+            if (Application.Current?.Dispatcher is { } dispatcher && !dispatcher.CheckAccess())
+            {
+                await dispatcher.InvokeAsync(action).Task.ConfigureAwait(false);
+                return;
+            }
+
             action();
         }
         catch (Exception ex)
@@ -1332,8 +1337,6 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             // responses — the tool window then freezes at its last rendered state.
             ExtensionDiagnostics.Write("UI state update failed", ex);
         }
-
-        return Task.CompletedTask;
     }
 }
 

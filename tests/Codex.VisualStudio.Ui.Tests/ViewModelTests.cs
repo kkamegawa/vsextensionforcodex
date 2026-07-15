@@ -1313,6 +1313,49 @@ public sealed class ViewModelTests
     }
 
     [TestMethod]
+    public async Task ChatViewModel_RefreshReadyState_LoadsModelsBeforeAccountUiNotificationCompletes()
+    {
+        var bridge = new FakeWorkerBridge
+        {
+            ModelListResult = new ListModelsResult
+            {
+                Models =
+                [
+                    new ModelInfo { Id = "gpt-5-codex" },
+                    new ModelInfo { Id = "gpt-5" },
+                ],
+                DefaultModel = "gpt-5",
+            },
+        };
+        using var accountUpdateStarted = new ManualResetEventSlim();
+        using var releaseAccountUpdate = new ManualResetEventSlim();
+        using var vm = new ChatViewModel(bridge, autoConnect: false);
+        vm.AccountCommand.PropertyChanged += (_, args) =>
+        {
+            if (string.Equals(args.PropertyName, nameof(AsyncCommand.CanExecute), StringComparison.Ordinal))
+            {
+accountUpdateStarted.Set();
+releaseAccountUpdate.Wait();
+            }
+        };
+
+        Task refresh = Task.Run(() => vm.RefreshReadyStateAsync(reloadThreads: false));
+        try
+        {
+            Assert.IsTrue(accountUpdateStarted.Wait(TimeSpan.FromSeconds(5)), "The account UI update did not start.");
+            Assert.AreEqual(1, bridge.ModelListCallCount);
+            CollectionAssert.AreEqual(ExpectedWorkerModels, vm.Models);
+            Assert.AreEqual("gpt-5", vm.SelectedModel);
+        }
+        finally
+        {
+            releaseAccountUpdate.Set();
+        }
+
+        await refresh.WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+    [TestMethod]
     public async Task ChatViewModel_PopulateModels_UsesWorkerModelsAndDefault()
     {
         var bridge = new FakeWorkerBridge
@@ -1700,6 +1743,8 @@ public sealed class ViewModelTests
 
         public ListModelsResult ModelListResult { get; set; } = new();
 
+        public int ModelListCallCount { get; private set; }
+
         public StartTurnRequest? LastStartTurnRequest { get; private set; }
 
         public Exception? ResolveApprovalException { get; set; }
@@ -1728,7 +1773,10 @@ public sealed class ViewModelTests
             => Task.FromResult(new ThreadPage());
 
         public Task<ListModelsResult> ListModelsAsync(CancellationToken cancellationToken)
-            => Task.FromResult(ModelListResult);
+        {
+            ModelListCallCount++;
+            return Task.FromResult(ModelListResult);
+        }
 
         public Task<ThreadSummary> StartThreadAsync(CancellationToken cancellationToken)
             => Task.FromResult(new ThreadSummary { Id = "thread-1" });
