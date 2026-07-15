@@ -1334,8 +1334,8 @@ public sealed class ViewModelTests
         {
             if (string.Equals(args.PropertyName, nameof(AsyncCommand.CanExecute), StringComparison.Ordinal))
             {
-                accountUpdateStarted.Set();
-                releaseAccountUpdate.Wait(TimeSpan.FromSeconds(5));
+accountUpdateStarted.Set();
+releaseAccountUpdate.Wait();
             }
         };
 
