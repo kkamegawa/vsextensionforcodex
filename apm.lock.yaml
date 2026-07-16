@@ -1,13 +1,14 @@
 lockfile_version: '1'
-generated_at: '2026-06-06T00:00:00.000000+00:00'
-apm_version: 0.18.0
+generated_at: '2026-07-16T12:44:34.307398+00:00'
+apm_version: 0.25.0
 dependencies:
 - repo_url: github/awesome-copilot
+  name: awesome-copilot-api-architect
   host: github.com
-  resolved_commit: 880b059b6203fd209cd6f0c25fdb77d9279fcce0
+  resolved_commit: fb80ec4f215e8a96dfdc80f674cabcda36ccd01a
+  version: 1.0.0
   virtual_path: agents/api-architect.agent.md
   is_virtual: true
-  package_type: apm_package
   deployed_files:
   - .claude/agents/api-architect.md
   - .codex/agents/api-architect.toml
@@ -16,4 +17,32 @@ dependencies:
     .claude/agents/api-architect.md: sha256:0a503c0c0d18b1e78645262e12d70857978f14463e1bbb1db8fc80451ed50e41
     .codex/agents/api-architect.toml: sha256:a067567cb324a19484096a72d29f85bc00affebb74a07a6be8b2908c18f22e85
     .github/agents/api-architect.agent.md: sha256:0a503c0c0d18b1e78645262e12d70857978f14463e1bbb1db8fc80451ed50e41
-  content_hash: sha256:9737dd83c02900b1f1f4ed0ca6aeb438f90a1d36d20272f83cf4d52fe270e2b1
+  content_hash: sha256:ee736d5bcf171e135dabaeb9a550728fc621aa244fbc5c4722ac23c01096b697
+deployments:
+- kind: project-relative
+  target: claude
+  value: .claude/agents/api-architect.md
+  runtime: null
+  scope: project
+  owners:
+  - github/awesome-copilot/agents/api-architect.agent.md
+  active_owner: github/awesome-copilot/agents/api-architect.agent.md
+  content_hash: sha256:0a503c0c0d18b1e78645262e12d70857978f14463e1bbb1db8fc80451ed50e41
+- kind: project-relative
+  target: codex
+  value: .codex/agents/api-architect.toml
+  runtime: null
+  scope: project
+  owners:
+  - github/awesome-copilot/agents/api-architect.agent.md
+  active_owner: github/awesome-copilot/agents/api-architect.agent.md
+  content_hash: sha256:a067567cb324a19484096a72d29f85bc00affebb74a07a6be8b2908c18f22e85
+- kind: project-relative
+  target: copilot
+  value: .github/agents/api-architect.agent.md
+  runtime: null
+  scope: project
+  owners:
+  - github/awesome-copilot/agents/api-architect.agent.md
+  active_owner: github/awesome-copilot/agents/api-architect.agent.md
+  content_hash: sha256:0a503c0c0d18b1e78645262e12d70857978f14463e1bbb1db8fc80451ed50e41
