@@ -149,6 +149,7 @@
 - [x] 実行中のスレッド別FIFOキュー、設定置換、切断・再起動・スレッド消失時取消
 - [x] Worker契約v8と型付きcompact/review/fork/goal/MCP/feedback/rate-limit RPC
 - [x] `/ide-context`、`/init`、`/status`のVisual Studio内処理
+- [x] レビュー指摘対応: 次ターン設定の消費、キュードレイン網羅（失敗後継続・選択スレッド・セッションキュー）、compaction完了時のReady復帰、`/fork`後の履歴復元、`/model`大文字小文字非区別、`/goal show`エイリアス、候補の編集距離閾値（GitHub Issue #51、sub-issues #52-#56）
 
 ### 3.2 スキル
 - [ ] `skills/list`（`cwds` スコープ、`forceReload`）でスキル一覧取得（キャッシュ + invalidation）
