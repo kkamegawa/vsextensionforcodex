@@ -78,6 +78,25 @@ public sealed class SlashCommandTests
     }
 
     [TestMethod]
+    public void Parser_UnknownCommandWithoutNearMatchOmitsCandidates()
+    {
+        var parser = new SlashCommandParser(catalog);
+
+        SlashCommandParseResult result = parser.Parse("/xyzzyqq");
+
+        Assert.AreEqual(SlashCommandParseKind.Unknown, result.Kind);
+        Assert.AreEqual(0, result.Suggestions!.Count);
+        Assert.IsFalse(result.ErrorMessage!.Contains("Did you mean", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    public void Catalog_SuggestOmitsCandidatesBeyondEditDistanceThreshold()
+    {
+        Assert.AreEqual(0, catalog.Suggest("xyzzyqq").Count);
+        Assert.IsTrue(catalog.Suggest("stauts").Contains("/status"));
+    }
+
+    [TestMethod]
     public void Parser_RecognizesHiddenCommandAsUnsupported()
     {
         var parser = new SlashCommandParser(catalog);
@@ -122,6 +141,16 @@ public sealed class SlashCommandTests
 
         string tooLong = "set " + new string('x', SlashCommandArgumentParser.MaximumGoalLength + 1);
         Assert.IsFalse(SlashCommandArgumentParser.TryParseGoal(tooLong, out _, out string? error));
+        Assert.IsNotNull(error);
+    }
+
+    [TestMethod]
+    public void ArgumentParser_AcceptsGoalShowAsAliasOfGet()
+    {
+        Assert.IsTrue(SlashCommandArgumentParser.TryParseGoal("show", out GoalCommandArguments? show, out _));
+        Assert.AreEqual(GoalCommandOperation.Get, show!.Operation);
+
+        Assert.IsFalse(SlashCommandArgumentParser.TryParseGoal("show something", out _, out string? error));
         Assert.IsNotNull(error);
     }
 
