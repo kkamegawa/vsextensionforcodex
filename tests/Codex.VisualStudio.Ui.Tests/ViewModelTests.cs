@@ -1184,7 +1184,9 @@ public sealed class ViewModelTests
         [
             typeof(ChatViewModel), typeof(ChatItemViewModel), typeof(ChatBlockViewModel), typeof(ApprovalViewModel),
             typeof(UserInputViewModel), typeof(UserInputQuestionViewModel), typeof(UserInputOptionViewModel),
-            typeof(SuggestionChip), typeof(WorkerStatus), typeof(ThreadSummary),
+            typeof(SuggestionChip), typeof(SlashCommandPresentationViewModel),
+            typeof(SlashCommandSuggestionViewModel), typeof(SlashCommandOptionViewModel),
+            typeof(WorkerStatus), typeof(ThreadSummary),
         ];
 
     [TestMethod]
@@ -1351,8 +1353,8 @@ public sealed class ViewModelTests
         {
             if (string.Equals(args.PropertyName, nameof(AsyncCommand.CanExecute), StringComparison.Ordinal))
             {
-accountUpdateStarted.Set();
-releaseAccountUpdate.Wait();
+                accountUpdateStarted.Set();
+                releaseAccountUpdate.Wait();
             }
         };
 
@@ -1602,6 +1604,133 @@ releaseAccountUpdate.Wait();
     }
 
     [TestMethod]
+    public async Task ChatViewModel_StatusSlashCommand_DoesNotSteerActiveTurn()
+    {
+        var bridge = new FakeWorkerBridge();
+        using var vm = new ChatViewModel(bridge, autoConnect: false)
+        {
+            SelectedThread = new ThreadSummary { Id = "thread-1" },
+            ComposerText = "/status",
+        };
+        await bridge.PublishStateAsync(new WorkerStatus
+        {
+            State = WorkerConnectionState.Busy,
+            ThreadId = "thread-1",
+            TurnId = "turn-1",
+        });
+
+        await InvokeComposerSendAsync(vm);
+
+        Assert.IsNull(bridge.LastSteerTurnRequest);
+        Assert.AreEqual(1, bridge.RateLimitCallCount);
+        Assert.AreEqual(string.Empty, vm.ComposerText);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_DoubleSlashSteersLiteralSlashPrompt()
+    {
+        var bridge = new FakeWorkerBridge();
+        using var vm = new ChatViewModel(bridge, autoConnect: false)
+        {
+            SelectedThread = new ThreadSummary { Id = "thread-1" },
+            ComposerText = "//status",
+        };
+        await bridge.PublishStateAsync(new WorkerStatus
+        {
+            State = WorkerConnectionState.Busy,
+            ThreadId = "thread-1",
+            TurnId = "turn-1",
+        });
+
+        await InvokeComposerSendAsync(vm);
+
+        Assert.IsNotNull(bridge.LastSteerTurnRequest);
+        Assert.AreEqual("/status", bridge.LastSteerTurnRequest!.Text);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_PlanWithPrompt_StartsPlanModeTurn()
+    {
+        var bridge = new FakeWorkerBridge();
+        using var vm = new ChatViewModel(bridge, autoConnect: false)
+        {
+            SelectedThread = new ThreadSummary { Id = "thread-1" },
+            SelectedModel = "gpt-5",
+            ComposerText = "/plan design the change",
+        };
+        await bridge.PublishStateAsync(new WorkerStatus
+        {
+            State = WorkerConnectionState.Ready,
+            ThreadId = "thread-1",
+        });
+
+        await InvokeComposerSendAsync(vm);
+
+        Assert.IsNotNull(bridge.LastStartTurnRequest);
+        Assert.AreEqual("design the change", bridge.LastStartTurnRequest!.Text);
+        Assert.IsNotNull(bridge.LastStartTurnRequest.CollaborationMode);
+        Assert.AreEqual("plan", bridge.LastStartTurnRequest.CollaborationMode!.Mode);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_PlanWithoutPrompt_AppliesOnlyToNextSuccessfulTurn()
+    {
+        var bridge = new FakeWorkerBridge();
+        using var vm = new ChatViewModel(bridge, autoConnect: false)
+        {
+            SelectedThread = new ThreadSummary { Id = "thread-1" },
+            ComposerText = "/plan",
+        };
+        await bridge.PublishStateAsync(new WorkerStatus
+        {
+            State = WorkerConnectionState.Ready,
+            ThreadId = "thread-1",
+        });
+
+        await InvokeComposerSendAsync(vm);
+        await SendMessageAsync(vm, "first", clearComposer: false);
+
+        Assert.IsNotNull(bridge.LastStartTurnRequest);
+        Assert.IsNotNull(bridge.LastStartTurnRequest!.CollaborationMode);
+        Assert.AreEqual("plan", bridge.LastStartTurnRequest.CollaborationMode!.Mode);
+
+        await SendMessageAsync(vm, "second", clearComposer: false);
+
+        Assert.IsNotNull(bridge.LastStartTurnRequest);
+        Assert.IsNull(bridge.LastStartTurnRequest!.CollaborationMode);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_QueuedReviewRunsAfterTurnCompletionWithoutSteer()
+    {
+        var bridge = new FakeWorkerBridge();
+        using var vm = new ChatViewModel(bridge, autoConnect: false)
+        {
+            SelectedThread = new ThreadSummary { Id = "thread-1" },
+            ComposerText = "/review uncommitted",
+        };
+        await bridge.PublishStateAsync(new WorkerStatus
+        {
+            State = WorkerConnectionState.Busy,
+            ThreadId = "thread-1",
+            TurnId = "turn-1",
+        });
+
+        await InvokeComposerSendAsync(vm);
+        Assert.AreEqual(0, bridge.ReviewCallCount);
+        Assert.IsNull(bridge.LastSteerTurnRequest);
+
+        await bridge.PublishStateAsync(new WorkerStatus
+        {
+            State = WorkerConnectionState.Ready,
+            ThreadId = "thread-1",
+        });
+        await Task.Delay(100);
+
+        Assert.AreEqual(1, bridge.ReviewCallCount);
+    }
+
+    [TestMethod]
     [DataRow("my-app", "my_app")]
     [DataRow("123", "_123")]
     [DataRow("---", "App")]
@@ -1716,6 +1845,16 @@ releaseAccountUpdate.Wait();
         return (Task)method.Invoke(viewModel, [text, clearComposer])!;
     }
 
+    private static Task InvokeComposerSendAsync(ChatViewModel viewModel)
+    {
+        MethodInfo method = typeof(ChatViewModel).GetMethod(
+            "SendAsync",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("Could not find SendAsync.");
+
+        return (Task)method.Invoke(viewModel, null)!;
+    }
+
     private static Task RaiseConversationEventAsync(ChatViewModel viewModel, ConversationEvent value)
     {
         MethodInfo method = typeof(ChatViewModel).GetMethod(
@@ -1758,11 +1897,25 @@ releaseAccountUpdate.Wait();
 
         public event Func<string, Task>? UserInputResolved { add { } remove { } }
 
+        public event Func<ContextCompactionEvent, Task>? ContextCompacted { add { } remove { } }
+
+        public event Func<ReviewModeEvent, Task>? ReviewModeChanged { add { } remove { } }
+
+        public event Func<ThreadGoalEvent, Task>? ThreadGoalChanged { add { } remove { } }
+
+        public event Func<RateLimitsResult, Task>? RateLimitsChanged { add { } remove { } }
+
         public ListModelsResult ModelListResult { get; set; } = new();
 
         public int ModelListCallCount { get; private set; }
 
         public StartTurnRequest? LastStartTurnRequest { get; private set; }
+
+        public SteerTurnRequest? LastSteerTurnRequest { get; private set; }
+
+        public int ReviewCallCount { get; private set; }
+
+        public int RateLimitCallCount { get; private set; }
 
         public Exception? ResolveApprovalException { get; set; }
 
@@ -1808,10 +1961,54 @@ releaseAccountUpdate.Wait();
         }
 
         public Task<string> SteerTurnAsync(SteerTurnRequest request, CancellationToken cancellationToken)
-            => Task.FromResult(request.ExpectedTurnId);
+        {
+            LastSteerTurnRequest = request;
+            return Task.FromResult(request.ExpectedTurnId);
+        }
 
         public Task InterruptTurnAsync(InterruptTurnRequest request, CancellationToken cancellationToken)
             => Task.CompletedTask;
+
+        public Task<CompactThreadResult> CompactThreadAsync(CompactThreadRequest request, CancellationToken cancellationToken)
+            => Task.FromResult(new CompactThreadResult());
+
+        public Task<StartReviewResult> StartReviewAsync(StartReviewRequest request, CancellationToken cancellationToken)
+        {
+            ReviewCallCount++;
+            return Task.FromResult(new StartReviewResult { TurnId = "turn-review" });
+        }
+
+        public Task<ForkThreadResult> ForkThreadAsync(ForkThreadRequest request, CancellationToken cancellationToken)
+            => Task.FromResult(new ForkThreadResult { Thread = new ThreadSummary { Id = "thread-fork" } });
+
+        public Task<ThreadGoalResult> GetThreadGoalAsync(string threadId, CancellationToken cancellationToken)
+            => Task.FromResult(new ThreadGoalResult());
+
+        public Task<ThreadGoalResult> SetThreadGoalAsync(SetThreadGoalRequest request, CancellationToken cancellationToken)
+            => Task.FromResult(new ThreadGoalResult
+            {
+                Goal = new ThreadGoalInfo
+                {
+                    ThreadId = request.ThreadId,
+                    Objective = request.Objective ?? string.Empty,
+                    Status = request.Status ?? ThreadGoalStatus.Active,
+                },
+            });
+
+        public Task<ThreadGoalResult> ClearThreadGoalAsync(string threadId, CancellationToken cancellationToken)
+            => Task.FromResult(new ThreadGoalResult { Cleared = true });
+
+        public Task<McpServerListResult> ListMcpServersAsync(string? threadId, CancellationToken cancellationToken)
+            => Task.FromResult(new McpServerListResult());
+
+        public Task<UploadFeedbackResult> UploadFeedbackAsync(UploadFeedbackRequest request, CancellationToken cancellationToken)
+            => Task.FromResult(new UploadFeedbackResult { ThreadId = request.ThreadId });
+
+        public Task<RateLimitsResult> GetRateLimitsAsync(CancellationToken cancellationToken)
+        {
+            RateLimitCallCount++;
+            return Task.FromResult(new RateLimitsResult());
+        }
 
         public Task ResolveApprovalAsync(ResolveApprovalRequest request, CancellationToken cancellationToken)
             => ResolveApprovalException is not null ? Task.FromException(ResolveApprovalException) : Task.CompletedTask;
