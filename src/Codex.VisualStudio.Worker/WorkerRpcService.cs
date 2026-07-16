@@ -373,6 +373,16 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
 
     private async Task PublishContextCompactedAsync(ContextCompactionEvent value, CancellationToken cancellationToken)
     {
+        // thread/compact/start marks the worker Busy, but the app-server may report completion
+        // only through this event instead of turn/completed. Restore Ready when no turn is
+        // active so queued slash commands are not blocked behind a finished compaction.
+        if (value.IsCompleted
+            && status.State == WorkerConnectionState.Busy
+            && session.ActiveTurnId is null)
+        {
+            await SetStatusAsync(WorkerConnectionState.Ready, "Context compaction completed.", cancellationToken).ConfigureAwait(false);
+        }
+
         if (clientRpc is not null)
         {
             await clientRpc.NotifyWithParameterObjectAsync("observer/contextCompacted", new { value }).ConfigureAwait(false);
