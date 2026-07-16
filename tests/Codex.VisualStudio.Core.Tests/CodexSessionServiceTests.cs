@@ -55,10 +55,37 @@ public sealed class CodexSessionServiceTests
             Handler = (method, _) => method == "model/list"
                 ? JsonSerializer.SerializeToElement(new
                 {
-                    data = new[]
+                    data = new object[]
                     {
-                        new { model = "gpt-5-codex", displayName = "GPT-5 Codex", isDefault = false },
-                        new { model = "gpt-5", displayName = "GPT-5", isDefault = true },
+                        new
+                        {
+                            model = "gpt-5-codex",
+                            displayName = "GPT-5 Codex",
+                            isDefault = false,
+                            defaultReasoningEffort = "high",
+                            supportedReasoningEfforts = new[]
+                            {
+                                new { reasoningEffort = "medium", description = "Balanced" },
+                                new { reasoningEffort = "high", description = "Deep" },
+                            },
+                            supportsPersonality = true,
+                            defaultServiceTier = "priority",
+                            serviceTiers = new[]
+                            {
+                                new { id = "priority", name = "Priority", description = "Fast queue" },
+                            },
+                        },
+                        new
+                        {
+                            model = "gpt-5",
+                            displayName = "GPT-5",
+                            isDefault = true,
+                            defaultReasoningEffort = "medium",
+                            supportedReasoningEfforts = Array.Empty<object>(),
+                            supportsPersonality = false,
+                            defaultServiceTier = (string?)null,
+                            serviceTiers = Array.Empty<object>(),
+                        },
                     },
                     nextCursor = (string?)null,
                 })
@@ -72,6 +99,12 @@ public sealed class CodexSessionServiceTests
         CollectionAssert.AreEqual(ExpectedModels, result.Models.Select(model => model.Id).ToArray());
         Assert.AreEqual("GPT-5 Codex", result.Models[0].DisplayName);
         Assert.AreEqual("gpt-5", result.DefaultModel);
+        Assert.AreEqual("high", result.Models[0].DefaultReasoningEffort);
+        Assert.AreEqual(2, result.Models[0].SupportedReasoningEfforts.Count);
+        Assert.AreEqual("medium", result.Models[0].SupportedReasoningEfforts[0].Id);
+        Assert.IsTrue(result.Models[0].SupportsPersonality);
+        Assert.AreEqual("priority", result.Models[0].DefaultServiceTier);
+        Assert.AreEqual("priority", result.Models[0].ServiceTiers[0].Id);
     }
 
     [TestMethod]
@@ -172,6 +205,8 @@ public sealed class CodexSessionServiceTests
     [TestMethod]
     public async Task StartTurnForwardsModelAndModeOverridesWhenSet()
     {
+        string activeDocument = Path.Combine(Path.GetTempPath(), "active.cs");
+        string referencedDocument = Path.Combine(Path.GetTempPath(), "referenced.cs");
         var connection = new RecordingConnection
         {
             Handler = (method, _) => method == "turn/start"
@@ -189,6 +224,23 @@ public sealed class CodexSessionServiceTests
                 Model = "gpt-5",
                 ApprovalPolicy = "never",
                 SandboxMode = "readOnly",
+                Effort = "high",
+                Personality = "friendly",
+                ServiceTier = "priority",
+                CollaborationMode = new CollaborationModeInfo
+                {
+                    Mode = "plan",
+                    Model = "gpt-5",
+                    ReasoningEffort = "high",
+                    DeveloperInstructions = "Return a plan.",
+                },
+                IdeContext = new IdeContextInfo
+                {
+                    ActiveDocumentPath = activeDocument,
+                    ReferencedFilePaths = [referencedDocument],
+                    SelectionFilePath = activeDocument,
+                    SelectionText = "selected text",
+                },
             },
             CancellationToken.None);
 
@@ -197,6 +249,22 @@ public sealed class CodexSessionServiceTests
         Assert.AreEqual("gpt-5", parameters.GetProperty("model").GetString());
         Assert.AreEqual("never", parameters.GetProperty("approvalPolicy").GetString());
         Assert.AreEqual("readOnly", parameters.GetProperty("sandboxPolicy").GetProperty("type").GetString());
+        Assert.AreEqual("high", parameters.GetProperty("effort").GetString());
+        Assert.AreEqual("friendly", parameters.GetProperty("personality").GetString());
+        Assert.AreEqual("priority", parameters.GetProperty("serviceTier").GetString());
+        JsonElement collaborationMode = parameters.GetProperty("collaborationMode");
+        Assert.AreEqual("plan", collaborationMode.GetProperty("mode").GetString());
+        Assert.AreEqual("gpt-5", collaborationMode.GetProperty("settings").GetProperty("model").GetString());
+        Assert.AreEqual(
+            "high",
+            collaborationMode.GetProperty("settings").GetProperty("reasoning_effort").GetString());
+        JsonElement[] input = parameters.GetProperty("input").EnumerateArray().ToArray();
+        Assert.AreEqual("text", input[0].GetProperty("type").GetString());
+        Assert.AreEqual(4, input.Length);
+        Assert.AreEqual("mention", input[1].GetProperty("type").GetString());
+        Assert.AreEqual(activeDocument, input[1].GetProperty("path").GetString());
+        Assert.AreEqual(referencedDocument, input[2].GetProperty("path").GetString());
+        StringAssert.Contains(input[3].GetProperty("text").GetString(), "selected text");
     }
 
     [TestMethod]
@@ -218,6 +286,288 @@ public sealed class CodexSessionServiceTests
         Assert.IsFalse(parameters.TryGetProperty("model", out _));
         Assert.IsFalse(parameters.TryGetProperty("approvalPolicy", out _));
         Assert.IsFalse(parameters.TryGetProperty("sandboxPolicy", out _));
+        Assert.IsFalse(parameters.TryGetProperty("effort", out _));
+        Assert.IsFalse(parameters.TryGetProperty("personality", out _));
+        Assert.IsFalse(parameters.TryGetProperty("serviceTier", out _));
+        Assert.IsFalse(parameters.TryGetProperty("collaborationMode", out _));
+    }
+
+    [TestMethod]
+    public async Task SlashOperationsUseTypedAppServerMethodsAndParameters()
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method switch
+            {
+                "review/start" => JsonSerializer.SerializeToElement(new
+                {
+                    reviewThreadId = "thread-review",
+                    turn = new { id = "turn-review" },
+                }),
+                "thread/fork" => JsonSerializer.SerializeToElement(new
+                {
+                    thread = new { id = "thread-fork", preview = "forked" },
+                }),
+                "thread/goal/get" or "thread/goal/set" => JsonSerializer.SerializeToElement(new
+                {
+                    goal = new
+                    {
+                        threadId = "thread-1",
+                        objective = "Ship typed slash commands",
+                        status = "active",
+                        tokenBudget = 1000L,
+                        tokensUsed = 10L,
+                        timeUsedSeconds = 5L,
+                        createdAt = 1L,
+                        updatedAt = 2L,
+                    },
+                }),
+                "thread/goal/clear" => JsonSerializer.SerializeToElement(new { cleared = true }),
+                "mcpServerStatus/list" => JsonSerializer.SerializeToElement(new
+                {
+                    data = new[]
+                    {
+                        new
+                        {
+                            name = "docs",
+                            authStatus = "oAuth",
+                            tools = new Dictionary<string, object>
+                            {
+                                ["search"] = new { description = "Search" },
+                            },
+                            resources = Array.Empty<object>(),
+                            resourceTemplates = Array.Empty<object>(),
+                            serverInfo = new { title = "Documentation" },
+                        },
+                    },
+                    nextCursor = (string?)null,
+                }),
+                "feedback/upload" => JsonSerializer.SerializeToElement(new { threadId = "thread-1" }),
+                "account/rateLimits/read" => JsonSerializer.SerializeToElement(new
+                {
+                    rateLimits = new
+                    {
+                        limitId = "codex",
+                        limitName = "Codex",
+                        planType = "plus",
+                        primary = new { usedPercent = 20, resetsAt = 100L, windowDurationMins = 300L },
+                        secondary = (object?)null,
+                        credits = new { hasCredits = true, unlimited = false, balance = "10" },
+                    },
+                    rateLimitsByLimitId = (object?)null,
+                }),
+                _ => JsonSerializer.SerializeToElement(new { }),
+            },
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        CompactThreadResult compact = await service.CompactThreadAsync(
+            new CompactThreadRequest { ThreadId = "thread-1" },
+            CancellationToken.None);
+        StartReviewResult review = await service.StartReviewAsync(
+            new StartReviewRequest
+            {
+                ThreadId = "thread-1",
+                Delivery = ReviewDelivery.Detached,
+                Target = new ReviewTarget { Kind = ReviewTargetKind.BaseBranch, Value = "main" },
+            },
+            CancellationToken.None);
+        ForkThreadResult fork = await service.ForkThreadAsync(
+            new ForkThreadRequest { ThreadId = "thread-1" },
+            CancellationToken.None);
+        ThreadGoalResult goal = await service.GetThreadGoalAsync("thread-1", CancellationToken.None);
+        await service.SetThreadGoalAsync(
+            new SetThreadGoalRequest
+            {
+                ThreadId = "thread-1",
+                Objective = "Ship typed slash commands",
+                Status = ThreadGoalStatus.Active,
+                TokenBudget = 1000,
+            },
+            CancellationToken.None);
+        ThreadGoalResult cleared = await service.ClearThreadGoalAsync("thread-1", CancellationToken.None);
+        McpServerListResult mcp = await service.ListMcpServersAsync("thread-1", CancellationToken.None);
+        UploadFeedbackResult feedback = await service.UploadFeedbackAsync(
+            new UploadFeedbackRequest
+            {
+                Classification = "bug",
+                Reason = "Something failed.",
+                IncludeLogs = false,
+                ThreadId = "thread-1",
+            },
+            CancellationToken.None);
+        RateLimitsResult rateLimits = await service.GetRateLimitsAsync(CancellationToken.None);
+
+        Assert.IsTrue(compact.IsSupported);
+        Assert.AreEqual("thread-review", review.ReviewThreadId);
+        Assert.AreEqual("turn-review", review.TurnId);
+        Assert.AreEqual("thread-fork", fork.Thread?.Id);
+        Assert.AreEqual("Ship typed slash commands", goal.Goal?.Objective);
+        Assert.IsTrue(cleared.Cleared);
+        Assert.AreEqual("docs", mcp.Servers[0].Name);
+        Assert.AreEqual("search", mcp.Servers[0].ToolNames[0]);
+        Assert.AreEqual("thread-1", feedback.ThreadId);
+        Assert.AreEqual(20, rateLimits.RateLimits?.Primary?.UsedPercent);
+
+        CollectionAssert.AreEqual(
+            new[]
+            {
+                "initialize",
+                "thread/compact/start",
+                "review/start",
+                "thread/fork",
+                "thread/goal/get",
+                "thread/goal/set",
+                "thread/goal/clear",
+                "mcpServerStatus/list",
+                "feedback/upload",
+                "account/rateLimits/read",
+            },
+            connection.Requests.Select(item => item.Method).ToArray());
+        JsonElement reviewParameters = ParametersFor(connection, "review/start");
+        Assert.AreEqual("detached", reviewParameters.GetProperty("delivery").GetString());
+        Assert.AreEqual("baseBranch", reviewParameters.GetProperty("target").GetProperty("type").GetString());
+        Assert.AreEqual("main", reviewParameters.GetProperty("target").GetProperty("branch").GetString());
+        JsonElement goalParameters = ParametersFor(connection, "thread/goal/set");
+        Assert.AreEqual("active", goalParameters.GetProperty("status").GetString());
+        Assert.AreEqual(1000L, goalParameters.GetProperty("tokenBudget").GetInt64());
+        JsonElement mcpParameters = ParametersFor(connection, "mcpServerStatus/list");
+        Assert.AreEqual("toolsAndAuthOnly", mcpParameters.GetProperty("detail").GetString());
+        JsonElement feedbackParameters = ParametersFor(connection, "feedback/upload");
+        Assert.IsFalse(feedbackParameters.GetProperty("includeLogs").GetBoolean());
+    }
+
+    [TestMethod]
+    public async Task MethodNotFoundDisablesOnlyThatOperationForTheSession()
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "thread/compact/start"
+                ? throw new JsonRpcRemoteException(-32601, "Method not found")
+                : method == "account/rateLimits/read"
+                    ? JsonSerializer.SerializeToElement(new { rateLimits = new { } })
+                    : JsonSerializer.SerializeToElement(new { }),
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        CompactThreadResult first = await service.CompactThreadAsync(
+            new CompactThreadRequest { ThreadId = "thread-1" },
+            CancellationToken.None);
+        CompactThreadResult second = await service.CompactThreadAsync(
+            new CompactThreadRequest { ThreadId = "thread-1" },
+            CancellationToken.None);
+        RateLimitsResult otherOperation = await service.GetRateLimitsAsync(CancellationToken.None);
+
+        Assert.IsFalse(first.IsSupported);
+        Assert.IsFalse(second.IsSupported);
+        Assert.IsTrue(otherOperation.IsSupported);
+        Assert.AreEqual(1, connection.Requests.Count(item => item.Method == "thread/compact/start"));
+        Assert.AreEqual(1, connection.Requests.Count(item => item.Method == "account/rateLimits/read"));
+    }
+
+    [TestMethod]
+    public async Task NonIdempotentSlashOperationIsNotRetried()
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "feedback/upload"
+                ? throw new JsonRpcRemoteException(-32001, "overloaded")
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        await Assert.ThrowsExactlyAsync<JsonRpcRemoteException>(() => service.UploadFeedbackAsync(
+            new UploadFeedbackRequest { Classification = "bug" },
+            CancellationToken.None));
+
+        Assert.AreEqual(1, connection.Requests.Count(item => item.Method == "feedback/upload"));
+    }
+
+    [TestMethod]
+    public async Task CompactionReviewAndGoalNotificationsUseDedicatedEvents()
+    {
+        var connection = new RecordingConnection();
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+        var conversationEvents = new List<ConversationEvent>();
+        var compactionEvents = new List<ContextCompactionEvent>();
+        var reviewEvents = new List<ReviewModeEvent>();
+        var goalEvents = new List<ThreadGoalEvent>();
+        service.ConversationEventReceived += (value, _) =>
+        {
+            conversationEvents.Add(value);
+            return Task.CompletedTask;
+        };
+        service.ContextCompacted += (value, _) =>
+        {
+            compactionEvents.Add(value);
+            return Task.CompletedTask;
+        };
+        service.ReviewModeChanged += (value, _) =>
+        {
+            reviewEvents.Add(value);
+            return Task.CompletedTask;
+        };
+        service.ThreadGoalChanged += (value, _) =>
+        {
+            goalEvents.Add(value);
+            return Task.CompletedTask;
+        };
+
+        await connection.EmitNotificationAsync(
+            "item/completed",
+            new
+            {
+                threadId = "thread-1",
+                turnId = "turn-1",
+                item = new { id = "compact-1", type = "contextCompaction" },
+            });
+        await connection.EmitNotificationAsync(
+            "item/completed",
+            new
+            {
+                threadId = "thread-1",
+                turnId = "turn-1",
+                item = new
+                {
+                    id = "review-1",
+                    type = "enteredReviewMode",
+                    review = "Review token=secret-value",
+                },
+            });
+        await connection.EmitNotificationAsync(
+            "thread/goal/updated",
+            new
+            {
+                threadId = "thread-1",
+                turnId = "turn-1",
+                goal = new
+                {
+                    threadId = "thread-1",
+                    objective = "Do not expose password=secret-value",
+                    status = "active",
+                    tokenBudget = (long?)null,
+                    tokensUsed = 0L,
+                    timeUsedSeconds = 0L,
+                    createdAt = 1L,
+                    updatedAt = 2L,
+                },
+            });
+
+        Assert.AreEqual(
+            0,
+            conversationEvents.Count,
+            string.Join(" | ", conversationEvents.Select(item => $"{item.Kind}:{item.Text}")));
+        Assert.AreEqual(1, compactionEvents.Count);
+        Assert.IsTrue(compactionEvents[0].IsCompleted);
+        Assert.AreEqual(1, reviewEvents.Count);
+        Assert.AreEqual(ReviewModeChangeKind.Entered, reviewEvents[0].ChangeKind);
+        StringAssert.Contains(reviewEvents[0].Review, "[REDACTED]");
+        Assert.AreEqual(1, goalEvents.Count);
+        StringAssert.Contains(goalEvents[0].Goal?.Objective, "[REDACTED]");
     }
 
     [TestMethod]
@@ -534,6 +884,11 @@ public sealed class CodexSessionServiceTests
         WorkingDirectory = Path.GetTempPath(),
         ExtensionVersion = "test",
     };
+
+    private static JsonElement ParametersFor(RecordingConnection connection, string method)
+        => JsonSerializer.SerializeToElement(
+            connection.Requests.Single(item => item.Method == method).Parameters,
+            WireJsonOptions);
 
     private sealed class RecordingConnection : IJsonRpcConnection
     {

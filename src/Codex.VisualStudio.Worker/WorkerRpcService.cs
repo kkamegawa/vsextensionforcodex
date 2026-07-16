@@ -29,6 +29,10 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
         session.ApprovalAuditRecorded += PublishApprovalAuditAsync;
         session.UserInputRequested += PublishUserInputAsync;
         session.UserInputResolved += PublishUserInputResolvedAsync;
+        session.ContextCompacted += PublishContextCompactedAsync;
+        session.ReviewModeChanged += PublishReviewModeChangedAsync;
+        session.ThreadGoalChanged += PublishThreadGoalChangedAsync;
+        session.RateLimitsChanged += PublishRateLimitsChangedAsync;
     }
 
     public void AttachClient(JsonRpc rpc)
@@ -193,6 +197,63 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
     public Task InterruptTurnAsync(InterruptTurnRequest request, CancellationToken cancellationToken)
         => session.InterruptTurnAsync(request, cancellationToken);
 
+    public async Task<CompactThreadResult> CompactThreadAsync(
+        CompactThreadRequest request,
+        CancellationToken cancellationToken)
+    {
+        CompactThreadResult result = await session.CompactThreadAsync(request, cancellationToken).ConfigureAwait(false);
+        if (result.IsSupported)
+        {
+            await SetStatusAsync(WorkerConnectionState.Busy, "Context compaction in progress.", cancellationToken).ConfigureAwait(false);
+        }
+
+        return result;
+    }
+
+    public async Task<StartReviewResult> StartReviewAsync(
+        StartReviewRequest request,
+        CancellationToken cancellationToken)
+    {
+        StartReviewResult result = await session.StartReviewAsync(request, cancellationToken).ConfigureAwait(false);
+        if (result.IsSupported)
+        {
+            await SetStatusAsync(WorkerConnectionState.Busy, "Code review in progress.", cancellationToken).ConfigureAwait(false);
+        }
+
+        return result;
+    }
+
+    public async Task<ForkThreadResult> ForkThreadAsync(
+        ForkThreadRequest request,
+        CancellationToken cancellationToken)
+    {
+        ForkThreadResult result = await session.ForkThreadAsync(request, cancellationToken).ConfigureAwait(false);
+        UpdateSessionIds();
+        return result;
+    }
+
+    public Task<ThreadGoalResult> GetThreadGoalAsync(string threadId, CancellationToken cancellationToken)
+        => session.GetThreadGoalAsync(threadId, cancellationToken);
+
+    public Task<ThreadGoalResult> SetThreadGoalAsync(
+        SetThreadGoalRequest request,
+        CancellationToken cancellationToken)
+        => session.SetThreadGoalAsync(request, cancellationToken);
+
+    public Task<ThreadGoalResult> ClearThreadGoalAsync(string threadId, CancellationToken cancellationToken)
+        => session.ClearThreadGoalAsync(threadId, cancellationToken);
+
+    public Task<McpServerListResult> ListMcpServersAsync(string? threadId, CancellationToken cancellationToken)
+        => session.ListMcpServersAsync(threadId, cancellationToken);
+
+    public Task<UploadFeedbackResult> UploadFeedbackAsync(
+        UploadFeedbackRequest request,
+        CancellationToken cancellationToken)
+        => session.UploadFeedbackAsync(request, cancellationToken);
+
+    public Task<RateLimitsResult> GetRateLimitsAsync(CancellationToken cancellationToken)
+        => session.GetRateLimitsAsync(cancellationToken);
+
     public Task ResolveApprovalAsync(ResolveApprovalRequest request, CancellationToken cancellationToken)
         => session.ResolveApprovalAsync(request, cancellationToken);
 
@@ -253,7 +314,11 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
 
     private async Task PublishEventAsync(ConversationEvent conversationEvent, CancellationToken cancellationToken)
     {
-        if (conversationEvent.Kind == ConversationEventKind.TurnCompleted)
+        if (conversationEvent.Kind == ConversationEventKind.TurnStarted)
+        {
+            await SetStatusAsync(WorkerConnectionState.Busy, "Turn in progress.", cancellationToken).ConfigureAwait(false);
+        }
+        else if (conversationEvent.Kind == ConversationEventKind.TurnCompleted)
         {
             await SetStatusAsync(WorkerConnectionState.Ready, "Turn completed.", cancellationToken).ConfigureAwait(false);
         }
@@ -303,6 +368,38 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
         if (clientRpc is not null)
         {
             await clientRpc.NotifyWithParameterObjectAsync("observer/userInputResolved", new { requestId }).ConfigureAwait(false);
+        }
+    }
+
+    private async Task PublishContextCompactedAsync(ContextCompactionEvent value, CancellationToken cancellationToken)
+    {
+        if (clientRpc is not null)
+        {
+            await clientRpc.NotifyWithParameterObjectAsync("observer/contextCompacted", new { value }).ConfigureAwait(false);
+        }
+    }
+
+    private async Task PublishReviewModeChangedAsync(ReviewModeEvent value, CancellationToken cancellationToken)
+    {
+        if (clientRpc is not null)
+        {
+            await clientRpc.NotifyWithParameterObjectAsync("observer/reviewModeChanged", new { value }).ConfigureAwait(false);
+        }
+    }
+
+    private async Task PublishThreadGoalChangedAsync(ThreadGoalEvent value, CancellationToken cancellationToken)
+    {
+        if (clientRpc is not null)
+        {
+            await clientRpc.NotifyWithParameterObjectAsync("observer/threadGoalChanged", new { value }).ConfigureAwait(false);
+        }
+    }
+
+    private async Task PublishRateLimitsChangedAsync(RateLimitsResult value, CancellationToken cancellationToken)
+    {
+        if (clientRpc is not null)
+        {
+            await clientRpc.NotifyWithParameterObjectAsync("observer/rateLimitsChanged", new { value }).ConfigureAwait(false);
         }
     }
 

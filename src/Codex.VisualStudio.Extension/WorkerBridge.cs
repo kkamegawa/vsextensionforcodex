@@ -23,6 +23,14 @@ internal interface IWorkerBridge : IAsyncDisposable
 
     event Func<string, Task>? UserInputResolved;
 
+    event Func<ContextCompactionEvent, Task>? ContextCompacted;
+
+    event Func<ReviewModeEvent, Task>? ReviewModeChanged;
+
+    event Func<ThreadGoalEvent, Task>? ThreadGoalChanged;
+
+    event Func<RateLimitsResult, Task>? RateLimitsChanged;
+
     Task<WorkerStatus> ConnectAsync(string workingDirectory, bool experimentalApi, CancellationToken cancellationToken);
 
     Task<WorkerStatus> RestartAsync(CancellationToken cancellationToken);
@@ -46,6 +54,24 @@ internal interface IWorkerBridge : IAsyncDisposable
     Task<string> SteerTurnAsync(SteerTurnRequest request, CancellationToken cancellationToken);
 
     Task InterruptTurnAsync(InterruptTurnRequest request, CancellationToken cancellationToken);
+
+    Task<CompactThreadResult> CompactThreadAsync(CompactThreadRequest request, CancellationToken cancellationToken);
+
+    Task<StartReviewResult> StartReviewAsync(StartReviewRequest request, CancellationToken cancellationToken);
+
+    Task<ForkThreadResult> ForkThreadAsync(ForkThreadRequest request, CancellationToken cancellationToken);
+
+    Task<ThreadGoalResult> GetThreadGoalAsync(string threadId, CancellationToken cancellationToken);
+
+    Task<ThreadGoalResult> SetThreadGoalAsync(SetThreadGoalRequest request, CancellationToken cancellationToken);
+
+    Task<ThreadGoalResult> ClearThreadGoalAsync(string threadId, CancellationToken cancellationToken);
+
+    Task<McpServerListResult> ListMcpServersAsync(string? threadId, CancellationToken cancellationToken);
+
+    Task<UploadFeedbackResult> UploadFeedbackAsync(UploadFeedbackRequest request, CancellationToken cancellationToken);
+
+    Task<RateLimitsResult> GetRateLimitsAsync(CancellationToken cancellationToken);
 
     Task ResolveApprovalAsync(ResolveApprovalRequest request, CancellationToken cancellationToken);
 
@@ -80,6 +106,14 @@ public sealed class WorkerBridge : IWorkerBridge, ICodexWorkerObserver
     public event Func<UserInputRequest, Task>? UserInputRequested;
 
     public event Func<string, Task>? UserInputResolved;
+
+    public event Func<ContextCompactionEvent, Task>? ContextCompacted;
+
+    public event Func<ReviewModeEvent, Task>? ReviewModeChanged;
+
+    public event Func<ThreadGoalEvent, Task>? ThreadGoalChanged;
+
+    public event Func<RateLimitsResult, Task>? RateLimitsChanged;
 
     public async Task<WorkerStatus> ConnectAsync(string workingDirectory, bool experimentalApi, CancellationToken cancellationToken)
     {
@@ -199,6 +233,60 @@ public sealed class WorkerBridge : IWorkerBridge, ICodexWorkerObserver
     public Task InterruptTurnAsync(InterruptTurnRequest request, CancellationToken cancellationToken)
         => rpc!.InvokeWithCancellationAsync("worker/turn/interrupt", new object[] { request }, cancellationToken);
 
+    public Task<CompactThreadResult> CompactThreadAsync(CompactThreadRequest request, CancellationToken cancellationToken)
+        => RequireRpc().InvokeWithCancellationAsync<CompactThreadResult>(
+            "worker/thread/compact",
+            new object[] { request },
+            cancellationToken);
+
+    public Task<StartReviewResult> StartReviewAsync(StartReviewRequest request, CancellationToken cancellationToken)
+        => RequireRpc().InvokeWithCancellationAsync<StartReviewResult>(
+            "worker/review/start",
+            new object[] { request },
+            cancellationToken);
+
+    public Task<ForkThreadResult> ForkThreadAsync(ForkThreadRequest request, CancellationToken cancellationToken)
+        => RequireRpc().InvokeWithCancellationAsync<ForkThreadResult>(
+            "worker/thread/fork",
+            new object[] { request },
+            cancellationToken);
+
+    public Task<ThreadGoalResult> GetThreadGoalAsync(string threadId, CancellationToken cancellationToken)
+        => RequireRpc().InvokeWithCancellationAsync<ThreadGoalResult>(
+            "worker/thread/goal/get",
+            new object[] { threadId },
+            cancellationToken);
+
+    public Task<ThreadGoalResult> SetThreadGoalAsync(SetThreadGoalRequest request, CancellationToken cancellationToken)
+        => RequireRpc().InvokeWithCancellationAsync<ThreadGoalResult>(
+            "worker/thread/goal/set",
+            new object[] { request },
+            cancellationToken);
+
+    public Task<ThreadGoalResult> ClearThreadGoalAsync(string threadId, CancellationToken cancellationToken)
+        => RequireRpc().InvokeWithCancellationAsync<ThreadGoalResult>(
+            "worker/thread/goal/clear",
+            new object[] { threadId },
+            cancellationToken);
+
+    public Task<McpServerListResult> ListMcpServersAsync(string? threadId, CancellationToken cancellationToken)
+        => RequireRpc().InvokeWithCancellationAsync<McpServerListResult>(
+            "worker/mcp/list",
+            new object?[] { threadId },
+            cancellationToken);
+
+    public Task<UploadFeedbackResult> UploadFeedbackAsync(UploadFeedbackRequest request, CancellationToken cancellationToken)
+        => RequireRpc().InvokeWithCancellationAsync<UploadFeedbackResult>(
+            "worker/feedback/upload",
+            new object[] { request },
+            cancellationToken);
+
+    public Task<RateLimitsResult> GetRateLimitsAsync(CancellationToken cancellationToken)
+        => RequireRpc().InvokeWithCancellationAsync<RateLimitsResult>(
+            "worker/account/rateLimits",
+            Array.Empty<object>(),
+            cancellationToken);
+
     public Task ResolveApprovalAsync(ResolveApprovalRequest request, CancellationToken cancellationToken)
         => rpc!.InvokeWithCancellationAsync("worker/approval/resolve", new object[] { request }, cancellationToken);
 
@@ -228,6 +316,18 @@ public sealed class WorkerBridge : IWorkerBridge, ICodexWorkerObserver
 
     public Task OnUserInputResolvedAsync(string requestId, CancellationToken cancellationToken)
         => UserInputResolved?.Invoke(requestId) ?? Task.CompletedTask;
+
+    public Task OnContextCompactedAsync(ContextCompactionEvent value, CancellationToken cancellationToken)
+        => ContextCompacted?.Invoke(value) ?? Task.CompletedTask;
+
+    public Task OnReviewModeChangedAsync(ReviewModeEvent value, CancellationToken cancellationToken)
+        => ReviewModeChanged?.Invoke(value) ?? Task.CompletedTask;
+
+    public Task OnThreadGoalChangedAsync(ThreadGoalEvent value, CancellationToken cancellationToken)
+        => ThreadGoalChanged?.Invoke(value) ?? Task.CompletedTask;
+
+    public Task OnRateLimitsChangedAsync(RateLimitsResult value, CancellationToken cancellationToken)
+        => RateLimitsChanged?.Invoke(value) ?? Task.CompletedTask;
 
     public Task OnApprovalAuditAsync(ApprovalAuditRecord record, CancellationToken cancellationToken)
     {
