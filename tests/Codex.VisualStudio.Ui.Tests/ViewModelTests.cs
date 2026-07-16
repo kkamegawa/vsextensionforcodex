@@ -240,6 +240,21 @@ public sealed class ViewModelTests
     }
 
     [TestMethod]
+    [DataRow("Do you want me to continue?")]
+    [DataRow("Do you want to apply the change?")]
+    public void ChoicePromptParser_DetectsEnglishActionConfirmationQuestion(string text)
+    {
+        bool ok = ChoicePromptParser.TryParse(text, out UserInputRequest request);
+
+        Assert.IsTrue(ok);
+        Assert.AreEqual(1, request.Questions.Count);
+        Assert.AreEqual(text, request.Questions[0].Question);
+        Assert.AreEqual(2, request.Questions[0].Options.Count);
+        Assert.AreEqual("Yes", request.Questions[0].Options[0].Label);
+        Assert.AreEqual("No", request.Questions[0].Options[1].Label);
+    }
+
+    [TestMethod]
     public void ChoicePromptParser_ProceedMentionOutsideQuestionLine_DoesNotTriggerConfirmationCard()
     {
         // "proceed" appears in an earlier sentence, but the actual question is open-ended (not
@@ -258,6 +273,8 @@ public sealed class ViewModelTests
     [DataRow("Here are the steps:\n1. Build\n2. Test\n3. Ship", DisplayName = "numbered list without a question")]
     [DataRow("Which one?\n1. Only one option", DisplayName = "question with a single option")]
     [DataRow("Just a sentence with no list?", DisplayName = "question without options")]
+    [DataRow("What do you want me to do?", DisplayName = "open-ended do-you-want question")]
+    [DataRow("Which option do you want me to use?", DisplayName = "embedded do-you-want question")]
     [DataRow("", DisplayName = "empty")]
     public void ChoicePromptParser_RejectsNonChoiceText(string text)
     {

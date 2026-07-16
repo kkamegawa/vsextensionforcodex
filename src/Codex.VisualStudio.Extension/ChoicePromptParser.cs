@@ -114,7 +114,7 @@ public static partial class ChoicePromptParser
     [GeneratedRegex(@"^\s*\d{1,2}[.)）、]\s+(.+?)\s*$")]
     private static partial Regex NumberedItem();
 
-    [GeneratedRegex(@"\b(?:proceed|continue|ok(?:ay)?\s+to|should\s+i|shall\s+i|do\s+you\s+want)\b|よいですか|いいですか|よろしいですか|進めて(?:よい|いい|もよい|もいい)|進めますか|続けますか", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    [GeneratedRegex(@"\Ado\s+you\s+want\s+(?:me\s+)?to\b|\b(?:proceed|continue|ok(?:ay)?\s+to|should\s+i|shall\s+i)\b|よいですか|いいですか|よろしいですか|進めて(?:よい|いい|もよい|もいい)|進めますか|続けますか", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex ConfirmationQuestion();
 
     [GeneratedRegex(@"[*_`]{1,2}([^*_`]+)[*_`]{1,2}")]
