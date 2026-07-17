@@ -1977,6 +1977,82 @@ public sealed class ViewModelTests
     }
 
     [TestMethod]
+    public void ChatViewModel_LeadingSlash_OpensEightSlashCommandSuggestions()
+    {
+        using var vm = new ChatViewModel(new FakeWorkerBridge(), autoConnect: false);
+
+        vm.ComposerText = "/";
+
+        Assert.IsTrue(vm.SlashCommands.IsSuggestionOpen);
+        Assert.HasCount(8, vm.SlashCommands.Suggestions);
+        Assert.AreEqual("/compact", vm.SlashCommands.SelectedSuggestion?.CommandName);
+    }
+
+    [TestMethod]
+    public void ChatViewModel_SlashCommandPrefix_FiltersReasoningAndReview()
+    {
+        using var vm = new ChatViewModel(new FakeWorkerBridge(), autoConnect: false);
+
+        vm.ComposerText = "/re";
+
+        Assert.IsTrue(vm.SlashCommands.IsSuggestionOpen);
+        Assert.HasCount(2, vm.SlashCommands.Suggestions);
+        Assert.AreEqual("/reasoning", vm.SlashCommands.Suggestions[0].CommandName);
+        Assert.AreEqual("/review", vm.SlashCommands.Suggestions[1].CommandName);
+    }
+
+    [TestMethod]
+    [DataRow("")]
+    [DataRow("hello")]
+    [DataRow("hello /status")]
+    [DataRow("//")]
+    public void ChatViewModel_NonCommandComposerText_ClosesSlashCommandSuggestions(string text)
+    {
+        using var vm = new ChatViewModel(new FakeWorkerBridge(), autoConnect: false)
+        {
+            ComposerText = "/",
+        };
+        Assert.IsTrue(vm.SlashCommands.IsSuggestionOpen);
+
+        vm.ComposerText = text;
+
+        Assert.IsFalse(vm.SlashCommands.IsSuggestionOpen);
+        Assert.IsNull(vm.SlashCommands.SelectedSuggestion);
+        Assert.IsFalse(vm.SlashCommands.HasStatusAnnouncement);
+    }
+
+    [TestMethod]
+    public void ChatViewModel_LeadingSlash_RaisesNestedPresentationNotifications()
+    {
+        using var vm = new ChatViewModel(new FakeWorkerBridge(), autoConnect: false);
+        var slashPropertyChanges = new List<string?>();
+        var suggestionCollectionChanges = new List<NotifyCollectionChangedAction>();
+        vm.SlashCommands.PropertyChanged += (_, eventArgs) =>
+        {
+            slashPropertyChanges.Add(eventArgs.PropertyName);
+        };
+        vm.SlashCommands.Suggestions.CollectionChanged += (_, eventArgs) =>
+        {
+            suggestionCollectionChanges.Add(eventArgs.Action);
+        };
+
+        vm.ComposerText = "/";
+
+        CollectionAssert.Contains(
+            slashPropertyChanges,
+            nameof(SlashCommandPresentationViewModel.SelectedSuggestion));
+        CollectionAssert.Contains(
+            slashPropertyChanges,
+            nameof(SlashCommandPresentationViewModel.IsSuggestionOpen));
+        Assert.AreEqual(NotifyCollectionChangedAction.Reset, suggestionCollectionChanges[0]);
+        Assert.AreEqual(
+            8,
+            suggestionCollectionChanges.Count(static action => action == NotifyCollectionChangedAction.Add));
+        Assert.IsTrue(vm.SlashCommands.IsSuggestionOpen);
+        Assert.HasCount(8, vm.SlashCommands.Suggestions);
+    }
+
+    [TestMethod]
     public async Task ChatViewModel_SuggestionChip_RaisesComposerTextPropertyChanged()
     {
         // The programmatic path (suggestion chip / clear-after-send) DOES notify ComposerText so

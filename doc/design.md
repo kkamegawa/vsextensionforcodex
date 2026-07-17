@@ -1,4 +1,4 @@
-# design.md — アーキテクチャ設計決定記録
+﻿# design.md — アーキテクチャ設計決定記録
 
 Session 1・2 での実装・修正作業から得た設計決定と教訓をまとめる。
 次のセッション（Codex 等）へ引き継ぐための参照資料。
@@ -35,9 +35,9 @@ CEE0028（コンパイル時評価エラー）で失敗する。最低限の設�
 public override ExtensionConfiguration ExtensionConfiguration => new()
 {
     Metadata = new(
-        id: "CodexForVisualStudio.kkamegawa",
+        id: "Kkamegawa.CodexForVisualStudio",
         version: ExtensionAssemblyVersion,   // 基底クラスのプロパティ
-        publisherName: "kkamegawa",
+        publisherName: "kazushikamegawa",
         displayName: "Codex for Visual Studio",
         description: "AI coding assistant powered by OpenAI Codex."),
 };

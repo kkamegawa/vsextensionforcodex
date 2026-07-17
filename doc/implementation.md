@@ -64,15 +64,15 @@ The generated VSIX contents have been inspected and include:
 - Confirm live approval request and response shapes against the installed Codex version.
 - Add ActivityLog-backed durable audit persistence before treating the security boundary as production-ready.
 
-## Debugging
+## Debugging and Experimental Instance Deployment
 
-`Codex.VisualStudio.Extension.csproj` is the startup project for debugging. It is configured to start
-`devenv.exe /RootSuffix Exp` with an explicit activity log path
-(`%APPDATA%\Microsoft\VisualStudio\CodexForVisualStudio-Exp-ActivityLog.xml`).
+`Codex.VisualStudio.Extension.csproj` is the startup project for debugging. Visual Studio owns the
+F5 build, deployment to the Experimental Instance, launch, and debugger attachment through the
+`ExtensibilityProjectExtension` capability supplied by the Extensibility SDK.
 
-Deployment to the experimental instance happens automatically when building inside Visual Studio in
-Debug configuration (`DeployExtension` is gated on `$(BuildingInsideVisualStudio) == true AND
-$(Configuration) == Debug`). No manual `Directory.Build.user.props` override is needed.
+Do not add legacy VSSDK deployment or launch properties such as `DeployExtension`,
+`VSSDKTargetPlatformRegRootSuffix`, `StartAction`, `StartProgram`, or `StartArguments`. Those settings
+bypass or conflict with the SDK-managed out-of-process deployment path.
 
 The Extension OOP process and Visual Studio run on different runtimes:
 
@@ -81,3 +81,27 @@ The Extension OOP process and Visual Studio run on different runtimes:
 - The `codex app-server` child process can be attached separately when debugging protocol issues.
 - If the in-proc `Codex.VisualStudio.Package` is ever activated, a second debugger attachment to
   the VS process (using the .NET Framework code type) is required for that component.
+
+### Duplicate deployment diagnosis
+
+The active extension identity must be `Kkamegawa.CodexForVisualStudio` with publisher
+`kazushikamegawa`. The former identity `CodexForVisualStudio.kkamegawa` and former publisher
+`kkamegawa` must not appear in the Experimental Instance metadata cache or hot-load registration.
+
+If both identities are present, a command contributed by the stale deployment can open a tool
+window backed by an older assembly. Slash-command candidates are then unavailable even though the
+current assembly and its view model behave correctly.
+
+To recover without resetting the entire Experimental Instance:
+
+1. Close the Experimental Instance and its extension hosts. A normal Visual Studio instance can
+   remain open when it uses a different root suffix.
+2. Under the Experimental Instance profile, identify the deployment folder whose manifest contains
+   the former identity. Preserve the folder whose manifest contains the current identity.
+3. Remove only the former deployment folder and its exact hot-load registration entry.
+4. Run the Experimental Instance configuration update so the extension metadata cache is rebuilt.
+5. Confirm that the former identity has no remaining cache or deployment hits and that the current
+   identity still appears in both metadata and the current deployment.
+
+Do not copy a build output manually over the deployment. After the cleanup, use the normal SDK-owned
+F5 flow so the deployed assembly and packaged resources come from one deterministic build.
