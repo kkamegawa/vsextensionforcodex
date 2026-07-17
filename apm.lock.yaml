@@ -1,14 +1,15 @@
 lockfile_version: '1'
-generated_at: '2026-07-16T12:44:34.307398+00:00'
+generated_at: '2026-07-17T02:33:36.972965+00:00'
 apm_version: 0.25.0
 dependencies:
 - repo_url: github/awesome-copilot
   name: awesome-copilot-api-architect
   host: github.com
-  resolved_commit: fb80ec4f215e8a96dfdc80f674cabcda36ccd01a
+  resolved_commit: 5668f70312061448262d3160d2ab8b7b105ab4db
   version: 1.0.0
   virtual_path: agents/api-architect.agent.md
   is_virtual: true
+  package_type: apm_package
   deployed_files:
   - .claude/agents/api-architect.md
   - .codex/agents/api-architect.toml
