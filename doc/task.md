@@ -153,7 +153,8 @@
 - [x] Remove the stale Experimental Instance registration, centralize extension identity diagnostics, and add slash-command display and packaging regression coverage (GitHub Issue #51, sub-issue #58)
   - The former identity has zero remaining Experimental Instance metadata or deployment hits; the current identity remains registered.
   - Slash-command hover and selection states use paired Visual Studio background and foreground theme resources, preserving contrast across themes.
-  - Debug solution build completed with zero warnings and zero errors; Core tests passed 70/70 and UI tests passed 169/169 with `--no-build`.
+  - Worker diagnostics cancellation, process teardown, and output shutdown are serialized and awaited to prevent exceptions when a debugging session ends.
+  - Debug solution build completed with zero warnings and zero errors; Core tests passed 70/70 and UI tests passed 171/171 with `--no-build`.
   - The VSIX manifest, packaged assembly, embedded Remote UI XAML, and SDK-managed Experimental deployment were inspected; packaged, build, and deployed assembly hashes matched.
 
 ### 3.2 スキル

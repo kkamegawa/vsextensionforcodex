@@ -403,8 +403,23 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         lifetime.Cancel();
         slashCommandCoordinator.CancelAll();
         lifetime.Dispose();
-        // Best-effort async disposal on shutdown; fire-and-forget is acceptable here.
-        _ = Task.Run(async () => await bridge.DisposeAsync().ConfigureAwait(false));
+        ValueTask bridgeDisposal = bridge.DisposeAsync();
+        if (!bridgeDisposal.IsCompletedSuccessfully)
+        {
+            _ = ObserveBridgeDisposalAsync(bridgeDisposal);
+        }
+    }
+
+    private static async Task ObserveBridgeDisposalAsync(ValueTask bridgeDisposal)
+    {
+        try
+        {
+            await bridgeDisposal.ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            ExtensionDiagnostics.Write("Worker bridge disposal failed", ex);
+        }
     }
 
     /// <summary>

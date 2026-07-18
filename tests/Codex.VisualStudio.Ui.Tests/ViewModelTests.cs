@@ -1989,6 +1989,18 @@ public sealed class ViewModelTests
     }
 
     [TestMethod]
+    public void ChatViewModel_Dispose_StartsWorkerBridgeCleanupOnce()
+    {
+        var bridge = new FakeWorkerBridge();
+        var vm = new ChatViewModel(bridge, autoConnect: false);
+
+        vm.Dispose();
+        vm.Dispose();
+
+        Assert.AreEqual(1, bridge.DisposeCallCount);
+    }
+
+    [TestMethod]
     public void ChatViewModel_SlashCommandPrefix_FiltersReasoningAndReview()
     {
         using var vm = new ChatViewModel(new FakeWorkerBridge(), autoConnect: false);
@@ -2278,6 +2290,12 @@ public sealed class ViewModelTests
         public Task ResolveUserInputAsync(ResolveUserInputRequest request, CancellationToken cancellationToken)
             => ResolveUserInputException is not null ? Task.FromException(ResolveUserInputException) : Task.CompletedTask;
 
-        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+        public int DisposeCallCount { get; private set; }
+
+        public ValueTask DisposeAsync()
+        {
+            DisposeCallCount++;
+            return ValueTask.CompletedTask;
+        }
     }
 }
