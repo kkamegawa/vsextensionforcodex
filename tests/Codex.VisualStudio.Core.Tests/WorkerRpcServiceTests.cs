@@ -127,6 +127,94 @@ public sealed class WorkerRpcServiceTests
         Assert.AreEqual(WorkerConnectionState.Ready, after.State);
     }
 
+    [TestMethod]
+    public async Task ConnectionStatusPropagatesVersionAndClearsItAfterInitializationFailure()
+    {
+        bool failInitialization = false;
+        var connection = new StubConnection
+        {
+            Handler = method => method switch
+            {
+                "initialize" when failInitialization => throw new InvalidOperationException("initialization failed"),
+                "initialize" => JsonSerializer.SerializeToElement(new { userAgent = "codex-cli/3.4.5" }),
+                "account/read" => JsonSerializer.SerializeToElement(new { account = (object?)null }),
+                _ => JsonSerializer.SerializeToElement(new { }),
+            },
+        };
+        var session = new CodexSessionService(new ApprovalPolicyEngine(new PathAccessPolicy()), new SecretRedactor());
+        await using var worker = new WorkerRpcService(
+            new SecretRedactor(),
+            new FakeProcessHost(connection),
+            session);
+
+        WorkerStatus ready = await worker.ConnectAsync(Options(), CancellationToken.None);
+        Assert.AreEqual(WorkerConnectionState.Ready, ready.State);
+        Assert.AreEqual("3.4.5", ready.CodexVersion);
+
+        failInitialization = true;
+        WorkerStatus degraded = await worker.ConnectAsync(Options(), CancellationToken.None);
+
+        Assert.AreEqual(WorkerConnectionState.Degraded, degraded.State);
+        Assert.IsNull(degraded.CodexVersion);
+        Assert.IsNull((await worker.GetStatusAsync(CancellationToken.None)).CodexVersion);
+    }
+
+    [TestMethod]
+    public async Task ConnectedVersionSurvivesBusyApprovalAndReadyTransitions()
+    {
+        var connection = new StubConnection
+        {
+            Handler = method => method switch
+            {
+                "initialize" => JsonSerializer.SerializeToElement(new { userAgent = "codex-cli/4.5.6" }),
+                "account/read" => JsonSerializer.SerializeToElement(new { account = (object?)null }),
+                _ => JsonSerializer.SerializeToElement(new { }),
+            },
+        };
+        var session = new CodexSessionService(new ApprovalPolicyEngine(new PathAccessPolicy()), new SecretRedactor());
+        await using var worker = new WorkerRpcService(
+            new SecretRedactor(),
+            new FakeProcessHost(connection),
+            session);
+        var approvalSeen = new TaskCompletionSource<ApprovalRequest>(TaskCreationOptions.RunContinuationsAsynchronously);
+        session.ApprovalRequested += (request, _) =>
+        {
+            approvalSeen.TrySetResult(request);
+            return Task.CompletedTask;
+        };
+
+        WorkerStatus initialReady = await worker.ConnectAsync(Options(), CancellationToken.None);
+        await worker.CompactThreadAsync(
+            new CompactThreadRequest { ThreadId = "thread-1" },
+            CancellationToken.None);
+        WorkerStatus busy = await worker.GetStatusAsync(CancellationToken.None);
+
+        Task<JsonElement> approvalTask = connection.EmitRequestAsync(
+            "approval-1",
+            "item/commandExecution/requestApproval",
+            new { command = "dotnet build", cwd = Options().WorkingDirectory, threadId = "thread-1", turnId = "turn-1" });
+        ApprovalRequest approval = await approvalSeen.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        WorkerStatus waiting = await worker.GetStatusAsync(CancellationToken.None);
+
+        await session.ResolveApprovalAsync(
+            new ResolveApprovalRequest { RequestId = approval.RequestId, Decision = ApprovalDecision.Decline },
+            CancellationToken.None);
+        await approvalTask;
+        await connection.EmitNotificationAsync(
+            "context/compacted",
+            new { threadId = "thread-1", turnId = "turn-1" });
+        WorkerStatus finalReady = await worker.GetStatusAsync(CancellationToken.None);
+
+        Assert.AreEqual(WorkerConnectionState.Ready, initialReady.State);
+        Assert.AreEqual("4.5.6", initialReady.CodexVersion);
+        Assert.AreEqual(WorkerConnectionState.Busy, busy.State);
+        Assert.AreEqual("4.5.6", busy.CodexVersion);
+        Assert.AreEqual(WorkerConnectionState.WaitingForApproval, waiting.State);
+        Assert.AreEqual("4.5.6", waiting.CodexVersion);
+        Assert.AreEqual(WorkerConnectionState.Ready, finalReady.State);
+        Assert.AreEqual("4.5.6", finalReady.CodexVersion);
+    }
+
     private static WorkerOptions Options() => new()
     {
         WorkingDirectory = Path.GetTempPath(),
@@ -219,7 +307,7 @@ public sealed class WorkerRpcServiceTests
     {
         public event Func<JsonRpcMessage, CancellationToken, Task>? NotificationReceived;
 
-        public event Func<JsonRpcMessage, CancellationToken, Task<JsonElement>>? RequestReceived { add { } remove { } }
+        public event Func<JsonRpcMessage, CancellationToken, Task<JsonElement>>? RequestReceived;
 
         public event EventHandler<Exception?>? Closed { add { } remove { } }
 
@@ -241,6 +329,17 @@ public sealed class WorkerRpcServiceTests
                     Params = JsonSerializer.SerializeToElement(parameters),
                 },
                 CancellationToken.None) ?? Task.CompletedTask;
+
+        public Task<JsonElement> EmitRequestAsync(string id, string method, object parameters)
+            => RequestReceived?.Invoke(
+                new JsonRpcMessage
+                {
+                    Id = JsonSerializer.SerializeToElement(id),
+                    Method = method,
+                    Params = JsonSerializer.SerializeToElement(parameters),
+                },
+                CancellationToken.None)
+                ?? Task.FromResult(JsonSerializer.SerializeToElement(new { }));
 
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }

@@ -18,6 +18,85 @@ public sealed class CodexSessionServiceTests
     private static readonly string[] CreativeOnly = ["Creative"];
 
     [TestMethod]
+    public async Task InitializeReadsVersionFromFirstUserAgentProduct()
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "initialize"
+                ? JsonSerializer.SerializeToElement(new
+                {
+                    userAgent = "codex-cli/1.2.3-beta.4+build.5 helper/9.9.9",
+                    serverInfo = new { version = "0.1.0" },
+                })
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        await using var service = CreateService();
+        ConversationEvent? connected = null;
+        service.ConversationEventReceived += (value, _) =>
+        {
+            connected = value;
+            return Task.CompletedTask;
+        };
+
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        Assert.AreEqual("1.2.3-beta.4+build.5", service.CodexVersion);
+        Assert.AreEqual(
+            "Connected to codex app-server v1.2.3-beta.4+build.5.",
+            connected?.Text);
+    }
+
+    [TestMethod]
+    public async Task InitializeFallsBackToValidatedLegacyServerVersion()
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "initialize"
+                ? JsonSerializer.SerializeToElement(new
+                {
+                    userAgent = "malformed user agent",
+                    serverInfo = new { version = "2.3.4-rc.1" },
+                })
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        await using var service = CreateService();
+
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        Assert.AreEqual("2.3.4-rc.1", service.CodexVersion);
+    }
+
+    [TestMethod]
+    public async Task InitializeRejectsUnsafeVersionsAndClearsPreviousVersion()
+    {
+        string userAgent = "codex/1.2.3";
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "initialize"
+                ? JsonSerializer.SerializeToElement(new { userAgent, serverInfo = new { version = "invalid" } })
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+        Assert.AreEqual("1.2.3", service.CodexVersion);
+
+        string[] unsafeUserAgents =
+        [
+            "codex/1.2",
+            "codex/01.2.3",
+            "codex/1.2.3\u001b[31m",
+            "codex/1.2.3-ベータ",
+            $"codex/1.2.3+{new string('a', 59)}",
+        ];
+        foreach (string value in unsafeUserAgents)
+        {
+            userAgent = value;
+            await service.InitializeAsync(connection, Options(), CancellationToken.None);
+            Assert.IsNull(service.CodexVersion, value);
+        }
+    }
+
+    [TestMethod]
     public async Task ThreadListUsesPagingAndAllSupportedSources()
     {
         var connection = new RecordingConnection

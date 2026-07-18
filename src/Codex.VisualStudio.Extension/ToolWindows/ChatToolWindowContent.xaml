@@ -385,7 +385,27 @@
         </StackPanel>
 
         <StackPanel VerticalAlignment="Center">
-          <TextBlock FontWeight="SemiBold" Text="{Binding Status.State}" ToolTip="{Binding Status.Message}" />
+          <!-- Keep the state in the non-trimming column and constrain only the version. The
+               state TextBlock owns the combined accessible name and live-region notification;
+               the visual version TextBlock has no AutomationProperties overrides. -->
+          <Grid>
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="Auto" />
+              <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+            <TextBlock Grid.Column="0"
+                       FontWeight="SemiBold"
+                       Text="{Binding StatusStateText}"
+                       ToolTip="{Binding StatusAutomationHelpText}"
+                       AutomationProperties.Name="{Binding StatusAutomationName}"
+                       AutomationProperties.HelpText="{Binding StatusAutomationHelpText}"
+                       AutomationProperties.LiveSetting="Polite" />
+            <TextBlock Grid.Column="1"
+                       Margin="4,0,0,0"
+                       Text="{Binding StatusVersionText}"
+                       TextTrimming="CharacterEllipsis"
+                       ToolTip="{Binding StatusAutomationHelpText}" />
+          </Grid>
           <TextBlock Opacity="0.8" Text="{Binding StatusDetailText}" TextTrimming="CharacterEllipsis" />
         </StackPanel>
       </DockPanel>

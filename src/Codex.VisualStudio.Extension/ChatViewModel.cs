@@ -37,6 +37,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     private readonly Queue<ApprovalViewModel> approvalQueue = new();
     private readonly Dictionary<string, StringBuilder> agentRawText = new(StringComparer.Ordinal);
     private readonly Dictionary<string, StringBuilder> itemRawText = new(StringComparer.Ordinal);
+    private static readonly Regex HeaderWhitespace = new(@"\s+", RegexOptions.Compiled | RegexOptions.CultureInvariant);
     private UserInputViewModel? activeUserInput;
     private ApprovalViewModel? activeApproval;
     private string? lastAgentRawKey;
@@ -220,6 +221,41 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         : Account.DisplayText;
 
     [DataMember]
+    public string StatusStateText => Status.State.ToString();
+
+    [DataMember]
+    public string StatusVersionText
+    {
+        get
+        {
+            string version = GetVisibleCodexVersion();
+            return version.Length == 0 ? string.Empty : $"\u00b7 Codex {version}";
+        }
+    }
+
+    [DataMember]
+    public string StatusAutomationName
+    {
+        get
+        {
+            string version = GetVisibleCodexVersion();
+            return version.Length == 0
+                ? StatusStateText
+                : $"{StatusStateText}, Codex version {version}";
+        }
+    }
+
+    [DataMember]
+    public string StatusAutomationHelpText
+    {
+        get
+        {
+            string message = ToSafeHeaderText(Status.Message);
+            return message.Length == 0 ? "Codex connection status." : message;
+        }
+    }
+
+    [DataMember]
     public bool ShowAccountAction => Account.ShowAction;
 
     [DataMember]
@@ -238,9 +274,21 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 OnPropertyChanged(nameof(IsTurnActive));
                 OnPropertyChanged(nameof(SendButtonText));
                 OnPropertyChanged(nameof(StatusDetailText));
+                OnPropertyChanged(nameof(StatusStateText));
+                OnPropertyChanged(nameof(StatusVersionText));
+                OnPropertyChanged(nameof(StatusAutomationName));
+                OnPropertyChanged(nameof(StatusAutomationHelpText));
             }
         }
     }
+
+    private string ToSafeHeaderText(string? value)
+        => HeaderWhitespace.Replace(markdown.ToSafeText(value ?? string.Empty), " ").Trim();
+
+    private string GetVisibleCodexVersion()
+        => Status.State is WorkerConnectionState.Ready or WorkerConnectionState.Busy or WorkerConnectionState.WaitingForApproval
+            ? ToSafeHeaderText(Status.CodexVersion)
+            : string.Empty;
 
     [DataMember]
     public ThreadSummary? SelectedThread

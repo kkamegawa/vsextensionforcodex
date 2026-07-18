@@ -31,6 +31,7 @@ public sealed class ViewModelTests
     private static readonly string[] ExpectedModelsWithInjectedDefault = ["gpt-5.1-codex-max", "gpt-5-codex", "gpt-5"];
     private static readonly string[] ExpectedRefreshedModels = ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini"];
     private static readonly string[] ExpectedReorderedModels = ["gpt-5", "gpt-5-codex", "gpt-5-mini"];
+    private static readonly string[] ExpectedStatusHeaderColumnWidths = ["Auto", "*"];
     private static readonly string[] CreativeOnly = ["Creative"];
     [TestMethod]
     public async Task ApprovalViewModel_ResolvesOnlyOnce()
@@ -1134,6 +1135,136 @@ public sealed class ViewModelTests
         Assert.IsTrue(xaml.Contains("{Binding ShowAccountAction,", StringComparison.Ordinal));
         Assert.IsTrue(xaml.Contains("{Binding StatusDetailText}", StringComparison.Ordinal));
         Assert.IsFalse(xaml.Contains("{Binding Account.", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    [DataRow(WorkerConnectionState.Ready)]
+    [DataRow(WorkerConnectionState.Busy)]
+    [DataRow(WorkerConnectionState.WaitingForApproval)]
+    public async Task ChatViewModel_StatusHeader_ShowsSanitizedCodexVersion(WorkerConnectionState state)
+    {
+        var bridge = new FakeWorkerBridge();
+        using var viewModel = new ChatViewModel(bridge, autoConnect: false);
+
+        await bridge.PublishStateAsync(new WorkerStatus
+        {
+            State = state,
+            Message = "  Connected\r\n\u001b[31msafely\u001b[0m.  ",
+            CodexVersion = "  **0.42.0**\r\npreview\u0001  ",
+        });
+
+        Assert.AreEqual(state.ToString(), viewModel.StatusStateText);
+        Assert.AreEqual("\u00b7 Codex 0.42.0 preview", viewModel.StatusVersionText);
+        Assert.AreEqual($"{state}, Codex version 0.42.0 preview", viewModel.StatusAutomationName);
+        Assert.AreEqual("Connected safely.", viewModel.StatusAutomationHelpText);
+    }
+
+    [TestMethod]
+    [DataRow(WorkerConnectionState.Disconnected)]
+    [DataRow(WorkerConnectionState.Connecting)]
+    [DataRow(WorkerConnectionState.Degraded)]
+    public async Task ChatViewModel_StatusHeader_HidesCodexVersionOutsideConnectedStates(WorkerConnectionState state)
+    {
+        var bridge = new FakeWorkerBridge();
+        using var viewModel = new ChatViewModel(bridge, autoConnect: false);
+
+        await bridge.PublishStateAsync(new WorkerStatus
+        {
+            State = state,
+            CodexVersion = "0.42.0",
+        });
+
+        Assert.AreEqual(string.Empty, viewModel.StatusVersionText);
+        Assert.AreEqual(state.ToString(), viewModel.StatusAutomationName);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_StatusHeader_HidesBlankCodexVersion()
+    {
+        var bridge = new FakeWorkerBridge();
+        using var viewModel = new ChatViewModel(bridge, autoConnect: false);
+
+        await bridge.PublishStateAsync(new WorkerStatus
+        {
+            State = WorkerConnectionState.Ready,
+            CodexVersion = " \r\n\t ",
+        });
+
+        Assert.AreEqual(string.Empty, viewModel.StatusVersionText);
+        Assert.AreEqual("Ready", viewModel.StatusAutomationName);
+        Assert.AreEqual("Codex connection status.", viewModel.StatusAutomationHelpText);
+    }
+
+    [TestMethod]
+    public void ChatToolWindowXaml_StatusHeader_PreservesStateAndProvidesOneLiveRegion()
+    {
+        const string resourceName = "Codex.VisualStudio.Extension.ToolWindows.ChatToolWindowContent.xaml";
+        using Stream? stream = typeof(ChatViewModel).Assembly.GetManifestResourceStream(resourceName);
+        Assert.IsNotNull(stream, $"Embedded resource '{resourceName}' not found.");
+        XDocument doc = XDocument.Load(stream);
+        XNamespace presentation = "http://schemas.microsoft.com/winfx/2006/xaml/presentation";
+        XName automationName = XName.Get("AutomationProperties.Name");
+        XName automationHelpText = XName.Get("AutomationProperties.HelpText");
+        XName automationLiveSetting = XName.Get("AutomationProperties.LiveSetting");
+
+        XElement stateText = doc
+            .Descendants(presentation + "TextBlock")
+            .Single(element => element.Attribute("Text")?.Value == "{Binding StatusStateText}");
+        XElement versionText = doc
+            .Descendants(presentation + "TextBlock")
+            .Single(element => element.Attribute("Text")?.Value == "{Binding StatusVersionText}");
+        XElement header = stateText.Parent!;
+
+        Assert.AreEqual("0", stateText.Attribute("Grid.Column")?.Value);
+        Assert.AreEqual("1", versionText.Attribute("Grid.Column")?.Value);
+        CollectionAssert.AreEqual(
+            ExpectedStatusHeaderColumnWidths,
+            header
+                .Element(presentation + "Grid.ColumnDefinitions")!
+                .Elements(presentation + "ColumnDefinition")
+                .Select(column => column.Attribute("Width")?.Value)
+                .ToArray());
+        Assert.IsNull(stateText.Attribute("TextTrimming"), "The connection state must remain visible.");
+        Assert.AreEqual("CharacterEllipsis", versionText.Attribute("TextTrimming")?.Value);
+        Assert.AreEqual("{Binding StatusAutomationName}", stateText.Attribute(automationName)?.Value);
+        Assert.AreEqual("{Binding StatusAutomationHelpText}", stateText.Attribute(automationHelpText)?.Value);
+        Assert.AreEqual("Polite", stateText.Attribute(automationLiveSetting)?.Value);
+        Assert.IsNull(versionText.Attribute(automationName));
+        Assert.IsNull(versionText.Attribute(automationHelpText));
+        Assert.IsNull(versionText.Attribute(automationLiveSetting));
+        Assert.AreEqual(
+            1,
+            new[] { stateText, versionText }.Count(element => element.Attribute(automationLiveSetting)?.Value == "Polite"),
+            "Only the state TextBlock may announce status-header changes.");
+    }
+
+    [TestMethod]
+    public void ChatToolWindowXaml_UsesOnlyWpfAutomationProperties()
+    {
+        const string resourceName = "Codex.VisualStudio.Extension.ToolWindows.ChatToolWindowContent.xaml";
+        using Stream? stream = typeof(ChatViewModel).Assembly.GetManifestResourceStream(resourceName);
+        Assert.IsNotNull(stream, $"Embedded resource '{resourceName}' not found.");
+        XDocument doc = XDocument.Load(stream);
+        var supportedProperties = typeof(System.Windows.Automation.AutomationProperties)
+            .GetMethods(BindingFlags.Public | BindingFlags.Static)
+            .Where(method => method.Name.StartsWith("Set", StringComparison.Ordinal) && method.GetParameters().Length == 2)
+            .Select(method => $"AutomationProperties.{method.Name[3..]}")
+            .ToHashSet(StringComparer.Ordinal);
+
+        string[] unsupportedProperties = doc
+            .Descendants()
+            .Attributes()
+            .Select(attribute => attribute.Name.LocalName)
+            .Where(name => name.StartsWith("AutomationProperties.", StringComparison.Ordinal))
+            .Where(name => !supportedProperties.Contains(name))
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(name => name, StringComparer.Ordinal)
+            .ToArray();
+
+        CollectionAssert.AreEqual(
+            Array.Empty<string>(),
+            unsupportedProperties,
+            $"Remote UI XAML contains unsupported AutomationProperties members: {string.Join(", ", unsupportedProperties)}");
     }
 
     [TestMethod]
