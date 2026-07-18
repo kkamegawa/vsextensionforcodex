@@ -853,38 +853,59 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
 
     private static void ValidateGoalRequest(SetThreadGoalRequest request)
     {
-        if (request.Objective is not null
-            && (string.IsNullOrWhiteSpace(request.Objective) || request.Objective.Length > 4_000))
-        {
-            throw new ArgumentOutOfRangeException(
-                nameof(request),
-                "A goal objective must contain between 1 and 4,000 characters.");
-        }
-
-        if (request.TokenBudget <= 0)
-        {
-            throw new ArgumentOutOfRangeException(nameof(request), "A token budget must be greater than zero.");
-        }
+        ValidateGoalObjective(request.Objective);
+        ValidateGoalTokenBudget(request.TokenBudget);
     }
 
     private static void ValidateFeedbackRequest(UploadFeedbackRequest request)
     {
-        if (string.IsNullOrWhiteSpace(request.Classification) || request.Classification.Length > 64)
+        ValidateFeedbackClassification(request.Classification);
+        ValidateFeedbackReason(request.Reason);
+        ValidateFeedbackTags(request.Tags);
+    }
+
+    private static void ValidateGoalObjective(string? objective)
+    {
+        if (objective is not null && (string.IsNullOrWhiteSpace(objective) || objective.Length > 4_000))
         {
             throw new ArgumentOutOfRangeException(
-                nameof(request),
+                nameof(objective),
+                "A goal objective must contain between 1 and 4,000 characters.");
+        }
+    }
+
+    private static void ValidateGoalTokenBudget(long? tokenBudget)
+    {
+        if (tokenBudget is not null && tokenBudget <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(tokenBudget), "A token budget must be greater than zero.");
+        }
+    }
+
+    private static void ValidateFeedbackClassification(string classification)
+    {
+        if (string.IsNullOrWhiteSpace(classification) || classification.Length > 64)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(classification),
                 "A feedback classification must contain between 1 and 64 characters.");
         }
+    }
 
-        if (request.Reason?.Length > 4_000)
+    private static void ValidateFeedbackReason(string? reason)
+    {
+        if (reason?.Length > 4_000)
         {
-            throw new ArgumentOutOfRangeException(nameof(request), "Feedback text cannot exceed 4,000 characters.");
+            throw new ArgumentOutOfRangeException(nameof(reason), "Feedback text cannot exceed 4,000 characters.");
         }
+    }
 
-        if (request.Tags.Count > 20
-            || request.Tags.Any(pair => pair.Key.Length > 128 || pair.Value.Length > 128))
+    private static void ValidateFeedbackTags(IReadOnlyDictionary<string, string> tags)
+    {
+        if (tags.Count > 20
+            || tags.Any(pair => pair.Key.Length > 128 || pair.Value.Length > 128))
         {
-            throw new ArgumentOutOfRangeException(nameof(request), "Feedback tags exceed the supported limits.");
+            throw new ArgumentOutOfRangeException(nameof(tags), "Feedback tags exceed the supported limits.");
         }
     }
 

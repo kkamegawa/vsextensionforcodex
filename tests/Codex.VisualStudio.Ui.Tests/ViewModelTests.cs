@@ -1729,7 +1729,7 @@ public sealed class ViewModelTests
             State = WorkerConnectionState.Ready,
             ThreadId = "thread-1",
         });
-        await Task.Delay(100);
+        await WaitForAsync(() => bridge.ReviewCallCount == 1);
 
         Assert.AreEqual(1, bridge.ReviewCallCount);
     }
