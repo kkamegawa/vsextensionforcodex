@@ -1206,7 +1206,6 @@ public sealed class ViewModelTests
         XName automationName = XName.Get("AutomationProperties.Name");
         XName automationHelpText = XName.Get("AutomationProperties.HelpText");
         XName automationLiveSetting = XName.Get("AutomationProperties.LiveSetting");
-        XName automationAccessibilityView = XName.Get("AutomationProperties.AccessibilityView");
 
         XElement stateText = doc
             .Descendants(presentation + "TextBlock")
@@ -1216,8 +1215,8 @@ public sealed class ViewModelTests
             .Single(element => element.Attribute("Text")?.Value == "{Binding StatusVersionText}");
         XElement header = stateText.Parent!;
 
-        Assert.AreEqual("0", stateText.Attribute(presentation + "Grid.Column")?.Value ?? stateText.Attribute("Grid.Column")?.Value);
-        Assert.AreEqual("1", versionText.Attribute(presentation + "Grid.Column")?.Value ?? versionText.Attribute("Grid.Column")?.Value);
+        Assert.AreEqual("0", stateText.Attribute("Grid.Column")?.Value);
+        Assert.AreEqual("1", versionText.Attribute("Grid.Column")?.Value);
         CollectionAssert.AreEqual(
             ExpectedStatusHeaderColumnWidths,
             header
@@ -1225,12 +1224,47 @@ public sealed class ViewModelTests
                 .Elements(presentation + "ColumnDefinition")
                 .Select(column => column.Attribute("Width")?.Value)
                 .ToArray());
+        Assert.IsNull(stateText.Attribute("TextTrimming"), "The connection state must remain visible.");
         Assert.AreEqual("CharacterEllipsis", versionText.Attribute("TextTrimming")?.Value);
-        Assert.AreEqual("{Binding StatusAutomationName}", header.Attribute(automationName)?.Value);
-        Assert.AreEqual("{Binding StatusAutomationHelpText}", header.Attribute(automationHelpText)?.Value);
-        Assert.AreEqual("Polite", header.Attribute(automationLiveSetting)?.Value);
-        Assert.AreEqual("Raw", stateText.Attribute(automationAccessibilityView)?.Value);
-        Assert.AreEqual("Raw", versionText.Attribute(automationAccessibilityView)?.Value);
+        Assert.AreEqual("{Binding StatusAutomationName}", stateText.Attribute(automationName)?.Value);
+        Assert.AreEqual("{Binding StatusAutomationHelpText}", stateText.Attribute(automationHelpText)?.Value);
+        Assert.AreEqual("Polite", stateText.Attribute(automationLiveSetting)?.Value);
+        Assert.IsNull(versionText.Attribute(automationName));
+        Assert.IsNull(versionText.Attribute(automationHelpText));
+        Assert.IsNull(versionText.Attribute(automationLiveSetting));
+        Assert.AreEqual(
+            1,
+            new[] { stateText, versionText }.Count(element => element.Attribute(automationLiveSetting)?.Value == "Polite"),
+            "Only the state TextBlock may announce status-header changes.");
+    }
+
+    [TestMethod]
+    public void ChatToolWindowXaml_UsesOnlyWpfAutomationProperties()
+    {
+        const string resourceName = "Codex.VisualStudio.Extension.ToolWindows.ChatToolWindowContent.xaml";
+        using Stream? stream = typeof(ChatViewModel).Assembly.GetManifestResourceStream(resourceName);
+        Assert.IsNotNull(stream, $"Embedded resource '{resourceName}' not found.");
+        XDocument doc = XDocument.Load(stream);
+        var supportedProperties = typeof(System.Windows.Automation.AutomationProperties)
+            .GetMethods(BindingFlags.Public | BindingFlags.Static)
+            .Where(method => method.Name.StartsWith("Set", StringComparison.Ordinal) && method.GetParameters().Length == 2)
+            .Select(method => $"AutomationProperties.{method.Name[3..]}")
+            .ToHashSet(StringComparer.Ordinal);
+
+        string[] unsupportedProperties = doc
+            .Descendants()
+            .Attributes()
+            .Select(attribute => attribute.Name.LocalName)
+            .Where(name => name.StartsWith("AutomationProperties.", StringComparison.Ordinal))
+            .Where(name => !supportedProperties.Contains(name))
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(name => name, StringComparer.Ordinal)
+            .ToArray();
+
+        CollectionAssert.AreEqual(
+            Array.Empty<string>(),
+            unsupportedProperties,
+            $"Remote UI XAML contains unsupported AutomationProperties members: {string.Join(", ", unsupportedProperties)}");
     }
 
     [TestMethod]
