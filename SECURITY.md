@@ -8,9 +8,11 @@ otherwise.
 
 ## Reporting a Vulnerability
 
-Please report suspected vulnerabilities privately to `<SECURITY_CONTACT>`.
-Include a clear description, affected version, reproduction steps, and impact
-when available. Do not open a public issue for an unpatched vulnerability.
+Please report suspected vulnerabilities privately through this repository's
+GitHub Security Advisories. Open the **Security** tab, select **Advisories**,
+and choose **New draft security advisory**. Include a clear description,
+affected version, reproduction steps, and impact when available. Do not open a
+public issue for an unpatched vulnerability.
 
 You should receive an acknowledgement within five business days. The project
 will coordinate validation, remediation, and disclosure timing with the
