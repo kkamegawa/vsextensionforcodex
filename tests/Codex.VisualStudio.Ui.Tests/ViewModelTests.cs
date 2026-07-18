@@ -271,6 +271,31 @@ public sealed class ViewModelTests
     }
 
     [TestMethod]
+    public void ChoicePromptParser_DoYouWantWithoutToClause_DoesNotTriggerConfirmationCard()
+    {
+        string text = string.Join('\n',
+            "I can help with either approach.",
+            "What do you want me to do?");
+
+        bool ok = ChoicePromptParser.TryParse(text, out _);
+
+        Assert.IsFalse(ok);
+    }
+
+    [TestMethod]
+    public void ChoicePromptParser_DoYouWantMeToClause_TriggersConfirmationCard()
+    {
+        string text = "Do you want me to continue with this implementation?";
+
+        bool ok = ChoicePromptParser.TryParse(text, out UserInputRequest request);
+
+        Assert.IsTrue(ok);
+        Assert.AreEqual(2, request.Questions[0].Options.Count);
+        Assert.AreEqual("Yes", request.Questions[0].Options[0].Label);
+        Assert.AreEqual("No", request.Questions[0].Options[1].Label);
+    }
+
+    [TestMethod]
     [DataRow("Here are the steps:\n1. Build\n2. Test\n3. Ship", DisplayName = "numbered list without a question")]
     [DataRow("Which one?\n1. Only one option", DisplayName = "question with a single option")]
     [DataRow("Just a sentence with no list?", DisplayName = "question without options")]
