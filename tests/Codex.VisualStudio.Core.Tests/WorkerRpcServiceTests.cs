@@ -64,6 +64,69 @@ public sealed class WorkerRpcServiceTests
         Assert.AreEqual("gpt-5-codex", result.DefaultModel);
     }
 
+    [TestMethod]
+    public async Task UnsupportedSlashOperationDoesNotDegradeConnection()
+    {
+        var connection = new StubConnection
+        {
+            Handler = method => method switch
+            {
+                "thread/compact/start" => throw new JsonRpcRemoteException(-32601, "Method not found"),
+                "account/read" => JsonSerializer.SerializeToElement(new { account = (object?)null }),
+                _ => JsonSerializer.SerializeToElement(new { }),
+            },
+        };
+        var session = new CodexSessionService(new ApprovalPolicyEngine(new PathAccessPolicy()), new SecretRedactor());
+        await using var worker = new WorkerRpcService(
+            new SecretRedactor(),
+            new FakeProcessHost(connection),
+            session);
+
+        WorkerStatus connected = await worker.ConnectAsync(Options(), CancellationToken.None);
+        CompactThreadResult result = await worker.CompactThreadAsync(
+            new CompactThreadRequest { ThreadId = "thread-1" },
+            CancellationToken.None);
+        WorkerStatus afterOperation = await worker.GetStatusAsync(CancellationToken.None);
+
+        Assert.AreEqual(WorkerConnectionState.Ready, connected.State);
+        Assert.IsFalse(result.IsSupported);
+        Assert.AreEqual(WorkerConnectionState.Ready, afterOperation.State);
+    }
+
+    [TestMethod]
+    public async Task CompactionCompletionRestoresReadyWhenNoTurnIsActive()
+    {
+        // thread/compact/start marks the worker Busy, but the app-server may report completion
+        // only through the context/compacted notification instead of turn/completed. The worker
+        // must return to Ready so queued slash commands are not blocked forever.
+        var connection = new StubConnection
+        {
+            Handler = method => method == "account/read"
+                ? JsonSerializer.SerializeToElement(new { account = (object?)null })
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        var session = new CodexSessionService(new ApprovalPolicyEngine(new PathAccessPolicy()), new SecretRedactor());
+        await using var worker = new WorkerRpcService(
+            new SecretRedactor(),
+            new FakeProcessHost(connection),
+            session);
+
+        await worker.ConnectAsync(Options(), CancellationToken.None);
+        CompactThreadResult result = await worker.CompactThreadAsync(
+            new CompactThreadRequest { ThreadId = "thread-1" },
+            CancellationToken.None);
+        WorkerStatus during = await worker.GetStatusAsync(CancellationToken.None);
+
+        await connection.EmitNotificationAsync(
+            "context/compacted",
+            new { threadId = "thread-1", turnId = "turn-9" });
+        WorkerStatus after = await worker.GetStatusAsync(CancellationToken.None);
+
+        Assert.IsTrue(result.IsSupported);
+        Assert.AreEqual(WorkerConnectionState.Busy, during.State);
+        Assert.AreEqual(WorkerConnectionState.Ready, after.State);
+    }
+
     private static WorkerOptions Options() => new()
     {
         WorkingDirectory = Path.GetTempPath(),
@@ -129,13 +192,20 @@ public sealed class WorkerRpcServiceTests
 
     private sealed class FakeProcessHost : ICodexProcessHost
     {
+        private readonly IJsonRpcConnection? connection;
+
+        public FakeProcessHost(IJsonRpcConnection? connection = null)
+        {
+            this.connection = connection;
+        }
+
         public event EventHandler<string>? StandardErrorReceived { add { } remove { } }
 
         public event EventHandler<int>? Exited { add { } remove { } }
 
         public int? ProcessId => 4242;
 
-        public IJsonRpcConnection? Connection => null;
+        public IJsonRpcConnection? Connection => connection;
 
         public Task StartAsync(string codexPath, string workingDirectory, CancellationToken cancellationToken)
             => Task.CompletedTask;
@@ -147,7 +217,7 @@ public sealed class WorkerRpcServiceTests
 
     private sealed class StubConnection : IJsonRpcConnection
     {
-        public event Func<JsonRpcMessage, CancellationToken, Task>? NotificationReceived { add { } remove { } }
+        public event Func<JsonRpcMessage, CancellationToken, Task>? NotificationReceived;
 
         public event Func<JsonRpcMessage, CancellationToken, Task<JsonElement>>? RequestReceived { add { } remove { } }
 
@@ -162,6 +232,15 @@ public sealed class WorkerRpcServiceTests
 
         public Task SendNotificationAsync(string method, object? parameters, CancellationToken cancellationToken)
             => Task.CompletedTask;
+
+        public Task EmitNotificationAsync(string method, object parameters)
+            => NotificationReceived?.Invoke(
+                new JsonRpcMessage
+                {
+                    Method = method,
+                    Params = JsonSerializer.SerializeToElement(parameters),
+                },
+                CancellationToken.None) ?? Task.CompletedTask;
 
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }

@@ -1,4 +1,5 @@
 ﻿using System.Collections.Concurrent;
+using System.Text;
 using System.Text.Json;
 using Codex.AppServer.Protocol;
 using Codex.VisualStudio.Contracts;
@@ -20,6 +21,14 @@ public interface ICodexSessionService : IAsyncDisposable
     event Func<UserInputRequest, CancellationToken, Task>? UserInputRequested;
 
     event Func<string, CancellationToken, Task>? UserInputResolved;
+
+    event Func<ContextCompactionEvent, CancellationToken, Task>? ContextCompacted;
+
+    event Func<ReviewModeEvent, CancellationToken, Task>? ReviewModeChanged;
+
+    event Func<ThreadGoalEvent, CancellationToken, Task>? ThreadGoalChanged;
+
+    event Func<RateLimitsResult, CancellationToken, Task>? RateLimitsChanged;
 
     string? ActiveThreadId { get; }
 
@@ -47,6 +56,24 @@ public interface ICodexSessionService : IAsyncDisposable
 
     Task InterruptTurnAsync(InterruptTurnRequest request, CancellationToken cancellationToken);
 
+    Task<CompactThreadResult> CompactThreadAsync(CompactThreadRequest request, CancellationToken cancellationToken);
+
+    Task<StartReviewResult> StartReviewAsync(StartReviewRequest request, CancellationToken cancellationToken);
+
+    Task<ForkThreadResult> ForkThreadAsync(ForkThreadRequest request, CancellationToken cancellationToken);
+
+    Task<ThreadGoalResult> GetThreadGoalAsync(string threadId, CancellationToken cancellationToken);
+
+    Task<ThreadGoalResult> SetThreadGoalAsync(SetThreadGoalRequest request, CancellationToken cancellationToken);
+
+    Task<ThreadGoalResult> ClearThreadGoalAsync(string threadId, CancellationToken cancellationToken);
+
+    Task<McpServerListResult> ListMcpServersAsync(string? threadId, CancellationToken cancellationToken);
+
+    Task<UploadFeedbackResult> UploadFeedbackAsync(UploadFeedbackRequest request, CancellationToken cancellationToken);
+
+    Task<RateLimitsResult> GetRateLimitsAsync(CancellationToken cancellationToken);
+
     Task ResolveApprovalAsync(ResolveApprovalRequest request, CancellationToken cancellationToken);
 
     Task ResolveUserInputAsync(ResolveUserInputRequest request, CancellationToken cancellationToken);
@@ -61,6 +88,8 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
     private readonly ConcurrentDictionary<string, PendingApproval> pendingApprovals = new();
     private readonly ConcurrentDictionary<string, PendingUserInput> pendingUserInputs = new();
     private readonly ApprovalGrantStore approvalGrants = new();
+    private readonly object unsupportedMethodsLock = new();
+    private readonly HashSet<string> unsupportedMethods = new(StringComparer.Ordinal);
     private IJsonRpcConnection? connection;
     private WorkerOptions options = new();
     private StreamingBuffer? streamingBuffer;
@@ -85,6 +114,14 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
 
     public event Func<string, CancellationToken, Task>? UserInputResolved;
 
+    public event Func<ContextCompactionEvent, CancellationToken, Task>? ContextCompacted;
+
+    public event Func<ReviewModeEvent, CancellationToken, Task>? ReviewModeChanged;
+
+    public event Func<ThreadGoalEvent, CancellationToken, Task>? ThreadGoalChanged;
+
+    public event Func<RateLimitsResult, CancellationToken, Task>? RateLimitsChanged;
+
     public string? ActiveThreadId { get; private set; }
 
     public string? ActiveTurnId { get; private set; }
@@ -98,6 +135,11 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
 
         pendingApprovals.Clear();
         approvalGrants.Clear();
+        lock (unsupportedMethodsLock)
+        {
+            unsupportedMethods.Clear();
+        }
+
         this.connection = connection;
         this.options = options;
         connection.NotificationReceived += OnNotificationAsync;
@@ -307,15 +349,31 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
 
     public async Task<string> StartTurnAsync(StartTurnRequest request, CancellationToken cancellationToken)
     {
+        List<object> input = BuildTurnInput(request);
         JsonElement result = await SendAsync(
             "turn/start",
             new
             {
                 threadId = request.ThreadId,
-                input = new[] { new { type = "text", text = request.Text } },
+                input,
                 model = request.Model,
                 approvalPolicy = request.ApprovalPolicy,
                 sandboxPolicy = request.SandboxMode is null ? null : new { type = request.SandboxMode },
+                effort = request.Effort,
+                personality = request.Personality,
+                serviceTier = request.ServiceTier,
+                collaborationMode = request.CollaborationMode is null
+                    ? null
+                    : new
+                    {
+                        mode = request.CollaborationMode.Mode,
+                        settings = new
+                        {
+                            model = request.CollaborationMode.Model,
+                            reasoning_effort = request.CollaborationMode.ReasoningEffort,
+                            developer_instructions = request.CollaborationMode.DeveloperInstructions,
+                        },
+                    },
             },
             cancellationToken).ConfigureAwait(false);
         ActiveThreadId = request.ThreadId;
@@ -349,6 +407,194 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
             new { threadId = request.ThreadId, turnId = request.TurnId },
             TimeSpan.FromSeconds(10),
             cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<CompactThreadResult> CompactThreadAsync(
+        CompactThreadRequest request,
+        CancellationToken cancellationToken)
+    {
+        OperationCallResult call = await TrySendOperationAsync(
+            "thread/compact/start",
+            new { threadId = request.ThreadId },
+            TimeSpan.FromSeconds(60),
+            cancellationToken).ConfigureAwait(false);
+        if (!call.IsSupported)
+        {
+            return Unsupported<CompactThreadResult>("Manual context compaction is not supported by this app-server.");
+        }
+
+        ActiveThreadId = request.ThreadId;
+        return new CompactThreadResult();
+    }
+
+    public async Task<StartReviewResult> StartReviewAsync(
+        StartReviewRequest request,
+        CancellationToken cancellationToken)
+    {
+        object target = CreateReviewTarget(request.Target);
+        OperationCallResult call = await TrySendOperationAsync(
+            "review/start",
+            new
+            {
+                threadId = request.ThreadId,
+                target,
+                delivery = request.Delivery == ReviewDelivery.Detached ? "detached" : "inline",
+            },
+            TimeSpan.FromSeconds(60),
+            cancellationToken).ConfigureAwait(false);
+        if (!call.IsSupported)
+        {
+            return Unsupported<StartReviewResult>("Code review is not supported by this app-server.");
+        }
+
+        string? reviewThreadId = GetString(call.Result, "reviewThreadId");
+        string? turnId = call.Result.TryGetProperty("turn", out JsonElement turn)
+            ? GetString(turn, "id")
+            : null;
+        ActiveThreadId = reviewThreadId ?? request.ThreadId;
+        ActiveTurnId = turnId;
+        return new StartReviewResult
+        {
+            ReviewThreadId = reviewThreadId,
+            TurnId = turnId,
+        };
+    }
+
+    public async Task<ForkThreadResult> ForkThreadAsync(
+        ForkThreadRequest request,
+        CancellationToken cancellationToken)
+    {
+        OperationCallResult call = await TrySendOperationAsync(
+            "thread/fork",
+            new { threadId = request.ThreadId },
+            TimeSpan.FromSeconds(60),
+            cancellationToken).ConfigureAwait(false);
+        if (!call.IsSupported)
+        {
+            return Unsupported<ForkThreadResult>("Thread forking is not supported by this app-server.");
+        }
+
+        ThreadSummary? thread = call.Result.TryGetProperty("thread", out JsonElement threadElement)
+            ? ReadThread(threadElement)
+            : null;
+        ActiveThreadId = thread?.Id ?? ActiveThreadId;
+        ActiveTurnId = null;
+        return new ForkThreadResult { Thread = thread };
+    }
+
+    public async Task<ThreadGoalResult> GetThreadGoalAsync(string threadId, CancellationToken cancellationToken)
+    {
+        OperationCallResult call = await TrySendOperationAsync(
+            "thread/goal/get",
+            new { threadId },
+            TimeSpan.FromSeconds(15),
+            cancellationToken).ConfigureAwait(false);
+        if (!call.IsSupported)
+        {
+            return Unsupported<ThreadGoalResult>("Thread goals are not supported by this app-server.");
+        }
+
+        return new ThreadGoalResult { Goal = ReadOptionalGoal(call.Result) };
+    }
+
+    public async Task<ThreadGoalResult> SetThreadGoalAsync(
+        SetThreadGoalRequest request,
+        CancellationToken cancellationToken)
+    {
+        ValidateGoalRequest(request);
+        OperationCallResult call = await TrySendOperationAsync(
+            "thread/goal/set",
+            new
+            {
+                threadId = request.ThreadId,
+                objective = request.Objective,
+                status = request.Status.HasValue ? ToWireGoalStatus(request.Status.Value) : null,
+                tokenBudget = request.TokenBudget,
+            },
+            TimeSpan.FromSeconds(30),
+            cancellationToken).ConfigureAwait(false);
+        if (!call.IsSupported)
+        {
+            return Unsupported<ThreadGoalResult>("Thread goals are not supported by this app-server.");
+        }
+
+        return new ThreadGoalResult { Goal = ReadOptionalGoal(call.Result) };
+    }
+
+    public async Task<ThreadGoalResult> ClearThreadGoalAsync(string threadId, CancellationToken cancellationToken)
+    {
+        OperationCallResult call = await TrySendOperationAsync(
+            "thread/goal/clear",
+            new { threadId },
+            TimeSpan.FromSeconds(30),
+            cancellationToken).ConfigureAwait(false);
+        if (!call.IsSupported)
+        {
+            return Unsupported<ThreadGoalResult>("Thread goals are not supported by this app-server.");
+        }
+
+        return new ThreadGoalResult
+        {
+            Cleared = GetBool(call.Result, "cleared") == true,
+        };
+    }
+
+    public async Task<McpServerListResult> ListMcpServersAsync(
+        string? threadId,
+        CancellationToken cancellationToken)
+    {
+        OperationCallResult call = await TrySendOperationAsync(
+            "mcpServerStatus/list",
+            new { cursor = (string?)null, limit = 100, detail = "toolsAndAuthOnly", threadId },
+            TimeSpan.FromSeconds(30),
+            cancellationToken).ConfigureAwait(false);
+        if (!call.IsSupported)
+        {
+            return Unsupported<McpServerListResult>("MCP server status is not supported by this app-server.");
+        }
+
+        return new McpServerListResult { Servers = ReadMcpServers(call.Result) };
+    }
+
+    public async Task<UploadFeedbackResult> UploadFeedbackAsync(
+        UploadFeedbackRequest request,
+        CancellationToken cancellationToken)
+    {
+        ValidateFeedbackRequest(request);
+        OperationCallResult call = await TrySendOperationAsync(
+            "feedback/upload",
+            new
+            {
+                classification = request.Classification,
+                reason = request.Reason,
+                includeLogs = request.IncludeLogs,
+                threadId = request.ThreadId,
+                tags = request.Tags.Count == 0 ? null : request.Tags,
+                extraLogFiles = (string[]?)null,
+            },
+            TimeSpan.FromSeconds(60),
+            cancellationToken).ConfigureAwait(false);
+        if (!call.IsSupported)
+        {
+            return Unsupported<UploadFeedbackResult>("Feedback upload is not supported by this app-server.");
+        }
+
+        return new UploadFeedbackResult { ThreadId = GetString(call.Result, "threadId") };
+    }
+
+    public async Task<RateLimitsResult> GetRateLimitsAsync(CancellationToken cancellationToken)
+    {
+        OperationCallResult call = await TrySendOperationAsync(
+            "account/rateLimits/read",
+            new { },
+            TimeSpan.FromSeconds(15),
+            cancellationToken).ConfigureAwait(false);
+        if (!call.IsSupported)
+        {
+            return Unsupported<RateLimitsResult>("Rate-limit status is not supported by this app-server.");
+        }
+
+        return ReadRateLimitsResult(call.Result);
     }
 
     public async Task ResolveApprovalAsync(ResolveApprovalRequest request, CancellationToken cancellationToken)
@@ -488,6 +734,181 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         return result;
     }
 
+    private List<object> BuildTurnInput(StartTurnRequest request)
+    {
+        var input = new List<object>
+        {
+            new { type = "text", text = request.Text },
+        };
+        if (request.IdeContext is null)
+        {
+            return input;
+        }
+
+        string? activeDocumentPath = request.IdeContext.ActiveDocumentPath;
+        if (IsWorkspacePath(activeDocumentPath))
+        {
+            input.Add(new
+            {
+                type = "mention",
+                name = Path.GetFileName(activeDocumentPath),
+                path = activeDocumentPath,
+            });
+        }
+
+        foreach (string path in request.IdeContext.ReferencedFilePaths
+            .Where(IsWorkspacePath)
+            .Where(path => !string.Equals(path, activeDocumentPath, StringComparison.OrdinalIgnoreCase))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Take(10))
+        {
+            input.Add(new
+            {
+                type = "mention",
+                name = Path.GetFileName(path),
+                path,
+            });
+        }
+
+        string? selection = LimitUtf8(request.IdeContext.SelectionText, 32 * 1024);
+        if (!string.IsNullOrEmpty(selection))
+        {
+            string? selectionPath = request.IdeContext.SelectionFilePath;
+            string header = IsWorkspacePath(selectionPath)
+                ? $"IDE selection from {selectionPath}:"
+                : "IDE selection:";
+            input.Add(new
+            {
+                type = "text",
+                text = $"{header}{Environment.NewLine}{selection}",
+            });
+        }
+
+        return input;
+    }
+
+    private bool IsWorkspacePath(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return false;
+        }
+
+        try
+        {
+            string workspace = Path.GetFullPath(options.WorkingDirectory)
+                .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+                + Path.DirectorySeparatorChar;
+            string candidate = Path.GetFullPath(path);
+            return candidate.StartsWith(workspace, StringComparison.OrdinalIgnoreCase);
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return false;
+        }
+    }
+
+    private static string? LimitUtf8(string? value, int maximumBytes)
+    {
+        if (string.IsNullOrEmpty(value) || Encoding.UTF8.GetByteCount(value) <= maximumBytes)
+        {
+            return value;
+        }
+
+        int low = 0;
+        int high = value.Length;
+        while (low < high)
+        {
+            int middle = low + ((high - low + 1) / 2);
+            if (Encoding.UTF8.GetByteCount(value.AsSpan(0, middle)) <= maximumBytes)
+            {
+                low = middle;
+            }
+            else
+            {
+                high = middle - 1;
+            }
+        }
+
+        if (low > 0 && char.IsHighSurrogate(value[low - 1]))
+        {
+            low--;
+        }
+
+        return value[..low];
+    }
+
+    private static object CreateReviewTarget(ReviewTarget target)
+    {
+        string? value = string.IsNullOrWhiteSpace(target.Value) ? null : target.Value.Trim();
+        return target.Kind switch
+        {
+            ReviewTargetKind.UncommittedChanges => new { type = "uncommittedChanges" },
+            ReviewTargetKind.BaseBranch when value is not null => new { type = "baseBranch", branch = value },
+            ReviewTargetKind.Commit when value is not null => new { type = "commit", sha = value, title = target.Title },
+            ReviewTargetKind.Custom when value is not null => new { type = "custom", instructions = value },
+            _ => throw new ArgumentException("The selected review target requires a value.", nameof(target)),
+        };
+    }
+
+    private static void ValidateGoalRequest(SetThreadGoalRequest request)
+    {
+        ValidateGoalObjective(request.Objective);
+        ValidateGoalTokenBudget(request.TokenBudget);
+    }
+
+    private static void ValidateFeedbackRequest(UploadFeedbackRequest request)
+    {
+        ValidateFeedbackClassification(request.Classification);
+        ValidateFeedbackReason(request.Reason);
+        ValidateFeedbackTags(request.Tags);
+    }
+
+    private static void ValidateGoalObjective(string? objective)
+    {
+        if (objective is not null && (string.IsNullOrWhiteSpace(objective) || objective.Length > 4_000))
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(objective),
+                "A goal objective must contain between 1 and 4,000 characters.");
+        }
+    }
+
+    private static void ValidateGoalTokenBudget(long? tokenBudget)
+    {
+        if (tokenBudget is not null && tokenBudget <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(tokenBudget), "A token budget must be greater than zero.");
+        }
+    }
+
+    private static void ValidateFeedbackClassification(string classification)
+    {
+        if (string.IsNullOrWhiteSpace(classification) || classification.Length > 64)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(classification),
+                "A feedback classification must contain between 1 and 64 characters.");
+        }
+    }
+
+    private static void ValidateFeedbackReason(string? reason)
+    {
+        if (reason?.Length > 4_000)
+        {
+            throw new ArgumentOutOfRangeException(nameof(reason), "Feedback text cannot exceed 4,000 characters.");
+        }
+    }
+
+    private static void ValidateFeedbackTags(IReadOnlyDictionary<string, string> tags)
+    {
+        if (tags.Count > 20
+            || tags.Any(pair => pair.Key.Length > 128 || pair.Value.Length > 128))
+        {
+            throw new ArgumentOutOfRangeException(nameof(tags), "Feedback tags exceed the supported limits.");
+        }
+    }
+
     public async ValueTask DisposeAsync()
     {
         if (streamingBuffer is not null)
@@ -612,6 +1033,68 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
             return;
         }
 
+        if (method == "account/rateLimits/updated"
+            && parameters.TryGetProperty("rateLimits", out JsonElement updatedRateLimits))
+        {
+            await EmitRateLimitsChangedAsync(
+                new RateLimitsResult { RateLimits = ReadRateLimit(updatedRateLimits) },
+                cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
+        if (method == "thread/goal/updated")
+        {
+            await EmitThreadGoalChangedAsync(
+                new ThreadGoalEvent
+                {
+                    ThreadId = threadId ?? string.Empty,
+                    TurnId = turnId,
+                    Goal = parameters.TryGetProperty("goal", out JsonElement goal)
+                        ? ReadGoal(goal)
+                        : null,
+                },
+                cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
+        if (method == "thread/goal/cleared")
+        {
+            await EmitThreadGoalChangedAsync(
+                new ThreadGoalEvent
+                {
+                    ThreadId = threadId ?? string.Empty,
+                    TurnId = turnId,
+                    IsCleared = true,
+                },
+                cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
+        if (method == "context/compacted")
+        {
+            await EmitContextCompactedAsync(
+                new ContextCompactionEvent
+                {
+                    ThreadId = threadId ?? string.Empty,
+                    TurnId = turnId ?? string.Empty,
+                    IsCompleted = true,
+                },
+                cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
+        if ((method is "item/started" or "item/completed")
+            && parameters.TryGetProperty("item", out JsonElement specialItem)
+            && await TryEmitSpecialItemAsync(
+                specialItem,
+                threadId,
+                turnId,
+                method == "item/completed",
+                cancellationToken).ConfigureAwait(false))
+        {
+            return;
+        }
+
         ConversationEventKind kind = MapKind(method);
         var output = new ConversationEvent
         {
@@ -689,6 +1172,92 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         return RequireConnection().SendRequestAsync(method, parameters, TimeSpan.FromSeconds(60), cancellationToken);
     }
 
+    private async Task<OperationCallResult> TrySendOperationAsync(
+        string method,
+        object parameters,
+        TimeSpan timeout,
+        CancellationToken cancellationToken)
+    {
+        lock (unsupportedMethodsLock)
+        {
+            if (unsupportedMethods.Contains(method))
+            {
+                return OperationCallResult.Unsupported;
+            }
+        }
+
+        try
+        {
+            JsonElement result = await RequireConnection().SendRequestAsync(
+                method,
+                parameters,
+                timeout,
+                cancellationToken).ConfigureAwait(false);
+            return new OperationCallResult(true, result);
+        }
+        catch (JsonRpcRemoteException ex) when (ex.Code == -32601)
+        {
+            lock (unsupportedMethodsLock)
+            {
+                unsupportedMethods.Add(method);
+            }
+
+            WorkerDiagnostics.Write($"app-server method disabled for this session method={method}", ex);
+            return OperationCallResult.Unsupported;
+        }
+    }
+
+    private static T Unsupported<T>(string reason)
+        where T : AppServerOperationResult, new()
+        => new()
+        {
+            IsSupported = false,
+            UnavailableReason = reason,
+        };
+
+    private async Task<bool> TryEmitSpecialItemAsync(
+        JsonElement item,
+        string? threadId,
+        string? turnId,
+        bool isCompleted,
+        CancellationToken cancellationToken)
+    {
+        string? itemType = GetString(item, "type");
+        string? itemId = GetString(item, "id");
+        if (itemType == "contextCompaction")
+        {
+            await EmitContextCompactedAsync(
+                new ContextCompactionEvent
+                {
+                    ThreadId = threadId ?? string.Empty,
+                    TurnId = turnId ?? string.Empty,
+                    ItemId = itemId,
+                    IsCompleted = isCompleted,
+                },
+                cancellationToken).ConfigureAwait(false);
+            return true;
+        }
+
+        if (itemType is "enteredReviewMode" or "exitedReviewMode")
+        {
+            await EmitReviewModeChangedAsync(
+                new ReviewModeEvent
+                {
+                    ThreadId = threadId ?? string.Empty,
+                    TurnId = turnId ?? string.Empty,
+                    ItemId = itemId,
+                    ChangeKind = itemType == "enteredReviewMode"
+                        ? ReviewModeChangeKind.Entered
+                        : ReviewModeChangeKind.Exited,
+                    Review = redactor.Redact(GetString(item, "review")),
+                },
+                cancellationToken).ConfigureAwait(false);
+            return true;
+        }
+
+        return false;
+    }
+
     private IJsonRpcConnection RequireConnection() => connection ?? throw new InvalidOperationException("The app-server is not initialized.");
 
     private Task EmitAsync(ConversationEvent value, CancellationToken cancellationToken)
@@ -699,6 +1268,18 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
 
     private Task EmitUserInputResolvedAsync(string requestId, CancellationToken cancellationToken)
         => UserInputResolved?.Invoke(requestId, cancellationToken) ?? Task.CompletedTask;
+
+    private Task EmitContextCompactedAsync(ContextCompactionEvent value, CancellationToken cancellationToken)
+        => ContextCompacted?.Invoke(value, cancellationToken) ?? Task.CompletedTask;
+
+    private Task EmitReviewModeChangedAsync(ReviewModeEvent value, CancellationToken cancellationToken)
+        => ReviewModeChanged?.Invoke(value, cancellationToken) ?? Task.CompletedTask;
+
+    private Task EmitThreadGoalChangedAsync(ThreadGoalEvent value, CancellationToken cancellationToken)
+        => ThreadGoalChanged?.Invoke(value, cancellationToken) ?? Task.CompletedTask;
+
+    private Task EmitRateLimitsChangedAsync(RateLimitsResult value, CancellationToken cancellationToken)
+        => RateLimitsChanged?.Invoke(value, cancellationToken) ?? Task.CompletedTask;
 
     private async Task EmitAccountStatusAsync(AccountStatus status, CancellationToken cancellationToken)
     {
@@ -819,6 +1400,11 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
                 {
                     Id = id,
                     DisplayName = displayName is null ? null : redactor.Redact(displayName),
+                    DefaultReasoningEffort = NormalizeWireIdentifier(GetString(model, "defaultReasoningEffort")),
+                    SupportedReasoningEfforts = ReadReasoningEfforts(model),
+                    SupportsPersonality = GetBool(model, "supportsPersonality") == true,
+                    DefaultServiceTier = NormalizeWireIdentifier(GetString(model, "defaultServiceTier")),
+                    ServiceTiers = ReadServiceTiers(model),
                 });
             }
         }
@@ -833,12 +1419,194 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
             }
         }
 
-        WorkerDiagnostics.Write($"app-server model list parsed; count={models.Count} default={defaultModel ?? "(none)"}");
+        WorkerDiagnostics.Write(
+            $"app-server model list parsed; count={models.Count} default={redactor.Redact(defaultModel ?? "(none)")}");
 
         return new ListModelsResult
         {
             Models = models,
             DefaultModel = defaultModel,
+        };
+    }
+
+    private IReadOnlyList<ReasoningEffortInfo> ReadReasoningEfforts(JsonElement model)
+    {
+        if (!model.TryGetProperty("supportedReasoningEfforts", out JsonElement efforts)
+            || efforts.ValueKind != JsonValueKind.Array)
+        {
+            return Array.Empty<ReasoningEffortInfo>();
+        }
+
+        var result = new List<ReasoningEffortInfo>();
+        foreach (JsonElement effort in efforts.EnumerateArray())
+        {
+            string? id = NormalizeWireIdentifier(GetString(effort, "reasoningEffort"));
+            if (id is null)
+            {
+                continue;
+            }
+
+            result.Add(new ReasoningEffortInfo
+            {
+                Id = id,
+                Description = redactor.Redact(GetString(effort, "description")),
+            });
+        }
+
+        return result;
+    }
+
+    private IReadOnlyList<ServiceTierInfo> ReadServiceTiers(JsonElement model)
+    {
+        if (!model.TryGetProperty("serviceTiers", out JsonElement serviceTiers)
+            || serviceTiers.ValueKind != JsonValueKind.Array)
+        {
+            return Array.Empty<ServiceTierInfo>();
+        }
+
+        var result = new List<ServiceTierInfo>();
+        foreach (JsonElement serviceTier in serviceTiers.EnumerateArray())
+        {
+            string? id = NormalizeWireIdentifier(GetString(serviceTier, "id"));
+            if (id is null)
+            {
+                continue;
+            }
+
+            result.Add(new ServiceTierInfo
+            {
+                Id = id,
+                Name = redactor.Redact(GetString(serviceTier, "name")),
+                Description = redactor.Redact(GetString(serviceTier, "description")),
+            });
+        }
+
+        return result;
+    }
+
+    private ThreadGoalInfo? ReadOptionalGoal(JsonElement result)
+        => result.TryGetProperty("goal", out JsonElement goal)
+        && goal.ValueKind == JsonValueKind.Object
+            ? ReadGoal(goal)
+            : null;
+
+    private ThreadGoalInfo ReadGoal(JsonElement goal) => new()
+    {
+        ThreadId = GetString(goal, "threadId") ?? string.Empty,
+        Objective = redactor.Redact(GetString(goal, "objective")) ?? string.Empty,
+        Status = FromWireGoalStatus(GetString(goal, "status")),
+        TokenBudget = GetInt64(goal, "tokenBudget"),
+        TokensUsed = GetInt64(goal, "tokensUsed") ?? 0,
+        TimeUsedSeconds = GetInt64(goal, "timeUsedSeconds") ?? 0,
+        CreatedAt = GetInt64(goal, "createdAt") ?? 0,
+        UpdatedAt = GetInt64(goal, "updatedAt") ?? 0,
+    };
+
+    private IReadOnlyList<McpServerStatusInfo> ReadMcpServers(JsonElement result)
+    {
+        if (!result.TryGetProperty("data", out JsonElement data) || data.ValueKind != JsonValueKind.Array)
+        {
+            return Array.Empty<McpServerStatusInfo>();
+        }
+
+        var servers = new List<McpServerStatusInfo>();
+        foreach (JsonElement server in data.EnumerateArray())
+        {
+            if (server.ValueKind != JsonValueKind.Object)
+            {
+                continue;
+            }
+
+            var tools = new List<string>();
+            if (server.TryGetProperty("tools", out JsonElement toolMap)
+                && toolMap.ValueKind == JsonValueKind.Object)
+            {
+                tools.AddRange(toolMap.EnumerateObject().Select(tool => redactor.Redact(tool.Name)));
+            }
+
+            string? displayName = null;
+            if (server.TryGetProperty("serverInfo", out JsonElement serverInfo)
+                && serverInfo.ValueKind == JsonValueKind.Object)
+            {
+                displayName = GetString(serverInfo, "title") ?? GetString(serverInfo, "name");
+            }
+
+            servers.Add(new McpServerStatusInfo
+            {
+                Name = redactor.Redact(GetString(server, "name")) ?? string.Empty,
+                DisplayName = redactor.Redact(displayName),
+                AuthStatus = NormalizeWireIdentifier(GetString(server, "authStatus")) ?? string.Empty,
+                ToolNames = tools,
+                ResourceCount = GetArrayLength(server, "resources"),
+                ResourceTemplateCount = GetArrayLength(server, "resourceTemplates"),
+            });
+        }
+
+        return servers;
+    }
+
+    private RateLimitsResult ReadRateLimitsResult(JsonElement result)
+    {
+        var byLimitId = new Dictionary<string, RateLimitInfo>(StringComparer.Ordinal);
+        if (result.TryGetProperty("rateLimitsByLimitId", out JsonElement map)
+            && map.ValueKind == JsonValueKind.Object)
+        {
+            foreach (JsonProperty property in map.EnumerateObject())
+            {
+                byLimitId[redactor.Redact(property.Name)] = ReadRateLimit(property.Value);
+            }
+        }
+
+        return new RateLimitsResult
+        {
+            RateLimits = result.TryGetProperty("rateLimits", out JsonElement rateLimits)
+                && rateLimits.ValueKind == JsonValueKind.Object
+                    ? ReadRateLimit(rateLimits)
+                    : null,
+            RateLimitsByLimitId = byLimitId,
+        };
+    }
+
+    private RateLimitInfo ReadRateLimit(JsonElement value) => new()
+    {
+        LimitId = redactor.Redact(GetString(value, "limitId")),
+        LimitName = redactor.Redact(GetString(value, "limitName")),
+        PlanType = NormalizeWireIdentifier(GetString(value, "planType")),
+        ReachedType = NormalizeWireIdentifier(GetString(value, "rateLimitReachedType")),
+        Primary = ReadRateLimitWindow(value, "primary"),
+        Secondary = ReadRateLimitWindow(value, "secondary"),
+        Credits = ReadCredits(value),
+    };
+
+    private static RateLimitWindowInfo? ReadRateLimitWindow(JsonElement value, string propertyName)
+    {
+        if (!value.TryGetProperty(propertyName, out JsonElement window)
+            || window.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+
+        return new RateLimitWindowInfo
+        {
+            UsedPercent = GetInt32(window, "usedPercent") ?? 0,
+            ResetsAt = GetInt64(window, "resetsAt"),
+            WindowDurationMinutes = GetInt64(window, "windowDurationMins"),
+        };
+    }
+
+    private static CreditsInfo? ReadCredits(JsonElement value)
+    {
+        if (!value.TryGetProperty("credits", out JsonElement credits)
+            || credits.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+
+        return new CreditsInfo
+        {
+            HasCredits = GetBool(credits, "hasCredits") == true,
+            Unlimited = GetBool(credits, "unlimited") == true,
+            Balance = GetString(credits, "balance"),
         };
     }
 
@@ -855,6 +1623,20 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
             : null;
     }
 
+    private static string? NormalizeWireIdentifier(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        string trimmed = value.Trim();
+        return trimmed.Length <= 128
+            && trimmed.All(character => char.IsAsciiLetterOrDigit(character) || character is '_' or '-')
+                ? trimmed
+                : null;
+    }
+
     private static string? GetString(JsonElement element, string name)
         => element.ValueKind == JsonValueKind.Object
             && element.TryGetProperty(name, out JsonElement property)
@@ -869,6 +1651,29 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
                 ? property.GetBoolean()
                 : null;
 
+    private static long? GetInt64(JsonElement element, string name)
+        => element.ValueKind == JsonValueKind.Object
+            && element.TryGetProperty(name, out JsonElement property)
+            && property.ValueKind == JsonValueKind.Number
+            && property.TryGetInt64(out long value)
+                ? value
+                : null;
+
+    private static int? GetInt32(JsonElement element, string name)
+        => element.ValueKind == JsonValueKind.Object
+            && element.TryGetProperty(name, out JsonElement property)
+            && property.ValueKind == JsonValueKind.Number
+            && property.TryGetInt32(out int value)
+                ? value
+                : null;
+
+    private static int GetArrayLength(JsonElement element, string name)
+        => element.ValueKind == JsonValueKind.Object
+            && element.TryGetProperty(name, out JsonElement property)
+            && property.ValueKind == JsonValueKind.Array
+                ? property.GetArrayLength()
+                : 0;
+
     private static string ToWireDecision(ApprovalDecision decision) => decision switch
     {
         ApprovalDecision.Accept => "accept",
@@ -877,6 +1682,27 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         ApprovalDecision.AcceptForSession => "acceptForSession",
         ApprovalDecision.Decline => "decline",
         _ => "cancel",
+    };
+
+    private static string ToWireGoalStatus(ThreadGoalStatus status) => status switch
+    {
+        ThreadGoalStatus.Active => "active",
+        ThreadGoalStatus.Paused => "paused",
+        ThreadGoalStatus.Blocked => "blocked",
+        ThreadGoalStatus.UsageLimited => "usageLimited",
+        ThreadGoalStatus.BudgetLimited => "budgetLimited",
+        ThreadGoalStatus.Complete => "complete",
+        _ => "active",
+    };
+
+    private static ThreadGoalStatus FromWireGoalStatus(string? status) => status switch
+    {
+        "paused" => ThreadGoalStatus.Paused,
+        "blocked" => ThreadGoalStatus.Blocked,
+        "usageLimited" => ThreadGoalStatus.UsageLimited,
+        "budgetLimited" => ThreadGoalStatus.BudgetLimited,
+        "complete" => ThreadGoalStatus.Complete,
+        _ => ThreadGoalStatus.Active,
     };
 
     private static JsonElement ApprovalResponse(string decision)
@@ -922,4 +1748,9 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
     private sealed record PendingUserInput(
         UserInputRequest Request,
         TaskCompletionSource<IReadOnlyDictionary<string, string[]>> Completion);
+
+    private readonly record struct OperationCallResult(bool IsSupported, JsonElement Result)
+    {
+        public static OperationCallResult Unsupported { get; } = new(false, default);
+    }
 }

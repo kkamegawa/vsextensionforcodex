@@ -9,6 +9,7 @@ using System.Windows.Input;
 using Codex.VisualStudio.Contracts;
 using Microsoft.VisualStudio.Extensibility;
 using Microsoft.VisualStudio.Extensibility.Documents;
+using Microsoft.VisualStudio.Extensibility.Shell;
 using VSUI = Microsoft.VisualStudio.Extensibility.UI;
 
 namespace Codex.VisualStudio.Extension;
@@ -26,6 +27,11 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     private readonly CancellationTokenSource lifetime = new();
     private readonly WorkspaceDirectoryResolver workspaceDirectoryResolver;
     private readonly ProjectScaffolder projectScaffolder;
+    private readonly AgentsFileInitializer agentsFileInitializer;
+    private readonly VisualStudioExtensibility? extensibility;
+    private readonly SlashCommandCatalog slashCommandCatalog = new();
+    private readonly SlashCommandParser slashCommandParser;
+    private readonly SlashCommandCoordinator slashCommandCoordinator = new();
     private readonly ExtensionSettings settings = ExtensionSettings.Load();
     private readonly Queue<UserInputViewModel> userInputQueue = new();
     private readonly Queue<ApprovalViewModel> approvalQueue = new();
@@ -42,8 +48,18 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     private string? nextCursor;
     private bool initialized;
     private bool isHistoryOpen;
+    private bool ideContextEnabled = true;
     private string? selectedModel;
     private string selectedMode = "Agent";
+    private string? workingDirectory;
+    private string? nextReasoningEffort;
+    private string? nextPersonality;
+    private string? nextServiceTier;
+    private string? nextCollaborationMode;
+    private ListModelsResult modelCatalog = new();
+    private RateLimitsResult? latestRateLimits;
+    private readonly HashSet<SlashCommandId> unavailableSlashCommands = [];
+    private int drainingSlashQueue;
 
     public ChatViewModel(OutputChannel? outputChannel = null, VisualStudioExtensibility? extensibility = null)
         : this(new WorkerBridge(outputChannel), outputChannel, extensibility, autoConnect: true)
@@ -58,8 +74,11 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     {
         this.bridge = bridge;
         this.outputChannel = outputChannel;
+        this.extensibility = extensibility;
         workspaceDirectoryResolver = new WorkspaceDirectoryResolver(extensibility);
         projectScaffolder = new ProjectScaffolder(extensibility);
+        agentsFileInitializer = new AgentsFileInitializer(extensibility);
+        slashCommandParser = new SlashCommandParser(slashCommandCatalog);
         bridge.StateChanged += OnStateChangedAsync;
         bridge.AccountChanged += OnAccountChangedAsync;
         bridge.ConversationEventReceived += OnConversationEventAsync;
@@ -67,6 +86,10 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         bridge.ApprovalResolved += OnApprovalResolvedAsync;
         bridge.UserInputRequested += OnUserInputRequestedAsync;
         bridge.UserInputResolved += OnUserInputResolvedAsync;
+        bridge.ContextCompacted += OnContextCompactedAsync;
+        bridge.ReviewModeChanged += OnReviewModeChangedAsync;
+        bridge.ThreadGoalChanged += OnThreadGoalChangedAsync;
+        bridge.RateLimitsChanged += OnRateLimitsChangedAsync;
         // The welcome/empty state is driven by IsThreadEmpty; keep it in sync with every
         // mutation of Items (Add/Clear from any call site) via a single subscription.
         Items.CollectionChanged += (_, _) => OnPropertyChanged(nameof(IsThreadEmpty));
@@ -83,6 +106,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             return Task.CompletedTask;
         });
         AttachCommand = new AsyncCommand(AttachStubAsync);
+        SlashCommands.Configure(OnSlashSuggestionAcceptedAsync, ExecuteSlashSubmissionAsync, OnSlashCommandClearedAsync);
 
         // Suggestion chips for the empty state. Selecting one populates the composer; the
         // user then presses Send. Keeps behavior simple and avoids needing editor context.
@@ -227,6 +251,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             if (SetProperty(ref selectedThread, value) && value is not null)
             {
                 _ = ResumeThreadAsync(value);
+                _ = DrainSlashQueuesAsync(value.Id);
             }
         }
     }
@@ -243,6 +268,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             }
 
             composerText = value;
+            UpdateSlashCommandSuggestions(value);
 
             // Deliberately do NOT raise PropertyChanged for ComposerText on this binding-driven
             // (user-typing) path. The data context is replicated to a proxy in a separate process,
@@ -267,6 +293,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         }
 
         composerText = value;
+        UpdateSlashCommandSuggestions(value);
         OnPropertyChanged(nameof(ComposerText));
         OnPropertyChanged(nameof(IsComposerEmpty));
         RaiseCommandStates();
@@ -294,6 +321,9 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     public ObservableCollection<SuggestionChip> Suggestions { get; }
 
     [DataMember]
+    public SlashCommandPresentationViewModel SlashCommands { get; } = new();
+
+    [DataMember]
     public ObservableCollection<string> Models { get; }
 
     [DataMember]
@@ -314,7 +344,10 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 return;
             }
 
-            SetProperty(ref selectedModel, value);
+            if (SetProperty(ref selectedModel, value))
+            {
+                UpdateSlashCommandSuggestions(ComposerText);
+            }
         }
     }
 
@@ -368,9 +401,25 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         if (Interlocked.Exchange(ref disposed, 1) != 0)
             return;
         lifetime.Cancel();
+        slashCommandCoordinator.CancelAll();
         lifetime.Dispose();
-        // Best-effort async disposal on shutdown; fire-and-forget is acceptable here.
-        _ = Task.Run(async () => await bridge.DisposeAsync().ConfigureAwait(false));
+        ValueTask bridgeDisposal = bridge.DisposeAsync();
+        if (!bridgeDisposal.IsCompletedSuccessfully)
+        {
+            _ = ObserveBridgeDisposalAsync(bridgeDisposal);
+        }
+    }
+
+    private static async Task ObserveBridgeDisposalAsync(ValueTask bridgeDisposal)
+    {
+        try
+        {
+            await bridgeDisposal.ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            ExtensionDiagnostics.Write("Worker bridge disposal failed", ex);
+        }
     }
 
     /// <summary>
@@ -516,6 +565,8 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             await OnUiAsync(() => Status = result).ConfigureAwait(false);
             if (result.State == WorkerConnectionState.Ready)
             {
+                this.workingDirectory = workingDirectory;
+                unavailableSlashCommands.Clear();
                 initialized = true;
                 await RefreshReadyStateAsync(reloadThreads: false).ConfigureAwait(false);
             }
@@ -530,10 +581,18 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
     private async Task RestartAsync()
     {
+        IReadOnlyList<SlashCommandInvocation> canceled = slashCommandCoordinator.CancelAll();
+        if (canceled.Count > 0)
+        {
+            await ShowSlashStatusAsync(
+                $"Canceled {canceled.Count} queued slash commands because the worker is restarting.").ConfigureAwait(false);
+        }
+
         WorkerStatus result = await bridge.RestartAsync(lifetime.Token).ConfigureAwait(false);
         await OnUiAsync(() => Status = result).ConfigureAwait(false);
         if (result.State == WorkerConnectionState.Ready)
         {
+            unavailableSlashCommands.Clear();
             await RefreshReadyStateAsync(reloadThreads: true).ConfigureAwait(false);
         }
     }
@@ -604,6 +663,19 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         await OnUiAsync(Threads.Clear).ConfigureAwait(false);
         nextCursor = null;
         await LoadMoreAsync().ConfigureAwait(false);
+        if (nextCursor is null)
+        {
+            var existingThreadIds = new HashSet<string>(
+                Threads.Select(static thread => thread.Id),
+                StringComparer.Ordinal);
+            IReadOnlyList<SlashCommandInvocation> canceled =
+                slashCommandCoordinator.CancelMissingThreads(existingThreadIds);
+            if (canceled.Count > 0)
+            {
+                await ShowSlashStatusAsync(
+                    $"Canceled {canceled.Count} queued slash commands because their threads no longer exist.").ConfigureAwait(false);
+            }
+        }
     }
 
     internal async Task PopulateModelsAsync()
@@ -626,6 +698,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             return;
         }
 
+        modelCatalog = result;
         var modelIds = result.Models
             .Select(model => model.Id)
             .Where(static id => !string.IsNullOrWhiteSpace(id))
@@ -704,6 +777,8 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                     Models.RemoveAt(i);
                 }
             }
+
+            UpdateSlashCommandSuggestions(ComposerText);
         }).ConfigureAwait(false);
     }
 
@@ -716,7 +791,31 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             await OnUiAsync(() => RemoveUserInput(ActiveUserInput!.RequestId)).ConfigureAwait(false);
         }
 
-        await SendMessageAsync(ComposerText, clearComposer: true).ConfigureAwait(false);
+        string text = ComposerText;
+        SlashCommandParseResult parseResult = slashCommandParser.Parse(text);
+        switch (parseResult.Kind)
+        {
+            case SlashCommandParseKind.Command:
+                if (parseResult.Invocation is not null
+                    && await ScheduleOrExecuteSlashCommandAsync(parseResult.Invocation).ConfigureAwait(false))
+                {
+                    await OnUiAsync(() => SetComposerText(string.Empty)).ConfigureAwait(false);
+                }
+
+                return;
+
+            case SlashCommandParseKind.Unsupported:
+            case SlashCommandParseKind.Unknown:
+            case SlashCommandParseKind.InputTooLong:
+                await ShowSlashFailureAsync(parseResult.ErrorMessage ?? "The slash command could not be parsed.").ConfigureAwait(false);
+                return;
+
+            case SlashCommandParseKind.EscapedPrompt:
+                text = parseResult.PromptText ?? string.Empty;
+                break;
+        }
+
+        await SendMessageAsync(text, clearComposer: true).ConfigureAwait(false);
     }
 
     // Core send path, shared by the composer (clearComposer: true) and the synthetic-choice resolver
@@ -734,11 +833,6 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             {
                 return;
             }
-        }
-
-        if (clearComposer)
-        {
-            await OnUiAsync(() => SetComposerText(string.Empty)).ConfigureAwait(false);
         }
 
         if (string.IsNullOrWhiteSpace(text))
@@ -759,16 +853,12 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         if (Status.TurnId is null)
         {
             await OnUiAsync(() => Items.Add(new ChatItemViewModel("You", markdown.ToSafeText(text), ConversationEventKind.ItemStarted))).ConfigureAwait(false);
-            await bridge.StartTurnAsync(
-                new StartTurnRequest
-                {
-                    ThreadId = SelectedThread.Id,
-                    Text = text,
-                    Model = SelectedModel,
-                    ApprovalPolicy = MapModeToApprovalPolicy(SelectedMode),
-                    SandboxMode = MapModeToSandbox(SelectedMode),
-                },
-                lifetime.Token).ConfigureAwait(false);
+            StartTurnRequest request = await CreateStartTurnRequestAsync(
+                SelectedThread.Id,
+                text,
+                forcePlanMode: false).ConfigureAwait(false);
+            await bridge.StartTurnAsync(request, lifetime.Token).ConfigureAwait(false);
+            ConsumeNextTurnSettings(request);
         }
         else
         {
@@ -776,6 +866,825 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 new SteerTurnRequest { ThreadId = SelectedThread.Id, ExpectedTurnId = Status.TurnId, Text = text },
                 lifetime.Token).ConfigureAwait(false);
         }
+
+        if (clearComposer)
+        {
+            await OnUiAsync(() => SetComposerText(string.Empty)).ConfigureAwait(false);
+        }
+    }
+
+    private async Task<StartTurnRequest> CreateStartTurnRequestAsync(
+        string threadId,
+        string text,
+        bool forcePlanMode)
+    {
+        IdeContextInfo? ideContext = ideContextEnabled
+            ? await IdeContextCaptureService.CaptureAsync(
+                workingDirectory,
+                AsyncCommand.CurrentClientContext,
+                lifetime.Token).ConfigureAwait(false)
+            : null;
+        string? collaborationMode = forcePlanMode ? "plan" : nextCollaborationMode;
+        return new StartTurnRequest
+        {
+            ThreadId = threadId,
+            Text = text,
+            Model = SelectedModel,
+            ApprovalPolicy = MapModeToApprovalPolicy(SelectedMode),
+            SandboxMode = MapModeToSandbox(SelectedMode),
+            Effort = nextReasoningEffort,
+            Personality = nextPersonality,
+            ServiceTier = nextServiceTier,
+            CollaborationMode = collaborationMode is null
+                ? null
+                : new CollaborationModeInfo
+                {
+                    Mode = collaborationMode,
+                    Model = SelectedModel ?? string.Empty,
+                    ReasoningEffort = nextReasoningEffort,
+                },
+            IdeContext = ideContext,
+        };
+    }
+
+    // Next-turn settings apply to exactly one started turn. Compare against the request so a
+    // value re-queued while the turn was starting survives for the following turn.
+    private void ConsumeNextTurnSettings(StartTurnRequest request)
+    {
+        if (string.Equals(nextReasoningEffort, request.Effort, StringComparison.Ordinal))
+        {
+            nextReasoningEffort = null;
+        }
+
+        if (string.Equals(nextPersonality, request.Personality, StringComparison.Ordinal))
+        {
+            nextPersonality = null;
+        }
+
+        if (string.Equals(nextServiceTier, request.ServiceTier, StringComparison.Ordinal))
+        {
+            nextServiceTier = null;
+        }
+
+        if (request.CollaborationMode is not null
+            && string.Equals(
+                nextCollaborationMode,
+                request.CollaborationMode.Mode,
+                StringComparison.Ordinal))
+        {
+            nextCollaborationMode = null;
+        }
+    }
+
+    private void UpdateSlashCommandSuggestions(string text)
+    {
+        if (SlashCommands.HasActiveCommand)
+        {
+            return;
+        }
+
+        if (string.IsNullOrEmpty(text)
+            || text[0] != '/'
+            || text.StartsWith("//", StringComparison.Ordinal))
+        {
+            SlashCommands.CloseSuggestions();
+            return;
+        }
+
+        int separator = text.IndexOfAny([' ', '\t', '\r', '\n']);
+        string filter = separator < 0 ? text : text[..separator];
+        IReadOnlyList<SlashCommandSuggestionDescriptor> descriptors = slashCommandCatalog
+            .Filter(filter)
+            .Select(CreateSlashCommandSuggestion)
+            .ToArray();
+        SlashCommands.ShowSuggestions(descriptors);
+    }
+
+    private SlashCommandSuggestionDescriptor CreateSlashCommandSuggestion(SlashCommandDefinition definition)
+    {
+        bool isAvailable = !unavailableSlashCommands.Contains(definition.Id);
+        string unavailableReason = isAvailable
+            ? string.Empty
+            : $"The /{definition.Name} command is unavailable for this app-server session.";
+        SlashCommandOptionDescriptor[]? options = definition.Id switch
+        {
+            SlashCommandId.Goal =>
+            [
+                new("get", "Show", "Show the current goal."),
+                new("set", "Set", "Set a new goal objective."),
+                new("edit", "Edit", "Replace the current goal objective."),
+                new("pause", "Pause", "Pause the current goal."),
+                new("resume", "Resume", "Resume the current goal."),
+                new("clear", "Clear", "Clear the current goal."),
+            ],
+            SlashCommandId.Review =>
+            [
+                new("uncommitted", "Uncommitted changes", "Review working-tree changes."),
+                new("base", "Base branch", "Review changes against a base branch."),
+                new("commit", "Commit", "Review a specific commit."),
+                new("custom", "Custom", "Review using custom instructions."),
+            ],
+            SlashCommandId.Model => Models
+                .Select(model => new SlashCommandOptionDescriptor(model, model))
+                .ToArray(),
+            SlashCommandId.Personality =>
+            [
+                new("none", "None"),
+                new("friendly", "Friendly"),
+                new("pragmatic", "Pragmatic"),
+            ],
+            SlashCommandId.Reasoning => GetSelectedModelInfo()?.SupportedReasoningEfforts
+                .Select(effort => new SlashCommandOptionDescriptor(
+                    effort.Id,
+                    effort.Id,
+                    effort.Description ?? string.Empty))
+                .ToArray(),
+            _ => null,
+        };
+
+        if (definition.Id == SlashCommandId.Personality && GetSelectedModelInfo()?.SupportsPersonality != true)
+        {
+            isAvailable = false;
+            unavailableReason = "The selected model does not support personality settings.";
+        }
+        else if (definition.Id == SlashCommandId.Reasoning && (options is null || options.Length == 0))
+        {
+            isAvailable = false;
+            unavailableReason = "The selected model did not report supported reasoning efforts.";
+        }
+        else if (definition.Id == SlashCommandId.Fast && !SelectedModelSupportsFastTier())
+        {
+            isAvailable = false;
+            unavailableReason = "The selected model did not report a fast service tier.";
+        }
+
+        string argumentHint = definition.Id switch
+        {
+            SlashCommandId.Feedback => "Feedback reason",
+            SlashCommandId.Goal => "Goal objective for Set or Edit",
+            SlashCommandId.Review => "Branch, commit, or custom instructions",
+            SlashCommandId.Plan => "Optional prompt to start in Plan mode",
+            _ => string.Empty,
+        };
+        bool showArgumentInput = definition.ArgumentKind is
+            SlashCommandArgumentKind.OptionalText
+            or SlashCommandArgumentKind.RequiredText
+            or SlashCommandArgumentKind.GoalOperation
+            or SlashCommandArgumentKind.ReviewTarget;
+        return new SlashCommandSuggestionDescriptor(
+            string.Concat("/", definition.Name),
+            definition.Description,
+            argumentHint,
+            showArgumentInput,
+            isAvailable,
+            unavailableReason,
+            options);
+    }
+
+    private ModelInfo? GetSelectedModelInfo()
+        => modelCatalog.Models.FirstOrDefault(
+            model => string.Equals(model.Id, SelectedModel, StringComparison.Ordinal));
+
+    private bool SelectedModelSupportsFastTier()
+        => GetSelectedModelInfo()?.ServiceTiers.Any(
+            tier => string.Equals(tier.Id, "fast", StringComparison.OrdinalIgnoreCase)) == true;
+
+    private Task OnSlashSuggestionAcceptedAsync(SlashCommandSuggestionViewModel _)
+    {
+        SetComposerText(string.Empty);
+        return Task.CompletedTask;
+    }
+
+    private Task OnSlashCommandClearedAsync()
+        => Task.CompletedTask;
+
+    private async Task<bool> ExecuteSlashSubmissionAsync(SlashCommandSubmission submission)
+    {
+        string commandName = submission.CommandName.TrimStart('/');
+        string arguments = BuildSlashSubmissionArguments(commandName, submission.OptionValue, submission.ArgumentText);
+        SlashCommandParseResult parseResult = slashCommandParser.Parse(
+            string.IsNullOrEmpty(arguments)
+                ? string.Concat("/", commandName)
+                : string.Concat("/", commandName, " ", arguments));
+        if (parseResult.Kind != SlashCommandParseKind.Command || parseResult.Invocation is null)
+        {
+            await ShowSlashFailureAsync(parseResult.ErrorMessage ?? "The slash command could not be parsed.").ConfigureAwait(false);
+            return false;
+        }
+
+        return await ScheduleOrExecuteSlashCommandAsync(parseResult.Invocation).ConfigureAwait(false);
+    }
+
+    private static string BuildSlashSubmissionArguments(
+        string commandName,
+        string? optionValue,
+        string argumentText)
+    {
+        string argument = argumentText.Trim();
+        if (string.Equals(commandName, "goal", StringComparison.OrdinalIgnoreCase))
+        {
+            return optionValue switch
+            {
+                null or "get" => string.Empty,
+                "set" or "edit" => string.IsNullOrEmpty(argument)
+                    ? optionValue
+                    : string.Concat(optionValue, " ", argument),
+                _ => optionValue,
+            };
+        }
+
+        if (string.Equals(commandName, "review", StringComparison.OrdinalIgnoreCase))
+        {
+            return optionValue switch
+            {
+                null or "uncommitted" => "uncommitted",
+                _ => string.IsNullOrEmpty(argument)
+                    ? optionValue
+                    : string.Concat(optionValue, " ", argument),
+            };
+        }
+
+        return optionValue ?? argument;
+    }
+
+    private async Task<bool> ScheduleOrExecuteSlashCommandAsync(SlashCommandInvocation invocation)
+    {
+        if (RequiresWorkerConnection(invocation.Definition.Id)
+            && Status.State is not (WorkerConnectionState.Ready or WorkerConnectionState.Busy or WorkerConnectionState.WaitingForApproval))
+        {
+            bool connected = await ConnectAsync().ConfigureAwait(false);
+            if (!connected)
+            {
+                return false;
+            }
+        }
+
+        string? targetThreadId = SelectedThread?.Id ?? Status.ThreadId;
+        bool requiresThread = RequiresThread(invocation);
+        if (requiresThread && targetThreadId is null)
+        {
+            await NewThreadAsync().ConfigureAwait(false);
+            targetThreadId = SelectedThread?.Id;
+        }
+
+        if (requiresThread && targetThreadId is null)
+        {
+            await ShowSlashFailureAsync("The slash command requires an active thread.").ConfigureAwait(false);
+            return false;
+        }
+
+        SlashCommandQueueDecision decision = slashCommandCoordinator.Schedule(
+            invocation,
+            targetThreadId,
+            Status.TurnId is not null);
+        if (decision.Kind == SlashCommandQueueDecisionKind.QueueFull)
+        {
+            await ShowSlashFailureAsync(decision.Message).ConfigureAwait(false);
+            return false;
+        }
+
+        if (decision.Kind is SlashCommandQueueDecisionKind.Queued or SlashCommandQueueDecisionKind.Replaced)
+        {
+            await ShowSlashStatusAsync(decision.Message).ConfigureAwait(false);
+            return true;
+        }
+
+        return await ExecuteSlashCommandAsync(invocation, targetThreadId).ConfigureAwait(false);
+    }
+
+    private static bool RequiresThread(SlashCommandInvocation invocation)
+        => invocation.Definition.Id is
+            SlashCommandId.Compact
+            or SlashCommandId.Fork
+            or SlashCommandId.Goal
+            or SlashCommandId.Review
+            || (invocation.Definition.Id == SlashCommandId.Plan
+                && !string.IsNullOrWhiteSpace(invocation.Arguments));
+
+    private static bool RequiresWorkerConnection(SlashCommandId commandId)
+        => commandId is
+            SlashCommandId.Compact
+            or SlashCommandId.Feedback
+            or SlashCommandId.Fork
+            or SlashCommandId.Goal
+            or SlashCommandId.Mcp
+            or SlashCommandId.Review;
+
+    private async Task<bool> ExecuteSlashCommandAsync(
+        SlashCommandInvocation invocation,
+        string? targetThreadId)
+    {
+        try
+        {
+            return invocation.Definition.Id switch
+            {
+                SlashCommandId.Compact => await ExecuteCompactAsync(targetThreadId!).ConfigureAwait(false),
+                SlashCommandId.Feedback => await ExecuteFeedbackAsync(invocation.Arguments, targetThreadId).ConfigureAwait(false),
+                SlashCommandId.Fork => await ExecuteForkAsync(targetThreadId!).ConfigureAwait(false),
+                SlashCommandId.Goal => await ExecuteGoalAsync(targetThreadId!, invocation.Arguments).ConfigureAwait(false),
+                SlashCommandId.Mcp => await ExecuteMcpAsync(targetThreadId).ConfigureAwait(false),
+                SlashCommandId.Review => await ExecuteReviewAsync(targetThreadId!, invocation.Arguments).ConfigureAwait(false),
+                SlashCommandId.Fast => await ExecuteFastAsync().ConfigureAwait(false),
+                SlashCommandId.Model => await ExecuteModelAsync(invocation.Arguments).ConfigureAwait(false),
+                SlashCommandId.Personality => await ExecutePersonalityAsync(invocation.Arguments).ConfigureAwait(false),
+                SlashCommandId.Plan => await ExecutePlanAsync(targetThreadId!, invocation.Arguments).ConfigureAwait(false),
+                SlashCommandId.Reasoning => await ExecuteReasoningAsync(invocation.Arguments).ConfigureAwait(false),
+                SlashCommandId.IdeContext => await ExecuteIdeContextAsync().ConfigureAwait(false),
+                SlashCommandId.Init => await ExecuteInitAsync().ConfigureAwait(false),
+                SlashCommandId.Status => await ExecuteStatusAsync(targetThreadId).ConfigureAwait(false),
+                _ => false,
+            };
+        }
+        catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+        {
+            return false;
+        }
+        catch (Exception ex)
+        {
+            ExtensionDiagnostics.Write($"Slash command /{invocation.Definition.Name} failed", ex);
+            await ShowSlashFailureAsync(
+                $"The /{invocation.Definition.Name} command failed. See diagnostics.log.").ConfigureAwait(false);
+            return false;
+        }
+    }
+
+    private async Task<bool> ExecuteCompactAsync(string threadId)
+    {
+        CompactThreadResult result = await bridge.CompactThreadAsync(
+            new CompactThreadRequest { ThreadId = threadId },
+            lifetime.Token).ConfigureAwait(false);
+        return await HandleOperationResultAsync(SlashCommandId.Compact, result, "Context compaction started.").ConfigureAwait(false);
+    }
+
+    private async Task<bool> ExecuteFeedbackAsync(string arguments, string? threadId)
+    {
+        string reason = arguments.Trim();
+        if (reason.Length == 0)
+        {
+            await ShowSlashFailureAsync("Enter feedback text after /feedback.").ConfigureAwait(false);
+            return false;
+        }
+
+        if (!await ConfirmFeedbackAsync(reason).ConfigureAwait(false))
+        {
+            await ShowSlashStatusAsync("Feedback submission was canceled.").ConfigureAwait(false);
+            return false;
+        }
+
+        UploadFeedbackResult result = await bridge.UploadFeedbackAsync(
+            new UploadFeedbackRequest
+            {
+                Classification = "visual-studio",
+                Reason = reason,
+                IncludeLogs = false,
+                ThreadId = threadId,
+            },
+            lifetime.Token).ConfigureAwait(false);
+        return await HandleOperationResultAsync(SlashCommandId.Feedback, result, "Feedback was uploaded.").ConfigureAwait(false);
+    }
+
+    private async Task<bool> ConfirmFeedbackAsync(string reason)
+    {
+        if (extensibility is null)
+        {
+            return false;
+        }
+
+        FeedbackSubmissionChoice choice = await extensibility.Shell().ShowPromptAsync(
+            $"Send this feedback to Codex?\r\n\r\n{reason}\r\n\r\nExtension logs will not be included.",
+            new PromptOptions<FeedbackSubmissionChoice>
+            {
+                Choices =
+                {
+                    { "Send feedback", FeedbackSubmissionChoice.Send },
+                    { "Cancel", FeedbackSubmissionChoice.Cancel },
+                },
+                DefaultChoiceIndex = 1,
+                DismissedReturns = FeedbackSubmissionChoice.Cancel,
+                Title = "Send Codex Feedback",
+            },
+            lifetime.Token).ConfigureAwait(false);
+        return choice == FeedbackSubmissionChoice.Send;
+    }
+
+    private async Task<bool> ExecuteForkAsync(string threadId)
+    {
+        ForkThreadResult result = await bridge.ForkThreadAsync(
+            new ForkThreadRequest { ThreadId = threadId },
+            lifetime.Token).ConfigureAwait(false);
+        if (!await EnsureOperationSupportedAsync(SlashCommandId.Fork, result).ConfigureAwait(false))
+        {
+            return false;
+        }
+
+        if (result.Thread is null)
+        {
+            await ShowSlashFailureAsync("The app-server did not return the forked thread.").ConfigureAwait(false);
+            return false;
+        }
+
+        await OnUiAsync(() =>
+        {
+            Threads.Insert(0, result.Thread);
+            // Select through the property setter so ResumeThreadAsync replays the forked
+            // thread's copied history instead of leaving an empty transcript.
+            SelectedThread = result.Thread;
+        }).ConfigureAwait(false);
+        await ShowSlashStatusAsync("Forked the thread and switched to the new copy.").ConfigureAwait(false);
+        return true;
+    }
+
+    private async Task<bool> ExecuteGoalAsync(string threadId, string arguments)
+    {
+        if (!SlashCommandArgumentParser.TryParseGoal(arguments, out GoalCommandArguments? goalArguments, out string? error)
+            || goalArguments is null)
+        {
+            await ShowSlashFailureAsync(error ?? "The goal command is invalid.").ConfigureAwait(false);
+            return false;
+        }
+
+        ThreadGoalResult result;
+        switch (goalArguments.Operation)
+        {
+            case GoalCommandOperation.Get:
+                result = await bridge.GetThreadGoalAsync(threadId, lifetime.Token).ConfigureAwait(false);
+                break;
+            case GoalCommandOperation.Clear:
+                result = await bridge.ClearThreadGoalAsync(threadId, lifetime.Token).ConfigureAwait(false);
+                break;
+            case GoalCommandOperation.Set:
+            case GoalCommandOperation.Edit:
+                result = await bridge.SetThreadGoalAsync(
+                    new SetThreadGoalRequest
+                    {
+                        ThreadId = threadId,
+                        Objective = goalArguments.Objective,
+                        Status = ThreadGoalStatus.Active,
+                    },
+                    lifetime.Token).ConfigureAwait(false);
+                break;
+            case GoalCommandOperation.Pause:
+            case GoalCommandOperation.Resume:
+                ThreadGoalResult current = await bridge.GetThreadGoalAsync(threadId, lifetime.Token).ConfigureAwait(false);
+                if (!await EnsureOperationSupportedAsync(SlashCommandId.Goal, current).ConfigureAwait(false))
+                {
+                    return false;
+                }
+
+                if (current.Goal is null)
+                {
+                    await ShowSlashFailureAsync("No goal is set for this thread.").ConfigureAwait(false);
+                    return false;
+                }
+
+                result = await bridge.SetThreadGoalAsync(
+                    new SetThreadGoalRequest
+                    {
+                        ThreadId = threadId,
+                        Objective = current.Goal.Objective,
+                        TokenBudget = current.Goal.TokenBudget,
+                        Status = goalArguments.Operation == GoalCommandOperation.Pause
+                            ? ThreadGoalStatus.Paused
+                            : ThreadGoalStatus.Active,
+                    },
+                    lifetime.Token).ConfigureAwait(false);
+                break;
+            default:
+                return false;
+        }
+
+        if (!await EnsureOperationSupportedAsync(SlashCommandId.Goal, result).ConfigureAwait(false))
+        {
+            return false;
+        }
+
+        await ShowSlashStatusAsync(FormatGoal(result)).ConfigureAwait(false);
+        return true;
+    }
+
+    private async Task<bool> ExecuteMcpAsync(string? threadId)
+    {
+        McpServerListResult result = await bridge.ListMcpServersAsync(threadId, lifetime.Token).ConfigureAwait(false);
+        if (!await EnsureOperationSupportedAsync(SlashCommandId.Mcp, result).ConfigureAwait(false))
+        {
+            return false;
+        }
+
+        string message = result.Servers.Count == 0
+            ? "No MCP servers are configured."
+            : string.Join(
+                "\r\n",
+                result.Servers.Select(server =>
+                    $"- {server.DisplayName ?? server.Name}: {server.AuthStatus}; {server.ToolNames.Count} tools, {server.ResourceCount} resources, {server.ResourceTemplateCount} templates"));
+        await ShowSlashStatusAsync(message).ConfigureAwait(false);
+        return true;
+    }
+
+    private async Task<bool> ExecuteReviewAsync(string threadId, string arguments)
+    {
+        if (!SlashCommandArgumentParser.TryParseReview(arguments, out ReviewCommandArguments? reviewArguments, out string? error)
+            || reviewArguments is null)
+        {
+            await ShowSlashFailureAsync(error ?? "The review target is invalid.").ConfigureAwait(false);
+            return false;
+        }
+
+        StartReviewResult result = await bridge.StartReviewAsync(
+            new StartReviewRequest
+            {
+                ThreadId = threadId,
+                Target = new ReviewTarget
+                {
+                    Kind = reviewArguments.Target switch
+                    {
+                        ReviewCommandTargetKind.UncommittedChanges => ReviewTargetKind.UncommittedChanges,
+                        ReviewCommandTargetKind.BaseBranch => ReviewTargetKind.BaseBranch,
+                        ReviewCommandTargetKind.Commit => ReviewTargetKind.Commit,
+                        ReviewCommandTargetKind.Custom => ReviewTargetKind.Custom,
+                        _ => ReviewTargetKind.UncommittedChanges,
+                    },
+                    Value = reviewArguments.Value,
+                },
+            },
+            lifetime.Token).ConfigureAwait(false);
+        return await HandleOperationResultAsync(SlashCommandId.Review, result, "Code review started.").ConfigureAwait(false);
+    }
+
+    private async Task<bool> ExecuteFastAsync()
+    {
+        if (!SelectedModelSupportsFastTier())
+        {
+            await ShowSlashFailureAsync("The selected model does not support the fast service tier.").ConfigureAwait(false);
+            return false;
+        }
+
+        nextServiceTier = "fast";
+        await ShowSlashStatusAsync("Fast service tier will be used for the next turn.").ConfigureAwait(false);
+        return true;
+    }
+
+    private async Task<bool> ExecuteModelAsync(string arguments)
+    {
+        string requested = arguments.Trim();
+        string? model = requested.Length == 0
+            ? null
+            : Models.FirstOrDefault(candidate => string.Equals(candidate, requested, StringComparison.OrdinalIgnoreCase));
+        if (model is null)
+        {
+            await ShowSlashFailureAsync("Select a model from the current model catalog.").ConfigureAwait(false);
+            return false;
+        }
+
+        await OnUiAsync(() => SelectedModel = model).ConfigureAwait(false);
+        await ShowSlashStatusAsync($"Model set to {model}.").ConfigureAwait(false);
+        return true;
+    }
+
+    private async Task<bool> ExecutePersonalityAsync(string arguments)
+    {
+        string personality = arguments.Trim().ToLowerInvariant();
+        if (GetSelectedModelInfo()?.SupportsPersonality != true
+            || personality is not ("none" or "friendly" or "pragmatic"))
+        {
+            await ShowSlashFailureAsync("Select none, friendly, or pragmatic for a model that supports personalities.").ConfigureAwait(false);
+            return false;
+        }
+
+        nextPersonality = personality;
+        await ShowSlashStatusAsync($"Personality set to {personality} for the next turn.").ConfigureAwait(false);
+        return true;
+    }
+
+    private async Task<bool> ExecutePlanAsync(string threadId, string arguments)
+    {
+        string prompt = arguments.Trim();
+        if (prompt.Length == 0)
+        {
+            nextCollaborationMode = "plan";
+            await ShowSlashStatusAsync("Plan mode will be used for the next turn.").ConfigureAwait(false);
+            return true;
+        }
+
+        await OnUiAsync(() => Items.Add(
+            new ChatItemViewModel("You", markdown.ToSafeText(prompt), ConversationEventKind.ItemStarted))).ConfigureAwait(false);
+        StartTurnRequest request = await CreateStartTurnRequestAsync(threadId, prompt, forcePlanMode: true).ConfigureAwait(false);
+        await bridge.StartTurnAsync(request, lifetime.Token).ConfigureAwait(false);
+        ConsumeNextTurnSettings(request);
+        return true;
+    }
+
+    private async Task<bool> ExecuteReasoningAsync(string arguments)
+    {
+        string effort = arguments.Trim();
+        ModelInfo? model = GetSelectedModelInfo();
+        if (effort.Length == 0
+            || model is null
+            || !model.SupportedReasoningEfforts.Any(
+                option => string.Equals(option.Id, effort, StringComparison.OrdinalIgnoreCase)))
+        {
+            await ShowSlashFailureAsync("Select a reasoning effort supported by the current model.").ConfigureAwait(false);
+            return false;
+        }
+
+        nextReasoningEffort = effort;
+        await ShowSlashStatusAsync($"Reasoning effort set to {effort} for the next turn.").ConfigureAwait(false);
+        return true;
+    }
+
+    private async Task<bool> ExecuteIdeContextAsync()
+    {
+        ideContextEnabled = !ideContextEnabled;
+        await ShowSlashStatusAsync(
+            ideContextEnabled
+                ? "IDE context is enabled for future turns."
+                : "IDE context is disabled for future turns.").ConfigureAwait(false);
+        return true;
+    }
+
+    private async Task<bool> ExecuteInitAsync()
+    {
+        string? root = workingDirectory
+            ?? await workspaceDirectoryResolver.TryResolveFromWorkspaceAsync(lifetime.Token).ConfigureAwait(false);
+        AgentsFileInitializationResult result = await agentsFileInitializer.InitializeAsync(root, lifetime.Token).ConfigureAwait(false);
+        if (result.Status is AgentsFileInitializationStatus.Failed or AgentsFileInitializationStatus.InvalidWorkspace)
+        {
+            await ShowSlashFailureAsync(result.Message).ConfigureAwait(false);
+            return false;
+        }
+
+        await ShowSlashStatusAsync(result.Message).ConfigureAwait(false);
+        return result.Status is AgentsFileInitializationStatus.Created or AgentsFileInitializationStatus.AlreadyExists;
+    }
+
+    private async Task<bool> ExecuteStatusAsync(string? threadId)
+    {
+        if (Status.State is WorkerConnectionState.Ready or WorkerConnectionState.Busy or WorkerConnectionState.WaitingForApproval)
+        {
+            try
+            {
+                latestRateLimits = await bridge.GetRateLimitsAsync(lifetime.Token).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                ExtensionDiagnostics.Write("Rate-limit lookup failed while building slash status", ex);
+            }
+        }
+
+        string usage = FormatRateLimits(latestRateLimits);
+        string message = string.Join(
+            "\r\n",
+            $"Connection: {Status.State}",
+            $"Thread: {threadId ?? "(none)"}",
+            $"Model: {SelectedModel ?? "(default)"}",
+            $"Reasoning effort: {nextReasoningEffort ?? "(default)"}",
+            $"Personality: {nextPersonality ?? "(default)"}",
+            $"Service tier: {nextServiceTier ?? "(default)"}",
+            $"Collaboration mode: {nextCollaborationMode ?? "default"}",
+            $"Approval policy: {MapModeToApprovalPolicy(SelectedMode) ?? "(default)"}",
+            $"Sandbox: {MapModeToSandbox(SelectedMode) ?? "(default)"}",
+            $"IDE context: {(ideContextEnabled ? "enabled" : "disabled")}",
+            $"Queued commands: {slashCommandCoordinator.GetQueueCount(threadId)}",
+            $"Usage: {usage}");
+        await ShowSlashStatusAsync(message).ConfigureAwait(false);
+        return true;
+    }
+
+    private async Task<bool> HandleOperationResultAsync(
+        SlashCommandId commandId,
+        AppServerOperationResult result,
+        string successMessage)
+    {
+        if (!await EnsureOperationSupportedAsync(commandId, result).ConfigureAwait(false))
+        {
+            return false;
+        }
+
+        await ShowSlashStatusAsync(successMessage).ConfigureAwait(false);
+        return true;
+    }
+
+    private async Task<bool> EnsureOperationSupportedAsync(
+        SlashCommandId commandId,
+        AppServerOperationResult result)
+    {
+        if (result.IsSupported)
+        {
+            return true;
+        }
+
+        unavailableSlashCommands.Add(commandId);
+        string reason = string.IsNullOrWhiteSpace(result.UnavailableReason)
+            ? "The app-server does not support this command."
+            : result.UnavailableReason;
+        await ShowSlashFailureAsync(reason).ConfigureAwait(false);
+        UpdateSlashCommandSuggestions(ComposerText);
+        return false;
+    }
+
+    private static string FormatGoal(ThreadGoalResult result)
+    {
+        if (result.Cleared)
+        {
+            return "The thread goal was cleared.";
+        }
+
+        return result.Goal is null
+            ? "No goal is set for this thread."
+            : $"Goal: {result.Goal.Objective}\r\nStatus: {result.Goal.Status}\r\nTokens used: {result.Goal.TokensUsed}";
+    }
+
+    private static string FormatRateLimits(RateLimitsResult? result)
+    {
+        if (result is null || !result.IsSupported)
+        {
+            return "unavailable";
+        }
+
+        RateLimitInfo? rateLimit = result.RateLimits ?? result.RateLimitsByLimitId.Values.FirstOrDefault();
+        if (rateLimit is null)
+        {
+            return "not reported";
+        }
+
+        string primary = rateLimit.Primary is null
+            ? "primary window not reported"
+            : $"{rateLimit.Primary.UsedPercent}% used";
+        string credits = rateLimit.Credits is null
+            ? string.Empty
+            : rateLimit.Credits.Unlimited
+                ? "; credits unlimited"
+                : $"; credits {rateLimit.Credits.Balance ?? "unavailable"}";
+        return string.Concat(primary, credits);
+    }
+
+    private Task ShowSlashStatusAsync(string message)
+        => OnUiAsync(() =>
+        {
+            string safeMessage = markdown.ToSafeText(message);
+            SlashCommands.ShowStatus(safeMessage);
+            Items.Add(new ChatItemViewModel("Status", safeMessage, ConversationEventKind.ItemCompleted));
+        });
+
+    private Task ShowSlashFailureAsync(string message)
+        => OnUiAsync(() =>
+        {
+            string safeMessage = markdown.ToSafeText(message);
+            SlashCommands.ShowFailure(safeMessage);
+            Items.Add(new ChatItemViewModel("Error", safeMessage, ConversationEventKind.Error));
+        });
+
+    // Drains the given thread queues followed by the session-scoped queue (commands queued
+    // before any thread existed). A failed command has already been surfaced to the user, so
+    // draining continues past it; only a successfully started turn pauses the drain, and the
+    // next turn-completed state change resumes it.
+    private async Task DrainSlashQueuesAsync(params string?[] threadIds)
+    {
+        if (Status.TurnId is not null
+            || Interlocked.CompareExchange(ref drainingSlashQueue, 1, 0) != 0)
+        {
+            return;
+        }
+
+        try
+        {
+            var queueKeys = new List<string?>();
+            foreach (string? threadId in threadIds)
+            {
+                if (!string.IsNullOrWhiteSpace(threadId) && !queueKeys.Contains(threadId))
+                {
+                    queueKeys.Add(threadId);
+                }
+            }
+
+            queueKeys.Add(null);
+            foreach (string? queueKey in queueKeys)
+            {
+                // The session queue (queueKey null) holds commands issued before any thread
+                // existed. By drain time a thread may already be selected, so target that
+                // thread instead of leaving thread-optional commands (e.g. /status) contextless.
+                string? executionThreadId = queueKey ?? SelectedThread?.Id;
+                while (Status.TurnId is null
+                    && slashCommandCoordinator.TryDequeue(queueKey, out SlashCommandInvocation? invocation)
+                    && invocation is not null)
+                {
+                    bool succeeded = await ExecuteSlashCommandAsync(invocation, executionThreadId).ConfigureAwait(false);
+                    if (succeeded && invocation.StartsTurn)
+                    {
+                        return;
+                    }
+                }
+            }
+        }
+        finally
+        {
+            Interlocked.Exchange(ref drainingSlashQueue, 0);
+        }
+    }
+
+    private enum FeedbackSubmissionChoice
+    {
+        Cancel,
+        Send,
     }
 
     private Task UseSuggestionAsync(string text)
@@ -817,8 +1726,27 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     private Task OnStateChangedAsync(WorkerStatus value)
         => OnUiAsync(() =>
         {
-            WorkerConnectionState previous = Status.State;
+            WorkerStatus previousStatus = Status;
+            WorkerConnectionState previous = previousStatus.State;
             Status = value;
+            if (value.State is WorkerConnectionState.Disconnected or WorkerConnectionState.Degraded)
+            {
+                IReadOnlyList<SlashCommandInvocation> canceled = slashCommandCoordinator.CancelAll();
+                if (canceled.Count > 0)
+                {
+                    string cancellationMessage = markdown.ToSafeText(
+                        $"Canceled {canceled.Count} queued slash commands because the worker connection ended.");
+                    SlashCommands.ShowFailure(cancellationMessage);
+                    Items.Add(new ChatItemViewModel("Status", cancellationMessage, ConversationEventKind.ItemCompleted));
+                }
+            }
+            else if (previousStatus.TurnId is not null && value.TurnId is null)
+            {
+                // Drain the completed turn's queue and the selected thread's queue: the user
+                // may have queued commands for a different thread while the turn was running.
+                _ = DrainSlashQueuesAsync(previousStatus.ThreadId ?? value.ThreadId, SelectedThread?.Id);
+            }
+
             if (value.State == previous)
             {
                 return;
@@ -864,6 +1792,37 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         {
             UpdateAccount(value);
         });
+    }
+
+    private Task OnContextCompactedAsync(ContextCompactionEvent value)
+        => value.IsCompleted
+            ? ShowSlashStatusAsync("Context compaction completed.")
+            : Task.CompletedTask;
+
+    private Task OnReviewModeChangedAsync(ReviewModeEvent value)
+    {
+        string message = value.ChangeKind == ReviewModeChangeKind.Entered
+            ? "Code review mode started."
+            : string.IsNullOrWhiteSpace(value.Review)
+                ? "Code review mode completed."
+                : $"Code review completed.\r\n{value.Review}";
+        return ShowSlashStatusAsync(message);
+    }
+
+    private Task OnThreadGoalChangedAsync(ThreadGoalEvent value)
+    {
+        var result = new ThreadGoalResult
+        {
+            Goal = value.Goal,
+            Cleared = value.IsCleared,
+        };
+        return ShowSlashStatusAsync(FormatGoal(result));
+    }
+
+    private Task OnRateLimitsChangedAsync(RateLimitsResult value)
+    {
+        latestRateLimits = value;
+        return Task.CompletedTask;
     }
 
     private Task OnConversationEventAsync(ConversationEvent value)
@@ -2024,6 +2983,7 @@ public abstract class ObservableObject : INotifyPropertyChanged
 public sealed class AsyncCommand : ICommand, VSUI.IAsyncCommand, INotifyPropertyChanged
 {
     private static readonly PropertyChangedEventArgs CanExecuteChangedArgs = new(nameof(CanExecute));
+    private static readonly AsyncLocal<Microsoft.VisualStudio.Extensibility.IClientContext?> ActiveClientContext = new();
 
     private readonly Func<Task> execute;
     private readonly Func<bool>? canExecute;
@@ -2038,6 +2998,9 @@ public sealed class AsyncCommand : ICommand, VSUI.IAsyncCommand, INotifyProperty
     public event EventHandler? CanExecuteChanged;
 
     public event PropertyChangedEventHandler? PropertyChanged;
+
+    internal static Microsoft.VisualStudio.Extensibility.IClientContext? CurrentClientContext
+        => ActiveClientContext.Value;
 
     // CanExecute must be a PUBLIC property (not an explicit interface implementation):
     // when PropertyChanged("CanExecute") fires, the SDK's NotificationsDispatcher resolves
@@ -2079,6 +3042,8 @@ public sealed class AsyncCommand : ICommand, VSUI.IAsyncCommand, INotifyProperty
         }
 
         RaiseCanExecuteChanged();
+        Microsoft.VisualStudio.Extensibility.IClientContext? previousClientContext = ActiveClientContext.Value;
+        ActiveClientContext.Value = clientContext;
         try
         {
             await execute().ConfigureAwait(false);
@@ -2089,6 +3054,7 @@ public sealed class AsyncCommand : ICommand, VSUI.IAsyncCommand, INotifyProperty
         }
         finally
         {
+            ActiveClientContext.Value = previousClientContext;
             Interlocked.Exchange(ref running, 0);
             RaiseCanExecuteChanged();
         }

@@ -140,12 +140,22 @@
 ## Phase 3: スラッシュコマンド / スキル
 
 ### 3.1 スラッシュコマンドルーター
-- [ ] 入力先頭 `/` を検出してコマンドへルーティング
-- [ ] `/review`（`review/start`: uncommittedChanges / baseBranch / commit / custom）
-- [ ] `/compact`（`thread/compact/start`、`contextCompaction` item 表示）
-- [ ] `/goal`（`thread/goal/set` / `get` / `clear`、`thread/goal/updated`）
-- [ ] その他 Codex CLI / IDE スラッシュコマンドの網羅（公式一覧に追従）
-- [ ] コマンド補完 UI（入力時サジェスト）
+- [x] 入力先頭 `/` を検出してコマンドへルーティング（GitHub Issue #46）
+- [x] `/review`（`review/start`: uncommittedChanges / baseBranch / commit / custom）
+- [x] `/compact`（`thread/compact/start`、専用compaction event表示）
+- [x] `/goal`（`thread/goal/set` / `get` / `clear`、専用goal event）
+- [x] Codex IDEコマンドの許可リスト、非対応コマンド非表示、`//`エスケープ
+- [x] コマンド補完 UI（入力時サジェスト、コマンドチップ、固定引数）
+- [x] 実行中のスレッド別FIFOキュー、設定置換、切断・再起動・スレッド消失時取消
+- [x] Worker契約v8と型付きcompact/review/fork/goal/MCP/feedback/rate-limit RPC
+- [x] `/ide-context`、`/init`、`/status`のVisual Studio内処理
+- [x] レビュー指摘対応: 次ターン設定の消費、キュードレイン網羅（失敗後継続・選択スレッド・セッションキュー）、compaction完了時のReady復帰、`/fork`後の履歴復元、`/model`大文字小文字非区別、`/goal show`エイリアス、候補の編集距離閾値（GitHub Issue #51、sub-issues #52-#56）
+- [x] Remove the stale Experimental Instance registration, centralize extension identity diagnostics, and add slash-command display and packaging regression coverage (GitHub Issue #51, sub-issue #58)
+  - The former identity has zero remaining Experimental Instance metadata or deployment hits; the current identity remains registered.
+  - Slash-command normal, hover, and selection states use paired Visual Studio theme resources without reduced text opacity, preserving contrast across themes.
+  - Worker diagnostics cancellation, process teardown, and output shutdown are serialized and awaited to prevent exceptions when a debugging session ends.
+  - Debug solution build completed with zero warnings and zero errors; Core tests passed 70/70 and UI tests passed 171/171 with `--no-build`.
+  - The VSIX manifest, packaged assembly, embedded Remote UI XAML, and SDK-managed Experimental deployment were inspected; packaged, build, and deployed assembly hashes matched.
 
 ### 3.2 スキル
 - [ ] `skills/list`（`cwds` スコープ、`forceReload`）でスキル一覧取得（キャッシュ + invalidation）
@@ -170,7 +180,7 @@
 - [x] Load the startup model catalog before Remote UI account synchronization can block initialization (#39)
 - [x] Add bounded model discovery diagnostics across the extension, Worker RPC, and app-server request boundaries (#39)
 - [ ] モデル一覧の明示的な再取得（refresh）コマンド
-- [ ] reasoning effort セレクタ、`supportsPersonality` 反映
+- [x] スラッシュコマンドのreasoning effort、personality、service tier選択にモデル能力を反映（GitHub Issue #46）
 
 ### 4.2 インライン補完（任意）
 - [ ] エディタ内ゴーストテキスト補完プロバイダ（in-proc が必要なら .NET Framework 4.7.2 フォールバック）
@@ -178,7 +188,7 @@
 - [ ] 送信する editor context のサイズ上限と秘密情報 redaction
 
 ### 4.3 MCP / アプリ（コネクタ）
-- [ ] `mcpServerStatus/list` で MCP サーバー状態表示
+- [x] `/mcp`から`mcpServerStatus/list`でMCPサーバー状態表示（GitHub Issue #46）
 - [ ] `mcpServer/oauth/login`（OAuth、`mcpServer/oauthLogin/completed`）
 - [ ] `app/list` でアプリ一覧、`$<app-slug>` mention 入力（キャッシュ + invalidation）
 - [ ] OAuth は PKCE / MSAL public client（client secret を拡張に埋め込まない）
