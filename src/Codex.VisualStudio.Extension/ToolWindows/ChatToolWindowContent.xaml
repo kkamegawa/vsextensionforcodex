@@ -385,7 +385,25 @@
         </StackPanel>
 
         <StackPanel VerticalAlignment="Center">
-          <TextBlock FontWeight="SemiBold" Text="{Binding Status.State}" ToolTip="{Binding Status.Message}" />
+          <Grid AutomationProperties.Name="{Binding StatusAutomationName}"
+                AutomationProperties.HelpText="{Binding StatusAutomationHelpText}"
+                AutomationProperties.LiveSetting="Polite">
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="Auto" />
+              <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+            <TextBlock Grid.Column="0"
+                       FontWeight="SemiBold"
+                       Text="{Binding StatusStateText}"
+                       ToolTip="{Binding StatusAutomationHelpText}"
+                       AutomationProperties.AccessibilityView="Raw" />
+            <TextBlock Grid.Column="1"
+                       Margin="4,0,0,0"
+                       Text="{Binding StatusVersionText}"
+                       TextTrimming="CharacterEllipsis"
+                       ToolTip="{Binding StatusAutomationHelpText}"
+                       AutomationProperties.AccessibilityView="Raw" />
+          </Grid>
           <TextBlock Opacity="0.8" Text="{Binding StatusDetailText}" TextTrimming="CharacterEllipsis" />
         </StackPanel>
       </DockPanel>
