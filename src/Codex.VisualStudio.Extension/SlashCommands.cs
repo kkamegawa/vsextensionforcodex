@@ -82,6 +82,9 @@ internal sealed class SlashCommandCatalog
         new(SlashCommandId.Side, "side", "Side threads are not supported by the current single-thread view.", SlashCommandArgumentKind.None, false, false, false, "Side threads require simultaneous multi-thread UI support."),
     ];
 
+    // Suggestions further than this edit distance are noise rather than likely typos.
+    public const int MaximumSuggestionDistance = 3;
+
     private readonly IReadOnlyList<SlashCommandDefinition> definitions;
 
     public SlashCommandCatalog()
@@ -129,6 +132,7 @@ internal sealed class SlashCommandCatalog
                 command.Name,
                 Distance = EditDistance(name, command.Name),
             })
+            .Where(static candidate => candidate.Distance <= MaximumSuggestionDistance)
             .OrderBy(static candidate => candidate.Distance)
             .ThenBy(static candidate => candidate.Name, StringComparer.Ordinal)
             .Take(maximum)
@@ -269,6 +273,7 @@ internal static class SlashCommandArgumentParser
         switch (operation.ToUpperInvariant())
         {
             case "GET" when value.Length == 0:
+            case "SHOW" when value.Length == 0:
                 result = new GoalCommandArguments(GoalCommandOperation.Get);
                 errorMessage = null;
                 return true;

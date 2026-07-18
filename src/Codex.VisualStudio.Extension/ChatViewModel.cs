@@ -251,7 +251,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             if (SetProperty(ref selectedThread, value) && value is not null)
             {
                 _ = ResumeThreadAsync(value);
-                _ = DrainSlashQueueAsync(value.Id);
+                _ = DrainSlashQueuesAsync(value.Id);
             }
         }
     }
@@ -403,8 +403,23 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         lifetime.Cancel();
         slashCommandCoordinator.CancelAll();
         lifetime.Dispose();
-        // Best-effort async disposal on shutdown; fire-and-forget is acceptable here.
-        _ = Task.Run(async () => await bridge.DisposeAsync().ConfigureAwait(false));
+        ValueTask bridgeDisposal = bridge.DisposeAsync();
+        if (!bridgeDisposal.IsCompletedSuccessfully)
+        {
+            _ = ObserveBridgeDisposalAsync(bridgeDisposal);
+        }
+    }
+
+    private static async Task ObserveBridgeDisposalAsync(ValueTask bridgeDisposal)
+    {
+        try
+        {
+            await bridgeDisposal.ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            ExtensionDiagnostics.Write("Worker bridge disposal failed", ex);
+        }
     }
 
     /// <summary>
@@ -843,14 +858,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 text,
                 forcePlanMode: false).ConfigureAwait(false);
             await bridge.StartTurnAsync(request, lifetime.Token).ConfigureAwait(false);
-            if (request.CollaborationMode is not null
-                && string.Equals(
-                    nextCollaborationMode,
-                    request.CollaborationMode.Mode,
-                    StringComparison.Ordinal))
-            {
-                nextCollaborationMode = null;
-            }
+            ConsumeNextTurnSettings(request);
         }
         else
         {
@@ -897,6 +905,35 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 },
             IdeContext = ideContext,
         };
+    }
+
+    // Next-turn settings apply to exactly one started turn. Compare against the request so a
+    // value re-queued while the turn was starting survives for the following turn.
+    private void ConsumeNextTurnSettings(StartTurnRequest request)
+    {
+        if (string.Equals(nextReasoningEffort, request.Effort, StringComparison.Ordinal))
+        {
+            nextReasoningEffort = null;
+        }
+
+        if (string.Equals(nextPersonality, request.Personality, StringComparison.Ordinal))
+        {
+            nextPersonality = null;
+        }
+
+        if (string.Equals(nextServiceTier, request.ServiceTier, StringComparison.Ordinal))
+        {
+            nextServiceTier = null;
+        }
+
+        if (request.CollaborationMode is not null
+            && string.Equals(
+                nextCollaborationMode,
+                request.CollaborationMode.Mode,
+                StringComparison.Ordinal))
+        {
+            nextCollaborationMode = null;
+        }
     }
 
     private void UpdateSlashCommandSuggestions(string text)
@@ -1249,9 +1286,9 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         await OnUiAsync(() =>
         {
             Threads.Insert(0, result.Thread);
-            selectedThread = result.Thread;
-            OnPropertyChanged(nameof(SelectedThread));
-            Items.Clear();
+            // Select through the property setter so ResumeThreadAsync replays the forked
+            // thread's copied history instead of leaving an empty transcript.
+            SelectedThread = result.Thread;
         }).ConfigureAwait(false);
         await ShowSlashStatusAsync("Forked the thread and switched to the new copy.").ConfigureAwait(false);
         return true;
@@ -1388,8 +1425,11 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
     private async Task<bool> ExecuteModelAsync(string arguments)
     {
-        string model = arguments.Trim();
-        if (model.Length == 0 || !Models.Contains(model))
+        string requested = arguments.Trim();
+        string? model = requested.Length == 0
+            ? null
+            : Models.FirstOrDefault(candidate => string.Equals(candidate, requested, StringComparison.OrdinalIgnoreCase));
+        if (model is null)
         {
             await ShowSlashFailureAsync("Select a model from the current model catalog.").ConfigureAwait(false);
             return false;
@@ -1429,6 +1469,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             new ChatItemViewModel("You", markdown.ToSafeText(prompt), ConversationEventKind.ItemStarted))).ConfigureAwait(false);
         StartTurnRequest request = await CreateStartTurnRequestAsync(threadId, prompt, forcePlanMode: true).ConfigureAwait(false);
         await bridge.StartTurnAsync(request, lifetime.Token).ConfigureAwait(false);
+        ConsumeNextTurnSettings(request);
         return true;
     }
 
@@ -1592,10 +1633,13 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             Items.Add(new ChatItemViewModel("Error", safeMessage, ConversationEventKind.Error));
         });
 
-    private async Task DrainSlashQueueAsync(string? threadId)
+    // Drains the given thread queues followed by the session-scoped queue (commands queued
+    // before any thread existed). A failed command has already been surfaced to the user, so
+    // draining continues past it; only a successfully started turn pauses the drain, and the
+    // next turn-completed state change resumes it.
+    private async Task DrainSlashQueuesAsync(params string?[] threadIds)
     {
-        if (string.IsNullOrWhiteSpace(threadId)
-            || Status.TurnId is not null
+        if (Status.TurnId is not null
             || Interlocked.CompareExchange(ref drainingSlashQueue, 1, 0) != 0)
         {
             return;
@@ -1603,14 +1647,31 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
         try
         {
-            while (Status.TurnId is null
-                && slashCommandCoordinator.TryDequeue(threadId, out SlashCommandInvocation? invocation)
-                && invocation is not null)
+            var queueKeys = new List<string?>();
+            foreach (string? threadId in threadIds)
             {
-                bool succeeded = await ExecuteSlashCommandAsync(invocation, threadId).ConfigureAwait(false);
-                if (!succeeded || invocation.StartsTurn)
+                if (!string.IsNullOrWhiteSpace(threadId) && !queueKeys.Contains(threadId))
                 {
-                    return;
+                    queueKeys.Add(threadId);
+                }
+            }
+
+            queueKeys.Add(null);
+            foreach (string? queueKey in queueKeys)
+            {
+                // The session queue (queueKey null) holds commands issued before any thread
+                // existed. By drain time a thread may already be selected, so target that
+                // thread instead of leaving thread-optional commands (e.g. /status) contextless.
+                string? executionThreadId = queueKey ?? SelectedThread?.Id;
+                while (Status.TurnId is null
+                    && slashCommandCoordinator.TryDequeue(queueKey, out SlashCommandInvocation? invocation)
+                    && invocation is not null)
+                {
+                    bool succeeded = await ExecuteSlashCommandAsync(invocation, executionThreadId).ConfigureAwait(false);
+                    if (succeeded && invocation.StartsTurn)
+                    {
+                        return;
+                    }
                 }
             }
         }
@@ -1681,7 +1742,9 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             }
             else if (previousStatus.TurnId is not null && value.TurnId is null)
             {
-                _ = DrainSlashQueueAsync(previousStatus.ThreadId ?? value.ThreadId);
+                // Drain the completed turn's queue and the selected thread's queue: the user
+                // may have queued commands for a different thread while the turn was running.
+                _ = DrainSlashQueuesAsync(previousStatus.ThreadId ?? value.ThreadId, SelectedThread?.Id);
             }
 
             if (value.State == previous)

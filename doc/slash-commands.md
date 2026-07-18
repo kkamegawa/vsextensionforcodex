@@ -14,7 +14,7 @@ The implementation is tracked by GitHub Issue #46 and its four sub-issues.
 | Category | Commands | Behavior |
 |---|---|---|
 | App Server operations | `/compact`, `/feedback`, `/fork`, `/goal`, `/mcp`, `/review` | Invoke dedicated typed Worker RPC methods. |
-| Next-turn settings | `/fast`, `/model`, `/personality`, `/plan`, `/reasoning` | Update typed fields used by the next `turn/start`. |
+| Next-turn settings | `/fast`, `/model`, `/personality`, `/plan`, `/reasoning` | Update typed fields used by the next `turn/start`. Except for `/model`, which changes the picker selection, these settings are consumed by the next started turn. |
 | Visual Studio operations | `/ide-context`, `/init`, `/status` | Toggle bounded editor context, safely create `AGENTS.md`, or show local session state. |
 
 The following commands remain hidden because the app-server or the current
@@ -23,8 +23,9 @@ single-thread UI cannot preserve their official semantics:
 and `/side`. Direct input produces a local unsupported message.
 
 `/review` supports uncommitted changes, a base branch, a commit, or custom
-instructions. `/goal` supports show, set, edit, pause, resume, and clear.
-Goal objectives contain between 1 and 4,000 characters.
+instructions. `/goal` supports show (alias: get), set, edit, pause, resume,
+and clear. Goal objectives contain between 1 and 4,000 characters. `/model`
+matches the catalog case-insensitively and applies the canonical model id.
 
 `/plan` without arguments selects Plan mode for the next turn. With arguments,
 it immediately starts a Plan-mode turn using the supplied prompt.
@@ -33,13 +34,16 @@ it immediately starts a Plan-mode turn using the supplied prompt.
 
 `SlashCommandParser` separates normal prompts, escaped prompts, supported
 commands, unsupported commands, and unknown commands. Unknown commands return
-up to three candidates and never reach `turn/start` or `turn/steer`.
+up to three candidates within a bounded edit distance and never reach
+`turn/start` or `turn/steer`.
 
 While a turn is active, `/status`, `/mcp`, and goal display execute immediately.
-Other commands enter a per-thread FIFO queue with a limit of ten. Pending
-setting commands with the same identity are replaced in place by their newest
-value. Queue draining begins after the active turn completes and pauses as soon
-as a queued command starts another turn.
+Other commands enter a per-thread FIFO queue with a limit of ten; commands
+issued before any thread exists use a session-scoped queue. Pending setting
+commands with the same identity are replaced in place by their newest value.
+Queue draining begins after the active turn completes, covers the completed
+turn's thread, the selected thread, and the session queue, continues past a
+failed command, and pauses as soon as a queued command starts another turn.
 
 Queues are memory-only. They are canceled on disconnect, Worker restart, or
 confirmed thread removal. A slash command is never sent through `turn/steer`;
@@ -58,7 +62,9 @@ session. It does not degrade the entire connection. Non-idempotent command
 operations are not retried.
 
 Compaction, review mode, goal changes, and rate limits use dedicated typed
-events. Their raw JSON payload is not forwarded to the transcript.
+events. Their raw JSON payload is not forwarded to the transcript. When a
+compaction completes while no turn is active, the Worker restores the Ready
+state so queued commands are not blocked behind a finished compaction.
 
 ## IDE context and initialization
 
