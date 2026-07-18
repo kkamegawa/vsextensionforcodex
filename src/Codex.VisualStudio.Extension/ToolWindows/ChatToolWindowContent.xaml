@@ -211,6 +211,7 @@
            transparent so the ListBoxItem supplies the VS-themed hover and selection state. -->
       <Style x:Key="SlashSuggestionButtonStyle" TargetType="Button">
         <Setter Property="Background" Value="Transparent" />
+        <Setter Property="Foreground" Value="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowTextBrushKey}}" />
         <Setter Property="BorderThickness" Value="0" />
         <Setter Property="Padding" Value="8,6" />
         <Setter Property="HorizontalContentAlignment" Value="Stretch" />
@@ -229,6 +230,16 @@
           </Setter.Value>
         </Setter>
         <Style.Triggers>
+          <DataTrigger Binding="{Binding IsMouseOver, RelativeSource={RelativeSource AncestorType={x:Type ListBoxItem}}}"
+                       Value="True">
+            <Setter Property="Foreground"
+                    Value="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowButtonHoverActiveGlyphBrushKey}}" />
+          </DataTrigger>
+          <DataTrigger Binding="{Binding IsSelected, RelativeSource={RelativeSource AncestorType={x:Type ListBoxItem}}}"
+                       Value="True">
+            <Setter Property="Foreground"
+                    Value="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowButtonDownActiveGlyphBrushKey}}" />
+          </DataTrigger>
           <Trigger Property="IsEnabled" Value="False">
             <Setter Property="Opacity" Value="0.5" />
           </Trigger>
@@ -941,7 +952,6 @@
                                  Text="{Binding CommandName}" />
                       <TextBlock Grid.Column="1"
                                  Margin="10,0,0,0"
-                                 Opacity="0.75"
                                  Style="{x:Null}"
                                  Text="{Binding Description}"
                                  TextTrimming="CharacterEllipsis" />

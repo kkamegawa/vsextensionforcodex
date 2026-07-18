@@ -259,9 +259,36 @@ public sealed class SlashCommandPresentationTests
         XElement suggestionButtonStyle = document
             .Descendants(Presentation + "Style")
             .Single(element => element.Attribute(xKey)?.Value == "SlashSuggestionButtonStyle");
-        Assert.IsNull(suggestionButtonStyle
+        XElement normalForeground = suggestionButtonStyle
             .Elements(Presentation + "Setter")
-            .SingleOrDefault(element => element.Attribute("Property")?.Value == "Foreground"));
+            .Single(element => element.Attribute("Property")?.Value == "Foreground");
+        Assert.IsTrue(normalForeground.Attribute("Value")?.Value?.Contains(
+            "ToolWindowTextBrushKey",
+            StringComparison.Ordinal) == true);
+
+        XElement[] buttonStateTriggers = suggestionButtonStyle
+            .Descendants(Presentation + "DataTrigger")
+            .ToArray();
+        XElement buttonHoverTrigger = buttonStateTriggers
+            .Single(element => element.Attribute("Binding")?.Value?.Contains("IsMouseOver", StringComparison.Ordinal) == true);
+        XElement buttonSelectedTrigger = buttonStateTriggers
+            .Single(element => element.Attribute("Binding")?.Value?.Contains("IsSelected", StringComparison.Ordinal) == true);
+        Assert.AreEqual("True", buttonHoverTrigger.Attribute("Value")?.Value);
+        Assert.AreEqual("True", buttonSelectedTrigger.Attribute("Value")?.Value);
+        Assert.IsTrue(buttonHoverTrigger.Attribute("Binding")?.Value?.Contains(
+            "RelativeSource AncestorType={x:Type ListBoxItem}",
+            StringComparison.Ordinal) == true);
+        Assert.IsTrue(buttonSelectedTrigger.Attribute("Binding")?.Value?.Contains(
+            "RelativeSource AncestorType={x:Type ListBoxItem}",
+            StringComparison.Ordinal) == true);
+        Assert.IsTrue(Array.IndexOf(buttonStateTriggers, buttonSelectedTrigger)
+            > Array.IndexOf(buttonStateTriggers, buttonHoverTrigger));
+        AssertThemeForeground(buttonHoverTrigger, "ToolWindowButtonHoverActiveGlyphBrushKey");
+        AssertThemeForeground(buttonSelectedTrigger, "ToolWindowButtonDownActiveGlyphBrushKey");
+
+        XElement description = suggestionText
+            .Single(element => element.Attribute("Text")?.Value == "{Binding Description}");
+        Assert.IsNull(description.Attribute("Opacity"));
     }
 
     [TestMethod]
@@ -359,6 +386,17 @@ public sealed class SlashCommandPresentationTests
 
         Assert.IsTrue(setters["Background"]?.Contains(expectedBackgroundKey, StringComparison.Ordinal) == true);
         Assert.IsTrue(setters["Foreground"]?.Contains(expectedForegroundKey, StringComparison.Ordinal) == true);
+    }
+
+    private static void AssertThemeForeground(XElement trigger, string expectedForegroundKey)
+    {
+        XElement foregroundSetter = trigger
+            .Elements(Presentation + "Setter")
+            .Single(element => element.Attribute("Property")?.Value == "Foreground");
+
+        Assert.IsTrue(foregroundSetter.Attribute("Value")?.Value?.Contains(
+            expectedForegroundKey,
+            StringComparison.Ordinal) == true);
     }
 
     private static async Task WaitForAsync(Func<bool> condition)

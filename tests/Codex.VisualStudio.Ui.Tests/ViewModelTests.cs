@@ -1256,9 +1256,13 @@ public sealed class ViewModelTests
             }
         }
 
-        // First path segment of every {Binding Foo...} expression ({Binding} alone has no name).
-        foreach (Match match in Regex.Matches(xaml, @"\{Binding\s+([A-Za-z_]\w*)"))
+        // First path segment of every data-context {Binding Foo...} expression. RelativeSource
+        // bindings target WPF UI ancestors and are not serialized Remote UI context properties.
+        foreach (Match match in Regex.Matches(xaml, @"\{Binding\s+([A-Za-z_]\w*)(?<options>[^}]*)"))
         {
+            if (match.Groups["options"].Value.Contains("RelativeSource=", StringComparison.Ordinal))
+                continue;
+
             string root = match.Groups[1].Value;
             Assert.IsTrue(
                 dataMemberNames.Contains(root),
