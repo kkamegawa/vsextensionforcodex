@@ -1659,11 +1659,15 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             queueKeys.Add(null);
             foreach (string? queueKey in queueKeys)
             {
+                // The session queue (queueKey null) holds commands issued before any thread
+                // existed. By drain time a thread may already be selected, so target that
+                // thread instead of leaving thread-optional commands (e.g. /status) contextless.
+                string? executionThreadId = queueKey ?? SelectedThread?.Id;
                 while (Status.TurnId is null
                     && slashCommandCoordinator.TryDequeue(queueKey, out SlashCommandInvocation? invocation)
                     && invocation is not null)
                 {
-                    bool succeeded = await ExecuteSlashCommandAsync(invocation, queueKey).ConfigureAwait(false);
+                    bool succeeded = await ExecuteSlashCommandAsync(invocation, executionThreadId).ConfigureAwait(false);
                     if (succeeded && invocation.StartsTurn)
                     {
                         return;

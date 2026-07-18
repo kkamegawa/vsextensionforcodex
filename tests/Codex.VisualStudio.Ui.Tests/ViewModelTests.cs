@@ -1829,7 +1829,7 @@ public sealed class ViewModelTests
         Assert.AreEqual("gpt-5-codex", vm.SelectedModel);
 
         await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready, ThreadId = "thread-1" });
-        await Task.Delay(100);
+        await WaitForAsync(() => vm.SelectedModel == "gpt-5");
 
         Assert.AreEqual("gpt-5", vm.SelectedModel);
     }
@@ -1854,7 +1854,7 @@ public sealed class ViewModelTests
         Assert.AreEqual("gpt-5-codex", vm.SelectedModel);
 
         await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready });
-        await Task.Delay(100);
+        await WaitForAsync(() => vm.SelectedModel == "gpt-5");
 
         Assert.AreEqual("gpt-5", vm.SelectedModel);
     }
@@ -1877,7 +1877,7 @@ public sealed class ViewModelTests
         Assert.AreEqual(0, bridge.ReviewCallCount);
 
         await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready, ThreadId = "thread-1" });
-        await Task.Delay(100);
+        await WaitForAsync(() => bridge.ReviewCallCount == 1);
 
         Assert.AreEqual(1, bridge.ReviewCallCount);
     }
@@ -1894,7 +1894,7 @@ public sealed class ViewModelTests
 
         vm.ComposerText = "/fork";
         await InvokeComposerSendAsync(vm);
-        await Task.Delay(100);
+        await WaitForAsync(() => bridge.LastResumedThreadId == "thread-fork");
 
         Assert.AreEqual("thread-fork", vm.SelectedThread!.Id);
         Assert.AreEqual("thread-fork", bridge.LastResumedThreadId);
@@ -2126,6 +2126,20 @@ public sealed class ViewModelTests
             ?? throw new InvalidOperationException("Could not find SendAsync.");
 
         return (Task)method.Invoke(viewModel, null)!;
+    }
+
+    private static async Task WaitForAsync(Func<bool> condition)
+    {
+        DateTime deadline = DateTime.UtcNow.AddSeconds(2);
+        while (!condition())
+        {
+            if (DateTime.UtcNow >= deadline)
+            {
+                Assert.Fail("Timed out waiting for the view model state to update.");
+            }
+
+            await Task.Delay(10);
+        }
     }
 
     private static Task RaiseConversationEventAsync(ChatViewModel viewModel, ConversationEvent value)
