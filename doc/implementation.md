@@ -25,7 +25,8 @@ The publisher is `kazushikamegawa`. The VSIX identifier is `Kkamegawa.CodexForVi
 - Future WebSocket policy that defaults off and requires loopback plus a capability/signed bearer token
 - Idempotent-only exponential retry policy for app-server overload error `-32001`
 - 75 ms streaming batches with bounded reasoning, command output, and diff buffers plus temporary overflow files
-- WPF chat window with history, transcript virtualization, composer, approvals, status, interrupt, and restart controls
+- WPF chat window with history, transcript virtualization, composer, approvals, connected Codex version status, interrupt, and restart controls
+- Initialize-handshake version discovery from a bounded, validated app-server user-agent product token, propagated through Worker contract version 9
 - Safe text rendering that removes HTML tags, ANSI escapes, and control characters
 - Structured block rendering for agent/reasoning markdown with ordered-list numbering and nested-list indentation (capped at two extra indent steps)
 - Result-only transcript lines after approval and choice resolution ("Accepted — <target>", "Selected — <option>"), sanitized through SafeMarkdownService

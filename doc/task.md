@@ -245,3 +245,21 @@
 - [ ] UI に表示する動的文字列は markdown/HTML/ANSI escape の扱いを明確にし、意図しないリンク・装飾・制御文字を無害化
 - [ ] long-running operation は CancellationToken、timeout、progress/error reporting を持つ
 - [ ] telemetry/logging は opt-in 方針、redaction、保存期間、管理者ポリシーを明確にする
+
+---
+
+## Work log
+
+### 2026-07-18: Displayed the connected Codex version (issue #61)
+
+Implemented issue #61 and sub-issues #62, #63, and #64. The Worker now reads a
+bounded, validated version from the app-server initialize user agent, carries it
+through contract version 9, and clears stale values outside connected states.
+The Remote UI header displays the sanitized value as `Ready · Codex <version>`
+and preserves it for busy and approval states with narrow-width truncation and
+one accessible live-region announcement.
+
+- Validation: Release build completed with 0 warnings and 0 errors.
+- Tests: Core.Tests 75/75 and Ui.Tests 179/179 passed from the Release build.
+- Documentation: implementation notes, worker contract notes, the security
+  policy, and the approved Wiki plan were updated.

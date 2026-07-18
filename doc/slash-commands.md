@@ -51,8 +51,10 @@ the existing steering behavior remains unchanged for normal prompts.
 
 ## Worker contract
 
-Worker contract version 8 adds typed DTOs and RPC methods for compact, review,
-fork, goals, MCP status, feedback, and rate limits. `StartTurnRequest` includes
+Worker contract version 9 adds the validated connected Codex version to
+`WorkerStatus` for Remote UI status presentation. Version 8 added typed DTOs
+and RPC methods for compact, review, fork, goals, MCP status, feedback, and
+rate limits. `StartTurnRequest` includes
 reasoning effort, personality, service tier, collaboration mode, and bounded
 IDE context. Model entries include supported reasoning efforts, the default
 effort, personality support, and service tiers.
