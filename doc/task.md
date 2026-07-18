@@ -250,6 +250,20 @@
 
 ## Work log
 
+### 2026-07-18: Verified and closed slash command review findings (issue #51)
+
+All fixes for issue #51 and its sub-issues (#52, #53, #54, #55, #56, #58) had already been
+implemented on the `fix/51-slash-command-review-findings` branch and merged to `main` via
+PR #60 (squash commit 2b005c6), but the issues remained open. Verified each fix against
+current `main` and closed every issue with an evidence comment.
+
+- Verification: Release build with 0 warnings (`TreatWarningsAsErrors=true`); full test
+  suite passed without rebuilding (Core.Tests 70/70, Ui.Tests 171/171), including the
+  regression tests named in each sub-issue.
+- Closed: #52 (next-turn settings consumption), #53 (queue drain gaps), #54 (Ready state
+  after compaction), #55 (/fork history load), #56 (model matching / goal alias /
+  suggestion threshold), #58 (stale Experimental deployment), and parent #51.
+
 ### 2026-07-18: Displayed the connected Codex version (issue #61)
 
 Implemented issue #61 and sub-issues #62, #63, and #64. The Worker now reads a
