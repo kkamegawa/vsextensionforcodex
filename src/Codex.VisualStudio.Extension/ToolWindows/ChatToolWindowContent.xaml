@@ -211,7 +211,6 @@
            transparent so the ListBoxItem supplies the VS-themed hover and selection state. -->
       <Style x:Key="SlashSuggestionButtonStyle" TargetType="Button">
         <Setter Property="Background" Value="Transparent" />
-        <Setter Property="Foreground" Value="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowTextBrushKey}}" />
         <Setter Property="BorderThickness" Value="0" />
         <Setter Property="Padding" Value="8,6" />
         <Setter Property="HorizontalContentAlignment" Value="Stretch" />
@@ -272,10 +271,14 @@
                 <Trigger Property="IsMouseOver" Value="True">
                   <Setter TargetName="Bd" Property="Background"
                           Value="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowButtonHoverActiveBrushKey}}" />
+                  <Setter Property="Foreground"
+                          Value="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowButtonHoverActiveGlyphBrushKey}}" />
                 </Trigger>
                 <Trigger Property="IsSelected" Value="True">
                   <Setter TargetName="Bd" Property="Background"
                           Value="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowButtonDownBrushKey}}" />
+                  <Setter Property="Foreground"
+                          Value="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowButtonDownActiveGlyphBrushKey}}" />
                 </Trigger>
               </ControlTemplate.Triggers>
             </ControlTemplate>
@@ -934,10 +937,12 @@
                       <TextBlock Grid.Column="0"
                                  MinWidth="108"
                                  FontWeight="SemiBold"
+                                 Style="{x:Null}"
                                  Text="{Binding CommandName}" />
                       <TextBlock Grid.Column="1"
                                  Margin="10,0,0,0"
                                  Opacity="0.75"
+                                 Style="{x:Null}"
                                  Text="{Binding Description}"
                                  TextTrimming="CharacterEllipsis" />
                     </Grid>

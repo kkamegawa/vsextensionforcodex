@@ -221,6 +221,50 @@ public sealed class SlashCommandPresentationTests
     }
 
     [TestMethod]
+    public void Xaml_SlashSuggestionRowsUsePairedVsThemeBrushes()
+    {
+        XDocument document = LoadXaml();
+        XName xKey = XName.Get("Key", "http://schemas.microsoft.com/winfx/2006/xaml");
+        XElement rowStyle = document
+            .Descendants(Presentation + "Style")
+            .Single(element => element.Attribute(xKey)?.Value == "SelectableRowStyle");
+
+        XElement hoverTrigger = rowStyle
+            .Descendants(Presentation + "Trigger")
+            .Single(element => element.Attribute("Property")?.Value == "IsMouseOver");
+        XElement selectedTrigger = rowStyle
+            .Descendants(Presentation + "Trigger")
+            .Single(element => element.Attribute("Property")?.Value == "IsSelected");
+
+        AssertThemeBrushPair(
+            hoverTrigger,
+            "ToolWindowButtonHoverActiveBrushKey",
+            "ToolWindowButtonHoverActiveGlyphBrushKey");
+        AssertThemeBrushPair(
+            selectedTrigger,
+            "ToolWindowButtonDownBrushKey",
+            "ToolWindowButtonDownActiveGlyphBrushKey");
+
+        XElement list = document
+            .Descendants(Presentation + "ListBox")
+            .Single(element => element.Attribute("ItemsSource")?.Value == "{Binding SlashCommands.Suggestions}");
+        XElement[] suggestionText = list
+            .Descendants(Presentation + "TextBlock")
+            .Where(element => element.Attribute("Text")?.Value is "{Binding CommandName}" or "{Binding Description}")
+            .ToArray();
+
+        Assert.HasCount(2, suggestionText);
+        Assert.IsTrue(suggestionText.All(element => element.Attribute("Style")?.Value == "{x:Null}"));
+
+        XElement suggestionButtonStyle = document
+            .Descendants(Presentation + "Style")
+            .Single(element => element.Attribute(xKey)?.Value == "SlashSuggestionButtonStyle");
+        Assert.IsNull(suggestionButtonStyle
+            .Elements(Presentation + "Setter")
+            .SingleOrDefault(element => element.Attribute("Property")?.Value == "Foreground"));
+    }
+
+    [TestMethod]
     public void ClosedSuggestions_RemoveKeyCommandsSoNormalEditorGesturesContinue()
     {
         var viewModel = new SlashCommandPresentationViewModel();
@@ -300,6 +344,21 @@ public sealed class SlashCommandPresentationTests
         using Stream? stream = typeof(ChatViewModel).Assembly.GetManifestResourceStream(ResourceName);
         Assert.IsNotNull(stream, $"Embedded resource '{ResourceName}' not found.");
         return XDocument.Load(stream);
+    }
+
+    private static void AssertThemeBrushPair(
+        XElement trigger,
+        string expectedBackgroundKey,
+        string expectedForegroundKey)
+    {
+        Dictionary<string, string?> setters = trigger
+            .Elements(Presentation + "Setter")
+            .ToDictionary(
+                setter => setter.Attribute("Property")?.Value ?? string.Empty,
+                setter => setter.Attribute("Value")?.Value);
+
+        Assert.IsTrue(setters["Background"]?.Contains(expectedBackgroundKey, StringComparison.Ordinal) == true);
+        Assert.IsTrue(setters["Foreground"]?.Contains(expectedForegroundKey, StringComparison.Ordinal) == true);
     }
 
     private static async Task WaitForAsync(Func<bool> condition)
