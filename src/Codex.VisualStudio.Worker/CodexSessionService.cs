@@ -34,6 +34,8 @@ public interface ICodexSessionService : IAsyncDisposable
 
     string? ActiveTurnId { get; }
 
+    string? CodexVersion { get; }
+
     Task InitializeAsync(IJsonRpcConnection connection, WorkerOptions options, CancellationToken cancellationToken);
 
     Task<AccountStatus> GetAccountStatusAsync(CancellationToken cancellationToken);
@@ -126,8 +128,11 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
 
     public string? ActiveTurnId { get; private set; }
 
+    public string? CodexVersion { get; private set; }
+
     public async Task InitializeAsync(IJsonRpcConnection connection, WorkerOptions options, CancellationToken cancellationToken)
     {
+        CodexVersion = null;
         foreach (PendingApproval approval in pendingApprovals.Values)
         {
             approval.Completion.TrySetResult("cancel");
@@ -166,17 +171,166 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
             cancellationToken).ConfigureAwait(false);
         await connection.SendNotificationAsync("initialized", new { }, cancellationToken).ConfigureAwait(false);
 
-        if (initResponse.TryGetProperty("serverInfo", out JsonElement serverInfo))
+        CodexVersion = ReadCodexVersion(initResponse);
+
+        string? serverName = null;
+        if (initResponse.TryGetProperty("serverInfo", out JsonElement serverInfo)
+            && serverInfo.ValueKind == JsonValueKind.Object)
         {
-            string? serverName = GetString(serverInfo, "name");
-            string? serverVersion = GetString(serverInfo, "version");
+            serverName = GetString(serverInfo, "name");
+        }
+
+        if (CodexVersion is not null || serverName is not null)
+        {
             await EmitAsync(new ConversationEvent
             {
                 Kind = ConversationEventKind.Unknown,
-                Text = $"Connected to {serverName ?? "codex"} app-server v{serverVersion ?? "unknown"}.",
+                Text = $"Connected to {serverName ?? "codex"} app-server v{CodexVersion ?? "unknown"}.",
             }, CancellationToken.None).ConfigureAwait(false);
         }
     }
+
+    private static string? ReadCodexVersion(JsonElement initResponse)
+    {
+        string? userAgent = GetString(initResponse, "userAgent");
+        if (userAgent is not null)
+        {
+            int separator = userAgent.IndexOf(' ');
+            ReadOnlySpan<char> firstProduct = separator >= 0
+                ? userAgent.AsSpan(0, separator)
+                : userAgent.AsSpan();
+            int slash = firstProduct.IndexOf('/');
+            if (slash > 0)
+            {
+                ReadOnlySpan<char> version = firstProduct[(slash + 1)..];
+                if (IsValidCodexVersion(version))
+                {
+                    return version.ToString();
+                }
+            }
+        }
+
+        if (initResponse.TryGetProperty("serverInfo", out JsonElement serverInfo)
+            && serverInfo.ValueKind == JsonValueKind.Object)
+        {
+            string? legacyVersion = GetString(serverInfo, "version");
+            if (legacyVersion is not null && IsValidCodexVersion(legacyVersion.AsSpan()))
+            {
+                return legacyVersion;
+            }
+        }
+
+        return null;
+    }
+
+    private static bool IsValidCodexVersion(ReadOnlySpan<char> version)
+    {
+        if (version.IsEmpty || version.Length > 64)
+        {
+            return false;
+        }
+
+        int buildSeparator = version.IndexOf('+');
+        ReadOnlySpan<char> withoutBuild = buildSeparator >= 0 ? version[..buildSeparator] : version;
+        if (buildSeparator >= 0
+            && (!IsValidIdentifierList(version[(buildSeparator + 1)..], allowNumericLeadingZero: true)
+                || version[(buildSeparator + 1)..].Contains('+')))
+        {
+            return false;
+        }
+
+        int prereleaseSeparator = withoutBuild.IndexOf('-');
+        ReadOnlySpan<char> core = prereleaseSeparator >= 0 ? withoutBuild[..prereleaseSeparator] : withoutBuild;
+        if (prereleaseSeparator >= 0
+            && !IsValidIdentifierList(withoutBuild[(prereleaseSeparator + 1)..], allowNumericLeadingZero: false))
+        {
+            return false;
+        }
+
+        int firstDot = core.IndexOf('.');
+        if (firstDot <= 0)
+        {
+            return false;
+        }
+
+        int secondDotOffset = core[(firstDot + 1)..].IndexOf('.');
+        if (secondDotOffset <= 0)
+        {
+            return false;
+        }
+
+        int secondDot = firstDot + 1 + secondDotOffset;
+        return !core[(secondDot + 1)..].Contains('.')
+            && IsValidCoreComponent(core[..firstDot])
+            && IsValidCoreComponent(core[(firstDot + 1)..secondDot])
+            && IsValidCoreComponent(core[(secondDot + 1)..]);
+    }
+
+    private static bool IsValidIdentifierList(ReadOnlySpan<char> identifiers, bool allowNumericLeadingZero)
+    {
+        if (identifiers.IsEmpty)
+        {
+            return false;
+        }
+
+        while (true)
+        {
+            int dot = identifiers.IndexOf('.');
+            ReadOnlySpan<char> identifier = dot >= 0 ? identifiers[..dot] : identifiers;
+            if (identifier.IsEmpty)
+            {
+                return false;
+            }
+
+            bool numeric = true;
+            foreach (char value in identifier)
+            {
+                bool isDigit = value is >= '0' and <= '9';
+                bool isLetter = value is >= 'A' and <= 'Z' or >= 'a' and <= 'z';
+                if (!isDigit && !isLetter && value != '-')
+                {
+                    return false;
+                }
+
+                numeric &= isDigit;
+            }
+
+            if (!allowNumericLeadingZero && numeric && HasLeadingZero(identifier))
+            {
+                return false;
+            }
+
+            if (dot < 0)
+            {
+                return true;
+            }
+
+            identifiers = identifiers[(dot + 1)..];
+        }
+    }
+
+    private static bool IsValidCoreComponent(ReadOnlySpan<char> value)
+        => IsAsciiDigits(value) && !HasLeadingZero(value);
+
+    private static bool IsAsciiDigits(ReadOnlySpan<char> value)
+    {
+        if (value.IsEmpty)
+        {
+            return false;
+        }
+
+        foreach (char character in value)
+        {
+            if (character is < '0' or > '9')
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static bool HasLeadingZero(ReadOnlySpan<char> value) => value.Length > 1 && value[0] == '0';
 
     public async Task<ThreadSummary> StartThreadAsync(CancellationToken cancellationToken)
     {

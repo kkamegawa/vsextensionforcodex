@@ -5,7 +5,7 @@ namespace Codex.VisualStudio.Contracts;
 
 public static class ContractVersions
 {
-    public const int Current = 8;
+    public const int Current = 9;
 }
 
 public enum WorkerConnectionState
@@ -143,6 +143,9 @@ public sealed class WorkerStatus
 
     [DataMember]
     public int? ProcessId { get; set; }
+
+    [DataMember]
+    public string? CodexVersion { get; set; }
 }
 
 public sealed class AccountStatus

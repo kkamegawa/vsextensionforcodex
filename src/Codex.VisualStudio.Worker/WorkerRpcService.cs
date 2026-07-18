@@ -275,6 +275,7 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
             ThreadId = session.ActiveThreadId,
             TurnId = session.ActiveTurnId,
             ProcessId = processHost.ProcessId,
+            CodexVersion = ShouldIncludeCodexVersion(state) ? session.CodexVersion : null,
         };
         if (clientRpc is not null)
         {
@@ -468,7 +469,13 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
         status.ThreadId = session.ActiveThreadId;
         status.TurnId = session.ActiveTurnId;
         status.ProcessId = processHost.ProcessId;
+        status.CodexVersion = ShouldIncludeCodexVersion(status.State) ? session.CodexVersion : null;
     }
+
+    private static bool ShouldIncludeCodexVersion(WorkerConnectionState state)
+        => state is WorkerConnectionState.Ready
+            or WorkerConnectionState.Busy
+            or WorkerConnectionState.WaitingForApproval;
 
     private WorkerStatus CloneStatus() => new()
     {
@@ -477,6 +484,7 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
         ThreadId = status.ThreadId,
         TurnId = status.TurnId,
         ProcessId = status.ProcessId,
+        CodexVersion = status.CodexVersion,
     };
 
     private AccountStatus CloneAccountStatus() => new()
