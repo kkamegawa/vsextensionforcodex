@@ -957,6 +957,7 @@
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
           </Grid.RowDefinitions>
           <!-- Inline file-reference suggestions share the composer focus scope with the prompt.
                Keeping the list bounded and virtualized avoids Popup focus transfer in Remote UI. -->
@@ -1242,9 +1243,40 @@
                      AutomationProperties.LiveSetting="Polite" />
           </StackPanel>
 
+          <Border Grid.Row="4"
+                  Margin="6,2,6,6"
+                  Padding="10,8"
+                  CornerRadius="4"
+                  BorderThickness="1"
+                  Background="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBackgroundBrushKey}}"
+                  BorderBrush="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBorderBrushKey}}"
+                  Visibility="{Binding HasApprovalModeConfirmation, Converter={StaticResource BoolToVis}}"
+                  AutomationProperties.Name="Permission mode confirmation"
+                  AutomationProperties.HelpText="Full access can disable the Codex sandbox and normal approval prompts. Custom settings may require a new thread.">
+            <DockPanel LastChildFill="True">
+              <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Margin="10,0,0,0">
+                <Button Content="Cancel"
+                        Command="{Binding CancelApprovalModeCommand}"
+                        Style="{StaticResource SmallRoundButtonStyle}"
+                        AutomationProperties.Name="Cancel permission mode change" />
+                <Button Margin="6,0,0,0"
+                        Content="Continue"
+                        Command="{Binding ConfirmApprovalModeCommand}"
+                        Style="{StaticResource SmallRoundButtonStyle}"
+                        AutomationProperties.Name="Confirm permission mode change" />
+              </StackPanel>
+              <TextBlock Text="{Binding ApprovalModeConfirmationText}"
+                         TextWrapping="Wrap"
+                         Foreground="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowTextBrushKey}}"
+                         AutomationProperties.Name="Permission mode warning"
+                         AutomationProperties.HelpText="{Binding ApprovalModeConfirmationText}"
+                         AutomationProperties.LiveSetting="Assertive" />
+            </DockPanel>
+          </Border>
+
           <!-- Action row: controls wrap at narrow tool-window widths; interrupt/send remain
                reachable in a dedicated right-aligned group. -->
-          <Grid Grid.Row="4" Margin="6,0,6,6">
+          <Grid Grid.Row="5" Margin="6,0,6,6">
             <Grid.ColumnDefinitions>
               <ColumnDefinition Width="*" />
               <ColumnDefinition Width="Auto" />
@@ -1257,7 +1289,17 @@
               <ComboBox Margin="6,0,0,0" Width="92" VerticalAlignment="Center"
                         ToolTip="Mode"
                         ItemsSource="{Binding Modes}" SelectedItem="{Binding SelectedMode}"
-                        AutomationProperties.Name="Mode" />
+                        AutomationProperties.Name="Mode"
+                        AutomationProperties.HelpText="{Binding ApprovalModeHelpText}" />
+              <ComboBox Margin="6,0,0,0" Width="166" VerticalAlignment="Center"
+                        ToolTip="{Binding ApprovalModeHelpText}"
+                        ItemsSource="{Binding ApprovalModes}"
+                        DisplayMemberPath="DisplayText"
+                        SelectedValuePath="Id"
+                        SelectedValue="{Binding SelectedApprovalModeId, Mode=TwoWay}"
+                        IsEnabled="{Binding IsApprovalModeEnabled}"
+                        AutomationProperties.Name="Permissions"
+                        AutomationProperties.HelpText="{Binding ApprovalModeHelpText}" />
               <ComboBox Margin="6,0,0,0" Width="124" VerticalAlignment="Center"
                         ToolTip="Model"
                         ItemsSource="{Binding Models}" SelectedItem="{Binding SelectedModel}"

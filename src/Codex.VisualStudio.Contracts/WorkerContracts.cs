@@ -5,7 +5,7 @@ namespace Codex.VisualStudio.Contracts;
 
 public static class ContractVersions
 {
-    public const int Current = 10;
+    public const int Current = 12;
 }
 
 public enum WorkerConnectionState
@@ -146,6 +146,9 @@ public sealed class WorkerStatus
 
     [DataMember]
     public string? CodexVersion { get; set; }
+
+    [DataMember]
+    public EffectiveApprovalState? EffectiveApprovalState { get; set; }
 }
 
 public sealed class AccountStatus
@@ -181,6 +184,9 @@ public sealed class ThreadSummary
 
     [DataMember]
     public long? UpdatedAt { get; set; }
+
+    [DataMember]
+    public EffectiveApprovalState? EffectiveApprovalState { get; set; }
 }
 
 public sealed class ThreadPage
@@ -230,6 +236,38 @@ public sealed class ListModelsResult
     public string? DefaultModel { get; set; }
 }
 
+public sealed class PermissionProfileInfo
+{
+    public string Id { get; set; } = string.Empty;
+
+    public string? Description { get; set; }
+
+    public bool Allowed { get; set; }
+}
+
+public sealed class ListPermissionProfilesResult : AppServerOperationResult
+{
+    public IReadOnlyList<PermissionProfileInfo> Profiles { get; set; } = Array.Empty<PermissionProfileInfo>();
+
+    public bool IsTruncated { get; set; }
+}
+
+[DataContract]
+public sealed class EffectiveApprovalState
+{
+    [DataMember]
+    public string? ActivePermissionProfile { get; set; }
+
+    [DataMember]
+    public string? ApprovalPolicy { get; set; }
+
+    [DataMember]
+    public string? ApprovalsReviewer { get; set; }
+
+    [DataMember]
+    public string? SandboxMode { get; set; }
+}
+
 public sealed class StartTurnRequest
 {
     public string ThreadId { get; set; } = string.Empty;
@@ -242,9 +280,16 @@ public sealed class StartTurnRequest
     // Matches the codex app-server turn/start "approvalPolicy" field (for example "on-request" or "never").
     public string? ApprovalPolicy { get; set; }
 
+    // Matches the codex app-server turn/start "approvalsReviewer" field ("user" or "auto_review").
+    public string? ApprovalsReviewer { get; set; }
+
     // Per-turn sandbox policy type override mapped from the Agent/Chat mode preset.
     // Matches the codex app-server turn/start "sandboxPolicy.type" field (for example "workspaceWrite" or "readOnly").
     public string? SandboxMode { get; set; }
+
+    // Selects a named app-server permissions profile. This is mutually exclusive with
+    // ApprovalPolicy, ApprovalsReviewer, and SandboxMode.
+    public string? Permissions { get; set; }
 
     public string? Effort { get; set; }
 
@@ -700,6 +745,9 @@ public interface ICodexWorkerClient
 
     [JsonRpcMethod("worker/models/list")]
     Task<ListModelsResult> ListModelsAsync(CancellationToken cancellationToken);
+
+    [JsonRpcMethod("worker/permissionProfiles/list")]
+    Task<ListPermissionProfilesResult> ListPermissionProfilesAsync(CancellationToken cancellationToken);
 
     [JsonRpcMethod("worker/turn/start")]
     Task<string> StartTurnAsync(StartTurnRequest request, CancellationToken cancellationToken);

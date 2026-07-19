@@ -14,18 +14,26 @@ The implementation is tracked by GitHub Issue #46 and its four sub-issues.
 | Category | Commands | Behavior |
 |---|---|---|
 | App Server operations | `/compact`, `/feedback`, `/fork`, `/goal`, `/mcp`, `/review` | Invoke dedicated typed Worker RPC methods. |
-| Next-turn settings | `/fast`, `/model`, `/personality`, `/plan`, `/reasoning` | Update typed fields used by the next `turn/start`. Except for `/model`, which changes the picker selection, these settings are consumed by the next started turn. |
+| Next-turn settings | `/fast`, `/model`, `/permissions` (`/approve` alias), `/personality`, `/plan`, `/reasoning` | Update typed fields used by the next `turn/start`. Except for picker selections, these settings are consumed by the next started turn. |
 | Visual Studio operations | `/ide-context`, `/init`, `/status` | Toggle bounded editor context, safely create `AGENTS.md`, or show local session state. |
 
 The following commands remain hidden because the app-server or the current
 single-thread UI cannot preserve their official semantics:
-`/approve`, `/cloud`, `/cloud-environment`, `/local`, `/memories`, `/project`,
+`/cloud`, `/cloud-environment`, `/local`, `/memories`, `/project`,
 and `/side`. Direct input produces a local unsupported message.
 
 `/review` supports uncommitted changes, a base branch, a commit, or custom
 instructions. `/goal` supports show (alias: get), set, edit, pause, resume,
 and clear. Goal objectives contain between 1 and 4,000 characters. `/model`
 matches the catalog case-insensitively and applies the canonical model id.
+
+`/permissions` is the canonical approval-mode command; `/approve` is a compatibility
+alias. With no argument it shows the desired default, the app-server-reported effective
+state, and available stable IDs. Built-ins are `ask`, `auto`, `full`, and `custom`;
+runtime profiles use `permission:<id>`. Full access requires confirmation because it
+disables the Codex sandbox and normal approval prompts, so operations may run without an
+extension approval request. Returning from a turn override to `custom` requires a new
+thread; omission or `null` is not treated as a reset.
 
 `/plan` without arguments selects Plan mode for the next turn. With arguments,
 it immediately starts a Plan-mode turn using the supplied prompt.

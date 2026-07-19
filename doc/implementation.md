@@ -26,6 +26,7 @@ The publisher is `kazushikamegawa`. The VSIX identifier is `Kkamegawa.CodexForVi
 - Idempotent-only exponential retry policy for app-server overload error `-32001`
 - 75 ms streaming batches with bounded reasoning, command output, and diff buffers plus temporary overflow files
 - WPF chat window with history, transcript virtualization, composer, approvals, connected Codex version status, interrupt, and restart controls
+- Agent-only typed permission picker with stable persisted IDs, built-in approval/reviewer/sandbox tuples, capability-gated permission profiles, and theme-aware accessible confirmation for Full access and Custom thread transitions
 - Initialize-handshake version discovery from a bounded, validated app-server user-agent product token, propagated through Worker contract version 9
 - Safe text rendering that removes HTML tags, ANSI escapes, and control characters
 - Structured block rendering for agent/reasoning markdown with ordered-list numbering and nested-list indentation (capped at two extra indent steps)
@@ -37,6 +38,13 @@ The publisher is `kazushikamegawa`. The VSIX identifier is `Kkamegawa.CodexForVi
 ## Validation Status
 
 Automated tests cover JSON-RPC round trips, server requests, cancellation, closed-stream disposal, redaction, relative/case-insensitive/symlink path boundaries, approval categories and scopes, WebSocket/retry policy, streaming overflow, thread-list parameters, stale steer rejection, duplicate approval prevention, and safe rendering.
+
+The picker keeps the desired default separate from the effective state reported by thread
+responses and Worker status. `ask` maps to `on-request` + `user` + `workspaceWrite`, `auto`
+maps to `on-request` + `auto_review` + `workspaceWrite`, and `full` maps to `never` + `user`
++ `dangerFullAccess`. Permission profiles use only the `permissions` turn override. Full access
+is never restored silently after restart, and incomplete or transient profile discovery does not
+overwrite the saved stable ID.
 
 Live validation completed on June 10, 2026:
 

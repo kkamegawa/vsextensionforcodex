@@ -36,7 +36,8 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     private readonly SlashCommandCatalog slashCommandCatalog = new();
     private readonly SlashCommandParser slashCommandParser;
     private readonly SlashCommandCoordinator slashCommandCoordinator = new();
-    private readonly ExtensionSettings settings = ExtensionSettings.Load();
+    private readonly IExtensionSettingsStore settingsStore;
+    private readonly ExtensionSettings settings;
     private readonly Queue<UserInputViewModel> userInputQueue = new();
     private readonly Queue<ApprovalViewModel> approvalQueue = new();
     private readonly Dictionary<string, StringBuilder> agentRawText = new(StringComparer.Ordinal);
@@ -56,6 +57,11 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     private bool ideContextEnabled = true;
     private string? selectedModel;
     private string selectedMode = "Agent";
+    private ApprovalModeOption? selectedApprovalMode;
+    private ApprovalModeOption? pendingApprovalMode;
+    private string approvalModeConfirmationText = string.Empty;
+    private string? approvalModeBeforeConfirmationId;
+    private bool confirmationStartsNewThread;
     private string? workingDirectory;
     private string? nextReasoningEffort;
     private string? nextPersonality;
@@ -79,7 +85,8 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         bool autoConnect = true,
         IFilePickerService? filePickerService = null,
         IWorkspaceFileSearchService? workspaceFileSearchService = null,
-        IProtectedDirectoryPolicy? protectedDirectoryPolicy = null)
+        IProtectedDirectoryPolicy? protectedDirectoryPolicy = null,
+        IExtensionSettingsStore? settingsStore = null)
     {
         this.bridge = bridge;
         this.outputChannel = outputChannel;
@@ -90,6 +97,8 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         this.filePickerService = filePickerService ?? new FilePickerService(extensibility);
         this.workspaceFileSearchService = workspaceFileSearchService ?? new WorkspaceFileSearchService(extensibility);
         this.protectedDirectoryPolicy = protectedDirectoryPolicy ?? new ProtectedDirectoryPolicy();
+        this.settingsStore = settingsStore ?? new FileExtensionSettingsStore();
+        settings = this.settingsStore.Load();
         slashCommandParser = new SlashCommandParser(slashCommandCatalog);
         bridge.StateChanged += OnStateChangedAsync;
         bridge.AccountChanged += OnAccountChangedAsync;
@@ -118,6 +127,8 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             return Task.CompletedTask;
         });
         AttachCommand = new AsyncCommand(AttachAsync);
+        ConfirmApprovalModeCommand = new AsyncCommand(ConfirmApprovalModeAsync, () => HasApprovalModeConfirmation);
+        CancelApprovalModeCommand = new AsyncCommand(CancelApprovalModeAsync, () => HasApprovalModeConfirmation);
         SlashCommands.Configure(OnSlashSuggestionAcceptedAsync, ExecuteSlashSubmissionAsync, OnSlashCommandClearedAsync);
         FileSuggestions.Configure(OnFileSuggestionAcceptedAsync);
 
@@ -132,6 +143,52 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
         Models = ["gpt-5-codex", "gpt-5"];
         selectedModel = Models[0];
+
+        ApprovalModes = ApprovalModeCatalog.CreateBuiltIns();
+        selectedApprovalMode = FindApprovalMode(ApprovalModeCatalog.CustomId);
+        ApprovalModeOption? configuredApprovalMode = FindApprovalMode(settings.ApprovalModeId);
+        bool isPendingPermissionProfile = settings.ApprovalModeId?.StartsWith("permission:", StringComparison.Ordinal) == true;
+        if (configuredApprovalMode is null && isPendingPermissionProfile)
+        {
+            string rawPermissionId = settings.ApprovalModeId!["permission:".Length..];
+            if (IsValidPermissionProfileId(rawPermissionId))
+            {
+                string safeId = markdown.ToSafeText(rawPermissionId).Trim();
+                configuredApprovalMode = new ApprovalModeOption(
+                    settings.ApprovalModeId,
+                    $"Permission: {safeId}",
+                    "Loading this Codex permission profile.",
+                    null,
+                    null,
+                    null,
+                    "Loading",
+                    rawPermissionId);
+                ApprovalModes.Add(configuredApprovalMode);
+            }
+            else
+            {
+                isPendingPermissionProfile = false;
+            }
+        }
+
+        ApprovalModeOption desiredApprovalMode = configuredApprovalMode
+            ?? selectedApprovalMode
+            ?? throw new InvalidOperationException("The built-in Custom approval mode is missing.");
+        if (configuredApprovalMode is null && !isPendingPermissionProfile)
+        {
+            settings.ApprovalModeId = ApprovalModeCatalog.CustomId;
+            this.settingsStore.Save(settings);
+        }
+        if (string.Equals(desiredApprovalMode.Id, ApprovalModeCatalog.FullAccessId, StringComparison.Ordinal))
+        {
+            selectedApprovalMode = FindApprovalMode(ApprovalModeCatalog.CustomId);
+            approvalModeBeforeConfirmationId = ApprovalModeCatalog.CustomId;
+            BeginApprovalModeConfirmation(desiredApprovalMode, startsNewThread: false);
+        }
+        else
+        {
+            selectedApprovalMode = desiredApprovalMode;
+        }
 
         if (autoConnect)
         {
@@ -216,7 +273,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             }
 
             settings.ExperimentalApiEnabled = value;
-            settings.Save();
+            settingsStore.Save(settings);
             OnPropertyChanged();
         }
     }
@@ -290,6 +347,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 OnPropertyChanged(nameof(StatusVersionText));
                 OnPropertyChanged(nameof(StatusAutomationName));
                 OnPropertyChanged(nameof(StatusAutomationHelpText));
+                OnPropertyChanged(nameof(EffectiveApprovalModeText));
             }
         }
     }
@@ -308,10 +366,14 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         get => selectedThread;
         set
         {
-            if (SetProperty(ref selectedThread, value) && value is not null)
+            if (SetProperty(ref selectedThread, value))
             {
-                _ = ResumeThreadAsync(value);
-                _ = DrainSlashQueuesAsync(value.Id);
+                OnPropertyChanged(nameof(EffectiveApprovalModeText));
+                if (value is not null)
+                {
+                    _ = ResumeThreadAsync(value);
+                    _ = DrainSlashQueuesAsync(value.Id);
+                }
             }
         }
     }
@@ -427,7 +489,96 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     public string SelectedMode
     {
         get => selectedMode;
-        set => SetProperty(ref selectedMode, value);
+        set
+        {
+            if (SetProperty(ref selectedMode, value))
+            {
+                OnPropertyChanged(nameof(IsApprovalModeEnabled));
+                OnPropertyChanged(nameof(ApprovalModeHelpText));
+            }
+        }
+    }
+
+    [DataMember]
+    public ObservableCollection<ApprovalModeOption> ApprovalModes { get; }
+
+    public ApprovalModeOption? SelectedApprovalMode
+    {
+        get => selectedApprovalMode;
+        set
+        {
+            if (value is null || ReferenceEquals(value, selectedApprovalMode) || !IsApprovalModeEnabled)
+            {
+                return;
+            }
+
+            RequestApprovalMode(value);
+        }
+    }
+
+    [DataMember]
+    public string SelectedApprovalModeId
+    {
+        get => SelectedApprovalMode?.Id ?? ApprovalModeCatalog.CustomId;
+        set
+        {
+            ApprovalModeOption? option = FindApprovalMode(value);
+            if (option is not null && !ReferenceEquals(option, selectedApprovalMode) && IsApprovalModeEnabled)
+            {
+                RequestApprovalMode(option);
+            }
+        }
+    }
+
+    [DataMember]
+    public bool IsApprovalModeEnabled => string.Equals(SelectedMode, "Agent", StringComparison.Ordinal);
+
+    [DataMember]
+    public string ApprovalModeHelpText => IsApprovalModeEnabled
+        ? SelectedApprovalMode?.Description ?? "Select the approval and sandbox policy used for Agent turns."
+        : "Approval mode is unavailable in Chat mode. Chat uses a read-only sandbox without approval prompts.";
+
+    [DataMember]
+    public bool HasApprovalModeConfirmation => pendingApprovalMode is not null;
+
+    [DataMember]
+    public string ApprovalModeConfirmationText
+    {
+        get => approvalModeConfirmationText;
+        private set => SetProperty(ref approvalModeConfirmationText, value);
+    }
+
+    [DataMember]
+    public AsyncCommand ConfirmApprovalModeCommand { get; }
+
+    [DataMember]
+    public AsyncCommand CancelApprovalModeCommand { get; }
+
+    [DataMember]
+    public string DesiredApprovalModeText
+        => FindApprovalMode(settings.ApprovalModeId)?.DisplayText ?? settings.ApprovalModeId;
+
+    [DataMember]
+    public string EffectiveApprovalModeText
+    {
+        get
+        {
+            EffectiveApprovalState? effective = SelectedThread?.EffectiveApprovalState
+                ?? Status.EffectiveApprovalState;
+            if (effective is null)
+            {
+                return "Not reported by the app-server";
+            }
+
+            if (!string.IsNullOrWhiteSpace(effective.ActivePermissionProfile))
+            {
+                return $"Permission profile: {ToSafeHeaderText(effective.ActivePermissionProfile)}";
+            }
+
+            return $"approval={ToSafeHeaderText(effective.ApprovalPolicy) switch { "" => "default", string value => value }}, "
+                + $"reviewer={ToSafeHeaderText(effective.ApprovalsReviewer) switch { "" => "default", string value => value }}, "
+                + $"sandbox={ToSafeHeaderText(effective.SandboxMode) switch { "" => "default", string value => value }}";
+        }
     }
 
     public bool IsDegraded => Status.State == WorkerConnectionState.Degraded;
@@ -676,6 +827,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         // raise several cross-process property and command notifications, and a delayed VS-side
         // subscriber previously kept the picker on its built-in fallback entries indefinitely.
         await PopulateModelsAsync().ConfigureAwait(false);
+        await PopulatePermissionProfilesAsync().ConfigureAwait(false);
         await OnUiAsync(() =>
         {
             UpdateAccount(accountStatus);
@@ -698,6 +850,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             Threads.Insert(0, thread);
             selectedThread = thread;
             OnPropertyChanged(nameof(SelectedThread));
+            OnPropertyChanged(nameof(EffectiveApprovalModeText));
             Items.Clear();
         }).ConfigureAwait(false);
     }
@@ -709,8 +862,13 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             return;
         }
 
-        await bridge.ResumeThreadAsync(thread.Id, lifetime.Token).ConfigureAwait(false);
-        await OnUiAsync(Items.Clear).ConfigureAwait(false);
+        ThreadSummary resumed = await bridge.ResumeThreadAsync(thread.Id, lifetime.Token).ConfigureAwait(false);
+        await OnUiAsync(() =>
+        {
+            thread.EffectiveApprovalState = resumed.EffectiveApprovalState;
+            OnPropertyChanged(nameof(EffectiveApprovalModeText));
+            Items.Clear();
+        }).ConfigureAwait(false);
     }
 
     private async Task LoadMoreAsync()
@@ -972,8 +1130,10 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             ThreadId = threadId,
             Text = text,
             Model = SelectedModel,
-            ApprovalPolicy = MapModeToApprovalPolicy(SelectedMode),
-            SandboxMode = MapModeToSandbox(SelectedMode),
+            ApprovalPolicy = GetTurnApprovalPolicy(),
+            ApprovalsReviewer = GetTurnApprovalsReviewer(),
+            SandboxMode = GetTurnSandboxMode(),
+            Permissions = GetTurnPermissions(),
             Effort = nextReasoningEffort,
             Personality = nextPersonality,
             ServiceTier = nextServiceTier,
@@ -1051,6 +1211,110 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             .Select(CreateSlashCommandSuggestion)
             .ToArray();
         SlashCommands.ShowSuggestions(descriptors);
+    }
+
+    internal async Task PopulatePermissionProfilesAsync()
+    {
+        ListPermissionProfilesResult result;
+        try
+        {
+            result = await bridge.ListPermissionProfilesAsync(lifetime.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+        {
+            return;
+        }
+        catch (Exception ex)
+        {
+            ExtensionDiagnostics.Write("Permission profile discovery failed; preserving the saved selection", ex);
+            return;
+        }
+
+        // Unsupported, transient, or incomplete catalogs are not authoritative. Preserve both
+        // the current picker state and saved stable ID until a complete successful response.
+        if (!result.IsSupported || result.IsTruncated)
+        {
+            return;
+        }
+
+        ApprovalModeOption[] discovered = result.Profiles
+            .Where(static profile => profile.Allowed && IsValidPermissionProfileId(profile.Id))
+            .GroupBy(static profile => profile.Id, StringComparer.Ordinal)
+            .Select(group =>
+            {
+                PermissionProfileInfo profile = group.First();
+                string safeId = markdown.ToSafeText(profile.Id).Trim();
+                string safeDescription = markdown.ToSafeText(profile.Description ?? string.Empty).Trim();
+                return new ApprovalModeOption(
+                    $"permission:{profile.Id}",
+                    $"Permission: {safeId}",
+                    safeDescription.Length == 0 ? "Codex permission profile." : safeDescription,
+                    null,
+                    null,
+                    null,
+                    "PermissionProfile",
+                    profile.Id);
+            })
+            .ToArray();
+
+        await OnUiAsync(() =>
+        {
+            string savedId = settings.ApprovalModeId;
+            foreach (ApprovalModeOption option in discovered)
+            {
+                ApprovalModeOption? existing = FindApprovalMode(option.Id);
+                if (existing is null)
+                {
+                    ApprovalModes.Add(option);
+                }
+                else if (string.Equals(existing.Source, "Loading", StringComparison.Ordinal))
+                {
+                    ApprovalModes.Insert(ApprovalModes.IndexOf(existing), option);
+                    if (string.Equals(savedId, option.Id, StringComparison.Ordinal))
+                    {
+                        ApplyApprovalMode(option);
+                    }
+
+                    ApprovalModes.Remove(existing);
+                }
+            }
+
+            ApprovalModeOption? savedOption = FindApprovalMode(savedId);
+            if (savedOption is null && savedId.StartsWith("permission:", StringComparison.Ordinal))
+            {
+                // Move the selection and persistence first. Removing an active item first makes
+                // the Remote UI ComboBox write null back and can erase a newer stable selection.
+                ApplyApprovalMode(FindApprovalMode(ApprovalModeCatalog.CustomId)!);
+            }
+            else if (savedOption is not null)
+            {
+                ApplyApprovalMode(savedOption);
+            }
+
+            for (int index = ApprovalModes.Count - 1; index >= 0; index--)
+            {
+                ApprovalModeOption option = ApprovalModes[index];
+                if ((string.Equals(option.Source, "PermissionProfile", StringComparison.Ordinal)
+                        || string.Equals(option.Source, "Loading", StringComparison.Ordinal))
+                    && !discovered.Any(candidate => string.Equals(candidate.Id, option.Id, StringComparison.Ordinal)))
+                {
+                    ApprovalModes.RemoveAt(index);
+                }
+            }
+        }).ConfigureAwait(false);
+    }
+
+    private static bool IsValidPermissionProfileId(string? id)
+    {
+        if (string.IsNullOrWhiteSpace(id))
+        {
+            return false;
+        }
+
+        string trimmed = id.Trim();
+        return string.Equals(id, trimmed, StringComparison.Ordinal)
+            && trimmed.Length <= 256
+            && !trimmed.Any(char.IsControl);
     }
 
     private static bool TryGetFileSuggestionQuery(string text, out string query)
@@ -1212,6 +1476,9 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                     effort.Id,
                     effort.Id,
                     effort.Description ?? string.Empty))
+                .ToArray(),
+            SlashCommandId.Permissions => ApprovalModes
+                .Select(mode => new SlashCommandOptionDescriptor(mode.Id, mode.DisplayText, mode.Description))
                 .ToArray(),
             _ => null,
         };
@@ -1406,6 +1673,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 SlashCommandId.IdeContext => await ExecuteIdeContextAsync().ConfigureAwait(false),
                 SlashCommandId.Init => await ExecuteInitAsync().ConfigureAwait(false),
                 SlashCommandId.Status => await ExecuteStatusAsync(targetThreadId).ConfigureAwait(false),
+                SlashCommandId.Permissions => await ExecutePermissionsAsync(invocation.Arguments).ConfigureAwait(false),
                 _ => false,
             };
         }
@@ -1755,12 +2023,61 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             $"Personality: {nextPersonality ?? "(default)"}",
             $"Service tier: {nextServiceTier ?? "(default)"}",
             $"Collaboration mode: {nextCollaborationMode ?? "default"}",
-            $"Approval policy: {MapModeToApprovalPolicy(SelectedMode) ?? "(default)"}",
-            $"Sandbox: {MapModeToSandbox(SelectedMode) ?? "(default)"}",
+            $"Desired permissions: {DesiredApprovalModeText}",
+            $"Effective permissions: {EffectiveApprovalModeText}",
+            $"Next-turn approval policy: {GetTurnApprovalPolicy() ?? "(config.toml)"}",
+            $"Next-turn sandbox: {GetTurnSandboxMode() ?? "(config.toml)"}",
             $"IDE context: {(ideContextEnabled ? "enabled" : "disabled")}",
             $"Queued commands: {slashCommandCoordinator.GetQueueCount(threadId)}",
             $"Usage: {usage}");
         await ShowSlashStatusAsync(message).ConfigureAwait(false);
+        return true;
+    }
+
+    private async Task<bool> ExecutePermissionsAsync(string arguments)
+    {
+        string requested = arguments.Trim();
+        if (requested.Length == 0)
+        {
+            string choices = string.Join(", ", ApprovalModes.Select(mode => $"{mode.Id} ({mode.DisplayText})"));
+            await ShowSlashStatusAsync(
+                $"Desired permissions: {DesiredApprovalModeText}\r\nEffective permissions: {EffectiveApprovalModeText}\r\nAvailable: {choices}").ConfigureAwait(false);
+            return true;
+        }
+
+        ApprovalModeOption? option = ApprovalModes.FirstOrDefault(candidate =>
+            string.Equals(candidate.Id, requested, StringComparison.OrdinalIgnoreCase));
+        if (option is null)
+        {
+            ApprovalModeOption[] displayMatches = ApprovalModes
+                .Where(candidate => string.Equals(candidate.DisplayText, requested, StringComparison.OrdinalIgnoreCase))
+                .ToArray();
+            if (displayMatches.Length > 1)
+            {
+                await ShowSlashFailureAsync("That display name is ambiguous. Select a mode by stable ID.").ConfigureAwait(false);
+                return false;
+            }
+
+            option = displayMatches.SingleOrDefault();
+        }
+
+        if (option is null)
+        {
+            string availableIds = string.Join(", ", ApprovalModes.Select(mode => mode.Id));
+            await ShowSlashFailureAsync($"Select a permission mode by stable ID. Available: {availableIds}.").ConfigureAwait(false);
+            return false;
+        }
+
+        if (!IsApprovalModeEnabled)
+        {
+            await ShowSlashStatusAsync("Chat mode is fixed to a read-only sandbox without approval prompts. Switch to Agent mode to select permissions.").ConfigureAwait(false);
+            return true;
+        }
+
+        RequestApprovalMode(option);
+        await ShowSlashStatusAsync(HasApprovalModeConfirmation
+            ? ApprovalModeConfirmationText
+            : $"Permissions set to {option.DisplayText}.").ConfigureAwait(false);
         return true;
     }
 
@@ -1916,6 +2233,127 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
     internal static string? MapModeToSandbox(string? mode)
         => string.Equals(mode, "Chat", StringComparison.Ordinal) ? "readOnly" : null;
+
+    private string? GetTurnApprovalPolicy()
+        => string.Equals(SelectedMode, "Chat", StringComparison.Ordinal)
+            ? "never"
+            : SelectedApprovalMode?.ApprovalPolicy;
+
+    private string? GetTurnSandboxMode()
+        => string.Equals(SelectedMode, "Chat", StringComparison.Ordinal)
+            ? "readOnly"
+            : SelectedApprovalMode?.SandboxMode;
+
+    private string? GetTurnApprovalsReviewer()
+        => string.Equals(SelectedMode, "Chat", StringComparison.Ordinal)
+            ? "user"
+            : SelectedApprovalMode?.ApprovalsReviewer;
+
+    private string? GetTurnPermissions()
+        => string.Equals(SelectedMode, "Chat", StringComparison.Ordinal)
+            ? null
+            : SelectedApprovalMode?.Permissions;
+
+    private ApprovalModeOption? FindApprovalMode(string? id)
+        => ApprovalModes.FirstOrDefault(candidate => string.Equals(candidate.Id, id, StringComparison.Ordinal));
+
+    private void RequestApprovalMode(ApprovalModeOption option)
+    {
+        bool requiresFullAccessConfirmation = string.Equals(option.Id, ApprovalModeCatalog.FullAccessId, StringComparison.Ordinal);
+        bool requiresNewThread = string.Equals(option.Id, ApprovalModeCatalog.CustomId, StringComparison.Ordinal)
+            && SelectedThread is not null
+            && HasPerTurnApprovalOverride(selectedApprovalMode);
+        if (requiresFullAccessConfirmation || requiresNewThread)
+        {
+            approvalModeBeforeConfirmationId = selectedApprovalMode?.Id ?? ApprovalModeCatalog.CustomId;
+            BeginApprovalModeConfirmation(option, requiresNewThread);
+            OnPropertyChanged(nameof(SelectedApprovalMode));
+            OnPropertyChanged(nameof(SelectedApprovalModeId));
+            return;
+        }
+
+        ApplyApprovalMode(option);
+    }
+
+    private void BeginApprovalModeConfirmation(ApprovalModeOption option, bool startsNewThread)
+    {
+        pendingApprovalMode = option;
+        confirmationStartsNewThread = startsNewThread;
+        ApprovalModeConfirmationText = startsNewThread
+            ? "Custom cannot reset approval overrides already applied to this thread. Start a new thread and use config.toml settings?"
+            : "Full access disables the Codex sandbox and normal approval prompts. Operations may run without any request reaching the extension approval policy. Continue?";
+        OnPropertyChanged(nameof(HasApprovalModeConfirmation));
+        ConfirmApprovalModeCommand.RaiseCanExecuteChanged();
+        CancelApprovalModeCommand.RaiseCanExecuteChanged();
+    }
+
+    private async Task ConfirmApprovalModeAsync()
+    {
+        ApprovalModeOption? option = pendingApprovalMode;
+        bool startNewThread = confirmationStartsNewThread;
+        if (option is null)
+        {
+            return;
+        }
+
+        if (startNewThread)
+        {
+            if (Status.State != WorkerConnectionState.Ready)
+            {
+                ApprovalModeConfirmationText = "Finish or interrupt the active turn before starting a new thread with Custom settings.";
+                return;
+            }
+
+            await NewThreadAsync().ConfigureAwait(false);
+        }
+
+        ClearApprovalModeConfirmation();
+        ApplyApprovalMode(option);
+    }
+
+    private static bool HasPerTurnApprovalOverride(ApprovalModeOption? option)
+        => option is not null
+            && (option.ApprovalPolicy is not null
+                || option.ApprovalsReviewer is not null
+                || option.SandboxMode is not null
+                || option.Permissions is not null);
+
+    private Task CancelApprovalModeAsync()
+    {
+        if (approvalModeBeforeConfirmationId is not null)
+        {
+            settings.ApprovalModeId = approvalModeBeforeConfirmationId;
+            settingsStore.Save(settings);
+            OnPropertyChanged(nameof(DesiredApprovalModeText));
+        }
+
+        ClearApprovalModeConfirmation();
+        OnPropertyChanged(nameof(SelectedApprovalMode));
+        OnPropertyChanged(nameof(SelectedApprovalModeId));
+        return Task.CompletedTask;
+    }
+
+    private void ApplyApprovalMode(ApprovalModeOption option)
+    {
+        settings.ApprovalModeId = option.Id;
+        settingsStore.Save(settings);
+        selectedApprovalMode = option;
+        OnPropertyChanged(nameof(SelectedApprovalMode));
+        OnPropertyChanged(nameof(SelectedApprovalModeId));
+        OnPropertyChanged(nameof(ApprovalModeHelpText));
+        OnPropertyChanged(nameof(DesiredApprovalModeText));
+    }
+
+    private void ClearApprovalModeConfirmation()
+    {
+        pendingApprovalMode = null;
+        confirmationStartsNewThread = false;
+        approvalModeBeforeConfirmationId = null;
+        ApprovalModeConfirmationText = string.Empty;
+        OnPropertyChanged(nameof(HasApprovalModeConfirmation));
+        ConfirmApprovalModeCommand.RaiseCanExecuteChanged();
+        CancelApprovalModeCommand.RaiseCanExecuteChanged();
+    }
 
     private async Task AttachAsync()
     {

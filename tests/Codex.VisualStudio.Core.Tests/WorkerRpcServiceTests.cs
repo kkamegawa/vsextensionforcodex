@@ -215,6 +215,48 @@ public sealed class WorkerRpcServiceTests
         Assert.AreEqual("4.5.6", finalReady.CodexVersion);
     }
 
+    [TestMethod]
+    public async Task ThreadSettingsUpdatePublishesEffectiveApprovalStateAcrossWorkerContract()
+    {
+        var connection = new StubConnection
+        {
+            Handler = method => method == "thread/start"
+                ? JsonSerializer.SerializeToElement(new
+                {
+                    thread = new { id = "thread-1" },
+                    approvalPolicy = "on-request",
+                    approvalsReviewer = "user",
+                    sandbox = new { type = "workspaceWrite" },
+                })
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        var session = new CodexSessionService(new ApprovalPolicyEngine(new PathAccessPolicy()), new SecretRedactor());
+        await session.InitializeAsync(connection, Options(), CancellationToken.None);
+        await using var worker = new WorkerRpcService(new SecretRedactor(), new FakeProcessHost(), session);
+        await worker.StartThreadAsync(CancellationToken.None);
+        await using var client = new ClientChannel(worker);
+
+        await connection.EmitNotificationAsync(
+            "thread/settings/updated",
+            new
+            {
+                threadId = "thread-1",
+                threadSettings = new
+                {
+                    activePermissionProfile = new { id = "review" },
+                    approvalPolicy = "on-request",
+                    approvalsReviewer = "auto_review",
+                    sandboxPolicy = new { type = "workspaceWrite" },
+                },
+            });
+
+        WorkerStatus published = await client.EffectiveStateSeen.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.AreEqual("review", published.EffectiveApprovalState!.ActivePermissionProfile);
+        Assert.AreEqual("on-request", published.EffectiveApprovalState.ApprovalPolicy);
+        Assert.AreEqual("auto_review", published.EffectiveApprovalState.ApprovalsReviewer);
+        Assert.AreEqual("workspaceWrite", published.EffectiveApprovalState.SandboxMode);
+    }
+
     private static WorkerOptions Options() => new()
     {
         WorkingDirectory = Path.GetTempPath(),
@@ -247,6 +289,8 @@ public sealed class WorkerRpcServiceTests
 
         public Task<WorkerStatus> TurnIdSeen => observer.TurnIdSeen;
 
+        public Task<WorkerStatus> EffectiveStateSeen => observer.EffectiveStateSeen;
+
         public ValueTask DisposeAsync()
         {
             workerRpc.Dispose();
@@ -258,8 +302,12 @@ public sealed class WorkerRpcServiceTests
         {
             private readonly TaskCompletionSource<WorkerStatus> turnIdSeen =
                 new(TaskCreationOptions.RunContinuationsAsynchronously);
+            private readonly TaskCompletionSource<WorkerStatus> effectiveStateSeen =
+                new(TaskCreationOptions.RunContinuationsAsynchronously);
 
             public Task<WorkerStatus> TurnIdSeen => turnIdSeen.Task;
+
+            public Task<WorkerStatus> EffectiveStateSeen => effectiveStateSeen.Task;
 
             [JsonRpcMethod("observer/stateChanged", UseSingleObjectParameterDeserialization = true)]
             public void OnStateChanged(StateChangedArgs args)
@@ -267,6 +315,11 @@ public sealed class WorkerRpcServiceTests
                 if (args.Status?.TurnId is not null)
                 {
                     turnIdSeen.TrySetResult(args.Status);
+                }
+
+                if (args.Status?.EffectiveApprovalState is not null)
+                {
+                    effectiveStateSeen.TrySetResult(args.Status);
                 }
             }
         }

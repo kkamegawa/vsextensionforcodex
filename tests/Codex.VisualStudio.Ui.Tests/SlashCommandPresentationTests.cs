@@ -385,6 +385,33 @@ public sealed class SlashCommandPresentationTests
         Assert.IsNotNull(actionRow.Elements(Presentation + "WrapPanel").SingleOrDefault());
     }
 
+    [TestMethod]
+    public void Xaml_PermissionsPickerUsesStableValueThemeAndAccessibleWarning()
+    {
+        XDocument document = LoadXaml();
+        XName automationName = XName.Get("AutomationProperties.Name");
+        XName automationHelpText = XName.Get("AutomationProperties.HelpText");
+
+        XElement picker = document
+            .Descendants(Presentation + "ComboBox")
+            .Single(element => element.Attribute(automationName)?.Value == "Permissions");
+        Assert.AreEqual("DisplayText", picker.Attribute("DisplayMemberPath")?.Value);
+        Assert.AreEqual("Id", picker.Attribute("SelectedValuePath")?.Value);
+        StringAssert.Contains(picker.Attribute("SelectedValue")?.Value, "SelectedApprovalModeId");
+        Assert.AreEqual("{Binding IsApprovalModeEnabled}", picker.Attribute("IsEnabled")?.Value);
+        Assert.AreEqual("{Binding ApprovalModeHelpText}", picker.Attribute(automationHelpText)?.Value);
+
+        XElement warning = document
+            .Descendants(Presentation + "TextBlock")
+            .Single(element => element.Attribute(automationName)?.Value == "Permission mode warning");
+        Assert.AreEqual("{Binding ApprovalModeConfirmationText}", warning.Attribute(automationHelpText)?.Value);
+        Assert.AreEqual("Assertive", warning.Attribute(XName.Get("AutomationProperties.LiveSetting"))?.Value);
+
+        XElement confirmation = warning.Ancestors(Presentation + "Border").First();
+        StringAssert.Contains(confirmation.Attribute("Background")?.Value, "ToolWindowBackgroundBrushKey");
+        StringAssert.Contains(confirmation.Attribute("BorderBrush")?.Value, "ToolWindowBorderBrushKey");
+    }
+
     private static XDocument LoadXaml()
     {
         using Stream? stream = typeof(ChatViewModel).Assembly.GetManifestResourceStream(ResourceName);

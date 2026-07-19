@@ -14,17 +14,24 @@ Visual Studio拡張機能は、入力の先頭文字が`/`の場合だけCodex�
 | 分類 | コマンド | 動作 |
 |---|---|---|
 | App Server操作 | `/compact`, `/feedback`, `/fork`, `/goal`, `/mcp`, `/review` | 専用の型付きWorker RPCを呼び出します。 |
-| 次ターン設定 | `/fast`, `/model`, `/personality`, `/plan`, `/reasoning` | 次の`turn/start`へ渡す型付きフィールドを更新します。ピッカー選択を変更する`/model`を除き、次のターン開始時に消費されます。 |
+| 次ターン設定 | `/fast`, `/model`, `/permissions`（`/approve`は互換エイリアス）, `/personality`, `/plan`, `/reasoning` | 次の`turn/start`へ渡す型付きフィールドを更新します。ピッカー選択以外は次のターン開始時に消費されます。 |
 | Visual Studio操作 | `/ide-context`, `/init`, `/status` | 上限付きIDEコンテキスト、`AGENTS.md`の安全な生成、ローカル状態表示を行います。 |
 
 公式の意味を現在のApp Serverまたは単一スレッドUIで維持できない
-`/approve`, `/cloud`, `/cloud-environment`, `/local`, `/memories`, `/project`,
+`/cloud`, `/cloud-environment`, `/local`, `/memories`, `/project`,
 `/side`は候補から隠します。直接入力時はローカルの非対応メッセージを表示します。
 
 `/review`は未コミット変更、基準ブランチ、コミット、自由指示を選べます。
 `/goal`は表示（`show`または`get`）、設定、編集、一時停止、再開、クリアに
 対応し、目的は1～4,000文字です。`/model`はカタログと大文字小文字を区別せず
 照合し、正規のモデルIDを適用します。
+
+承認モードの正式コマンドは`/permissions`で、`/approve`は互換エイリアスです。
+引数なしでは希望する既定値、App Serverが報告した実効状態、利用可能な安定IDを表示します。
+組み込みIDは`ask`、`auto`、`full`、`custom`で、実行時profileは`permission:<id>`です。
+Full accessはCodex sandboxと通常の承認promptを無効化し、拡張へ承認要求が届かないまま
+処理が実行される可能性があるため確認が必須です。turn overrideから`custom`へ戻す場合は
+新規threadを開始し、値の省略や`null`をresetとして扱いません。
 
 引数なしの`/plan`は次ターンをPlanモードにします。引数がある場合は、その
 内容をプロンプトとしてPlanモードのターンを開始します。

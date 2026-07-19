@@ -208,3 +208,16 @@ NU1603・MSB3277 を `<NoWarn>` / `<MSBuildWarningsAsMessages>` で抑制する�
 | `ChatViewModel.OnUiAsync` の `Application.Current?.Dispatcher` → OOP プロセスでは null になるため直接実行（意図的） | 正常動作 | — |
 | `Codex.VisualStudio.Package` は空プレースホルダ → 差分ビュー等が必要になったときに実装 | 予定 | 低 |
 | DI コンテナへの `AppServerClient` / `CodexSessionService` 登録 → Phase 1 未完了 | 未着手 | 高 |
+
+## 7. Approval mode picker
+
+The Agent composer exposes typed approval options whose display text is separate from the
+stable IDs `ask`, `auto`, `full`, `custom`, and `permission:<id>`. Remote UI synchronizes the
+selection with `SelectedValuePath=Id`. Chat mode keeps its fixed read-only behavior and disables
+the picker while exposing the reason through the adjacent mode control's accessibility help.
+
+A saved permission profile is represented by a bounded loading placeholder until the capability-
+gated catalog completes. Only a complete successful catalog may fall back to Custom when a profile
+is missing; transient failures and truncated responses preserve the saved ID. Full access must be
+confirmed because it disables the Codex sandbox and normal approval prompts. Moving from any turn
+override to Custom starts a new thread because omitted overrides do not reset an existing thread.

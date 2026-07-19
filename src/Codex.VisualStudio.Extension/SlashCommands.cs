@@ -18,7 +18,7 @@ internal enum SlashCommandId
     IdeContext,
     Init,
     Status,
-    Approve,
+    Permissions,
     Cloud,
     CloudEnvironment,
     Local,
@@ -37,6 +37,7 @@ internal enum SlashCommandArgumentKind
     ReasoningEffort,
     ReviewTarget,
     GoalOperation,
+    ApprovalMode,
 }
 
 internal sealed record SlashCommandDefinition(
@@ -73,7 +74,7 @@ internal sealed class SlashCommandCatalog
         new(SlashCommandId.IdeContext, "ide-context", "Toggle IDE context for future turns.", SlashCommandArgumentKind.None, true, true, false),
         new(SlashCommandId.Init, "init", "Create an AGENTS.md file in the workspace root.", SlashCommandArgumentKind.None, true, false, false),
         new(SlashCommandId.Status, "status", "Show connection, model, permissions, and usage.", SlashCommandArgumentKind.None, true, false, false),
-        new(SlashCommandId.Approve, "approve", "Approval policy selection is not exposed by the current app-server API.", SlashCommandArgumentKind.None, false, false, false, "The app-server does not expose a compatible approval command."),
+        new(SlashCommandId.Permissions, "permissions", "View or select the approval and sandbox mode.", SlashCommandArgumentKind.ApprovalMode, true, true, false, null, "approve"),
         new(SlashCommandId.Cloud, "cloud", "Cloud tasks are not available in this local-only extension.", SlashCommandArgumentKind.None, false, false, false, "Cloud tasks require a cloud-capable Codex surface."),
         new(SlashCommandId.CloudEnvironment, "cloud-environment", "Cloud environments are not available in this local-only extension.", SlashCommandArgumentKind.None, false, false, false, "Cloud environments require a cloud-capable Codex surface."),
         new(SlashCommandId.Local, "local", "The extension already uses the local app-server.", SlashCommandArgumentKind.None, false, false, false, "Changing execution surfaces is not supported by this extension."),

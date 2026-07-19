@@ -27,6 +27,7 @@ public sealed class ViewModelTests
     private static readonly ApprovalDecision[] NoDecisions = [];
 
     private static readonly string[] ExpectedModes = ["Agent", "Chat"];
+    private static readonly string[] ExpectedApprovalModes = ["ask", "auto", "full", "custom"];
     private static readonly string[] ExpectedWorkerModels = ["gpt-5-codex", "gpt-5"];
     private static readonly string[] ExpectedModelsWithInjectedDefault = ["gpt-5.1-codex-max", "gpt-5-codex", "gpt-5"];
     private static readonly string[] ExpectedRefreshedModels = ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini"];
@@ -1742,6 +1743,7 @@ public sealed class ViewModelTests
         Assert.AreEqual("hello", bridge.LastStartTurnRequest.Text);
         Assert.AreEqual("gpt-5", bridge.LastStartTurnRequest.Model);
         Assert.AreEqual("never", bridge.LastStartTurnRequest.ApprovalPolicy);
+        Assert.AreEqual("user", bridge.LastStartTurnRequest.ApprovalsReviewer);
         Assert.AreEqual("readOnly", bridge.LastStartTurnRequest.SandboxMode);
     }
 
@@ -1763,6 +1765,129 @@ public sealed class ViewModelTests
         Assert.AreEqual("gpt-5-codex", bridge.LastStartTurnRequest!.Model);
         Assert.IsNull(bridge.LastStartTurnRequest.ApprovalPolicy);
         Assert.IsNull(bridge.LastStartTurnRequest.SandboxMode);
+    }
+
+    [TestMethod]
+    public void ChatViewModel_ApprovalModesUseStableIdsAndCustomDefault()
+    {
+        var store = new MemorySettingsStore(new ExtensionSettings());
+        using var vm = new ChatViewModel(new FakeWorkerBridge(), autoConnect: false, settingsStore: store);
+
+        CollectionAssert.AreEqual(
+            ExpectedApprovalModes,
+            vm.ApprovalModes.Select(static mode => mode.Id).ToArray());
+        Assert.AreEqual("custom", vm.SelectedApprovalModeId);
+        Assert.AreEqual("Custom (config.toml)", vm.DesiredApprovalModeText);
+        Assert.IsNotNull(typeof(ApprovalModeOption).GetProperty(nameof(ApprovalModeOption.Id))!
+            .GetCustomAttribute<DataMemberAttribute>());
+        Assert.IsNotNull(typeof(ApprovalModeOption).GetProperty(nameof(ApprovalModeOption.Source))!
+            .GetCustomAttribute<DataMemberAttribute>());
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_FullAccessRequiresConfirmationBeforePersistence()
+    {
+        var store = new MemorySettingsStore(new ExtensionSettings());
+        using var vm = new ChatViewModel(new FakeWorkerBridge(), autoConnect: false, settingsStore: store);
+
+        vm.SelectedApprovalModeId = "full";
+
+        Assert.IsTrue(vm.HasApprovalModeConfirmation);
+        Assert.AreEqual("custom", vm.SelectedApprovalModeId);
+        Assert.AreEqual("custom", store.Settings.ApprovalModeId);
+        StringAssert.Contains(vm.ApprovalModeConfirmationText, "without any request reaching");
+
+        vm.ConfirmApprovalModeCommand.Execute(null);
+        await WaitForAsync(() => !vm.HasApprovalModeConfirmation);
+
+        Assert.AreEqual("full", vm.SelectedApprovalModeId);
+        Assert.AreEqual("full", store.Settings.ApprovalModeId);
+    }
+
+    [TestMethod]
+    public void ChatViewModel_SavedFullAccessFallsBackUntilReconfirmed()
+    {
+        var store = new MemorySettingsStore(new ExtensionSettings { ApprovalModeId = "full" });
+        using var vm = new ChatViewModel(new FakeWorkerBridge(), autoConnect: false, settingsStore: store);
+
+        Assert.AreEqual("custom", vm.SelectedApprovalModeId);
+        Assert.IsTrue(vm.HasApprovalModeConfirmation);
+        Assert.AreEqual("Full access", vm.DesiredApprovalModeText);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_PermissionProfileUsesExclusiveTurnOverride()
+    {
+        var store = new MemorySettingsStore(new ExtensionSettings { ApprovalModeId = "permission:workspace-safe" });
+        var bridge = new FakeWorkerBridge
+        {
+            PermissionProfilesResult = new ListPermissionProfilesResult
+            {
+                Profiles =
+                [
+                    new PermissionProfileInfo { Id = "workspace-safe", Description = "Workspace only", Allowed = true },
+                    new PermissionProfileInfo { Id = "blocked", Allowed = false },
+                ],
+            },
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: store)
+        {
+            SelectedThread = new ThreadSummary { Id = "thread-1" },
+        };
+        Assert.AreEqual("permission:workspace-safe", vm.SelectedApprovalModeId);
+        Assert.AreEqual("Loading", vm.ApprovalModes.Single(mode => mode.Id == "permission:workspace-safe").Source);
+        await vm.PopulatePermissionProfilesAsync();
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready });
+
+        await SendMessageAsync(vm, "hello", clearComposer: false);
+
+        Assert.AreEqual("permission:workspace-safe", vm.SelectedApprovalModeId);
+        Assert.IsFalse(vm.ApprovalModes.Any(mode => mode.Id == "permission:blocked"));
+        Assert.AreEqual("workspace-safe", bridge.LastStartTurnRequest!.Permissions);
+        Assert.IsNull(bridge.LastStartTurnRequest.ApprovalPolicy);
+        Assert.IsNull(bridge.LastStartTurnRequest.ApprovalsReviewer);
+        Assert.IsNull(bridge.LastStartTurnRequest.SandboxMode);
+
+        vm.SelectedApprovalModeId = "custom";
+        Assert.IsTrue(vm.HasApprovalModeConfirmation);
+        Assert.AreEqual("permission:workspace-safe", store.Settings.ApprovalModeId);
+        vm.ConfirmApprovalModeCommand.Execute(null);
+        await WaitForAsync(() => vm.SelectedApprovalModeId == "custom");
+        Assert.AreEqual("custom", store.Settings.ApprovalModeId);
+    }
+
+    [TestMethod]
+    public void ChatViewModel_WhitespacePermissionProfileIdFallsBackToCustom()
+    {
+        var store = new MemorySettingsStore(new ExtensionSettings { ApprovalModeId = "permission: workspace-safe " });
+
+        using var vm = new ChatViewModel(new FakeWorkerBridge(), autoConnect: false, settingsStore: store);
+
+        Assert.AreEqual("custom", vm.SelectedApprovalModeId);
+        Assert.AreEqual("custom", store.Settings.ApprovalModeId);
+        Assert.IsFalse(vm.ApprovalModes.Any(mode => mode.Id.StartsWith("permission:", StringComparison.Ordinal)));
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_PermissionsErrorListsRuntimeProfileStableIds()
+    {
+        var bridge = new FakeWorkerBridge
+        {
+            PermissionProfilesResult = new ListPermissionProfilesResult
+            {
+                Profiles = [new PermissionProfileInfo { Id = "workspace-safe", Allowed = true }],
+            },
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false);
+        await vm.PopulatePermissionProfilesAsync();
+
+        MethodInfo executePermissions = typeof(ChatViewModel).GetMethod(
+            "ExecutePermissionsAsync",
+            BindingFlags.NonPublic | BindingFlags.Instance)!;
+        bool succeeded = await (Task<bool>)executePermissions.Invoke(vm, ["unknown-mode"])!;
+
+        Assert.IsFalse(succeeded);
+        StringAssert.Contains(vm.Items.Last().Text, "permission:workspace-safe");
     }
 
     [TestMethod]
@@ -2499,6 +2624,20 @@ public sealed class ViewModelTests
         }
     }
 
+    private sealed class MemorySettingsStore : IExtensionSettingsStore
+    {
+        public MemorySettingsStore(ExtensionSettings settings)
+        {
+            Settings = settings;
+        }
+
+        public ExtensionSettings Settings { get; private set; }
+
+        public ExtensionSettings Load() => Settings;
+
+        public void Save(ExtensionSettings settings) => Settings = settings;
+    }
+
     private sealed class FakeWorkerBridge : IWorkerBridge
     {
         public event Func<WorkerStatus, Task>? StateChanged;
@@ -2524,6 +2663,8 @@ public sealed class ViewModelTests
         public event Func<RateLimitsResult, Task>? RateLimitsChanged { add { } remove { } }
 
         public ListModelsResult ModelListResult { get; set; } = new();
+
+        public ListPermissionProfilesResult PermissionProfilesResult { get; set; } = new();
 
         public int ModelListCallCount { get; private set; }
 
@@ -2567,6 +2708,9 @@ public sealed class ViewModelTests
             ModelListCallCount++;
             return Task.FromResult(ModelListResult);
         }
+
+        public Task<ListPermissionProfilesResult> ListPermissionProfilesAsync(CancellationToken cancellationToken)
+            => Task.FromResult(PermissionProfilesResult);
 
         public Task<ThreadSummary> StartThreadAsync(CancellationToken cancellationToken)
             => Task.FromResult(new ThreadSummary { Id = "thread-1" });
