@@ -250,6 +250,12 @@
 
 ## Work log
 
+### 2026-07-19: Addressed attachment and presentation review feedback (PR #74)
+
+Disposed completed file-suggestion refresh cancellation sources without racing newer
+refreshes, made temporary workspace cleanup reliable when tests fail, and restored exact
+cardinality checks for slash-command key bindings so duplicate bindings are detected.
+
 ### 2026-07-19: Improved chat author label contrast (issue #73)
 
 Set the transcript author label foreground directly to the Visual Studio tool-window text

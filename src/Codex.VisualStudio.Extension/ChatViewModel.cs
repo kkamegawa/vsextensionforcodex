@@ -470,8 +470,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         if (Interlocked.Exchange(ref disposed, 1) != 0)
             return;
         lifetime.Cancel();
-        fileSuggestionRefresh?.Cancel();
-        fileSuggestionRefresh?.Dispose();
+        CancelFileSuggestionRefresh();
         slashCommandCoordinator.CancelAll();
         lifetime.Dispose();
         ValueTask bridgeDisposal = bridge.DisposeAsync();
@@ -1127,6 +1126,24 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         {
             ExtensionDiagnostics.Write("Refreshing file suggestions failed", ex);
             await OnUiAsync(FileSuggestions.CloseSuggestions).ConfigureAwait(false);
+        }
+        finally
+        {
+            CompleteFileSuggestionRefresh(ref fileSuggestionRefresh, refresh);
+        }
+    }
+
+    internal static void CompleteFileSuggestionRefresh(
+        ref CancellationTokenSource? currentRefresh,
+        CancellationTokenSource completedRefresh)
+    {
+        CancellationTokenSource? released = Interlocked.CompareExchange(
+            ref currentRefresh,
+            null,
+            completedRefresh);
+        if (ReferenceEquals(released, completedRefresh))
+        {
+            completedRefresh.Dispose();
         }
     }
 

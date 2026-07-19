@@ -223,10 +223,21 @@ public sealed class SlashCommandPresentationTests
         string key,
         string? modifiers,
         string command)
-        => Assert.IsTrue(bindings.Any(binding =>
+    {
+        int matchCount = bindings.Count(binding =>
             binding.Attribute("Key")?.Value == key
             && binding.Attribute("Modifiers")?.Value == modifiers
-            && binding.Attribute("Command")?.Value == command));
+            && binding.Attribute("Command")?.Value == command);
+        string failureReason = matchCount == 0
+            ? "the binding is missing"
+            : $"the binding is duplicated ({matchCount} matches)";
+
+        Assert.AreEqual(
+            1,
+            matchCount,
+            $"Expected exactly one KeyBinding for Key='{key}', Modifiers='{modifiers ?? "<none>"}', "
+                + $"Command='{command}', but {failureReason}.");
+    }
 
     [TestMethod]
     public void Xaml_SlashSuggestionRowsUsePairedVsThemeBrushes()
