@@ -462,7 +462,12 @@
                   </Style>
                 </Border.Style>
                 <StackPanel>
-                  <TextBlock FontWeight="SemiBold" Opacity="0.85" Text="{Binding Role}" />
+                  <!-- Author is essential transcript context. Set the foreground directly so
+                       Remote UI cannot fall back to a default WPF color across an implicit-style
+                       boundary, and keep full opacity for High Contrast themes. -->
+                  <TextBlock FontWeight="SemiBold"
+                             Foreground="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowTextBrushKey}}"
+                             Text="{Binding Role}" />
 
                   <!-- Collapse toggle button — visible only for reasoning items. -->
                   <Button Margin="0,4,0,0"

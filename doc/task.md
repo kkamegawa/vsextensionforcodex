@@ -250,6 +250,13 @@
 
 ## Work log
 
+### 2026-07-19: Improved chat author label contrast (issue #73)
+
+Set the transcript author label foreground directly to the Visual Studio tool-window text
+theme resource and restored full opacity. This keeps the `You` and `Codex` labels paired
+with the existing tool-window card background across light, dark, and High Contrast themes,
+including live theme changes in the Remote UI host.
+
 ### 2026-07-19: Implemented file attachment support (issue #67)
 
 Implemented the approved file attachment plan with SDK-backed multi-file selection,
