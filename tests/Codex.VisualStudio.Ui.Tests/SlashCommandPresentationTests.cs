@@ -204,21 +204,29 @@ public sealed class SlashCommandPresentationTests
             .Descendants(Presentation + "TextBox")
             .Single(element => (element.Attribute("Text")?.Value ?? string.Empty)
                 .Contains("ComposerText", StringComparison.Ordinal));
-        Dictionary<(string? Key, string? Modifiers), string?> bindings = composer
+        XElement[] bindings = composer
             .Element(Presentation + "TextBox.InputBindings")!
             .Elements(Presentation + "KeyBinding")
-            .ToDictionary(
-                binding => (binding.Attribute("Key")?.Value, binding.Attribute("Modifiers")?.Value),
-                binding => binding.Attribute("Command")?.Value);
+            .ToArray();
 
-        Assert.AreEqual("{Binding SlashCommands.MovePreviousKeyCommand}", bindings[("Up", null)]);
-        Assert.AreEqual("{Binding SlashCommands.MoveNextKeyCommand}", bindings[("Down", null)]);
-        Assert.AreEqual("{Binding SlashCommands.AcceptSuggestionKeyCommand}", bindings[("Return", null)]);
-        Assert.AreEqual("{Binding SlashCommands.AcceptSuggestionKeyCommand}", bindings[("Tab", null)]);
-        Assert.AreEqual("{Binding SlashCommands.DismissSuggestionsKeyCommand}", bindings[("Escape", null)]);
-        Assert.AreEqual("{Binding SendCommand}", bindings[("Return", "Control")]);
+        AssertKeyBinding(bindings, "Up", null, "{Binding SlashCommands.MovePreviousKeyCommand}");
+        AssertKeyBinding(bindings, "Down", null, "{Binding SlashCommands.MoveNextKeyCommand}");
+        AssertKeyBinding(bindings, "Return", null, "{Binding SlashCommands.AcceptSuggestionKeyCommand}");
+        AssertKeyBinding(bindings, "Tab", null, "{Binding SlashCommands.AcceptSuggestionKeyCommand}");
+        AssertKeyBinding(bindings, "Escape", null, "{Binding SlashCommands.DismissSuggestionsKeyCommand}");
+        AssertKeyBinding(bindings, "Return", "Control", "{Binding SendCommand}");
         Assert.AreEqual("True", composer.Attribute("AcceptsReturn")?.Value);
     }
+
+    private static void AssertKeyBinding(
+        IEnumerable<XElement> bindings,
+        string key,
+        string? modifiers,
+        string command)
+        => Assert.IsTrue(bindings.Any(binding =>
+            binding.Attribute("Key")?.Value == key
+            && binding.Attribute("Modifiers")?.Value == modifiers
+            && binding.Attribute("Command")?.Value == command));
 
     [TestMethod]
     public void Xaml_SlashSuggestionRowsUsePairedVsThemeBrushes()

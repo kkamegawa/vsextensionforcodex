@@ -1,4 +1,4 @@
-# CLAUDE.md
+﻿# CLAUDE.md
 
 ## Project
 
@@ -46,4 +46,4 @@ Before adding or updating any NuGet package:
 
 ## Docs
 
-`doc/design.md` · `doc/plan.md` · `doc/task.md` · `doc/implementation.md`
+`doc/design.md` · `doc/plan.md` · `doc/task.md` · `doc/implementation.md` · `doc/adr.md`

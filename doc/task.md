@@ -250,6 +250,15 @@
 
 ## Work log
 
+### 2026-07-19: Implemented file attachment support (issue #67)
+
+Implemented the approved file attachment plan with SDK-backed multi-file selection,
+removable attachment chips, workspace file suggestions triggered by `#`, and typed
+`mention`/`localImage` turn inputs. Explicit selections are validated at both process
+boundaries, capped and de-duplicated, while steering remains text-only and preserves
+attachments for the next turn. ADR-001 records the Remote UI constraints and trust-boundary
+decisions.
+
 ### 2026-07-18: Verified and closed slash command review findings (issue #51)
 
 All fixes for issue #51 and its sub-issues (#52, #53, #54, #55, #56, #58) had already been

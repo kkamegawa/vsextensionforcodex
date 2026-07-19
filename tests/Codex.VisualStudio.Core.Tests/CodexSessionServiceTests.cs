@@ -284,8 +284,8 @@ public sealed class CodexSessionServiceTests
     [TestMethod]
     public async Task StartTurnForwardsModelAndModeOverridesWhenSet()
     {
-        string activeDocument = Path.Combine(Path.GetTempPath(), "active.cs");
-        string referencedDocument = Path.Combine(Path.GetTempPath(), "referenced.cs");
+        string activeDocument = Path.GetTempFileName();
+        string referencedDocument = Path.GetTempFileName();
         var connection = new RecordingConnection
         {
             Handler = (method, _) => method == "turn/start"
@@ -344,6 +344,107 @@ public sealed class CodexSessionServiceTests
         Assert.AreEqual(activeDocument, input[1].GetProperty("path").GetString());
         Assert.AreEqual(referencedDocument, input[2].GetProperty("path").GetString());
         StringAssert.Contains(input[3].GetProperty("text").GetString(), "selected text");
+
+        File.Delete(activeDocument);
+        File.Delete(referencedDocument);
+    }
+
+    [TestMethod]
+    public async Task StartTurnBuildsValidatedAttachmentInputsAndDeduplicatesIdeContext()
+    {
+        string workspace = Path.Combine(Path.GetTempPath(), $"codex-attachments-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(workspace);
+        string document = Path.Combine(workspace, "notes.md");
+        string image = Path.Combine(workspace, "diagram.png");
+        await File.WriteAllTextAsync(document, "notes");
+        await File.WriteAllBytesAsync(image, [0x89, 0x50, 0x4e, 0x47]);
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "turn/start"
+                ? JsonSerializer.SerializeToElement(new { turn = new { id = "turn-1" } })
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(workspace), CancellationToken.None);
+
+        await service.StartTurnAsync(
+            new StartTurnRequest
+            {
+                ThreadId = "thread-1",
+                Text = "inspect",
+                Attachments =
+                [
+                    new AttachmentInfo(image, "image"),
+                    new AttachmentInfo(document, "file"),
+                    new AttachmentInfo(document, "mention"),
+                    new AttachmentInfo(Path.Combine(workspace, ".", "notes.md"), "mention"),
+                    new AttachmentInfo(Path.Combine(workspace, "missing.txt"), "mention"),
+                ],
+                IdeContext = new IdeContextInfo
+                {
+                    ActiveDocumentPath = document,
+                    ReferencedFilePaths = [image],
+                },
+            },
+            CancellationToken.None);
+
+        JsonElement parameters = ParametersFor(connection, "turn/start");
+        JsonElement[] input = parameters.GetProperty("input").EnumerateArray().ToArray();
+        Assert.AreEqual(3, input.Length);
+        Assert.AreEqual("localImage", input[1].GetProperty("type").GetString());
+        Assert.AreEqual(Path.GetFullPath(image), input[1].GetProperty("path").GetString());
+        Assert.AreEqual("mention", input[2].GetProperty("type").GetString());
+        Assert.AreEqual(Path.GetFullPath(document), input[2].GetProperty("path").GetString());
+
+        Directory.Delete(workspace, recursive: true);
+    }
+
+    [TestMethod]
+    public async Task StartTurnAllowsOutsideWorkspaceAttachmentsButRejectsProtectedFilesAndCapsAtTen()
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"codex-attachment-policy-{Guid.NewGuid():N}");
+        string workspace = Path.Combine(root, "workspace");
+        string external = Path.Combine(root, "external");
+        string protectedRoot = Path.Combine(root, "protected");
+        Directory.CreateDirectory(workspace);
+        Directory.CreateDirectory(external);
+        Directory.CreateDirectory(protectedRoot);
+        string protectedFile = Path.Combine(protectedRoot, "blocked.txt");
+        await File.WriteAllTextAsync(protectedFile, "blocked");
+        var attachments = new List<AttachmentInfo>();
+        for (int index = 0; index < 11; index++)
+        {
+            string path = Path.Combine(external, $"file-{index}.txt");
+            await File.WriteAllTextAsync(path, index.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            attachments.Add(new AttachmentInfo(path, "mention"));
+        }
+
+        attachments.Insert(0, new AttachmentInfo(protectedFile, "mention"));
+        var protectedPolicy = new ProtectedDirectoryPolicy([protectedRoot]);
+        var pathPolicy = new PathAccessPolicy();
+        await using var service = new CodexSessionService(
+            new ApprovalPolicyEngine(pathPolicy, protectedPolicy),
+            new SecretRedactor(),
+            pathPolicy,
+            protectedPolicy);
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "turn/start"
+                ? JsonSerializer.SerializeToElement(new { turn = new { id = "turn-1" } })
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        await service.InitializeAsync(connection, Options(workspace), CancellationToken.None);
+
+        await service.StartTurnAsync(
+            new StartTurnRequest { ThreadId = "thread-1", Text = "inspect", Attachments = attachments },
+            CancellationToken.None);
+
+        JsonElement[] input = ParametersFor(connection, "turn/start").GetProperty("input").EnumerateArray().ToArray();
+        Assert.AreEqual(10, input.Count(item => item.GetProperty("type").GetString() == "mention"));
+        Assert.IsFalse(input.Any(item => item.TryGetProperty("path", out JsonElement path)
+            && string.Equals(path.GetString(), protectedFile, StringComparison.OrdinalIgnoreCase)));
+
+        Directory.Delete(root, recursive: true);
     }
 
     [TestMethod]
@@ -958,9 +1059,9 @@ public sealed class CodexSessionServiceTests
     private static CodexSessionService CreateService()
         => new(new ApprovalPolicyEngine(new PathAccessPolicy()), new SecretRedactor());
 
-    private static WorkerOptions Options() => new()
+    private static WorkerOptions Options(string? workingDirectory = null) => new()
     {
-        WorkingDirectory = Path.GetTempPath(),
+        WorkingDirectory = workingDirectory ?? Path.GetTempPath(),
         ExtensionVersion = "test",
     };
 
