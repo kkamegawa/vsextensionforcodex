@@ -1857,6 +1857,40 @@ public sealed class ViewModelTests
     }
 
     [TestMethod]
+    public void ChatViewModel_WhitespacePermissionProfileIdFallsBackToCustom()
+    {
+        var store = new MemorySettingsStore(new ExtensionSettings { ApprovalModeId = "permission: workspace-safe " });
+
+        using var vm = new ChatViewModel(new FakeWorkerBridge(), autoConnect: false, settingsStore: store);
+
+        Assert.AreEqual("custom", vm.SelectedApprovalModeId);
+        Assert.AreEqual("custom", store.Settings.ApprovalModeId);
+        Assert.IsFalse(vm.ApprovalModes.Any(mode => mode.Id.StartsWith("permission:", StringComparison.Ordinal)));
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_PermissionsErrorListsRuntimeProfileStableIds()
+    {
+        var bridge = new FakeWorkerBridge
+        {
+            PermissionProfilesResult = new ListPermissionProfilesResult
+            {
+                Profiles = [new PermissionProfileInfo { Id = "workspace-safe", Allowed = true }],
+            },
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false);
+        await vm.PopulatePermissionProfilesAsync();
+
+        MethodInfo executePermissions = typeof(ChatViewModel).GetMethod(
+            "ExecutePermissionsAsync",
+            BindingFlags.NonPublic | BindingFlags.Instance)!;
+        bool succeeded = await (Task<bool>)executePermissions.Invoke(vm, ["unknown-mode"])!;
+
+        Assert.IsFalse(succeeded);
+        StringAssert.Contains(vm.Items.Last().Text, "permission:workspace-safe");
+    }
+
+    [TestMethod]
     public async Task ChatViewModel_StatusSlashCommand_DoesNotSteerActiveTurn()
     {
         var bridge = new FakeWorkerBridge();

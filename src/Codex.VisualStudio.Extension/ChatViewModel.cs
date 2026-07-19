@@ -1305,9 +1305,17 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     }
 
     private static bool IsValidPermissionProfileId(string? id)
-        => !string.IsNullOrWhiteSpace(id)
-            && id.Length <= 256
-            && !id.Any(char.IsControl);
+    {
+        if (string.IsNullOrWhiteSpace(id))
+        {
+            return false;
+        }
+
+        string trimmed = id.Trim();
+        return string.Equals(id, trimmed, StringComparison.Ordinal)
+            && trimmed.Length <= 256
+            && !trimmed.Any(char.IsControl);
+    }
 
     private static bool TryGetFileSuggestionQuery(string text, out string query)
     {
@@ -2055,7 +2063,8 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
         if (option is null)
         {
-            await ShowSlashFailureAsync("Select ask, auto, full, or custom by stable ID.").ConfigureAwait(false);
+            string availableIds = string.Join(", ", ApprovalModes.Select(mode => mode.Id));
+            await ShowSlashFailureAsync($"Select a permission mode by stable ID. Available: {availableIds}.").ConfigureAwait(false);
             return false;
         }
 
