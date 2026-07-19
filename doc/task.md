@@ -205,14 +205,14 @@
 
 ChatGPT デスクトップと同等の承認方法選択 UI。レビュー済みの wire マッピングと設計詳細は #75 を参照。
 
-- [ ] Sub-issue A (#76): 組み込みモード（Ask for approval / Approve on my behalf / Full access / Custom (config.toml)）を、表示名と安定 ID を分離した Remote UI DTO で追加する。Agent モード時のみ有効にし、設定ストアを注入可能にして永続化する。`turn/start` には手動承認=`on-request` + `user` + `workspaceWrite`、代理承認=`on-request` + `auto_review` + `workspaceWrite`、Full access=`never` + `user` + `dangerFullAccess` を送る
-- [ ] Sub-issue B (#77): 手書き TOML 解析は行わず、対応する app-server の `permissionProfile/list`（`cwd`、ページング）で `[permissions.<id>]` を取得し、実験 API と runtime capability が利用できる場合だけ turn の `permissions` override で選択する。未対応時はプロファイル項目を表示せず組み込みモードを継続する
-- [ ] Sub-issue C (#78): `/permissions` を正式名、`/approve` を互換エイリアスとして実装し、`/status`、候補表示、`doc/slash-commands*.md`・`doc/design.md`・`doc/implementation.md` を更新する
-- [ ] Full access は Codex の sandbox と承認プロンプトを無効化し、Worker のポリシーは app-server が承認要求を送った場合だけ評価されることを、確認 UI・ToolTip・Automation HelpText・ドキュメントで正確に警告する
-- [ ] 保存する「希望する既定値」と thread start/resume/fork response および `thread/settings/updated` から得る「実効状態」を分離し、`/status` で両者の差を表示する。Full access は再起動後に無確認で復元しない
-- [ ] `turn/start` override は後続 turn に残るため、Ask / Auto / Full / profile から Custom に切り替える場合は新規 thread の作成を確認し、null/省略を reset として扱わない
-- [ ] profile カタログの非同期ロード中は保存済み選択を保持し、取得成功後に限って欠落 profile を Custom へフォールバックする。RPC 一時失敗で設定を上書きしない
-- [ ] XAML バインド対象の option collection / selected ID / enablement に `[DataMember]` を付け、Remote UI シリアライズ、アクセシビリティ、`/status` の実効値、Fake/実 app-server の wire 値を回帰テストする
+- [x] Sub-issue A (#76): 組み込みモード（Ask for approval / Approve on my behalf / Full access / Custom (config.toml)）を、表示名と安定 ID を分離した Remote UI DTO で追加する。Agent モード時のみ有効にし、設定ストアを注入可能にして永続化する。`turn/start` には手動承認=`on-request` + `user` + `workspaceWrite`、代理承認=`on-request` + `auto_review` + `workspaceWrite`、Full access=`never` + `user` + `dangerFullAccess` を送る
+- [x] Sub-issue B (#77): 手書き TOML 解析は行わず、対応する app-server の `permissionProfile/list`（`cwd`、ページング）で `[permissions.<id>]` を取得し、実験 API と runtime capability が利用できる場合だけ turn の `permissions` override で選択する。未対応時はプロファイル項目を表示せず組み込みモードを継続する
+- [x] Sub-issue C (#78): `/permissions` を正式名、`/approve` を互換エイリアスとして実装し、`/status`、候補表示、`doc/slash-commands*.md`・`doc/design.md`・`doc/implementation.md` を更新する
+- [x] Full access は Codex の sandbox と承認プロンプトを無効化し、Worker のポリシーは app-server が承認要求を送った場合だけ評価されることを、確認 UI・ToolTip・Automation HelpText・ドキュメントで正確に警告する
+- [x] 保存する「希望する既定値」と thread start/resume/fork response および `thread/settings/updated` から得る「実効状態」を分離し、`/status` で両者の差を表示する。Full access は再起動後に無確認で復元しない
+- [x] `turn/start` override は後続 turn に残るため、Ask / Auto / Full / profile から Custom に切り替える場合は新規 thread の作成を確認し、null/省略を reset として扱わない
+- [x] profile カタログの非同期ロード中は保存済み選択を保持し、取得成功後に限って欠落 profile を Custom へフォールバックする。RPC 一時失敗で設定を上書きしない
+- [x] XAML バインド対象の option collection / selected ID / enablement に `[DataMember]` を付け、Remote UI シリアライズ、アクセシビリティ、`/status` の実効値、Fake/実 app-server の wire 値を回帰テストする
 
 **完了条件**: モデル選択・承認モードピッカー・MCP/アプリ・設定 UI が動作し、必要に応じインライン補完を提供できる。
 
@@ -262,6 +262,22 @@ ChatGPT デスクトップと同等の承認方法選択 UI。レビュー済み
 ---
 
 ## Work log
+
+### 2026-07-20: Implemented the approval mode picker (issue #75)
+
+Implemented issue #75 and sub-issues #76, #77, and #78. The Agent composer now exposes
+stable built-in approval modes and capability-gated permission profiles, while Chat keeps
+the exact read-only tuple. Contract version 12 carries the approval reviewer, mutually
+exclusive permission-profile selection, and app-server-reported effective thread state.
+Full access and Custom transitions use explicit confirmation, saved profile selections
+survive asynchronous discovery failures, and `/permissions` plus `/approve` share the same
+safe selection path.
+
+- Validation: Release UI build completed with zero warnings and zero errors.
+- Tests: Core tests passed 89/89 and UI tests passed 206/206 with `--no-build`.
+- Packaging: the VSIX contains the Worker and both matching Contracts assemblies; packaged
+  binaries match their Release outputs and the approval picker XAML remains a raw embedded
+  `DataTemplate` resource.
 
 ### 2026-07-19: Addressed attachment and presentation review feedback (PR #74)
 

@@ -20,6 +20,22 @@ public sealed class SlashCommandTests
     }
 
     [TestMethod]
+    [DataRow("/permissions", "")]
+    [DataRow("/permissions ask", "ask")]
+    [DataRow("/approve full", "full")]
+    public void Parser_RecognizesPermissionsAndApproveAlias(string input, string expectedArguments)
+    {
+        var parser = new SlashCommandParser(catalog);
+
+        SlashCommandParseResult result = parser.Parse(input);
+
+        Assert.AreEqual(SlashCommandParseKind.Command, result.Kind);
+        Assert.AreEqual(SlashCommandId.Permissions, result.Invocation!.Definition.Id);
+        Assert.AreEqual(expectedArguments, result.Invocation.Arguments);
+        Assert.AreEqual("permissions", result.Invocation.Definition.Name);
+    }
+
+    [TestMethod]
     public void Parser_DoubleSlashProducesLiteralPrompt()
     {
         var parser = new SlashCommandParser(catalog);

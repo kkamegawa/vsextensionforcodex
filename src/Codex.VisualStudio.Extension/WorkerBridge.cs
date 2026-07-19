@@ -45,6 +45,13 @@ internal interface IWorkerBridge : IAsyncDisposable
 
     Task<ListModelsResult> ListModelsAsync(CancellationToken cancellationToken);
 
+    Task<ListPermissionProfilesResult> ListPermissionProfilesAsync(CancellationToken cancellationToken)
+        => Task.FromResult(new ListPermissionProfilesResult
+        {
+            IsSupported = false,
+            UnavailableReason = "Permission profiles are not available through this bridge.",
+        });
+
     Task<ThreadSummary> StartThreadAsync(CancellationToken cancellationToken);
 
     Task<ThreadSummary> ResumeThreadAsync(string threadId, CancellationToken cancellationToken);
@@ -218,6 +225,12 @@ public sealed class WorkerBridge : IWorkerBridge, ICodexWorkerObserver
             throw;
         }
     }
+
+    public Task<ListPermissionProfilesResult> ListPermissionProfilesAsync(CancellationToken cancellationToken)
+        => RequireRpc().InvokeWithCancellationAsync<ListPermissionProfilesResult>(
+            "worker/permissionProfiles/list",
+            Array.Empty<object>(),
+            cancellationToken);
 
     public Task<ThreadSummary> StartThreadAsync(CancellationToken cancellationToken)
         => rpc!.InvokeWithCancellationAsync<ThreadSummary>("worker/thread/start", Array.Empty<object>(), cancellationToken);

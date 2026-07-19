@@ -19,7 +19,10 @@ while (await Console.In.ReadLineAsync().ConfigureAwait(false) is { } line)
     {
         "initialize" => new { userAgent = "codex-app-server-fake/0.1.0" },
         "thread/start" => CreateThread(),
-        "thread/resume" => new { thread = new { id = root.GetProperty("params").GetProperty("threadId").GetString(), preview = "Resumed fake thread" } },
+        "thread/resume" => ThreadResponse(
+            new { id = root.GetProperty("params").GetProperty("threadId").GetString(), preview = "Resumed fake thread" }),
+        "thread/fork" => ThreadResponse(
+            new { id = $"fake-thread-{nextThread++}", preview = "Forked fake thread", cwd = Environment.CurrentDirectory }),
         "thread/list" => new { data = threads, nextCursor = (string?)null },
         "model/list" => new
         {
@@ -29,6 +32,15 @@ while (await Console.In.ReadLineAsync().ConfigureAwait(false) is { } line)
                 new { model = "gpt-5", displayName = "GPT-5", isDefault = false, hidden = false },
                 // Hidden catalog default: filtered from the picker server-side but surfaced via isDefault.
                 new { model = "gpt-5.1-codex-max", displayName = "GPT-5.1 Codex Max", isDefault = true, hidden = true },
+            },
+            nextCursor = (string?)null,
+        },
+        "permissionProfile/list" => new
+        {
+            data = new[]
+            {
+                new { id = "review", description = "Review commands before workspace changes.", allowed = true },
+                new { id = "managed", description = "Managed by organization policy.", allowed = false },
             },
             nextCursor = (string?)null,
         },
@@ -53,8 +65,17 @@ object CreateThread()
 {
     var thread = new { id = $"fake-thread-{nextThread++}", preview = "Fake conversation", cwd = Environment.CurrentDirectory };
     threads.Add(thread);
-    return new { thread };
+    return ThreadResponse(thread);
 }
+
+static object ThreadResponse(object thread) => new
+{
+    thread,
+    activePermissionProfile = new { id = ":workspace" },
+    approvalPolicy = "on-request",
+    approvalsReviewer = "user",
+    sandbox = new { type = "workspaceWrite" },
+};
 
 object StartTurn(JsonElement request)
 {
@@ -62,15 +83,32 @@ object StartTurn(JsonElement request)
     string threadId = parameters.GetProperty("threadId").GetString() ?? string.Empty;
     string? model = GetOptionalString(parameters, "model");
     string? approvalPolicy = GetOptionalString(parameters, "approvalPolicy");
+    string? approvalsReviewer = GetOptionalString(parameters, "approvalsReviewer");
+    string? permissions = GetOptionalString(parameters, "permissions");
     string? sandboxMode = parameters.TryGetProperty("sandboxPolicy", out JsonElement sandbox)
         ? GetOptionalString(sandbox, "type")
         : null;
     string turnId = $"fake-turn-{nextTurn++}";
-    Console.Error.WriteLine($"fake turn/start model={Sanitize(model) ?? "(default)"} approvalPolicy={Sanitize(approvalPolicy) ?? "(default)"} sandbox={Sanitize(sandboxMode) ?? "(default)"}");
+    Console.Error.WriteLine($"fake turn/start model={Sanitize(model) ?? "(default)"} approvalPolicy={Sanitize(approvalPolicy) ?? "(default)"} approvalsReviewer={Sanitize(approvalsReviewer) ?? "(default)"} sandbox={Sanitize(sandboxMode) ?? "(default)"} permissions={Sanitize(permissions) ?? "(default)"}");
     _ = Task.Run(async () =>
     {
         await Task.Delay(25).ConfigureAwait(false);
         await WriteAsync(new { method = "turn/started", @params = new { threadId, turnId, turn = new { id = turnId } } }).ConfigureAwait(false);
+        await WriteAsync(new
+        {
+            method = "thread/settings/updated",
+            @params = new
+            {
+                threadId,
+                threadSettings = new
+                {
+                    activePermissionProfile = permissions is null ? null : new { id = permissions },
+                    approvalPolicy = approvalPolicy ?? "on-request",
+                    approvalsReviewer = approvalsReviewer ?? "user",
+                    sandboxPolicy = new { type = sandboxMode ?? "workspaceWrite" },
+                },
+            },
+        }).ConfigureAwait(false);
         await WriteAsync(new { method = "item/agentMessage/delta", @params = new { threadId, turnId, itemId = "agent-1", delta = "Hello from the fake app-server." } }).ConfigureAwait(false);
         await WriteAsync(new { method = "turn/completed", @params = new { threadId, turnId, turn = new { id = turnId, status = "completed" } } }).ConfigureAwait(false);
     });

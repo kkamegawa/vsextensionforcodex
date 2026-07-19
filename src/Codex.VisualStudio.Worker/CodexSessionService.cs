@@ -30,11 +30,15 @@ public interface ICodexSessionService : IAsyncDisposable
 
     event Func<RateLimitsResult, CancellationToken, Task>? RateLimitsChanged;
 
+    event Func<EffectiveApprovalState, CancellationToken, Task>? EffectiveApprovalStateChanged;
+
     string? ActiveThreadId { get; }
 
     string? ActiveTurnId { get; }
 
     string? CodexVersion { get; }
+
+    EffectiveApprovalState? EffectiveApprovalState { get; }
 
     Task InitializeAsync(IJsonRpcConnection connection, WorkerOptions options, CancellationToken cancellationToken);
 
@@ -51,6 +55,8 @@ public interface ICodexSessionService : IAsyncDisposable
     Task<ThreadPage> ListThreadsAsync(string? cursor, CancellationToken cancellationToken);
 
     Task<ListModelsResult> ListModelsAsync(CancellationToken cancellationToken);
+
+    Task<ListPermissionProfilesResult> ListPermissionProfilesAsync(CancellationToken cancellationToken);
 
     Task<string> StartTurnAsync(StartTurnRequest request, CancellationToken cancellationToken);
 
@@ -84,6 +90,10 @@ public interface ICodexSessionService : IAsyncDisposable
 public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
 {
     private static readonly string[] ThreadSourceKinds = ["cli", "vscode", "appServer"];
+    private const int PermissionProfilePageSize = 100;
+    private const int MaxPermissionProfilePages = 10;
+    private const int MaxPermissionProfiles = 500;
+    private const int MaxPermissionProfileIdLength = 256;
 
     private readonly IApprovalPolicyEngine approvalPolicy;
     private readonly ISecretRedactor redactor;
@@ -132,15 +142,20 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
 
     public event Func<RateLimitsResult, CancellationToken, Task>? RateLimitsChanged;
 
+    public event Func<EffectiveApprovalState, CancellationToken, Task>? EffectiveApprovalStateChanged;
+
     public string? ActiveThreadId { get; private set; }
 
     public string? ActiveTurnId { get; private set; }
 
     public string? CodexVersion { get; private set; }
 
+    public EffectiveApprovalState? EffectiveApprovalState { get; private set; }
+
     public async Task InitializeAsync(IJsonRpcConnection connection, WorkerOptions options, CancellationToken cancellationToken)
     {
         CodexVersion = null;
+        EffectiveApprovalState = null;
         foreach (PendingApproval approval in pendingApprovals.Values)
         {
             approval.Completion.TrySetResult("cancel");
@@ -343,7 +358,8 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
     public async Task<ThreadSummary> StartThreadAsync(CancellationToken cancellationToken)
     {
         JsonElement result = await SendAsync("thread/start", new { cwd = options.WorkingDirectory }, cancellationToken).ConfigureAwait(false);
-        ThreadSummary summary = ReadThread(result.GetProperty("thread"));
+        EffectiveApprovalState = ReadEffectiveApprovalState(result);
+        ThreadSummary summary = ReadThread(result.GetProperty("thread"), EffectiveApprovalState);
         ActiveThreadId = summary.Id;
         return summary;
     }
@@ -454,7 +470,8 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
     public async Task<ThreadSummary> ResumeThreadAsync(string threadId, CancellationToken cancellationToken)
     {
         JsonElement result = await SendAsync("thread/resume", new { threadId }, cancellationToken).ConfigureAwait(false);
-        ThreadSummary summary = ReadThread(result.GetProperty("thread"));
+        EffectiveApprovalState = ReadEffectiveApprovalState(result);
+        ThreadSummary summary = ReadThread(result.GetProperty("thread"), EffectiveApprovalState);
         ActiveThreadId = summary.Id;
         return summary;
     }
@@ -509,8 +526,77 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         }
     }
 
+    public async Task<ListPermissionProfilesResult> ListPermissionProfilesAsync(CancellationToken cancellationToken)
+    {
+        const string method = "permissionProfile/list";
+        if (!options.ExperimentalApi)
+        {
+            return Unsupported<ListPermissionProfilesResult>(
+                "Permission profiles require the experimental app-server API.");
+        }
+
+        var profiles = new List<PermissionProfileInfo>();
+        var seenIds = new HashSet<string>(StringComparer.Ordinal);
+        var seenCursors = new HashSet<string>(StringComparer.Ordinal);
+        string? cursor = null;
+        bool truncated = false;
+
+        for (int page = 0; page < MaxPermissionProfilePages; page++)
+        {
+            OperationCallResult call = await TrySendOperationAsync(
+                method,
+                new { cwd = options.WorkingDirectory, cursor, limit = PermissionProfilePageSize },
+                TimeSpan.FromSeconds(15),
+                cancellationToken).ConfigureAwait(false);
+            if (!call.IsSupported)
+            {
+                return Unsupported<ListPermissionProfilesResult>(
+                    "Permission profiles are not supported by this app-server.");
+            }
+
+            bool pageWasTruncated = ReadPermissionProfiles(call.Result, profiles, seenIds);
+            if (profiles.Count >= MaxPermissionProfiles)
+            {
+                truncated = pageWasTruncated || GetString(call.Result, "nextCursor") is not null;
+                break;
+            }
+
+            string? rawNextCursor = GetString(call.Result, "nextCursor");
+            if (rawNextCursor is null)
+            {
+                break;
+            }
+
+            string? nextCursor = NormalizeCursor(rawNextCursor);
+            if (nextCursor is null)
+            {
+                truncated = true;
+                break;
+            }
+
+            if (!seenCursors.Add(nextCursor))
+            {
+                truncated = true;
+                break;
+            }
+
+            cursor = nextCursor;
+            if (page == MaxPermissionProfilePages - 1)
+            {
+                truncated = true;
+            }
+        }
+
+        return new ListPermissionProfilesResult
+        {
+            Profiles = profiles,
+            IsTruncated = truncated,
+        };
+    }
+
     public async Task<string> StartTurnAsync(StartTurnRequest request, CancellationToken cancellationToken)
     {
+        ValidateTurnApprovalOverrides(request);
         List<object> input = BuildTurnInput(request);
         JsonElement result = await SendAsync(
             "turn/start",
@@ -520,7 +606,9 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
                 input,
                 model = request.Model,
                 approvalPolicy = request.ApprovalPolicy,
+                approvalsReviewer = request.ApprovalsReviewer,
                 sandboxPolicy = request.SandboxMode is null ? null : new { type = request.SandboxMode },
+                permissions = request.Permissions,
                 effort = request.Effort,
                 personality = request.Personality,
                 serviceTier = request.ServiceTier,
@@ -636,8 +724,9 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
             return Unsupported<ForkThreadResult>("Thread forking is not supported by this app-server.");
         }
 
+        EffectiveApprovalState = ReadEffectiveApprovalState(call.Result);
         ThreadSummary? thread = call.Result.TryGetProperty("thread", out JsonElement threadElement)
-            ? ReadThread(threadElement)
+            ? ReadThread(threadElement, EffectiveApprovalState)
             : null;
         ActiveThreadId = thread?.Id ?? ActiveThreadId;
         ActiveTurnId = null;
@@ -1259,6 +1348,25 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
             return;
         }
 
+        if (method == "thread/settings/updated")
+        {
+            bool isActiveThread = ActiveThreadId is not null
+                && string.Equals(threadId, ActiveThreadId, StringComparison.Ordinal);
+            bool hasSettings = (parameters.TryGetProperty("threadSettings", out JsonElement threadSettings)
+                    || parameters.TryGetProperty("settings", out threadSettings))
+                && threadSettings.ValueKind == JsonValueKind.Object;
+            if (isActiveThread && hasSettings)
+            {
+                EffectiveApprovalState = ReadEffectiveApprovalState(threadSettings);
+                if (EffectiveApprovalStateChanged is not null)
+                {
+                    await EffectiveApprovalStateChanged(EffectiveApprovalState, cancellationToken).ConfigureAwait(false);
+                }
+            }
+
+            return;
+        }
+
         if (method == "account/rateLimits/updated"
             && parameters.TryGetProperty("rateLimits", out JsonElement updatedRateLimits))
         {
@@ -1572,13 +1680,166 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
             ? value
             : null;
 
-    private static ThreadSummary ReadThread(JsonElement thread) => new()
+    private static ThreadSummary ReadThread(
+        JsonElement thread,
+        EffectiveApprovalState? effectiveApprovalState = null) => new()
+        {
+            Id = GetString(thread, "id") ?? string.Empty,
+            Preview = GetString(thread, "preview"),
+            Cwd = GetString(thread, "cwd"),
+            UpdatedAt = thread.TryGetProperty("updatedAt", out JsonElement updated) && updated.TryGetInt64(out long value) ? value : null,
+            EffectiveApprovalState = effectiveApprovalState,
+        };
+
+    private static EffectiveApprovalState ReadEffectiveApprovalState(JsonElement value)
     {
-        Id = GetString(thread, "id") ?? string.Empty,
-        Preview = GetString(thread, "preview"),
-        Cwd = GetString(thread, "cwd"),
-        UpdatedAt = thread.TryGetProperty("updatedAt", out JsonElement updated) && updated.TryGetInt64(out long value) ? value : null,
-    };
+        string? activePermissionProfile = null;
+        if (value.TryGetProperty("activePermissionProfile", out JsonElement activeProfile))
+        {
+            activePermissionProfile = activeProfile.ValueKind switch
+            {
+                JsonValueKind.Object => NormalizeEffectiveIdentifier(GetString(activeProfile, "id")),
+                JsonValueKind.String => NormalizeEffectiveIdentifier(activeProfile.GetString()),
+                _ => null,
+            };
+        }
+
+        JsonElement sandbox = default;
+        bool hasSandbox = (value.TryGetProperty("sandbox", out sandbox)
+                || value.TryGetProperty("sandboxPolicy", out sandbox))
+            && sandbox.ValueKind == JsonValueKind.Object;
+        return new EffectiveApprovalState
+        {
+            ActivePermissionProfile = activePermissionProfile,
+            ApprovalPolicy = NormalizeWireIdentifier(GetString(value, "approvalPolicy")),
+            ApprovalsReviewer = NormalizeWireIdentifier(GetString(value, "approvalsReviewer")),
+            SandboxMode = hasSandbox ? NormalizeWireIdentifier(GetString(sandbox, "type")) : null,
+        };
+    }
+
+    private bool ReadPermissionProfiles(
+        JsonElement result,
+        List<PermissionProfileInfo> profiles,
+        HashSet<string> seenIds)
+    {
+        if (!result.TryGetProperty("data", out JsonElement data) || data.ValueKind != JsonValueKind.Array)
+        {
+            return false;
+        }
+
+        foreach (JsonElement profile in data.EnumerateArray())
+        {
+            if (profiles.Count >= MaxPermissionProfiles)
+            {
+                return true;
+            }
+
+            if (profile.ValueKind != JsonValueKind.Object)
+            {
+                continue;
+            }
+
+            string? id = NormalizePermissionProfileId(GetString(profile, "id"));
+            if (id is null || !seenIds.Add(id))
+            {
+                continue;
+            }
+
+            profiles.Add(new PermissionProfileInfo
+            {
+                Id = id,
+                Description = SanitizePermissionProfileDescription(GetString(profile, "description")),
+                Allowed = GetBool(profile, "allowed") == true,
+            });
+        }
+
+        return false;
+    }
+
+    private string? SanitizePermissionProfileDescription(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        string redacted = redactor.Redact(value);
+        string sanitized = new(redacted.Where(character => !char.IsControl(character)).Take(512).ToArray());
+        return string.IsNullOrWhiteSpace(sanitized) ? null : sanitized.Trim();
+    }
+
+    private static string? NormalizePermissionProfileId(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        string trimmed = value.Trim();
+        return trimmed.Length <= MaxPermissionProfileIdLength
+            && trimmed.All(character => !char.IsControl(character))
+                ? trimmed
+                : null;
+    }
+
+    private static string? NormalizeEffectiveIdentifier(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        string trimmed = value.Trim();
+        return trimmed.Length <= 128 && trimmed.All(character => !char.IsControl(character))
+            ? trimmed
+            : null;
+    }
+
+    private static string? NormalizeCursor(string? value)
+        => !string.IsNullOrEmpty(value)
+            && value.Length <= 512
+            && value.All(character => !char.IsControl(character))
+                ? value
+                : null;
+
+    private static void ValidateTurnApprovalOverrides(StartTurnRequest request)
+    {
+        if (request.Permissions is not null)
+        {
+            if (request.ApprovalPolicy is not null
+                || request.ApprovalsReviewer is not null
+                || request.SandboxMode is not null)
+            {
+                throw new ArgumentException(
+                    "A permissions profile cannot be combined with approval, reviewer, or sandbox overrides.",
+                    nameof(request));
+            }
+
+            string? normalizedProfile = NormalizePermissionProfileId(request.Permissions);
+            if (!string.Equals(normalizedProfile, request.Permissions, StringComparison.Ordinal))
+            {
+                throw new ArgumentException("The permissions profile id is invalid.", nameof(request));
+            }
+        }
+
+        if (request.ApprovalPolicy is not null
+            && request.ApprovalPolicy is not ("untrusted" or "on-request" or "never"))
+        {
+            throw new ArgumentException("The approval policy override is invalid.", nameof(request));
+        }
+
+        if (request.ApprovalsReviewer is not null
+            && request.ApprovalsReviewer is not ("user" or "auto_review"))
+        {
+            throw new ArgumentException("The approvals reviewer override is invalid.", nameof(request));
+        }
+
+        if (request.SandboxMode is not null
+            && request.SandboxMode is not ("readOnly" or "workspaceWrite" or "dangerFullAccess"))
+        {
+            throw new ArgumentException("The sandbox override is invalid.", nameof(request));
+        }
+    }
 
     private ListModelsResult ReadModelsResult(JsonElement result)
     {

@@ -302,6 +302,7 @@ public sealed class CodexSessionServiceTests
                 Text = "hello",
                 Model = "gpt-5",
                 ApprovalPolicy = "never",
+                ApprovalsReviewer = "user",
                 SandboxMode = "readOnly",
                 Effort = "high",
                 Personality = "friendly",
@@ -327,6 +328,7 @@ public sealed class CodexSessionServiceTests
         JsonElement parameters = JsonSerializer.SerializeToElement(request.Parameters, WireJsonOptions);
         Assert.AreEqual("gpt-5", parameters.GetProperty("model").GetString());
         Assert.AreEqual("never", parameters.GetProperty("approvalPolicy").GetString());
+        Assert.AreEqual("user", parameters.GetProperty("approvalsReviewer").GetString());
         Assert.AreEqual("readOnly", parameters.GetProperty("sandboxPolicy").GetProperty("type").GetString());
         Assert.AreEqual("high", parameters.GetProperty("effort").GetString());
         Assert.AreEqual("friendly", parameters.GetProperty("personality").GetString());
@@ -465,11 +467,321 @@ public sealed class CodexSessionServiceTests
         JsonElement parameters = JsonSerializer.SerializeToElement(request.Parameters, WireJsonOptions);
         Assert.IsFalse(parameters.TryGetProperty("model", out _));
         Assert.IsFalse(parameters.TryGetProperty("approvalPolicy", out _));
+        Assert.IsFalse(parameters.TryGetProperty("approvalsReviewer", out _));
         Assert.IsFalse(parameters.TryGetProperty("sandboxPolicy", out _));
+        Assert.IsFalse(parameters.TryGetProperty("permissions", out _));
         Assert.IsFalse(parameters.TryGetProperty("effort", out _));
         Assert.IsFalse(parameters.TryGetProperty("personality", out _));
         Assert.IsFalse(parameters.TryGetProperty("serviceTier", out _));
         Assert.IsFalse(parameters.TryGetProperty("collaborationMode", out _));
+    }
+
+    [TestMethod]
+    public async Task StartTurnForwardsPermissionProfileWithoutLowLevelOverrides()
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "turn/start"
+                ? JsonSerializer.SerializeToElement(new { turn = new { id = "turn-1" } })
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        await service.StartTurnAsync(
+            new StartTurnRequest { ThreadId = "thread-1", Text = "hello", Permissions = "team-review" },
+            CancellationToken.None);
+
+        JsonElement parameters = ParametersFor(connection, "turn/start");
+        Assert.AreEqual("team-review", parameters.GetProperty("permissions").GetString());
+        Assert.IsFalse(parameters.TryGetProperty("approvalPolicy", out _));
+        Assert.IsFalse(parameters.TryGetProperty("approvalsReviewer", out _));
+        Assert.IsFalse(parameters.TryGetProperty("sandboxPolicy", out _));
+    }
+
+    [TestMethod]
+    [DataRow("on-request", "user", "workspaceWrite")]
+    [DataRow("on-request", "auto_review", "workspaceWrite")]
+    [DataRow("never", "user", "dangerFullAccess")]
+    public async Task StartTurnForwardsExactBuiltInApprovalTuple(
+        string approvalPolicy,
+        string approvalsReviewer,
+        string sandboxMode)
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "turn/start"
+                ? JsonSerializer.SerializeToElement(new { turn = new { id = "turn-1" } })
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        await service.StartTurnAsync(
+            new StartTurnRequest
+            {
+                ThreadId = "thread-1",
+                Text = "hello",
+                ApprovalPolicy = approvalPolicy,
+                ApprovalsReviewer = approvalsReviewer,
+                SandboxMode = sandboxMode,
+            },
+            CancellationToken.None);
+
+        JsonElement parameters = ParametersFor(connection, "turn/start");
+        Assert.AreEqual(approvalPolicy, parameters.GetProperty("approvalPolicy").GetString());
+        Assert.AreEqual(approvalsReviewer, parameters.GetProperty("approvalsReviewer").GetString());
+        Assert.AreEqual(sandboxMode, parameters.GetProperty("sandboxPolicy").GetProperty("type").GetString());
+        Assert.IsFalse(parameters.TryGetProperty("permissions", out _));
+    }
+
+    [TestMethod]
+    public async Task StartTurnRejectsPermissionProfileCombinedWithLowLevelOverrides()
+    {
+        var connection = new RecordingConnection();
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+        var request = new StartTurnRequest
+        {
+            ThreadId = "thread-1",
+            Text = "hello",
+            Permissions = "team-review",
+            ApprovalsReviewer = "user",
+        };
+
+        await Assert.ThrowsExactlyAsync<ArgumentException>(
+            () => service.StartTurnAsync(request, CancellationToken.None));
+
+        Assert.IsFalse(connection.Requests.Any(item => item.Method == "turn/start"));
+    }
+
+    [TestMethod]
+    public async Task ListPermissionProfilesUsesCwdAndPaginationAndBoundsUntrustedFields()
+    {
+        const string longDescription = "This description is intentionally longer than the display boundary. ";
+        var connection = new RecordingConnection
+        {
+            Handler = (method, parameters) => method == "permissionProfile/list"
+                ? PermissionProfilePage(parameters, longDescription)
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        await using var service = CreateService();
+        string cwd = Path.GetTempPath();
+        await service.InitializeAsync(connection, Options(cwd, experimentalApi: true), CancellationToken.None);
+
+        ListPermissionProfilesResult result = await service.ListPermissionProfilesAsync(CancellationToken.None);
+
+        Assert.IsTrue(result.IsSupported);
+        Assert.IsFalse(result.IsTruncated);
+        Assert.AreEqual(3, result.Profiles.Count);
+        CollectionAssert.AreEqual(
+            new[] { "review", "custom", ":workspace" },
+            result.Profiles.Select(profile => profile.Id).ToArray());
+        Assert.IsTrue(result.Profiles[0].Allowed);
+        Assert.IsFalse(result.Profiles[1].Allowed);
+        Assert.IsTrue(result.Profiles[0].Description!.Length <= 512);
+        Assert.IsFalse(result.Profiles[0].Description!.Any(char.IsControl));
+
+        RecordedRequest[] requests = connection.Requests
+            .Where(item => item.Method == "permissionProfile/list")
+            .ToArray();
+        Assert.AreEqual(2, requests.Length);
+        JsonElement first = JsonSerializer.SerializeToElement(requests[0].Parameters, WireJsonOptions);
+        JsonElement second = JsonSerializer.SerializeToElement(requests[1].Parameters, WireJsonOptions);
+        Assert.AreEqual(cwd, first.GetProperty("cwd").GetString());
+        Assert.AreEqual(100, first.GetProperty("limit").GetInt32());
+        Assert.AreEqual(TimeSpan.FromSeconds(15), requests[0].Timeout);
+        Assert.IsFalse(first.TryGetProperty("cursor", out _));
+        Assert.AreEqual("page-2", second.GetProperty("cursor").GetString());
+    }
+
+    [TestMethod]
+    public async Task ListPermissionProfilesStopsAtPageLimitAndHonorsCancellation()
+    {
+        int page = 0;
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "permissionProfile/list"
+                ? JsonSerializer.SerializeToElement(new
+                {
+                    data = new[] { new { id = $"profile-{page}", allowed = true } },
+                    nextCursor = $"page-{++page}",
+                })
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(experimentalApi: true), CancellationToken.None);
+
+        ListPermissionProfilesResult result = await service.ListPermissionProfilesAsync(CancellationToken.None);
+
+        Assert.IsTrue(result.IsTruncated);
+        Assert.AreEqual(10, connection.Requests.Count(item => item.Method == "permissionProfile/list"));
+        using var canceled = new CancellationTokenSource();
+        canceled.Cancel();
+        await Assert.ThrowsExactlyAsync<OperationCanceledException>(
+            () => service.ListPermissionProfilesAsync(canceled.Token));
+    }
+
+    [TestMethod]
+    public async Task ListPermissionProfilesDegradesAndCachesMethodNotFound()
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "permissionProfile/list"
+                ? throw new JsonRpcRemoteException(-32601, "Method not found")
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(experimentalApi: true), CancellationToken.None);
+
+        ListPermissionProfilesResult first = await service.ListPermissionProfilesAsync(CancellationToken.None);
+        ListPermissionProfilesResult second = await service.ListPermissionProfilesAsync(CancellationToken.None);
+
+        Assert.IsFalse(first.IsSupported);
+        Assert.IsFalse(second.IsSupported);
+        Assert.AreEqual(1, connection.Requests.Count(item => item.Method == "permissionProfile/list"));
+    }
+
+    [TestMethod]
+    public async Task ListPermissionProfilesDoesNotProbeWhenExperimentalApiIsDisabled()
+    {
+        var connection = new RecordingConnection();
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(experimentalApi: false), CancellationToken.None);
+
+        ListPermissionProfilesResult result = await service.ListPermissionProfilesAsync(CancellationToken.None);
+
+        Assert.IsFalse(result.IsSupported);
+        Assert.IsFalse(connection.Requests.Any(item => item.Method == "permissionProfile/list"));
+    }
+
+    [TestMethod]
+    public async Task ThreadResponsesAndSettingsNotificationTrackEffectiveApprovalState()
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "thread/start"
+                ? JsonSerializer.SerializeToElement(new
+                {
+                    thread = new { id = "thread-1" },
+                    activePermissionProfile = new { id = "review" },
+                    approvalPolicy = "on-request",
+                    approvalsReviewer = "auto_review",
+                    sandbox = new { type = "workspaceWrite" },
+                })
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        ThreadSummary thread = await service.StartThreadAsync(CancellationToken.None);
+
+        Assert.AreEqual("review", thread.EffectiveApprovalState!.ActivePermissionProfile);
+        Assert.AreEqual("auto_review", service.EffectiveApprovalState!.ApprovalsReviewer);
+        var changed = new TaskCompletionSource<EffectiveApprovalState>(TaskCreationOptions.RunContinuationsAsynchronously);
+        service.EffectiveApprovalStateChanged += (value, _) =>
+        {
+            changed.TrySetResult(value);
+            return Task.CompletedTask;
+        };
+        await connection.EmitNotificationAsync(
+            "thread/settings/updated",
+            new
+            {
+                threadId = "thread-1",
+                threadSettings = new
+                {
+                    activePermissionProfile = new { id = ":workspace" },
+                    approvalPolicy = "never",
+                    approvalsReviewer = "user",
+                    sandboxPolicy = new { type = "dangerFullAccess" },
+                },
+            });
+
+        EffectiveApprovalState updated = await changed.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.AreEqual(":workspace", updated.ActivePermissionProfile);
+        Assert.AreEqual("never", updated.ApprovalPolicy);
+        Assert.AreEqual("user", updated.ApprovalsReviewer);
+        Assert.AreEqual("dangerFullAccess", updated.SandboxMode);
+
+        await connection.EmitNotificationAsync(
+            "thread/settings/updated",
+            new
+            {
+                threadId = "stale-thread",
+                threadSettings = new
+                {
+                    activePermissionProfile = new { id = "stale" },
+                    approvalPolicy = "never",
+                    approvalsReviewer = "user",
+                    sandboxPolicy = new { type = "readOnly" },
+                },
+            });
+        Assert.AreSame(updated, service.EffectiveApprovalState);
+    }
+
+    [TestMethod]
+    public async Task ResumeAndForkResponsesReplaceEffectiveApprovalState()
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method switch
+            {
+                "thread/resume" => EffectiveThreadResponse("thread-resumed", "resume-profile", "auto_review"),
+                "thread/fork" => EffectiveThreadResponse("thread-forked", "fork-profile", "user"),
+                _ => JsonSerializer.SerializeToElement(new { }),
+            },
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        ThreadSummary resumed = await service.ResumeThreadAsync("thread-resumed", CancellationToken.None);
+        ForkThreadResult forked = await service.ForkThreadAsync(
+            new ForkThreadRequest { ThreadId = "thread-resumed" },
+            CancellationToken.None);
+
+        Assert.AreEqual("resume-profile", resumed.EffectiveApprovalState!.ActivePermissionProfile);
+        Assert.AreEqual("auto_review", resumed.EffectiveApprovalState.ApprovalsReviewer);
+        Assert.AreEqual("fork-profile", forked.Thread!.EffectiveApprovalState!.ActivePermissionProfile);
+        Assert.AreEqual("user", service.EffectiveApprovalState!.ApprovalsReviewer);
+    }
+
+    private static JsonElement EffectiveThreadResponse(string threadId, string profileId, string reviewer)
+        => JsonSerializer.SerializeToElement(new
+        {
+            thread = new { id = threadId },
+            activePermissionProfile = new { id = profileId },
+            approvalPolicy = "on-request",
+            approvalsReviewer = reviewer,
+            sandbox = new { type = "workspaceWrite" },
+        });
+
+    private static JsonElement PermissionProfilePage(object? parameters, string longDescription)
+    {
+        JsonElement value = JsonSerializer.SerializeToElement(parameters, WireJsonOptions);
+        string? cursor = value.TryGetProperty("cursor", out JsonElement cursorValue)
+            ? cursorValue.GetString()
+            : null;
+        return cursor is null
+            ? JsonSerializer.SerializeToElement(new
+            {
+                data = new object[]
+                {
+                    new { id = "review", description = string.Concat(Enumerable.Repeat(longDescription, 12)) + "\u001b", allowed = true },
+                    new { id = "custom", description = "A legal raw profile id that is namespaced by the UI.", allowed = false },
+                    new { id = new string('x', 257), description = "too long", allowed = true },
+                },
+                nextCursor = "page-2",
+            })
+            : JsonSerializer.SerializeToElement(new
+            {
+                data = new[]
+                {
+                    new { id = "review", description = "duplicate", allowed = false },
+                    new { id = ":workspace", description = "built-in profile", allowed = true },
+                },
+                nextCursor = (string?)null,
+            });
     }
 
     [TestMethod]
@@ -1059,10 +1371,11 @@ public sealed class CodexSessionServiceTests
     private static CodexSessionService CreateService()
         => new(new ApprovalPolicyEngine(new PathAccessPolicy()), new SecretRedactor());
 
-    private static WorkerOptions Options(string? workingDirectory = null) => new()
+    private static WorkerOptions Options(string? workingDirectory = null, bool experimentalApi = false) => new()
     {
         WorkingDirectory = workingDirectory ?? Path.GetTempPath(),
         ExtensionVersion = "test",
+        ExperimentalApi = experimentalApi,
     };
 
     private static JsonElement ParametersFor(RecordingConnection connection, string method)
@@ -1090,7 +1403,8 @@ public sealed class CodexSessionServiceTests
 
         public Task<JsonElement> SendRequestAsync(string method, object? parameters, TimeSpan timeout, CancellationToken cancellationToken)
         {
-            Requests.Add(new RecordedRequest(method, parameters));
+            cancellationToken.ThrowIfCancellationRequested();
+            Requests.Add(new RecordedRequest(method, parameters, timeout));
             return Task.FromResult(Handler(method, parameters));
         }
 
@@ -1120,5 +1434,5 @@ public sealed class CodexSessionServiceTests
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 
-    private sealed record RecordedRequest(string Method, object? Parameters);
+    private sealed record RecordedRequest(string Method, object? Parameters, TimeSpan Timeout);
 }

@@ -33,6 +33,7 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
         session.ReviewModeChanged += PublishReviewModeChangedAsync;
         session.ThreadGoalChanged += PublishThreadGoalChangedAsync;
         session.RateLimitsChanged += PublishRateLimitsChangedAsync;
+        session.EffectiveApprovalStateChanged += PublishEffectiveApprovalStateAsync;
     }
 
     public void AttachClient(JsonRpc rpc)
@@ -178,6 +179,9 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
         }
     }
 
+    public Task<ListPermissionProfilesResult> ListPermissionProfilesAsync(CancellationToken cancellationToken)
+        => session.ListPermissionProfilesAsync(cancellationToken);
+
     public async Task<string> StartTurnAsync(StartTurnRequest request, CancellationToken cancellationToken)
     {
         await SetStatusAsync(WorkerConnectionState.Busy, "Turn in progress.", cancellationToken).ConfigureAwait(false);
@@ -276,6 +280,7 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
             TurnId = session.ActiveTurnId,
             ProcessId = processHost.ProcessId,
             CodexVersion = ShouldIncludeCodexVersion(state) ? session.CodexVersion : null,
+            EffectiveApprovalState = session.EffectiveApprovalState,
         };
         if (clientRpc is not null)
         {
@@ -335,6 +340,11 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
                 new { conversationEvent }).ConfigureAwait(false);
         }
     }
+
+    private async Task PublishEffectiveApprovalStateAsync(
+        EffectiveApprovalState _,
+        CancellationToken cancellationToken)
+        => await SetStatusAsync(status.State, status.Message, cancellationToken).ConfigureAwait(false);
 
     private async Task PublishApprovalAsync(ApprovalRequest approval, CancellationToken cancellationToken)
     {
@@ -470,6 +480,7 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
         status.TurnId = session.ActiveTurnId;
         status.ProcessId = processHost.ProcessId;
         status.CodexVersion = ShouldIncludeCodexVersion(status.State) ? session.CodexVersion : null;
+        status.EffectiveApprovalState = session.EffectiveApprovalState;
     }
 
     private static bool ShouldIncludeCodexVersion(WorkerConnectionState state)
@@ -485,6 +496,7 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
         TurnId = status.TurnId,
         ProcessId = status.ProcessId,
         CodexVersion = status.CodexVersion,
+        EffectiveApprovalState = status.EffectiveApprovalState,
     };
 
     private AccountStatus CloneAccountStatus() => new()
