@@ -201,7 +201,16 @@
 - [ ] managed policy を読み込み、ユーザー設定より強い制約として自動承認・non-loopback transport・未承認 marketplace・MCP/OAuth を制御
 - [ ] 設定変更時に app-server restart が必要な項目と即時反映項目を明示
 
-**完了条件**: モデル選択・MCP/アプリ・設定 UI が動作し、必要に応じインライン補完を提供できる。
+### 4.5 承認モードピッカー（GitHub Issue #75）
+
+ChatGPT デスクトップと同等の承認方法選択 UI。プリセット → wire 値マッピングと設計詳細は #75 を参照。
+
+- [ ] Sub-issue A (#76): 組み込みプリセット（Ask for approval / Approve on my behalf / Full access / Custom (config.toml)）の ComboBox を composer アクション行に追加。Agent モード時のみ有効、`ExtensionSettings.ApprovalMode` に安定 ID で永続化、`turn/start` の `approvalPolicy` / `sandboxPolicy` にマッピング
+- [ ] Sub-issue B (#77): `CODEX_HOME` / `~/.codex/config.toml` の `[profiles.*]` を手書きミニマルリーダー（fail-soft、NuGet 依存なし）で読み取り、`worker/profiles/list` RPC 経由で `Profile: <name>` をピッカーに追加（`sandbox_mode` はケバブ→camel 変換）
+- [ ] Sub-issue C (#78): 非表示の `/approve` スラッシュコマンドを可視化・実装し、`doc/slash-commands*.md`・`doc/design.md`・`doc/implementation.md` を更新
+- [ ] Full access 選択時も Worker の `IApprovalPolicyEngine` / `ProtectedDirectoryPolicy` ガードレールを維持することをツールチップとドキュメントに明記
+
+**完了条件**: モデル選択・承認モードピッカー・MCP/アプリ・設定 UI が動作し、必要に応じインライン補完を提供できる。
 
 ---
 

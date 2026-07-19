@@ -168,6 +168,7 @@ Protocol          AppServerClient / JsonRpcDispatcher / SchemaVersionGuard / Cod
 | アプリ（コネクタ） | `app/list` / `$<app-slug>` mention |
 | MCP | `mcpServerStatus/list` / `mcpServer/tool/call` / `mcpServer/oauth/login` |
 | 承認 | `item/commandExecution/requestApproval` / `item/fileChange/requestApproval` |
+| 承認/サンドボックスポリシー | `turn/start` の `approvalPolicy`（`untrusted` / `on-failure` / `on-request` / `never`）と `sandboxPolicy.type`（`readOnly` / `workspaceWrite` / `dangerFullAccess`）。config.toml の `sandbox_mode` はケバブケースのため wire 値へ変換する |
 | 設定 | `config/read` / `config/value/write` / `config/batchWrite` |
 
 ## 6. UI 仕様（GitHub Copilot 拡張準拠）
@@ -175,6 +176,10 @@ Protocol          AppServerClient / JsonRpcDispatcher / SchemaVersionGuard / Cod
 - **チャットツールウィンドウ**: 会話履歴、ストリーミング応答、推論サマリー折りたたみ、
   コマンド実行ログ、差分プレビュー（承認/拒否ボタン付き）、計画（plan）ステップ表示。
 - **入力欄**: スラッシュコマンド補完、`@`/`$` でスキル・アプリ mention、モデル/努力度セレクタ。
+- **承認モードピッカー**: composer アクション行の ComboBox で Ask for approval / Approve on my behalf /
+  Full access / Custom (config.toml) / config.toml プロファイル（`[profiles.*]`）を選択（GitHub Issue #75）。
+  Agent モード時のみ有効（Chat は従来どおり `never`/`readOnly` 固定）、選択は `ExtensionSettings` に永続化。
+  Full access でも拡張機能側の `ApprovalPolicyEngine` / `ProtectedDirectoryPolicy` は無効化しない。
 - **インライン補完**: エディタ内ゴースト テキスト（Phase 4 で検討、初期は任意）。
 - **テーマ対応**: `EnvironmentColors` / `VsResourceKeys`、テーマ変更に追従。
 - **ローカライズ**: 英語ソース + 日本語リソース（英語フォールバック）。
