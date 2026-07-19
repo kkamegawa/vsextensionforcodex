@@ -1,4 +1,4 @@
-# plan.md — Codex for Visual Studio 拡張機能 実装計画
+﻿# plan.md — Codex for Visual Studio 拡張機能 実装計画
 
 ## 1. 概要
 
@@ -168,7 +168,7 @@ Protocol          AppServerClient / JsonRpcDispatcher / SchemaVersionGuard / Cod
 | アプリ（コネクタ） | `app/list` / `$<app-slug>` mention |
 | MCP | `mcpServerStatus/list` / `mcpServer/tool/call` / `mcpServer/oauth/login` |
 | 承認 | `item/commandExecution/requestApproval` / `item/fileChange/requestApproval` |
-| 承認/サンドボックスポリシー | `turn/start` の `approvalPolicy`（`untrusted` / `on-failure` / `on-request` / `never`）と `sandboxPolicy.type`（`readOnly` / `workspaceWrite` / `dangerFullAccess`）。config.toml の `sandbox_mode` はケバブケースのため wire 値へ変換する |
+| 承認/サンドボックスポリシー | `turn/start` の `approvalPolicy`、`approvalsReviewer`、`sandboxPolicy` を一体で扱う。手動承認は `on-request` + `user`、代理承認は `on-request` + `auto_review`、Full access は `never` + `dangerFullAccess`。カスタム permission profile は、対応する app-server で `permissionProfile/list` と turn の `permissions` override を使う |
 | 設定 | `config/read` / `config/value/write` / `config/batchWrite` |
 
 ## 6. UI 仕様（GitHub Copilot 拡張準拠）
@@ -177,9 +177,12 @@ Protocol          AppServerClient / JsonRpcDispatcher / SchemaVersionGuard / Cod
   コマンド実行ログ、差分プレビュー（承認/拒否ボタン付き）、計画（plan）ステップ表示。
 - **入力欄**: スラッシュコマンド補完、`@`/`$` でスキル・アプリ mention、モデル/努力度セレクタ。
 - **承認モードピッカー**: composer アクション行の ComboBox で Ask for approval / Approve on my behalf /
-  Full access / Custom (config.toml) / config.toml プロファイル（`[profiles.*]`）を選択（GitHub Issue #75）。
-  Agent モード時のみ有効（Chat は従来どおり `never`/`readOnly` 固定）、選択は `ExtensionSettings` に永続化。
-  Full access でも拡張機能側の `ApprovalPolicyEngine` / `ProtectedDirectoryPolicy` は無効化しない。
+  Full access / Custom (config.toml) と、対応する app-server が公開する permission profile（`[permissions.<id>]`）を選択する
+  （GitHub Issue #75）。Agent モード時のみ有効（Chat は従来どおり `never`/`readOnly` 固定）で、表示名と分離した
+  安定 ID を `ExtensionSettings` に永続化する。Full access は Codex の sandbox と承認プロンプトを無効化するため、
+  Worker の `ApprovalPolicyEngine` / `ProtectedDirectoryPolicy` は app-server が承認要求を送った場合にしか適用できないことを警告し、
+  選択時と再起動後の復元時に再確認する。保存する「希望する既定値」と app-server が報告する thread の「実効状態」は分離し、
+  override 済み thread から Custom へ戻る場合は新規 thread を開始する。
 - **インライン補完**: エディタ内ゴースト テキスト（Phase 4 で検討、初期は任意）。
 - **テーマ対応**: `EnvironmentColors` / `VsResourceKeys`、テーマ変更に追従。
 - **ローカライズ**: 英語ソース + 日本語リソース（英語フォールバック）。
