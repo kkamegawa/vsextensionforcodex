@@ -1,5 +1,6 @@
 ﻿using System.Collections.ObjectModel;
 using System.ComponentModel;
+using System.IO;
 using System.Runtime.CompilerServices;
 using System.Runtime.Serialization;
 using System.Text;
@@ -28,6 +29,9 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     private readonly WorkspaceDirectoryResolver workspaceDirectoryResolver;
     private readonly ProjectScaffolder projectScaffolder;
     private readonly AgentsFileInitializer agentsFileInitializer;
+    private readonly IFilePickerService filePickerService;
+    private readonly IWorkspaceFileSearchService workspaceFileSearchService;
+    private readonly IProtectedDirectoryPolicy protectedDirectoryPolicy;
     private readonly VisualStudioExtensibility? extensibility;
     private readonly SlashCommandCatalog slashCommandCatalog = new();
     private readonly SlashCommandParser slashCommandParser;
@@ -61,6 +65,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     private RateLimitsResult? latestRateLimits;
     private readonly HashSet<SlashCommandId> unavailableSlashCommands = [];
     private int drainingSlashQueue;
+    private CancellationTokenSource? fileSuggestionRefresh;
 
     public ChatViewModel(OutputChannel? outputChannel = null, VisualStudioExtensibility? extensibility = null)
         : this(new WorkerBridge(outputChannel), outputChannel, extensibility, autoConnect: true)
@@ -71,7 +76,10 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         IWorkerBridge bridge,
         OutputChannel? outputChannel = null,
         VisualStudioExtensibility? extensibility = null,
-        bool autoConnect = true)
+        bool autoConnect = true,
+        IFilePickerService? filePickerService = null,
+        IWorkspaceFileSearchService? workspaceFileSearchService = null,
+        IProtectedDirectoryPolicy? protectedDirectoryPolicy = null)
     {
         this.bridge = bridge;
         this.outputChannel = outputChannel;
@@ -79,6 +87,9 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         workspaceDirectoryResolver = new WorkspaceDirectoryResolver(extensibility);
         projectScaffolder = new ProjectScaffolder(extensibility);
         agentsFileInitializer = new AgentsFileInitializer(extensibility);
+        this.filePickerService = filePickerService ?? new FilePickerService(extensibility);
+        this.workspaceFileSearchService = workspaceFileSearchService ?? new WorkspaceFileSearchService(extensibility);
+        this.protectedDirectoryPolicy = protectedDirectoryPolicy ?? new ProtectedDirectoryPolicy();
         slashCommandParser = new SlashCommandParser(slashCommandCatalog);
         bridge.StateChanged += OnStateChangedAsync;
         bridge.AccountChanged += OnAccountChangedAsync;
@@ -106,8 +117,9 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             IsHistoryOpen = !IsHistoryOpen;
             return Task.CompletedTask;
         });
-        AttachCommand = new AsyncCommand(AttachStubAsync);
+        AttachCommand = new AsyncCommand(AttachAsync);
         SlashCommands.Configure(OnSlashSuggestionAcceptedAsync, ExecuteSlashSubmissionAsync, OnSlashCommandClearedAsync);
+        FileSuggestions.Configure(OnFileSuggestionAcceptedAsync);
 
         // Suggestion chips for the empty state. Selecting one populates the composer; the
         // user then presses Send. Keeps behavior simple and avoids needing editor context.
@@ -316,7 +328,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             }
 
             composerText = value;
-            UpdateSlashCommandSuggestions(value);
+            UpdateComposerSuggestions(value);
 
             // Deliberately do NOT raise PropertyChanged for ComposerText on this binding-driven
             // (user-typing) path. The data context is replicated to a proxy in a separate process,
@@ -341,7 +353,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         }
 
         composerText = value;
-        UpdateSlashCommandSuggestions(value);
+        UpdateComposerSuggestions(value);
         OnPropertyChanged(nameof(ComposerText));
         OnPropertyChanged(nameof(IsComposerEmpty));
         RaiseCommandStates();
@@ -372,6 +384,15 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     public SlashCommandPresentationViewModel SlashCommands { get; } = new();
 
     [DataMember]
+    public FileSuggestionPresentationViewModel FileSuggestions { get; } = new();
+
+    [DataMember]
+    public ObservableCollection<AttachmentChipViewModel> PendingAttachments { get; } = [];
+
+    [DataMember]
+    public bool HasPendingAttachments => PendingAttachments.Count > 0;
+
+    [DataMember]
     public ObservableCollection<string> Models { get; }
 
     [DataMember]
@@ -394,7 +415,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
             if (SetProperty(ref selectedModel, value))
             {
-                UpdateSlashCommandSuggestions(ComposerText);
+                UpdateComposerSuggestions(ComposerText);
             }
         }
     }
@@ -449,6 +470,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         if (Interlocked.Exchange(ref disposed, 1) != 0)
             return;
         lifetime.Cancel();
+        CancelFileSuggestionRefresh();
         slashCommandCoordinator.CancelAll();
         lifetime.Dispose();
         ValueTask bridgeDisposal = bridge.DisposeAsync();
@@ -826,7 +848,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 }
             }
 
-            UpdateSlashCommandSuggestions(ComposerText);
+            UpdateComposerSuggestions(ComposerText);
         }).ConfigureAwait(false);
     }
 
@@ -839,7 +861,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             await OnUiAsync(() => RemoveUserInput(ActiveUserInput!.RequestId)).ConfigureAwait(false);
         }
 
-        string text = ComposerText;
+        string text = UnescapeFinalFileToken(ComposerText);
         SlashCommandParseResult parseResult = slashCommandParser.Parse(text);
         switch (parseResult.Kind)
         {
@@ -883,7 +905,8 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             }
         }
 
-        if (string.IsNullOrWhiteSpace(text))
+        if (string.IsNullOrWhiteSpace(text)
+            && (Status.TurnId is not null || !HasPendingAttachments))
         {
             return;
         }
@@ -900,12 +923,16 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
         if (Status.TurnId is null)
         {
-            await OnUiAsync(() => Items.Add(new ChatItemViewModel("You", markdown.ToSafeText(text), ConversationEventKind.ItemStarted))).ConfigureAwait(false);
+            string displayText = string.IsNullOrWhiteSpace(text)
+                ? PendingAttachments.Count == 1 ? "Attached 1 file." : $"Attached {PendingAttachments.Count} files."
+                : markdown.ToSafeText(text);
+            await OnUiAsync(() => Items.Add(new ChatItemViewModel("You", displayText, ConversationEventKind.ItemStarted))).ConfigureAwait(false);
             StartTurnRequest request = await CreateStartTurnRequestAsync(
                 SelectedThread.Id,
                 text,
                 forcePlanMode: false).ConfigureAwait(false);
             await bridge.StartTurnAsync(request, lifetime.Token).ConfigureAwait(false);
+            await OnUiAsync(() => ClearSentAttachments(request.Attachments)).ConfigureAwait(false);
             ConsumeNextTurnSettings(request);
         }
         else
@@ -926,6 +953,13 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         string text,
         bool forcePlanMode)
     {
+        AttachmentInfo[] attachments = PendingAttachments
+            .Select(attachment => new AttachmentInfo
+            {
+                Path = attachment.FullPath,
+                Kind = IsImageAttachment(attachment.FullPath) ? "image" : "mention",
+            })
+            .ToArray();
         IdeContextInfo? ideContext = ideContextEnabled
             ? await IdeContextCaptureService.CaptureAsync(
                 workingDirectory,
@@ -952,6 +986,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                     ReasoningEffort = nextReasoningEffort,
                 },
             IdeContext = ideContext,
+            Attachments = attachments,
         };
     }
 
@@ -984,8 +1019,18 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         }
     }
 
-    private void UpdateSlashCommandSuggestions(string text)
+    private void UpdateComposerSuggestions(string text)
     {
+        if (TryGetFileSuggestionQuery(text, out string query))
+        {
+            SlashCommands.CloseSuggestions();
+            QueueFileSuggestionRefresh(query);
+            return;
+        }
+
+        CancelFileSuggestionRefresh();
+        FileSuggestions.CloseSuggestions();
+
         if (SlashCommands.HasActiveCommand)
         {
             return;
@@ -1006,6 +1051,127 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             .Select(CreateSlashCommandSuggestion)
             .ToArray();
         SlashCommands.ShowSuggestions(descriptors);
+    }
+
+    private static bool TryGetFileSuggestionQuery(string text, out string query)
+    {
+        query = string.Empty;
+        if (string.IsNullOrEmpty(text))
+        {
+            return false;
+        }
+
+        int tokenStart = text.LastIndexOfAny([' ', '\t', '\r', '\n']) + 1;
+        string token = text[tokenStart..];
+        if (token.Length == 0
+            || token[0] != '#'
+            || token.StartsWith("##", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        query = token[1..];
+        return true;
+    }
+
+    private static string UnescapeFinalFileToken(string text)
+    {
+        int tokenStart = text.LastIndexOfAny([' ', '\t', '\r', '\n']) + 1;
+        return text.AsSpan(tokenStart).StartsWith("##", StringComparison.Ordinal)
+            ? string.Concat(text.AsSpan(0, tokenStart), text.AsSpan(tokenStart + 1))
+            : text;
+    }
+
+    private void QueueFileSuggestionRefresh(string query)
+    {
+        CancelFileSuggestionRefresh();
+        var refresh = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
+        fileSuggestionRefresh = refresh;
+        _ = RefreshFileSuggestionsAsync(query, refresh);
+    }
+
+    private async Task RefreshFileSuggestionsAsync(string query, CancellationTokenSource refresh)
+    {
+        try
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(150), refresh.Token).ConfigureAwait(false);
+            string? workspaceRoot = workingDirectory
+                ?? await workspaceDirectoryResolver.TryResolveFromWorkspaceAsync(refresh.Token).ConfigureAwait(false);
+            if (string.IsNullOrWhiteSpace(workspaceRoot))
+            {
+                await OnUiAsync(FileSuggestions.CloseSuggestions).ConfigureAwait(false);
+                return;
+            }
+
+            IReadOnlyList<WorkspaceFileSearchResult> results = await workspaceFileSearchService
+                .SearchAsync(workspaceRoot, query, refresh.Token)
+                .ConfigureAwait(false);
+            if (!ReferenceEquals(fileSuggestionRefresh, refresh))
+            {
+                return;
+            }
+
+            FileSuggestionDescriptor[] descriptors = results
+                .Select(result => new FileSuggestionDescriptor(
+                    result.Path,
+                    Path.GetFileName(result.Path),
+                    result.DisplayPath))
+                .ToArray();
+            await OnUiAsync(() => FileSuggestions.ShowSuggestions(descriptors)).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (refresh.IsCancellationRequested)
+        {
+        }
+        catch (Exception ex)
+        {
+            ExtensionDiagnostics.Write("Refreshing file suggestions failed", ex);
+            await OnUiAsync(FileSuggestions.CloseSuggestions).ConfigureAwait(false);
+        }
+        finally
+        {
+            CompleteFileSuggestionRefresh(ref fileSuggestionRefresh, refresh);
+        }
+    }
+
+    internal static void CompleteFileSuggestionRefresh(
+        ref CancellationTokenSource? currentRefresh,
+        CancellationTokenSource completedRefresh)
+    {
+        CancellationTokenSource? released = Interlocked.CompareExchange(
+            ref currentRefresh,
+            null,
+            completedRefresh);
+        if (ReferenceEquals(released, completedRefresh))
+        {
+            completedRefresh.Dispose();
+        }
+    }
+
+    private void CancelFileSuggestionRefresh()
+    {
+        CancellationTokenSource? previous = Interlocked.Exchange(ref fileSuggestionRefresh, null);
+        if (previous is null)
+        {
+            return;
+        }
+
+        previous.Cancel();
+        previous.Dispose();
+    }
+
+    private Task OnFileSuggestionAcceptedAsync(FileSuggestionViewModel suggestion)
+    {
+        if (!TryAddPendingAttachment(suggestion.FullPath))
+        {
+            FileSuggestions.CloseSuggestions();
+            return Task.CompletedTask;
+        }
+
+        string text = UnescapeFinalFileToken(ComposerText);
+        int tokenStart = text.LastIndexOfAny([' ', '\t', '\r', '\n']) + 1;
+        string replacement = string.Concat("#", suggestion.DisplayName, " ");
+        SetComposerText(string.Concat(text.AsSpan(0, tokenStart), replacement));
+        return Task.CompletedTask;
     }
 
     private SlashCommandSuggestionDescriptor CreateSlashCommandSuggestion(SlashCommandDefinition definition)
@@ -1517,6 +1683,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             new ChatItemViewModel("You", markdown.ToSafeText(prompt), ConversationEventKind.ItemStarted))).ConfigureAwait(false);
         StartTurnRequest request = await CreateStartTurnRequestAsync(threadId, prompt, forcePlanMode: true).ConfigureAwait(false);
         await bridge.StartTurnAsync(request, lifetime.Token).ConfigureAwait(false);
+        await OnUiAsync(() => ClearSentAttachments(request.Attachments)).ConfigureAwait(false);
         ConsumeNextTurnSettings(request);
         return true;
     }
@@ -1625,7 +1792,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             ? "The app-server does not support this command."
             : result.UnavailableReason;
         await ShowSlashFailureAsync(reason).ConfigureAwait(false);
-        UpdateSlashCommandSuggestions(ComposerText);
+        UpdateComposerSuggestions(ComposerText);
         return false;
     }
 
@@ -1750,14 +1917,89 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     internal static string? MapModeToSandbox(string? mode)
         => string.Equals(mode, "Chat", StringComparison.Ordinal) ? "readOnly" : null;
 
-    // TODO(issue): wire to a real file/context attach picker. Stubbed for now so the
-    // composer + button is present without a backend dependency.
-    private async Task AttachStubAsync()
+    private async Task AttachAsync()
     {
-        await ExtensionDiagnostics.WriteOutputAsync(
-            outputChannel,
-            "[CODEX] Attach is not implemented yet.").ConfigureAwait(false);
+        IReadOnlyList<string> selectedFiles = await filePickerService
+            .PickFilesAsync(workingDirectory, lifetime.Token)
+            .ConfigureAwait(false);
+        await OnUiAsync(() =>
+        {
+            foreach (string path in selectedFiles)
+            {
+                if (PendingAttachments.Count >= 10)
+                {
+                    break;
+                }
+
+                TryAddPendingAttachment(path);
+            }
+        }).ConfigureAwait(false);
     }
+
+    private bool TryAddPendingAttachment(string path)
+    {
+        if (PendingAttachments.Count >= 10)
+        {
+            return false;
+        }
+
+        string fullPath;
+        try
+        {
+            fullPath = Path.GetFullPath(path);
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            ExtensionDiagnostics.Write("Ignoring an invalid attachment path", ex);
+            return false;
+        }
+
+        if (!File.Exists(fullPath)
+            || protectedDirectoryPolicy.IsProtected(fullPath)
+            || PendingAttachments.Any(
+                attachment => string.Equals(attachment.FullPath, fullPath, StringComparison.OrdinalIgnoreCase)))
+        {
+            return false;
+        }
+
+        PendingAttachments.Add(new AttachmentChipViewModel(fullPath, markdown, RemovePendingAttachmentAsync));
+        OnPropertyChanged(nameof(HasPendingAttachments));
+        RaiseCommandStates();
+        return true;
+    }
+
+    private Task RemovePendingAttachmentAsync(AttachmentChipViewModel attachment)
+    {
+        PendingAttachments.Remove(attachment);
+        OnPropertyChanged(nameof(HasPendingAttachments));
+        RaiseCommandStates();
+        return Task.CompletedTask;
+    }
+
+    private void ClearSentAttachments(IReadOnlyList<AttachmentInfo> sentAttachments)
+    {
+        if (PendingAttachments.Count == 0 || sentAttachments.Count == 0)
+        {
+            return;
+        }
+
+        var sentPaths = new HashSet<string>(
+            sentAttachments.Select(attachment => attachment.Path),
+            StringComparer.OrdinalIgnoreCase);
+        for (int index = PendingAttachments.Count - 1; index >= 0; index--)
+        {
+            if (sentPaths.Contains(PendingAttachments[index].FullPath))
+            {
+                PendingAttachments.RemoveAt(index);
+            }
+        }
+
+        OnPropertyChanged(nameof(HasPendingAttachments));
+        RaiseCommandStates();
+    }
+
+    private static bool IsImageAttachment(string path)
+        => Path.GetExtension(path).ToLowerInvariant() is ".png" or ".jpg" or ".jpeg" or ".gif" or ".webp";
 
     private Task InterruptAsync()
     {
@@ -2305,7 +2547,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     // Restart. Disconnected is also gated on connecting == 0: if ConnectWithDirectoryAsync has
     // already started (and will reject a second attempt), disable Send until that attempt settles.
     private bool CanSend()
-        => !string.IsNullOrWhiteSpace(ComposerText)
+        => (!string.IsNullOrWhiteSpace(ComposerText) || (Status.TurnId is null && HasPendingAttachments))
         && (Status.State is WorkerConnectionState.Ready or WorkerConnectionState.Busy
                 or WorkerConnectionState.WaitingForApproval
             || (Status.State is WorkerConnectionState.Disconnected && Volatile.Read(ref connecting) == 0));

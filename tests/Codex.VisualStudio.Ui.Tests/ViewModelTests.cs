@@ -1342,6 +1342,8 @@ public sealed class ViewModelTests
             typeof(UserInputViewModel), typeof(UserInputQuestionViewModel), typeof(UserInputOptionViewModel),
             typeof(SuggestionChip), typeof(SlashCommandPresentationViewModel),
             typeof(SlashCommandSuggestionViewModel), typeof(SlashCommandOptionViewModel),
+            typeof(AttachmentChipViewModel), typeof(FileSuggestionPresentationViewModel),
+            typeof(FileSuggestionViewModel),
             typeof(WorkerStatus), typeof(ThreadSummary),
         ];
 
@@ -2149,6 +2151,149 @@ public sealed class ViewModelTests
     }
 
     [TestMethod]
+    public async Task ChatViewModel_AttachAndStartTurn_CopiesAndClearsAttachments()
+    {
+        string filePath = Path.GetTempFileName();
+        try
+        {
+            var bridge = new FakeWorkerBridge();
+            var picker = new FakeFilePickerService([filePath, filePath]);
+            using var vm = new ChatViewModel(
+                bridge,
+                autoConnect: false,
+                filePickerService: picker,
+                protectedDirectoryPolicy: new ProtectedDirectoryPolicy([]));
+            await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready });
+            vm.SelectedThread = new ThreadSummary { Id = "thread-1" };
+
+            vm.AttachCommand.Execute(null);
+            await WaitForAsync(() => vm.PendingAttachments.Count == 1);
+
+            await SendMessageAsync(vm, "inspect this", clearComposer: true);
+
+            Assert.IsNotNull(bridge.LastStartTurnRequest);
+            Assert.HasCount(1, bridge.LastStartTurnRequest!.Attachments);
+            Assert.AreEqual(Path.GetFullPath(filePath), bridge.LastStartTurnRequest.Attachments[0].Path);
+            Assert.AreEqual("mention", bridge.LastStartTurnRequest.Attachments[0].Kind);
+            Assert.IsFalse(vm.HasPendingAttachments);
+        }
+        finally
+        {
+            File.Delete(filePath);
+        }
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_StartTurnFailure_PreservesAttachments()
+    {
+        string filePath = Path.GetTempFileName();
+        try
+        {
+            var bridge = new FakeWorkerBridge { StartTurnException = new InvalidOperationException("failed") };
+            using var vm = new ChatViewModel(
+                bridge,
+                autoConnect: false,
+                filePickerService: new FakeFilePickerService([filePath]),
+                protectedDirectoryPolicy: new ProtectedDirectoryPolicy([]));
+            await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready });
+            vm.SelectedThread = new ThreadSummary { Id = "thread-1" };
+            vm.AttachCommand.Execute(null);
+            await WaitForAsync(() => vm.HasPendingAttachments);
+
+            await Assert.ThrowsExactlyAsync<InvalidOperationException>(
+                () => SendMessageAsync(vm, "inspect this", clearComposer: true));
+
+            Assert.IsTrue(vm.HasPendingAttachments);
+        }
+        finally
+        {
+            File.Delete(filePath);
+        }
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_SteerTurn_PreservesAttachmentsForNextStart()
+    {
+        string filePath = Path.GetTempFileName();
+        try
+        {
+            var bridge = new FakeWorkerBridge();
+            using var vm = new ChatViewModel(
+                bridge,
+                autoConnect: false,
+                filePickerService: new FakeFilePickerService([filePath]),
+                protectedDirectoryPolicy: new ProtectedDirectoryPolicy([]));
+            vm.SelectedThread = new ThreadSummary { Id = "thread-1" };
+            await bridge.PublishStateAsync(new WorkerStatus
+            {
+                State = WorkerConnectionState.Busy,
+                ThreadId = "thread-1",
+                TurnId = "turn-active",
+            });
+            vm.AttachCommand.Execute(null);
+            await WaitForAsync(() => vm.HasPendingAttachments);
+
+            await SendMessageAsync(vm, "one more detail", clearComposer: true);
+
+            Assert.IsNotNull(bridge.LastSteerTurnRequest);
+            Assert.IsTrue(vm.HasPendingAttachments);
+            Assert.IsNull(bridge.LastStartTurnRequest);
+        }
+        finally
+        {
+            File.Delete(filePath);
+        }
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_FileSuggestion_ReplacesFinalTokenAndAddsChip()
+    {
+        string directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        string filePath = Path.Combine(directory, "Program.cs");
+        await File.WriteAllTextAsync(filePath, "class Program { }");
+        try
+        {
+            var search = new FakeWorkspaceFileSearchService(
+                [new WorkspaceFileSearchResult(filePath, "src/Program.cs")]);
+            using var vm = new ChatViewModel(
+                new FakeWorkerBridge(),
+                autoConnect: false,
+                workspaceFileSearchService: search,
+                protectedDirectoryPolicy: new ProtectedDirectoryPolicy([]));
+            SetWorkingDirectory(vm, directory);
+
+            vm.ComposerText = "review #prog";
+            await WaitForAsync(() => vm.FileSuggestions.IsSuggestionOpen);
+            vm.FileSuggestions.AcceptSuggestionCommand.Execute(null);
+            await WaitForAsync(() => vm.PendingAttachments.Count == 1);
+
+            Assert.AreEqual("review #Program.cs ", vm.ComposerText);
+            Assert.AreEqual(filePath, vm.PendingAttachments[0].FullPath);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_DoubleHash_SendsLiteralHashWithoutOpeningFileSuggestions()
+    {
+        var bridge = new FakeWorkerBridge();
+        using var vm = new ChatViewModel(bridge, autoConnect: false);
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready });
+        vm.SelectedThread = new ThreadSummary { Id = "thread-1" };
+        vm.ComposerText = "review ##Program.cs";
+
+        await InvokeComposerSendAsync(vm);
+
+        Assert.IsFalse(vm.FileSuggestions.IsSuggestionOpen);
+        Assert.IsNotNull(bridge.LastStartTurnRequest);
+        Assert.AreEqual("review #Program.cs", bridge.LastStartTurnRequest!.Text);
+    }
+
+    [TestMethod]
     public void ChatViewModel_Dispose_StartsWorkerBridgeCleanupOnce()
     {
         var bridge = new FakeWorkerBridge();
@@ -2318,11 +2463,41 @@ public sealed class ViewModelTests
         return (ExtensionSettings)field.GetValue(viewModel)!;
     }
 
+    private static void SetWorkingDirectory(ChatViewModel viewModel, string path)
+    {
+        FieldInfo field = typeof(ChatViewModel).GetField(
+            "workingDirectory",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("Could not find workingDirectory.");
+        field.SetValue(viewModel, path);
+    }
+
     private static ChatItemViewModel SingleConversationItem(
         ChatViewModel viewModel,
         string itemId,
         ConversationEventKind kind)
         => viewModel.Items.Single(item => item.ItemId == itemId && item.Kind == kind);
+
+    private sealed class FakeFilePickerService(IReadOnlyList<string> files) : IFilePickerService
+    {
+        public Task<IReadOnlyList<string>> PickFilesAsync(string? initialDirectory, CancellationToken cancellationToken)
+            => Task.FromResult(files);
+    }
+
+    private sealed class FakeWorkspaceFileSearchService(IReadOnlyList<WorkspaceFileSearchResult> results)
+        : IWorkspaceFileSearchService
+    {
+        public int CallCount { get; private set; }
+
+        public Task<IReadOnlyList<WorkspaceFileSearchResult>> SearchAsync(
+            string workspaceRoot,
+            string query,
+            CancellationToken cancellationToken)
+        {
+            CallCount++;
+            return Task.FromResult(results);
+        }
+    }
 
     private sealed class FakeWorkerBridge : IWorkerBridge
     {
@@ -2363,6 +2538,8 @@ public sealed class ViewModelTests
         public Exception? ResolveApprovalException { get; set; }
 
         public Exception? ResolveUserInputException { get; set; }
+
+        public Exception? StartTurnException { get; set; }
 
         public Task PublishStateAsync(WorkerStatus status)
             => StateChanged?.Invoke(status) ?? Task.CompletedTask;
@@ -2405,7 +2582,9 @@ public sealed class ViewModelTests
         public Task<string> StartTurnAsync(StartTurnRequest request, CancellationToken cancellationToken)
         {
             LastStartTurnRequest = request;
-            return Task.FromResult("turn-1");
+            return StartTurnException is null
+                ? Task.FromResult("turn-1")
+                : Task.FromException<string>(StartTurnException);
         }
 
         public Task<string> SteerTurnAsync(SteerTurnRequest request, CancellationToken cancellationToken)

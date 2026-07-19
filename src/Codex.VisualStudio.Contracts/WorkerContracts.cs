@@ -5,7 +5,7 @@ namespace Codex.VisualStudio.Contracts;
 
 public static class ContractVersions
 {
-    public const int Current = 9;
+    public const int Current = 10;
 }
 
 public enum WorkerConnectionState
@@ -255,6 +255,25 @@ public sealed class StartTurnRequest
     public CollaborationModeInfo? CollaborationMode { get; set; }
 
     public IdeContextInfo? IdeContext { get; set; }
+
+    public IReadOnlyList<AttachmentInfo> Attachments { get; set; } = Array.Empty<AttachmentInfo>();
+}
+
+public sealed class AttachmentInfo
+{
+    public AttachmentInfo()
+    {
+    }
+
+    public AttachmentInfo(string path, string kind)
+    {
+        Path = path;
+        Kind = kind;
+    }
+
+    public string Path { get; set; } = string.Empty;
+
+    public string Kind { get; set; } = string.Empty;
 }
 
 public sealed class CollaborationModeInfo

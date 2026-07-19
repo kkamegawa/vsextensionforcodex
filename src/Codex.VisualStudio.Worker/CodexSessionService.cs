@@ -87,6 +87,8 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
 
     private readonly IApprovalPolicyEngine approvalPolicy;
     private readonly ISecretRedactor redactor;
+    private readonly IPathAccessPolicy pathAccessPolicy;
+    private readonly IProtectedDirectoryPolicy protectedDirectoryPolicy;
     private readonly ConcurrentDictionary<string, PendingApproval> pendingApprovals = new();
     private readonly ConcurrentDictionary<string, PendingUserInput> pendingUserInputs = new();
     private readonly ApprovalGrantStore approvalGrants = new();
@@ -96,10 +98,16 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
     private WorkerOptions options = new();
     private StreamingBuffer? streamingBuffer;
 
-    public CodexSessionService(IApprovalPolicyEngine approvalPolicy, ISecretRedactor redactor)
+    public CodexSessionService(
+        IApprovalPolicyEngine approvalPolicy,
+        ISecretRedactor redactor,
+        IPathAccessPolicy? pathAccessPolicy = null,
+        IProtectedDirectoryPolicy? protectedDirectoryPolicy = null)
     {
         this.approvalPolicy = approvalPolicy;
         this.redactor = redactor;
+        this.pathAccessPolicy = pathAccessPolicy ?? new PathAccessPolicy();
+        this.protectedDirectoryPolicy = protectedDirectoryPolicy ?? new ProtectedDirectoryPolicy();
     }
 
     public event Func<ConversationEvent, CancellationToken, Task>? ConversationEventReceived;
@@ -894,33 +902,76 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         {
             new { type = "text", text = request.Text },
         };
+
+        var includedPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        int attachmentCount = 0;
+        foreach (AttachmentInfo attachment in request.Attachments)
+        {
+            if (attachmentCount == 10)
+            {
+                break;
+            }
+
+            bool isImage = string.Equals(attachment.Kind, "image", StringComparison.OrdinalIgnoreCase);
+            bool isMention = string.Equals(attachment.Kind, "mention", StringComparison.OrdinalIgnoreCase);
+            if ((!isImage && !isMention)
+                || !TryNormalizeReadableFile(attachment.Path, allowOutsideWorkspace: true, out string normalizedPath)
+                || !includedPaths.Add(normalizedPath))
+            {
+                continue;
+            }
+
+            attachmentCount++;
+
+            if (isImage)
+            {
+                input.Add(new
+                {
+                    type = "localImage",
+                    path = normalizedPath,
+                });
+            }
+            else
+            {
+                input.Add(new
+                {
+                    type = "mention",
+                    name = Path.GetFileName(normalizedPath),
+                    path = normalizedPath,
+                });
+            }
+        }
+
         if (request.IdeContext is null)
         {
             return input;
         }
 
         string? activeDocumentPath = request.IdeContext.ActiveDocumentPath;
-        if (IsWorkspacePath(activeDocumentPath))
+        if (TryNormalizeReadableFile(activeDocumentPath, allowOutsideWorkspace: false, out string normalizedActivePath)
+            && includedPaths.Add(normalizedActivePath))
         {
             input.Add(new
             {
                 type = "mention",
-                name = Path.GetFileName(activeDocumentPath),
-                path = activeDocumentPath,
+                name = Path.GetFileName(normalizedActivePath),
+                path = normalizedActivePath,
             });
         }
 
-        foreach (string path in request.IdeContext.ReferencedFilePaths
-            .Where(IsWorkspacePath)
-            .Where(path => !string.Equals(path, activeDocumentPath, StringComparison.OrdinalIgnoreCase))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .Take(10))
+        foreach (string path in request.IdeContext.ReferencedFilePaths.Take(10))
         {
+            if (!TryNormalizeReadableFile(path, allowOutsideWorkspace: false, out string normalizedPath)
+                || !includedPaths.Add(normalizedPath))
+            {
+                continue;
+            }
+
             input.Add(new
             {
                 type = "mention",
-                name = Path.GetFileName(path),
-                path,
+                name = Path.GetFileName(normalizedPath),
+                path = normalizedPath,
             });
         }
 
@@ -960,6 +1011,27 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         {
             return false;
         }
+    }
+
+    private bool TryNormalizeReadableFile(string? path, bool allowOutsideWorkspace, out string normalizedPath)
+    {
+        normalizedPath = string.Empty;
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return false;
+        }
+
+        PathAccessResult result = pathAccessPolicy.Evaluate(path, options.WorkingDirectory);
+        if (!result.IsValid
+            || (!allowOutsideWorkspace && !result.IsWithinWorkspace)
+            || protectedDirectoryPolicy.IsProtected(result.NormalizedPath)
+            || !File.Exists(result.NormalizedPath))
+        {
+            return false;
+        }
+
+        normalizedPath = result.NormalizedPath;
+        return true;
     }
 
     private static string? LimitUtf8(string? value, int maximumBytes)
