@@ -225,11 +225,22 @@ public sealed class CodexSessionServiceTests
             Handler = (method, _) => method == "model/list"
                 ? JsonSerializer.SerializeToElement(new
                 {
-                    data = new[]
+                    data = new object[]
                     {
                         new { model = "gpt-5-codex", displayName = "GPT-5 Codex", isDefault = false, hidden = false },
                         new { model = "gpt-5", displayName = "GPT-5", isDefault = false, hidden = false },
-                        new { model = "gpt-5.1-codex-max", displayName = "GPT-5.1 Codex Max", isDefault = true, hidden = true },
+                        new
+                        {
+                            model = "gpt-5.1-codex-max",
+                            displayName = "GPT-5.1 Codex Max",
+                            isDefault = true,
+                            hidden = true,
+                            defaultReasoningEffort = "high",
+                            supportedReasoningEfforts = new[]
+                            {
+                                new { reasoningEffort = "high", description = "Deep" },
+                            },
+                        },
                     },
                     nextCursor = (string?)null,
                 })
@@ -242,6 +253,10 @@ public sealed class CodexSessionServiceTests
 
         CollectionAssert.AreEqual(ExpectedModels, result.Models.Select(model => model.Id).ToArray());
         Assert.AreEqual("gpt-5.1-codex-max", result.DefaultModel);
+        Assert.IsNotNull(result.DefaultModelInfo);
+        Assert.AreEqual("gpt-5.1-codex-max", result.DefaultModelInfo.Id);
+        Assert.AreEqual("high", result.DefaultModelInfo.DefaultReasoningEffort);
+        Assert.AreEqual("high", result.DefaultModelInfo.SupportedReasoningEfforts.Single().Id);
     }
 
     [TestMethod]
@@ -304,8 +319,10 @@ public sealed class CodexSessionServiceTests
                 ApprovalPolicy = "never",
                 ApprovalsReviewer = "user",
                 SandboxMode = "readOnly",
+                HasEffort = true,
                 Effort = "high",
                 Personality = "friendly",
+                HasServiceTier = true,
                 ServiceTier = "priority",
                 CollaborationMode = new CollaborationModeInfo
                 {
@@ -474,6 +491,35 @@ public sealed class CodexSessionServiceTests
         Assert.IsFalse(parameters.TryGetProperty("personality", out _));
         Assert.IsFalse(parameters.TryGetProperty("serviceTier", out _));
         Assert.IsFalse(parameters.TryGetProperty("collaborationMode", out _));
+    }
+
+    [TestMethod]
+    public async Task StartTurnDistinguishesExplicitNullTurnSettingsFromOmittedSettings()
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "turn/start"
+                ? JsonSerializer.SerializeToElement(new { turn = new { id = "turn-1" } })
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        await service.StartTurnAsync(
+            new StartTurnRequest
+            {
+                ThreadId = "thread-1",
+                Text = "clear sticky settings",
+                HasEffort = true,
+                HasServiceTier = true,
+            },
+            CancellationToken.None);
+
+        JsonElement parameters = ParametersFor(connection, "turn/start");
+        Assert.AreEqual(JsonValueKind.Null, parameters.GetProperty("effort").ValueKind);
+        Assert.AreEqual(JsonValueKind.Null, parameters.GetProperty("serviceTier").ValueKind);
+        Assert.IsNull(service.EffectiveReasoningEffort);
+        Assert.IsNull(service.EffectiveServiceTier);
     }
 
     [TestMethod]
@@ -668,6 +714,8 @@ public sealed class CodexSessionServiceTests
                     approvalPolicy = "on-request",
                     approvalsReviewer = "auto_review",
                     sandbox = new { type = "workspaceWrite" },
+                    effort = "medium",
+                    serviceTier = "fast",
                 })
                 : JsonSerializer.SerializeToElement(new { }),
         };
@@ -678,6 +726,8 @@ public sealed class CodexSessionServiceTests
 
         Assert.AreEqual("review", thread.EffectiveApprovalState!.ActivePermissionProfile);
         Assert.AreEqual("auto_review", service.EffectiveApprovalState!.ApprovalsReviewer);
+        Assert.AreEqual("medium", thread.EffectiveReasoningEffort);
+        Assert.AreEqual("fast", service.EffectiveServiceTier);
         var changed = new TaskCompletionSource<EffectiveApprovalState>(TaskCreationOptions.RunContinuationsAsynchronously);
         service.EffectiveApprovalStateChanged += (value, _) =>
         {
@@ -695,6 +745,8 @@ public sealed class CodexSessionServiceTests
                     approvalPolicy = "never",
                     approvalsReviewer = "user",
                     sandboxPolicy = new { type = "dangerFullAccess" },
+                    effort = "high",
+                    serviceTier = "priority",
                 },
             });
 
@@ -703,6 +755,8 @@ public sealed class CodexSessionServiceTests
         Assert.AreEqual("never", updated.ApprovalPolicy);
         Assert.AreEqual("user", updated.ApprovalsReviewer);
         Assert.AreEqual("dangerFullAccess", updated.SandboxMode);
+        Assert.AreEqual("high", service.EffectiveReasoningEffort);
+        Assert.AreEqual("priority", service.EffectiveServiceTier);
 
         await connection.EmitNotificationAsync(
             "thread/settings/updated",
@@ -742,6 +796,8 @@ public sealed class CodexSessionServiceTests
 
         Assert.AreEqual("resume-profile", resumed.EffectiveApprovalState!.ActivePermissionProfile);
         Assert.AreEqual("auto_review", resumed.EffectiveApprovalState.ApprovalsReviewer);
+        Assert.AreEqual("high", resumed.EffectiveReasoningEffort);
+        Assert.AreEqual("fast", resumed.EffectiveServiceTier);
         Assert.AreEqual("fork-profile", forked.Thread!.EffectiveApprovalState!.ActivePermissionProfile);
         Assert.AreEqual("user", service.EffectiveApprovalState!.ApprovalsReviewer);
     }
@@ -749,7 +805,11 @@ public sealed class CodexSessionServiceTests
     private static JsonElement EffectiveThreadResponse(string threadId, string profileId, string reviewer)
         => JsonSerializer.SerializeToElement(new
         {
-            thread = new { id = threadId },
+            thread = new
+            {
+                id = threadId,
+                settings = new { reasoningEffort = "high", serviceTier = "fast" },
+            },
             activePermissionProfile = new { id = profileId },
             approvalPolicy = "on-request",
             approvalsReviewer = reviewer,

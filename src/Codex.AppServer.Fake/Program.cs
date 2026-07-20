@@ -28,10 +28,48 @@ while (await Console.In.ReadLineAsync().ConfigureAwait(false) is { } line)
         {
             data = new[]
             {
-                new { model = "gpt-5-codex", displayName = "GPT-5 Codex", isDefault = false, hidden = false },
-                new { model = "gpt-5", displayName = "GPT-5", isDefault = false, hidden = false },
+                new
+                {
+                    model = "gpt-5-codex",
+                    displayName = "GPT-5 Codex",
+                    isDefault = false,
+                    hidden = false,
+                    defaultReasoningEffort = "medium",
+                    supportedReasoningEfforts = new[]
+                    {
+                        new { reasoningEffort = "low", description = "Faster responses with lighter reasoning." },
+                        new { reasoningEffort = "medium", description = "Balanced reasoning for everyday work." },
+                        new { reasoningEffort = "high", description = "Deeper reasoning for complex work." },
+                    },
+                },
+                new
+                {
+                    model = "gpt-5",
+                    displayName = "GPT-5",
+                    isDefault = false,
+                    hidden = false,
+                    defaultReasoningEffort = "medium",
+                    supportedReasoningEfforts = new[]
+                    {
+                        new { reasoningEffort = "medium", description = "Balanced reasoning." },
+                        new { reasoningEffort = "high", description = "Deeper reasoning." },
+                    },
+                },
                 // Hidden catalog default: filtered from the picker server-side but surfaced via isDefault.
-                new { model = "gpt-5.1-codex-max", displayName = "GPT-5.1 Codex Max", isDefault = true, hidden = true },
+                new
+                {
+                    model = "gpt-5.1-codex-max",
+                    displayName = "GPT-5.1 Codex Max",
+                    isDefault = true,
+                    hidden = true,
+                    defaultReasoningEffort = "high",
+                    supportedReasoningEfforts = new[]
+                    {
+                        new { reasoningEffort = "medium", description = "Balanced reasoning." },
+                        new { reasoningEffort = "high", description = "Deeper reasoning." },
+                        new { reasoningEffort = "xhigh", description = "Maximum reasoning depth." },
+                    },
+                },
             },
             nextCursor = (string?)null,
         },
@@ -85,11 +123,13 @@ object StartTurn(JsonElement request)
     string? approvalPolicy = GetOptionalString(parameters, "approvalPolicy");
     string? approvalsReviewer = GetOptionalString(parameters, "approvalsReviewer");
     string? permissions = GetOptionalString(parameters, "permissions");
+    string? effort = GetOptionalString(parameters, "effort");
+    string? serviceTier = GetOptionalString(parameters, "serviceTier");
     string? sandboxMode = parameters.TryGetProperty("sandboxPolicy", out JsonElement sandbox)
         ? GetOptionalString(sandbox, "type")
         : null;
     string turnId = $"fake-turn-{nextTurn++}";
-    Console.Error.WriteLine($"fake turn/start model={Sanitize(model) ?? "(default)"} approvalPolicy={Sanitize(approvalPolicy) ?? "(default)"} approvalsReviewer={Sanitize(approvalsReviewer) ?? "(default)"} sandbox={Sanitize(sandboxMode) ?? "(default)"} permissions={Sanitize(permissions) ?? "(default)"}");
+    Console.Error.WriteLine($"fake turn/start model={Sanitize(model) ?? "(default)"} effort={Sanitize(effort) ?? "(default)"} serviceTier={Sanitize(serviceTier) ?? "(default)"} approvalPolicy={Sanitize(approvalPolicy) ?? "(default)"} approvalsReviewer={Sanitize(approvalsReviewer) ?? "(default)"} sandbox={Sanitize(sandboxMode) ?? "(default)"} permissions={Sanitize(permissions) ?? "(default)"}");
     _ = Task.Run(async () =>
     {
         await Task.Delay(25).ConfigureAwait(false);
@@ -106,6 +146,8 @@ object StartTurn(JsonElement request)
                     approvalPolicy = approvalPolicy ?? "on-request",
                     approvalsReviewer = approvalsReviewer ?? "user",
                     sandboxPolicy = new { type = sandboxMode ?? "workspaceWrite" },
+                    reasoningEffort = effort ?? "medium",
+                    serviceTier,
                 },
             },
         }).ConfigureAwait(false);

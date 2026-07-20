@@ -5,7 +5,7 @@ namespace Codex.VisualStudio.Contracts;
 
 public static class ContractVersions
 {
-    public const int Current = 12;
+    public const int Current = 13;
 }
 
 public enum WorkerConnectionState
@@ -149,6 +149,12 @@ public sealed class WorkerStatus
 
     [DataMember]
     public EffectiveApprovalState? EffectiveApprovalState { get; set; }
+
+    [DataMember]
+    public string? EffectiveReasoningEffort { get; set; }
+
+    [DataMember]
+    public string? EffectiveServiceTier { get; set; }
 }
 
 public sealed class AccountStatus
@@ -187,6 +193,12 @@ public sealed class ThreadSummary
 
     [DataMember]
     public EffectiveApprovalState? EffectiveApprovalState { get; set; }
+
+    [DataMember]
+    public string? EffectiveReasoningEffort { get; set; }
+
+    [DataMember]
+    public string? EffectiveServiceTier { get; set; }
 }
 
 public sealed class ThreadPage
@@ -234,6 +246,10 @@ public sealed class ListModelsResult
     public IReadOnlyList<ModelInfo> Models { get; set; } = Array.Empty<ModelInfo>();
 
     public string? DefaultModel { get; set; }
+
+    // A default model can be hidden from the picker while still carrying the capabilities
+    // needed by the reasoning and service-tier selectors.
+    public ModelInfo? DefaultModelInfo { get; set; }
 }
 
 public sealed class PermissionProfileInfo
@@ -291,9 +307,16 @@ public sealed class StartTurnRequest
     // ApprovalPolicy, ApprovalsReviewer, and SandboxMode.
     public string? Permissions { get; set; }
 
+    // Distinguishes an omitted setting (inherit config), an explicit null (clear a sticky
+    // app-server override), and a concrete value. The value property alone cannot represent
+    // all three wire states.
+    public bool HasEffort { get; set; }
+
     public string? Effort { get; set; }
 
     public string? Personality { get; set; }
+
+    public bool HasServiceTier { get; set; }
 
     public string? ServiceTier { get; set; }
 

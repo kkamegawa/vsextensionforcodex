@@ -257,6 +257,45 @@ public sealed class WorkerRpcServiceTests
         Assert.AreEqual("workspaceWrite", published.EffectiveApprovalState.SandboxMode);
     }
 
+    [TestMethod]
+    [DataRow(false, null)]
+    [DataRow(true, null)]
+    [DataRow(true, "canonical")]
+    public async Task StartTurnRequest_V13PresencePairsSurviveRealRpcRoundTrip(bool hasValue, string? value)
+    {
+        var clientToServer = new Pipe();
+        var serverToClient = new Pipe();
+        using var serverRpc = new JsonRpc(new HeaderDelimitedMessageHandler(
+            serverToClient.Writer, clientToServer.Reader, new SystemTextJsonFormatter()));
+        using var clientRpc = new JsonRpc(new HeaderDelimitedMessageHandler(
+            clientToServer.Writer, serverToClient.Reader, new SystemTextJsonFormatter()));
+        var echo = new ContractEcho();
+        serverRpc.AddLocalRpcTarget(echo);
+        serverRpc.StartListening();
+        clientRpc.StartListening();
+
+        var request = new StartTurnRequest
+        {
+            ThreadId = "thread-1",
+            Text = "round trip",
+            HasEffort = hasValue,
+            Effort = value,
+            HasServiceTier = hasValue,
+            ServiceTier = value,
+        };
+
+        StartTurnRequest result = await clientRpc.InvokeWithParameterObjectAsync<StartTurnRequest>(
+            "test/echoStartTurn",
+            request,
+            CancellationToken.None);
+
+        Assert.AreEqual(hasValue, result.HasEffort);
+        Assert.AreEqual(value, result.Effort);
+        Assert.AreEqual(hasValue, result.HasServiceTier);
+        Assert.AreEqual(value, result.ServiceTier);
+        Assert.AreEqual(1, echo.CallCount);
+    }
+
     private static WorkerOptions Options() => new()
     {
         WorkingDirectory = Path.GetTempPath(),
@@ -328,6 +367,18 @@ public sealed class WorkerRpcServiceTests
         {
             [JsonPropertyName("status")]
             public WorkerStatus? Status { get; set; }
+        }
+    }
+
+    private sealed class ContractEcho
+    {
+        public int CallCount { get; private set; }
+
+        [JsonRpcMethod("test/echoStartTurn", UseSingleObjectParameterDeserialization = true)]
+        public StartTurnRequest EchoStartTurn(StartTurnRequest request)
+        {
+            CallCount++;
+            return request;
         }
     }
 
