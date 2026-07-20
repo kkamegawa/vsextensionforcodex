@@ -1350,6 +1350,7 @@ public sealed class ViewModelTests
             typeof(SlashCommandSuggestionViewModel), typeof(SlashCommandOptionViewModel),
             typeof(AttachmentChipViewModel), typeof(FileSuggestionPresentationViewModel),
             typeof(FileSuggestionViewModel), typeof(ReasoningEffortOption), typeof(ServiceTierOption),
+            typeof(UsagePresentation),
             typeof(WorkerStatus), typeof(ThreadSummary),
         ];
 
@@ -1424,10 +1425,13 @@ public sealed class ViewModelTests
         // bindings target WPF UI ancestors and are not serialized Remote UI context properties.
         foreach (Match match in Regex.Matches(xaml, @"\{Binding\s+([A-Za-z_]\w*)(?<options>[^}]*)"))
         {
-            if (match.Groups["options"].Value.Contains("RelativeSource=", StringComparison.Ordinal))
+            if (match.Groups["options"].Value.Contains("RelativeSource=", StringComparison.Ordinal)
+                || match.Groups["options"].Value.Contains("ElementName=", StringComparison.Ordinal))
                 continue;
 
             string root = match.Groups[1].Value;
+            if (string.Equals(root, "ElementName", StringComparison.Ordinal))
+                continue;
             Assert.IsTrue(
                 dataMemberNames.Contains(root),
                 $"XAML binds '{root}' but no Remote UI context type exposes it as a [DataMember] property.");
@@ -2077,12 +2081,24 @@ public sealed class ViewModelTests
     [TestMethod]
     public async Task ChatViewModel_StatusSlashCommand_DoesNotSteerActiveTurn()
     {
-        var bridge = new FakeWorkerBridge();
+        var bridge = new FakeWorkerBridge
+        {
+            RateLimitsResult = new RateLimitsResult
+            {
+                RateLimits = new RateLimitInfo
+                {
+                    Primary = new() { UsedPercent = 20, WindowDurationMinutes = 300 },
+                    Secondary = new() { UsedPercent = 50, WindowDurationMinutes = 10_080 },
+                    Credits = new() { HasCredits = true, Balance = "12.50" },
+                },
+            },
+        };
         using var vm = new ChatViewModel(bridge, autoConnect: false)
         {
             SelectedThread = new ThreadSummary { Id = "thread-1" },
             ComposerText = "/status",
         };
+        await bridge.PublishAccountAsync(new AccountStatus { State = AccountState.SignedIn });
         await bridge.PublishStateAsync(new WorkerStatus
         {
             State = WorkerConnectionState.Busy,
@@ -2094,6 +2110,9 @@ public sealed class ViewModelTests
 
         Assert.IsNull(bridge.LastSteerTurnRequest);
         Assert.AreEqual(1, bridge.RateLimitCallCount);
+        StringAssert.Contains(vm.Items.Last().Text, "5-hour limit: 80% remaining");
+        StringAssert.Contains(vm.Items.Last().Text, "Weekly limit: 50% remaining");
+        StringAssert.Contains(vm.Items.Last().Text, "Credits: 12.50");
         Assert.AreEqual(string.Empty, vm.ComposerText);
     }
 
@@ -2808,6 +2827,166 @@ public sealed class ViewModelTests
     }
 
     [TestMethod]
+    public async Task ChatViewModel_UsageFetchesOncePerConnectionGeneration()
+    {
+        var bridge = new FakeWorkerBridge
+        {
+            RateLimitsResult = UsageResult(20),
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false);
+        await bridge.PublishAccountAsync(new AccountStatus { State = AccountState.SignedIn });
+
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready });
+        Assert.AreEqual(1, bridge.RateLimitCallCount);
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Busy });
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready });
+        Assert.AreEqual(1, bridge.RateLimitCallCount);
+
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Disconnected });
+        Assert.IsFalse(vm.Usage.HasData);
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready });
+        Assert.AreEqual(2, bridge.RateLimitCallCount);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_UsagePopupRefreshesOnlyAfterTtl()
+    {
+        DateTimeOffset now = DateTimeOffset.UnixEpoch;
+        var bridge = new FakeWorkerBridge { RateLimitsResult = UsageResult(20) };
+        using var vm = new ChatViewModel(bridge, autoConnect: false, utcNow: () => now);
+        await bridge.PublishAccountAsync(new AccountStatus { State = AccountState.SignedIn });
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready });
+
+        await vm.RefreshUsageAsync(force: false);
+        Assert.AreEqual(1, bridge.RateLimitCallCount);
+        now = now.AddSeconds(61);
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Busy });
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready });
+        Assert.AreEqual(1, bridge.RateLimitCallCount, "Busy-to-Ready must not refresh usage even after the popup TTL.");
+        await vm.RefreshUsageAsync(force: false);
+        Assert.AreEqual(2, bridge.RateLimitCallCount);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_UsagePushWinsAgainstOlderReadResponse()
+    {
+        using var releaseRead = new SemaphoreSlim(0, 1);
+        var bridge = new FakeWorkerBridge
+        {
+            RateLimitHandler = async _ =>
+            {
+                await releaseRead.WaitAsync();
+                return UsageResult(10);
+            },
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false);
+        await bridge.PublishAccountAsync(new AccountStatus { State = AccountState.SignedIn });
+
+        Task ready = Task.Run(() => bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready }));
+        await WaitForAsync(() => bridge.RateLimitCallCount == 1);
+        await bridge.PublishRateLimitsAsync(UsageResult(70));
+        releaseRead.Release();
+        await ready;
+
+        Assert.AreEqual("30% remaining", vm.Usage.ToolbarText);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_OldGenerationPushCannotOverwriteReconnect()
+    {
+        var bridge = new FakeWorkerBridge { RateLimitsResult = UsageResult(20) };
+        using var vm = new ChatViewModel(bridge, autoConnect: false);
+        await bridge.PublishAccountAsync(new AccountStatus { State = AccountState.SignedIn });
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready });
+
+        long oldGeneration = GetPrivateLong(vm, "usageConnectionGeneration");
+        await bridge.PublishRateLimitsAsync(UsageResult(40));
+        long oldPushVersion = GetPrivateLong(vm, "rateLimitPushVersion");
+
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Disconnected });
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready });
+        await bridge.PublishRateLimitsAsync(UsageResult(70));
+        long currentPushVersion = GetPrivateLong(vm, "rateLimitPushVersion");
+
+        Assert.IsTrue(currentPushVersion > oldPushVersion, "The push version must remain monotonic across reconnects.");
+        ApplyRateLimitsPush(vm, UsageResult(5), oldGeneration, currentPushVersion);
+        Assert.AreEqual("30% remaining", vm.Usage.ToolbarText);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_UsageRefreshFailurePreservesSnapshotAndCanRetry()
+    {
+        DateTimeOffset now = DateTimeOffset.UnixEpoch;
+        var bridge = new FakeWorkerBridge
+        {
+            RateLimitHandler = call => call switch
+            {
+                1 => Task.FromResult(UsageResult(20)),
+                2 => Task.FromException<RateLimitsResult>(new InvalidOperationException("transient")),
+                _ => Task.FromResult(UsageResult(60)),
+            },
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false, utcNow: () => now);
+        await bridge.PublishAccountAsync(new AccountStatus { State = AccountState.SignedIn });
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready });
+
+        now = now.AddSeconds(61);
+        await vm.RefreshUsageAsync(force: false);
+        Assert.AreEqual("80% remaining", vm.Usage.ToolbarText);
+        Assert.AreEqual(2, bridge.RateLimitCallCount);
+
+        await vm.RefreshUsageAsync(force: false);
+        Assert.AreEqual("40% remaining", vm.Usage.ToolbarText);
+        Assert.AreEqual(3, bridge.RateLimitCallCount, "A failed refresh must remain immediately retryable.");
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_UsageLifecycleAndFlyoutsAreMutuallyExclusive()
+    {
+        var bridge = new FakeWorkerBridge { RateLimitsResult = UsageResult(20) };
+        using var vm = new ChatViewModel(bridge, autoConnect: false);
+        await bridge.PublishAccountAsync(new AccountStatus { State = AccountState.SignedIn });
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready });
+        vm.IsHistoryOpen = true;
+        vm.IsUsageOpen = true;
+        Assert.IsFalse(vm.IsHistoryOpen);
+        Assert.IsTrue(vm.IsUsageOpen);
+
+        long signedInGeneration = GetPrivateLong(vm, "usageConnectionGeneration");
+        await bridge.PublishAccountAsync(new AccountStatus { State = AccountState.SignedOut });
+        Assert.IsFalse(vm.IsUsageAvailable);
+        Assert.IsFalse(vm.IsUsageOpen);
+        Assert.IsFalse(vm.Usage.HasData);
+        Assert.IsTrue(GetPrivateLong(vm, "usageConnectionGeneration") > signedInGeneration);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_DisposeInvalidatesUsageAndRejectsInFlightRead()
+    {
+        using var releaseRead = new SemaphoreSlim(0, 1);
+        var bridge = new FakeWorkerBridge
+        {
+            RateLimitHandler = call => call == 1
+                ? Task.FromResult(UsageResult(20))
+                : WaitForReadReleaseAsync(releaseRead),
+        };
+        var vm = new ChatViewModel(bridge, autoConnect: false);
+        await bridge.PublishAccountAsync(new AccountStatus { State = AccountState.SignedIn });
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready });
+        vm.IsUsageOpen = true;
+        Task refresh = vm.RefreshUsageAsync(force: true);
+        await WaitForAsync(() => bridge.RateLimitCallCount == 2);
+
+        vm.Dispose();
+        releaseRead.Release();
+        await refresh;
+
+        Assert.IsFalse(vm.IsUsageOpen);
+        Assert.IsFalse(vm.Usage.HasData);
+        Assert.AreEqual("Usage", vm.Usage.ToolbarText);
+    }
+
+    [TestMethod]
     public void ChatViewModel_TypingComposerText_DoesNotEchoComposerTextPropertyChanged()
     {
         // Regression: the binding-driven (user-typing) setter must NOT raise PropertyChanged for
@@ -3119,6 +3298,26 @@ public sealed class ViewModelTests
         return (Task)method.Invoke(viewModel, null)!;
     }
 
+    private static long GetPrivateLong(ChatViewModel viewModel, string fieldName)
+    {
+        FieldInfo field = typeof(ChatViewModel).GetField(fieldName, BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException($"Could not find {fieldName}.");
+        return (long)field.GetValue(viewModel)!;
+    }
+
+    private static void ApplyRateLimitsPush(
+        ChatViewModel viewModel,
+        RateLimitsResult result,
+        long generation,
+        long pushVersion)
+    {
+        MethodInfo method = typeof(ChatViewModel).GetMethod(
+            "ApplyRateLimitsPush",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("Could not find ApplyRateLimitsPush.");
+        method.Invoke(viewModel, [result, generation, pushVersion]);
+    }
+
     private static async Task WaitForAsync(Func<bool> condition)
     {
         DateTime deadline = DateTime.UtcNow.AddSeconds(2);
@@ -3131,6 +3330,26 @@ public sealed class ViewModelTests
 
             await Task.Delay(10);
         }
+    }
+
+    private static RateLimitsResult UsageResult(int usedPercent)
+        => new()
+        {
+            RateLimits = new RateLimitInfo
+            {
+                LimitId = "codex",
+                Primary = new RateLimitWindowInfo
+                {
+                    UsedPercent = usedPercent,
+                    WindowDurationMinutes = 300,
+                },
+            },
+        };
+
+    private static async Task<RateLimitsResult> WaitForReadReleaseAsync(SemaphoreSlim releaseRead)
+    {
+        await releaseRead.WaitAsync();
+        return UsageResult(5);
     }
 
     private static Task RaiseConversationEventAsync(ChatViewModel viewModel, ConversationEvent value)
@@ -3217,7 +3436,7 @@ public sealed class ViewModelTests
     {
         public event Func<WorkerStatus, Task>? StateChanged;
 
-        public event Func<AccountStatus, Task>? AccountChanged { add { } remove { } }
+        public event Func<AccountStatus, Task>? AccountChanged;
 
         public event Func<ConversationEvent, Task>? ConversationEventReceived { add { } remove { } }
 
@@ -3235,7 +3454,7 @@ public sealed class ViewModelTests
 
         public event Func<ThreadGoalEvent, Task>? ThreadGoalChanged { add { } remove { } }
 
-        public event Func<RateLimitsResult, Task>? RateLimitsChanged { add { } remove { } }
+        public event Func<RateLimitsResult, Task>? RateLimitsChanged;
 
         public ListModelsResult ModelListResult { get; set; } = new();
 
@@ -3251,6 +3470,12 @@ public sealed class ViewModelTests
 
         public int RateLimitCallCount { get; private set; }
 
+        public AccountStatus AccountStatusResult { get; set; } = new() { State = AccountState.SignedIn };
+
+        public RateLimitsResult RateLimitsResult { get; set; } = new();
+
+        public Func<int, Task<RateLimitsResult>>? RateLimitHandler { get; set; }
+
         public Exception? ResolveApprovalException { get; set; }
 
         public Exception? ResolveUserInputException { get; set; }
@@ -3260,6 +3485,12 @@ public sealed class ViewModelTests
         public Task PublishStateAsync(WorkerStatus status)
             => StateChanged?.Invoke(status) ?? Task.CompletedTask;
 
+        public Task PublishAccountAsync(AccountStatus status)
+            => AccountChanged?.Invoke(status) ?? Task.CompletedTask;
+
+        public Task PublishRateLimitsAsync(RateLimitsResult result)
+            => RateLimitsChanged?.Invoke(result) ?? Task.CompletedTask;
+
         public Task<WorkerStatus> ConnectAsync(string workingDirectory, bool experimentalApi, CancellationToken cancellationToken)
             => Task.FromResult(new WorkerStatus { State = WorkerConnectionState.Ready });
 
@@ -3267,7 +3498,7 @@ public sealed class ViewModelTests
             => Task.FromResult(new WorkerStatus { State = WorkerConnectionState.Ready });
 
         public Task<AccountStatus> GetAccountStatusAsync(CancellationToken cancellationToken)
-            => Task.FromResult(new AccountStatus { State = AccountState.SignedIn });
+            => Task.FromResult(AccountStatusResult);
 
         public Task<StartAccountLoginResult> StartAccountLoginAsync(CancellationToken cancellationToken)
             => Task.FromResult(new StartAccountLoginResult());
@@ -3353,7 +3584,7 @@ public sealed class ViewModelTests
         public Task<RateLimitsResult> GetRateLimitsAsync(CancellationToken cancellationToken)
         {
             RateLimitCallCount++;
-            return Task.FromResult(new RateLimitsResult());
+            return RateLimitHandler?.Invoke(RateLimitCallCount) ?? Task.FromResult(RateLimitsResult);
         }
 
         public Task ResolveApprovalAsync(ResolveApprovalRequest request, CancellationToken cancellationToken)

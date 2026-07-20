@@ -59,3 +59,24 @@
 - The Extension/Worker RPC contract advances to version 13 and requires matching binaries.
 - Thread summaries and Worker status expose effective reasoning effort and service tier.
 - A restoration turn can carry explicit null even though a normal Default turn omits the property.
+
+## ADR-005: Usage freshness is connection-generation and push-version scoped
+
+- Date: 2026-07-20
+- Task: GitHub Issue #87 and sub-issues #99, #100, and #101
+- Status: Accepted
+
+### Decision
+
+- Treat a signed-in connection generation as the lifetime of one usage snapshot. Fetch once when that generation first reaches Ready, and do not interpret Busy-to-Ready turn transitions as a new connection.
+- Refresh an open-on-demand snapshot only after a 60-second TTL. A push notification advances a monotonic version; a read started before that push cannot replace it.
+- Invalidate the snapshot, generation, and pending read eligibility on disconnect, sign-out, and disposal.
+- Present only the top-level limit, one canonical Codex map entry, or the sole map entry. Ambiguous maps and windows without `usedPercent` are unavailable rather than zero usage.
+- Open only the two compile-time approved usage destinations after exact HTTPS host and path validation. Diagnostics record neither destination nor user-derived URL text.
+- Keep the modeless WPF `Popup`, but do not claim that `FocusManager.FocusedElement` transfers keyboard focus. Raw Remote UI cannot run VS-side `Popup.Opened` focus code, so Escape is bound on both the still-focused host and popup content; deterministic opening focus would require an in-process host.
+
+### Consequences
+
+- Usage remains stable when a turn changes Ready to Busy and back, while opening the popup can refresh genuinely stale data.
+- Late reads from an old connection or from before a push are harmless.
+- The Remote UI popup shares one sanitized presentation model with `/status`, exposes automation metadata, and remains dismissible with Escape whether keyboard focus stays on the host or enters the popup.

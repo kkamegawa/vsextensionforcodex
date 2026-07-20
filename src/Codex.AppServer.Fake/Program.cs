@@ -104,6 +104,7 @@ while (await Console.In.ReadLineAsync().ConfigureAwait(false) is { } line)
         },
         "account/login/start" => StartLogin(),
         "account/logout" => Logout(),
+        "account/rateLimits/read" => CreateRateLimits(),
         _ => new { },
     };
     await WriteAsync(new { id = JsonSerializer.Deserialize<object>(id.GetRawText()), result }).ConfigureAwait(false);
@@ -180,6 +181,7 @@ object StartLogin()
         signedIn = true;
         await WriteAsync(new { method = "account/login/completed", @params = new { loginId, success = true } }).ConfigureAwait(false);
         await WriteAsync(new { method = "account/updated", @params = new { authMode = "chatgpt", planType = "plus" } }).ConfigureAwait(false);
+        await WriteAsync(new { method = "account/rateLimits/updated", @params = CreateRateLimits() }).ConfigureAwait(false);
     });
     return new { type = "chatgpt", loginId, authUrl = "https://example.com/codex-login" };
 }
@@ -189,6 +191,17 @@ object Logout()
     signedIn = false;
     return new { };
 }
+
+static object CreateRateLimits() => new
+{
+    rateLimits = new
+    {
+        limitId = "codex",
+        primary = new { usedPercent = 20, resetsAt = 1_800_000_000L, windowDurationMins = 300L },
+        secondary = new { usedPercent = 50, resetsAt = 1_800_000_000L, windowDurationMins = 10_080L },
+        credits = new { hasCredits = true, unlimited = false, balance = "10" },
+    },
+};
 
 static string? GetOptionalString(JsonElement element, string name)
     => element.ValueKind == JsonValueKind.Object

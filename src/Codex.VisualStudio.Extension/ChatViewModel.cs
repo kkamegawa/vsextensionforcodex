@@ -37,6 +37,9 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     private readonly SlashCommandParser slashCommandParser;
     private readonly SlashCommandCoordinator slashCommandCoordinator = new();
     private readonly IExtensionSettingsStore settingsStore;
+    private readonly IExternalLinkOpener externalLinkOpener;
+    private readonly Func<DateTimeOffset> utcNow;
+    private readonly SemaphoreSlim usageRefreshGate = new(1, 1);
     private readonly ExtensionSettings settings;
     private readonly Queue<UserInputViewModel> userInputQueue = new();
     private readonly Queue<ApprovalViewModel> approvalQueue = new();
@@ -54,6 +57,12 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     private string? nextCursor;
     private bool initialized;
     private bool isHistoryOpen;
+    private bool isUsageOpen;
+    private bool usageConnectionActive;
+    private long usageConnectionGeneration;
+    private long usageFetchedGeneration = -1;
+    private long rateLimitPushVersion;
+    private DateTimeOffset? latestRateLimitsAt;
     private bool ideContextEnabled = true;
     private string? selectedModel;
     private string selectedReasoningEffortId = ReasoningEffortCatalog.DefaultId;
@@ -92,7 +101,9 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         IFilePickerService? filePickerService = null,
         IWorkspaceFileSearchService? workspaceFileSearchService = null,
         IProtectedDirectoryPolicy? protectedDirectoryPolicy = null,
-        IExtensionSettingsStore? settingsStore = null)
+        IExtensionSettingsStore? settingsStore = null,
+        IExternalLinkOpener? externalLinkOpener = null,
+        Func<DateTimeOffset>? utcNow = null)
     {
         this.bridge = bridge;
         this.outputChannel = outputChannel;
@@ -104,6 +115,8 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         this.workspaceFileSearchService = workspaceFileSearchService ?? new WorkspaceFileSearchService(extensibility);
         this.protectedDirectoryPolicy = protectedDirectoryPolicy ?? new ProtectedDirectoryPolicy();
         this.settingsStore = settingsStore ?? new FileExtensionSettingsStore();
+        this.externalLinkOpener = externalLinkOpener ?? new ExternalLinkOpener();
+        this.utcNow = utcNow ?? (() => DateTimeOffset.UtcNow);
         settings = this.settingsStore.Load();
         slashCommandParser = new SlashCommandParser(slashCommandCatalog);
         bridge.StateChanged += OnStateChangedAsync;
@@ -132,6 +145,19 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             IsHistoryOpen = !IsHistoryOpen;
             return Task.CompletedTask;
         });
+        CloseHistoryCommand = new AsyncCommand(() =>
+        {
+            IsHistoryOpen = false;
+            return Task.CompletedTask;
+        });
+        ToggleUsageCommand = new AsyncCommand(ToggleUsageAsync, () => IsUsageAvailable);
+        CloseUsageCommand = new AsyncCommand(() =>
+        {
+            IsUsageOpen = false;
+            return Task.CompletedTask;
+        });
+        OpenUsageDashboardCommand = new AsyncCommand(() => OpenExternalLinkAsync(ExternalLinkTarget.UsageDashboard));
+        OpenUsageHelpCommand = new AsyncCommand(() => OpenExternalLinkAsync(ExternalLinkTarget.UsageHelp));
         AttachCommand = new AsyncCommand(AttachAsync);
         ConfirmApprovalModeCommand = new AsyncCommand(ConfirmApprovalModeAsync, () => HasApprovalModeConfirmation);
         CancelApprovalModeCommand = new AsyncCommand(CancelApprovalModeAsync, () => HasApprovalModeConfirmation);
@@ -348,6 +374,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         {
             if (SetProperty(ref status, value))
             {
+                UpdateUsageConnectionLifecycle(value.State);
                 RaiseCommandStates();
                 OnPropertyChanged(nameof(IsDegraded));
                 OnPropertyChanged(nameof(IsTurnActive));
@@ -358,6 +385,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 OnPropertyChanged(nameof(StatusAutomationName));
                 OnPropertyChanged(nameof(StatusAutomationHelpText));
                 OnPropertyChanged(nameof(EffectiveApprovalModeText));
+                OnPropertyChanged(nameof(IsUsageAvailable));
             }
         }
     }
@@ -446,8 +474,36 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     public bool IsHistoryOpen
     {
         get => isHistoryOpen;
-        set => SetProperty(ref isHistoryOpen, value);
+        set
+        {
+            if (SetProperty(ref isHistoryOpen, value) && value && isUsageOpen)
+            {
+                isUsageOpen = false;
+                OnPropertyChanged(nameof(IsUsageOpen));
+            }
+        }
     }
+
+    [DataMember]
+    public bool IsUsageOpen
+    {
+        get => isUsageOpen;
+        set
+        {
+            if (SetProperty(ref isUsageOpen, value) && value && isHistoryOpen)
+            {
+                isHistoryOpen = false;
+                OnPropertyChanged(nameof(IsHistoryOpen));
+            }
+        }
+    }
+
+    [DataMember]
+    public bool IsUsageAvailable
+        => Account.IsSignedIn && IsConnectedState(Status.State);
+
+    [DataMember]
+    public UsagePresentation Usage { get; } = new();
 
     [DataMember]
     public ObservableCollection<SuggestionChip> Suggestions { get; }
@@ -688,12 +744,29 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     public AsyncCommand ToggleHistoryCommand { get; }
 
     [DataMember]
+    public AsyncCommand CloseHistoryCommand { get; }
+
+    [DataMember]
+    public AsyncCommand ToggleUsageCommand { get; }
+
+    [DataMember]
+    public AsyncCommand CloseUsageCommand { get; }
+
+    [DataMember]
+    public AsyncCommand OpenUsageDashboardCommand { get; }
+
+    [DataMember]
+    public AsyncCommand OpenUsageHelpCommand { get; }
+
+    [DataMember]
     public AsyncCommand AttachCommand { get; }
 
     public void Dispose()
     {
         if (Interlocked.Exchange(ref disposed, 1) != 0)
             return;
+        Interlocked.Increment(ref usageConnectionGeneration);
+        InvalidateUsage();
         lifetime.Cancel();
         CancelFileSuggestionRefresh();
         slashCommandCoordinator.CancelAll();
@@ -906,6 +979,10 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         {
             UpdateAccount(accountStatus);
         }).ConfigureAwait(false);
+        if (accountStatus.State == AccountState.SignedIn)
+        {
+            await RefreshUsageAsync(force: false).ConfigureAwait(false);
+        }
         if (reloadThreads)
         {
             await ReloadThreadsAsync().ConfigureAwait(false);
@@ -2268,19 +2345,12 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
     private async Task<bool> ExecuteStatusAsync(string? threadId)
     {
-        if (Status.State is WorkerConnectionState.Ready or WorkerConnectionState.Busy or WorkerConnectionState.WaitingForApproval)
+        if (IsUsageAvailable)
         {
-            try
-            {
-                latestRateLimits = await bridge.GetRateLimitsAsync(lifetime.Token).ConfigureAwait(false);
-            }
-            catch (Exception ex)
-            {
-                ExtensionDiagnostics.Write("Rate-limit lookup failed while building slash status", ex);
-            }
+            await RefreshUsageAsync(force: true).ConfigureAwait(false);
         }
 
-        string usage = FormatRateLimits(latestRateLimits);
+        string usage = Usage.SlashStatusText;
         string desiredReasoning = string.IsNullOrEmpty(settings.ReasoningEffortId)
             ? "(config.toml)"
             : markdown.ToSafeText(settings.ReasoningEffortId);
@@ -2420,30 +2490,6 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         return result.Goal is null
             ? "No goal is set for this thread."
             : $"Goal: {result.Goal.Objective}\r\nStatus: {result.Goal.Status}\r\nTokens used: {result.Goal.TokensUsed}";
-    }
-
-    private static string FormatRateLimits(RateLimitsResult? result)
-    {
-        if (result is null || !result.IsSupported)
-        {
-            return "unavailable";
-        }
-
-        RateLimitInfo? rateLimit = result.RateLimits ?? result.RateLimitsByLimitId.Values.FirstOrDefault();
-        if (rateLimit is null)
-        {
-            return "not reported";
-        }
-
-        string primary = rateLimit.Primary is null
-            ? "primary window not reported"
-            : $"{rateLimit.Primary.UsedPercent}% used";
-        string credits = rateLimit.Credits is null
-            ? string.Empty
-            : rateLimit.Credits.Unlimited
-                ? "; credits unlimited"
-                : $"; credits {rateLimit.Credits.Balance ?? "unavailable"}";
-        return string.Concat(primary, credits);
     }
 
     private Task ShowSlashStatusAsync(string message)
@@ -2748,8 +2794,9 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             lifetime.Token);
     }
 
-    private Task OnStateChangedAsync(WorkerStatus value)
-        => OnUiAsync(() =>
+    private async Task OnStateChangedAsync(WorkerStatus value)
+    {
+        await OnUiAsync(() =>
         {
             WorkerStatus previousStatus = Status;
             WorkerConnectionState previous = previousStatus.State;
@@ -2814,15 +2861,27 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                     Items.Add(new ChatItemViewModel("Error", errorText, ConversationEventKind.Error));
                 }
             }
-        });
+        }).ConfigureAwait(false);
 
-    private Task OnAccountChangedAsync(AccountStatus value)
+        if (value.State == WorkerConnectionState.Ready
+            && Account.IsSignedIn
+            && usageFetchedGeneration != usageConnectionGeneration)
+        {
+            await RefreshUsageAsync(force: false).ConfigureAwait(false);
+        }
+    }
+
+    private async Task OnAccountChangedAsync(AccountStatus value)
     {
         ExtensionDiagnostics.Write($"Account status notification received state={value.State} plan={value.PlanType ?? "none"}");
-        return OnUiAsync(() =>
+        await OnUiAsync(() =>
         {
             UpdateAccount(value);
-        });
+        }).ConfigureAwait(false);
+        if (value.State == AccountState.SignedIn && Status.State == WorkerConnectionState.Ready)
+        {
+            await RefreshUsageAsync(force: false).ConfigureAwait(false);
+        }
     }
 
     private Task OnContextCompactedAsync(ContextCompactionEvent value)
@@ -2852,8 +2911,25 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
     private Task OnRateLimitsChangedAsync(RateLimitsResult value)
     {
+        long generation = Volatile.Read(ref usageConnectionGeneration);
+        long pushVersion = Interlocked.Increment(ref rateLimitPushVersion);
+        return OnUiAsync(() => ApplyRateLimitsPush(value, generation, pushVersion));
+    }
+
+    private void ApplyRateLimitsPush(RateLimitsResult value, long generation, long pushVersion)
+    {
+        if (!IsUsageAvailable
+            || generation != Volatile.Read(ref usageConnectionGeneration)
+            || pushVersion != Volatile.Read(ref rateLimitPushVersion))
+        {
+            return;
+        }
+
+        DateTimeOffset refreshedAt = utcNow();
         latestRateLimits = value;
-        return Task.CompletedTask;
+        latestRateLimitsAt = refreshedAt;
+        usageFetchedGeneration = generation;
+        Usage.Update(value, refreshedAt, markdown);
     }
 
     private Task OnConversationEventAsync(ConversationEvent value)
@@ -3273,13 +3349,151 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         => (Status.State is WorkerConnectionState.Ready or WorkerConnectionState.Busy or WorkerConnectionState.WaitingForApproval)
         && Account.ShowAction;
 
+    private async Task ToggleUsageAsync()
+    {
+        bool opening = !IsUsageOpen;
+        await OnUiAsync(() => IsUsageOpen = opening).ConfigureAwait(false);
+        if (opening)
+        {
+            await RefreshUsageAsync(force: false).ConfigureAwait(false);
+        }
+    }
+
+    private async Task OpenExternalLinkAsync(ExternalLinkTarget target)
+    {
+        try
+        {
+            await externalLinkOpener.OpenAsync(target, lifetime.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+        {
+        }
+        catch (Exception ex)
+        {
+            ExtensionDiagnostics.Write($"Opening an approved usage link failed ({ex.GetType().Name}).");
+        }
+    }
+
+    internal async Task RefreshUsageAsync(bool force)
+    {
+        try
+        {
+            await usageRefreshGate.WaitAsync(lifetime.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+        {
+            return;
+        }
+
+        try
+        {
+            if (!IsUsageAvailable)
+            {
+                return;
+            }
+
+            long generation = Volatile.Read(ref usageConnectionGeneration);
+            DateTimeOffset requestedAt = utcNow();
+            if (!force
+                && usageFetchedGeneration == generation
+                && latestRateLimitsAt.HasValue
+                && requestedAt - latestRateLimitsAt.Value < TimeSpan.FromSeconds(60))
+            {
+                return;
+            }
+
+            long pushVersion = Volatile.Read(ref rateLimitPushVersion);
+            await OnUiAsync(() => Usage.SetLoading(true)).ConfigureAwait(false);
+            RateLimitsResult result;
+            try
+            {
+                result = await bridge.GetRateLimitsAsync(lifetime.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+            {
+                return;
+            }
+            catch (Exception ex)
+            {
+                ExtensionDiagnostics.Write($"Usage lookup failed ({ex.GetType().Name}).");
+                return;
+            }
+
+            await OnUiAsync(() =>
+            {
+                if (generation != Volatile.Read(ref usageConnectionGeneration)
+                    || !IsUsageAvailable
+                    || pushVersion != Volatile.Read(ref rateLimitPushVersion))
+                {
+                    return;
+                }
+
+                DateTimeOffset refreshedAt = utcNow();
+                latestRateLimits = result;
+                latestRateLimitsAt = refreshedAt;
+                usageFetchedGeneration = generation;
+                Usage.Update(result, refreshedAt, markdown);
+            }).ConfigureAwait(false);
+        }
+        finally
+        {
+            await OnUiAsync(() => Usage.SetLoading(false)).ConfigureAwait(false);
+            usageRefreshGate.Release();
+        }
+    }
+
+    private static bool IsConnectedState(WorkerConnectionState state)
+        => state is WorkerConnectionState.Ready or WorkerConnectionState.Busy or WorkerConnectionState.WaitingForApproval;
+
+    private void UpdateUsageConnectionLifecycle(WorkerConnectionState state)
+    {
+        bool isConnected = IsConnectedState(state);
+        if (isConnected && !usageConnectionActive)
+        {
+            usageConnectionActive = true;
+            Interlocked.Increment(ref usageConnectionGeneration);
+            usageFetchedGeneration = -1;
+            latestRateLimits = null;
+            latestRateLimitsAt = null;
+            Usage.Clear();
+        }
+        else if (!isConnected && usageConnectionActive)
+        {
+            usageConnectionActive = false;
+            Interlocked.Increment(ref usageConnectionGeneration);
+            InvalidateUsage();
+        }
+    }
+
+    private void InvalidateUsage()
+    {
+        usageFetchedGeneration = -1;
+        latestRateLimits = null;
+        latestRateLimitsAt = null;
+        Interlocked.Increment(ref rateLimitPushVersion);
+        IsUsageOpen = false;
+        Usage.Clear();
+    }
+
     private void UpdateAccount(AccountStatus value)
     {
+        bool wasSignedIn = Account.IsSignedIn;
         Account.Update(value);
+        if (!Account.IsSignedIn)
+        {
+            if (wasSignedIn)
+            {
+                Interlocked.Increment(ref usageConnectionGeneration);
+            }
+
+            InvalidateUsage();
+        }
         OnPropertyChanged(nameof(StatusDetailText));
         OnPropertyChanged(nameof(ShowAccountAction));
         OnPropertyChanged(nameof(AccountActionText));
+        OnPropertyChanged(nameof(IsUsageAvailable));
         AccountCommand.RaiseCanExecuteChanged();
+        ToggleUsageCommand.RaiseCanExecuteChanged();
     }
 
     // Disconnected is allowed so the user can send with no solution/folder open: SendAsync
@@ -3302,6 +3516,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         SendCommand.RaiseCanExecuteChanged();
         InterruptCommand.RaiseCanExecuteChanged();
         AccountCommand.RaiseCanExecuteChanged();
+        ToggleUsageCommand.RaiseCanExecuteChanged();
     }
 
     // In the OOP extension process, Application.Current is null so the null-conditional

@@ -344,6 +344,73 @@
                   Style="{StaticResource SmallRoundButtonStyle}" Margin="0,0,8,0"
                   Visibility="{Binding ShowAccountAction, Converter={StaticResource BoolToVis}}" />
 
+          <Grid Margin="0,0,6,0"
+                Visibility="{Binding IsUsageAvailable, Converter={StaticResource BoolToVis}}">
+            <!-- Remote UI cannot run VS-side Popup.Opened code to move keyboard focus. Keep
+                 Escape on the host so keyboard-opened popups can always be dismissed while
+                 focus remains on the toggle. The popup focus scope records the logical entry
+                 target and handles Escape plus cyclic Tab navigation after focus enters it. -->
+            <Grid.InputBindings>
+              <KeyBinding Key="Escape" Command="{Binding CloseUsageCommand}" />
+            </Grid.InputBindings>
+            <Button Content="{Binding Usage.ToolbarText}"
+                    Command="{Binding ToggleUsageCommand}"
+                    ToolTip="{Binding Usage.AutomationHelpText}"
+                    AutomationProperties.Name="{Binding Usage.AutomationName}"
+                    AutomationProperties.HelpText="{Binding Usage.AutomationHelpText}"
+                    Style="{StaticResource SmallRoundButtonStyle}" />
+            <Popup IsOpen="{Binding IsUsageOpen, Mode=TwoWay}"
+                   StaysOpen="False"
+                   Placement="Bottom"
+                   VerticalOffset="2"
+                   AllowsTransparency="True"
+                   PopupAnimation="Fade"
+                   Focusable="True">
+              <Border Width="320" MaxHeight="430" Padding="12" CornerRadius="6" BorderThickness="1"
+                      Focusable="True"
+                      FocusManager.IsFocusScope="True"
+                      FocusManager.FocusedElement="{Binding ElementName=UsageCloseButton}"
+                      KeyboardNavigation.TabNavigation="Cycle"
+                      Background="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBackgroundBrushKey}}"
+                      BorderBrush="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBorderBrushKey}}"
+                      AutomationProperties.Name="Codex usage details"
+                      AutomationProperties.HelpText="Shows current Codex limits and approved help links.">
+                <Border.InputBindings>
+                  <KeyBinding Key="Escape" Command="{Binding CloseUsageCommand}" />
+                </Border.InputBindings>
+                <StackPanel>
+                  <TextBlock Text="Codex usage" FontWeight="SemiBold" FontSize="14" />
+                  <TextBlock Margin="0,6,0,0" Text="{Binding Usage.StatusText}"
+                             AutomationProperties.LiveSetting="Polite" />
+                  <TextBlock Margin="0,8,0,0" Text="{Binding Usage.PrimaryText}"
+                             Visibility="{Binding Usage.HasPrimary, Converter={StaticResource BoolToVis}}" />
+                  <TextBlock Margin="0,4,0,0" Text="{Binding Usage.SecondaryText}"
+                             Visibility="{Binding Usage.HasSecondary, Converter={StaticResource BoolToVis}}" />
+                  <TextBlock Margin="0,4,0,0" Text="{Binding Usage.CreditsText}"
+                             Visibility="{Binding Usage.HasCredits, Converter={StaticResource BoolToVis}}" />
+                  <TextBlock Margin="0,8,0,0" FontSize="10" Text="{Binding Usage.UpdatedText}" />
+                  <WrapPanel Margin="0,12,0,0">
+                    <Button Content="Open usage dashboard"
+                            Command="{Binding OpenUsageDashboardCommand}"
+                            AutomationProperties.Name="Open usage dashboard"
+                            AutomationProperties.HelpText="Opens the approved Codex usage dashboard in the default browser."
+                            Style="{StaticResource SmallRoundButtonStyle}" />
+                    <Button Content="Learn more" Margin="6,0,0,0"
+                            Command="{Binding OpenUsageHelpCommand}"
+                            AutomationProperties.Name="Learn more about Codex usage"
+                            AutomationProperties.HelpText="Opens the approved Codex usage help article in the default browser."
+                            Style="{StaticResource SmallRoundButtonStyle}" />
+                  </WrapPanel>
+                  <Button x:Name="UsageCloseButton" Content="Close" Margin="0,10,0,0"
+                          HorizontalAlignment="Right"
+                          Command="{Binding CloseUsageCommand}"
+                          AutomationProperties.Name="Close usage details"
+                          Style="{StaticResource SmallRoundButtonStyle}" />
+                </StackPanel>
+              </Border>
+            </Popup>
+          </Grid>
+
           <!-- Thread-history flyout. The Popup's PlacementTarget defaults to its parent grid
                (which wraps the history button), so it anchors directly beneath the icon. -->
           <Grid>
@@ -357,8 +424,13 @@
                    AllowsTransparency="True"
                    PopupAnimation="Fade">
               <Border Width="280" MaxHeight="380" CornerRadius="6" BorderThickness="1"
+                      Focusable="True"
+                      KeyboardNavigation.TabNavigation="Cycle"
                       Background="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBackgroundBrushKey}}"
                       BorderBrush="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBorderBrushKey}}">
+                <Border.InputBindings>
+                  <KeyBinding Key="Escape" Command="{Binding CloseHistoryCommand}" />
+                </Border.InputBindings>
                 <DockPanel Margin="6">
                   <Button DockPanel.Dock="Bottom" Margin="0,6,0,0" Content="Load more"
                           Command="{Binding LoadMoreCommand}"
