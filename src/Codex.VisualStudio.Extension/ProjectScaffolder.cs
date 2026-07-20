@@ -12,13 +12,13 @@ namespace Codex.VisualStudio.Extension;
 public enum ScaffoldChoice
 {
     None,
-    SolutionAndProject,
+    EmptySolution,
     FileBasedApp,
     DontCreate,
 }
 
 /// <summary>
-/// Offers to scaffold a starter solution/project (or a file-based app) when Codex's resolved
+/// Offers to scaffold an empty solution (or a file-based app) when Codex's resolved
 /// working directory does not yet contain one.
 /// </summary>
 public interface IProjectScaffolder
@@ -31,12 +31,14 @@ public interface IProjectScaffolder
 }
 
 /// <summary>
-/// Creates a minimal solution/project layout (<c>ROOT/src/&lt;Name&gt;.slnx</c> and
-/// <c>ROOT/src/&lt;Name&gt;/&lt;Name&gt;.csproj</c>) or a file-based app (no solution), based on
-/// the user's choice. Never overwrites existing files.
+/// Creates a root-level empty solution (<c>ROOT/&lt;Name&gt;.slnx</c>) or a file-based app
+/// (no solution), based on the user's choice. Never overwrites existing files.
 /// </summary>
 public sealed class ProjectScaffolder : IProjectScaffolder
 {
+    private const int ErrorFileExists = 80;
+    private const int ErrorAlreadyExists = 183;
+
     private readonly VisualStudioExtensibility? extensibility;
 
     public ProjectScaffolder(VisualStudioExtensibility? extensibility)
@@ -57,7 +59,7 @@ public sealed class ProjectScaffolder : IProjectScaffolder
             {
                 Choices =
                 {
-                    { "Create a solution and project", ScaffoldChoice.SolutionAndProject },
+                    { "Create an empty solution", ScaffoldChoice.EmptySolution },
                     { "Use a file-based app (no solution)", ScaffoldChoice.FileBasedApp },
                     { "Don't create anything", ScaffoldChoice.DontCreate },
                 },
@@ -69,8 +71,8 @@ public sealed class ProjectScaffolder : IProjectScaffolder
 
         switch (choice)
         {
-            case ScaffoldChoice.SolutionAndProject:
-                CreateSolutionAndProject(rootDirectory);
+            case ScaffoldChoice.EmptySolution:
+                CreateEmptySolution(rootDirectory);
                 break;
             case ScaffoldChoice.FileBasedApp:
                 CreateFileBasedApp(rootDirectory);
@@ -109,34 +111,15 @@ public sealed class ProjectScaffolder : IProjectScaffolder
     private static bool HasMatchingFile(string directory, string searchPattern)
         => Directory.Exists(directory) && Directory.EnumerateFiles(directory, searchPattern).Any();
 
-    private static void CreateSolutionAndProject(string rootDirectory)
+    internal static void CreateEmptySolution(string rootDirectory)
     {
         string name = GetProjectName(rootDirectory);
-        string srcDirectory = Path.Combine(rootDirectory, "src");
-        string projectDirectory = Path.Combine(srcDirectory, name);
-        Directory.CreateDirectory(projectDirectory);
-
         WriteFileIfMissing(
-            Path.Combine(srcDirectory, $"{name}.slnx"),
-            $"<Solution>\r\n  <Project Path=\"{name}/{name}.csproj\" />\r\n</Solution>\r\n");
-
-        WriteFileIfMissing(
-            Path.Combine(projectDirectory, $"{name}.csproj"),
-            "<Project Sdk=\"Microsoft.NET.Sdk\">\r\n" +
-            "  <PropertyGroup>\r\n" +
-            "    <OutputType>Exe</OutputType>\r\n" +
-            "    <TargetFramework>net8.0</TargetFramework>\r\n" +
-            "    <ImplicitUsings>enable</ImplicitUsings>\r\n" +
-            "    <Nullable>enable</Nullable>\r\n" +
-            "  </PropertyGroup>\r\n" +
-            "</Project>\r\n");
-
-        WriteFileIfMissing(
-            Path.Combine(projectDirectory, "Program.cs"),
-            "Console.WriteLine(\"Hello from Codex!\");\r\n");
+            Path.Combine(rootDirectory, $"{name}.slnx"),
+            "<Solution>\r\n</Solution>\r\n");
     }
 
-    private static void CreateFileBasedApp(string rootDirectory)
+    internal static void CreateFileBasedApp(string rootDirectory)
     {
         // A file-based app (requirement 4) skips solution/project creation entirely; just seed a
         // starter file so Codex has something to work with.
@@ -147,13 +130,25 @@ public sealed class ProjectScaffolder : IProjectScaffolder
 
     private static void WriteFileIfMissing(string path, string contents)
     {
-        if (File.Exists(path))
+        try
         {
-            return;
+            using var stream = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None);
+            using var writer = new StreamWriter(
+                stream,
+                new UTF8Encoding(encoderShouldEmitUTF8Identifier: true),
+                bufferSize: 1024,
+                leaveOpen: false);
+            writer.Write(contents);
         }
-
-        File.WriteAllText(path, contents, new UTF8Encoding(encoderShouldEmitUTF8Identifier: true));
+        catch (IOException ex) when (IsExistingPathException(ex))
+        {
+            // FileMode.CreateNew makes the non-overwrite guarantee atomic. An existing file,
+            // directory, or reparse-point entry wins without being opened or followed.
+        }
     }
+
+    private static bool IsExistingPathException(IOException exception)
+        => (exception.HResult & 0xFFFF) is ErrorFileExists or ErrorAlreadyExists;
 
     /// <summary>
     /// Derives a project name from the working directory's folder name, falling back to
