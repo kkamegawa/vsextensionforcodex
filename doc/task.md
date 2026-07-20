@@ -2,6 +2,14 @@
 
 `plan.md` のフェーズ分割に対応する詳細タスク。各タスクは独立してレビュー可能な小さなスライスを意図する。
 
+## 2026-07-21: Merge main into PR #31 (issue #25) and resolve conflicts
+
+- [x] Resolve `ChoicePromptParser.cs` confirmation-regex conflict by adopting main's line-anchored `\A...to\b` pattern (issue #45), compatible with this branch's question-line scoping fix (issue #33).
+- [x] Resolve `ChatToolWindowContent.xaml` action-row conflict by dropping this branch's superseded `Grid.Row="1"` DockPanel (would have collided with the slash-command `ItemsControl` already at `Grid.Row="1"`) and keeping main's `Grid.Row="3"` accessibility live region; the richer `Grid.Row="5"` action row already covers this branch's Attach/Mode/Model/Experimental API controls.
+- [x] Resolve `ViewModelTests.cs` and `doc/implementation.md` conflicts (pure additive union with main).
+- [x] Validate: solution builds with 0 warnings/0 errors; 95 Core tests and 268 UI tests pass.
+- Ref: PR #31, issue #25.
+
 ## 2026-07-20: PR #89 review and merge validation
 
 - [x] Confirm that the PR branch already contains the current `main` commit without conflicts.
