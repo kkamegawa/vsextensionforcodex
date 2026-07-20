@@ -119,3 +119,18 @@ To recover without resetting the entire Experimental Instance:
 
 Do not copy a build output manually over the deployment. After the cleanup, use the normal SDK-owned
 F5 flow so the deployed assembly and packaged resources come from one deterministic build.
+
+## Usage pipeline
+
+`CodexSessionService` preserves an absent `usedPercent` as null and redacts credit balance text at
+the Worker boundary. `UsagePresentation` selects only an unambiguous limit, computes remaining
+percentage, and creates the bounded strings serialized by Remote UI. `ChatViewModel` owns the
+connection generation, push version, 60-second TTL, and refresh gate so a stale read cannot replace
+a newer push or survive lifecycle invalidation.
+
+`ExternalLinkOpener` maps commands to two compile-time destinations and validates their exact HTTPS
+host and path before shell activation. No arbitrary URI crosses the view-model command boundary and
+diagnostics do not include destination text. The raw embedded XAML provides the mutually exclusive
+Usage popup with themed WPF controls, cyclic navigation after focus enters the popup, host- and
+popup-level Escape commands, and UI Automation metadata. Raw Remote UI cannot execute VS-side
+`Keyboard.Focus` from `Popup.Opened`; guaranteed focus transfer requires an in-process WPF host.

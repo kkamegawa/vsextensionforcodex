@@ -272,6 +272,21 @@ ChatGPT デスクトップと同等の承認方法選択 UI。レビュー済み
 
 ## Work log
 
+### 2026-07-20: Implemented usage presentation and freshness (issue #87)
+
+Implemented issue #87 and sub-issues #99, #100, and #101. The Worker now preserves missing usage
+percentages, while the extension presents clamped remaining limits, known window labels, Unix reset
+times, and sanitized credits in both the popup and `/status`. Signed-in connection generations fetch
+once; a 60-second popup TTL, monotonic push versions, and lifecycle invalidation prevent stale reads.
+Transient refresh failures preserve the last-good snapshot and remain retryable. The themed Usage
+popup is mutually exclusive with History, binds Escape at both host and popup levels, and opens only
+compile-time approved destinations through an exact allowlist. ADR-005 records the freshness and
+Remote UI focus contracts.
+
+- Validation: project-scoped Release builds completed with zero warnings and zero errors. Core tests
+  passed 90/90 and UI tests passed 226/226 with `--no-build`, covering parser, presentation,
+  freshness, read/push races, lifecycle invalidation, links, and embedded XAML structure.
+
 ### 2026-07-20: Implemented the approval mode picker (issue #75)
 
 Implemented issue #75 and sub-issues #76, #77, and #78. The Agent composer now exposes
