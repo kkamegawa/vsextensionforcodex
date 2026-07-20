@@ -26,7 +26,7 @@ while (await Console.In.ReadLineAsync().ConfigureAwait(false) is { } line)
         "thread/list" => new { data = threads, nextCursor = (string?)null },
         "model/list" => new
         {
-            data = new[]
+            data = new object[]
             {
                 new
                 {
@@ -40,6 +40,12 @@ while (await Console.In.ReadLineAsync().ConfigureAwait(false) is { } line)
                         new { reasoningEffort = "low", description = "Faster responses with lighter reasoning." },
                         new { reasoningEffort = "medium", description = "Balanced reasoning for everyday work." },
                         new { reasoningEffort = "high", description = "Deeper reasoning for complex work." },
+                    },
+                    defaultServiceTier = "standard",
+                    serviceTiers = new[]
+                    {
+                        new { id = "standard", name = "Standard", description = "Standard Codex service." },
+                        new { id = "fast", name = "Fast", description = "Prioritize lower latency." },
                     },
                 },
                 new
@@ -68,6 +74,12 @@ while (await Console.In.ReadLineAsync().ConfigureAwait(false) is { } line)
                         new { reasoningEffort = "medium", description = "Balanced reasoning." },
                         new { reasoningEffort = "high", description = "Deeper reasoning." },
                         new { reasoningEffort = "xhigh", description = "Maximum reasoning depth." },
+                    },
+                    defaultServiceTier = "standard",
+                    serviceTiers = new[]
+                    {
+                        new { id = "standard", name = "Standard", description = "Standard Codex service." },
+                        new { id = "fast", name = "Fast", description = "Prioritize lower latency." },
                     },
                 },
             },
@@ -113,6 +125,8 @@ static object ThreadResponse(object thread) => new
     approvalPolicy = "on-request",
     approvalsReviewer = "user",
     sandbox = new { type = "workspaceWrite" },
+    effort = "medium",
+    serviceTier = "standard",
 };
 
 object StartTurn(JsonElement request)
@@ -129,7 +143,7 @@ object StartTurn(JsonElement request)
         ? GetOptionalString(sandbox, "type")
         : null;
     string turnId = $"fake-turn-{nextTurn++}";
-    Console.Error.WriteLine($"fake turn/start model={Sanitize(model) ?? "(default)"} effort={Sanitize(effort) ?? "(default)"} serviceTier={Sanitize(serviceTier) ?? "(default)"} approvalPolicy={Sanitize(approvalPolicy) ?? "(default)"} approvalsReviewer={Sanitize(approvalsReviewer) ?? "(default)"} sandbox={Sanitize(sandboxMode) ?? "(default)"} permissions={Sanitize(permissions) ?? "(default)"}");
+    Console.Error.WriteLine($"fake turn/start model={Sanitize(model) ?? "(default)"} approvalPolicy={Sanitize(approvalPolicy) ?? "(default)"} approvalsReviewer={Sanitize(approvalsReviewer) ?? "(default)"} sandbox={Sanitize(sandboxMode) ?? "(default)"} permissions={Sanitize(permissions) ?? "(default)"} effort={Sanitize(effort) ?? "(default)"} serviceTier={Sanitize(serviceTier) ?? "(default)"}");
     _ = Task.Run(async () =>
     {
         await Task.Delay(25).ConfigureAwait(false);
@@ -146,8 +160,8 @@ object StartTurn(JsonElement request)
                     approvalPolicy = approvalPolicy ?? "on-request",
                     approvalsReviewer = approvalsReviewer ?? "user",
                     sandboxPolicy = new { type = sandboxMode ?? "workspaceWrite" },
-                    reasoningEffort = effort ?? "medium",
-                    serviceTier,
+                    effort = effort ?? "medium",
+                    serviceTier = serviceTier ?? "standard",
                 },
             },
         }).ConfigureAwait(false);

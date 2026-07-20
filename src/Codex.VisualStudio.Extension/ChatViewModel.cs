@@ -67,8 +67,10 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     private readonly Dictionary<string, PendingReasoningOverride> pendingReasoningByThread = new(StringComparer.Ordinal);
     private readonly Dictionary<string, string?> reasoningRestoreByThread = new(StringComparer.Ordinal);
     private string? nextPersonality;
-    private string? nextServiceTier;
     private string? nextCollaborationMode;
+    private string selectedServiceTierId = ServiceTierCatalog.DefaultId;
+    private readonly Dictionary<string, PendingServiceTierOverride> pendingServiceTierByThread = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, string?> serviceTierRestoreByThread = new(StringComparer.Ordinal);
     private ListModelsResult modelCatalog = new();
     private RateLimitsResult? latestRateLimits;
     private readonly HashSet<SlashCommandId> unavailableSlashCommands = [];
@@ -76,8 +78,6 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     private CancellationTokenSource? fileSuggestionRefresh;
 
     private readonly record struct PendingReasoningOverride(string Effort, string? RestoreEffort);
-
-    private readonly record struct TurnSettingResolution(bool HasValue, string? Value);
 
     public ChatViewModel(OutputChannel? outputChannel = null, VisualStudioExtensibility? extensibility = null)
         : this(new WorkerBridge(outputChannel), outputChannel, extensibility, autoConnect: true)
@@ -151,6 +151,8 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         selectedModel = Models[0];
         ReasoningEfforts = [];
         RefreshReasoningEfforts();
+        ServiceTiers = [];
+        RefreshServiceTiers();
 
         ApprovalModes = ApprovalModeCatalog.CreateBuiltIns();
         selectedApprovalMode = FindApprovalMode(ApprovalModeCatalog.CustomId);
@@ -469,30 +471,35 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     public ObservableCollection<ReasoningEffortOption> ReasoningEfforts { get; }
 
     [DataMember]
-    public string? SelectedModel
+    public ObservableCollection<ServiceTierOption> ServiceTiers { get; }
+
+    [DataMember]
+    public string SelectedServiceTierId
     {
-        get => selectedModel;
+        get => selectedServiceTierId;
         set
         {
-            // The VS-side ComboBox writes null back through the TwoWay SelectedItem binding
-            // whenever its ItemsSource momentarily invalidates the current selection. Remote UI
-            // delivers that write-back asynchronously, so it can arrive after a newer selection
-            // was already set here and would blank the picker. Only ignore the null when the
-            // current selection is still a valid entry (the signature of a stale write-back);
-            // if the current selection is already invalid, let the null through so the VM does
-            // not end up stuck on a value that no longer exists in the list.
-            if (value is null && selectedModel is not null && Models.Contains(selectedModel))
+            ServiceTierOption? option = ServiceTiers.FirstOrDefault(candidate =>
+                string.Equals(candidate.Id, value, StringComparison.OrdinalIgnoreCase));
+            if (option is null || !SetProperty(ref selectedServiceTierId, option.Id))
             {
                 return;
             }
 
-            if (SetProperty(ref selectedModel, value))
-            {
-                RefreshReasoningEfforts();
-                UpdateComposerSuggestions(ComposerText);
-            }
+            settings.ServiceTierId = option.Id;
+            settingsStore.Save(settings);
+            OnPropertyChanged(nameof(ServiceTierHelpText));
         }
     }
+
+    [DataMember]
+    public bool HasServiceTiers => ServiceTiers.Count > 1;
+
+    [DataMember]
+    public string ServiceTierHelpText
+        => ServiceTiers.FirstOrDefault(option =>
+            string.Equals(option.Id, SelectedServiceTierId, StringComparison.OrdinalIgnoreCase))?.AutomationName
+        ?? "Inherit the service tier from the Codex configuration.";
 
     [DataMember]
     public string SelectedReasoningEffortId
@@ -500,9 +507,6 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         get => selectedReasoningEffortId;
         set
         {
-            // Ignore transient null/unknown SelectedValue writes produced while Remote UI applies
-            // the collection merge. A model fallback is visual only and must not overwrite the
-            // user's persisted choice.
             ReasoningEffortOption? option = FindReasoningEffort(value);
             if (option is null || string.Equals(selectedReasoningEffortId, option.Id, StringComparison.Ordinal))
             {
@@ -524,6 +528,33 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     public string ReasoningEffortHelpText
         => FindReasoningEffort(SelectedReasoningEffortId)?.Description
             ?? "Inherit the reasoning effort from the Codex configuration.";
+
+    [DataMember]
+    public string? SelectedModel
+    {
+        get => selectedModel;
+        set
+        {
+            // The VS-side ComboBox writes null back through the TwoWay SelectedItem binding
+            // whenever its ItemsSource momentarily invalidates the current selection. Remote UI
+            // delivers that write-back asynchronously, so it can arrive after a newer selection
+            // was already set here and would blank the picker. Only ignore the null when the
+            // current selection is still a valid entry (the signature of a stale write-back);
+            // if the current selection is already invalid, let the null through so the VM does
+            // not end up stuck on a value that no longer exists in the list.
+            if (value is null && selectedModel is not null && Models.Contains(selectedModel))
+            {
+                return;
+            }
+
+            if (SetProperty(ref selectedModel, value))
+            {
+                RefreshReasoningEfforts();
+                RefreshServiceTiers();
+                UpdateComposerSuggestions(ComposerText);
+            }
+        }
+    }
 
     [DataMember]
     public ObservableCollection<string> Modes { get; } = ["Agent", "Chat"];
@@ -1051,6 +1082,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 }
             }
 
+            RefreshServiceTiers();
             UpdateComposerSuggestions(ComposerText);
             RefreshReasoningEfforts();
         }).ConfigureAwait(false);
@@ -1172,6 +1204,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             : null;
         string? collaborationMode = forcePlanMode ? "plan" : nextCollaborationMode;
         TurnSettingResolution reasoning = ResolveReasoningSetting(threadId);
+        TurnSettingResolution serviceTier = ResolveServiceTierSetting(threadId);
         return new StartTurnRequest
         {
             ThreadId = threadId,
@@ -1184,8 +1217,8 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             HasEffort = reasoning.HasValue,
             Effort = reasoning.Value,
             Personality = nextPersonality,
-            HasServiceTier = nextServiceTier is not null,
-            ServiceTier = nextServiceTier,
+            HasServiceTier = serviceTier.HasValue,
+            ServiceTier = serviceTier.Value,
             CollaborationMode = collaborationMode is null
                 ? null
                 : new CollaborationModeInfo
@@ -1203,16 +1236,16 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     // value re-queued while the turn was starting survives for the following turn.
     private void ConsumeNextTurnSettings(StartTurnRequest request)
     {
-        if (pendingReasoningByThread.TryGetValue(request.ThreadId, out PendingReasoningOverride pending)
+        if (pendingReasoningByThread.TryGetValue(request.ThreadId, out PendingReasoningOverride reasoningPending)
             && request.HasEffort
-            && string.Equals(pending.Effort, request.Effort, StringComparison.Ordinal))
+            && string.Equals(reasoningPending.Effort, request.Effort, StringComparison.Ordinal))
         {
             pendingReasoningByThread.Remove(request.ThreadId);
-            reasoningRestoreByThread[request.ThreadId] = pending.RestoreEffort;
+            reasoningRestoreByThread[request.ThreadId] = reasoningPending.RestoreEffort;
         }
-        else if (reasoningRestoreByThread.TryGetValue(request.ThreadId, out string? restore)
+        else if (reasoningRestoreByThread.TryGetValue(request.ThreadId, out string? reasoningRestore)
             && request.HasEffort
-            && string.Equals(restore, request.Effort, StringComparison.Ordinal))
+            && string.Equals(reasoningRestore, request.Effort, StringComparison.Ordinal))
         {
             reasoningRestoreByThread.Remove(request.ThreadId);
         }
@@ -1222,9 +1255,18 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             nextPersonality = null;
         }
 
-        if (string.Equals(nextServiceTier, request.ServiceTier, StringComparison.Ordinal))
+        if (pendingServiceTierByThread.TryGetValue(request.ThreadId, out PendingServiceTierOverride? pending)
+            && request.HasServiceTier
+            && string.Equals(pending.Tier, request.ServiceTier, StringComparison.Ordinal))
         {
-            nextServiceTier = null;
+            pendingServiceTierByThread.Remove(request.ThreadId);
+            serviceTierRestoreByThread[request.ThreadId] = pending.RestoreTier;
+        }
+        else if (serviceTierRestoreByThread.TryGetValue(request.ThreadId, out string? restore)
+            && request.HasServiceTier
+            && string.Equals(restore, request.ServiceTier, StringComparison.Ordinal))
+        {
+            serviceTierRestoreByThread.Remove(request.ThreadId);
         }
 
         if (request.CollaborationMode is not null
@@ -1236,6 +1278,53 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             nextCollaborationMode = null;
         }
     }
+
+    private TurnSettingResolution ResolveServiceTierSetting(string threadId)
+    {
+        if (pendingServiceTierByThread.TryGetValue(threadId, out PendingServiceTierOverride? pending))
+        {
+            if (SelectedModelSupportsServiceTier(pending.Tier))
+            {
+                return new TurnSettingResolution(true, pending.Tier);
+            }
+        }
+
+        if (serviceTierRestoreByThread.TryGetValue(threadId, out string? restore))
+        {
+            if (restore is null || SelectedModelSupportsServiceTier(restore))
+            {
+                return new TurnSettingResolution(true, restore);
+            }
+        }
+
+        ServiceTierOption? configured = ServiceTiers.FirstOrDefault(option =>
+            option.Id.Length > 0
+            && string.Equals(option.Id, settings.ServiceTierId, StringComparison.OrdinalIgnoreCase));
+        return configured is null
+            ? new TurnSettingResolution(false, null)
+            : new TurnSettingResolution(true, configured.Id);
+    }
+
+    private bool SelectedModelSupportsServiceTier(string tier)
+        => GetSelectedModelInfo()?.ServiceTiers.Any(option =>
+            string.Equals(option.Id, tier, StringComparison.OrdinalIgnoreCase)) == true;
+
+    private string? GetEffectiveServiceTier(string threadId)
+    {
+        ThreadSummary? thread = SelectedThread;
+        if (thread is not null && string.Equals(thread.Id, threadId, StringComparison.Ordinal))
+        {
+            return thread.EffectiveServiceTier;
+        }
+
+        return string.Equals(Status.ThreadId, threadId, StringComparison.Ordinal)
+            ? Status.EffectiveServiceTier
+            : null;
+    }
+
+    private sealed record PendingServiceTierOverride(string Tier, string? RestoreTier);
+
+    private readonly record struct TurnSettingResolution(bool HasValue, string? Value);
 
     private void UpdateComposerSuggestions(string text)
     {
@@ -1582,10 +1671,32 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     }
 
     private ModelInfo? GetSelectedModelInfo()
-        => string.Equals(modelCatalog.DefaultModelInfo?.Id, SelectedModel, StringComparison.Ordinal)
-            ? modelCatalog.DefaultModelInfo
-            : modelCatalog.Models.FirstOrDefault(
-                model => string.Equals(model.Id, SelectedModel, StringComparison.Ordinal));
+    {
+        if (string.Equals(modelCatalog.DefaultModelInfo?.Id, SelectedModel, StringComparison.Ordinal))
+        {
+            return modelCatalog.DefaultModelInfo;
+        }
+
+        return modelCatalog.Models.FirstOrDefault(
+            model => string.Equals(model.Id, SelectedModel, StringComparison.Ordinal));
+    }
+
+    private void RefreshServiceTiers()
+    {
+        IReadOnlyList<ServiceTierOption> options = ServiceTierCatalog.Create(GetSelectedModelInfo(), markdown);
+        ServiceTierCatalog.Merge(ServiceTiers, options);
+        ServiceTierOption? configured = ServiceTiers.FirstOrDefault(option =>
+            string.Equals(option.Id, settings.ServiceTierId, StringComparison.OrdinalIgnoreCase));
+        string displayedId = configured?.Id ?? ServiceTierCatalog.DefaultId;
+        if (!string.Equals(selectedServiceTierId, displayedId, StringComparison.Ordinal))
+        {
+            selectedServiceTierId = displayedId;
+            OnPropertyChanged(nameof(SelectedServiceTierId));
+        }
+
+        OnPropertyChanged(nameof(HasServiceTiers));
+        OnPropertyChanged(nameof(ServiceTierHelpText));
+    }
 
     private void RefreshReasoningEfforts()
     {
@@ -1743,6 +1854,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         => invocation.Definition.Id is
             SlashCommandId.Compact
             or SlashCommandId.Fork
+            or SlashCommandId.Fast
             or SlashCommandId.Goal
             or SlashCommandId.Reasoning
             or SlashCommandId.Review
@@ -1772,7 +1884,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 SlashCommandId.Goal => await ExecuteGoalAsync(targetThreadId!, invocation.Arguments).ConfigureAwait(false),
                 SlashCommandId.Mcp => await ExecuteMcpAsync(targetThreadId).ConfigureAwait(false),
                 SlashCommandId.Review => await ExecuteReviewAsync(targetThreadId!, invocation.Arguments).ConfigureAwait(false),
-                SlashCommandId.Fast => await ExecuteFastAsync().ConfigureAwait(false),
+                SlashCommandId.Fast => await ExecuteFastAsync(targetThreadId!).ConfigureAwait(false),
                 SlashCommandId.Model => await ExecuteModelAsync(invocation.Arguments).ConfigureAwait(false),
                 SlashCommandId.Personality => await ExecutePersonalityAsync(invocation.Arguments).ConfigureAwait(false),
                 SlashCommandId.Plan => await ExecutePlanAsync(targetThreadId!, invocation.Arguments).ConfigureAwait(false),
@@ -1999,15 +2111,34 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         return await HandleOperationResultAsync(SlashCommandId.Review, result, "Code review started.").ConfigureAwait(false);
     }
 
-    private async Task<bool> ExecuteFastAsync()
+    private async Task<bool> ExecuteFastAsync(string threadId)
     {
-        if (!SelectedModelSupportsFastTier())
+        ServiceTierInfo? fastTier = GetSelectedModelInfo()?.ServiceTiers.FirstOrDefault(
+            tier => string.Equals(tier.Id, "fast", StringComparison.OrdinalIgnoreCase));
+        if (fastTier is null)
         {
             await ShowSlashFailureAsync("The selected model does not support the fast service tier.").ConfigureAwait(false);
             return false;
         }
 
-        nextServiceTier = "fast";
+        string? restoreTier;
+        if (pendingServiceTierByThread.TryGetValue(threadId, out PendingServiceTierOverride? existing))
+        {
+            restoreTier = existing.RestoreTier;
+        }
+        else if (serviceTierRestoreByThread.TryGetValue(threadId, out string? queuedRestore))
+        {
+            restoreTier = queuedRestore;
+        }
+        else
+        {
+            ServiceTierOption? configured = ServiceTiers.FirstOrDefault(option =>
+                option.Id.Length > 0
+                && string.Equals(option.Id, settings.ServiceTierId, StringComparison.OrdinalIgnoreCase));
+            restoreTier = configured?.Id ?? GetEffectiveServiceTier(threadId);
+        }
+
+        pendingServiceTierByThread[threadId] = new PendingServiceTierOverride(fastTier.Id, restoreTier);
         await ShowSlashStatusAsync("Fast service tier will be used for the next turn.").ConfigureAwait(false);
         return true;
     }
@@ -2091,6 +2222,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 ? GetEffectiveReasoningEffort(threadId)
                 : persistent.Id;
         }
+
         pendingReasoningByThread[threadId] = new PendingReasoningOverride(matched.Id, restoreEffort);
         await ShowSlashStatusAsync($"Reasoning effort set to {matched.Id} for the next turn in this thread.").ConfigureAwait(false);
         return true;
@@ -2158,6 +2290,22 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         string nextReasoningText = nextReasoning.HasValue
             ? nextReasoning.Value ?? "(explicit null)"
             : "(config.toml)";
+        string desiredServiceTier = string.IsNullOrEmpty(settings.ServiceTierId)
+            ? "(config.toml)"
+            : markdown.ToSafeText(settings.ServiceTierId);
+        string effectiveServiceTier = threadId is null
+            ? Status.EffectiveServiceTier ?? "(unknown)"
+            : GetEffectiveServiceTier(threadId) ?? "(config/default)";
+        TurnSettingResolution nextServiceTier = threadId is null
+            ? new TurnSettingResolution(false, null)
+            : ResolveServiceTierSetting(threadId);
+        string pendingServiceTier = threadId is not null
+            && pendingServiceTierByThread.TryGetValue(threadId, out PendingServiceTierOverride? pending)
+                ? pending.Tier
+                : "(none)";
+        string nextServiceTierText = nextServiceTier.HasValue
+            ? nextServiceTier.Value ?? "(explicit null)"
+            : "(config.toml)";
         string message = string.Join(
             "\r\n",
             $"Connection: {Status.State}",
@@ -2167,7 +2315,10 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             $"Effective reasoning effort: {GetEffectiveReasoningEffort(threadId ?? string.Empty) ?? "(not reported)"}",
             $"Next-turn reasoning effort: {nextReasoningText}",
             $"Personality: {nextPersonality ?? "(default)"}",
-            $"Service tier: {nextServiceTier ?? "(default)"}",
+            $"Desired service tier: {desiredServiceTier}",
+            $"Effective service tier: {effectiveServiceTier}",
+            $"Pending service-tier override: {pendingServiceTier}",
+            $"Next-turn service tier: {nextServiceTierText}",
             $"Collaboration mode: {nextCollaborationMode ?? "default"}",
             $"Desired permissions: {DesiredApprovalModeText}",
             $"Effective permissions: {EffectiveApprovalModeText}",
