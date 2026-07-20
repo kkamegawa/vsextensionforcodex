@@ -1313,6 +1313,15 @@
                         Visibility="{Binding HasReasoningEfforts, Converter={StaticResource BoolToVis}}"
                         AutomationProperties.Name="Reasoning effort"
                         AutomationProperties.HelpText="{Binding ReasoningEffortHelpText}" />
+              <ComboBox Margin="6,0,0,0" Width="112" VerticalAlignment="Center"
+                        ToolTip="{Binding ServiceTierHelpText}"
+                        ItemsSource="{Binding ServiceTiers}"
+                        DisplayMemberPath="DisplayText"
+                        SelectedValuePath="Id"
+                        SelectedValue="{Binding SelectedServiceTierId, Mode=TwoWay}"
+                        Visibility="{Binding HasServiceTiers, Converter={StaticResource BoolToVis}}"
+                        AutomationProperties.Name="Speed"
+                        AutomationProperties.HelpText="{Binding ServiceTierHelpText}" />
               <CheckBox Margin="8,0,0,0" VerticalAlignment="Center"
                         Content="Experimental API"
                         ToolTip="Enable codex experimental APIs for structured prompts after reconnect; natural-language confirmation cards are detected locally."
