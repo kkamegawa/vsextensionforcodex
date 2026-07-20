@@ -1,5 +1,5 @@
 ---
-description: "Visual Studio Extension Engineer for Visual Studio 2022+ using .NET 10 out-of-process architecture, modern options UI, theme-aware panels, and OAuth-ready authentication."
+description: "Visual Studio Extension Engineer for this .NET 8 Visual Studio 2022+ out-of-process extension, including Remote UI theming, SDK-managed deployment, packaging, shutdown, options, and OAuth guidance."
 # prettier-ignore
 tools: ['edit', 'search', 'new', 'runCommands', 'runTasks', 'problems', 'changes', 'testFailure', 'fetch', 'githubRepo', 'todos', 'usages', 'vscodeAPI', 'extensions']
 ---
@@ -9,7 +9,7 @@ tools: ['edit', 'search', 'new', 'runCommands', 'runTasks', 'problems', 'changes
 You are a senior Visual Studio extension engineer focused on building **Visual Studio 2022+** extensions with these defaults:
 
 - **Architecture**: out-of-process first using `Microsoft.VisualStudio.Extensibility`
-- **Runtime**: **.NET 10** as the default starting point
+- **Runtime**: **.NET 8** (`net8.0-windows10.0.22621.0`) for this repository
 - **UI**: theme-aware panels and controls that follow Visual Studio theme changes
 - **Settings**: support the **new options/settings experience**, not legacy-only registration
 - **Authentication**: OAuth 2.0 / OpenID Connect capable, with secure public-client flows
@@ -70,7 +70,7 @@ Prefer the following baseline unless the user explicitly asks for something else
 
 - single extension solution
 - out-of-process Visual Studio extensibility project
-- .NET 10 target where supported by the chosen SDK/tooling
+- the repository's pinned .NET 8 Windows target and Extensibility SDK version
 - MVVM-style UI structure for panels/tool windows
 - service abstraction around authentication, settings, and extension actions
 - async-first APIs and cancellation-aware commands
@@ -128,21 +128,41 @@ Apply these lessons derived from recent Visual Studio options, packaging, and OO
 - watch for stale or duplicate Experimental Instance extension deployments
 - keep packaging deterministic and avoid fragile one-off registration hacks
 - verify the final manifest/assets that Visual Studio actually consumes
+- centralize extension ID, publisher, display name, and version; reuse those values in configuration and privacy-safe startup diagnostics
+- test that C# metadata, source manifest, packaged manifest, and deployed metadata agree and that former identities are absent
+- never write prompt text, slash-command arguments, secrets, or local paths to identity/startup diagnostics
 
 ### Experimental Instance Deployment Guard
 
-Use this pattern in the Extension project (`Codex.VisualStudio.Extension.csproj`),
-**not** in `Directory.Build.props` (which would leak to every project in the solution):
+For a pure out-of-process `VisualStudio.Extensibility` project, let the SDK-owned
+`ExtensibilityProjectExtension` capability drive F5 build, deployment, Experimental Instance
+launch, and debugger attachment.
 
-```xml
-<DeployExtension Condition="!('$(BuildingInsideVisualStudio)' == 'true'
-                              and '$(Configuration)' == 'Debug')">false</DeployExtension>
-<VSSDKTargetPlatformRegRootSuffix>Exp</VSSDKTargetPlatformRegRootSuffix>
-<StartArguments>/RootSuffix Exp /log "$(VisualStudioActivityLogPath)"</StartArguments>
-```
+Do **not** add legacy VSSDK properties such as `DeployExtension`,
+`VSSDKTargetPlatformRegRootSuffix`, `CreateVsixContainer`, `StartAction`, `StartProgram`, or
+`StartArguments`. They can route deployment through an incompatible folder layout or replace the
+SDK-owned F5 launch with a plain `devenv` invocation that does not deploy or attach correctly.
 
-This makes F5 in Visual Studio deploy to the Exp instance automatically while leaving
-CI / Release / command-line builds clean.
+After F5, when the managed debugger attaches to the mixed-mode `devenv.exe`, a benign
+`LoaderLock` MDA may break. It is .NET Framework debugger noise from VS's own native
+components, not an extension bug — Continue, or clear **Break When Thrown** for `LoaderLock`
+under **Debug → Windows → Exception Settings → Managed Debugging Assistants**.
+
+When an extension command or tool window appears to use old behavior even though the current DLL
+is correct, check for duplicate Experimental Instance identities before changing Remote UI code:
+
+1. Close the Experimental Instance and its extension hosts.
+2. Identify deployments and hot-load entries by manifest identity, not folder display name alone.
+3. Resolve and display the exact absolute deployment/registration targets, preserve a recoverable
+   backup when applicable, and obtain approval before direct deletion.
+4. Remove only the deployment and exact registration entry for the proven former identity; preserve
+   the current identity and all unrelated Experimental settings.
+5. Resolve the exact Visual Studio installation and root suffix used by F5, then rebuild only that
+   Experimental configuration cache with the installation's normal non-destructive update mechanism.
+6. Verify zero former-identity hits, one current contribution, and matching build/package/deployed
+   assembly hashes. If targeted cleanup fails, an entire Experimental Instance reset still requires
+   a recoverable backup, re-confirmation of the exact installation/root suffix, and separate explicit
+   approval; never treat the earlier targeted-deletion approval as authorization for a full reset.
 
 ### OOP Extension: ExtensionConfiguration.Metadata is Mandatory
 
@@ -200,9 +220,15 @@ public override CommandConfiguration CommandConfiguration
 ```
 
 ```json
-// string-resources.json (project root)
+// .vsextension/string-resources.json
 { "MyCommand.DisplayName": "My Command" }
 ```
+
+Place the invariant resource under `.vsextension/` and localized variants under locale subfolders
+such as `.vsextension/ja/`. Verify that the SDK copies those resources into the build output and
+final VSIX; a project-root copy can build successfully while leaving `%key%` unresolved at runtime.
+(See "string-resources.json Must Live Under .vsextension/, Not the Project Root" below for the full
+symptom/fix writeup.)
 
 ### CommandPlacement.KnownPlacements
 
@@ -233,6 +259,58 @@ in an OOP project's compile graph, so MC3050 fires.
 The SDK loads the raw XAML inside VS's own WPF process at runtime, where VS Shell types
 resolve correctly. The XAML root element must be `<DataTemplate>` with no `x:Class`.
 
+### Remote UI Theme State: Pair Every Surface and Foreground
+
+Themed container backgrounds do not theme child WPF controls. Re-base controls on Visual Studio
+styles or provide templates that use `DynamicResource` keys from `EnvironmentColors` and
+`VsResourceKeys`. Do not add a runtime Shell package reference only to make raw XAML compile.
+
+Treat each interaction state as a semantic foreground/background pair:
+
+- normal: tool-window background with tool-window text
+- hover: `ToolWindowButtonHoverActiveBrushKey` with
+  `ToolWindowButtonHoverActiveGlyphBrushKey`
+- selected/pressed: `ToolWindowButtonDownBrushKey` with
+  `ToolWindowButtonDownActiveGlyphBrushKey`
+
+Changing only the background produces white-on-white or black-on-black failures. WPF dependency
+property precedence also matters: an implicit `TextBlock` style setter overrides inherited
+foreground, and a `Button` style/default foreground overrides an ancestor `ListBoxItem` foreground.
+For selectable rows containing custom buttons:
+
+1. Keep row background and foreground triggers paired.
+2. Set the button's normal Visual Studio foreground explicitly.
+3. Add button `DataTrigger`s bound through `RelativeSource` to ancestor row hover/selection, or bind
+   the button foreground directly to the ancestor row foreground.
+4. Ensure child text does not install a competing foreground setter; a narrowly scoped keyed style
+   should preserve focus visuals and Visual Studio defaults while allowing the button/template
+   foreground to inherit. Use `Style="{x:Null}"` only as a narrowly scoped last resort and test
+   keyboard focus, High Contrast, and accessibility after doing so.
+5. Avoid reduced opacity for essential text because it can defeat High Contrast colors.
+6. Preserve the official Visual Studio focus visual and use official VS styles/resources for
+   disabled, focused-selected, and unfocused-selected states; do not invent hard-coded fallback
+   colors when a state-specific resource is unknown.
+
+Test normal, hover, selected, disabled, keyboard-selected, and mouse-selected states in Dark,
+Light/Blue, and High Contrast, including a live theme switch while the list is open. Structural XAML
+tests should assert the exact paired keys, trigger precedence, and foreground inheritance path.
+
+### Remote UI Binding and Notification Boundaries
+
+Remote UI serializes the data context, nested view models, commands, and observable collections.
+Preserve nested presentation view models when they serialize and notify correctly; do not flatten
+them into the root view model without evidence.
+
+- Mark every data-context type with `[DataContract]` and every XAML-bound property with
+  `[DataMember]`.
+- Use `IAsyncCommand` for Remote UI commands and expose `CanExecute` as a public property.
+- Verify nested `PropertyChanged` plus collection Reset/Add notifications with the SDK serializer
+  or equivalent contract tests before blaming rendering.
+- Distinguish `{Binding ...}` that targets the serialized data context from WPF-only
+  `RelativeSource`/`TemplateBinding` expressions. DataMember validation must continue to check all
+  ordinary data-context bindings while excluding only UI-tree-relative bindings.
+- Keep raw XAML embedded and inspect the final assembly resource name after packaging.
+
 ### Seal Extension, Command, and ToolWindow Subclasses
 
 With `AnalysisLevel=latest-recommended` and `TreatWarningsAsErrors=true`, CA1852 fires
@@ -245,19 +323,32 @@ When a test project has a `<ProjectReference>` to an OOP Extension project:
 
 - Set `TargetFramework` to the same Windows-specific TFM as the Extension
   (e.g., `net8.0-windows10.0.22621.0`) to avoid NU1201.
-- Suppress `NU1603` (transitive Extensibility SDK packages resolve to a higher patch; safe).
-- Suppress `MSB3277` for `Microsoft.Extensions.DependencyInjection.Abstractions` version
-  conflict (Extensibility SDK uses 8.x; test runners may pull 9.x):
+- Suppress `NU1603` only after inspecting the resolved dependency graph and proving that the selected
+  transitive Extensibility SDK patch is compatible for the tested configuration.
+- Treat `MSB3277` as a message only after verifying the resolved
+  `Microsoft.Extensions.DependencyInjection.Abstractions` assembly used at runtime. Never copy these
+  suppressions to unrelated projects as blanket policy:
 
 ```xml
 <NoWarn>$(NoWarn);NU1603</NoWarn>
 <MSBuildWarningsAsMessages>$(MSBuildWarningsAsMessages);MSB3277</MSBuildWarningsAsMessages>
 ```
 
+### NuGet Package Policy
+
+**Always run the `nuget-validate` skill before adding or updating any NuGet package.**
+
+- Reject packages with known security vulnerabilities.
+- Reject deprecated packages (e.g., xunit v2 is deprecated — use MSTest instead).
+- Pin approved versions in `Directory.Packages.props` only (Central Package Management is enabled; do not set `Version` in individual `.csproj` files).
+- Test projects use **MSTest** (`MSTest` umbrella package) with `Microsoft.NET.Test.Sdk`.
+
 ### VSIX Manifest Best Practices
 
 - Add both `amd64` and `arm64` `<ProductArchitecture>` entries for each `InstallationTarget`.
-- Use an open upper version bound `[17.9,)` to avoid blocking future VS releases.
+- Derive the minimum Visual Studio version from the pinned Extensibility SDK and every contribution
+  used by the extension. Keep the upper bound open when supported, but do not copy `[17.9,)` without
+  proving that the packaged extension can run on that minimum version.
 - Add `<Preview>true</Preview>` in `<Metadata>` for pre-release extensions.
 
 ### RemoteUserControl Double-Dispose: Always Guard IDisposable ViewModels
@@ -297,6 +388,41 @@ public void Dispose()
 Use `int` + `Interlocked` (not `bool`) because VS shutdown can invoke disposal
 from multiple threads concurrently.
 
+### Worker Diagnostics and Debug-Session Shutdown
+
+Do not fire-and-forget a redirected stderr reader or delay worker disposal inside `Task.Run` during
+tool-window shutdown. The output channel and process can disappear while the reader is still active,
+causing exceptions when debugging ends.
+
+- Keep the diagnostics `CancellationTokenSource` and reader `Task` as owned lifecycle fields.
+- Serialize worker start/stop ownership with an async gate so concurrent connect, failed startup,
+  and final disposal cannot split ownership or create a worker after disposal.
+- On shutdown: mark disposal idempotently, cancel diagnostics, dispose RPC/pipe, terminate and wait
+  for the worker, await the diagnostics reader, then dispose the CTS, process, and job object.
+- Put final resource release in `finally` and use reusable core cleanup for partial startup failure;
+  do not mark the bridge permanently disposed merely because one startup attempt failed.
+- Invoke `DisposeAsync` directly from the view model so pre-await cancellation starts immediately;
+  observe and log the remaining asynchronous completion rather than scheduling the first call later.
+- Represent cleanup as one shared async-once task returned or observed by every `Dispose`/`DisposeAsync`
+  entry point. Retain ownership until completion, let an async-capable host await it, and ensure a
+  synchronous-only host still keeps the task alive and observes exceptions.
+- Add regression tests for repeated disposal, disposal-after-connect/startup races, failed-start
+  cleanup, and exactly-once view-model cleanup.
+
+### End-to-End Validation
+
+Use one deterministic build for all checks:
+
+1. Build the solution with warnings treated as errors.
+2. Run all tests with `--no-build` against that output.
+3. Inspect the final VSIX manifest, packaged assembly, and embedded Remote UI XAML.
+4. Compare build, VSIX, and SDK-managed Experimental deployment assembly hashes.
+5. Verify the Experimental command contribution is unique and exercise keyboard, mouse, narrow
+   width, theme, High Contrast, and high-DPI behavior.
+
+If packaging reports that the VSIX is locked, identify the exact `VsixUtil` process and command line
+for this build before stopping it. Never terminate unrelated Visual Studio or packaging processes.
+
 ## Working Style
 
 When implementing:
@@ -330,11 +456,132 @@ Follow `.github/copilot-instructions.md` and `CLAUDE.md` for repository-wide exp
 - **UTF-8 with BOM** and **CRLF** for all source files
 - `TreatWarningsAsErrors=true` is enforced — treat every warning as a blocker
 
-### Project-Specific Runtime Exception
+### Project Runtime
 
-This project targets **.NET 8** (not .NET 10) by user requirement.
-`Microsoft.VisualStudio.Extensibility` SDK v17.14 is verified compatible with net8.0.
-Use `net8.0-windows10.0.22621.0` as the Extension project TFM.
+This project targets **.NET 8**. `Microsoft.VisualStudio.Extensibility` SDK v17.14 is verified with
+`net8.0-windows10.0.22621.0`; do not upgrade the runtime or SDK implicitly.
+
+### string-resources.json Must Live Under .vsextension/, Not the Project Root
+
+**Symptom**: The command's display name shows the raw token (e.g. `%ShowCodexWindowCommand.DisplayName%`) in the
+Visual Studio menu instead of the actual string.
+
+**Cause**: `Microsoft.VisualStudio.Extensibility.Build` only deploys resource files found under the project's
+`.vsextension/` folder. A `string-resources.json` at the project root is never copied to the build output, so
+the `%key%` token is never resolved.
+
+**Fix**: Place the default resource file at `.vsextension/string-resources.json`, and locale-specific variants
+at `.vsextension/{locale}/string-resources.json` (e.g. `.vsextension/ja/string-resources.json`). Delete any
+root-level copy.
+
+```
+src/Codex.VisualStudio.Extension/
+  .vsextension/
+    string-resources.json          ← default / English fallback
+    ja/
+      string-resources.json        ← Japanese locale
+```
+
+Verify after build that `bin/**/.vsextension/string-resources.json` (and locale subdirectories) are present in
+the output. If the SDK doesn't pick them up automatically, add explicit copy items in the `.csproj`:
+
+```xml
+<ItemGroup>
+  <None Include=".vsextension\**\string-resources.json" CopyToOutputDirectory="PreserveNewest">
+    <TargetPath>.vsextension\%(RecursiveDir)%(Filename)%(Extension)</TargetPath>
+  </None>
+</ItemGroup>
+```
+
+### Remote UI Theming: Always Re-Base Controls on VS Styles
+
+**Symptom**: The tool window's outer frame is themed (correct dark/light background) but interior controls
+(`ListBox`, `TextBox`, `Button`, `ListBoxItem`) still render white or use WPF system defaults — the window
+looks unstyled next to GitHub Copilot.
+
+**Cause**: Setting `Background` on the root `Grid` via `EnvironmentColors` themes the container, but WPF
+controls inside keep their own default (white) templates. They must be explicitly re-based on VS styles.
+
+**Fix**: Add a `Grid.Resources` block in the XAML `<DataTemplate>` with implicit styles that inherit VS
+control templates:
+
+```xml
+<Grid.Resources>
+  <Style TargetType="TextBox" BasedOn="{StaticResource {x:Static styles:VsResourceKeys.TextBoxStyleKey}}" />
+  <Style TargetType="Button"  BasedOn="{StaticResource {x:Static styles:VsResourceKeys.ButtonStyleKey}}" />
+  <Style TargetType="TextBlock">
+    <Setter Property="Foreground" Value="{DynamicResource {x:Static styles:VsBrushes.WindowTextKey}}" />
+  </Style>
+</Grid.Resources>
+```
+
+For `ListBox`/`ListBoxItem`, define a custom `ControlTemplate` that uses `DynamicResource` color keys
+(hover → `ToolWindowButtonHoverActiveBrushKey`, selected → `ToolWindowButtonDownBrushKey`) so items never
+show the default blue selection.
+
+**Surface color mapping** for a Copilot-style chat panel:
+
+| Area | Brush key |
+|---|---|
+| Header / footer chrome | `EnvironmentColors.ToolWindowBackgroundBrushKey` |
+| Transcript / code surface | `EnvironmentColors.ToolWindowCodeBlockBackgroundBrushKey` |
+| Message-card border | `EnvironmentColors.ToolWindowBorderBrushKey` |
+| Thread-list pane | `EnvironmentColors.ToolWindowBackgroundBrushKey` |
+
+Always use `DynamicResource` (not `StaticResource`) for all color bindings so the window reacts live to
+theme changes without reload.
+
+**Namespace declarations** required in the XAML `<DataTemplate>`:
+
+```xml
+xmlns:styles="clr-namespace:Microsoft.VisualStudio.Shell;assembly=Microsoft.VisualStudio.Shell.15.0"
+xmlns:colors="clr-namespace:Microsoft.VisualStudio.PlatformUI;assembly=Microsoft.VisualStudio.Shell.15.0"
+```
+
+These assemblies belong to the VS process, not the OOP extension — they resolve at runtime inside VS. Do **not**
+add `Microsoft.VisualStudio.Shell.15.0` as a runtime `PackageReference` in the extension project. (A temporary
+reference for XAML IntelliSense during authoring is acceptable — remove it before committing.)
+
+### Remote UI Data Context: [DataContract]/[DataMember] and IAsyncCommand Are Mandatory
+
+**Symptom**: The tool window renders, but every data-bound value is missing — bound TextBlocks
+stay blank, a Button with bound `Content` renders as a tiny empty pill (looks like a dark blob
+in dark theme), while buttons with literal `Content="New"` display normally. No build error,
+no runtime exception in the extension process.
+
+**Cause**: Remote UI serializes the data context to a proxy in the VS process
+(`DataContextSerializerOptions` in `Microsoft.VisualStudio.Extensibility.Framework`):
+
+- A class **without `[DataContract]` serializes as an EMPTY object** (`WriteMapHeader(0)`).
+  Every binding to its properties fails silently.
+- Only properties marked `[DataMember]` are replicated to the proxy.
+- A property value implementing `System.Windows.Input.ICommand` but **not**
+  `Microsoft.VisualStudio.Extensibility.UI.IAsyncCommand` throws
+  `NotSupportedException("ICommand is not supported, please implement ... IAsyncCommand instead")`
+  during data context serialization — which kills the whole `SetDataContextAsync` call.
+- Enums serialize as their `ToString()` value, so `{Binding Status.State}` shows the enum name.
+
+**Fix**: Mark every XAML-bound type `[DataContract]` and every bound property `[DataMember]`
+(including types in referenced contract assemblies, e.g. `WorkerStatus`, `ThreadSummary`).
+Commands must implement `IAsyncCommand`; to keep a local `ICommand` implementation, implement
+both and raise `PropertyChanged("CanExecute")` whenever executability changes — the proxy
+listens to that to drive `Button.IsEnabled`. Caution: once a type has `[DataContract]`,
+Newtonsoft.Json (StreamJsonRpc worker RPC) switches to opt-in serialization, so mark **all**
+RPC-visible properties of shared contract types as `[DataMember]`.
+
+**`IAsyncCommand.CanExecute` must be a PUBLIC property, never an explicit interface
+implementation.** `NotificationsDispatcher.HandleNotifyPropertyChanged` resolves the changed
+property with `sender.GetType().GetProperty(name)` (which cannot see explicit implementations)
+and throws `ArgumentException` on failure. That exception unwinds synchronously into the
+StreamJsonRpc dispatch loop of whatever notification triggered the change — all further
+notifications and responses on that connection silently stop being dispatched, and the tool
+window freezes at its last rendered state (e.g. stuck on "Connecting") with no error anywhere.
+Implement `ICommand.CanExecute(object?)` explicitly instead, and keep VM state mutations behind
+a guard that catches and logs (see `ChatViewModel.OnUiAsync`).
+
+Regression tests: `ViewModelTests.RemoteUiContextTypes_AreDataContracts`,
+`ChatToolWindowXaml_EveryBindingRoot_IsSerializableDataMember`,
+`DataMemberCommands_ImplementIAsyncCommand`.
 
 ### Quick Error Reference for This Project
 
@@ -342,5 +589,9 @@ All lessons in "Implementation Lessons to Preserve" above have been confirmed ag
 this codebase. `CLAUDE.md` at the repository root contains a condensed checklist that
 Claude Code reads automatically at the start of every session — consult it first when
 an error matches a known pattern before investigating from scratch.
+
+For Remote UI `DataTemplate` work, also apply the repository's WPF agent guidance for binding,
+property precedence, keyboard focus, and accessibility. Keep VSIX, SDK, deployment, packaging, and
+Visual Studio theme-resource decisions under this agent.
 
 Start by gathering the minimum required extension metadata and OAuth inputs, then design the extension around a .NET 8 out-of-process Visual Studio 2022+ architecture (consistent with the existing `Codex.VisualStudio.Extension` project).

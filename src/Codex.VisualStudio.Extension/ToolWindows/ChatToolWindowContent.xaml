@@ -10,7 +10,7 @@
        welcome state with suggestion chips, and a rounded composer with mode/model pickers.
        Custom value converters cannot be used here (they would not resolve inside VS's WPF
        process), so the view model exposes pre-computed bool flags for BooleanToVisibility. -->
-  <Grid MinWidth="520"
+  <Grid MinWidth="360"
         MinHeight="360"
         Background="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBackgroundBrushKey}}"
         TextElement.Foreground="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowTextBrushKey}}">
@@ -21,9 +21,132 @@
            correctly in dark/light/high-contrast themes. -->
       <Style TargetType="ComboBox" BasedOn="{StaticResource {x:Static styles:VsResourceKeys.ComboBoxStyleKey}}" />
 
+      <!-- Plain text inputs use the complete VS foreground/background/template pairing. Local
+           composer styles remain explicit and continue to provide their transparent surface. -->
+      <Style TargetType="TextBox" BasedOn="{StaticResource {x:Static styles:VsResourceKeys.TextBoxStyleKey}}" />
+
       <Style TargetType="TextBlock">
         <Setter Property="Foreground" Value="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowTextBrushKey}}" />
         <Setter Property="TextOptions.TextFormattingMode" Value="Display" />
+      </Style>
+
+      <!-- Keep Expander header text inheritable so the themed ToggleButton foreground reaches
+           both the label and glyph in every interaction state. -->
+      <Style x:Key="CommandOutputExpanderHeaderTextStyle" TargetType="TextBlock">
+        <Setter Property="TextOptions.TextFormattingMode" Value="Display" />
+      </Style>
+
+      <!-- The standard Expander control retains its keyboard behavior and ExpandCollapse
+           automation peer. Its header ToggleButton is templated with VS dynamic resources so
+           Dark, Light/Blue, High Contrast, and live theme changes use paired state colors. -->
+      <Style x:Key="CommandOutputExpanderStyle" TargetType="Expander">
+        <Setter Property="Visibility" Value="Collapsed" />
+        <Setter Property="BorderBrush"
+                Value="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBorderBrushKey}}" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="Template">
+          <Setter.Value>
+            <ControlTemplate TargetType="Expander">
+              <Border Background="{TemplateBinding Background}"
+                      BorderBrush="{TemplateBinding BorderBrush}"
+                      BorderThickness="{TemplateBinding BorderThickness}"
+                      CornerRadius="3"
+                      SnapsToDevicePixels="True">
+                <Grid>
+                  <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                  </Grid.RowDefinitions>
+                  <ToggleButton x:Name="HeaderSite"
+                                Grid.Row="0"
+                                Padding="6,4"
+                                HorizontalContentAlignment="Stretch"
+                                Background="{TemplateBinding Background}"
+                                BorderThickness="0"
+                                ClickMode="Release"
+                                Content="{TemplateBinding Header}"
+                                ContentTemplate="{TemplateBinding HeaderTemplate}"
+                                ContentTemplateSelector="{TemplateBinding HeaderTemplateSelector}"
+                                IsChecked="{Binding IsExpanded, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}">
+                    <ToggleButton.Template>
+                      <ControlTemplate TargetType="ToggleButton">
+                        <Border x:Name="HeaderBackground"
+                                Background="{TemplateBinding Background}"
+                                Padding="{TemplateBinding Padding}"
+                                SnapsToDevicePixels="True">
+                          <Grid>
+                            <Grid.ColumnDefinitions>
+                              <ColumnDefinition Width="Auto" />
+                              <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <Path x:Name="HeaderGlyph"
+                                  Grid.Column="0"
+                                  Width="6"
+                                  Height="8"
+                                  Margin="0,0,6,0"
+                                  VerticalAlignment="Center"
+                                  Data="M 0 0 L 6 4 L 0 8 Z"
+                                  Fill="{TemplateBinding Foreground}"
+                                  Stretch="Fill" />
+                            <ContentPresenter Grid.Column="1"
+                                              VerticalAlignment="Center"
+                                              HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                              Content="{TemplateBinding Content}"
+                                              ContentTemplate="{TemplateBinding ContentTemplate}"
+                                              ContentTemplateSelector="{TemplateBinding ContentTemplateSelector}"
+                                              RecognizesAccessKey="True"
+                                              TextElement.Foreground="{TemplateBinding Foreground}" />
+                            <Border x:Name="KeyboardFocusBorder"
+                                    Grid.ColumnSpan="2"
+                                    BorderBrush="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowTextBrushKey}}"
+                                    BorderThickness="1"
+                                    IsHitTestVisible="False"
+                                    Visibility="Collapsed" />
+                          </Grid>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                          <Trigger Property="IsChecked" Value="True">
+                            <Setter TargetName="HeaderGlyph" Property="Data" Value="M 0 0 L 6 0 L 3 5 Z" />
+                          </Trigger>
+                          <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="HeaderBackground" Property="Background"
+                                    Value="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowButtonHoverActiveBrushKey}}" />
+                            <Setter Property="Foreground"
+                                    Value="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowButtonHoverActiveGlyphBrushKey}}" />
+                          </Trigger>
+                          <Trigger Property="IsPressed" Value="True">
+                            <Setter TargetName="HeaderBackground" Property="Background"
+                                    Value="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowButtonDownBrushKey}}" />
+                            <Setter Property="Foreground"
+                                    Value="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowButtonDownActiveGlyphBrushKey}}" />
+                          </Trigger>
+                          <Trigger Property="IsKeyboardFocused" Value="True">
+                            <Setter TargetName="KeyboardFocusBorder" Property="Visibility" Value="Visible" />
+                          </Trigger>
+                        </ControlTemplate.Triggers>
+                      </ControlTemplate>
+                    </ToggleButton.Template>
+                  </ToggleButton>
+                  <ContentPresenter x:Name="ExpandSite"
+                                    Grid.Row="1"
+                                    Margin="8,2,8,8"
+                                    ContentSource="Content"
+                                    Visibility="Collapsed" />
+                </Grid>
+              </Border>
+              <ControlTemplate.Triggers>
+                <Trigger Property="IsExpanded" Value="True">
+                  <Setter TargetName="ExpandSite" Property="Visibility" Value="Visible" />
+                </Trigger>
+              </ControlTemplate.Triggers>
+            </ControlTemplate>
+          </Setter.Value>
+        </Setter>
+        <Style.Triggers>
+          <DataTrigger Binding="{Binding IsCommandOutputCollapsible}" Value="True">
+            <Setter Property="Visibility" Value="Visible" />
+          </DataTrigger>
+        </Style.Triggers>
       </Style>
 
       <!-- ── Rounded secondary button (outlined ghost style) ── -->
@@ -157,6 +280,15 @@
         </Setter>
       </Style>
 
+      <!-- Remove glyphs sit on the selected/down attachment-chip surface. The base template's
+           hover and pressed triggers still replace this foreground with their paired glyph key. -->
+      <Style x:Key="AttachmentRemoveButtonStyle"
+             TargetType="Button"
+             BasedOn="{StaticResource IconButtonStyle}">
+        <Setter Property="Foreground"
+                Value="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowButtonDownActiveGlyphBrushKey}}" />
+      </Style>
+
       <!-- ── Accent icon button (Send / Steer) ── -->
       <Style x:Key="SendIconButtonStyle" TargetType="Button" BasedOn="{StaticResource PrimaryRoundButtonStyle}">
         <Setter Property="FontFamily" Value="Segoe MDL2 Assets" />
@@ -207,6 +339,60 @@
         </Setter>
       </Style>
 
+      <!-- Slash-command suggestions stay inline inside the composer. The button surface is
+           transparent so the ListBoxItem supplies the VS-themed hover and selection state. -->
+      <Style x:Key="SlashSuggestionButtonStyle" TargetType="Button">
+        <Setter Property="Background" Value="Transparent" />
+        <Setter Property="Foreground" Value="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowTextBrushKey}}" />
+        <Setter Property="BorderThickness" Value="0" />
+        <Setter Property="Padding" Value="8,6" />
+        <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+        <Setter Property="Cursor" Value="Hand" />
+        <Setter Property="Template">
+          <Setter.Value>
+            <ControlTemplate TargetType="Button">
+              <Border Background="{TemplateBinding Background}"
+                      Padding="{TemplateBinding Padding}"
+                      SnapsToDevicePixels="True">
+                <ContentPresenter HorizontalAlignment="Stretch"
+                                  VerticalAlignment="Center"
+                                  TextElement.Foreground="{TemplateBinding Foreground}" />
+              </Border>
+            </ControlTemplate>
+          </Setter.Value>
+        </Setter>
+        <Style.Triggers>
+          <DataTrigger Binding="{Binding IsMouseOver, RelativeSource={RelativeSource AncestorType={x:Type ListBoxItem}}}"
+                       Value="True">
+            <Setter Property="Foreground"
+                    Value="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowButtonHoverActiveGlyphBrushKey}}" />
+          </DataTrigger>
+          <DataTrigger Binding="{Binding IsSelected, RelativeSource={RelativeSource AncestorType={x:Type ListBoxItem}}}"
+                       Value="True">
+            <Setter Property="Foreground"
+                    Value="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowButtonDownActiveGlyphBrushKey}}" />
+          </DataTrigger>
+          <Trigger Property="IsEnabled" Value="False">
+            <Setter Property="Opacity" Value="0.5" />
+          </Trigger>
+        </Style.Triggers>
+      </Style>
+
+      <!-- Fixed slash-command options are buttons rather than free-form text. Selection is
+           communicated by both the background and the bound option label for high contrast. -->
+      <Style x:Key="SlashOptionButtonStyle" TargetType="Button" BasedOn="{StaticResource RoundButtonStyle}">
+        <Setter Property="Margin" Value="0,0,6,6" />
+        <Setter Property="Padding" Value="10,4" />
+        <Style.Triggers>
+          <DataTrigger Binding="{Binding IsSelected}" Value="True">
+            <Setter Property="Background"
+                    Value="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowButtonDownBrushKey}}" />
+            <Setter Property="Foreground"
+                    Value="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowButtonDownActiveGlyphBrushKey}}" />
+          </DataTrigger>
+        </Style.Triggers>
+      </Style>
+
       <!-- Selectable list rows (thread history): themed hover/selection, no default blue. -->
       <Style x:Key="SelectableRowStyle" TargetType="ListBoxItem">
         <Setter Property="HorizontalContentAlignment" Value="Stretch" />
@@ -228,10 +414,14 @@
                 <Trigger Property="IsMouseOver" Value="True">
                   <Setter TargetName="Bd" Property="Background"
                           Value="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowButtonHoverActiveBrushKey}}" />
+                  <Setter Property="Foreground"
+                          Value="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowButtonHoverActiveGlyphBrushKey}}" />
                 </Trigger>
                 <Trigger Property="IsSelected" Value="True">
                   <Setter TargetName="Bd" Property="Background"
                           Value="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowButtonDownBrushKey}}" />
+                  <Setter Property="Foreground"
+                          Value="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowButtonDownActiveGlyphBrushKey}}" />
                 </Trigger>
               </ControlTemplate.Triggers>
             </ControlTemplate>
@@ -253,6 +443,11 @@
       </Style>
     </Grid.Resources>
 
+    <Grid.InputBindings>
+      <KeyBinding Key="Return" Modifiers="Control" Command="{Binding SlashCommands.ExecuteKeyCommand}" />
+      <KeyBinding Key="Escape" Command="{Binding SlashCommands.ClearKeyCommand}" />
+    </Grid.InputBindings>
+
     <Grid.RowDefinitions>
       <RowDefinition Height="Auto" />
       <RowDefinition Height="*" />
@@ -272,6 +467,73 @@
                   Style="{StaticResource SmallRoundButtonStyle}" Margin="0,0,8,0"
                   Visibility="{Binding ShowAccountAction, Converter={StaticResource BoolToVis}}" />
 
+          <Grid Margin="0,0,6,0"
+                Visibility="{Binding IsUsageAvailable, Converter={StaticResource BoolToVis}}">
+            <!-- Remote UI cannot run VS-side Popup.Opened code to move keyboard focus. Keep
+                 Escape on the host so keyboard-opened popups can always be dismissed while
+                 focus remains on the toggle. The popup focus scope records the logical entry
+                 target and handles Escape plus cyclic Tab navigation after focus enters it. -->
+            <Grid.InputBindings>
+              <KeyBinding Key="Escape" Command="{Binding CloseUsageCommand}" />
+            </Grid.InputBindings>
+            <Button Content="{Binding Usage.ToolbarText}"
+                    Command="{Binding ToggleUsageCommand}"
+                    ToolTip="{Binding Usage.AutomationHelpText}"
+                    AutomationProperties.Name="{Binding Usage.AutomationName}"
+                    AutomationProperties.HelpText="{Binding Usage.AutomationHelpText}"
+                    Style="{StaticResource SmallRoundButtonStyle}" />
+            <Popup IsOpen="{Binding IsUsageOpen, Mode=TwoWay}"
+                   StaysOpen="False"
+                   Placement="Bottom"
+                   VerticalOffset="2"
+                   AllowsTransparency="True"
+                   PopupAnimation="Fade"
+                   Focusable="True">
+              <Border Width="320" MaxHeight="430" Padding="12" CornerRadius="6" BorderThickness="1"
+                      Focusable="True"
+                      FocusManager.IsFocusScope="True"
+                      FocusManager.FocusedElement="{Binding ElementName=UsageCloseButton}"
+                      KeyboardNavigation.TabNavigation="Cycle"
+                      Background="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBackgroundBrushKey}}"
+                      BorderBrush="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBorderBrushKey}}"
+                      AutomationProperties.Name="Codex usage details"
+                      AutomationProperties.HelpText="Shows current Codex limits and approved help links.">
+                <Border.InputBindings>
+                  <KeyBinding Key="Escape" Command="{Binding CloseUsageCommand}" />
+                </Border.InputBindings>
+                <StackPanel>
+                  <TextBlock Text="Codex usage" FontWeight="SemiBold" FontSize="14" />
+                  <TextBlock Margin="0,6,0,0" Text="{Binding Usage.StatusText}"
+                             AutomationProperties.LiveSetting="Polite" />
+                  <TextBlock Margin="0,8,0,0" Text="{Binding Usage.PrimaryText}"
+                             Visibility="{Binding Usage.HasPrimary, Converter={StaticResource BoolToVis}}" />
+                  <TextBlock Margin="0,4,0,0" Text="{Binding Usage.SecondaryText}"
+                             Visibility="{Binding Usage.HasSecondary, Converter={StaticResource BoolToVis}}" />
+                  <TextBlock Margin="0,4,0,0" Text="{Binding Usage.CreditsText}"
+                             Visibility="{Binding Usage.HasCredits, Converter={StaticResource BoolToVis}}" />
+                  <TextBlock Margin="0,8,0,0" FontSize="10" Text="{Binding Usage.UpdatedText}" />
+                  <WrapPanel Margin="0,12,0,0">
+                    <Button Content="Open usage dashboard"
+                            Command="{Binding OpenUsageDashboardCommand}"
+                            AutomationProperties.Name="Open usage dashboard"
+                            AutomationProperties.HelpText="Opens the approved Codex usage dashboard in the default browser."
+                            Style="{StaticResource SmallRoundButtonStyle}" />
+                    <Button Content="Learn more" Margin="6,0,0,0"
+                            Command="{Binding OpenUsageHelpCommand}"
+                            AutomationProperties.Name="Learn more about Codex usage"
+                            AutomationProperties.HelpText="Opens the approved Codex usage help article in the default browser."
+                            Style="{StaticResource SmallRoundButtonStyle}" />
+                  </WrapPanel>
+                  <Button x:Name="UsageCloseButton" Content="Close" Margin="0,10,0,0"
+                          HorizontalAlignment="Right"
+                          Command="{Binding CloseUsageCommand}"
+                          AutomationProperties.Name="Close usage details"
+                          Style="{StaticResource SmallRoundButtonStyle}" />
+                </StackPanel>
+              </Border>
+            </Popup>
+          </Grid>
+
           <!-- Thread-history flyout. The Popup's PlacementTarget defaults to its parent grid
                (which wraps the history button), so it anchors directly beneath the icon. -->
           <Grid>
@@ -285,8 +547,13 @@
                    AllowsTransparency="True"
                    PopupAnimation="Fade">
               <Border Width="280" MaxHeight="380" CornerRadius="6" BorderThickness="1"
+                      Focusable="True"
+                      KeyboardNavigation.TabNavigation="Cycle"
                       Background="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBackgroundBrushKey}}"
                       BorderBrush="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBorderBrushKey}}">
+                <Border.InputBindings>
+                  <KeyBinding Key="Escape" Command="{Binding CloseHistoryCommand}" />
+                </Border.InputBindings>
                 <DockPanel Margin="6">
                   <Button DockPanel.Dock="Bottom" Margin="0,6,0,0" Content="Load more"
                           Command="{Binding LoadMoreCommand}"
@@ -322,7 +589,27 @@
         </StackPanel>
 
         <StackPanel VerticalAlignment="Center">
-          <TextBlock FontWeight="SemiBold" Text="{Binding Status.State}" ToolTip="{Binding Status.Message}" />
+          <!-- Keep the state in the non-trimming column and constrain only the version. The
+               state TextBlock owns the combined accessible name and live-region notification;
+               the visual version TextBlock has no AutomationProperties overrides. -->
+          <Grid>
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="Auto" />
+              <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+            <TextBlock Grid.Column="0"
+                       FontWeight="SemiBold"
+                       Text="{Binding StatusStateText}"
+                       ToolTip="{Binding StatusAutomationHelpText}"
+                       AutomationProperties.Name="{Binding StatusAutomationName}"
+                       AutomationProperties.HelpText="{Binding StatusAutomationHelpText}"
+                       AutomationProperties.LiveSetting="Polite" />
+            <TextBlock Grid.Column="1"
+                       Margin="4,0,0,0"
+                       Text="{Binding StatusVersionText}"
+                       TextTrimming="CharacterEllipsis"
+                       ToolTip="{Binding StatusAutomationHelpText}" />
+          </Grid>
           <TextBlock Opacity="0.8" Text="{Binding StatusDetailText}" TextTrimming="CharacterEllipsis" />
         </StackPanel>
       </DockPanel>
@@ -370,7 +657,12 @@
                   </Style>
                 </Border.Style>
                 <StackPanel>
-                  <TextBlock FontWeight="SemiBold" Opacity="0.85" Text="{Binding Role}" />
+                  <!-- Author is essential transcript context. Set the foreground directly so
+                       Remote UI cannot fall back to a default WPF color across an implicit-style
+                       boundary, and keep full opacity for High Contrast themes. -->
+                  <TextBlock FontWeight="SemiBold"
+                             Foreground="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowTextBrushKey}}"
+                             Text="{Binding Role}" />
 
                   <!-- Collapse toggle button — visible only for reasoning items. -->
                   <Button Margin="0,4,0,0"
@@ -551,7 +843,88 @@
                     </ItemsControl.ItemTemplate>
                   </ItemsControl>
 
-                  <!-- Main text content: plain, monospace (command/diff), or hidden (plan/block rendering/collapsed reasoning). -->
+                  <!-- Short command output stays inline without an affordance. Long command output uses
+                       the standard WPF Expander so keyboard and UI Automation expand/collapse behavior
+                       are supplied by the platform. The view model exposes only a bounded preview while
+                       collapsed and the buffered text while explicitly expanded. -->
+                  <ScrollViewer Margin="0,4,0,0"
+                                HorizontalScrollBarVisibility="Auto"
+                                VerticalScrollBarVisibility="Disabled"
+                                AutomationProperties.Name="Command output">
+                    <ScrollViewer.Style>
+                      <Style TargetType="ScrollViewer">
+                        <Setter Property="Visibility" Value="Collapsed" />
+                        <Style.Triggers>
+                          <DataTrigger Binding="{Binding IsCommandItem}" Value="True">
+                            <Setter Property="Visibility" Value="Visible" />
+                          </DataTrigger>
+                          <DataTrigger Binding="{Binding IsCommandOutputCollapsible}" Value="True">
+                            <Setter Property="Visibility" Value="Collapsed" />
+                          </DataTrigger>
+                        </Style.Triggers>
+                      </Style>
+                    </ScrollViewer.Style>
+                    <TextBlock FontFamily="Consolas, Courier New, monospace"
+                               FontSize="11"
+                               Foreground="{DynamicResource {x:Static styles:VsBrushes.WindowTextKey}}"
+                               Text="{Binding Text}"
+                               TextOptions.TextFormattingMode="Display"
+                               TextWrapping="NoWrap" />
+                  </ScrollViewer>
+
+                  <Expander Margin="0,4,0,0"
+                            Style="{StaticResource CommandOutputExpanderStyle}"
+                            Background="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowCodeBlockBackgroundBrushKey}}"
+                            Foreground="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowTextBrushKey}}"
+                            IsExpanded="{Binding IsCommandOutputExpanded, Mode=TwoWay}"
+                            AutomationProperties.Name="{Binding CommandOutputAutomationName}"
+                            AutomationProperties.HelpText="{Binding CommandOutputAutomationHelpText}">
+                    <Expander.Header>
+                      <TextBlock Style="{StaticResource CommandOutputExpanderHeaderTextStyle}"
+                                 Text="{Binding CommandOutputExpansionLabel}"
+                                 TextOptions.TextFormattingMode="Display" />
+                    </Expander.Header>
+                    <ScrollViewer MaxHeight="320"
+                                  HorizontalScrollBarVisibility="Auto"
+                                  VerticalScrollBarVisibility="Auto"
+                                  AutomationProperties.Name="Buffered command output">
+                      <TextBlock FontFamily="Consolas, Courier New, monospace"
+                                 FontSize="11"
+                                 Foreground="{DynamicResource {x:Static styles:VsBrushes.WindowTextKey}}"
+                                 Text="{Binding Text}"
+                                 TextOptions.TextFormattingMode="Display"
+                                 TextWrapping="NoWrap" />
+                    </ScrollViewer>
+                  </Expander>
+
+                  <!-- The bounded three-line preview remains visible next to the collapsed Expander
+                       header. It disappears when the user expands the buffered output. -->
+                  <ScrollViewer Margin="0,4,0,0"
+                                HorizontalScrollBarVisibility="Auto"
+                                VerticalScrollBarVisibility="Disabled"
+                                AutomationProperties.Name="Command output preview">
+                    <ScrollViewer.Style>
+                      <Style TargetType="ScrollViewer">
+                        <Setter Property="Visibility" Value="Collapsed" />
+                        <Style.Triggers>
+                          <DataTrigger Binding="{Binding IsCommandOutputCollapsible}" Value="True">
+                            <Setter Property="Visibility" Value="Visible" />
+                          </DataTrigger>
+                          <DataTrigger Binding="{Binding IsCommandOutputExpanded}" Value="True">
+                            <Setter Property="Visibility" Value="Collapsed" />
+                          </DataTrigger>
+                        </Style.Triggers>
+                      </Style>
+                    </ScrollViewer.Style>
+                    <TextBlock FontFamily="Consolas, Courier New, monospace"
+                               FontSize="11"
+                               Foreground="{DynamicResource {x:Static styles:VsBrushes.WindowTextKey}}"
+                               Text="{Binding Text}"
+                               TextOptions.TextFormattingMode="Display"
+                               TextWrapping="NoWrap" />
+                  </ScrollViewer>
+
+                  <!-- Main text content: plain, monospace diff, or hidden (command/plan/block rendering/collapsed reasoning). -->
                   <TextBlock Margin="0,4,0,0" TextWrapping="Wrap" Text="{Binding Text}">
                     <TextBlock.Style>
                       <Style TargetType="TextBlock">
@@ -567,6 +940,10 @@
                           <DataTrigger Binding="{Binding UsesBlockRendering}" Value="True">
                             <Setter Property="Visibility" Value="Collapsed" />
                           </DataTrigger>
+                          <!-- Command output uses the bounded, horizontally scrollable surfaces above. -->
+                          <DataTrigger Binding="{Binding IsCommandItem}" Value="True">
+                            <Setter Property="Visibility" Value="Collapsed" />
+                          </DataTrigger>
                           <!-- Collapsed reasoning hides its full text. -->
                           <MultiDataTrigger>
                             <MultiDataTrigger.Conditions>
@@ -575,11 +952,6 @@
                             </MultiDataTrigger.Conditions>
                             <Setter Property="Visibility" Value="Collapsed" />
                           </MultiDataTrigger>
-                          <!-- Command output rendered in monospace. -->
-                          <DataTrigger Binding="{Binding IsCommandItem}" Value="True">
-                            <Setter Property="FontFamily" Value="Consolas, Courier New, monospace" />
-                            <Setter Property="FontSize" Value="11" />
-                          </DataTrigger>
                           <!-- Diff rendered in monospace. -->
                           <DataTrigger Binding="{Binding IsDiffItem}" Value="True">
                             <Setter Property="FontFamily" Value="Consolas, Courier New, monospace" />
@@ -612,8 +984,8 @@
                   </ItemsControl>
 
                   <!-- Truncation notice — shown when output was cut due to size limit. -->
-                  <TextBlock Margin="0,6,0,0" FontSize="11" Opacity="0.6"
-                             Text="Output truncated; full output is stored in a temporary file.">
+                  <TextBlock Margin="0,6,0,0" FontSize="11"
+                             Text="{Binding TruncationNotice}">
                     <TextBlock.Style>
                       <Style TargetType="TextBlock">
                         <Setter Property="Foreground" Value="{DynamicResource {x:Static styles:VsBrushes.WindowTextKey}}" />
@@ -843,77 +1215,410 @@
               BorderThickness="1"
               Background="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowCodeBlockBackgroundBrushKey}}">
         <Grid>
+          <!-- File-navigation bindings live on the composer scope, while slash navigation stays
+               on the TextBox. Closed presentations expose null commands, so only the active
+               suggestion surface handles these gestures. Keeping separate scopes also avoids
+               duplicate gestures in the TextBox's InputBinding collection. -->
+          <Grid.InputBindings>
+            <KeyBinding Key="Up" Command="{Binding FileSuggestions.MovePreviousKeyCommand}" />
+            <KeyBinding Key="Down" Command="{Binding FileSuggestions.MoveNextKeyCommand}" />
+            <KeyBinding Key="Return" Command="{Binding FileSuggestions.AcceptSuggestionKeyCommand}" />
+            <KeyBinding Key="Tab" Command="{Binding FileSuggestions.AcceptSuggestionKeyCommand}" />
+            <KeyBinding Key="Escape" Command="{Binding FileSuggestions.DismissSuggestionsKeyCommand}" />
+          </Grid.InputBindings>
           <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
           </Grid.RowDefinitions>
+          <!-- Inline file-reference suggestions share the composer focus scope with the prompt.
+               Keeping the list bounded and virtualized avoids Popup focus transfer in Remote UI. -->
+          <Border Grid.Row="0"
+                  MaxHeight="200"
+                  Margin="6,6,6,0"
+                  CornerRadius="6"
+                  BorderThickness="1"
+                  Background="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBackgroundBrushKey}}"
+                  BorderBrush="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBorderBrushKey}}"
+                  Visibility="{Binding FileSuggestions.IsSuggestionOpen, Converter={StaticResource BoolToVis}}"
+                  AutomationProperties.Name="File suggestions"
+                  AutomationProperties.HelpText="Use Up and Down to move, Enter or Tab to attach, and Escape to close.">
+            <ListBox MaxHeight="198"
+                     Background="Transparent"
+                     BorderThickness="0"
+                     ItemsSource="{Binding FileSuggestions.Suggestions}"
+                     SelectedItem="{Binding FileSuggestions.SelectedSuggestion, Mode=TwoWay}"
+                     ItemContainerStyle="{StaticResource SelectableRowStyle}"
+                     ScrollViewer.VerticalScrollBarVisibility="Auto"
+                     ScrollViewer.CanContentScroll="True"
+                     VirtualizingPanel.IsVirtualizing="True"
+                     VirtualizingPanel.VirtualizationMode="Recycling">
+              <ListBox.ItemTemplate>
+                <DataTemplate>
+                  <Button Command="{Binding UseCommand}"
+                          Style="{StaticResource SlashSuggestionButtonStyle}"
+                          AutomationProperties.Name="{Binding AutomationName}">
+                    <Grid>
+                      <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                      </Grid.ColumnDefinitions>
+                      <TextBlock Grid.Column="0"
+                                 MinWidth="108"
+                                 FontWeight="SemiBold"
+                                 Style="{x:Null}"
+                                 Text="{Binding DisplayName}" />
+                      <TextBlock Grid.Column="1"
+                                 Margin="10,0,0,0"
+                                 Style="{x:Null}"
+                                 Text="{Binding RelativePath}"
+                                 TextTrimming="CharacterEllipsis" />
+                    </Grid>
+                  </Button>
+                </DataTemplate>
+              </ListBox.ItemTemplate>
+            </ListBox>
+          </Border>
 
-          <!-- Textarea with an "Ask Codex" placeholder overlay (shown while empty). -->
-          <Grid Grid.Row="0">
-            <TextBox MinHeight="54"
-                     MaxHeight="160"
-                     AcceptsReturn="True"
-                     VerticalScrollBarVisibility="Auto"
-                     Foreground="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowTextBrushKey}}"
-                     CaretBrush="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowTextBrushKey}}"
-                     SelectionBrush="{DynamicResource {x:Static SystemColors.HighlightBrushKey}}"
-                     Text="{Binding ComposerText, UpdateSourceTrigger=PropertyChanged}">
-              <!-- Ctrl+Enter sends (or steers). Enter is reserved for newlines because
-                   AcceptsReturn is true. KeyBinding is a declarative command binding, the
-                   Remote UI-supported way to map a gesture to a data-context command. -->
-              <TextBox.InputBindings>
-                <KeyBinding Key="Return" Modifiers="Control" Command="{Binding SendCommand}" />
-              </TextBox.InputBindings>
-              <TextBox.Style>
-                <Style TargetType="TextBox">
-                  <Setter Property="Background" Value="Transparent" />
-                  <Setter Property="BorderThickness" Value="0" />
-                  <Setter Property="Padding" Value="12,10" />
-                  <Setter Property="Template">
-                    <Setter.Value>
-                      <ControlTemplate TargetType="TextBox">
-                        <ScrollViewer x:Name="PART_ContentHost"
-                                      Margin="{TemplateBinding Padding}"
-                                      Background="Transparent"
-                                      VerticalScrollBarVisibility="{TemplateBinding ScrollViewer.VerticalScrollBarVisibility}"
-                                      HorizontalScrollBarVisibility="Disabled" />
-                      </ControlTemplate>
-                    </Setter.Value>
-                  </Setter>
-                </Style>
-              </TextBox.Style>
-            </TextBox>
-            <TextBlock Text="Ask Codex" Margin="13,11,0,0" Opacity="0.5"
-                       IsHitTestVisible="False"
-                       VerticalAlignment="Top" HorizontalAlignment="Left"
-                       Visibility="{Binding IsComposerEmpty, Converter={StaticResource BoolToVis}}" />
+          <!-- Inline slash-command suggestions. This is deliberately not a Popup: Remote UI
+               keeps the surface in the composer focus scope and preserves keyboard navigation. -->
+          <Border Grid.Row="0"
+                  MaxHeight="200"
+                  Margin="6,6,6,0"
+                  CornerRadius="6"
+                  BorderThickness="1"
+                  Background="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBackgroundBrushKey}}"
+                  BorderBrush="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBorderBrushKey}}"
+                  Visibility="{Binding SlashCommands.IsSuggestionOpen, Converter={StaticResource BoolToVis}}"
+                  AutomationProperties.Name="Slash command suggestions"
+                  AutomationProperties.HelpText="Use Up and Down to move, Enter or Tab to select, and Escape to close.">
+            <ListBox MaxHeight="198"
+                     Background="Transparent"
+                     BorderThickness="0"
+                     ItemsSource="{Binding SlashCommands.Suggestions}"
+                     SelectedItem="{Binding SlashCommands.SelectedSuggestion, Mode=TwoWay}"
+                     ItemContainerStyle="{StaticResource SelectableRowStyle}"
+                     ScrollViewer.VerticalScrollBarVisibility="Auto"
+                     ScrollViewer.CanContentScroll="True"
+                     VirtualizingPanel.IsVirtualizing="True"
+                     VirtualizingPanel.VirtualizationMode="Recycling">
+              <ListBox.ItemTemplate>
+                <DataTemplate>
+                  <Button Command="{Binding UseCommand}"
+                          ToolTip="{Binding UnavailableReason}"
+                          Style="{StaticResource SlashSuggestionButtonStyle}"
+                          AutomationProperties.Name="{Binding AutomationName}">
+                    <Grid>
+                      <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                      </Grid.ColumnDefinitions>
+                      <TextBlock Grid.Column="0"
+                                 MinWidth="108"
+                                 FontWeight="SemiBold"
+                                 Style="{x:Null}"
+                                 Text="{Binding CommandName}" />
+                      <TextBlock Grid.Column="1"
+                                 Margin="10,0,0,0"
+                                 Style="{x:Null}"
+                                 Text="{Binding Description}"
+                                 TextTrimming="CharacterEllipsis" />
+                    </Grid>
+                  </Button>
+                </DataTemplate>
+              </ListBox.ItemTemplate>
+            </ListBox>
+          </Border>
+
+          <!-- Pending attachments are compact, removable chips above the prompt. -->
+          <ItemsControl Grid.Row="1"
+                        Margin="10,8,10,0"
+                        ItemsSource="{Binding PendingAttachments}"
+                        Visibility="{Binding HasPendingAttachments, Converter={StaticResource BoolToVis}}"
+                        AutomationProperties.Name="Pending attachments">
+            <ItemsControl.ItemsPanel>
+              <ItemsPanelTemplate>
+                <WrapPanel />
+              </ItemsPanelTemplate>
+            </ItemsControl.ItemsPanel>
+            <ItemsControl.ItemTemplate>
+              <DataTemplate>
+                <Border Padding="10,4"
+                        Margin="0,0,6,6"
+                        CornerRadius="12"
+                        Background="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowButtonDownBrushKey}}"
+                        BorderBrush="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBorderBrushKey}}"
+                        BorderThickness="1">
+                  <StackPanel Orientation="Horizontal">
+                    <TextBlock VerticalAlignment="Center"
+                               Foreground="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowButtonDownActiveGlyphBrushKey}}"
+                               Text="{Binding DisplayName}"
+                               TextTrimming="CharacterEllipsis"
+                               MaxWidth="220" />
+                    <Button Margin="6,0,0,0"
+                            Padding="2,0"
+                            MinWidth="18"
+                            Content="&#xE711;"
+                            Command="{Binding RemoveCommand}"
+                            Style="{StaticResource AttachmentRemoveButtonStyle}"
+                            AutomationProperties.Name="{Binding AutomationName}" />
+                  </StackPanel>
+                </Border>
+              </DataTemplate>
+            </ItemsControl.ItemTemplate>
+          </ItemsControl>
+
+          <Grid Grid.Row="2">
+            <!-- Normal prompt textarea. Selecting a suggestion replaces this surface with a
+                 command chip instead of asynchronously writing command text back into it. -->
+            <Grid Visibility="{Binding SlashCommands.HasNoActiveCommand, Converter={StaticResource BoolToVis}}">
+              <TextBox MinHeight="54"
+                       MaxHeight="160"
+                       AcceptsReturn="True"
+                       VerticalScrollBarVisibility="Auto"
+                       Foreground="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowTextBrushKey}}"
+                       CaretBrush="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowTextBrushKey}}"
+                       SelectionBrush="{DynamicResource {x:Static SystemColors.HighlightBrushKey}}"
+                       Text="{Binding ComposerText, UpdateSourceTrigger=PropertyChanged}"
+                       AutomationProperties.Name="Codex prompt">
+                <!-- Ctrl+Enter sends. While the inline command list is open, Up/Down move,
+                     Enter/Tab accept, and Escape closes. When the list is closed those commands
+                     are null, so plain Enter keeps inserting a newline. -->
+                <TextBox.InputBindings>
+                  <KeyBinding Key="Return" Modifiers="Control" Command="{Binding SendCommand}" />
+                  <KeyBinding Key="Up" Command="{Binding SlashCommands.MovePreviousKeyCommand}" />
+                  <KeyBinding Key="Down" Command="{Binding SlashCommands.MoveNextKeyCommand}" />
+                  <KeyBinding Key="Return" Command="{Binding SlashCommands.AcceptSuggestionKeyCommand}" />
+                  <KeyBinding Key="Tab" Command="{Binding SlashCommands.AcceptSuggestionKeyCommand}" />
+                  <KeyBinding Key="Escape" Command="{Binding SlashCommands.DismissSuggestionsKeyCommand}" />
+                </TextBox.InputBindings>
+                <TextBox.Style>
+                  <Style TargetType="TextBox">
+                    <Setter Property="Background" Value="Transparent" />
+                    <Setter Property="BorderThickness" Value="0" />
+                    <Setter Property="Padding" Value="12,10" />
+                    <Setter Property="Template">
+                      <Setter.Value>
+                        <ControlTemplate TargetType="TextBox">
+                          <ScrollViewer x:Name="PART_ContentHost"
+                                        Margin="{TemplateBinding Padding}"
+                                        Background="Transparent"
+                                        VerticalScrollBarVisibility="{TemplateBinding ScrollViewer.VerticalScrollBarVisibility}"
+                                        HorizontalScrollBarVisibility="Disabled" />
+                        </ControlTemplate>
+                      </Setter.Value>
+                    </Setter>
+                  </Style>
+                </TextBox.Style>
+              </TextBox>
+              <TextBlock Text="Ask Codex" Margin="13,11,0,0" Opacity="0.5"
+                         IsHitTestVisible="False"
+                         VerticalAlignment="Top" HorizontalAlignment="Left"
+                         Visibility="{Binding IsComposerEmpty, Converter={StaticResource BoolToVis}}" />
+            </Grid>
+
+            <!-- Selected command chip and its structured arguments. Failure leaves this state
+                 intact; the presentation view model clears it only after successful execution. -->
+            <StackPanel Margin="10,8,10,4"
+                        Visibility="{Binding SlashCommands.HasActiveCommand, Converter={StaticResource BoolToVis}}">
+              <WrapPanel>
+                <Border Padding="10,4"
+                        Margin="0,0,8,6"
+                        CornerRadius="12"
+                        Background="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowButtonDownBrushKey}}"
+                        BorderBrush="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBorderBrushKey}}"
+                        BorderThickness="1">
+                  <StackPanel Orientation="Horizontal">
+                    <TextBlock FontWeight="SemiBold"
+                               VerticalAlignment="Center"
+                               Text="{Binding SlashCommands.ActiveCommand.CommandName}" />
+                    <Button Margin="6,0,0,0"
+                            Padding="2,0"
+                            MinWidth="18"
+                            Content="&#xE711;"
+                            Command="{Binding SlashCommands.ClearCommandCommand}"
+                            Style="{StaticResource IconButtonStyle}"
+                            AutomationProperties.Name="Clear selected slash command" />
+                  </StackPanel>
+                </Border>
+                <TextBlock Margin="0,4,0,6"
+                           Opacity="0.7"
+                           Text="{Binding SlashCommands.ActiveCommand.Description}"
+                           TextWrapping="Wrap" />
+              </WrapPanel>
+
+              <ItemsControl ItemsSource="{Binding SlashCommands.Options}"
+                            Visibility="{Binding SlashCommands.HasFixedOptions, Converter={StaticResource BoolToVis}}"
+                            AutomationProperties.Name="Slash command options">
+                <ItemsControl.ItemsPanel>
+                  <ItemsPanelTemplate>
+                    <WrapPanel />
+                  </ItemsPanelTemplate>
+                </ItemsControl.ItemsPanel>
+                <ItemsControl.ItemTemplate>
+                  <DataTemplate>
+                    <Button Command="{Binding UseCommand}"
+                            ToolTip="{Binding Description}"
+                            Style="{StaticResource SlashOptionButtonStyle}"
+                            AutomationProperties.Name="{Binding AutomationName}">
+                      <StackPanel Orientation="Horizontal">
+                        <TextBlock Text="{Binding DisplayText}" />
+                        <TextBlock Margin="6,0,0,0"
+                                   FontSize="10"
+                                   FontWeight="SemiBold"
+                                   Text="Selected"
+                                   Visibility="{Binding IsSelected, Converter={StaticResource BoolToVis}}" />
+                      </StackPanel>
+                    </Button>
+                  </DataTemplate>
+                </ItemsControl.ItemTemplate>
+              </ItemsControl>
+
+              <StackPanel Visibility="{Binding SlashCommands.ShowArgumentInput, Converter={StaticResource BoolToVis}}">
+                <TextBlock Margin="2,0,0,3"
+                           Text="{Binding SlashCommands.ActiveCommand.ArgumentHint}"
+                           TextWrapping="Wrap" />
+                <TextBox MinHeight="42"
+                         MaxHeight="140"
+                         Padding="8,6"
+                         AcceptsReturn="True"
+                         VerticalScrollBarVisibility="Auto"
+                         Text="{Binding SlashCommands.ArgumentText, UpdateSourceTrigger=PropertyChanged}"
+                         AutomationProperties.Name="Slash command arguments" />
+              </StackPanel>
+            </StackPanel>
           </Grid>
 
-          <!-- Action row: attach + mode + model (left) · interrupt + send (right) -->
-          <DockPanel Grid.Row="1" Margin="6,0,6,6" LastChildFill="False">
-            <Button DockPanel.Dock="Left" Content="&#xE723;" ToolTip="Attach context"
-                    Command="{Binding AttachCommand}"
-                    Style="{StaticResource IconButtonStyle}" />
-            <ComboBox DockPanel.Dock="Left" Margin="6,0,0,0" Width="92" VerticalAlignment="Center"
-                      ToolTip="Mode"
-                      ItemsSource="{Binding Modes}" SelectedItem="{Binding SelectedMode}" />
-            <ComboBox DockPanel.Dock="Left" Margin="6,0,0,0" Width="124" VerticalAlignment="Center"
-                      ToolTip="Model"
-                      ItemsSource="{Binding Models}" SelectedItem="{Binding SelectedModel}" />
-            <CheckBox DockPanel.Dock="Left" Margin="8,0,0,0" VerticalAlignment="Center"
-                      Content="Experimental API"
-                      ToolTip="Enable codex experimental APIs for structured prompts after reconnect; natural-language confirmation cards are detected locally."
-                      Foreground="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowTextBrushKey}}"
-                      IsChecked="{Binding ExperimentalApiEnabled, Mode=TwoWay}" />
+          <!-- Polite live region announces list counts, selection changes, and failures without
+               stealing focus from the composer. Dynamic text is sanitized before it reaches
+               this presentation view model. -->
+          <StackPanel Grid.Row="3">
+            <TextBlock Margin="12,2,12,4"
+                       FontSize="11"
+                       Opacity="0.75"
+                       Text="{Binding FileSuggestions.StatusAnnouncement}"
+                       TextWrapping="Wrap"
+                       Visibility="{Binding FileSuggestions.HasStatusAnnouncement, Converter={StaticResource BoolToVis}}"
+                       AutomationProperties.Name="File suggestion status"
+                       AutomationProperties.LiveSetting="Polite" />
+            <TextBlock
+                     Margin="12,2,12,4"
+                     FontSize="11"
+                     Opacity="0.75"
+                     Text="{Binding SlashCommands.StatusAnnouncement}"
+                     TextWrapping="Wrap"
+                     Visibility="{Binding SlashCommands.HasStatusAnnouncement, Converter={StaticResource BoolToVis}}"
+                     AutomationProperties.Name="Slash command status"
+                     AutomationProperties.LiveSetting="Polite" />
+          </StackPanel>
 
-            <Button DockPanel.Dock="Right" Content="&#xE724;" ToolTip="{Binding SendButtonText}"
-                    Command="{Binding SendCommand}"
-                    Style="{StaticResource SendIconButtonStyle}" />
-            <Button DockPanel.Dock="Right" Margin="0,0,6,0" Content="&#xE71A;" ToolTip="Interrupt"
-                    Command="{Binding InterruptCommand}"
-                    Style="{StaticResource IconButtonStyle}"
-                    Visibility="{Binding IsTurnActive, Converter={StaticResource BoolToVis}}" />
-          </DockPanel>
+          <Border Grid.Row="4"
+                  Margin="6,2,6,6"
+                  Padding="10,8"
+                  CornerRadius="4"
+                  BorderThickness="1"
+                  Background="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBackgroundBrushKey}}"
+                  BorderBrush="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBorderBrushKey}}"
+                  Visibility="{Binding HasApprovalModeConfirmation, Converter={StaticResource BoolToVis}}"
+                  AutomationProperties.Name="Permission mode confirmation"
+                  AutomationProperties.HelpText="Full access can disable the Codex sandbox and normal approval prompts. Custom settings may require a new thread.">
+            <DockPanel LastChildFill="True">
+              <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Margin="10,0,0,0">
+                <Button Content="Cancel"
+                        Command="{Binding CancelApprovalModeCommand}"
+                        Style="{StaticResource SmallRoundButtonStyle}"
+                        AutomationProperties.Name="Cancel permission mode change" />
+                <Button Margin="6,0,0,0"
+                        Content="Continue"
+                        Command="{Binding ConfirmApprovalModeCommand}"
+                        Style="{StaticResource SmallRoundButtonStyle}"
+                        AutomationProperties.Name="Confirm permission mode change" />
+              </StackPanel>
+              <TextBlock Text="{Binding ApprovalModeConfirmationText}"
+                         TextWrapping="Wrap"
+                         Foreground="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowTextBrushKey}}"
+                         AutomationProperties.Name="Permission mode warning"
+                         AutomationProperties.HelpText="{Binding ApprovalModeConfirmationText}"
+                         AutomationProperties.LiveSetting="Assertive" />
+            </DockPanel>
+          </Border>
+
+          <!-- Action row: controls wrap at narrow tool-window widths; interrupt/send remain
+               reachable in a dedicated right-aligned group. -->
+          <Grid Grid.Row="5" Margin="6,0,6,6">
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="*" />
+              <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <WrapPanel Grid.Column="0" VerticalAlignment="Center">
+              <Button Content="&#xE723;" ToolTip="Attach context"
+                      Command="{Binding AttachCommand}"
+                      Style="{StaticResource IconButtonStyle}"
+                      AutomationProperties.Name="Attach context" />
+              <ComboBox Margin="6,0,0,0" Width="92" VerticalAlignment="Center"
+                        ToolTip="Mode"
+                        ItemsSource="{Binding Modes}" SelectedItem="{Binding SelectedMode}"
+                        AutomationProperties.Name="Mode"
+                        AutomationProperties.HelpText="{Binding ApprovalModeHelpText}" />
+              <ComboBox Margin="6,0,0,0" Width="166" VerticalAlignment="Center"
+                        ToolTip="{Binding ApprovalModeHelpText}"
+                        ItemsSource="{Binding ApprovalModes}"
+                        DisplayMemberPath="DisplayText"
+                        SelectedValuePath="Id"
+                        SelectedValue="{Binding SelectedApprovalModeId, Mode=TwoWay}"
+                        IsEnabled="{Binding IsApprovalModeEnabled}"
+                        AutomationProperties.Name="Permissions"
+                        AutomationProperties.HelpText="{Binding ApprovalModeHelpText}" />
+              <ComboBox Margin="6,0,0,0" Width="124" VerticalAlignment="Center"
+                        ToolTip="Model"
+                        ItemsSource="{Binding Models}" SelectedItem="{Binding SelectedModel}"
+                        AutomationProperties.Name="Model" />
+              <ComboBox Margin="6,0,0,0" Width="112" VerticalAlignment="Center"
+                        ToolTip="{Binding ReasoningEffortHelpText}"
+                        ItemsSource="{Binding ReasoningEfforts}"
+                        DisplayMemberPath="DisplayText"
+                        SelectedValuePath="Id"
+                        SelectedValue="{Binding SelectedReasoningEffortId, Mode=TwoWay}"
+                        Visibility="{Binding HasReasoningEfforts, Converter={StaticResource BoolToVis}}"
+                        AutomationProperties.Name="Reasoning effort"
+                        AutomationProperties.HelpText="{Binding ReasoningEffortHelpText}" />
+              <ComboBox Margin="6,0,0,0" Width="112" VerticalAlignment="Center"
+                        ToolTip="{Binding ServiceTierHelpText}"
+                        ItemsSource="{Binding ServiceTiers}"
+                        DisplayMemberPath="DisplayText"
+                        SelectedValuePath="Id"
+                        SelectedValue="{Binding SelectedServiceTierId, Mode=TwoWay}"
+                        Visibility="{Binding HasServiceTiers, Converter={StaticResource BoolToVis}}"
+                        AutomationProperties.Name="Speed"
+                        AutomationProperties.HelpText="{Binding ServiceTierHelpText}" />
+              <CheckBox Margin="8,0,0,0" VerticalAlignment="Center"
+                        Content="Experimental API"
+                        ToolTip="Enable codex experimental APIs for structured prompts after reconnect; natural-language confirmation cards are detected locally."
+                        Foreground="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowTextBrushKey}}"
+                        IsChecked="{Binding ExperimentalApiEnabled, Mode=TwoWay}" />
+            </WrapPanel>
+
+            <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+              <Button Margin="0,0,6,0" Content="&#xE71A;" ToolTip="Interrupt"
+                      Command="{Binding InterruptCommand}"
+                      Style="{StaticResource IconButtonStyle}"
+                      Visibility="{Binding IsTurnActive, Converter={StaticResource BoolToVis}}"
+                      AutomationProperties.Name="Interrupt turn" />
+              <Button Content="&#xE724;" ToolTip="{Binding SendButtonText}"
+                      Command="{Binding SendCommand}"
+                      Style="{StaticResource SendIconButtonStyle}"
+                      Visibility="{Binding SlashCommands.HasNoActiveCommand, Converter={StaticResource BoolToVis}}"
+                      AutomationProperties.Name="{Binding SendButtonText}" />
+              <Button Content="&#xE724;" ToolTip="Run slash command"
+                      Command="{Binding SlashCommands.ExecuteCommand}"
+                      Style="{StaticResource SendIconButtonStyle}"
+                      Visibility="{Binding SlashCommands.HasActiveCommand, Converter={StaticResource BoolToVis}}"
+                      AutomationProperties.Name="Run slash command" />
+            </StackPanel>
+          </Grid>
         </Grid>
       </Border>
     </Border>

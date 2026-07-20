@@ -1,4 +1,5 @@
 ﻿using System.Collections.Concurrent;
+using System.Text;
 using System.Text.Json;
 using Codex.AppServer.Protocol;
 using Codex.VisualStudio.Contracts;
@@ -21,9 +22,27 @@ public interface ICodexSessionService : IAsyncDisposable
 
     event Func<string, CancellationToken, Task>? UserInputResolved;
 
+    event Func<ContextCompactionEvent, CancellationToken, Task>? ContextCompacted;
+
+    event Func<ReviewModeEvent, CancellationToken, Task>? ReviewModeChanged;
+
+    event Func<ThreadGoalEvent, CancellationToken, Task>? ThreadGoalChanged;
+
+    event Func<RateLimitsResult, CancellationToken, Task>? RateLimitsChanged;
+
+    event Func<EffectiveApprovalState, CancellationToken, Task>? EffectiveApprovalStateChanged;
+
     string? ActiveThreadId { get; }
 
     string? ActiveTurnId { get; }
+
+    string? CodexVersion { get; }
+
+    EffectiveApprovalState? EffectiveApprovalState { get; }
+
+    string? EffectiveReasoningEffort { get; }
+
+    string? EffectiveServiceTier { get; }
 
     Task InitializeAsync(IJsonRpcConnection connection, WorkerOptions options, CancellationToken cancellationToken);
 
@@ -41,11 +60,31 @@ public interface ICodexSessionService : IAsyncDisposable
 
     Task<ListModelsResult> ListModelsAsync(CancellationToken cancellationToken);
 
+    Task<ListPermissionProfilesResult> ListPermissionProfilesAsync(CancellationToken cancellationToken);
+
     Task<string> StartTurnAsync(StartTurnRequest request, CancellationToken cancellationToken);
 
     Task<string> SteerTurnAsync(SteerTurnRequest request, CancellationToken cancellationToken);
 
     Task InterruptTurnAsync(InterruptTurnRequest request, CancellationToken cancellationToken);
+
+    Task<CompactThreadResult> CompactThreadAsync(CompactThreadRequest request, CancellationToken cancellationToken);
+
+    Task<StartReviewResult> StartReviewAsync(StartReviewRequest request, CancellationToken cancellationToken);
+
+    Task<ForkThreadResult> ForkThreadAsync(ForkThreadRequest request, CancellationToken cancellationToken);
+
+    Task<ThreadGoalResult> GetThreadGoalAsync(string threadId, CancellationToken cancellationToken);
+
+    Task<ThreadGoalResult> SetThreadGoalAsync(SetThreadGoalRequest request, CancellationToken cancellationToken);
+
+    Task<ThreadGoalResult> ClearThreadGoalAsync(string threadId, CancellationToken cancellationToken);
+
+    Task<McpServerListResult> ListMcpServersAsync(string? threadId, CancellationToken cancellationToken);
+
+    Task<UploadFeedbackResult> UploadFeedbackAsync(UploadFeedbackRequest request, CancellationToken cancellationToken);
+
+    Task<RateLimitsResult> GetRateLimitsAsync(CancellationToken cancellationToken);
 
     Task ResolveApprovalAsync(ResolveApprovalRequest request, CancellationToken cancellationToken);
 
@@ -55,20 +94,34 @@ public interface ICodexSessionService : IAsyncDisposable
 public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
 {
     private static readonly string[] ThreadSourceKinds = ["cli", "vscode", "appServer"];
+    private const int PermissionProfilePageSize = 100;
+    private const int MaxPermissionProfilePages = 10;
+    private const int MaxPermissionProfiles = 500;
+    private const int MaxPermissionProfileIdLength = 256;
 
     private readonly IApprovalPolicyEngine approvalPolicy;
     private readonly ISecretRedactor redactor;
+    private readonly IPathAccessPolicy pathAccessPolicy;
+    private readonly IProtectedDirectoryPolicy protectedDirectoryPolicy;
     private readonly ConcurrentDictionary<string, PendingApproval> pendingApprovals = new();
     private readonly ConcurrentDictionary<string, PendingUserInput> pendingUserInputs = new();
     private readonly ApprovalGrantStore approvalGrants = new();
+    private readonly object unsupportedMethodsLock = new();
+    private readonly HashSet<string> unsupportedMethods = new(StringComparer.Ordinal);
     private IJsonRpcConnection? connection;
     private WorkerOptions options = new();
     private StreamingBuffer? streamingBuffer;
 
-    public CodexSessionService(IApprovalPolicyEngine approvalPolicy, ISecretRedactor redactor)
+    public CodexSessionService(
+        IApprovalPolicyEngine approvalPolicy,
+        ISecretRedactor redactor,
+        IPathAccessPolicy? pathAccessPolicy = null,
+        IProtectedDirectoryPolicy? protectedDirectoryPolicy = null)
     {
         this.approvalPolicy = approvalPolicy;
         this.redactor = redactor;
+        this.pathAccessPolicy = pathAccessPolicy ?? new PathAccessPolicy();
+        this.protectedDirectoryPolicy = protectedDirectoryPolicy ?? new ProtectedDirectoryPolicy();
     }
 
     public event Func<ConversationEvent, CancellationToken, Task>? ConversationEventReceived;
@@ -85,12 +138,34 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
 
     public event Func<string, CancellationToken, Task>? UserInputResolved;
 
+    public event Func<ContextCompactionEvent, CancellationToken, Task>? ContextCompacted;
+
+    public event Func<ReviewModeEvent, CancellationToken, Task>? ReviewModeChanged;
+
+    public event Func<ThreadGoalEvent, CancellationToken, Task>? ThreadGoalChanged;
+
+    public event Func<RateLimitsResult, CancellationToken, Task>? RateLimitsChanged;
+
+    public event Func<EffectiveApprovalState, CancellationToken, Task>? EffectiveApprovalStateChanged;
+
     public string? ActiveThreadId { get; private set; }
 
     public string? ActiveTurnId { get; private set; }
 
+    public string? CodexVersion { get; private set; }
+
+    public EffectiveApprovalState? EffectiveApprovalState { get; private set; }
+
+    public string? EffectiveReasoningEffort { get; private set; }
+
+    public string? EffectiveServiceTier { get; private set; }
+
     public async Task InitializeAsync(IJsonRpcConnection connection, WorkerOptions options, CancellationToken cancellationToken)
     {
+        CodexVersion = null;
+        EffectiveApprovalState = null;
+        EffectiveReasoningEffort = null;
+        EffectiveServiceTier = null;
         foreach (PendingApproval approval in pendingApprovals.Values)
         {
             approval.Completion.TrySetResult("cancel");
@@ -98,6 +173,11 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
 
         pendingApprovals.Clear();
         approvalGrants.Clear();
+        lock (unsupportedMethodsLock)
+        {
+            unsupportedMethods.Clear();
+        }
+
         this.connection = connection;
         this.options = options;
         connection.NotificationReceived += OnNotificationAsync;
@@ -124,22 +204,179 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
             cancellationToken).ConfigureAwait(false);
         await connection.SendNotificationAsync("initialized", new { }, cancellationToken).ConfigureAwait(false);
 
-        if (initResponse.TryGetProperty("serverInfo", out JsonElement serverInfo))
+        CodexVersion = ReadCodexVersion(initResponse);
+
+        string? serverName = null;
+        if (initResponse.TryGetProperty("serverInfo", out JsonElement serverInfo)
+            && serverInfo.ValueKind == JsonValueKind.Object)
         {
-            string? serverName = GetString(serverInfo, "name");
-            string? serverVersion = GetString(serverInfo, "version");
+            serverName = GetString(serverInfo, "name");
+        }
+
+        if (CodexVersion is not null || serverName is not null)
+        {
             await EmitAsync(new ConversationEvent
             {
                 Kind = ConversationEventKind.Unknown,
-                Text = $"Connected to {serverName ?? "codex"} app-server v{serverVersion ?? "unknown"}.",
+                Text = $"Connected to {serverName ?? "codex"} app-server v{CodexVersion ?? "unknown"}.",
             }, CancellationToken.None).ConfigureAwait(false);
         }
     }
 
+    private static string? ReadCodexVersion(JsonElement initResponse)
+    {
+        string? userAgent = GetString(initResponse, "userAgent");
+        if (userAgent is not null)
+        {
+            int separator = userAgent.IndexOf(' ');
+            ReadOnlySpan<char> firstProduct = separator >= 0
+                ? userAgent.AsSpan(0, separator)
+                : userAgent.AsSpan();
+            int slash = firstProduct.IndexOf('/');
+            if (slash > 0)
+            {
+                ReadOnlySpan<char> version = firstProduct[(slash + 1)..];
+                if (IsValidCodexVersion(version))
+                {
+                    return version.ToString();
+                }
+            }
+        }
+
+        if (initResponse.TryGetProperty("serverInfo", out JsonElement serverInfo)
+            && serverInfo.ValueKind == JsonValueKind.Object)
+        {
+            string? legacyVersion = GetString(serverInfo, "version");
+            if (legacyVersion is not null && IsValidCodexVersion(legacyVersion.AsSpan()))
+            {
+                return legacyVersion;
+            }
+        }
+
+        return null;
+    }
+
+    private static bool IsValidCodexVersion(ReadOnlySpan<char> version)
+    {
+        if (version.IsEmpty || version.Length > 64)
+        {
+            return false;
+        }
+
+        int buildSeparator = version.IndexOf('+');
+        ReadOnlySpan<char> withoutBuild = buildSeparator >= 0 ? version[..buildSeparator] : version;
+        if (buildSeparator >= 0
+            && (!IsValidIdentifierList(version[(buildSeparator + 1)..], allowNumericLeadingZero: true)
+                || version[(buildSeparator + 1)..].Contains('+')))
+        {
+            return false;
+        }
+
+        int prereleaseSeparator = withoutBuild.IndexOf('-');
+        ReadOnlySpan<char> core = prereleaseSeparator >= 0 ? withoutBuild[..prereleaseSeparator] : withoutBuild;
+        if (prereleaseSeparator >= 0
+            && !IsValidIdentifierList(withoutBuild[(prereleaseSeparator + 1)..], allowNumericLeadingZero: false))
+        {
+            return false;
+        }
+
+        int firstDot = core.IndexOf('.');
+        if (firstDot <= 0)
+        {
+            return false;
+        }
+
+        int secondDotOffset = core[(firstDot + 1)..].IndexOf('.');
+        if (secondDotOffset <= 0)
+        {
+            return false;
+        }
+
+        int secondDot = firstDot + 1 + secondDotOffset;
+        return !core[(secondDot + 1)..].Contains('.')
+            && IsValidCoreComponent(core[..firstDot])
+            && IsValidCoreComponent(core[(firstDot + 1)..secondDot])
+            && IsValidCoreComponent(core[(secondDot + 1)..]);
+    }
+
+    private static bool IsValidIdentifierList(ReadOnlySpan<char> identifiers, bool allowNumericLeadingZero)
+    {
+        if (identifiers.IsEmpty)
+        {
+            return false;
+        }
+
+        while (true)
+        {
+            int dot = identifiers.IndexOf('.');
+            ReadOnlySpan<char> identifier = dot >= 0 ? identifiers[..dot] : identifiers;
+            if (identifier.IsEmpty)
+            {
+                return false;
+            }
+
+            bool numeric = true;
+            foreach (char value in identifier)
+            {
+                bool isDigit = value is >= '0' and <= '9';
+                bool isLetter = value is >= 'A' and <= 'Z' or >= 'a' and <= 'z';
+                if (!isDigit && !isLetter && value != '-')
+                {
+                    return false;
+                }
+
+                numeric &= isDigit;
+            }
+
+            if (!allowNumericLeadingZero && numeric && HasLeadingZero(identifier))
+            {
+                return false;
+            }
+
+            if (dot < 0)
+            {
+                return true;
+            }
+
+            identifiers = identifiers[(dot + 1)..];
+        }
+    }
+
+    private static bool IsValidCoreComponent(ReadOnlySpan<char> value)
+        => IsAsciiDigits(value) && !HasLeadingZero(value);
+
+    private static bool IsAsciiDigits(ReadOnlySpan<char> value)
+    {
+        if (value.IsEmpty)
+        {
+            return false;
+        }
+
+        foreach (char character in value)
+        {
+            if (character is < '0' or > '9')
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static bool HasLeadingZero(ReadOnlySpan<char> value) => value.Length > 1 && value[0] == '0';
+
     public async Task<ThreadSummary> StartThreadAsync(CancellationToken cancellationToken)
     {
         JsonElement result = await SendAsync("thread/start", new { cwd = options.WorkingDirectory }, cancellationToken).ConfigureAwait(false);
-        ThreadSummary summary = ReadThread(result.GetProperty("thread"));
+        EffectiveApprovalState = ReadEffectiveApprovalState(result);
+        ReadEffectiveTurnSettings(result, out string? reasoningEffort, out string? serviceTier);
+        EffectiveReasoningEffort = reasoningEffort;
+        EffectiveServiceTier = serviceTier;
+        ThreadSummary summary = ReadThread(
+            result.GetProperty("thread"),
+            EffectiveApprovalState,
+            EffectiveReasoningEffort,
+            EffectiveServiceTier);
         ActiveThreadId = summary.Id;
         return summary;
     }
@@ -250,7 +487,15 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
     public async Task<ThreadSummary> ResumeThreadAsync(string threadId, CancellationToken cancellationToken)
     {
         JsonElement result = await SendAsync("thread/resume", new { threadId }, cancellationToken).ConfigureAwait(false);
-        ThreadSummary summary = ReadThread(result.GetProperty("thread"));
+        EffectiveApprovalState = ReadEffectiveApprovalState(result);
+        ReadEffectiveTurnSettings(result, out string? reasoningEffort, out string? serviceTier);
+        EffectiveReasoningEffort = reasoningEffort;
+        EffectiveServiceTier = serviceTier;
+        ThreadSummary summary = ReadThread(
+            result.GetProperty("thread"),
+            EffectiveApprovalState,
+            EffectiveReasoningEffort,
+            EffectiveServiceTier);
         ActiveThreadId = summary.Id;
         return summary;
     }
@@ -279,6 +524,7 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
 
     public async Task<ListModelsResult> ListModelsAsync(CancellationToken cancellationToken)
     {
+        WorkerDiagnostics.Write("app-server model list request starting");
         try
         {
             JsonElement result = await RequireConnection().SendRequestAsync(
@@ -288,10 +534,13 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
                 new { includeHidden = true },
                 TimeSpan.FromSeconds(15),
                 cancellationToken).ConfigureAwait(false);
-            return ReadModelsResult(result);
+            ListModelsResult models = ReadModelsResult(result);
+            WorkerDiagnostics.Write($"app-server model list request completed count={models.Models.Count}");
+            return models;
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException ex)
         {
+            WorkerDiagnostics.Write("app-server model list request canceled", ex);
             throw;
         }
         catch (Exception ex)
@@ -301,22 +550,150 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         }
     }
 
+    public async Task<ListPermissionProfilesResult> ListPermissionProfilesAsync(CancellationToken cancellationToken)
+    {
+        const string method = "permissionProfile/list";
+        if (!options.ExperimentalApi)
+        {
+            return Unsupported<ListPermissionProfilesResult>(
+                "Permission profiles require the experimental app-server API.");
+        }
+
+        var profiles = new List<PermissionProfileInfo>();
+        var seenIds = new HashSet<string>(StringComparer.Ordinal);
+        var seenCursors = new HashSet<string>(StringComparer.Ordinal);
+        string? cursor = null;
+        bool truncated = false;
+
+        for (int page = 0; page < MaxPermissionProfilePages; page++)
+        {
+            OperationCallResult call = await TrySendOperationAsync(
+                method,
+                new { cwd = options.WorkingDirectory, cursor, limit = PermissionProfilePageSize },
+                TimeSpan.FromSeconds(15),
+                cancellationToken).ConfigureAwait(false);
+            if (!call.IsSupported)
+            {
+                return Unsupported<ListPermissionProfilesResult>(
+                    "Permission profiles are not supported by this app-server.");
+            }
+
+            bool pageWasTruncated = ReadPermissionProfiles(call.Result, profiles, seenIds);
+            if (profiles.Count >= MaxPermissionProfiles)
+            {
+                truncated = pageWasTruncated || GetString(call.Result, "nextCursor") is not null;
+                break;
+            }
+
+            string? rawNextCursor = GetString(call.Result, "nextCursor");
+            if (rawNextCursor is null)
+            {
+                break;
+            }
+
+            string? nextCursor = NormalizeCursor(rawNextCursor);
+            if (nextCursor is null)
+            {
+                truncated = true;
+                break;
+            }
+
+            if (!seenCursors.Add(nextCursor))
+            {
+                truncated = true;
+                break;
+            }
+
+            cursor = nextCursor;
+            if (page == MaxPermissionProfilePages - 1)
+            {
+                truncated = true;
+            }
+        }
+
+        return new ListPermissionProfilesResult
+        {
+            Profiles = profiles,
+            IsTruncated = truncated,
+        };
+    }
+
     public async Task<string> StartTurnAsync(StartTurnRequest request, CancellationToken cancellationToken)
     {
+        ValidateTurnApprovalOverrides(request);
+        List<object> input = BuildTurnInput(request);
+        var parameters = new Dictionary<string, object?>
+        {
+            ["threadId"] = request.ThreadId,
+            ["input"] = input,
+        };
+        AddOptional(parameters, "model", request.Model);
+        AddOptional(parameters, "approvalPolicy", request.ApprovalPolicy);
+        AddOptional(parameters, "approvalsReviewer", request.ApprovalsReviewer);
+        if (request.SandboxMode is not null)
+        {
+            parameters["sandboxPolicy"] = new { type = request.SandboxMode };
+        }
+
+        AddOptional(parameters, "permissions", request.Permissions);
+        if (request.HasEffort)
+        {
+            parameters["effort"] = request.Effort;
+        }
+
+        AddOptional(parameters, "personality", request.Personality);
+        if (request.HasServiceTier)
+        {
+            parameters["serviceTier"] = request.ServiceTier;
+        }
+
+        if (request.CollaborationMode is not null)
+        {
+            var collaborationSettings = new Dictionary<string, object?>
+            {
+                ["model"] = request.CollaborationMode.Model,
+            };
+            if (request.HasEffort)
+            {
+                collaborationSettings["reasoning_effort"] = request.CollaborationMode.ReasoningEffort;
+            }
+
+            AddOptional(
+                collaborationSettings,
+                "developer_instructions",
+                request.CollaborationMode.DeveloperInstructions);
+            parameters["collaborationMode"] = new Dictionary<string, object?>
+            {
+                ["mode"] = request.CollaborationMode.Mode,
+                ["settings"] = collaborationSettings,
+            };
+        }
+
         JsonElement result = await SendAsync(
             "turn/start",
-            new
-            {
-                threadId = request.ThreadId,
-                input = new[] { new { type = "text", text = request.Text } },
-                model = request.Model,
-                approvalPolicy = request.ApprovalPolicy,
-                sandboxPolicy = request.SandboxMode is null ? null : new { type = request.SandboxMode },
-            },
+            parameters,
             cancellationToken).ConfigureAwait(false);
         ActiveThreadId = request.ThreadId;
         ActiveTurnId = result.GetProperty("turn").GetProperty("id").GetString();
+        if (request.HasEffort)
+        {
+            EffectiveReasoningEffort = request.Effort;
+        }
+
+        if (request.HasServiceTier)
+        {
+            EffectiveServiceTier = request.ServiceTier;
+        }
+
         return ActiveTurnId ?? string.Empty;
+    }
+
+    private static void AddOptional(Dictionary<string, object?> values, string name, object? value)
+    {
+        if (value is not null)
+        {
+            values[name] = value;
+        }
     }
 
     public async Task<string> SteerTurnAsync(SteerTurnRequest request, CancellationToken cancellationToken)
@@ -345,6 +722,202 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
             new { threadId = request.ThreadId, turnId = request.TurnId },
             TimeSpan.FromSeconds(10),
             cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<CompactThreadResult> CompactThreadAsync(
+        CompactThreadRequest request,
+        CancellationToken cancellationToken)
+    {
+        OperationCallResult call = await TrySendOperationAsync(
+            "thread/compact/start",
+            new { threadId = request.ThreadId },
+            TimeSpan.FromSeconds(60),
+            cancellationToken).ConfigureAwait(false);
+        if (!call.IsSupported)
+        {
+            return Unsupported<CompactThreadResult>("Manual context compaction is not supported by this app-server.");
+        }
+
+        ActiveThreadId = request.ThreadId;
+        return new CompactThreadResult();
+    }
+
+    public async Task<StartReviewResult> StartReviewAsync(
+        StartReviewRequest request,
+        CancellationToken cancellationToken)
+    {
+        object target = CreateReviewTarget(request.Target);
+        OperationCallResult call = await TrySendOperationAsync(
+            "review/start",
+            new
+            {
+                threadId = request.ThreadId,
+                target,
+                delivery = request.Delivery == ReviewDelivery.Detached ? "detached" : "inline",
+            },
+            TimeSpan.FromSeconds(60),
+            cancellationToken).ConfigureAwait(false);
+        if (!call.IsSupported)
+        {
+            return Unsupported<StartReviewResult>("Code review is not supported by this app-server.");
+        }
+
+        string? reviewThreadId = GetString(call.Result, "reviewThreadId");
+        string? turnId = call.Result.TryGetProperty("turn", out JsonElement turn)
+            ? GetString(turn, "id")
+            : null;
+        ActiveThreadId = reviewThreadId ?? request.ThreadId;
+        ActiveTurnId = turnId;
+        return new StartReviewResult
+        {
+            ReviewThreadId = reviewThreadId,
+            TurnId = turnId,
+        };
+    }
+
+    public async Task<ForkThreadResult> ForkThreadAsync(
+        ForkThreadRequest request,
+        CancellationToken cancellationToken)
+    {
+        OperationCallResult call = await TrySendOperationAsync(
+            "thread/fork",
+            new { threadId = request.ThreadId },
+            TimeSpan.FromSeconds(60),
+            cancellationToken).ConfigureAwait(false);
+        if (!call.IsSupported)
+        {
+            return Unsupported<ForkThreadResult>("Thread forking is not supported by this app-server.");
+        }
+
+        EffectiveApprovalState = ReadEffectiveApprovalState(call.Result);
+        ReadEffectiveTurnSettings(call.Result, out string? reasoningEffort, out string? serviceTier);
+        EffectiveReasoningEffort = reasoningEffort;
+        EffectiveServiceTier = serviceTier;
+        ThreadSummary? thread = call.Result.TryGetProperty("thread", out JsonElement threadElement)
+            ? ReadThread(
+                threadElement,
+                EffectiveApprovalState,
+                EffectiveReasoningEffort,
+                EffectiveServiceTier)
+            : null;
+        ActiveThreadId = thread?.Id ?? ActiveThreadId;
+        ActiveTurnId = null;
+        return new ForkThreadResult { Thread = thread };
+    }
+
+    public async Task<ThreadGoalResult> GetThreadGoalAsync(string threadId, CancellationToken cancellationToken)
+    {
+        OperationCallResult call = await TrySendOperationAsync(
+            "thread/goal/get",
+            new { threadId },
+            TimeSpan.FromSeconds(15),
+            cancellationToken).ConfigureAwait(false);
+        if (!call.IsSupported)
+        {
+            return Unsupported<ThreadGoalResult>("Thread goals are not supported by this app-server.");
+        }
+
+        return new ThreadGoalResult { Goal = ReadOptionalGoal(call.Result) };
+    }
+
+    public async Task<ThreadGoalResult> SetThreadGoalAsync(
+        SetThreadGoalRequest request,
+        CancellationToken cancellationToken)
+    {
+        ValidateGoalRequest(request);
+        OperationCallResult call = await TrySendOperationAsync(
+            "thread/goal/set",
+            new
+            {
+                threadId = request.ThreadId,
+                objective = request.Objective,
+                status = request.Status.HasValue ? ToWireGoalStatus(request.Status.Value) : null,
+                tokenBudget = request.TokenBudget,
+            },
+            TimeSpan.FromSeconds(30),
+            cancellationToken).ConfigureAwait(false);
+        if (!call.IsSupported)
+        {
+            return Unsupported<ThreadGoalResult>("Thread goals are not supported by this app-server.");
+        }
+
+        return new ThreadGoalResult { Goal = ReadOptionalGoal(call.Result) };
+    }
+
+    public async Task<ThreadGoalResult> ClearThreadGoalAsync(string threadId, CancellationToken cancellationToken)
+    {
+        OperationCallResult call = await TrySendOperationAsync(
+            "thread/goal/clear",
+            new { threadId },
+            TimeSpan.FromSeconds(30),
+            cancellationToken).ConfigureAwait(false);
+        if (!call.IsSupported)
+        {
+            return Unsupported<ThreadGoalResult>("Thread goals are not supported by this app-server.");
+        }
+
+        return new ThreadGoalResult
+        {
+            Cleared = GetBool(call.Result, "cleared") == true,
+        };
+    }
+
+    public async Task<McpServerListResult> ListMcpServersAsync(
+        string? threadId,
+        CancellationToken cancellationToken)
+    {
+        OperationCallResult call = await TrySendOperationAsync(
+            "mcpServerStatus/list",
+            new { cursor = (string?)null, limit = 100, detail = "toolsAndAuthOnly", threadId },
+            TimeSpan.FromSeconds(30),
+            cancellationToken).ConfigureAwait(false);
+        if (!call.IsSupported)
+        {
+            return Unsupported<McpServerListResult>("MCP server status is not supported by this app-server.");
+        }
+
+        return new McpServerListResult { Servers = ReadMcpServers(call.Result) };
+    }
+
+    public async Task<UploadFeedbackResult> UploadFeedbackAsync(
+        UploadFeedbackRequest request,
+        CancellationToken cancellationToken)
+    {
+        ValidateFeedbackRequest(request);
+        OperationCallResult call = await TrySendOperationAsync(
+            "feedback/upload",
+            new
+            {
+                classification = request.Classification,
+                reason = request.Reason,
+                includeLogs = request.IncludeLogs,
+                threadId = request.ThreadId,
+                tags = request.Tags.Count == 0 ? null : request.Tags,
+                extraLogFiles = (string[]?)null,
+            },
+            TimeSpan.FromSeconds(60),
+            cancellationToken).ConfigureAwait(false);
+        if (!call.IsSupported)
+        {
+            return Unsupported<UploadFeedbackResult>("Feedback upload is not supported by this app-server.");
+        }
+
+        return new UploadFeedbackResult { ThreadId = GetString(call.Result, "threadId") };
+    }
+
+    public async Task<RateLimitsResult> GetRateLimitsAsync(CancellationToken cancellationToken)
+    {
+        OperationCallResult call = await TrySendOperationAsync(
+            "account/rateLimits/read",
+            new { },
+            TimeSpan.FromSeconds(15),
+            cancellationToken).ConfigureAwait(false);
+        if (!call.IsSupported)
+        {
+            return Unsupported<RateLimitsResult>("Rate-limit status is not supported by this app-server.");
+        }
+
+        return ReadRateLimitsResult(call.Result);
     }
 
     public async Task ResolveApprovalAsync(ResolveApprovalRequest request, CancellationToken cancellationToken)
@@ -484,6 +1057,245 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         return result;
     }
 
+    private List<object> BuildTurnInput(StartTurnRequest request)
+    {
+        var input = new List<object>
+        {
+            new { type = "text", text = request.Text },
+        };
+
+        var includedPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        int attachmentCount = 0;
+        foreach (AttachmentInfo attachment in request.Attachments)
+        {
+            if (attachmentCount == 10)
+            {
+                break;
+            }
+
+            bool isImage = string.Equals(attachment.Kind, "image", StringComparison.OrdinalIgnoreCase);
+            bool isMention = string.Equals(attachment.Kind, "mention", StringComparison.OrdinalIgnoreCase);
+            if ((!isImage && !isMention)
+                || !TryNormalizeReadableFile(attachment.Path, allowOutsideWorkspace: true, out string normalizedPath)
+                || !includedPaths.Add(normalizedPath))
+            {
+                continue;
+            }
+
+            attachmentCount++;
+
+            if (isImage)
+            {
+                input.Add(new
+                {
+                    type = "localImage",
+                    path = normalizedPath,
+                });
+            }
+            else
+            {
+                input.Add(new
+                {
+                    type = "mention",
+                    name = Path.GetFileName(normalizedPath),
+                    path = normalizedPath,
+                });
+            }
+        }
+
+        if (request.IdeContext is null)
+        {
+            return input;
+        }
+
+        string? activeDocumentPath = request.IdeContext.ActiveDocumentPath;
+        if (TryNormalizeReadableFile(activeDocumentPath, allowOutsideWorkspace: false, out string normalizedActivePath)
+            && includedPaths.Add(normalizedActivePath))
+        {
+            input.Add(new
+            {
+                type = "mention",
+                name = Path.GetFileName(normalizedActivePath),
+                path = normalizedActivePath,
+            });
+        }
+
+        foreach (string path in request.IdeContext.ReferencedFilePaths.Take(10))
+        {
+            if (!TryNormalizeReadableFile(path, allowOutsideWorkspace: false, out string normalizedPath)
+                || !includedPaths.Add(normalizedPath))
+            {
+                continue;
+            }
+
+            input.Add(new
+            {
+                type = "mention",
+                name = Path.GetFileName(normalizedPath),
+                path = normalizedPath,
+            });
+        }
+
+        string? selection = LimitUtf8(request.IdeContext.SelectionText, 32 * 1024);
+        if (!string.IsNullOrEmpty(selection))
+        {
+            string? selectionPath = request.IdeContext.SelectionFilePath;
+            string header = IsWorkspacePath(selectionPath)
+                ? $"IDE selection from {selectionPath}:"
+                : "IDE selection:";
+            input.Add(new
+            {
+                type = "text",
+                text = $"{header}{Environment.NewLine}{selection}",
+            });
+        }
+
+        return input;
+    }
+
+    private bool IsWorkspacePath(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return false;
+        }
+
+        try
+        {
+            string workspace = Path.GetFullPath(options.WorkingDirectory)
+                .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+                + Path.DirectorySeparatorChar;
+            string candidate = Path.GetFullPath(path);
+            return candidate.StartsWith(workspace, StringComparison.OrdinalIgnoreCase);
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return false;
+        }
+    }
+
+    private bool TryNormalizeReadableFile(string? path, bool allowOutsideWorkspace, out string normalizedPath)
+    {
+        normalizedPath = string.Empty;
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return false;
+        }
+
+        PathAccessResult result = pathAccessPolicy.Evaluate(path, options.WorkingDirectory);
+        if (!result.IsValid
+            || (!allowOutsideWorkspace && !result.IsWithinWorkspace)
+            || protectedDirectoryPolicy.IsProtected(result.NormalizedPath)
+            || !File.Exists(result.NormalizedPath))
+        {
+            return false;
+        }
+
+        normalizedPath = result.NormalizedPath;
+        return true;
+    }
+
+    private static string? LimitUtf8(string? value, int maximumBytes)
+    {
+        if (string.IsNullOrEmpty(value) || Encoding.UTF8.GetByteCount(value) <= maximumBytes)
+        {
+            return value;
+        }
+
+        int low = 0;
+        int high = value.Length;
+        while (low < high)
+        {
+            int middle = low + ((high - low + 1) / 2);
+            if (Encoding.UTF8.GetByteCount(value.AsSpan(0, middle)) <= maximumBytes)
+            {
+                low = middle;
+            }
+            else
+            {
+                high = middle - 1;
+            }
+        }
+
+        if (low > 0 && char.IsHighSurrogate(value[low - 1]))
+        {
+            low--;
+        }
+
+        return value[..low];
+    }
+
+    private static object CreateReviewTarget(ReviewTarget target)
+    {
+        string? value = string.IsNullOrWhiteSpace(target.Value) ? null : target.Value.Trim();
+        return target.Kind switch
+        {
+            ReviewTargetKind.UncommittedChanges => new { type = "uncommittedChanges" },
+            ReviewTargetKind.BaseBranch when value is not null => new { type = "baseBranch", branch = value },
+            ReviewTargetKind.Commit when value is not null => new { type = "commit", sha = value, title = target.Title },
+            ReviewTargetKind.Custom when value is not null => new { type = "custom", instructions = value },
+            _ => throw new ArgumentException("The selected review target requires a value.", nameof(target)),
+        };
+    }
+
+    private static void ValidateGoalRequest(SetThreadGoalRequest request)
+    {
+        ValidateGoalObjective(request.Objective);
+        ValidateGoalTokenBudget(request.TokenBudget);
+    }
+
+    private static void ValidateFeedbackRequest(UploadFeedbackRequest request)
+    {
+        ValidateFeedbackClassification(request.Classification);
+        ValidateFeedbackReason(request.Reason);
+        ValidateFeedbackTags(request.Tags);
+    }
+
+    private static void ValidateGoalObjective(string? objective)
+    {
+        if (objective is not null && (string.IsNullOrWhiteSpace(objective) || objective.Length > 4_000))
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(objective),
+                "A goal objective must contain between 1 and 4,000 characters.");
+        }
+    }
+
+    private static void ValidateGoalTokenBudget(long? tokenBudget)
+    {
+        if (tokenBudget is not null && tokenBudget <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(tokenBudget), "A token budget must be greater than zero.");
+        }
+    }
+
+    private static void ValidateFeedbackClassification(string classification)
+    {
+        if (string.IsNullOrWhiteSpace(classification) || classification.Length > 64)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(classification),
+                "A feedback classification must contain between 1 and 64 characters.");
+        }
+    }
+
+    private static void ValidateFeedbackReason(string? reason)
+    {
+        if (reason?.Length > 4_000)
+        {
+            throw new ArgumentOutOfRangeException(nameof(reason), "Feedback text cannot exceed 4,000 characters.");
+        }
+    }
+
+    private static void ValidateFeedbackTags(IReadOnlyDictionary<string, string> tags)
+    {
+        if (tags.Count > 20
+            || tags.Any(pair => pair.Key.Length > 128 || pair.Value.Length > 128))
+        {
+            throw new ArgumentOutOfRangeException(nameof(tags), "Feedback tags exceed the supported limits.");
+        }
+    }
+
     public async ValueTask DisposeAsync()
     {
         if (streamingBuffer is not null)
@@ -608,6 +1420,91 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
             return;
         }
 
+        if (method == "thread/settings/updated")
+        {
+            bool isActiveThread = ActiveThreadId is not null
+                && string.Equals(threadId, ActiveThreadId, StringComparison.Ordinal);
+            bool hasSettings = (parameters.TryGetProperty("threadSettings", out JsonElement threadSettings)
+                    || parameters.TryGetProperty("settings", out threadSettings))
+                && threadSettings.ValueKind == JsonValueKind.Object;
+            if (isActiveThread && hasSettings)
+            {
+                EffectiveApprovalState = ReadEffectiveApprovalState(threadSettings);
+                ReadEffectiveTurnSettings(threadSettings, out string? reasoningEffort, out string? serviceTier);
+                EffectiveReasoningEffort = reasoningEffort;
+                EffectiveServiceTier = serviceTier;
+                if (EffectiveApprovalStateChanged is not null)
+                {
+                    await EffectiveApprovalStateChanged(EffectiveApprovalState, cancellationToken).ConfigureAwait(false);
+                }
+
+            }
+
+            return;
+        }
+
+        if (method == "account/rateLimits/updated"
+            && parameters.TryGetProperty("rateLimits", out JsonElement updatedRateLimits))
+        {
+            await EmitRateLimitsChangedAsync(
+                new RateLimitsResult { RateLimits = ReadRateLimit(updatedRateLimits) },
+                cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
+        if (method == "thread/goal/updated")
+        {
+            await EmitThreadGoalChangedAsync(
+                new ThreadGoalEvent
+                {
+                    ThreadId = threadId ?? string.Empty,
+                    TurnId = turnId,
+                    Goal = parameters.TryGetProperty("goal", out JsonElement goal)
+                        ? ReadGoal(goal)
+                        : null,
+                },
+                cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
+        if (method == "thread/goal/cleared")
+        {
+            await EmitThreadGoalChangedAsync(
+                new ThreadGoalEvent
+                {
+                    ThreadId = threadId ?? string.Empty,
+                    TurnId = turnId,
+                    IsCleared = true,
+                },
+                cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
+        if (method == "context/compacted")
+        {
+            await EmitContextCompactedAsync(
+                new ContextCompactionEvent
+                {
+                    ThreadId = threadId ?? string.Empty,
+                    TurnId = turnId ?? string.Empty,
+                    IsCompleted = true,
+                },
+                cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
+        if ((method is "item/started" or "item/completed")
+            && parameters.TryGetProperty("item", out JsonElement specialItem)
+            && await TryEmitSpecialItemAsync(
+                specialItem,
+                threadId,
+                turnId,
+                method == "item/completed",
+                cancellationToken).ConfigureAwait(false))
+        {
+            return;
+        }
+
         ConversationEventKind kind = MapKind(method);
         var output = new ConversationEvent
         {
@@ -685,6 +1582,92 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         return RequireConnection().SendRequestAsync(method, parameters, TimeSpan.FromSeconds(60), cancellationToken);
     }
 
+    private async Task<OperationCallResult> TrySendOperationAsync(
+        string method,
+        object parameters,
+        TimeSpan timeout,
+        CancellationToken cancellationToken)
+    {
+        lock (unsupportedMethodsLock)
+        {
+            if (unsupportedMethods.Contains(method))
+            {
+                return OperationCallResult.Unsupported;
+            }
+        }
+
+        try
+        {
+            JsonElement result = await RequireConnection().SendRequestAsync(
+                method,
+                parameters,
+                timeout,
+                cancellationToken).ConfigureAwait(false);
+            return new OperationCallResult(true, result);
+        }
+        catch (JsonRpcRemoteException ex) when (ex.Code == -32601)
+        {
+            lock (unsupportedMethodsLock)
+            {
+                unsupportedMethods.Add(method);
+            }
+
+            WorkerDiagnostics.Write($"app-server method disabled for this session method={method}", ex);
+            return OperationCallResult.Unsupported;
+        }
+    }
+
+    private static T Unsupported<T>(string reason)
+        where T : AppServerOperationResult, new()
+        => new()
+        {
+            IsSupported = false,
+            UnavailableReason = reason,
+        };
+
+    private async Task<bool> TryEmitSpecialItemAsync(
+        JsonElement item,
+        string? threadId,
+        string? turnId,
+        bool isCompleted,
+        CancellationToken cancellationToken)
+    {
+        string? itemType = GetString(item, "type");
+        string? itemId = GetString(item, "id");
+        if (itemType == "contextCompaction")
+        {
+            await EmitContextCompactedAsync(
+                new ContextCompactionEvent
+                {
+                    ThreadId = threadId ?? string.Empty,
+                    TurnId = turnId ?? string.Empty,
+                    ItemId = itemId,
+                    IsCompleted = isCompleted,
+                },
+                cancellationToken).ConfigureAwait(false);
+            return true;
+        }
+
+        if (itemType is "enteredReviewMode" or "exitedReviewMode")
+        {
+            await EmitReviewModeChangedAsync(
+                new ReviewModeEvent
+                {
+                    ThreadId = threadId ?? string.Empty,
+                    TurnId = turnId ?? string.Empty,
+                    ItemId = itemId,
+                    ChangeKind = itemType == "enteredReviewMode"
+                        ? ReviewModeChangeKind.Entered
+                        : ReviewModeChangeKind.Exited,
+                    Review = redactor.Redact(GetString(item, "review")),
+                },
+                cancellationToken).ConfigureAwait(false);
+            return true;
+        }
+
+        return false;
+    }
+
     private IJsonRpcConnection RequireConnection() => connection ?? throw new InvalidOperationException("The app-server is not initialized.");
 
     private Task EmitAsync(ConversationEvent value, CancellationToken cancellationToken)
@@ -695,6 +1678,18 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
 
     private Task EmitUserInputResolvedAsync(string requestId, CancellationToken cancellationToken)
         => UserInputResolved?.Invoke(requestId, cancellationToken) ?? Task.CompletedTask;
+
+    private Task EmitContextCompactedAsync(ContextCompactionEvent value, CancellationToken cancellationToken)
+        => ContextCompacted?.Invoke(value, cancellationToken) ?? Task.CompletedTask;
+
+    private Task EmitReviewModeChangedAsync(ReviewModeEvent value, CancellationToken cancellationToken)
+        => ReviewModeChanged?.Invoke(value, cancellationToken) ?? Task.CompletedTask;
+
+    private Task EmitThreadGoalChangedAsync(ThreadGoalEvent value, CancellationToken cancellationToken)
+        => ThreadGoalChanged?.Invoke(value, cancellationToken) ?? Task.CompletedTask;
+
+    private Task EmitRateLimitsChangedAsync(RateLimitsResult value, CancellationToken cancellationToken)
+        => RateLimitsChanged?.Invoke(value, cancellationToken) ?? Task.CompletedTask;
 
     private async Task EmitAccountStatusAsync(AccountStatus status, CancellationToken cancellationToken)
     {
@@ -761,19 +1756,216 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
             ? value
             : null;
 
-    private static ThreadSummary ReadThread(JsonElement thread) => new()
+    private static ThreadSummary ReadThread(
+        JsonElement thread,
+        EffectiveApprovalState? effectiveApprovalState = null,
+        string? effectiveReasoningEffort = null,
+        string? effectiveServiceTier = null) => new()
+        {
+            Id = GetString(thread, "id") ?? string.Empty,
+            Preview = GetString(thread, "preview"),
+            Cwd = GetString(thread, "cwd"),
+            UpdatedAt = thread.TryGetProperty("updatedAt", out JsonElement updated) && updated.TryGetInt64(out long value) ? value : null,
+            EffectiveApprovalState = effectiveApprovalState,
+            EffectiveReasoningEffort = effectiveReasoningEffort,
+            EffectiveServiceTier = effectiveServiceTier,
+        };
+
+    private static void ReadEffectiveTurnSettings(
+        JsonElement value,
+        out string? reasoningEffort,
+        out string? serviceTier)
     {
-        Id = GetString(thread, "id") ?? string.Empty,
-        Preview = GetString(thread, "preview"),
-        Cwd = GetString(thread, "cwd"),
-        UpdatedAt = thread.TryGetProperty("updatedAt", out JsonElement updated) && updated.TryGetInt64(out long value) ? value : null,
-    };
+        JsonElement settings = value;
+        if ((value.TryGetProperty("threadSettings", out JsonElement nested)
+                || value.TryGetProperty("settings", out nested))
+            && nested.ValueKind == JsonValueKind.Object)
+        {
+            settings = nested;
+        }
+        else if (value.TryGetProperty("thread", out JsonElement thread)
+            && thread.ValueKind == JsonValueKind.Object)
+        {
+            settings = thread;
+            if ((thread.TryGetProperty("threadSettings", out nested)
+                    || thread.TryGetProperty("settings", out nested))
+                && nested.ValueKind == JsonValueKind.Object)
+            {
+                settings = nested;
+            }
+        }
+
+        reasoningEffort = NormalizeWireIdentifier(
+            GetString(settings, "effort")
+            ?? GetString(settings, "reasoningEffort")
+            ?? GetString(settings, "reasoning_effort")
+            ?? GetString(value, "effort")
+            ?? GetString(value, "reasoningEffort")
+            ?? GetString(value, "reasoning_effort"));
+        serviceTier = NormalizeWireIdentifier(
+            GetString(settings, "serviceTier")
+            ?? GetString(settings, "service_tier")
+            ?? GetString(value, "serviceTier")
+            ?? GetString(value, "service_tier"));
+    }
+
+    private static EffectiveApprovalState ReadEffectiveApprovalState(JsonElement value)
+    {
+        string? activePermissionProfile = null;
+        if (value.TryGetProperty("activePermissionProfile", out JsonElement activeProfile))
+        {
+            activePermissionProfile = activeProfile.ValueKind switch
+            {
+                JsonValueKind.Object => NormalizeEffectiveIdentifier(GetString(activeProfile, "id")),
+                JsonValueKind.String => NormalizeEffectiveIdentifier(activeProfile.GetString()),
+                _ => null,
+            };
+        }
+
+        JsonElement sandbox = default;
+        bool hasSandbox = (value.TryGetProperty("sandbox", out sandbox)
+                || value.TryGetProperty("sandboxPolicy", out sandbox))
+            && sandbox.ValueKind == JsonValueKind.Object;
+        return new EffectiveApprovalState
+        {
+            ActivePermissionProfile = activePermissionProfile,
+            ApprovalPolicy = NormalizeWireIdentifier(GetString(value, "approvalPolicy")),
+            ApprovalsReviewer = NormalizeWireIdentifier(GetString(value, "approvalsReviewer")),
+            SandboxMode = hasSandbox ? NormalizeWireIdentifier(GetString(sandbox, "type")) : null,
+        };
+    }
+
+    private bool ReadPermissionProfiles(
+        JsonElement result,
+        List<PermissionProfileInfo> profiles,
+        HashSet<string> seenIds)
+    {
+        if (!result.TryGetProperty("data", out JsonElement data) || data.ValueKind != JsonValueKind.Array)
+        {
+            return false;
+        }
+
+        foreach (JsonElement profile in data.EnumerateArray())
+        {
+            if (profiles.Count >= MaxPermissionProfiles)
+            {
+                return true;
+            }
+
+            if (profile.ValueKind != JsonValueKind.Object)
+            {
+                continue;
+            }
+
+            string? id = NormalizePermissionProfileId(GetString(profile, "id"));
+            if (id is null || !seenIds.Add(id))
+            {
+                continue;
+            }
+
+            profiles.Add(new PermissionProfileInfo
+            {
+                Id = id,
+                Description = SanitizePermissionProfileDescription(GetString(profile, "description")),
+                Allowed = GetBool(profile, "allowed") == true,
+            });
+        }
+
+        return false;
+    }
+
+    private string? SanitizePermissionProfileDescription(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        string redacted = redactor.Redact(value);
+        string sanitized = new(redacted.Where(character => !char.IsControl(character)).Take(512).ToArray());
+        return string.IsNullOrWhiteSpace(sanitized) ? null : sanitized.Trim();
+    }
+
+    private static string? NormalizePermissionProfileId(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        string trimmed = value.Trim();
+        return trimmed.Length <= MaxPermissionProfileIdLength
+            && trimmed.All(character => !char.IsControl(character))
+                ? trimmed
+                : null;
+    }
+
+    private static string? NormalizeEffectiveIdentifier(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        string trimmed = value.Trim();
+        return trimmed.Length <= 128 && trimmed.All(character => !char.IsControl(character))
+            ? trimmed
+            : null;
+    }
+
+    private static string? NormalizeCursor(string? value)
+        => !string.IsNullOrEmpty(value)
+            && value.Length <= 512
+            && value.All(character => !char.IsControl(character))
+                ? value
+                : null;
+
+    private static void ValidateTurnApprovalOverrides(StartTurnRequest request)
+    {
+        if (request.Permissions is not null)
+        {
+            if (request.ApprovalPolicy is not null
+                || request.ApprovalsReviewer is not null
+                || request.SandboxMode is not null)
+            {
+                throw new ArgumentException(
+                    "A permissions profile cannot be combined with approval, reviewer, or sandbox overrides.",
+                    nameof(request));
+            }
+
+            string? normalizedProfile = NormalizePermissionProfileId(request.Permissions);
+            if (!string.Equals(normalizedProfile, request.Permissions, StringComparison.Ordinal))
+            {
+                throw new ArgumentException("The permissions profile id is invalid.", nameof(request));
+            }
+        }
+
+        if (request.ApprovalPolicy is not null
+            && request.ApprovalPolicy is not ("untrusted" or "on-request" or "never"))
+        {
+            throw new ArgumentException("The approval policy override is invalid.", nameof(request));
+        }
+
+        if (request.ApprovalsReviewer is not null
+            && request.ApprovalsReviewer is not ("user" or "auto_review"))
+        {
+            throw new ArgumentException("The approvals reviewer override is invalid.", nameof(request));
+        }
+
+        if (request.SandboxMode is not null
+            && request.SandboxMode is not ("readOnly" or "workspaceWrite" or "dangerFullAccess"))
+        {
+            throw new ArgumentException("The sandbox override is invalid.", nameof(request));
+        }
+    }
 
     private ListModelsResult ReadModelsResult(JsonElement result)
     {
         var models = new List<ModelInfo>();
         var seen = new HashSet<string>(StringComparer.Ordinal);
+        var modelInfoById = new Dictionary<string, ModelInfo>(StringComparer.Ordinal);
         string? defaultModel = null;
+        ModelInfo? defaultModelInfo = null;
 
         // The codex app-server model/list response uses "data"; tolerate a legacy "models" key as well.
         if ((result.TryGetProperty("data", out JsonElement modelArray)
@@ -800,6 +1992,13 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
                     defaultModel = id;
                 }
 
+                ModelInfo modelInfo = ReadModelInfo(model, id);
+                modelInfoById.TryAdd(id, modelInfo);
+                if (GetBool(model, "isDefault") == true)
+                {
+                    defaultModelInfo = modelInfo;
+                }
+
                 if (GetBool(model, "hidden") == true)
                 {
                     continue;
@@ -810,12 +2009,7 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
                     continue;
                 }
 
-                string? displayName = GetString(model, "displayName");
-                models.Add(new ModelInfo
-                {
-                    Id = id,
-                    DisplayName = displayName is null ? null : redactor.Redact(displayName),
-                });
+                models.Add(modelInfo);
             }
         }
 
@@ -823,18 +2017,217 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         if (defaultModel is null)
         {
             string? topLevelDefault = NormalizeModelId(GetString(result, "defaultModel"));
-            if (topLevelDefault is not null && seen.Contains(topLevelDefault))
+            if (topLevelDefault is not null && modelInfoById.TryGetValue(topLevelDefault, out ModelInfo? modelInfo))
             {
                 defaultModel = topLevelDefault;
+                defaultModelInfo = modelInfo;
             }
         }
 
-        WorkerDiagnostics.Write($"app-server model list parsed; count={models.Count} default={defaultModel ?? "(none)"}");
+        WorkerDiagnostics.Write(
+            $"app-server model list parsed; count={models.Count} default={redactor.Redact(defaultModel ?? "(none)")}");
 
         return new ListModelsResult
         {
             Models = models,
             DefaultModel = defaultModel,
+            DefaultModelInfo = defaultModelInfo,
+        };
+    }
+
+    private ModelInfo ReadModelInfo(JsonElement model, string id)
+    {
+        string? displayName = GetString(model, "displayName");
+        return new ModelInfo
+        {
+            Id = id,
+            DisplayName = displayName is null ? null : redactor.Redact(displayName),
+            DefaultReasoningEffort = NormalizeWireIdentifier(GetString(model, "defaultReasoningEffort")),
+            SupportedReasoningEfforts = ReadReasoningEfforts(model),
+            SupportsPersonality = GetBool(model, "supportsPersonality") == true,
+            DefaultServiceTier = NormalizeWireIdentifier(GetString(model, "defaultServiceTier")),
+            ServiceTiers = ReadServiceTiers(model),
+        };
+    }
+
+    private IReadOnlyList<ReasoningEffortInfo> ReadReasoningEfforts(JsonElement model)
+    {
+        if (!model.TryGetProperty("supportedReasoningEfforts", out JsonElement efforts)
+            || efforts.ValueKind != JsonValueKind.Array)
+        {
+            return Array.Empty<ReasoningEffortInfo>();
+        }
+
+        var result = new List<ReasoningEffortInfo>();
+        foreach (JsonElement effort in efforts.EnumerateArray())
+        {
+            string? id = NormalizeWireIdentifier(GetString(effort, "reasoningEffort"));
+            if (id is null)
+            {
+                continue;
+            }
+
+            result.Add(new ReasoningEffortInfo
+            {
+                Id = id,
+                Description = redactor.Redact(GetString(effort, "description")),
+            });
+        }
+
+        return result;
+    }
+
+    private IReadOnlyList<ServiceTierInfo> ReadServiceTiers(JsonElement model)
+    {
+        if (!model.TryGetProperty("serviceTiers", out JsonElement serviceTiers)
+            || serviceTiers.ValueKind != JsonValueKind.Array)
+        {
+            return Array.Empty<ServiceTierInfo>();
+        }
+
+        var result = new List<ServiceTierInfo>();
+        foreach (JsonElement serviceTier in serviceTiers.EnumerateArray())
+        {
+            string? id = NormalizeWireIdentifier(GetString(serviceTier, "id"));
+            if (id is null)
+            {
+                continue;
+            }
+
+            result.Add(new ServiceTierInfo
+            {
+                Id = id,
+                Name = redactor.Redact(GetString(serviceTier, "name")),
+                Description = redactor.Redact(GetString(serviceTier, "description")),
+            });
+        }
+
+        return result;
+    }
+
+    private ThreadGoalInfo? ReadOptionalGoal(JsonElement result)
+        => result.TryGetProperty("goal", out JsonElement goal)
+        && goal.ValueKind == JsonValueKind.Object
+            ? ReadGoal(goal)
+            : null;
+
+    private ThreadGoalInfo ReadGoal(JsonElement goal) => new()
+    {
+        ThreadId = GetString(goal, "threadId") ?? string.Empty,
+        Objective = redactor.Redact(GetString(goal, "objective")) ?? string.Empty,
+        Status = FromWireGoalStatus(GetString(goal, "status")),
+        TokenBudget = GetInt64(goal, "tokenBudget"),
+        TokensUsed = GetInt64(goal, "tokensUsed") ?? 0,
+        TimeUsedSeconds = GetInt64(goal, "timeUsedSeconds") ?? 0,
+        CreatedAt = GetInt64(goal, "createdAt") ?? 0,
+        UpdatedAt = GetInt64(goal, "updatedAt") ?? 0,
+    };
+
+    private IReadOnlyList<McpServerStatusInfo> ReadMcpServers(JsonElement result)
+    {
+        if (!result.TryGetProperty("data", out JsonElement data) || data.ValueKind != JsonValueKind.Array)
+        {
+            return Array.Empty<McpServerStatusInfo>();
+        }
+
+        var servers = new List<McpServerStatusInfo>();
+        foreach (JsonElement server in data.EnumerateArray())
+        {
+            if (server.ValueKind != JsonValueKind.Object)
+            {
+                continue;
+            }
+
+            var tools = new List<string>();
+            if (server.TryGetProperty("tools", out JsonElement toolMap)
+                && toolMap.ValueKind == JsonValueKind.Object)
+            {
+                tools.AddRange(toolMap.EnumerateObject().Select(tool => redactor.Redact(tool.Name)));
+            }
+
+            string? displayName = null;
+            if (server.TryGetProperty("serverInfo", out JsonElement serverInfo)
+                && serverInfo.ValueKind == JsonValueKind.Object)
+            {
+                displayName = GetString(serverInfo, "title") ?? GetString(serverInfo, "name");
+            }
+
+            servers.Add(new McpServerStatusInfo
+            {
+                Name = redactor.Redact(GetString(server, "name")) ?? string.Empty,
+                DisplayName = redactor.Redact(displayName),
+                AuthStatus = NormalizeWireIdentifier(GetString(server, "authStatus")) ?? string.Empty,
+                ToolNames = tools,
+                ResourceCount = GetArrayLength(server, "resources"),
+                ResourceTemplateCount = GetArrayLength(server, "resourceTemplates"),
+            });
+        }
+
+        return servers;
+    }
+
+    private RateLimitsResult ReadRateLimitsResult(JsonElement result)
+    {
+        var byLimitId = new Dictionary<string, RateLimitInfo>(StringComparer.Ordinal);
+        if (result.TryGetProperty("rateLimitsByLimitId", out JsonElement map)
+            && map.ValueKind == JsonValueKind.Object)
+        {
+            foreach (JsonProperty property in map.EnumerateObject())
+            {
+                byLimitId[redactor.Redact(property.Name)] = ReadRateLimit(property.Value);
+            }
+        }
+
+        return new RateLimitsResult
+        {
+            RateLimits = result.TryGetProperty("rateLimits", out JsonElement rateLimits)
+                && rateLimits.ValueKind == JsonValueKind.Object
+                    ? ReadRateLimit(rateLimits)
+                    : null,
+            RateLimitsByLimitId = byLimitId,
+        };
+    }
+
+    private RateLimitInfo ReadRateLimit(JsonElement value) => new()
+    {
+        LimitId = redactor.Redact(GetString(value, "limitId")),
+        LimitName = redactor.Redact(GetString(value, "limitName")),
+        PlanType = NormalizeWireIdentifier(GetString(value, "planType")),
+        ReachedType = NormalizeWireIdentifier(GetString(value, "rateLimitReachedType")),
+        Primary = ReadRateLimitWindow(value, "primary"),
+        Secondary = ReadRateLimitWindow(value, "secondary"),
+        Credits = ReadCredits(value),
+    };
+
+    private static RateLimitWindowInfo? ReadRateLimitWindow(JsonElement value, string propertyName)
+    {
+        if (!value.TryGetProperty(propertyName, out JsonElement window)
+            || window.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+
+        return new RateLimitWindowInfo
+        {
+            UsedPercent = GetInt32(window, "usedPercent"),
+            ResetsAt = GetInt64(window, "resetsAt"),
+            WindowDurationMinutes = GetInt64(window, "windowDurationMins"),
+        };
+    }
+
+    private CreditsInfo? ReadCredits(JsonElement value)
+    {
+        if (!value.TryGetProperty("credits", out JsonElement credits)
+            || credits.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+
+        return new CreditsInfo
+        {
+            HasCredits = GetBool(credits, "hasCredits") == true,
+            Unlimited = GetBool(credits, "unlimited") == true,
+            Balance = redactor.Redact(GetString(credits, "balance")),
         };
     }
 
@@ -851,6 +2244,20 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
             : null;
     }
 
+    private static string? NormalizeWireIdentifier(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        string trimmed = value.Trim();
+        return trimmed.Length <= 128
+            && trimmed.All(character => char.IsAsciiLetterOrDigit(character) || character is '_' or '-')
+                ? trimmed
+                : null;
+    }
+
     private static string? GetString(JsonElement element, string name)
         => element.ValueKind == JsonValueKind.Object
             && element.TryGetProperty(name, out JsonElement property)
@@ -865,6 +2272,29 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
                 ? property.GetBoolean()
                 : null;
 
+    private static long? GetInt64(JsonElement element, string name)
+        => element.ValueKind == JsonValueKind.Object
+            && element.TryGetProperty(name, out JsonElement property)
+            && property.ValueKind == JsonValueKind.Number
+            && property.TryGetInt64(out long value)
+                ? value
+                : null;
+
+    private static int? GetInt32(JsonElement element, string name)
+        => element.ValueKind == JsonValueKind.Object
+            && element.TryGetProperty(name, out JsonElement property)
+            && property.ValueKind == JsonValueKind.Number
+            && property.TryGetInt32(out int value)
+                ? value
+                : null;
+
+    private static int GetArrayLength(JsonElement element, string name)
+        => element.ValueKind == JsonValueKind.Object
+            && element.TryGetProperty(name, out JsonElement property)
+            && property.ValueKind == JsonValueKind.Array
+                ? property.GetArrayLength()
+                : 0;
+
     private static string ToWireDecision(ApprovalDecision decision) => decision switch
     {
         ApprovalDecision.Accept => "accept",
@@ -873,6 +2303,27 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         ApprovalDecision.AcceptForSession => "acceptForSession",
         ApprovalDecision.Decline => "decline",
         _ => "cancel",
+    };
+
+    private static string ToWireGoalStatus(ThreadGoalStatus status) => status switch
+    {
+        ThreadGoalStatus.Active => "active",
+        ThreadGoalStatus.Paused => "paused",
+        ThreadGoalStatus.Blocked => "blocked",
+        ThreadGoalStatus.UsageLimited => "usageLimited",
+        ThreadGoalStatus.BudgetLimited => "budgetLimited",
+        ThreadGoalStatus.Complete => "complete",
+        _ => "active",
+    };
+
+    private static ThreadGoalStatus FromWireGoalStatus(string? status) => status switch
+    {
+        "paused" => ThreadGoalStatus.Paused,
+        "blocked" => ThreadGoalStatus.Blocked,
+        "usageLimited" => ThreadGoalStatus.UsageLimited,
+        "budgetLimited" => ThreadGoalStatus.BudgetLimited,
+        "complete" => ThreadGoalStatus.Complete,
+        _ => ThreadGoalStatus.Active,
     };
 
     private static JsonElement ApprovalResponse(string decision)
@@ -918,4 +2369,9 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
     private sealed record PendingUserInput(
         UserInputRequest Request,
         TaskCompletionSource<IReadOnlyDictionary<string, string[]>> Completion);
+
+    private readonly record struct OperationCallResult(bool IsSupported, JsonElement Result)
+    {
+        public static OperationCallResult Unsupported { get; } = new(false, default);
+    }
 }

@@ -1,4 +1,4 @@
-using Microsoft.VisualStudio.Extensibility;
+﻿using Microsoft.VisualStudio.Extensibility;
 using Microsoft.VisualStudio.Extensibility.Documents;
 using Microsoft.VisualStudio.Extensibility.ToolWindows;
 using Microsoft.VisualStudio.RpcContracts.RemoteUI;
@@ -23,7 +23,10 @@ internal sealed class CodexToolWindow : ToolWindow
 
     public override async Task InitializeAsync(CancellationToken cancellationToken)
     {
-        ExtensionDiagnostics.Write("Codex tool window initialization starting");
+        ExtensionDiagnostics.Write(
+            $"Codex tool window initialization starting: id={ExtensionIdentity.Id}; " +
+            $"publisher={ExtensionIdentity.PublisherName}; displayName={ExtensionIdentity.DisplayName}; " +
+            $"version={ExtensionIdentity.AssemblyVersion}");
         outputChannel = await this.Extensibility.Views().Output
             .CreateOutputChannelAsync("Codex Diagnostics", cancellationToken)
             .ConfigureAwait(false);

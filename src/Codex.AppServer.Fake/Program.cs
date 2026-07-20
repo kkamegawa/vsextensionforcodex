@@ -19,16 +19,78 @@ while (await Console.In.ReadLineAsync().ConfigureAwait(false) is { } line)
     {
         "initialize" => new { userAgent = "codex-app-server-fake/0.1.0" },
         "thread/start" => CreateThread(),
-        "thread/resume" => new { thread = new { id = root.GetProperty("params").GetProperty("threadId").GetString(), preview = "Resumed fake thread" } },
+        "thread/resume" => ThreadResponse(
+            new { id = root.GetProperty("params").GetProperty("threadId").GetString(), preview = "Resumed fake thread" }),
+        "thread/fork" => ThreadResponse(
+            new { id = $"fake-thread-{nextThread++}", preview = "Forked fake thread", cwd = Environment.CurrentDirectory }),
         "thread/list" => new { data = threads, nextCursor = (string?)null },
         "model/list" => new
         {
+            data = new object[]
+            {
+                new
+                {
+                    model = "gpt-5-codex",
+                    displayName = "GPT-5 Codex",
+                    isDefault = false,
+                    hidden = false,
+                    defaultReasoningEffort = "medium",
+                    supportedReasoningEfforts = new[]
+                    {
+                        new { reasoningEffort = "low", description = "Faster responses with lighter reasoning." },
+                        new { reasoningEffort = "medium", description = "Balanced reasoning for everyday work." },
+                        new { reasoningEffort = "high", description = "Deeper reasoning for complex work." },
+                    },
+                    defaultServiceTier = "standard",
+                    serviceTiers = new[]
+                    {
+                        new { id = "standard", name = "Standard", description = "Standard Codex service." },
+                        new { id = "fast", name = "Fast", description = "Prioritize lower latency." },
+                    },
+                },
+                new
+                {
+                    model = "gpt-5",
+                    displayName = "GPT-5",
+                    isDefault = false,
+                    hidden = false,
+                    defaultReasoningEffort = "medium",
+                    supportedReasoningEfforts = new[]
+                    {
+                        new { reasoningEffort = "medium", description = "Balanced reasoning." },
+                        new { reasoningEffort = "high", description = "Deeper reasoning." },
+                    },
+                },
+                // Hidden catalog default: filtered from the picker server-side but surfaced via isDefault.
+                new
+                {
+                    model = "gpt-5.1-codex-max",
+                    displayName = "GPT-5.1 Codex Max",
+                    isDefault = true,
+                    hidden = true,
+                    defaultReasoningEffort = "high",
+                    supportedReasoningEfforts = new[]
+                    {
+                        new { reasoningEffort = "medium", description = "Balanced reasoning." },
+                        new { reasoningEffort = "high", description = "Deeper reasoning." },
+                        new { reasoningEffort = "xhigh", description = "Maximum reasoning depth." },
+                    },
+                    defaultServiceTier = "standard",
+                    serviceTiers = new[]
+                    {
+                        new { id = "standard", name = "Standard", description = "Standard Codex service." },
+                        new { id = "fast", name = "Fast", description = "Prioritize lower latency." },
+                    },
+                },
+            },
+            nextCursor = (string?)null,
+        },
+        "permissionProfile/list" => new
+        {
             data = new[]
             {
-                new { model = "gpt-5-codex", displayName = "GPT-5 Codex", isDefault = false, hidden = false },
-                new { model = "gpt-5", displayName = "GPT-5", isDefault = false, hidden = false },
-                // Hidden catalog default: filtered from the picker server-side but surfaced via isDefault.
-                new { model = "gpt-5.1-codex-max", displayName = "GPT-5.1 Codex Max", isDefault = true, hidden = true },
+                new { id = "review", description = "Review commands before workspace changes.", allowed = true },
+                new { id = "managed", description = "Managed by organization policy.", allowed = false },
             },
             nextCursor = (string?)null,
         },
@@ -42,6 +104,7 @@ while (await Console.In.ReadLineAsync().ConfigureAwait(false) is { } line)
         },
         "account/login/start" => StartLogin(),
         "account/logout" => Logout(),
+        "account/rateLimits/read" => CreateRateLimits(),
         _ => new { },
     };
     await WriteAsync(new { id = JsonSerializer.Deserialize<object>(id.GetRawText()), result }).ConfigureAwait(false);
@@ -53,8 +116,19 @@ object CreateThread()
 {
     var thread = new { id = $"fake-thread-{nextThread++}", preview = "Fake conversation", cwd = Environment.CurrentDirectory };
     threads.Add(thread);
-    return new { thread };
+    return ThreadResponse(thread);
 }
+
+static object ThreadResponse(object thread) => new
+{
+    thread,
+    activePermissionProfile = new { id = ":workspace" },
+    approvalPolicy = "on-request",
+    approvalsReviewer = "user",
+    sandbox = new { type = "workspaceWrite" },
+    effort = "medium",
+    serviceTier = "standard",
+};
 
 object StartTurn(JsonElement request)
 {
@@ -62,15 +136,36 @@ object StartTurn(JsonElement request)
     string threadId = parameters.GetProperty("threadId").GetString() ?? string.Empty;
     string? model = GetOptionalString(parameters, "model");
     string? approvalPolicy = GetOptionalString(parameters, "approvalPolicy");
+    string? approvalsReviewer = GetOptionalString(parameters, "approvalsReviewer");
+    string? permissions = GetOptionalString(parameters, "permissions");
+    string? effort = GetOptionalString(parameters, "effort");
+    string? serviceTier = GetOptionalString(parameters, "serviceTier");
     string? sandboxMode = parameters.TryGetProperty("sandboxPolicy", out JsonElement sandbox)
         ? GetOptionalString(sandbox, "type")
         : null;
     string turnId = $"fake-turn-{nextTurn++}";
-    Console.Error.WriteLine($"fake turn/start model={Sanitize(model) ?? "(default)"} approvalPolicy={Sanitize(approvalPolicy) ?? "(default)"} sandbox={Sanitize(sandboxMode) ?? "(default)"}");
+    Console.Error.WriteLine($"fake turn/start model={Sanitize(model) ?? "(default)"} approvalPolicy={Sanitize(approvalPolicy) ?? "(default)"} approvalsReviewer={Sanitize(approvalsReviewer) ?? "(default)"} sandbox={Sanitize(sandboxMode) ?? "(default)"} permissions={Sanitize(permissions) ?? "(default)"} effort={Sanitize(effort) ?? "(default)"} serviceTier={Sanitize(serviceTier) ?? "(default)"}");
     _ = Task.Run(async () =>
     {
         await Task.Delay(25).ConfigureAwait(false);
         await WriteAsync(new { method = "turn/started", @params = new { threadId, turnId, turn = new { id = turnId } } }).ConfigureAwait(false);
+        await WriteAsync(new
+        {
+            method = "thread/settings/updated",
+            @params = new
+            {
+                threadId,
+                threadSettings = new
+                {
+                    activePermissionProfile = permissions is null ? null : new { id = permissions },
+                    approvalPolicy = approvalPolicy ?? "on-request",
+                    approvalsReviewer = approvalsReviewer ?? "user",
+                    sandboxPolicy = new { type = sandboxMode ?? "workspaceWrite" },
+                    effort = effort ?? "medium",
+                    serviceTier = serviceTier ?? "standard",
+                },
+            },
+        }).ConfigureAwait(false);
         await WriteAsync(new { method = "item/agentMessage/delta", @params = new { threadId, turnId, itemId = "agent-1", delta = "Hello from the fake app-server." } }).ConfigureAwait(false);
         await WriteAsync(new { method = "turn/completed", @params = new { threadId, turnId, turn = new { id = turnId, status = "completed" } } }).ConfigureAwait(false);
     });
@@ -86,6 +181,7 @@ object StartLogin()
         signedIn = true;
         await WriteAsync(new { method = "account/login/completed", @params = new { loginId, success = true } }).ConfigureAwait(false);
         await WriteAsync(new { method = "account/updated", @params = new { authMode = "chatgpt", planType = "plus" } }).ConfigureAwait(false);
+        await WriteAsync(new { method = "account/rateLimits/updated", @params = CreateRateLimits() }).ConfigureAwait(false);
     });
     return new { type = "chatgpt", loginId, authUrl = "https://example.com/codex-login" };
 }
@@ -95,6 +191,17 @@ object Logout()
     signedIn = false;
     return new { };
 }
+
+static object CreateRateLimits() => new
+{
+    rateLimits = new
+    {
+        limitId = "codex",
+        primary = new { usedPercent = 20, resetsAt = 1_800_000_000L, windowDurationMins = 300L },
+        secondary = new { usedPercent = 50, resetsAt = 1_800_000_000L, windowDurationMins = 10_080L },
+        credits = new { hasCredits = true, unlimited = false, balance = "10" },
+    },
+};
 
 static string? GetOptionalString(JsonElement element, string name)
     => element.ValueKind == JsonValueKind.Object

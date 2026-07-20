@@ -1,4 +1,5 @@
-﻿using System.IO;
+﻿using System.Collections.Specialized;
+using System.IO;
 using System.Reflection;
 using System.Runtime.Serialization;
 using System.Text.RegularExpressions;
@@ -26,8 +27,12 @@ public sealed class ViewModelTests
     private static readonly ApprovalDecision[] NoDecisions = [];
 
     private static readonly string[] ExpectedModes = ["Agent", "Chat"];
+    private static readonly string[] ExpectedApprovalModes = ["ask", "auto", "full", "custom"];
     private static readonly string[] ExpectedWorkerModels = ["gpt-5-codex", "gpt-5"];
     private static readonly string[] ExpectedModelsWithInjectedDefault = ["gpt-5.1-codex-max", "gpt-5-codex", "gpt-5"];
+    private static readonly string[] ExpectedRefreshedModels = ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini"];
+    private static readonly string[] ExpectedReorderedModels = ["gpt-5", "gpt-5-codex", "gpt-5-mini"];
+    private static readonly string[] ExpectedStatusHeaderColumnWidths = ["Auto", "*"];
     private static readonly string[] CreativeOnly = ["Creative"];
     [TestMethod]
     public async Task ApprovalViewModel_ResolvesOnlyOnce()
@@ -237,6 +242,21 @@ public sealed class ViewModelTests
     }
 
     [TestMethod]
+    [DataRow("Do you want me to continue?")]
+    [DataRow("Do you want to apply the change?")]
+    public void ChoicePromptParser_DetectsEnglishActionConfirmationQuestion(string text)
+    {
+        bool ok = ChoicePromptParser.TryParse(text, out UserInputRequest request);
+
+        Assert.IsTrue(ok);
+        Assert.AreEqual(1, request.Questions.Count);
+        Assert.AreEqual(text, request.Questions[0].Question);
+        Assert.AreEqual(2, request.Questions[0].Options.Count);
+        Assert.AreEqual("Yes", request.Questions[0].Options[0].Label);
+        Assert.AreEqual("No", request.Questions[0].Options[1].Label);
+    }
+
+    [TestMethod]
     public void ChoicePromptParser_ProceedMentionOutsideQuestionLine_DoesNotTriggerConfirmationCard()
     {
         // "proceed" appears in an earlier sentence, but the actual question is open-ended (not
@@ -252,9 +272,36 @@ public sealed class ViewModelTests
     }
 
     [TestMethod]
+    public void ChoicePromptParser_DoYouWantWithoutToClause_DoesNotTriggerConfirmationCard()
+    {
+        string text = string.Join('\n',
+            "I can help with either approach.",
+            "What do you want me to do?");
+
+        bool ok = ChoicePromptParser.TryParse(text, out _);
+
+        Assert.IsFalse(ok);
+    }
+
+    [TestMethod]
+    public void ChoicePromptParser_DoYouWantMeToClause_TriggersConfirmationCard()
+    {
+        string text = "Do you want me to continue with this implementation?";
+
+        bool ok = ChoicePromptParser.TryParse(text, out UserInputRequest request);
+
+        Assert.IsTrue(ok);
+        Assert.AreEqual(2, request.Questions[0].Options.Count);
+        Assert.AreEqual("Yes", request.Questions[0].Options[0].Label);
+        Assert.AreEqual("No", request.Questions[0].Options[1].Label);
+    }
+
+    [TestMethod]
     [DataRow("Here are the steps:\n1. Build\n2. Test\n3. Ship", DisplayName = "numbered list without a question")]
     [DataRow("Which one?\n1. Only one option", DisplayName = "question with a single option")]
     [DataRow("Just a sentence with no list?", DisplayName = "question without options")]
+    [DataRow("What do you want me to do?", DisplayName = "open-ended do-you-want question")]
+    [DataRow("Which option do you want me to use?", DisplayName = "embedded do-you-want question")]
     [DataRow("", DisplayName = "empty")]
     public void ChoicePromptParser_RejectsNonChoiceText(string text)
     {
@@ -793,6 +840,140 @@ public sealed class ViewModelTests
     }
 
     [TestMethod]
+    [DataRow("")]
+    [DataRow("one line")]
+    [DataRow("one\ntwo\nthree")]
+    [DataRow("one\ntwo\nthree\n")]
+    public void ChatItemViewModel_ShortCommandOutput_RemainsInline(string output)
+    {
+        var item = new ChatItemViewModel("Command", output, ConversationEventKind.CommandOutputDelta);
+
+        Assert.IsFalse(item.IsCommandOutputCollapsible);
+        Assert.IsFalse(item.IsCommandOutputExpanded);
+        Assert.AreEqual(output, item.Text);
+    }
+
+    [TestMethod]
+    public void ChatItemViewModel_FourCommandLines_StartCollapsedWithThreeLinePreview()
+    {
+        var item = new ChatItemViewModel(
+            "Command",
+            "one\r\ntwo\r\nthree\r\nfour",
+            ConversationEventKind.CommandOutputDelta);
+
+        Assert.IsTrue(item.IsCommandOutputCollapsible);
+        Assert.IsFalse(item.IsCommandOutputExpanded);
+        Assert.AreEqual("one\r\ntwo\r\nthree", item.Text);
+        Assert.AreEqual("Show 1 more line", item.CommandOutputExpansionLabel);
+        Assert.AreEqual(4, item.BufferedCommandLineCount);
+    }
+
+    [TestMethod]
+    public void ChatItemViewModel_CommandCrLfSplitAcrossDeltas_CountsOneLineBreak()
+    {
+        var item = new ChatItemViewModel("Command", "one\r", ConversationEventKind.CommandOutputDelta);
+
+        item.AppendCommandOutput("\ntwo\r\nthree\r\nfour");
+
+        Assert.AreEqual(4, item.BufferedCommandLineCount);
+        Assert.AreEqual("one\r\ntwo\r\nthree", item.Text);
+        Assert.AreEqual("Show 1 more line", item.CommandOutputExpansionLabel);
+    }
+
+    [TestMethod]
+    public void ChatItemViewModel_LongSingleCommandLine_UsesBoundedPreview()
+    {
+        string output = new('x', ChatItemViewModel.CommandPreviewCharacterLimit + 17);
+        var item = new ChatItemViewModel("Command", output, ConversationEventKind.CommandOutputDelta);
+
+        Assert.IsTrue(item.IsCommandOutputCollapsible);
+        Assert.AreEqual(ChatItemViewModel.CommandPreviewCharacterLimit, item.Text.Length);
+        Assert.AreEqual("Show remaining buffered command output", item.CommandOutputExpansionLabel);
+    }
+
+    [TestMethod]
+    public void ChatItemViewModel_CommandPreview_DoesNotSplitCrLfAtCharacterLimit()
+    {
+        string output = new string('x', ChatItemViewModel.CommandPreviewCharacterLimit - 1) + "\r\nremaining";
+        var item = new ChatItemViewModel("Command", output, ConversationEventKind.CommandOutputDelta);
+
+        Assert.IsTrue(item.IsCommandOutputCollapsible);
+        Assert.AreEqual(ChatItemViewModel.CommandPreviewCharacterLimit - 1, item.Text.Length);
+        Assert.IsFalse(item.Text.EndsWith('\r'));
+    }
+
+    [TestMethod]
+    public void ChatItemViewModel_ExpandedCommandOutput_ProjectsFullBufferAndCanCollapseAgain()
+    {
+        const string output = "one\ntwo\nthree\nfour";
+        var item = new ChatItemViewModel("Command", output, ConversationEventKind.CommandOutputDelta);
+
+        item.IsCommandOutputExpanded = true;
+        Assert.AreEqual(output, item.Text);
+        Assert.AreEqual("Hide command output", item.CommandOutputExpansionLabel);
+        Assert.AreEqual("Collapse command output", item.CommandOutputAutomationName);
+        Assert.AreEqual(string.Empty, item.TruncationNotice);
+
+        item.IsCommandOutputExpanded = false;
+        Assert.AreEqual("one\ntwo\nthree", item.Text);
+        Assert.AreEqual("Expand command output", item.CommandOutputAutomationName);
+    }
+
+    [TestMethod]
+    public void ChatItemViewModel_CollapsedCommandOutput_DoesNotRepublishFullTextForHiddenDeltas()
+    {
+        var item = new ChatItemViewModel(
+            "Command",
+            "one\ntwo\nthree\nfour",
+            ConversationEventKind.CommandOutputDelta);
+        int textNotifications = 0;
+        item.PropertyChanged += (_, args) =>
+        {
+            if (args.PropertyName == nameof(ChatItemViewModel.Text))
+            {
+                textNotifications++;
+            }
+        };
+
+        item.AppendCommandOutput("\nfive");
+        item.AppendCommandOutput("\nsix");
+
+        Assert.AreEqual(0, textNotifications);
+        Assert.AreEqual("one\ntwo\nthree", item.Text);
+        Assert.AreEqual("Show 3 more lines", item.CommandOutputExpansionLabel);
+        Assert.AreEqual(27, item.BufferedCommandCharacterCount);
+    }
+
+    [TestMethod]
+    public void ChatItemViewModel_CommandBuffer_IsBoundedAndUsesTruncationSafeLabels()
+    {
+        string output = new('x', ChatItemViewModel.CommandBufferCharacterLimit + 1);
+        var item = new ChatItemViewModel("Command", output, ConversationEventKind.CommandOutputDelta);
+
+        Assert.AreEqual(ChatItemViewModel.CommandBufferCharacterLimit, item.BufferedCommandCharacterCount);
+        Assert.IsTrue(item.IsTruncated);
+        Assert.AreEqual("Show buffered command output (truncated)", item.CommandOutputExpansionLabel);
+        Assert.AreEqual("Command output was truncated to the buffered limit.", item.TruncationNotice);
+
+        item.IsCommandOutputExpanded = true;
+        Assert.AreEqual("Hide buffered command output (truncated)", item.CommandOutputExpansionLabel);
+        Assert.AreEqual(ChatItemViewModel.CommandBufferCharacterLimit, item.Text.Length);
+    }
+
+    [TestMethod]
+    public void ChatItemViewModel_CommandBuffer_IsNotPartOfRemoteUiContract()
+    {
+        FieldInfo? buffer = typeof(ChatItemViewModel).GetField(
+            "commandOutputBuffer",
+            BindingFlags.Instance | BindingFlags.NonPublic);
+
+        Assert.IsNotNull(buffer);
+        Assert.IsNull(buffer!.GetCustomAttribute<DataMemberAttribute>());
+        Assert.IsNotNull(typeof(ChatItemViewModel).GetProperty(nameof(ChatItemViewModel.Text))!
+            .GetCustomAttribute<DataMemberAttribute>());
+    }
+
+    [TestMethod]
     public async Task ChatViewModel_AgentMessageDelta_MultipleChunks_NoArtificialNewlines()
     {
         using var vm = new ChatViewModel();
@@ -978,6 +1159,35 @@ public sealed class ViewModelTests
     }
 
     [TestMethod]
+    public async Task ChatViewModel_CommandOutputMetadataOnlyDelta_PreservesTruncationState()
+    {
+        using var vm = new ChatViewModel();
+
+        await RaiseConversationEventAsync(vm, new ConversationEvent
+        {
+            Kind = ConversationEventKind.CommandOutputDelta,
+            ItemId = "command-overflow",
+            Text = "visible output",
+        });
+        await RaiseConversationEventAsync(vm, new ConversationEvent
+        {
+            Kind = ConversationEventKind.CommandOutputDelta,
+            ItemId = "command-overflow",
+            Truncated = true,
+            OverflowFile = "temporary-output.log",
+        });
+
+        ChatItemViewModel item = SingleConversationItem(
+            vm,
+            "command-overflow",
+            ConversationEventKind.CommandOutputDelta);
+        Assert.IsTrue(item.IsTruncated);
+        Assert.IsTrue(item.IsCommandOutputCollapsible);
+        Assert.AreEqual("Show buffered command output (truncated)", item.CommandOutputExpansionLabel);
+        Assert.AreEqual("Output truncated; additional output is stored in a temporary file.", item.TruncationNotice);
+    }
+
+    [TestMethod]
     public async Task ChatViewModel_TurnStarted_ClearsItemRawText()
     {
         using var vm = new ChatViewModel();
@@ -1113,7 +1323,142 @@ public sealed class ViewModelTests
         Assert.IsTrue(xaml.Contains("{Binding AccountActionText}", StringComparison.Ordinal));
         Assert.IsTrue(xaml.Contains("{Binding ShowAccountAction,", StringComparison.Ordinal));
         Assert.IsTrue(xaml.Contains("{Binding StatusDetailText}", StringComparison.Ordinal));
+        Assert.IsTrue(xaml.Contains("ItemsSource=\"{Binding ServiceTiers}\"", StringComparison.Ordinal));
+        Assert.IsTrue(xaml.Contains("SelectedValue=\"{Binding SelectedServiceTierId, Mode=TwoWay}\"", StringComparison.Ordinal));
+        Assert.IsTrue(xaml.Contains("AutomationProperties.Name=\"Speed\"", StringComparison.Ordinal));
+        Assert.IsTrue(xaml.Contains("ItemsSource=\"{Binding ReasoningEfforts}\"", StringComparison.Ordinal));
+        Assert.IsTrue(xaml.Contains("SelectedValue=\"{Binding SelectedReasoningEffortId, Mode=TwoWay}\"", StringComparison.Ordinal));
         Assert.IsFalse(xaml.Contains("{Binding Account.", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    [DataRow(WorkerConnectionState.Ready)]
+    [DataRow(WorkerConnectionState.Busy)]
+    [DataRow(WorkerConnectionState.WaitingForApproval)]
+    public async Task ChatViewModel_StatusHeader_ShowsSanitizedCodexVersion(WorkerConnectionState state)
+    {
+        var bridge = new FakeWorkerBridge();
+        using var viewModel = new ChatViewModel(bridge, autoConnect: false);
+
+        await bridge.PublishStateAsync(new WorkerStatus
+        {
+            State = state,
+            Message = "  Connected\r\n\u001b[31msafely\u001b[0m.  ",
+            CodexVersion = "  **0.42.0**\r\npreview\u0001  ",
+        });
+
+        Assert.AreEqual(state.ToString(), viewModel.StatusStateText);
+        Assert.AreEqual("\u00b7 Codex 0.42.0 preview", viewModel.StatusVersionText);
+        Assert.AreEqual($"{state}, Codex version 0.42.0 preview", viewModel.StatusAutomationName);
+        Assert.AreEqual("Connected safely.", viewModel.StatusAutomationHelpText);
+    }
+
+    [TestMethod]
+    [DataRow(WorkerConnectionState.Disconnected)]
+    [DataRow(WorkerConnectionState.Connecting)]
+    [DataRow(WorkerConnectionState.Degraded)]
+    public async Task ChatViewModel_StatusHeader_HidesCodexVersionOutsideConnectedStates(WorkerConnectionState state)
+    {
+        var bridge = new FakeWorkerBridge();
+        using var viewModel = new ChatViewModel(bridge, autoConnect: false);
+
+        await bridge.PublishStateAsync(new WorkerStatus
+        {
+            State = state,
+            CodexVersion = "0.42.0",
+        });
+
+        Assert.AreEqual(string.Empty, viewModel.StatusVersionText);
+        Assert.AreEqual(state.ToString(), viewModel.StatusAutomationName);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_StatusHeader_HidesBlankCodexVersion()
+    {
+        var bridge = new FakeWorkerBridge();
+        using var viewModel = new ChatViewModel(bridge, autoConnect: false);
+
+        await bridge.PublishStateAsync(new WorkerStatus
+        {
+            State = WorkerConnectionState.Ready,
+            CodexVersion = " \r\n\t ",
+        });
+
+        Assert.AreEqual(string.Empty, viewModel.StatusVersionText);
+        Assert.AreEqual("Ready", viewModel.StatusAutomationName);
+        Assert.AreEqual("Codex connection status.", viewModel.StatusAutomationHelpText);
+    }
+
+    [TestMethod]
+    public void ChatToolWindowXaml_StatusHeader_PreservesStateAndProvidesOneLiveRegion()
+    {
+        const string resourceName = "Codex.VisualStudio.Extension.ToolWindows.ChatToolWindowContent.xaml";
+        using Stream? stream = typeof(ChatViewModel).Assembly.GetManifestResourceStream(resourceName);
+        Assert.IsNotNull(stream, $"Embedded resource '{resourceName}' not found.");
+        XDocument doc = XDocument.Load(stream);
+        XNamespace presentation = "http://schemas.microsoft.com/winfx/2006/xaml/presentation";
+        XName automationName = XName.Get("AutomationProperties.Name");
+        XName automationHelpText = XName.Get("AutomationProperties.HelpText");
+        XName automationLiveSetting = XName.Get("AutomationProperties.LiveSetting");
+
+        XElement stateText = doc
+            .Descendants(presentation + "TextBlock")
+            .Single(element => element.Attribute("Text")?.Value == "{Binding StatusStateText}");
+        XElement versionText = doc
+            .Descendants(presentation + "TextBlock")
+            .Single(element => element.Attribute("Text")?.Value == "{Binding StatusVersionText}");
+        XElement header = stateText.Parent!;
+
+        Assert.AreEqual("0", stateText.Attribute("Grid.Column")?.Value);
+        Assert.AreEqual("1", versionText.Attribute("Grid.Column")?.Value);
+        CollectionAssert.AreEqual(
+            ExpectedStatusHeaderColumnWidths,
+            header
+                .Element(presentation + "Grid.ColumnDefinitions")!
+                .Elements(presentation + "ColumnDefinition")
+                .Select(column => column.Attribute("Width")?.Value)
+                .ToArray());
+        Assert.IsNull(stateText.Attribute("TextTrimming"), "The connection state must remain visible.");
+        Assert.AreEqual("CharacterEllipsis", versionText.Attribute("TextTrimming")?.Value);
+        Assert.AreEqual("{Binding StatusAutomationName}", stateText.Attribute(automationName)?.Value);
+        Assert.AreEqual("{Binding StatusAutomationHelpText}", stateText.Attribute(automationHelpText)?.Value);
+        Assert.AreEqual("Polite", stateText.Attribute(automationLiveSetting)?.Value);
+        Assert.IsNull(versionText.Attribute(automationName));
+        Assert.IsNull(versionText.Attribute(automationHelpText));
+        Assert.IsNull(versionText.Attribute(automationLiveSetting));
+        Assert.AreEqual(
+            1,
+            new[] { stateText, versionText }.Count(element => element.Attribute(automationLiveSetting)?.Value == "Polite"),
+            "Only the state TextBlock may announce status-header changes.");
+    }
+
+    [TestMethod]
+    public void ChatToolWindowXaml_UsesOnlyWpfAutomationProperties()
+    {
+        const string resourceName = "Codex.VisualStudio.Extension.ToolWindows.ChatToolWindowContent.xaml";
+        using Stream? stream = typeof(ChatViewModel).Assembly.GetManifestResourceStream(resourceName);
+        Assert.IsNotNull(stream, $"Embedded resource '{resourceName}' not found.");
+        XDocument doc = XDocument.Load(stream);
+        var supportedProperties = typeof(System.Windows.Automation.AutomationProperties)
+            .GetMethods(BindingFlags.Public | BindingFlags.Static)
+            .Where(method => method.Name.StartsWith("Set", StringComparison.Ordinal) && method.GetParameters().Length == 2)
+            .Select(method => $"AutomationProperties.{method.Name[3..]}")
+            .ToHashSet(StringComparer.Ordinal);
+
+        string[] unsupportedProperties = doc
+            .Descendants()
+            .Attributes()
+            .Select(attribute => attribute.Name.LocalName)
+            .Where(name => name.StartsWith("AutomationProperties.", StringComparison.Ordinal))
+            .Where(name => !supportedProperties.Contains(name))
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(name => name, StringComparer.Ordinal)
+            .ToArray();
+
+        CollectionAssert.AreEqual(
+            Array.Empty<string>(),
+            unsupportedProperties,
+            $"Remote UI XAML contains unsupported AutomationProperties members: {string.Join(", ", unsupportedProperties)}");
     }
 
     [TestMethod]
@@ -1164,7 +1509,12 @@ public sealed class ViewModelTests
         [
             typeof(ChatViewModel), typeof(ChatItemViewModel), typeof(ChatBlockViewModel), typeof(ApprovalViewModel),
             typeof(UserInputViewModel), typeof(UserInputQuestionViewModel), typeof(UserInputOptionViewModel),
-            typeof(SuggestionChip), typeof(WorkerStatus), typeof(ThreadSummary),
+            typeof(SuggestionChip), typeof(SlashCommandPresentationViewModel),
+            typeof(SlashCommandSuggestionViewModel), typeof(SlashCommandOptionViewModel),
+            typeof(AttachmentChipViewModel), typeof(FileSuggestionPresentationViewModel),
+            typeof(FileSuggestionViewModel), typeof(ReasoningEffortOption), typeof(ServiceTierOption),
+            typeof(UsagePresentation),
+            typeof(WorkerStatus), typeof(ThreadSummary),
         ];
 
     [TestMethod]
@@ -1234,10 +1584,17 @@ public sealed class ViewModelTests
             }
         }
 
-        // First path segment of every {Binding Foo...} expression ({Binding} alone has no name).
-        foreach (Match match in Regex.Matches(xaml, @"\{Binding\s+([A-Za-z_]\w*)"))
+        // First path segment of every data-context {Binding Foo...} expression. RelativeSource
+        // bindings target WPF UI ancestors and are not serialized Remote UI context properties.
+        foreach (Match match in Regex.Matches(xaml, @"\{Binding\s+([A-Za-z_]\w*)(?<options>[^}]*)"))
         {
+            if (match.Groups["options"].Value.Contains("RelativeSource=", StringComparison.Ordinal)
+                || match.Groups["options"].Value.Contains("ElementName=", StringComparison.Ordinal))
+                continue;
+
             string root = match.Groups[1].Value;
+            if (string.Equals(root, "ElementName", StringComparison.Ordinal))
+                continue;
             Assert.IsTrue(
                 dataMemberNames.Contains(root),
                 $"XAML binds '{root}' but no Remote UI context type exposes it as a [DataMember] property.");
@@ -1310,6 +1667,49 @@ public sealed class ViewModelTests
     }
 
     [TestMethod]
+    public async Task ChatViewModel_RefreshReadyState_LoadsModelsBeforeAccountUiNotificationCompletes()
+    {
+        var bridge = new FakeWorkerBridge
+        {
+            ModelListResult = new ListModelsResult
+            {
+                Models =
+                [
+                    new ModelInfo { Id = "gpt-5-codex" },
+                    new ModelInfo { Id = "gpt-5" },
+                ],
+                DefaultModel = "gpt-5",
+            },
+        };
+        using var accountUpdateStarted = new ManualResetEventSlim();
+        using var releaseAccountUpdate = new ManualResetEventSlim();
+        using var vm = new ChatViewModel(bridge, autoConnect: false);
+        vm.AccountCommand.PropertyChanged += (_, args) =>
+        {
+            if (string.Equals(args.PropertyName, nameof(AsyncCommand.CanExecute), StringComparison.Ordinal))
+            {
+                accountUpdateStarted.Set();
+                releaseAccountUpdate.Wait();
+            }
+        };
+
+        Task refresh = Task.Run(() => vm.RefreshReadyStateAsync(reloadThreads: false));
+        try
+        {
+            Assert.IsTrue(accountUpdateStarted.Wait(TimeSpan.FromSeconds(5)), "The account UI update did not start.");
+            Assert.AreEqual(1, bridge.ModelListCallCount);
+            CollectionAssert.AreEqual(ExpectedWorkerModels, vm.Models);
+            Assert.AreEqual("gpt-5", vm.SelectedModel);
+        }
+        finally
+        {
+            releaseAccountUpdate.Set();
+        }
+
+        await refresh.WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+    [TestMethod]
     public async Task ChatViewModel_PopulateModels_UsesWorkerModelsAndDefault()
     {
         var bridge = new FakeWorkerBridge
@@ -1356,6 +1756,190 @@ public sealed class ViewModelTests
     }
 
     [TestMethod]
+    public async Task ChatViewModel_HiddenDefaultModelExposesSanitizedReasoningOptions()
+    {
+        var bridge = new FakeWorkerBridge
+        {
+            ModelListResult = new ListModelsResult
+            {
+                Models = [new ModelInfo { Id = "gpt-5" }],
+                DefaultModel = "hidden-default",
+                DefaultModelInfo = new ModelInfo
+                {
+                    Id = "hidden-default",
+                    DefaultReasoningEffort = "high",
+                    SupportedReasoningEfforts =
+                    [
+                        new ReasoningEffortInfo
+                        {
+                            Id = "high",
+                            Description = "**Deep**\u001b[31m <script>bad</script>",
+                        },
+                    ],
+                },
+            },
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false);
+        await vm.PopulateModelsAsync();
+
+        Assert.AreEqual("hidden-default", vm.SelectedModel);
+        Assert.IsTrue(vm.HasReasoningEfforts);
+        Assert.AreEqual("", vm.ReasoningEfforts[0].Id);
+        Assert.AreEqual("Default", vm.ReasoningEfforts[0].DisplayText);
+        Assert.AreEqual("high", vm.ReasoningEfforts[1].Id);
+        Assert.AreEqual("High", vm.ReasoningEfforts[1].DisplayText);
+        Assert.IsFalse(vm.ReasoningEfforts[1].Description.Contains('\u001b'));
+        Assert.IsFalse(vm.ReasoningEfforts[1].Description.Contains("script", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_ReasoningFallbackDoesNotOverwritePersistedChoice()
+    {
+        var store = new MemorySettingsStore(new ExtensionSettings { ReasoningEffortId = "high" });
+        var bridge = new FakeWorkerBridge
+        {
+            ModelListResult = new ListModelsResult
+            {
+                Models = [ModelWithReasoning("model-high", "high"), ModelWithReasoning("model-low", "low")],
+                DefaultModel = "model-high",
+            },
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: store);
+        await vm.PopulateModelsAsync();
+
+        Assert.AreEqual("high", vm.SelectedReasoningEffortId);
+        vm.SelectedModel = "model-low";
+        Assert.AreEqual(ReasoningEffortCatalog.DefaultId, vm.SelectedReasoningEffortId);
+        Assert.AreEqual("high", store.Settings.ReasoningEffortId);
+        vm.SelectedModel = "model-high";
+        Assert.AreEqual("high", vm.SelectedReasoningEffortId);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_PersistentReasoningUsesCanonicalValueForDefaultAndPlanTurns()
+    {
+        var store = new MemorySettingsStore(new ExtensionSettings { ReasoningEffortId = "HIGH" });
+        var bridge = new FakeWorkerBridge
+        {
+            ModelListResult = new ListModelsResult
+            {
+                Models = [ModelWithReasoning("gpt-5", "high")],
+                DefaultModel = "gpt-5",
+            },
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: store)
+        {
+            SelectedThread = new ThreadSummary { Id = "thread-1" },
+        };
+        await vm.PopulateModelsAsync();
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready, ThreadId = "thread-1" });
+
+        await SendMessageAsync(vm, "default turn", clearComposer: false);
+        Assert.IsTrue(bridge.LastStartTurnRequest!.HasEffort);
+        Assert.AreEqual("high", bridge.LastStartTurnRequest.Effort);
+        vm.ComposerText = "/plan plan turn";
+        await InvokeComposerSendAsync(vm);
+        Assert.IsTrue(bridge.LastStartTurnRequest!.HasEffort);
+        Assert.AreEqual("high", bridge.LastStartTurnRequest.Effort);
+        Assert.AreEqual("high", bridge.LastStartTurnRequest.CollaborationMode!.ReasoningEffort);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_ServiceTiersUseHiddenDefaultMetadataAndSanitizeCatalogText()
+    {
+        var bridge = new FakeWorkerBridge
+        {
+            ModelListResult = new ListModelsResult
+            {
+                Models = [new ModelInfo { Id = "visible" }],
+                DefaultModel = "hidden-default",
+                DefaultModelInfo = new ModelInfo
+                {
+                    Id = "hidden-default",
+                    DefaultServiceTier = "<script>standard</script>",
+                    ServiceTiers =
+                    [
+                        new ServiceTierInfo { Id = "standard", Name = "Standard", Description = "Normal queue" },
+                        new ServiceTierInfo { Id = "FAST", Name = "<b>Fast</b>", Description = "<script>bad()</script> Low latency" },
+                        new ServiceTierInfo { Id = "fast", Name = "Duplicate" },
+                        new ServiceTierInfo { Id = "<script>ultra</script>" },
+                    ],
+                },
+            },
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false);
+
+        await vm.PopulateModelsAsync();
+
+        string[] expectedIds = ["", "standard", "FAST", "<script>ultra</script>"];
+        CollectionAssert.AreEqual(expectedIds, vm.ServiceTiers.Select(option => option.Id).ToArray());
+        Assert.AreEqual("Fast", vm.ServiceTiers[2].DisplayText);
+        Assert.IsFalse(vm.ServiceTiers[2].Description.Contains("<script>", StringComparison.OrdinalIgnoreCase));
+        Assert.IsFalse(vm.ServiceTiers[0].Description.Contains("<script>", StringComparison.OrdinalIgnoreCase));
+        Assert.IsFalse(vm.ServiceTiers[0].AutomationName.Contains("<script>", StringComparison.OrdinalIgnoreCase));
+        Assert.IsFalse(vm.ServiceTiers[3].DisplayText.Contains('<'));
+        Assert.IsFalse(vm.ServiceTiers[3].AutomationName.Contains('<'));
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_ServiceTierSelectionPreservesUnsupportedPersistedIdAcrossModels()
+    {
+        var store = new MemorySettingsStore(new ExtensionSettings { ServiceTierId = "FAST" });
+        var bridge = new FakeWorkerBridge
+        {
+            ModelListResult = new ListModelsResult
+            {
+                Models =
+                [
+                    new ModelInfo { Id = "fast-model", ServiceTiers = [new ServiceTierInfo { Id = "fast" }] },
+                    new ModelInfo { Id = "standard-model", ServiceTiers = [new ServiceTierInfo { Id = "standard" }] },
+                ],
+                DefaultModel = "fast-model",
+            },
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: store);
+        await vm.PopulateModelsAsync();
+        Assert.AreEqual("fast", vm.SelectedServiceTierId);
+
+        vm.SelectedModel = "standard-model";
+        Assert.AreEqual(ServiceTierCatalog.DefaultId, vm.SelectedServiceTierId);
+        Assert.AreEqual("FAST", store.Settings.ServiceTierId);
+
+        vm.SelectedModel = "fast-model";
+        Assert.AreEqual("fast", vm.SelectedServiceTierId);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_PersistentServiceTierUsesCanonicalValueForNormalAndPlanTurns()
+    {
+        var store = new MemorySettingsStore(new ExtensionSettings { ServiceTierId = "FAST" });
+        var bridge = new FakeWorkerBridge
+        {
+            ModelListResult = new ListModelsResult
+            {
+                Models = [new ModelInfo { Id = "gpt-5", ServiceTiers = [new ServiceTierInfo { Id = "fast" }] }],
+                DefaultModel = "gpt-5",
+            },
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: store)
+        {
+            SelectedThread = new ThreadSummary { Id = "thread-1" },
+        };
+        await vm.PopulateModelsAsync();
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready, ThreadId = "thread-1" });
+
+        await SendMessageAsync(vm, "normal", clearComposer: false);
+        Assert.IsTrue(bridge.LastStartTurnRequest!.HasServiceTier);
+        Assert.AreEqual("fast", bridge.LastStartTurnRequest.ServiceTier);
+
+        vm.ComposerText = "/plan direct plan";
+        await InvokeComposerSendAsync(vm);
+        Assert.IsTrue(bridge.LastStartTurnRequest!.HasServiceTier);
+        Assert.AreEqual("fast", bridge.LastStartTurnRequest.ServiceTier);
+        Assert.AreEqual("plan", bridge.LastStartTurnRequest.CollaborationMode!.Mode);
+    }
+
+    [TestMethod]
     public async Task ChatViewModel_PopulateModels_KeepsFallbackSeedsWhenWorkerReturnsEmpty()
     {
         var bridge = new FakeWorkerBridge { ModelListResult = new ListModelsResult() };
@@ -1367,6 +1951,115 @@ public sealed class ViewModelTests
 
         CollectionAssert.AreEqual(originalModels, vm.Models);
         Assert.AreEqual(originalSelection, vm.SelectedModel);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_PopulateModels_RefreshNeverInvalidatesSelection()
+    {
+        // Remote UI mirrors every collection change to a VS-process proxy where the TwoWay
+        // SelectedItem binding writes null back if the selection ever leaves the list. The
+        // refresh must therefore never reset the list, and whenever an entry is removed the
+        // current selection must already point at a surviving entry.
+        var bridge = new FakeWorkerBridge
+        {
+            ModelListResult = new ListModelsResult
+            {
+                Models =
+                [
+                    new ModelInfo { Id = "gpt-5.5" },
+                    new ModelInfo { Id = "gpt-5.4" },
+                    new ModelInfo { Id = "gpt-5.4-mini" },
+                ],
+                DefaultModel = "gpt-5.5",
+            },
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false);
+        var violations = new List<string>();
+        vm.Models.CollectionChanged += (_, e) =>
+        {
+            if (e.Action == NotifyCollectionChangedAction.Reset)
+            {
+                violations.Add("Reset raised");
+            }
+            else if (e.Action == NotifyCollectionChangedAction.Remove
+                && (vm.SelectedModel is null || !vm.Models.Contains(vm.SelectedModel)))
+            {
+                violations.Add($"Selection '{vm.SelectedModel}' invalid after removing '{e.OldItems![0]}'");
+            }
+        };
+
+        await vm.PopulateModelsAsync();
+
+        CollectionAssert.AreEqual(ExpectedRefreshedModels, vm.Models);
+        Assert.AreEqual("gpt-5.5", vm.SelectedModel);
+        Assert.AreEqual(0, violations.Count, string.Join("; ", violations));
+    }
+
+    [TestMethod]
+    public void ChatViewModel_SelectedModel_IgnoresNullWriteBackWhileModelsExist()
+    {
+        // The VS-side ComboBox can write null back through the TwoWay binding while the list
+        // is being refreshed; that late write-back must not blank a valid selection.
+        using var vm = new ChatViewModel(new FakeWorkerBridge(), autoConnect: false);
+        string? before = vm.SelectedModel;
+        Assert.IsNotNull(before);
+
+        vm.SelectedModel = null;
+
+        Assert.AreEqual(before, vm.SelectedModel);
+    }
+
+    [TestMethod]
+    public void ChatViewModel_SelectedModel_AllowsNullWhenCurrentSelectionAlreadyInvalid()
+    {
+        // If the current selection no longer exists in Models, a null is not a stale
+        // write-back to guard against -- it's a legitimate clear, and must go through so the
+        // VM does not get stuck holding a value the picker can no longer display.
+        using var vm = new ChatViewModel(new FakeWorkerBridge(), autoConnect: false);
+        vm.Models.Clear();
+        Assert.IsFalse(vm.Models.Contains(vm.SelectedModel!));
+
+        vm.SelectedModel = null;
+
+        Assert.IsNull(vm.SelectedModel);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_PopulateModels_ReordersExistingEntriesToMatchCatalogOrder()
+    {
+        // The merge must reorder entries that already exist in Models (not just insert new
+        // ones), so the dropdown order tracks the app-server catalog order across refreshes.
+        var bridge = new FakeWorkerBridge
+        {
+            ModelListResult = new ListModelsResult
+            {
+                Models =
+                [
+                    new ModelInfo { Id = "gpt-5-codex" },
+                    new ModelInfo { Id = "gpt-5" },
+                ],
+                DefaultModel = "gpt-5",
+            },
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false);
+        await vm.PopulateModelsAsync();
+        CollectionAssert.AreEqual(ExpectedWorkerModels, vm.Models);
+
+        bridge.ModelListResult = new ListModelsResult
+        {
+            Models =
+            [
+                new ModelInfo { Id = "gpt-5" },
+                new ModelInfo { Id = "gpt-5-codex" },
+                new ModelInfo { Id = "gpt-5-mini" },
+            ],
+            DefaultModel = "gpt-5",
+        };
+
+        await vm.PopulateModelsAsync();
+
+        CollectionAssert.AreEqual(ExpectedReorderedModels, vm.Models);
+        Assert.AreEqual("gpt-5", vm.SelectedModel);
     }
 
     [TestMethod]
@@ -1406,6 +2099,7 @@ public sealed class ViewModelTests
         Assert.AreEqual("hello", bridge.LastStartTurnRequest.Text);
         Assert.AreEqual("gpt-5", bridge.LastStartTurnRequest.Model);
         Assert.AreEqual("never", bridge.LastStartTurnRequest.ApprovalPolicy);
+        Assert.AreEqual("user", bridge.LastStartTurnRequest.ApprovalsReviewer);
         Assert.AreEqual("readOnly", bridge.LastStartTurnRequest.SandboxMode);
     }
 
@@ -1427,6 +2121,834 @@ public sealed class ViewModelTests
         Assert.AreEqual("gpt-5-codex", bridge.LastStartTurnRequest!.Model);
         Assert.IsNull(bridge.LastStartTurnRequest.ApprovalPolicy);
         Assert.IsNull(bridge.LastStartTurnRequest.SandboxMode);
+    }
+
+    [TestMethod]
+    public void ChatViewModel_ApprovalModesUseStableIdsAndCustomDefault()
+    {
+        var store = new MemorySettingsStore(new ExtensionSettings());
+        using var vm = new ChatViewModel(new FakeWorkerBridge(), autoConnect: false, settingsStore: store);
+
+        CollectionAssert.AreEqual(
+            ExpectedApprovalModes,
+            vm.ApprovalModes.Select(static mode => mode.Id).ToArray());
+        Assert.AreEqual("custom", vm.SelectedApprovalModeId);
+        Assert.AreEqual("Custom (config.toml)", vm.DesiredApprovalModeText);
+        Assert.IsNotNull(typeof(ApprovalModeOption).GetProperty(nameof(ApprovalModeOption.Id))!
+            .GetCustomAttribute<DataMemberAttribute>());
+        Assert.IsNotNull(typeof(ApprovalModeOption).GetProperty(nameof(ApprovalModeOption.Source))!
+            .GetCustomAttribute<DataMemberAttribute>());
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_FullAccessRequiresConfirmationBeforePersistence()
+    {
+        var store = new MemorySettingsStore(new ExtensionSettings());
+        using var vm = new ChatViewModel(new FakeWorkerBridge(), autoConnect: false, settingsStore: store);
+
+        vm.SelectedApprovalModeId = "full";
+
+        Assert.IsTrue(vm.HasApprovalModeConfirmation);
+        Assert.AreEqual("custom", vm.SelectedApprovalModeId);
+        Assert.AreEqual("custom", store.Settings.ApprovalModeId);
+        StringAssert.Contains(vm.ApprovalModeConfirmationText, "without any request reaching");
+
+        vm.ConfirmApprovalModeCommand.Execute(null);
+        await WaitForAsync(() => !vm.HasApprovalModeConfirmation);
+
+        Assert.AreEqual("full", vm.SelectedApprovalModeId);
+        Assert.AreEqual("full", store.Settings.ApprovalModeId);
+    }
+
+    [TestMethod]
+    public void ChatViewModel_SavedFullAccessFallsBackUntilReconfirmed()
+    {
+        var store = new MemorySettingsStore(new ExtensionSettings { ApprovalModeId = "full" });
+        using var vm = new ChatViewModel(new FakeWorkerBridge(), autoConnect: false, settingsStore: store);
+
+        Assert.AreEqual("custom", vm.SelectedApprovalModeId);
+        Assert.IsTrue(vm.HasApprovalModeConfirmation);
+        Assert.AreEqual("Full access", vm.DesiredApprovalModeText);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_PermissionProfileUsesExclusiveTurnOverride()
+    {
+        var store = new MemorySettingsStore(new ExtensionSettings { ApprovalModeId = "permission:workspace-safe" });
+        var bridge = new FakeWorkerBridge
+        {
+            PermissionProfilesResult = new ListPermissionProfilesResult
+            {
+                Profiles =
+                [
+                    new PermissionProfileInfo { Id = "workspace-safe", Description = "Workspace only", Allowed = true },
+                    new PermissionProfileInfo { Id = "blocked", Allowed = false },
+                ],
+            },
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: store)
+        {
+            SelectedThread = new ThreadSummary { Id = "thread-1" },
+        };
+        Assert.AreEqual("permission:workspace-safe", vm.SelectedApprovalModeId);
+        Assert.AreEqual("Loading", vm.ApprovalModes.Single(mode => mode.Id == "permission:workspace-safe").Source);
+        await vm.PopulatePermissionProfilesAsync();
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready });
+
+        await SendMessageAsync(vm, "hello", clearComposer: false);
+
+        Assert.AreEqual("permission:workspace-safe", vm.SelectedApprovalModeId);
+        Assert.IsFalse(vm.ApprovalModes.Any(mode => mode.Id == "permission:blocked"));
+        Assert.AreEqual("workspace-safe", bridge.LastStartTurnRequest!.Permissions);
+        Assert.IsNull(bridge.LastStartTurnRequest.ApprovalPolicy);
+        Assert.IsNull(bridge.LastStartTurnRequest.ApprovalsReviewer);
+        Assert.IsNull(bridge.LastStartTurnRequest.SandboxMode);
+
+        vm.SelectedApprovalModeId = "custom";
+        Assert.IsTrue(vm.HasApprovalModeConfirmation);
+        Assert.AreEqual("permission:workspace-safe", store.Settings.ApprovalModeId);
+        vm.ConfirmApprovalModeCommand.Execute(null);
+        await WaitForAsync(() => vm.SelectedApprovalModeId == "custom");
+        Assert.AreEqual("custom", store.Settings.ApprovalModeId);
+    }
+
+    [TestMethod]
+    public void ChatViewModel_WhitespacePermissionProfileIdFallsBackToCustom()
+    {
+        var store = new MemorySettingsStore(new ExtensionSettings { ApprovalModeId = "permission: workspace-safe " });
+
+        using var vm = new ChatViewModel(new FakeWorkerBridge(), autoConnect: false, settingsStore: store);
+
+        Assert.AreEqual("custom", vm.SelectedApprovalModeId);
+        Assert.AreEqual("custom", store.Settings.ApprovalModeId);
+        Assert.IsFalse(vm.ApprovalModes.Any(mode => mode.Id.StartsWith("permission:", StringComparison.Ordinal)));
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_PermissionsErrorListsRuntimeProfileStableIds()
+    {
+        var bridge = new FakeWorkerBridge
+        {
+            PermissionProfilesResult = new ListPermissionProfilesResult
+            {
+                Profiles = [new PermissionProfileInfo { Id = "workspace-safe", Allowed = true }],
+            },
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false);
+        await vm.PopulatePermissionProfilesAsync();
+
+        MethodInfo executePermissions = typeof(ChatViewModel).GetMethod(
+            "ExecutePermissionsAsync",
+            BindingFlags.NonPublic | BindingFlags.Instance)!;
+        bool succeeded = await (Task<bool>)executePermissions.Invoke(vm, ["unknown-mode"])!;
+
+        Assert.IsFalse(succeeded);
+        StringAssert.Contains(vm.Items.Last().Text, "permission:workspace-safe");
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_StatusSlashCommand_DoesNotSteerActiveTurn()
+    {
+        var bridge = new FakeWorkerBridge
+        {
+            RateLimitsResult = new RateLimitsResult
+            {
+                RateLimits = new RateLimitInfo
+                {
+                    Primary = new() { UsedPercent = 20, WindowDurationMinutes = 300 },
+                    Secondary = new() { UsedPercent = 50, WindowDurationMinutes = 10_080 },
+                    Credits = new() { HasCredits = true, Balance = "12.50" },
+                },
+            },
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false)
+        {
+            SelectedThread = new ThreadSummary { Id = "thread-1" },
+            ComposerText = "/status",
+        };
+        await bridge.PublishAccountAsync(new AccountStatus { State = AccountState.SignedIn });
+        await bridge.PublishStateAsync(new WorkerStatus
+        {
+            State = WorkerConnectionState.Busy,
+            ThreadId = "thread-1",
+            TurnId = "turn-1",
+        });
+
+        await InvokeComposerSendAsync(vm);
+
+        Assert.IsNull(bridge.LastSteerTurnRequest);
+        Assert.AreEqual(1, bridge.RateLimitCallCount);
+        StringAssert.Contains(vm.Items.Last().Text, "5-hour limit: 80% remaining");
+        StringAssert.Contains(vm.Items.Last().Text, "Weekly limit: 50% remaining");
+        StringAssert.Contains(vm.Items.Last().Text, "Credits: 12.50");
+        Assert.AreEqual(string.Empty, vm.ComposerText);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_DoubleSlashSteersLiteralSlashPrompt()
+    {
+        var bridge = new FakeWorkerBridge();
+        using var vm = new ChatViewModel(bridge, autoConnect: false)
+        {
+            SelectedThread = new ThreadSummary { Id = "thread-1" },
+            ComposerText = "//status",
+        };
+        await bridge.PublishStateAsync(new WorkerStatus
+        {
+            State = WorkerConnectionState.Busy,
+            ThreadId = "thread-1",
+            TurnId = "turn-1",
+        });
+
+        await InvokeComposerSendAsync(vm);
+
+        Assert.IsNotNull(bridge.LastSteerTurnRequest);
+        Assert.AreEqual("/status", bridge.LastSteerTurnRequest!.Text);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_PlanWithPrompt_StartsPlanModeTurn()
+    {
+        var bridge = new FakeWorkerBridge();
+        using var vm = new ChatViewModel(bridge, autoConnect: false)
+        {
+            SelectedThread = new ThreadSummary { Id = "thread-1" },
+            SelectedModel = "gpt-5",
+            ComposerText = "/plan design the change",
+        };
+        await bridge.PublishStateAsync(new WorkerStatus
+        {
+            State = WorkerConnectionState.Ready,
+            ThreadId = "thread-1",
+        });
+
+        await InvokeComposerSendAsync(vm);
+
+        Assert.IsNotNull(bridge.LastStartTurnRequest);
+        Assert.AreEqual("design the change", bridge.LastStartTurnRequest!.Text);
+        Assert.IsNotNull(bridge.LastStartTurnRequest.CollaborationMode);
+        Assert.AreEqual("plan", bridge.LastStartTurnRequest.CollaborationMode!.Mode);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_PlanWithoutPrompt_AppliesOnlyToNextSuccessfulTurn()
+    {
+        var bridge = new FakeWorkerBridge();
+        using var vm = new ChatViewModel(bridge, autoConnect: false)
+        {
+            SelectedThread = new ThreadSummary { Id = "thread-1" },
+            ComposerText = "/plan",
+        };
+        await bridge.PublishStateAsync(new WorkerStatus
+        {
+            State = WorkerConnectionState.Ready,
+            ThreadId = "thread-1",
+        });
+
+        await InvokeComposerSendAsync(vm);
+        await SendMessageAsync(vm, "first", clearComposer: false);
+
+        Assert.IsNotNull(bridge.LastStartTurnRequest);
+        Assert.IsNotNull(bridge.LastStartTurnRequest!.CollaborationMode);
+        Assert.AreEqual("plan", bridge.LastStartTurnRequest.CollaborationMode!.Mode);
+
+        await SendMessageAsync(vm, "second", clearComposer: false);
+
+        Assert.IsNotNull(bridge.LastStartTurnRequest);
+        Assert.IsNull(bridge.LastStartTurnRequest!.CollaborationMode);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_QueuedReviewRunsAfterTurnCompletionWithoutSteer()
+    {
+        var bridge = new FakeWorkerBridge();
+        using var vm = new ChatViewModel(bridge, autoConnect: false)
+        {
+            SelectedThread = new ThreadSummary { Id = "thread-1" },
+            ComposerText = "/review uncommitted",
+        };
+        await bridge.PublishStateAsync(new WorkerStatus
+        {
+            State = WorkerConnectionState.Busy,
+            ThreadId = "thread-1",
+            TurnId = "turn-1",
+        });
+
+        await InvokeComposerSendAsync(vm);
+        Assert.AreEqual(0, bridge.ReviewCallCount);
+        Assert.IsNull(bridge.LastSteerTurnRequest);
+
+        await bridge.PublishStateAsync(new WorkerStatus
+        {
+            State = WorkerConnectionState.Ready,
+            ThreadId = "thread-1",
+        });
+        await WaitForAsync(() => bridge.ReviewCallCount == 1);
+
+        Assert.AreEqual(1, bridge.ReviewCallCount);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_NextTurnSettings_ApplyOnlyToNextSuccessfulTurn()
+    {
+        var bridge = new FakeWorkerBridge
+        {
+            ModelListResult = new ListModelsResult
+            {
+                Models =
+                [
+                    new ModelInfo
+                    {
+                        Id = "gpt-5",
+                        SupportsPersonality = true,
+                        SupportedReasoningEfforts = [new ReasoningEffortInfo { Id = "high" }],
+                        ServiceTiers = [new ServiceTierInfo { Id = "fast" }],
+                    },
+                ],
+                DefaultModel = "gpt-5",
+            },
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false)
+        {
+            SelectedThread = new ThreadSummary { Id = "thread-1" },
+        };
+        await vm.PopulateModelsAsync();
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready, ThreadId = "thread-1" });
+
+        vm.ComposerText = "/fast";
+        await InvokeComposerSendAsync(vm);
+        vm.ComposerText = "/reasoning high";
+        await InvokeComposerSendAsync(vm);
+        vm.ComposerText = "/personality friendly";
+        await InvokeComposerSendAsync(vm);
+
+        await SendMessageAsync(vm, "first", clearComposer: false);
+
+        Assert.IsNotNull(bridge.LastStartTurnRequest);
+        Assert.AreEqual("fast", bridge.LastStartTurnRequest!.ServiceTier);
+        Assert.AreEqual("high", bridge.LastStartTurnRequest.Effort);
+        Assert.AreEqual("friendly", bridge.LastStartTurnRequest.Personality);
+
+        await SendMessageAsync(vm, "second", clearComposer: false);
+
+        Assert.IsNull(bridge.LastStartTurnRequest!.ServiceTier);
+        Assert.IsTrue(bridge.LastStartTurnRequest.HasServiceTier);
+        Assert.IsNull(bridge.LastStartTurnRequest.Effort);
+        Assert.IsNull(bridge.LastStartTurnRequest.Personality);
+
+        await SendMessageAsync(vm, "third", clearComposer: false);
+        Assert.IsFalse(bridge.LastStartTurnRequest!.HasServiceTier);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_FastOverrideSurvivesFailureAndRestoresPersistentTier()
+    {
+        var store = new MemorySettingsStore(new ExtensionSettings { ServiceTierId = "standard" });
+        var bridge = new FakeWorkerBridge
+        {
+            ModelListResult = new ListModelsResult
+            {
+                Models =
+                [
+                    new ModelInfo
+                    {
+                        Id = "gpt-5",
+                        ServiceTiers = [new ServiceTierInfo { Id = "standard" }, new ServiceTierInfo { Id = "Fast" }],
+                    },
+                ],
+                DefaultModel = "gpt-5",
+            },
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: store)
+        {
+            SelectedThread = new ThreadSummary { Id = "thread-1", EffectiveServiceTier = "standard" },
+        };
+        await vm.PopulateModelsAsync();
+        await bridge.PublishStateAsync(new WorkerStatus
+        {
+            State = WorkerConnectionState.Ready,
+            ThreadId = "thread-1",
+            EffectiveServiceTier = "standard",
+        });
+        vm.ComposerText = "/fast";
+        await InvokeComposerSendAsync(vm);
+
+        bridge.StartTurnException = new InvalidOperationException("start failed");
+        await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => SendMessageAsync(vm, "fails", clearComposer: false));
+        Assert.AreEqual("Fast", bridge.LastStartTurnRequest!.ServiceTier);
+        bridge.StartTurnException = null;
+        await SendMessageAsync(vm, "fast succeeds", clearComposer: false);
+        Assert.AreEqual("Fast", bridge.LastStartTurnRequest!.ServiceTier);
+        vm.ComposerText = "/status";
+        await InvokeComposerSendAsync(vm);
+        StringAssert.Contains(vm.Items[^1].Text, "Desired service tier: standard");
+        StringAssert.Contains(vm.Items[^1].Text, "Effective service tier: standard");
+        StringAssert.Contains(vm.Items[^1].Text, "Next-turn service tier: standard");
+        await SendMessageAsync(vm, "restore", clearComposer: false);
+        Assert.AreEqual("standard", bridge.LastStartTurnRequest!.ServiceTier);
+        await SendMessageAsync(vm, "stable", clearComposer: false);
+        Assert.AreEqual("standard", bridge.LastStartTurnRequest!.ServiceTier);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_FastOverrideIsIsolatedByThread()
+    {
+        var store = new MemorySettingsStore(new ExtensionSettings { ServiceTierId = "standard" });
+        var bridge = new FakeWorkerBridge
+        {
+            ModelListResult = new ListModelsResult
+            {
+                Models =
+                [
+                    new ModelInfo
+                    {
+                        Id = "gpt-5",
+                        ServiceTiers = [new ServiceTierInfo { Id = "standard" }, new ServiceTierInfo { Id = "fast" }],
+                    },
+                ],
+                DefaultModel = "gpt-5",
+            },
+        };
+        var thread1 = new ThreadSummary { Id = "thread-1", EffectiveServiceTier = "standard" };
+        var thread2 = new ThreadSummary { Id = "thread-2", EffectiveServiceTier = "standard" };
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: store) { SelectedThread = thread1 };
+        await vm.PopulateModelsAsync();
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready, ThreadId = "thread-1" });
+        vm.ComposerText = "/fast";
+        await InvokeComposerSendAsync(vm);
+
+        vm.SelectedThread = thread2;
+        await SendMessageAsync(vm, "thread two", clearComposer: false);
+        Assert.AreEqual("standard", bridge.LastStartTurnRequest!.ServiceTier);
+        vm.SelectedThread = thread1;
+        await SendMessageAsync(vm, "thread one", clearComposer: false);
+        Assert.AreEqual("fast", bridge.LastStartTurnRequest!.ServiceTier);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_RepeatedFastOverridePreservesInheritedRestoreTarget()
+    {
+        var bridge = new FakeWorkerBridge
+        {
+            ModelListResult = new ListModelsResult
+            {
+                Models =
+                [
+                    new ModelInfo
+                    {
+                        Id = "gpt-5",
+                        ServiceTiers = [new ServiceTierInfo { Id = "standard" }, new ServiceTierInfo { Id = "fast" }],
+                    },
+                ],
+                DefaultModel = "gpt-5",
+            },
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false)
+        {
+            SelectedThread = new ThreadSummary { Id = "thread-1", EffectiveServiceTier = "standard" },
+        };
+        await vm.PopulateModelsAsync();
+        await bridge.PublishStateAsync(new WorkerStatus
+        {
+            State = WorkerConnectionState.Ready,
+            ThreadId = "thread-1",
+            EffectiveServiceTier = "standard",
+        });
+
+        vm.ComposerText = "/fast";
+        await InvokeComposerSendAsync(vm);
+        await SendMessageAsync(vm, "first fast", clearComposer: false);
+        Assert.AreEqual("fast", bridge.LastStartTurnRequest!.ServiceTier);
+
+        vm.ComposerText = "/fast";
+        await InvokeComposerSendAsync(vm);
+        await SendMessageAsync(vm, "second fast", clearComposer: false);
+        Assert.AreEqual("fast", bridge.LastStartTurnRequest!.ServiceTier);
+
+        await SendMessageAsync(vm, "restore", clearComposer: false);
+        Assert.IsTrue(bridge.LastStartTurnRequest!.HasServiceTier);
+        Assert.AreEqual("standard", bridge.LastStartTurnRequest.ServiceTier);
+
+        await SendMessageAsync(vm, "inherit", clearComposer: false);
+        Assert.IsFalse(bridge.LastStartTurnRequest!.HasServiceTier);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_FastOverrideAndRestoreWaitForSupportedModel()
+    {
+        var bridge = new FakeWorkerBridge
+        {
+            ModelListResult = new ListModelsResult
+            {
+                Models =
+                [
+                    new ModelInfo
+                    {
+                        Id = "tier-model",
+                        ServiceTiers = [new ServiceTierInfo { Id = "standard" }, new ServiceTierInfo { Id = "fast" }],
+                    },
+                    new ModelInfo { Id = "plain-model" },
+                ],
+                DefaultModel = "tier-model",
+            },
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false)
+        {
+            SelectedThread = new ThreadSummary { Id = "thread-1", EffectiveServiceTier = "standard" },
+        };
+        await vm.PopulateModelsAsync();
+        await bridge.PublishStateAsync(new WorkerStatus
+        {
+            State = WorkerConnectionState.Ready,
+            ThreadId = "thread-1",
+            EffectiveServiceTier = "standard",
+        });
+
+        vm.ComposerText = "/fast";
+        await InvokeComposerSendAsync(vm);
+        vm.SelectedModel = "plain-model";
+        await SendMessageAsync(vm, "unsupported fast", clearComposer: false);
+        Assert.IsFalse(bridge.LastStartTurnRequest!.HasServiceTier);
+
+        vm.SelectedModel = "tier-model";
+        await SendMessageAsync(vm, "supported fast", clearComposer: false);
+        Assert.IsTrue(bridge.LastStartTurnRequest!.HasServiceTier);
+        Assert.AreEqual("fast", bridge.LastStartTurnRequest.ServiceTier);
+
+        vm.SelectedModel = "plain-model";
+        await SendMessageAsync(vm, "unsupported restore", clearComposer: false);
+        Assert.IsFalse(bridge.LastStartTurnRequest!.HasServiceTier);
+
+        vm.SelectedModel = "tier-model";
+        await SendMessageAsync(vm, "supported restore", clearComposer: false);
+        Assert.IsTrue(bridge.LastStartTurnRequest!.HasServiceTier);
+        Assert.AreEqual("standard", bridge.LastStartTurnRequest.ServiceTier);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_ReasoningSlashIsCanonicalThreadScopedAndRestoresStickySetting()
+    {
+        var store = new MemorySettingsStore(new ExtensionSettings());
+        var bridge = new FakeWorkerBridge
+        {
+            ModelListResult = new ListModelsResult
+            {
+                Models = [ModelWithReasoning("gpt-5", "medium", "high")],
+                DefaultModel = "gpt-5",
+            },
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: store)
+        {
+            SelectedThread = new ThreadSummary { Id = "thread-1" },
+        };
+        await vm.PopulateModelsAsync();
+        await bridge.PublishStateAsync(new WorkerStatus
+        {
+            State = WorkerConnectionState.Ready,
+            ThreadId = "thread-1",
+            EffectiveReasoningEffort = "medium",
+        });
+
+        vm.ComposerText = "/reasoning HIGH";
+        await InvokeComposerSendAsync(vm);
+        await SendMessageAsync(vm, "override", clearComposer: false);
+        Assert.AreEqual("high", bridge.LastStartTurnRequest!.Effort);
+        vm.ComposerText = "/status";
+        await InvokeComposerSendAsync(vm);
+        StringAssert.Contains(vm.Items[^1].Text, "Next-turn reasoning effort: medium");
+        await SendMessageAsync(vm, "restore", clearComposer: false);
+        Assert.AreEqual("medium", bridge.LastStartTurnRequest!.Effort);
+        await SendMessageAsync(vm, "inherit", clearComposer: false);
+        Assert.IsFalse(bridge.LastStartTurnRequest!.HasEffort);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_ReplacingReasoningOverridePreservesPersistentRestoreTarget()
+    {
+        var store = new MemorySettingsStore(new ExtensionSettings { ReasoningEffortId = "high" });
+        var bridge = new FakeWorkerBridge
+        {
+            ModelListResult = new ListModelsResult
+            {
+                Models = [ModelWithReasoning("gpt-5", "low", "medium", "high", "xhigh")],
+                DefaultModel = "gpt-5",
+            },
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: store)
+        {
+            SelectedThread = new ThreadSummary { Id = "thread-1" },
+        };
+        await vm.PopulateModelsAsync();
+        await bridge.PublishStateAsync(new WorkerStatus
+        {
+            State = WorkerConnectionState.Ready,
+            ThreadId = "thread-1",
+            EffectiveReasoningEffort = "medium",
+        });
+
+        vm.ComposerText = "/reasoning xhigh";
+        await InvokeComposerSendAsync(vm);
+        await SendMessageAsync(vm, "first", clearComposer: false);
+        vm.ComposerText = "/reasoning low";
+        await InvokeComposerSendAsync(vm);
+        await SendMessageAsync(vm, "replacement", clearComposer: false);
+        Assert.AreEqual("low", bridge.LastStartTurnRequest!.Effort);
+        await SendMessageAsync(vm, "restore", clearComposer: false);
+        Assert.AreEqual("high", bridge.LastStartTurnRequest!.Effort);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_ReplacingReasoningOverridePreservesOriginalEffectiveRestore()
+    {
+        var bridge = new FakeWorkerBridge
+        {
+            ModelListResult = new ListModelsResult
+            {
+                Models = [ModelWithReasoning("gpt-5", "low", "medium", "high")],
+                DefaultModel = "gpt-5",
+            },
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false)
+        {
+            SelectedThread = new ThreadSummary { Id = "thread-1" },
+        };
+        await vm.PopulateModelsAsync();
+        await bridge.PublishStateAsync(new WorkerStatus
+        {
+            State = WorkerConnectionState.Ready,
+            ThreadId = "thread-1",
+            EffectiveReasoningEffort = "medium",
+        });
+        vm.ComposerText = "/reasoning high";
+        await InvokeComposerSendAsync(vm);
+        await SendMessageAsync(vm, "high", clearComposer: false);
+        vm.ComposerText = "/reasoning low";
+        await InvokeComposerSendAsync(vm);
+        await SendMessageAsync(vm, "low", clearComposer: false);
+        Assert.AreEqual("low", bridge.LastStartTurnRequest!.Effort);
+        await SendMessageAsync(vm, "restore", clearComposer: false);
+        Assert.AreEqual("medium", bridge.LastStartTurnRequest!.Effort);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_ReasoningOverrideAndRestoreWaitForSupportedModel()
+    {
+        var bridge = new FakeWorkerBridge
+        {
+            ModelListResult = new ListModelsResult
+            {
+                Models =
+                [
+                    ModelWithReasoning("reasoning-model", "medium", "high"),
+                    new ModelInfo { Id = "plain-model" },
+                ],
+                DefaultModel = "reasoning-model",
+            },
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false)
+        {
+            SelectedThread = new ThreadSummary { Id = "thread-1", EffectiveReasoningEffort = "medium" },
+        };
+        await vm.PopulateModelsAsync();
+        await bridge.PublishStateAsync(new WorkerStatus
+        {
+            State = WorkerConnectionState.Ready,
+            ThreadId = "thread-1",
+            EffectiveReasoningEffort = "medium",
+        });
+
+        vm.ComposerText = "/reasoning high";
+        await InvokeComposerSendAsync(vm);
+        vm.SelectedModel = "plain-model";
+        await SendMessageAsync(vm, "unsupported override", clearComposer: false);
+        Assert.IsFalse(bridge.LastStartTurnRequest!.HasEffort);
+
+        vm.SelectedModel = "reasoning-model";
+        await SendMessageAsync(vm, "supported override", clearComposer: false);
+        Assert.IsTrue(bridge.LastStartTurnRequest!.HasEffort);
+        Assert.AreEqual("high", bridge.LastStartTurnRequest.Effort);
+
+        vm.SelectedModel = "plain-model";
+        await SendMessageAsync(vm, "unsupported restore", clearComposer: false);
+        Assert.IsFalse(bridge.LastStartTurnRequest!.HasEffort);
+
+        vm.SelectedModel = "reasoning-model";
+        await SendMessageAsync(vm, "supported restore", clearComposer: false);
+        Assert.IsTrue(bridge.LastStartTurnRequest!.HasEffort);
+        Assert.AreEqual("medium", bridge.LastStartTurnRequest.Effort);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_StatusReportsUnsupportedPersistedReasoningId()
+    {
+        var store = new MemorySettingsStore(new ExtensionSettings { ReasoningEffortId = "organization-tier" });
+        using var vm = new ChatViewModel(new FakeWorkerBridge(), autoConnect: false, settingsStore: store)
+        {
+            SelectedThread = new ThreadSummary { Id = "thread-1" },
+            ComposerText = "/status",
+        };
+        await InvokeComposerSendAsync(vm);
+        StringAssert.Contains(vm.Items[^1].Text, "Desired reasoning effort: organization-tier");
+        StringAssert.Contains(vm.Items[^1].Text, "Next-turn reasoning effort: (config.toml)");
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_FailedTurnDoesNotConsumeReasoningSlashOverride()
+    {
+        var bridge = new FakeWorkerBridge
+        {
+            ModelListResult = new ListModelsResult
+            {
+                Models = [ModelWithReasoning("gpt-5", "high")],
+                DefaultModel = "gpt-5",
+            },
+            StartTurnException = new InvalidOperationException("start failed"),
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false)
+        {
+            SelectedThread = new ThreadSummary { Id = "thread-1" },
+        };
+        await vm.PopulateModelsAsync();
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready, ThreadId = "thread-1" });
+        vm.ComposerText = "/reasoning high";
+        await InvokeComposerSendAsync(vm);
+        await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => SendMessageAsync(vm, "fails", clearComposer: false));
+        bridge.StartTurnException = null;
+        await SendMessageAsync(vm, "succeeds", clearComposer: false);
+        Assert.AreEqual("high", bridge.LastStartTurnRequest!.Effort);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_PlanWithPrompt_ClearsPendingPlanMode()
+    {
+        var bridge = new FakeWorkerBridge();
+        using var vm = new ChatViewModel(bridge, autoConnect: false)
+        {
+            SelectedThread = new ThreadSummary { Id = "thread-1" },
+        };
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready, ThreadId = "thread-1" });
+
+        vm.ComposerText = "/plan";
+        await InvokeComposerSendAsync(vm);
+        vm.ComposerText = "/plan design the change";
+        await InvokeComposerSendAsync(vm);
+
+        Assert.IsNotNull(bridge.LastStartTurnRequest);
+        Assert.AreEqual("plan", bridge.LastStartTurnRequest!.CollaborationMode!.Mode);
+
+        await SendMessageAsync(vm, "after the plan turn", clearComposer: false);
+
+        Assert.IsNull(bridge.LastStartTurnRequest!.CollaborationMode);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_QueueContinuesDrainingAfterFailedCommand()
+    {
+        var bridge = new FakeWorkerBridge();
+        using var vm = new ChatViewModel(bridge, autoConnect: false)
+        {
+            SelectedThread = new ThreadSummary { Id = "thread-1" },
+            SelectedModel = "gpt-5-codex",
+        };
+        await bridge.PublishStateAsync(new WorkerStatus
+        {
+            State = WorkerConnectionState.Busy,
+            ThreadId = "thread-1",
+            TurnId = "turn-1",
+        });
+
+        // Feedback fails on drain (no extensibility to confirm the prompt); /model must still run.
+        vm.ComposerText = "/feedback the composer lost my draft";
+        await InvokeComposerSendAsync(vm);
+        vm.ComposerText = "/model gpt-5";
+        await InvokeComposerSendAsync(vm);
+        Assert.AreEqual("gpt-5-codex", vm.SelectedModel);
+
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready, ThreadId = "thread-1" });
+        await WaitForAsync(() => vm.SelectedModel == "gpt-5");
+
+        Assert.AreEqual("gpt-5", vm.SelectedModel);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_SessionQueuedCommandRunsAfterTurnCompletes()
+    {
+        var bridge = new FakeWorkerBridge();
+        using var vm = new ChatViewModel(bridge, autoConnect: false)
+        {
+            SelectedModel = "gpt-5-codex",
+        };
+        await bridge.PublishStateAsync(new WorkerStatus
+        {
+            State = WorkerConnectionState.Busy,
+            TurnId = "turn-1",
+        });
+
+        // No selected thread and no status thread id: the command lands in the session queue.
+        vm.ComposerText = "/model gpt-5";
+        await InvokeComposerSendAsync(vm);
+        Assert.AreEqual("gpt-5-codex", vm.SelectedModel);
+
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready });
+        await WaitForAsync(() => vm.SelectedModel == "gpt-5");
+
+        Assert.AreEqual("gpt-5", vm.SelectedModel);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_SelectedThreadQueueDrainsWhenOtherThreadTurnCompletes()
+    {
+        var bridge = new FakeWorkerBridge();
+        using var vm = new ChatViewModel(bridge, autoConnect: false);
+        await bridge.PublishStateAsync(new WorkerStatus
+        {
+            State = WorkerConnectionState.Busy,
+            ThreadId = "thread-1",
+            TurnId = "turn-1",
+        });
+        vm.SelectedThread = new ThreadSummary { Id = "thread-2" };
+
+        vm.ComposerText = "/review uncommitted";
+        await InvokeComposerSendAsync(vm);
+        Assert.AreEqual(0, bridge.ReviewCallCount);
+
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready, ThreadId = "thread-1" });
+        await WaitForAsync(() => bridge.ReviewCallCount == 1);
+
+        Assert.AreEqual(1, bridge.ReviewCallCount);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_ForkResumesForkedThreadHistory()
+    {
+        var bridge = new FakeWorkerBridge();
+        using var vm = new ChatViewModel(bridge, autoConnect: false)
+        {
+            SelectedThread = new ThreadSummary { Id = "thread-1" },
+        };
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready, ThreadId = "thread-1" });
+
+        vm.ComposerText = "/fork";
+        await InvokeComposerSendAsync(vm);
+        await WaitForAsync(() => bridge.LastResumedThreadId == "thread-fork");
+
+        Assert.AreEqual("thread-fork", vm.SelectedThread!.Id);
+        Assert.AreEqual("thread-fork", bridge.LastResumedThreadId);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_ModelCommandMatchesCatalogCaseInsensitively()
+    {
+        var bridge = new FakeWorkerBridge();
+        using var vm = new ChatViewModel(bridge, autoConnect: false)
+        {
+            SelectedModel = "gpt-5-codex",
+        };
+
+        vm.ComposerText = "/model GPT-5";
+        await InvokeComposerSendAsync(vm);
+
+        Assert.AreEqual("gpt-5", vm.SelectedModel);
     }
 
     [TestMethod]
@@ -1474,6 +2996,166 @@ public sealed class ViewModelTests
     }
 
     [TestMethod]
+    public async Task ChatViewModel_UsageFetchesOncePerConnectionGeneration()
+    {
+        var bridge = new FakeWorkerBridge
+        {
+            RateLimitsResult = UsageResult(20),
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false);
+        await bridge.PublishAccountAsync(new AccountStatus { State = AccountState.SignedIn });
+
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready });
+        Assert.AreEqual(1, bridge.RateLimitCallCount);
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Busy });
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready });
+        Assert.AreEqual(1, bridge.RateLimitCallCount);
+
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Disconnected });
+        Assert.IsFalse(vm.Usage.HasData);
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready });
+        Assert.AreEqual(2, bridge.RateLimitCallCount);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_UsagePopupRefreshesOnlyAfterTtl()
+    {
+        DateTimeOffset now = DateTimeOffset.UnixEpoch;
+        var bridge = new FakeWorkerBridge { RateLimitsResult = UsageResult(20) };
+        using var vm = new ChatViewModel(bridge, autoConnect: false, utcNow: () => now);
+        await bridge.PublishAccountAsync(new AccountStatus { State = AccountState.SignedIn });
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready });
+
+        await vm.RefreshUsageAsync(force: false);
+        Assert.AreEqual(1, bridge.RateLimitCallCount);
+        now = now.AddSeconds(61);
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Busy });
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready });
+        Assert.AreEqual(1, bridge.RateLimitCallCount, "Busy-to-Ready must not refresh usage even after the popup TTL.");
+        await vm.RefreshUsageAsync(force: false);
+        Assert.AreEqual(2, bridge.RateLimitCallCount);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_UsagePushWinsAgainstOlderReadResponse()
+    {
+        using var releaseRead = new SemaphoreSlim(0, 1);
+        var bridge = new FakeWorkerBridge
+        {
+            RateLimitHandler = async _ =>
+            {
+                await releaseRead.WaitAsync();
+                return UsageResult(10);
+            },
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false);
+        await bridge.PublishAccountAsync(new AccountStatus { State = AccountState.SignedIn });
+
+        Task ready = Task.Run(() => bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready }));
+        await WaitForAsync(() => bridge.RateLimitCallCount == 1);
+        await bridge.PublishRateLimitsAsync(UsageResult(70));
+        releaseRead.Release();
+        await ready;
+
+        Assert.AreEqual("30% remaining", vm.Usage.ToolbarText);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_OldGenerationPushCannotOverwriteReconnect()
+    {
+        var bridge = new FakeWorkerBridge { RateLimitsResult = UsageResult(20) };
+        using var vm = new ChatViewModel(bridge, autoConnect: false);
+        await bridge.PublishAccountAsync(new AccountStatus { State = AccountState.SignedIn });
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready });
+
+        long oldGeneration = GetPrivateLong(vm, "usageConnectionGeneration");
+        await bridge.PublishRateLimitsAsync(UsageResult(40));
+        long oldPushVersion = GetPrivateLong(vm, "rateLimitPushVersion");
+
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Disconnected });
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready });
+        await bridge.PublishRateLimitsAsync(UsageResult(70));
+        long currentPushVersion = GetPrivateLong(vm, "rateLimitPushVersion");
+
+        Assert.IsTrue(currentPushVersion > oldPushVersion, "The push version must remain monotonic across reconnects.");
+        ApplyRateLimitsPush(vm, UsageResult(5), oldGeneration, currentPushVersion);
+        Assert.AreEqual("30% remaining", vm.Usage.ToolbarText);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_UsageRefreshFailurePreservesSnapshotAndCanRetry()
+    {
+        DateTimeOffset now = DateTimeOffset.UnixEpoch;
+        var bridge = new FakeWorkerBridge
+        {
+            RateLimitHandler = call => call switch
+            {
+                1 => Task.FromResult(UsageResult(20)),
+                2 => Task.FromException<RateLimitsResult>(new InvalidOperationException("transient")),
+                _ => Task.FromResult(UsageResult(60)),
+            },
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false, utcNow: () => now);
+        await bridge.PublishAccountAsync(new AccountStatus { State = AccountState.SignedIn });
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready });
+
+        now = now.AddSeconds(61);
+        await vm.RefreshUsageAsync(force: false);
+        Assert.AreEqual("80% remaining", vm.Usage.ToolbarText);
+        Assert.AreEqual(2, bridge.RateLimitCallCount);
+
+        await vm.RefreshUsageAsync(force: false);
+        Assert.AreEqual("40% remaining", vm.Usage.ToolbarText);
+        Assert.AreEqual(3, bridge.RateLimitCallCount, "A failed refresh must remain immediately retryable.");
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_UsageLifecycleAndFlyoutsAreMutuallyExclusive()
+    {
+        var bridge = new FakeWorkerBridge { RateLimitsResult = UsageResult(20) };
+        using var vm = new ChatViewModel(bridge, autoConnect: false);
+        await bridge.PublishAccountAsync(new AccountStatus { State = AccountState.SignedIn });
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready });
+        vm.IsHistoryOpen = true;
+        vm.IsUsageOpen = true;
+        Assert.IsFalse(vm.IsHistoryOpen);
+        Assert.IsTrue(vm.IsUsageOpen);
+
+        long signedInGeneration = GetPrivateLong(vm, "usageConnectionGeneration");
+        await bridge.PublishAccountAsync(new AccountStatus { State = AccountState.SignedOut });
+        Assert.IsFalse(vm.IsUsageAvailable);
+        Assert.IsFalse(vm.IsUsageOpen);
+        Assert.IsFalse(vm.Usage.HasData);
+        Assert.IsTrue(GetPrivateLong(vm, "usageConnectionGeneration") > signedInGeneration);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_DisposeInvalidatesUsageAndRejectsInFlightRead()
+    {
+        using var releaseRead = new SemaphoreSlim(0, 1);
+        var bridge = new FakeWorkerBridge
+        {
+            RateLimitHandler = call => call == 1
+                ? Task.FromResult(UsageResult(20))
+                : WaitForReadReleaseAsync(releaseRead),
+        };
+        var vm = new ChatViewModel(bridge, autoConnect: false);
+        await bridge.PublishAccountAsync(new AccountStatus { State = AccountState.SignedIn });
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready });
+        vm.IsUsageOpen = true;
+        Task refresh = vm.RefreshUsageAsync(force: true);
+        await WaitForAsync(() => bridge.RateLimitCallCount == 2);
+
+        vm.Dispose();
+        releaseRead.Release();
+        await refresh;
+
+        Assert.IsFalse(vm.IsUsageOpen);
+        Assert.IsFalse(vm.Usage.HasData);
+        Assert.AreEqual("Usage", vm.Usage.ToolbarText);
+    }
+
+    [TestMethod]
     public void ChatViewModel_TypingComposerText_DoesNotEchoComposerTextPropertyChanged()
     {
         // Regression: the binding-driven (user-typing) setter must NOT raise PropertyChanged for
@@ -1492,6 +3174,237 @@ public sealed class ViewModelTests
             "Typing must not echo ComposerText PropertyChanged (would reset the caret in Remote UI).");
         Assert.IsTrue(raised.Contains("IsComposerEmpty"), "Placeholder visibility must still update.");
         Assert.IsFalse(vm.IsComposerEmpty);
+    }
+
+    [TestMethod]
+    public void ChatViewModel_LeadingSlash_OpensEightSlashCommandSuggestions()
+    {
+        using var vm = new ChatViewModel(new FakeWorkerBridge(), autoConnect: false);
+
+        vm.ComposerText = "/";
+
+        Assert.IsTrue(vm.SlashCommands.IsSuggestionOpen);
+        Assert.HasCount(8, vm.SlashCommands.Suggestions);
+        Assert.AreEqual("/compact", vm.SlashCommands.SelectedSuggestion?.CommandName);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_AttachAndStartTurn_CopiesAndClearsAttachments()
+    {
+        string filePath = Path.GetTempFileName();
+        try
+        {
+            var bridge = new FakeWorkerBridge();
+            var picker = new FakeFilePickerService([filePath, filePath]);
+            using var vm = new ChatViewModel(
+                bridge,
+                autoConnect: false,
+                filePickerService: picker,
+                protectedDirectoryPolicy: new ProtectedDirectoryPolicy([]));
+            await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready });
+            vm.SelectedThread = new ThreadSummary { Id = "thread-1" };
+
+            vm.AttachCommand.Execute(null);
+            await WaitForAsync(() => vm.PendingAttachments.Count == 1);
+
+            await SendMessageAsync(vm, "inspect this", clearComposer: true);
+
+            Assert.IsNotNull(bridge.LastStartTurnRequest);
+            Assert.HasCount(1, bridge.LastStartTurnRequest!.Attachments);
+            Assert.AreEqual(Path.GetFullPath(filePath), bridge.LastStartTurnRequest.Attachments[0].Path);
+            Assert.AreEqual("mention", bridge.LastStartTurnRequest.Attachments[0].Kind);
+            Assert.IsFalse(vm.HasPendingAttachments);
+        }
+        finally
+        {
+            File.Delete(filePath);
+        }
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_StartTurnFailure_PreservesAttachments()
+    {
+        string filePath = Path.GetTempFileName();
+        try
+        {
+            var bridge = new FakeWorkerBridge { StartTurnException = new InvalidOperationException("failed") };
+            using var vm = new ChatViewModel(
+                bridge,
+                autoConnect: false,
+                filePickerService: new FakeFilePickerService([filePath]),
+                protectedDirectoryPolicy: new ProtectedDirectoryPolicy([]));
+            await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready });
+            vm.SelectedThread = new ThreadSummary { Id = "thread-1" };
+            vm.AttachCommand.Execute(null);
+            await WaitForAsync(() => vm.HasPendingAttachments);
+
+            await Assert.ThrowsExactlyAsync<InvalidOperationException>(
+                () => SendMessageAsync(vm, "inspect this", clearComposer: true));
+
+            Assert.IsTrue(vm.HasPendingAttachments);
+        }
+        finally
+        {
+            File.Delete(filePath);
+        }
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_SteerTurn_PreservesAttachmentsForNextStart()
+    {
+        string filePath = Path.GetTempFileName();
+        try
+        {
+            var bridge = new FakeWorkerBridge();
+            using var vm = new ChatViewModel(
+                bridge,
+                autoConnect: false,
+                filePickerService: new FakeFilePickerService([filePath]),
+                protectedDirectoryPolicy: new ProtectedDirectoryPolicy([]));
+            vm.SelectedThread = new ThreadSummary { Id = "thread-1" };
+            await bridge.PublishStateAsync(new WorkerStatus
+            {
+                State = WorkerConnectionState.Busy,
+                ThreadId = "thread-1",
+                TurnId = "turn-active",
+            });
+            vm.AttachCommand.Execute(null);
+            await WaitForAsync(() => vm.HasPendingAttachments);
+
+            await SendMessageAsync(vm, "one more detail", clearComposer: true);
+
+            Assert.IsNotNull(bridge.LastSteerTurnRequest);
+            Assert.IsTrue(vm.HasPendingAttachments);
+            Assert.IsNull(bridge.LastStartTurnRequest);
+        }
+        finally
+        {
+            File.Delete(filePath);
+        }
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_FileSuggestion_ReplacesFinalTokenAndAddsChip()
+    {
+        string directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        string filePath = Path.Combine(directory, "Program.cs");
+        await File.WriteAllTextAsync(filePath, "class Program { }");
+        try
+        {
+            var search = new FakeWorkspaceFileSearchService(
+                [new WorkspaceFileSearchResult(filePath, "src/Program.cs")]);
+            using var vm = new ChatViewModel(
+                new FakeWorkerBridge(),
+                autoConnect: false,
+                workspaceFileSearchService: search,
+                protectedDirectoryPolicy: new ProtectedDirectoryPolicy([]));
+            SetWorkingDirectory(vm, directory);
+
+            vm.ComposerText = "review #prog";
+            await WaitForAsync(() => vm.FileSuggestions.IsSuggestionOpen);
+            vm.FileSuggestions.AcceptSuggestionCommand.Execute(null);
+            await WaitForAsync(() => vm.PendingAttachments.Count == 1);
+
+            Assert.AreEqual("review #Program.cs ", vm.ComposerText);
+            Assert.AreEqual(filePath, vm.PendingAttachments[0].FullPath);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_DoubleHash_SendsLiteralHashWithoutOpeningFileSuggestions()
+    {
+        var bridge = new FakeWorkerBridge();
+        using var vm = new ChatViewModel(bridge, autoConnect: false);
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready });
+        vm.SelectedThread = new ThreadSummary { Id = "thread-1" };
+        vm.ComposerText = "review ##Program.cs";
+
+        await InvokeComposerSendAsync(vm);
+
+        Assert.IsFalse(vm.FileSuggestions.IsSuggestionOpen);
+        Assert.IsNotNull(bridge.LastStartTurnRequest);
+        Assert.AreEqual("review #Program.cs", bridge.LastStartTurnRequest!.Text);
+    }
+
+    [TestMethod]
+    public void ChatViewModel_Dispose_StartsWorkerBridgeCleanupOnce()
+    {
+        var bridge = new FakeWorkerBridge();
+        var vm = new ChatViewModel(bridge, autoConnect: false);
+
+        vm.Dispose();
+        vm.Dispose();
+
+        Assert.AreEqual(1, bridge.DisposeCallCount);
+    }
+
+    [TestMethod]
+    public void ChatViewModel_SlashCommandPrefix_FiltersReasoningAndReview()
+    {
+        using var vm = new ChatViewModel(new FakeWorkerBridge(), autoConnect: false);
+
+        vm.ComposerText = "/re";
+
+        Assert.IsTrue(vm.SlashCommands.IsSuggestionOpen);
+        Assert.HasCount(2, vm.SlashCommands.Suggestions);
+        Assert.AreEqual("/reasoning", vm.SlashCommands.Suggestions[0].CommandName);
+        Assert.AreEqual("/review", vm.SlashCommands.Suggestions[1].CommandName);
+    }
+
+    [TestMethod]
+    [DataRow("")]
+    [DataRow("hello")]
+    [DataRow("hello /status")]
+    [DataRow("//")]
+    public void ChatViewModel_NonCommandComposerText_ClosesSlashCommandSuggestions(string text)
+    {
+        using var vm = new ChatViewModel(new FakeWorkerBridge(), autoConnect: false)
+        {
+            ComposerText = "/",
+        };
+        Assert.IsTrue(vm.SlashCommands.IsSuggestionOpen);
+
+        vm.ComposerText = text;
+
+        Assert.IsFalse(vm.SlashCommands.IsSuggestionOpen);
+        Assert.IsNull(vm.SlashCommands.SelectedSuggestion);
+        Assert.IsFalse(vm.SlashCommands.HasStatusAnnouncement);
+    }
+
+    [TestMethod]
+    public void ChatViewModel_LeadingSlash_RaisesNestedPresentationNotifications()
+    {
+        using var vm = new ChatViewModel(new FakeWorkerBridge(), autoConnect: false);
+        var slashPropertyChanges = new List<string?>();
+        var suggestionCollectionChanges = new List<NotifyCollectionChangedAction>();
+        vm.SlashCommands.PropertyChanged += (_, eventArgs) =>
+        {
+            slashPropertyChanges.Add(eventArgs.PropertyName);
+        };
+        vm.SlashCommands.Suggestions.CollectionChanged += (_, eventArgs) =>
+        {
+            suggestionCollectionChanges.Add(eventArgs.Action);
+        };
+
+        vm.ComposerText = "/";
+
+        CollectionAssert.Contains(
+            slashPropertyChanges,
+            nameof(SlashCommandPresentationViewModel.SelectedSuggestion));
+        CollectionAssert.Contains(
+            slashPropertyChanges,
+            nameof(SlashCommandPresentationViewModel.IsSuggestionOpen));
+        Assert.AreEqual(NotifyCollectionChangedAction.Reset, suggestionCollectionChanges[0]);
+        Assert.AreEqual(
+            8,
+            suggestionCollectionChanges.Count(static action => action == NotifyCollectionChangedAction.Add));
+        Assert.IsTrue(vm.SlashCommands.IsSuggestionOpen);
+        Assert.HasCount(8, vm.SlashCommands.Suggestions);
     }
 
     [TestMethod]
@@ -1544,6 +3457,70 @@ public sealed class ViewModelTests
         return (Task)method.Invoke(viewModel, [text, clearComposer])!;
     }
 
+    private static Task InvokeComposerSendAsync(ChatViewModel viewModel)
+    {
+        MethodInfo method = typeof(ChatViewModel).GetMethod(
+            "SendAsync",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("Could not find SendAsync.");
+
+        return (Task)method.Invoke(viewModel, null)!;
+    }
+
+    private static long GetPrivateLong(ChatViewModel viewModel, string fieldName)
+    {
+        FieldInfo field = typeof(ChatViewModel).GetField(fieldName, BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException($"Could not find {fieldName}.");
+        return (long)field.GetValue(viewModel)!;
+    }
+
+    private static void ApplyRateLimitsPush(
+        ChatViewModel viewModel,
+        RateLimitsResult result,
+        long generation,
+        long pushVersion)
+    {
+        MethodInfo method = typeof(ChatViewModel).GetMethod(
+            "ApplyRateLimitsPush",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("Could not find ApplyRateLimitsPush.");
+        method.Invoke(viewModel, [result, generation, pushVersion]);
+    }
+
+    private static async Task WaitForAsync(Func<bool> condition)
+    {
+        DateTime deadline = DateTime.UtcNow.AddSeconds(2);
+        while (!condition())
+        {
+            if (DateTime.UtcNow >= deadline)
+            {
+                Assert.Fail("Timed out waiting for the view model state to update.");
+            }
+
+            await Task.Delay(10);
+        }
+    }
+
+    private static RateLimitsResult UsageResult(int usedPercent)
+        => new()
+        {
+            RateLimits = new RateLimitInfo
+            {
+                LimitId = "codex",
+                Primary = new RateLimitWindowInfo
+                {
+                    UsedPercent = usedPercent,
+                    WindowDurationMinutes = 300,
+                },
+            },
+        };
+
+    private static async Task<RateLimitsResult> WaitForReadReleaseAsync(SemaphoreSlim releaseRead)
+    {
+        await releaseRead.WaitAsync();
+        return UsageResult(5);
+    }
+
     private static Task RaiseConversationEventAsync(ChatViewModel viewModel, ConversationEvent value)
     {
         MethodInfo method = typeof(ChatViewModel).GetMethod(
@@ -1564,17 +3541,71 @@ public sealed class ViewModelTests
         return (ExtensionSettings)field.GetValue(viewModel)!;
     }
 
+    private static void SetWorkingDirectory(ChatViewModel viewModel, string path)
+    {
+        FieldInfo field = typeof(ChatViewModel).GetField(
+            "workingDirectory",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("Could not find workingDirectory.");
+        field.SetValue(viewModel, path);
+    }
+
     private static ChatItemViewModel SingleConversationItem(
         ChatViewModel viewModel,
         string itemId,
         ConversationEventKind kind)
         => viewModel.Items.Single(item => item.ItemId == itemId && item.Kind == kind);
 
+    private sealed class FakeFilePickerService(IReadOnlyList<string> files) : IFilePickerService
+    {
+        public Task<IReadOnlyList<string>> PickFilesAsync(string? initialDirectory, CancellationToken cancellationToken)
+            => Task.FromResult(files);
+    }
+
+    private sealed class FakeWorkspaceFileSearchService(IReadOnlyList<WorkspaceFileSearchResult> results)
+        : IWorkspaceFileSearchService
+    {
+        public int CallCount { get; private set; }
+
+        public Task<IReadOnlyList<WorkspaceFileSearchResult>> SearchAsync(
+            string workspaceRoot,
+            string query,
+            CancellationToken cancellationToken)
+        {
+            CallCount++;
+            return Task.FromResult(results);
+        }
+    }
+
+    private static ModelInfo ModelWithReasoning(string id, params string[] efforts)
+        => new()
+        {
+            Id = id,
+            DefaultReasoningEffort = efforts.FirstOrDefault(),
+            SupportedReasoningEfforts = efforts
+                .Select(effort => new ReasoningEffortInfo { Id = effort, Description = $"{effort} description" })
+                .ToArray(),
+        };
+
+    private sealed class MemorySettingsStore : IExtensionSettingsStore
+    {
+        public MemorySettingsStore(ExtensionSettings settings)
+        {
+            Settings = settings;
+        }
+
+        public ExtensionSettings Settings { get; private set; }
+
+        public ExtensionSettings Load() => Settings;
+
+        public void Save(ExtensionSettings settings) => Settings = settings;
+    }
+
     private sealed class FakeWorkerBridge : IWorkerBridge
     {
         public event Func<WorkerStatus, Task>? StateChanged;
 
-        public event Func<AccountStatus, Task>? AccountChanged { add { } remove { } }
+        public event Func<AccountStatus, Task>? AccountChanged;
 
         public event Func<ConversationEvent, Task>? ConversationEventReceived { add { } remove { } }
 
@@ -1586,16 +3617,48 @@ public sealed class ViewModelTests
 
         public event Func<string, Task>? UserInputResolved { add { } remove { } }
 
+        public event Func<ContextCompactionEvent, Task>? ContextCompacted { add { } remove { } }
+
+        public event Func<ReviewModeEvent, Task>? ReviewModeChanged { add { } remove { } }
+
+        public event Func<ThreadGoalEvent, Task>? ThreadGoalChanged { add { } remove { } }
+
+        public event Func<RateLimitsResult, Task>? RateLimitsChanged;
+
         public ListModelsResult ModelListResult { get; set; } = new();
 
+        public ListPermissionProfilesResult PermissionProfilesResult { get; set; } = new();
+
+        public int ModelListCallCount { get; private set; }
+
         public StartTurnRequest? LastStartTurnRequest { get; private set; }
+
+        public SteerTurnRequest? LastSteerTurnRequest { get; private set; }
+
+        public int ReviewCallCount { get; private set; }
+
+        public int RateLimitCallCount { get; private set; }
+
+        public AccountStatus AccountStatusResult { get; set; } = new() { State = AccountState.SignedIn };
+
+        public RateLimitsResult RateLimitsResult { get; set; } = new();
+
+        public Func<int, Task<RateLimitsResult>>? RateLimitHandler { get; set; }
 
         public Exception? ResolveApprovalException { get; set; }
 
         public Exception? ResolveUserInputException { get; set; }
 
+        public Exception? StartTurnException { get; set; }
+
         public Task PublishStateAsync(WorkerStatus status)
             => StateChanged?.Invoke(status) ?? Task.CompletedTask;
+
+        public Task PublishAccountAsync(AccountStatus status)
+            => AccountChanged?.Invoke(status) ?? Task.CompletedTask;
+
+        public Task PublishRateLimitsAsync(RateLimitsResult result)
+            => RateLimitsChanged?.Invoke(result) ?? Task.CompletedTask;
 
         public Task<WorkerStatus> ConnectAsync(string workingDirectory, bool experimentalApi, CancellationToken cancellationToken)
             => Task.FromResult(new WorkerStatus { State = WorkerConnectionState.Ready });
@@ -1604,7 +3667,7 @@ public sealed class ViewModelTests
             => Task.FromResult(new WorkerStatus { State = WorkerConnectionState.Ready });
 
         public Task<AccountStatus> GetAccountStatusAsync(CancellationToken cancellationToken)
-            => Task.FromResult(new AccountStatus { State = AccountState.SignedIn });
+            => Task.FromResult(AccountStatusResult);
 
         public Task<StartAccountLoginResult> StartAccountLoginAsync(CancellationToken cancellationToken)
             => Task.FromResult(new StartAccountLoginResult());
@@ -1616,25 +3679,82 @@ public sealed class ViewModelTests
             => Task.FromResult(new ThreadPage());
 
         public Task<ListModelsResult> ListModelsAsync(CancellationToken cancellationToken)
-            => Task.FromResult(ModelListResult);
+        {
+            ModelListCallCount++;
+            return Task.FromResult(ModelListResult);
+        }
+
+        public Task<ListPermissionProfilesResult> ListPermissionProfilesAsync(CancellationToken cancellationToken)
+            => Task.FromResult(PermissionProfilesResult);
 
         public Task<ThreadSummary> StartThreadAsync(CancellationToken cancellationToken)
             => Task.FromResult(new ThreadSummary { Id = "thread-1" });
 
+        public string? LastResumedThreadId { get; private set; }
+
         public Task<ThreadSummary> ResumeThreadAsync(string threadId, CancellationToken cancellationToken)
-            => Task.FromResult(new ThreadSummary { Id = threadId });
+        {
+            LastResumedThreadId = threadId;
+            return Task.FromResult(new ThreadSummary { Id = threadId });
+        }
 
         public Task<string> StartTurnAsync(StartTurnRequest request, CancellationToken cancellationToken)
         {
             LastStartTurnRequest = request;
-            return Task.FromResult("turn-1");
+            return StartTurnException is null
+                ? Task.FromResult("turn-1")
+                : Task.FromException<string>(StartTurnException);
         }
 
         public Task<string> SteerTurnAsync(SteerTurnRequest request, CancellationToken cancellationToken)
-            => Task.FromResult(request.ExpectedTurnId);
+        {
+            LastSteerTurnRequest = request;
+            return Task.FromResult(request.ExpectedTurnId);
+        }
 
         public Task InterruptTurnAsync(InterruptTurnRequest request, CancellationToken cancellationToken)
             => Task.CompletedTask;
+
+        public Task<CompactThreadResult> CompactThreadAsync(CompactThreadRequest request, CancellationToken cancellationToken)
+            => Task.FromResult(new CompactThreadResult());
+
+        public Task<StartReviewResult> StartReviewAsync(StartReviewRequest request, CancellationToken cancellationToken)
+        {
+            ReviewCallCount++;
+            return Task.FromResult(new StartReviewResult { TurnId = "turn-review" });
+        }
+
+        public Task<ForkThreadResult> ForkThreadAsync(ForkThreadRequest request, CancellationToken cancellationToken)
+            => Task.FromResult(new ForkThreadResult { Thread = new ThreadSummary { Id = "thread-fork" } });
+
+        public Task<ThreadGoalResult> GetThreadGoalAsync(string threadId, CancellationToken cancellationToken)
+            => Task.FromResult(new ThreadGoalResult());
+
+        public Task<ThreadGoalResult> SetThreadGoalAsync(SetThreadGoalRequest request, CancellationToken cancellationToken)
+            => Task.FromResult(new ThreadGoalResult
+            {
+                Goal = new ThreadGoalInfo
+                {
+                    ThreadId = request.ThreadId,
+                    Objective = request.Objective ?? string.Empty,
+                    Status = request.Status ?? ThreadGoalStatus.Active,
+                },
+            });
+
+        public Task<ThreadGoalResult> ClearThreadGoalAsync(string threadId, CancellationToken cancellationToken)
+            => Task.FromResult(new ThreadGoalResult { Cleared = true });
+
+        public Task<McpServerListResult> ListMcpServersAsync(string? threadId, CancellationToken cancellationToken)
+            => Task.FromResult(new McpServerListResult());
+
+        public Task<UploadFeedbackResult> UploadFeedbackAsync(UploadFeedbackRequest request, CancellationToken cancellationToken)
+            => Task.FromResult(new UploadFeedbackResult { ThreadId = request.ThreadId });
+
+        public Task<RateLimitsResult> GetRateLimitsAsync(CancellationToken cancellationToken)
+        {
+            RateLimitCallCount++;
+            return RateLimitHandler?.Invoke(RateLimitCallCount) ?? Task.FromResult(RateLimitsResult);
+        }
 
         public Task ResolveApprovalAsync(ResolveApprovalRequest request, CancellationToken cancellationToken)
             => ResolveApprovalException is not null ? Task.FromException(ResolveApprovalException) : Task.CompletedTask;
@@ -1642,6 +3762,12 @@ public sealed class ViewModelTests
         public Task ResolveUserInputAsync(ResolveUserInputRequest request, CancellationToken cancellationToken)
             => ResolveUserInputException is not null ? Task.FromException(ResolveUserInputException) : Task.CompletedTask;
 
-        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+        public int DisposeCallCount { get; private set; }
+
+        public ValueTask DisposeAsync()
+        {
+            DisposeCallCount++;
+            return ValueTask.CompletedTask;
+        }
     }
 }

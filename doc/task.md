@@ -2,6 +2,31 @@
 
 `plan.md` のフェーズ分割に対応する詳細タスク。各タスクは独立してレビュー可能な小さなスライスを意図する。
 
+## 2026-07-21: Merge main into PR #31 (issue #25) and resolve conflicts
+
+- [x] Resolve `ChoicePromptParser.cs` confirmation-regex conflict by adopting main's line-anchored `\A...to\b` pattern (issue #45), compatible with this branch's question-line scoping fix (issue #33).
+- [x] Resolve `ChatToolWindowContent.xaml` action-row conflict by dropping this branch's superseded `Grid.Row="1"` DockPanel (would have collided with the slash-command `ItemsControl` already at `Grid.Row="1"`) and keeping main's `Grid.Row="3"` accessibility live region; the richer `Grid.Row="5"` action row already covers this branch's Attach/Mode/Model/Experimental API controls.
+- [x] Resolve `ViewModelTests.cs` and `doc/implementation.md` conflicts (pure additive union with main).
+- [x] Validate: solution builds with 0 warnings/0 errors; 95 Core tests and 268 UI tests pass.
+- Ref: PR #31, issue #25.
+
+## 2026-07-20: PR #89 review and merge validation
+
+- [x] Confirm that the PR branch already contains the current `main` commit without conflicts.
+- [x] Re-base plain text inputs on the Visual Studio TextBox style so slash-command arguments keep a themed foreground/background pair.
+- [x] Preserve hidden default model metadata when only the top-level default identifier is reported.
+- [x] Make the reasoning override test independent from persisted user settings.
+- [x] Validate the integrated Release outputs with 95 Core tests and 244 UI tests passing.
+
+## 2026-07-20: Reasoning and service-tier pickers (#85, #86, #93-#98)
+
+- [x] Upgrade the Extension/Worker contract to version 13 with effort and service-tier presence flags.
+- [x] Preserve hidden default model capabilities separately from the visible catalog.
+- [x] Track effective turn settings across thread lifecycle and settings updates.
+- [x] Add sanitized, model-aware persistent Reasoning and Speed pickers to Remote UI.
+- [x] Make `/reasoning` and `/fast` thread-scoped, canonical, success-consumed, and sticky-restoring.
+- [x] Update the Fake app-server and add Core/UI regression coverage.
+
 ---
 
 ## Phase 0: リポジトリ準備・PoC
@@ -140,12 +165,22 @@
 ## Phase 3: スラッシュコマンド / スキル
 
 ### 3.1 スラッシュコマンドルーター
-- [ ] 入力先頭 `/` を検出してコマンドへルーティング
-- [ ] `/review`（`review/start`: uncommittedChanges / baseBranch / commit / custom）
-- [ ] `/compact`（`thread/compact/start`、`contextCompaction` item 表示）
-- [ ] `/goal`（`thread/goal/set` / `get` / `clear`、`thread/goal/updated`）
-- [ ] その他 Codex CLI / IDE スラッシュコマンドの網羅（公式一覧に追従）
-- [ ] コマンド補完 UI（入力時サジェスト）
+- [x] 入力先頭 `/` を検出してコマンドへルーティング（GitHub Issue #46）
+- [x] `/review`（`review/start`: uncommittedChanges / baseBranch / commit / custom）
+- [x] `/compact`（`thread/compact/start`、専用compaction event表示）
+- [x] `/goal`（`thread/goal/set` / `get` / `clear`、専用goal event）
+- [x] Codex IDEコマンドの許可リスト、非対応コマンド非表示、`//`エスケープ
+- [x] コマンド補完 UI（入力時サジェスト、コマンドチップ、固定引数）
+- [x] 実行中のスレッド別FIFOキュー、設定置換、切断・再起動・スレッド消失時取消
+- [x] Worker契約v8と型付きcompact/review/fork/goal/MCP/feedback/rate-limit RPC
+- [x] `/ide-context`、`/init`、`/status`のVisual Studio内処理
+- [x] レビュー指摘対応: 次ターン設定の消費、キュードレイン網羅（失敗後継続・選択スレッド・セッションキュー）、compaction完了時のReady復帰、`/fork`後の履歴復元、`/model`大文字小文字非区別、`/goal show`エイリアス、候補の編集距離閾値（GitHub Issue #51、sub-issues #52-#56）
+- [x] Remove the stale Experimental Instance registration, centralize extension identity diagnostics, and add slash-command display and packaging regression coverage (GitHub Issue #51, sub-issue #58)
+  - The former identity has zero remaining Experimental Instance metadata or deployment hits; the current identity remains registered.
+  - Slash-command normal, hover, and selection states use paired Visual Studio theme resources without reduced text opacity, preserving contrast across themes.
+  - Worker diagnostics cancellation, process teardown, and output shutdown are serialized and awaited to prevent exceptions when a debugging session ends.
+  - Debug solution build completed with zero warnings and zero errors; Core tests passed 70/70 and UI tests passed 171/171 with `--no-build`.
+  - The VSIX manifest, packaged assembly, embedded Remote UI XAML, and SDK-managed Experimental deployment were inspected; packaged, build, and deployed assembly hashes matched.
 
 ### 3.2 スキル
 - [ ] `skills/list`（`cwds` スコープ、`forceReload`）でスキル一覧取得（キャッシュ + invalidation）
@@ -166,8 +201,11 @@
 ## Phase 4: 拡張機能・統合
 
 ### 4.1 モデル / 努力度
-- [ ] `model/list`（`includeHidden`）でモデルピッカー UI（キャッシュ + 明示 refresh）
-- [ ] reasoning effort セレクタ、`supportsPersonality` 反映
+- [x] `model/list`（`includeHidden`）でモデルピッカー UI（`ChatViewModel.PopulateModelsAsync`、起動時 1 回ロード）
+- [x] Load the startup model catalog before Remote UI account synchronization can block initialization (#39)
+- [x] Add bounded model discovery diagnostics across the extension, Worker RPC, and app-server request boundaries (#39)
+- [ ] モデル一覧の明示的な再取得（refresh）コマンド
+- [x] スラッシュコマンドのreasoning effort、personality、service tier選択にモデル能力を反映（GitHub Issue #46）
 
 ### 4.2 インライン補完（任意）
 - [ ] エディタ内ゴーストテキスト補完プロバイダ（in-proc が必要なら .NET Framework 4.7.2 フォールバック）
@@ -175,7 +213,7 @@
 - [ ] 送信する editor context のサイズ上限と秘密情報 redaction
 
 ### 4.3 MCP / アプリ（コネクタ）
-- [ ] `mcpServerStatus/list` で MCP サーバー状態表示
+- [x] `/mcp`から`mcpServerStatus/list`でMCPサーバー状態表示（GitHub Issue #46）
 - [ ] `mcpServer/oauth/login`（OAuth、`mcpServer/oauthLogin/completed`）
 - [ ] `app/list` でアプリ一覧、`$<app-slug>` mention 入力（キャッシュ + invalidation）
 - [ ] OAuth は PKCE / MSAL public client（client secret を拡張に埋め込まない）
@@ -188,7 +226,20 @@
 - [ ] managed policy を読み込み、ユーザー設定より強い制約として自動承認・non-loopback transport・未承認 marketplace・MCP/OAuth を制御
 - [ ] 設定変更時に app-server restart が必要な項目と即時反映項目を明示
 
-**完了条件**: モデル選択・MCP/アプリ・設定 UI が動作し、必要に応じインライン補完を提供できる。
+### 4.5 承認モードピッカー（GitHub Issue #75）
+
+ChatGPT デスクトップと同等の承認方法選択 UI。レビュー済みの wire マッピングと設計詳細は #75 を参照。
+
+- [x] Sub-issue A (#76): 組み込みモード（Ask for approval / Approve on my behalf / Full access / Custom (config.toml)）を、表示名と安定 ID を分離した Remote UI DTO で追加する。Agent モード時のみ有効にし、設定ストアを注入可能にして永続化する。`turn/start` には手動承認=`on-request` + `user` + `workspaceWrite`、代理承認=`on-request` + `auto_review` + `workspaceWrite`、Full access=`never` + `user` + `dangerFullAccess` を送る
+- [x] Sub-issue B (#77): 手書き TOML 解析は行わず、対応する app-server の `permissionProfile/list`（`cwd`、ページング）で `[permissions.<id>]` を取得し、実験 API と runtime capability が利用できる場合だけ turn の `permissions` override で選択する。未対応時はプロファイル項目を表示せず組み込みモードを継続する
+- [x] Sub-issue C (#78): `/permissions` を正式名、`/approve` を互換エイリアスとして実装し、`/status`、候補表示、`doc/slash-commands*.md`・`doc/design.md`・`doc/implementation.md` を更新する
+- [x] Full access は Codex の sandbox と承認プロンプトを無効化し、Worker のポリシーは app-server が承認要求を送った場合だけ評価されることを、確認 UI・ToolTip・Automation HelpText・ドキュメントで正確に警告する
+- [x] 保存する「希望する既定値」と thread start/resume/fork response および `thread/settings/updated` から得る「実効状態」を分離し、`/status` で両者の差を表示する。Full access は再起動後に無確認で復元しない
+- [x] `turn/start` override は後続 turn に残るため、Ask / Auto / Full / profile から Custom に切り替える場合は新規 thread の作成を確認し、null/省略を reset として扱わない
+- [x] profile カタログの非同期ロード中は保存済み選択を保持し、取得成功後に限って欠落 profile を Custom へフォールバックする。RPC 一時失敗で設定を上書きしない
+- [x] XAML バインド対象の option collection / selected ID / enablement に `[DataMember]` を付け、Remote UI シリアライズ、アクセシビリティ、`/status` の実効値、Fake/実 app-server の wire 値を回帰テストする
+
+**完了条件**: モデル選択・承認モードピッカー・MCP/アプリ・設定 UI が動作し、必要に応じインライン補完を提供できる。
 
 ---
 
@@ -232,3 +283,153 @@
 - [ ] UI に表示する動的文字列は markdown/HTML/ANSI escape の扱いを明確にし、意図しないリンク・装飾・制御文字を無害化
 - [ ] long-running operation は CancellationToken、timeout、progress/error reporting を持つ
 - [ ] telemetry/logging は opt-in 方針、redaction、保存期間、管理者ポリシーを明確にする
+
+---
+
+## Work log
+
+### 2026-07-20: Implemented bounded collapsible command output (issue #80)
+
+Implemented issue #80 and sub-issues #81, #82, and #83. Sanitized command deltas now accumulate
+in a non-serialized extension buffer capped at 2 MiB of characters. Output remains inline through
+three logical lines and 4,096 characters, then starts collapsed with only that bounded preview
+published to Remote UI. Hidden streaming deltas no longer republish the accumulated full text.
+
+The transcript uses a standard WPF Expander with TwoWay state, native keyboard/UI Automation
+behavior, Visual Studio dynamic theme resources, non-wrapping monospace text, and horizontal
+scrolling. CRLF split across deltas is counted once, truncated output avoids unverified total-line
+claims, and no third-party control or package was added. ADR-003 records the projection boundary.
+
+The expanded header now retains its normal themed surface instead of remaining in the pressed
+state. Hover and pressed foregrounds can override the inherited normal foreground, so every state
+keeps a matching Visual Studio foreground/background pair. Non-truncated items also publish an
+empty truncation notice across Remote UI.
+
+- Validation: Release solution build completed with zero warnings and zero errors.
+- Tests: Core tests passed 95/95 with `--no-build`.
+- Tests: UI tests passed 267 with one symlink test skipped when the Windows test process lacked
+  symlink privilege.
+
+### 2026-07-20: Implemented empty SLNX-only scaffolding (issue #88)
+
+Implemented issue #88 and sub-issues #102, #103, and #104. The empty-workspace prompt now
+offers a root-level empty solution that contains no implicit project or source layout. The SLNX
+file uses the sanitized workspace name, exact empty-solution XML, UTF-8 BOM, and CRLF, and the
+existing non-overwrite and file-based app behaviors remain intact. ADR-006 records the decision.
+
+- Validation: Release solution build completed with zero warnings and zero errors.
+- Tests: eight focused scaffold tests are included; Core tests passed 95/95 and UI tests passed
+  251 with one symlink test skipped when the Windows test process lacked symlink privilege.
+- Compatibility: generated SLNX files passed XML parsing and `dotnet sln ... list` validation.
+
+### 2026-07-20: Implemented usage presentation and freshness (issue #87)
+
+Implemented issue #87 and sub-issues #99, #100, and #101. The Worker now preserves missing usage
+percentages, while the extension presents clamped remaining limits, known window labels, Unix reset
+times, and sanitized credits in both the popup and `/status`. Signed-in connection generations fetch
+once; a 60-second popup TTL, monotonic push versions, and lifecycle invalidation prevent stale reads.
+Transient refresh failures preserve the last-good snapshot and remain retryable. The themed Usage
+popup is mutually exclusive with History, binds Escape at both host and popup levels, and opens only
+compile-time approved destinations through an exact allowlist. ADR-005 records the freshness and
+Remote UI focus contracts.
+
+- Validation: project-scoped Release builds completed with zero warnings and zero errors. Core and UI
+  tests passed with `--no-build`, covering parser, presentation, freshness, read/push races,
+  lifecycle invalidation, links, and embedded XAML structure.
+
+### 2026-07-20: Implemented the approval mode picker (issue #75)
+
+Implemented issue #75 and sub-issues #76, #77, and #78. The Agent composer now exposes
+stable built-in approval modes and capability-gated permission profiles, while Chat keeps
+the exact read-only tuple. Contract version 12 carries the approval reviewer, mutually
+exclusive permission-profile selection, and app-server-reported effective thread state.
+Full access and Custom transitions use explicit confirmation, saved profile selections
+survive asynchronous discovery failures, and `/permissions` plus `/approve` share the same
+safe selection path.
+
+- Validation: Release UI build completed with zero warnings and zero errors.
+- Tests: Core tests passed 89/89 and UI tests passed 206/206 with `--no-build`.
+- Packaging: the VSIX contains the Worker and both matching Contracts assemblies; packaged
+  binaries match their Release outputs and the approval picker XAML remains a raw embedded
+  `DataTemplate` resource.
+
+### 2026-07-19: Addressed attachment and presentation review feedback (PR #74)
+
+Disposed completed file-suggestion refresh cancellation sources without racing newer
+refreshes, made temporary workspace cleanup reliable when tests fail, and restored exact
+cardinality checks for slash-command key bindings so duplicate bindings are detected.
+
+### 2026-07-19: Improved chat author label contrast (issue #73)
+
+Set the transcript author label foreground directly to the Visual Studio tool-window text
+theme resource and restored full opacity. This keeps the `You` and `Codex` labels paired
+with the existing tool-window card background across light, dark, and High Contrast themes,
+including live theme changes in the Remote UI host.
+
+### 2026-07-19: Implemented file attachment support (issue #67)
+
+Implemented the approved file attachment plan with SDK-backed multi-file selection,
+removable attachment chips, workspace file suggestions triggered by `#`, and typed
+`mention`/`localImage` turn inputs. Explicit selections are validated at both process
+boundaries, capped and de-duplicated, while steering remains text-only and preserves
+attachments for the next turn. ADR-001 records the Remote UI constraints and trust-boundary
+decisions.
+
+### 2026-07-18: Verified and closed slash command review findings (issue #51)
+
+All fixes for issue #51 and its sub-issues (#52, #53, #54, #55, #56, #58) had already been
+implemented on the `fix/51-slash-command-review-findings` branch and merged to `main` via
+PR #60 (squash commit 2b005c6), but the issues remained open. Verified each fix against
+current `main` and closed every issue with an evidence comment.
+
+- Verification: Release build with 0 warnings (`TreatWarningsAsErrors=true`); full test
+  suite passed without rebuilding (Core.Tests 70/70, Ui.Tests 171/171), including the
+  regression tests named in each sub-issue.
+- Closed: #52 (next-turn settings consumption), #53 (queue drain gaps), #54 (Ready state
+  after compaction), #55 (/fork history load), #56 (model matching / goal alias /
+  suggestion threshold), #58 (stale Experimental deployment), and parent #51.
+
+### 2026-07-18: Displayed the connected Codex version (issue #61)
+
+Implemented issue #61 and sub-issues #62, #63, and #64. The Worker now reads a
+bounded, validated version from the app-server initialize user agent, carries it
+through contract version 9, and clears stale values outside connected states.
+The Remote UI header displays the sanitized value as `Ready · Codex <version>`
+and preserves it for busy and approval states with narrow-width truncation and
+one accessible live-region announcement.
+
+- Validation: Release build completed with 0 warnings and 0 errors.
+- Tests: Core.Tests 75/75 and Ui.Tests 179/179 passed from the Release build.
+- Documentation: implementation notes, worker contract notes, the security
+  policy, and the approved Wiki plan were updated.
+
+### 2026-07-20: Release readiness — docs, VSIX identity, and CI (issue #105)
+
+Prepared the first Marketplace-bound release. Rewrote `README.md` for end users
+(requirements, setup, limitations, FAQ, release flow), added `README_ja.md`, moved the
+VSIX identity to `relaycodexforvs.KazushiKamegawa.<GUID>`, bundled the English
+license and the extension icon into the VSIX, and made the VSIX version follow the git
+tag through the generated assembly version.
+
+- Issues: #105 (parent), #106 (README), #107 (VSIX identity and bundled assets),
+  #108 (CI and release workflows).
+- Documented limitations: Codex CLI older than the verified 0.145.0 is unsupported,
+  multiple Codex installations can launch an older build (`CODEX_PATH` pins it), and npm
+  installs are known to misbehave so winget is recommended.
+- Validation: Release build with 0 warnings; Core.Tests 95/95 and Ui.Tests 268/268 passed.
+  A build with `-p:Version=1.2.3.4` produced a VSIX whose `Identity Version` was `1.2.3.4`.
+- Decision record: `doc/adr.md` ADR-007.
+
+### 2026-07-20: Fixed a dangling-symlink write bypass found by CI (PR #109)
+
+The GitHub-hosted Windows CI runner has symlink-creation privilege that local
+development machines typically lack, so `CreateEmptySolution_DoesNotFollowDanglingSolutionSymlink`
+had always been skipped locally and never actually exercised. On CI it failed for real:
+`ProjectScaffolder.WriteFileIfMissing` opened the target path with
+`FileMode.CreateNew` without first checking for an existing leaf entry, and Windows
+transparently follows a dangling symbolic link for that open mode, so scaffolding could
+write a new file at the link's target instead of leaving the existing link alone.
+Added an upfront `PathEntryExists` check before the open.
+
+- Validation: Release build 0 warnings; Ui.Tests 268/268 passed locally (the symlink
+  test itself still reports Inconclusive/skipped locally, lacking the OS privilege).

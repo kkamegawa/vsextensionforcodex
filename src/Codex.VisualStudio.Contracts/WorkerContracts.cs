@@ -5,7 +5,7 @@ namespace Codex.VisualStudio.Contracts;
 
 public static class ContractVersions
 {
-    public const int Current = 7;
+    public const int Current = 13;
 }
 
 public enum WorkerConnectionState
@@ -76,6 +76,36 @@ public enum ApprovalAuditAction
     AutoApproved,
 }
 
+public enum ReviewTargetKind
+{
+    UncommittedChanges,
+    BaseBranch,
+    Commit,
+    Custom,
+}
+
+public enum ReviewDelivery
+{
+    Inline,
+    Detached,
+}
+
+public enum ThreadGoalStatus
+{
+    Active,
+    Paused,
+    Blocked,
+    UsageLimited,
+    BudgetLimited,
+    Complete,
+}
+
+public enum ReviewModeChangeKind
+{
+    Entered,
+    Exited,
+}
+
 public sealed class WorkerOptions
 {
     public int ContractVersion { get; set; } = ContractVersions.Current;
@@ -113,6 +143,18 @@ public sealed class WorkerStatus
 
     [DataMember]
     public int? ProcessId { get; set; }
+
+    [DataMember]
+    public string? CodexVersion { get; set; }
+
+    [DataMember]
+    public EffectiveApprovalState? EffectiveApprovalState { get; set; }
+
+    [DataMember]
+    public string? EffectiveReasoningEffort { get; set; }
+
+    [DataMember]
+    public string? EffectiveServiceTier { get; set; }
 }
 
 public sealed class AccountStatus
@@ -148,6 +190,15 @@ public sealed class ThreadSummary
 
     [DataMember]
     public long? UpdatedAt { get; set; }
+
+    [DataMember]
+    public EffectiveApprovalState? EffectiveApprovalState { get; set; }
+
+    [DataMember]
+    public string? EffectiveReasoningEffort { get; set; }
+
+    [DataMember]
+    public string? EffectiveServiceTier { get; set; }
 }
 
 public sealed class ThreadPage
@@ -162,6 +213,32 @@ public sealed class ModelInfo
     public string Id { get; set; } = string.Empty;
 
     public string? DisplayName { get; set; }
+
+    public string? DefaultReasoningEffort { get; set; }
+
+    public IReadOnlyList<ReasoningEffortInfo> SupportedReasoningEfforts { get; set; } = Array.Empty<ReasoningEffortInfo>();
+
+    public bool SupportsPersonality { get; set; }
+
+    public string? DefaultServiceTier { get; set; }
+
+    public IReadOnlyList<ServiceTierInfo> ServiceTiers { get; set; } = Array.Empty<ServiceTierInfo>();
+}
+
+public sealed class ReasoningEffortInfo
+{
+    public string Id { get; set; } = string.Empty;
+
+    public string? Description { get; set; }
+}
+
+public sealed class ServiceTierInfo
+{
+    public string Id { get; set; } = string.Empty;
+
+    public string? Name { get; set; }
+
+    public string? Description { get; set; }
 }
 
 public sealed class ListModelsResult
@@ -169,6 +246,42 @@ public sealed class ListModelsResult
     public IReadOnlyList<ModelInfo> Models { get; set; } = Array.Empty<ModelInfo>();
 
     public string? DefaultModel { get; set; }
+
+    // A default model can be hidden from the picker while still carrying the capabilities
+    // needed by the reasoning and service-tier selectors.
+    public ModelInfo? DefaultModelInfo { get; set; }
+}
+
+public sealed class PermissionProfileInfo
+{
+    public string Id { get; set; } = string.Empty;
+
+    public string? Description { get; set; }
+
+    public bool Allowed { get; set; }
+}
+
+public sealed class ListPermissionProfilesResult : AppServerOperationResult
+{
+    public IReadOnlyList<PermissionProfileInfo> Profiles { get; set; } = Array.Empty<PermissionProfileInfo>();
+
+    public bool IsTruncated { get; set; }
+}
+
+[DataContract]
+public sealed class EffectiveApprovalState
+{
+    [DataMember]
+    public string? ActivePermissionProfile { get; set; }
+
+    [DataMember]
+    public string? ApprovalPolicy { get; set; }
+
+    [DataMember]
+    public string? ApprovalsReviewer { get; set; }
+
+    [DataMember]
+    public string? SandboxMode { get; set; }
 }
 
 public sealed class StartTurnRequest
@@ -183,9 +296,74 @@ public sealed class StartTurnRequest
     // Matches the codex app-server turn/start "approvalPolicy" field (for example "on-request" or "never").
     public string? ApprovalPolicy { get; set; }
 
+    // Matches the codex app-server turn/start "approvalsReviewer" field ("user" or "auto_review").
+    public string? ApprovalsReviewer { get; set; }
+
     // Per-turn sandbox policy type override mapped from the Agent/Chat mode preset.
     // Matches the codex app-server turn/start "sandboxPolicy.type" field (for example "workspaceWrite" or "readOnly").
     public string? SandboxMode { get; set; }
+
+    // Selects a named app-server permissions profile. This is mutually exclusive with
+    // ApprovalPolicy, ApprovalsReviewer, and SandboxMode.
+    public string? Permissions { get; set; }
+
+    // Distinguishes an omitted setting (inherit config), an explicit null (clear a sticky
+    // app-server override), and a concrete value. The value property alone cannot represent
+    // all three wire states.
+    public bool HasEffort { get; set; }
+
+    public string? Effort { get; set; }
+
+    public string? Personality { get; set; }
+
+    public bool HasServiceTier { get; set; }
+
+    public string? ServiceTier { get; set; }
+
+    public CollaborationModeInfo? CollaborationMode { get; set; }
+
+    public IdeContextInfo? IdeContext { get; set; }
+
+    public IReadOnlyList<AttachmentInfo> Attachments { get; set; } = Array.Empty<AttachmentInfo>();
+}
+
+public sealed class AttachmentInfo
+{
+    public AttachmentInfo()
+    {
+    }
+
+    public AttachmentInfo(string path, string kind)
+    {
+        Path = path;
+        Kind = kind;
+    }
+
+    public string Path { get; set; } = string.Empty;
+
+    public string Kind { get; set; } = string.Empty;
+}
+
+public sealed class CollaborationModeInfo
+{
+    public string Mode { get; set; } = "default";
+
+    public string Model { get; set; } = string.Empty;
+
+    public string? ReasoningEffort { get; set; }
+
+    public string? DeveloperInstructions { get; set; }
+}
+
+public sealed class IdeContextInfo
+{
+    public string? ActiveDocumentPath { get; set; }
+
+    public IReadOnlyList<string> ReferencedFilePaths { get; set; } = Array.Empty<string>();
+
+    public string? SelectionFilePath { get; set; }
+
+    public string? SelectionText { get; set; }
 }
 
 public sealed class SteerTurnRequest
@@ -202,6 +380,210 @@ public sealed class InterruptTurnRequest
     public string ThreadId { get; set; } = string.Empty;
 
     public string TurnId { get; set; } = string.Empty;
+}
+
+public abstract class AppServerOperationResult
+{
+    public bool IsSupported { get; set; } = true;
+
+    public string? UnavailableReason { get; set; }
+}
+
+public sealed class CompactThreadRequest
+{
+    public string ThreadId { get; set; } = string.Empty;
+}
+
+public sealed class CompactThreadResult : AppServerOperationResult
+{
+}
+
+public sealed class ReviewTarget
+{
+    public ReviewTargetKind Kind { get; set; }
+
+    public string? Value { get; set; }
+
+    public string? Title { get; set; }
+}
+
+public sealed class StartReviewRequest
+{
+    public string ThreadId { get; set; } = string.Empty;
+
+    public ReviewTarget Target { get; set; } = new();
+
+    public ReviewDelivery Delivery { get; set; } = ReviewDelivery.Inline;
+}
+
+public sealed class StartReviewResult : AppServerOperationResult
+{
+    public string? ReviewThreadId { get; set; }
+
+    public string? TurnId { get; set; }
+}
+
+public sealed class ForkThreadRequest
+{
+    public string ThreadId { get; set; } = string.Empty;
+}
+
+public sealed class ForkThreadResult : AppServerOperationResult
+{
+    public ThreadSummary? Thread { get; set; }
+}
+
+public sealed class ThreadGoalInfo
+{
+    public string ThreadId { get; set; } = string.Empty;
+
+    public string Objective { get; set; } = string.Empty;
+
+    public ThreadGoalStatus Status { get; set; } = ThreadGoalStatus.Active;
+
+    public long? TokenBudget { get; set; }
+
+    public long TokensUsed { get; set; }
+
+    public long TimeUsedSeconds { get; set; }
+
+    public long CreatedAt { get; set; }
+
+    public long UpdatedAt { get; set; }
+}
+
+public sealed class SetThreadGoalRequest
+{
+    public string ThreadId { get; set; } = string.Empty;
+
+    public string? Objective { get; set; }
+
+    public ThreadGoalStatus? Status { get; set; }
+
+    public long? TokenBudget { get; set; }
+}
+
+public sealed class ThreadGoalResult : AppServerOperationResult
+{
+    public ThreadGoalInfo? Goal { get; set; }
+
+    public bool Cleared { get; set; }
+}
+
+public sealed class McpServerStatusInfo
+{
+    public string Name { get; set; } = string.Empty;
+
+    public string? DisplayName { get; set; }
+
+    public string AuthStatus { get; set; } = string.Empty;
+
+    public IReadOnlyList<string> ToolNames { get; set; } = Array.Empty<string>();
+
+    public int ResourceCount { get; set; }
+
+    public int ResourceTemplateCount { get; set; }
+}
+
+public sealed class McpServerListResult : AppServerOperationResult
+{
+    public IReadOnlyList<McpServerStatusInfo> Servers { get; set; } = Array.Empty<McpServerStatusInfo>();
+}
+
+public sealed class UploadFeedbackRequest
+{
+    public string Classification { get; set; } = string.Empty;
+
+    public string? Reason { get; set; }
+
+    public bool IncludeLogs { get; set; }
+
+    public string? ThreadId { get; set; }
+
+    public IReadOnlyDictionary<string, string> Tags { get; set; } = new Dictionary<string, string>();
+}
+
+public sealed class UploadFeedbackResult : AppServerOperationResult
+{
+    public string? ThreadId { get; set; }
+}
+
+public sealed class RateLimitWindowInfo
+{
+    public int? UsedPercent { get; set; }
+
+    public long? ResetsAt { get; set; }
+
+    public long? WindowDurationMinutes { get; set; }
+}
+
+public sealed class CreditsInfo
+{
+    public bool HasCredits { get; set; }
+
+    public bool Unlimited { get; set; }
+
+    public string? Balance { get; set; }
+}
+
+public sealed class RateLimitInfo
+{
+    public string? LimitId { get; set; }
+
+    public string? LimitName { get; set; }
+
+    public string? PlanType { get; set; }
+
+    public string? ReachedType { get; set; }
+
+    public RateLimitWindowInfo? Primary { get; set; }
+
+    public RateLimitWindowInfo? Secondary { get; set; }
+
+    public CreditsInfo? Credits { get; set; }
+}
+
+public sealed class RateLimitsResult : AppServerOperationResult
+{
+    public RateLimitInfo? RateLimits { get; set; }
+
+    public IReadOnlyDictionary<string, RateLimitInfo> RateLimitsByLimitId { get; set; } =
+        new Dictionary<string, RateLimitInfo>();
+}
+
+public sealed class ContextCompactionEvent
+{
+    public string ThreadId { get; set; } = string.Empty;
+
+    public string TurnId { get; set; } = string.Empty;
+
+    public string? ItemId { get; set; }
+
+    public bool IsCompleted { get; set; }
+}
+
+public sealed class ReviewModeEvent
+{
+    public string ThreadId { get; set; } = string.Empty;
+
+    public string TurnId { get; set; } = string.Empty;
+
+    public string? ItemId { get; set; }
+
+    public ReviewModeChangeKind ChangeKind { get; set; }
+
+    public string? Review { get; set; }
+}
+
+public sealed class ThreadGoalEvent
+{
+    public string ThreadId { get; set; } = string.Empty;
+
+    public string? TurnId { get; set; }
+
+    public ThreadGoalInfo? Goal { get; set; }
+
+    public bool IsCleared { get; set; }
 }
 
 public sealed class ConversationEvent
@@ -341,6 +723,18 @@ public interface ICodexWorkerObserver
 
     [JsonRpcMethod("observer/userInputResolved")]
     Task OnUserInputResolvedAsync(string requestId, CancellationToken cancellationToken);
+
+    [JsonRpcMethod("observer/contextCompacted")]
+    Task OnContextCompactedAsync(ContextCompactionEvent value, CancellationToken cancellationToken);
+
+    [JsonRpcMethod("observer/reviewModeChanged")]
+    Task OnReviewModeChangedAsync(ReviewModeEvent value, CancellationToken cancellationToken);
+
+    [JsonRpcMethod("observer/threadGoalChanged")]
+    Task OnThreadGoalChangedAsync(ThreadGoalEvent value, CancellationToken cancellationToken);
+
+    [JsonRpcMethod("observer/rateLimitsChanged")]
+    Task OnRateLimitsChangedAsync(RateLimitsResult value, CancellationToken cancellationToken);
 }
 
 public interface ICodexWorkerClient
@@ -375,6 +769,9 @@ public interface ICodexWorkerClient
     [JsonRpcMethod("worker/models/list")]
     Task<ListModelsResult> ListModelsAsync(CancellationToken cancellationToken);
 
+    [JsonRpcMethod("worker/permissionProfiles/list")]
+    Task<ListPermissionProfilesResult> ListPermissionProfilesAsync(CancellationToken cancellationToken);
+
     [JsonRpcMethod("worker/turn/start")]
     Task<string> StartTurnAsync(StartTurnRequest request, CancellationToken cancellationToken);
 
@@ -383,6 +780,33 @@ public interface ICodexWorkerClient
 
     [JsonRpcMethod("worker/turn/interrupt")]
     Task InterruptTurnAsync(InterruptTurnRequest request, CancellationToken cancellationToken);
+
+    [JsonRpcMethod("worker/thread/compact")]
+    Task<CompactThreadResult> CompactThreadAsync(CompactThreadRequest request, CancellationToken cancellationToken);
+
+    [JsonRpcMethod("worker/review/start")]
+    Task<StartReviewResult> StartReviewAsync(StartReviewRequest request, CancellationToken cancellationToken);
+
+    [JsonRpcMethod("worker/thread/fork")]
+    Task<ForkThreadResult> ForkThreadAsync(ForkThreadRequest request, CancellationToken cancellationToken);
+
+    [JsonRpcMethod("worker/thread/goal/get")]
+    Task<ThreadGoalResult> GetThreadGoalAsync(string threadId, CancellationToken cancellationToken);
+
+    [JsonRpcMethod("worker/thread/goal/set")]
+    Task<ThreadGoalResult> SetThreadGoalAsync(SetThreadGoalRequest request, CancellationToken cancellationToken);
+
+    [JsonRpcMethod("worker/thread/goal/clear")]
+    Task<ThreadGoalResult> ClearThreadGoalAsync(string threadId, CancellationToken cancellationToken);
+
+    [JsonRpcMethod("worker/mcp/list")]
+    Task<McpServerListResult> ListMcpServersAsync(string? threadId, CancellationToken cancellationToken);
+
+    [JsonRpcMethod("worker/feedback/upload")]
+    Task<UploadFeedbackResult> UploadFeedbackAsync(UploadFeedbackRequest request, CancellationToken cancellationToken);
+
+    [JsonRpcMethod("worker/account/rateLimits")]
+    Task<RateLimitsResult> GetRateLimitsAsync(CancellationToken cancellationToken);
 
     [JsonRpcMethod("worker/approval/resolve")]
     Task ResolveApprovalAsync(ResolveApprovalRequest request, CancellationToken cancellationToken);

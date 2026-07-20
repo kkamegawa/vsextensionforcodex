@@ -29,6 +29,11 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
         session.ApprovalAuditRecorded += PublishApprovalAuditAsync;
         session.UserInputRequested += PublishUserInputAsync;
         session.UserInputResolved += PublishUserInputResolvedAsync;
+        session.ContextCompacted += PublishContextCompactedAsync;
+        session.ReviewModeChanged += PublishReviewModeChangedAsync;
+        session.ThreadGoalChanged += PublishThreadGoalChangedAsync;
+        session.RateLimitsChanged += PublishRateLimitsChangedAsync;
+        session.EffectiveApprovalStateChanged += PublishEffectiveApprovalStateAsync;
     }
 
     public void AttachClient(JsonRpc rpc)
@@ -153,8 +158,29 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
     public Task<ThreadPage> ListThreadsAsync(string? cursor, CancellationToken cancellationToken)
         => session.ListThreadsAsync(cursor, cancellationToken);
 
-    public Task<ListModelsResult> ListModelsAsync(CancellationToken cancellationToken)
-        => session.ListModelsAsync(cancellationToken);
+    public async Task<ListModelsResult> ListModelsAsync(CancellationToken cancellationToken)
+    {
+        WorkerDiagnostics.Write("worker/models/list RPC received");
+        try
+        {
+            ListModelsResult result = await session.ListModelsAsync(cancellationToken).ConfigureAwait(false);
+            WorkerDiagnostics.Write($"worker/models/list RPC completed count={result.Models.Count}");
+            return result;
+        }
+        catch (OperationCanceledException ex)
+        {
+            WorkerDiagnostics.Write("worker/models/list RPC canceled", ex);
+            throw;
+        }
+        catch (Exception ex)
+        {
+            WorkerDiagnostics.Write("worker/models/list RPC failed", ex);
+            throw;
+        }
+    }
+
+    public Task<ListPermissionProfilesResult> ListPermissionProfilesAsync(CancellationToken cancellationToken)
+        => session.ListPermissionProfilesAsync(cancellationToken);
 
     public async Task<string> StartTurnAsync(StartTurnRequest request, CancellationToken cancellationToken)
     {
@@ -174,6 +200,63 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
 
     public Task InterruptTurnAsync(InterruptTurnRequest request, CancellationToken cancellationToken)
         => session.InterruptTurnAsync(request, cancellationToken);
+
+    public async Task<CompactThreadResult> CompactThreadAsync(
+        CompactThreadRequest request,
+        CancellationToken cancellationToken)
+    {
+        CompactThreadResult result = await session.CompactThreadAsync(request, cancellationToken).ConfigureAwait(false);
+        if (result.IsSupported)
+        {
+            await SetStatusAsync(WorkerConnectionState.Busy, "Context compaction in progress.", cancellationToken).ConfigureAwait(false);
+        }
+
+        return result;
+    }
+
+    public async Task<StartReviewResult> StartReviewAsync(
+        StartReviewRequest request,
+        CancellationToken cancellationToken)
+    {
+        StartReviewResult result = await session.StartReviewAsync(request, cancellationToken).ConfigureAwait(false);
+        if (result.IsSupported)
+        {
+            await SetStatusAsync(WorkerConnectionState.Busy, "Code review in progress.", cancellationToken).ConfigureAwait(false);
+        }
+
+        return result;
+    }
+
+    public async Task<ForkThreadResult> ForkThreadAsync(
+        ForkThreadRequest request,
+        CancellationToken cancellationToken)
+    {
+        ForkThreadResult result = await session.ForkThreadAsync(request, cancellationToken).ConfigureAwait(false);
+        UpdateSessionIds();
+        return result;
+    }
+
+    public Task<ThreadGoalResult> GetThreadGoalAsync(string threadId, CancellationToken cancellationToken)
+        => session.GetThreadGoalAsync(threadId, cancellationToken);
+
+    public Task<ThreadGoalResult> SetThreadGoalAsync(
+        SetThreadGoalRequest request,
+        CancellationToken cancellationToken)
+        => session.SetThreadGoalAsync(request, cancellationToken);
+
+    public Task<ThreadGoalResult> ClearThreadGoalAsync(string threadId, CancellationToken cancellationToken)
+        => session.ClearThreadGoalAsync(threadId, cancellationToken);
+
+    public Task<McpServerListResult> ListMcpServersAsync(string? threadId, CancellationToken cancellationToken)
+        => session.ListMcpServersAsync(threadId, cancellationToken);
+
+    public Task<UploadFeedbackResult> UploadFeedbackAsync(
+        UploadFeedbackRequest request,
+        CancellationToken cancellationToken)
+        => session.UploadFeedbackAsync(request, cancellationToken);
+
+    public Task<RateLimitsResult> GetRateLimitsAsync(CancellationToken cancellationToken)
+        => session.GetRateLimitsAsync(cancellationToken);
 
     public Task ResolveApprovalAsync(ResolveApprovalRequest request, CancellationToken cancellationToken)
         => session.ResolveApprovalAsync(request, cancellationToken);
@@ -196,6 +279,10 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
             ThreadId = session.ActiveThreadId,
             TurnId = session.ActiveTurnId,
             ProcessId = processHost.ProcessId,
+            CodexVersion = ShouldIncludeCodexVersion(state) ? session.CodexVersion : null,
+            EffectiveApprovalState = session.EffectiveApprovalState,
+            EffectiveReasoningEffort = session.EffectiveReasoningEffort,
+            EffectiveServiceTier = session.EffectiveServiceTier,
         };
         if (clientRpc is not null)
         {
@@ -235,7 +322,11 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
 
     private async Task PublishEventAsync(ConversationEvent conversationEvent, CancellationToken cancellationToken)
     {
-        if (conversationEvent.Kind == ConversationEventKind.TurnCompleted)
+        if (conversationEvent.Kind == ConversationEventKind.TurnStarted)
+        {
+            await SetStatusAsync(WorkerConnectionState.Busy, "Turn in progress.", cancellationToken).ConfigureAwait(false);
+        }
+        else if (conversationEvent.Kind == ConversationEventKind.TurnCompleted)
         {
             await SetStatusAsync(WorkerConnectionState.Ready, "Turn completed.", cancellationToken).ConfigureAwait(false);
         }
@@ -251,6 +342,11 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
                 new { conversationEvent }).ConfigureAwait(false);
         }
     }
+
+    private async Task PublishEffectiveApprovalStateAsync(
+        EffectiveApprovalState _,
+        CancellationToken cancellationToken)
+        => await SetStatusAsync(status.State, status.Message, cancellationToken).ConfigureAwait(false);
 
     private async Task PublishApprovalAsync(ApprovalRequest approval, CancellationToken cancellationToken)
     {
@@ -285,6 +381,48 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
         if (clientRpc is not null)
         {
             await clientRpc.NotifyWithParameterObjectAsync("observer/userInputResolved", new { requestId }).ConfigureAwait(false);
+        }
+    }
+
+    private async Task PublishContextCompactedAsync(ContextCompactionEvent value, CancellationToken cancellationToken)
+    {
+        // thread/compact/start marks the worker Busy, but the app-server may report completion
+        // only through this event instead of turn/completed. Restore Ready when no turn is
+        // active so queued slash commands are not blocked behind a finished compaction.
+        if (value.IsCompleted
+            && status.State == WorkerConnectionState.Busy
+            && session.ActiveTurnId is null)
+        {
+            await SetStatusAsync(WorkerConnectionState.Ready, "Context compaction completed.", cancellationToken).ConfigureAwait(false);
+        }
+
+        if (clientRpc is not null)
+        {
+            await clientRpc.NotifyWithParameterObjectAsync("observer/contextCompacted", new { value }).ConfigureAwait(false);
+        }
+    }
+
+    private async Task PublishReviewModeChangedAsync(ReviewModeEvent value, CancellationToken cancellationToken)
+    {
+        if (clientRpc is not null)
+        {
+            await clientRpc.NotifyWithParameterObjectAsync("observer/reviewModeChanged", new { value }).ConfigureAwait(false);
+        }
+    }
+
+    private async Task PublishThreadGoalChangedAsync(ThreadGoalEvent value, CancellationToken cancellationToken)
+    {
+        if (clientRpc is not null)
+        {
+            await clientRpc.NotifyWithParameterObjectAsync("observer/threadGoalChanged", new { value }).ConfigureAwait(false);
+        }
+    }
+
+    private async Task PublishRateLimitsChangedAsync(RateLimitsResult value, CancellationToken cancellationToken)
+    {
+        if (clientRpc is not null)
+        {
+            await clientRpc.NotifyWithParameterObjectAsync("observer/rateLimitsChanged", new { value }).ConfigureAwait(false);
         }
     }
 
@@ -343,7 +481,16 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
         status.ThreadId = session.ActiveThreadId;
         status.TurnId = session.ActiveTurnId;
         status.ProcessId = processHost.ProcessId;
+        status.CodexVersion = ShouldIncludeCodexVersion(status.State) ? session.CodexVersion : null;
+        status.EffectiveApprovalState = session.EffectiveApprovalState;
+        status.EffectiveReasoningEffort = session.EffectiveReasoningEffort;
+        status.EffectiveServiceTier = session.EffectiveServiceTier;
     }
+
+    private static bool ShouldIncludeCodexVersion(WorkerConnectionState state)
+        => state is WorkerConnectionState.Ready
+            or WorkerConnectionState.Busy
+            or WorkerConnectionState.WaitingForApproval;
 
     private WorkerStatus CloneStatus() => new()
     {
@@ -352,6 +499,10 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
         ThreadId = status.ThreadId,
         TurnId = status.TurnId,
         ProcessId = status.ProcessId,
+        CodexVersion = status.CodexVersion,
+        EffectiveApprovalState = status.EffectiveApprovalState,
+        EffectiveReasoningEffort = status.EffectiveReasoningEffort,
+        EffectiveServiceTier = status.EffectiveServiceTier,
     };
 
     private AccountStatus CloneAccountStatus() => new()

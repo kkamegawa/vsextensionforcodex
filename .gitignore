@@ -46,3 +46,7 @@ apm_modules/
 Thumbs.db
 src/Codex.AppServer.Fake/Codex.AppServer.Fake.csproj.lscache
 *.lscache
+
+.calude/
+.codex/
+.github/agents/

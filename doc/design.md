@@ -1,4 +1,4 @@
-# design.md — アーキテクチャ設計決定記録
+﻿# design.md — アーキテクチャ設計決定記録
 
 Session 1・2 での実装・修正作業から得た設計決定と教訓をまとめる。
 次のセッション（Codex 等）へ引き継ぐための参照資料。
@@ -35,9 +35,9 @@ CEE0028（コンパイル時評価エラー）で失敗する。最低限の設�
 public override ExtensionConfiguration ExtensionConfiguration => new()
 {
     Metadata = new(
-        id: "CodexForVisualStudio.kkamegawa",
+        id: "Kkamegawa.CodexForVisualStudio",
         version: ExtensionAssemblyVersion,   // 基底クラスのプロパティ
-        publisherName: "kkamegawa",
+        publisherName: "kazushikamegawa",
         displayName: "Codex for Visual Studio",
         description: "AI coding assistant powered by OpenAI Codex."),
 };
@@ -208,3 +208,72 @@ NU1603・MSB3277 を `<NoWarn>` / `<MSBuildWarningsAsMessages>` で抑制する�
 | `ChatViewModel.OnUiAsync` の `Application.Current?.Dispatcher` → OOP プロセスでは null になるため直接実行（意図的） | 正常動作 | — |
 | `Codex.VisualStudio.Package` は空プレースホルダ → 差分ビュー等が必要になったときに実装 | 予定 | 低 |
 | DI コンテナへの `AppServerClient` / `CodexSessionService` 登録 → Phase 1 未完了 | 未着手 | 高 |
+
+## 7. Approval mode picker
+
+The Agent composer exposes typed approval options whose display text is separate from the
+stable IDs `ask`, `auto`, `full`, `custom`, and `permission:<id>`. Remote UI synchronizes the
+selection with `SelectedValuePath=Id`. Chat mode keeps its fixed read-only behavior and disables
+the picker while exposing the reason through the adjacent mode control's accessibility help.
+
+A saved permission profile is represented by a bounded loading placeholder until the capability-
+gated catalog completes. Only a complete successful catalog may fall back to Custom when a profile
+is missing; transient failures and truncated responses preserve the saved ID. Full access must be
+confirmed because it disables the Codex sandbox and normal approval prompts. Moving from any turn
+override to Custom starts a new thread because omitted overrides do not reset an existing thread.
+
+## 8. Bounded command-output projection
+
+Command output crosses two independently bounded stages. The Worker batches deltas and caps its
+visible stream at 2 MiB, while the extension keeps a separate 2 MiB-character sanitized buffer that
+is never serialized as a Remote UI member. `ChatItemViewModel.Text` is only the current projection:
+the complete short output, a three-logical-line/4,096-character collapsed preview, or the buffered
+full output after explicit expansion.
+
+The projection counts CRLF as one break across delta boundaries and preserves empty logical lines.
+After the preview boundary is reached, hidden deltas update only small summary properties unless the
+preview itself changes. Truncated output uses non-exact buffered-output wording because the overflow
+file can contain additional lines that the extension does not scan.
+
+The Remote UI uses a standard WPF `Expander` with a TwoWay expanded-state binding, Visual Studio
+dynamic theme resources, UI Automation name/help text, non-wrapping monospace text, and horizontal
+scrolling. No custom or third-party control is required.
+
+## 9. Reasoning effort and service-tier pickers (contract version 13)
+
+The composer exposes model-aware Reasoning and Speed pickers after the model selector. Their first entry is `Default`, which omits the turn override and inherits Codex configuration. A concrete selection persists only its canonical catalog ID. When a selected model does not support that ID, the UI temporarily displays `Default` without overwriting the saved preference.
+
+Hidden default models remain absent from the normal model catalog but are represented by `ListModelsResult.DefaultModelInfo`. This preserves reasoning and service-tier capabilities when the default model ID is injected into the picker. Every app-server name and description passes through `SafeMarkdownService` before it reaches Remote UI, while server ordering, canonical casing, and case-insensitive deduplication are retained.
+
+Contract version 13 adds explicit presence flags for effort and service tier. The Worker can send an omitted property to inherit configuration, an explicit null to clear a sticky thread override, or a canonical value. Effective settings are tracked after start, resume, fork, turn start, and thread-settings updates.
+
+`/reasoning` and `/fast` are thread-scoped one-turn overrides consumed only after `turn/start` succeeds. The following turn explicitly restores the persistent selection or captured effective value, including null. Normal and direct Plan turns share the same resolvers.
+
+## 10. Usage presentation and freshness
+
+The signed-in header exposes one Usage flyout backed by `UsagePresentation`. It converts the
+app-server's used percentage into a clamped remaining percentage, recognizes the five-hour and
+weekly windows, formats reset values as Unix seconds, and sanitizes bounded credit text before it
+crosses Remote UI. Missing usage percentages and ambiguous multi-limit maps are not presented as
+zero usage.
+
+Usage freshness is scoped to a connection generation and a monotonic push version. The first
+signed-in Ready state fetches once, Busy-to-Ready transitions do not fetch, and opening the flyout
+refreshes only after a 60-second TTL. Disconnect, sign-out, and disposal invalidate the snapshot.
+The Usage and History flyouts are mutually exclusive; the Usage popup cycles Tab focus after focus
+enters its content, closes with Escape from either the host or popup, uses Visual Studio dynamic
+theme resources, and exposes automation names and help text. Raw Remote UI cannot run VS-side
+`Popup.Opened` code to transfer keyboard focus; guaranteed opening focus would require an in-process
+WPF host.
+
+## 11. Empty solution scaffolding
+
+When the resolved workspace contains no solution or project, the default scaffold choice creates
+only `ROOT/<Name>.slnx`. The generated solution is an empty SLNX document with UTF-8 BOM and CRLF
+line endings. It deliberately omits `src`, project files, and source files so Codex can shape the
+workspace without inheriting an arbitrary application template.
+
+The operation remains non-destructive: an existing solution is never overwritten, and the separate
+file-based app choice continues to create only a root-level `Program.cs` without a solution or
+project. The generated empty document must remain parseable as XML and accepted by the pinned
+`.NET` SDK's `dotnet sln` command.
