@@ -912,6 +912,7 @@ public sealed class ViewModelTests
         Assert.AreEqual(output, item.Text);
         Assert.AreEqual("Hide command output", item.CommandOutputExpansionLabel);
         Assert.AreEqual("Collapse command output", item.CommandOutputAutomationName);
+        Assert.AreEqual(string.Empty, item.TruncationNotice);
 
         item.IsCommandOutputExpanded = false;
         Assert.AreEqual("one\ntwo\nthree", item.Text);

@@ -3251,7 +3251,9 @@ public sealed class ChatItemViewModel : ObservableObject
 
     [DataMember]
     public string TruncationNotice
-        => IsCommandItem && string.IsNullOrEmpty(OverflowFile)
+        => !IsTruncated
+            ? string.Empty
+            : IsCommandItem && string.IsNullOrEmpty(OverflowFile)
             ? "Command output was truncated to the buffered limit."
             : "Output truncated; additional output is stored in a temporary file.";
 

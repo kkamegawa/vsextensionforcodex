@@ -275,7 +275,13 @@ behavior, Visual Studio dynamic theme resources, non-wrapping monospace text, an
 scrolling. CRLF split across deltas is counted once, truncated output avoids unverified total-line
 claims, and no third-party control or package was added. ADR-003 records the projection boundary.
 
-- Validation: Release UI build completed with zero warnings and zero errors.
+The expanded header now retains its normal themed surface instead of remaining in the pressed
+state. Hover and pressed foregrounds can override the inherited normal foreground, so every state
+keeps a matching Visual Studio foreground/background pair. Non-truncated items also publish an
+empty truncation notice across Remote UI.
+
+- Validation: Release solution build completed with zero warnings and zero errors.
+- Tests: Core tests passed 89/89 with `--no-build`.
 - Tests: UI tests passed 224/224 with `--no-build`.
 
 ### 2026-07-20: Implemented the approval mode picker (issue #75)

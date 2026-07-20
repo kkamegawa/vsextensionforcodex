@@ -106,6 +106,9 @@ public sealed class TranscriptPresentationTests
         Assert.AreEqual(
             "{Binding IsExpanded, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}",
             headerToggle.Attribute("IsChecked")?.Value);
+        Assert.IsNull(
+            headerToggle.Attribute("Foreground"),
+            "The header toggle must inherit its normal foreground so template state triggers can override it.");
 
         XElement toggleTemplate = headerToggle
             .Descendants(Presentation + "ControlTemplate")
@@ -135,13 +138,25 @@ public sealed class TranscriptPresentationTests
             triggers.Single(element => element.Attribute("Property")?.Value == "IsPressed"),
             ToolWindowButtonDownBrushKey,
             ToolWindowButtonDownActiveGlyphBrushKey);
-        AssertTriggerThemePair(
-            triggers.Single(element => element.Attribute("Property")?.Value == "IsChecked"),
-            ToolWindowButtonDownBrushKey,
-            ToolWindowButtonDownActiveGlyphBrushKey);
+
+        XElement checkedTrigger = triggers
+            .Single(element => element.Attribute("Property")?.Value == "IsChecked");
+        Assert.IsFalse(
+            checkedTrigger.Elements(Presentation + "Setter").Any(element =>
+                element.Attribute("Property")?.Value is "Background" or "Foreground"),
+            "An expanded command must retain the normal themed header colors instead of looking selected.");
+        Assert.AreEqual(
+            "HeaderGlyph",
+            checkedTrigger.Elements(Presentation + "Setter")
+                .Single(element => element.Attribute("Property")?.Value == "Data")
+                .Attribute("TargetName")?.Value);
 
         XElement focusTrigger = triggers
             .Single(element => element.Attribute("Property")?.Value == "IsKeyboardFocused");
+        Assert.IsFalse(
+            focusTrigger.Elements(Presentation + "Setter").Any(element =>
+                element.Attribute("Property")?.Value == "Background"),
+            "Keyboard focus must use the themed focus border without repainting the header surface.");
         XElement focusVisibility = focusTrigger
             .Elements(Presentation + "Setter")
             .Single(element => element.Attribute("TargetName")?.Value == "KeyboardFocusBorder");

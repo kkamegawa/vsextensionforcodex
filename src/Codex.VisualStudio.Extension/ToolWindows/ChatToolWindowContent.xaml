@@ -58,7 +58,6 @@
                                 Padding="6,4"
                                 HorizontalContentAlignment="Stretch"
                                 Background="{TemplateBinding Background}"
-                                Foreground="{TemplateBinding Foreground}"
                                 BorderThickness="0"
                                 ClickMode="Release"
                                 Content="{TemplateBinding Header}"
@@ -103,10 +102,6 @@
                         </Border>
                         <ControlTemplate.Triggers>
                           <Trigger Property="IsChecked" Value="True">
-                            <Setter TargetName="HeaderBackground" Property="Background"
-                                    Value="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowButtonDownBrushKey}}" />
-                            <Setter Property="Foreground"
-                                    Value="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowButtonDownActiveGlyphBrushKey}}" />
                             <Setter TargetName="HeaderGlyph" Property="Data" Value="M 0 0 L 6 0 L 3 5 Z" />
                           </Trigger>
                           <Trigger Property="IsMouseOver" Value="True">
