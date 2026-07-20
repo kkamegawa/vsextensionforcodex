@@ -2166,6 +2166,7 @@ public sealed class ViewModelTests
     [TestMethod]
     public async Task ChatViewModel_ReasoningSlashIsCanonicalThreadScopedAndRestoresStickySetting()
     {
+        var store = new MemorySettingsStore(new ExtensionSettings());
         var bridge = new FakeWorkerBridge
         {
             ModelListResult = new ListModelsResult
@@ -2174,7 +2175,7 @@ public sealed class ViewModelTests
                 DefaultModel = "gpt-5",
             },
         };
-        using var vm = new ChatViewModel(bridge, autoConnect: false)
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: store)
         {
             SelectedThread = new ThreadSummary { Id = "thread-1" },
         };

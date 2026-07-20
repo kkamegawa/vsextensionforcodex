@@ -21,6 +21,10 @@
            correctly in dark/light/high-contrast themes. -->
       <Style TargetType="ComboBox" BasedOn="{StaticResource {x:Static styles:VsResourceKeys.ComboBoxStyleKey}}" />
 
+      <!-- Plain text inputs use the complete VS foreground/background/template pairing. Local
+           composer styles remain explicit and continue to provide their transparent surface. -->
+      <Style TargetType="TextBox" BasedOn="{StaticResource {x:Static styles:VsResourceKeys.TextBoxStyleKey}}" />
+
       <Style TargetType="TextBlock">
         <Setter Property="Foreground" Value="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowTextBrushKey}}" />
         <Setter Property="TextOptions.TextFormattingMode" Value="Display" />
@@ -1211,9 +1215,6 @@
                          Padding="8,6"
                          AcceptsReturn="True"
                          VerticalScrollBarVisibility="Auto"
-                         Foreground="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowTextBrushKey}}"
-                         CaretBrush="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowTextBrushKey}}"
-                         SelectionBrush="{DynamicResource {x:Static SystemColors.HighlightBrushKey}}"
                          Text="{Binding SlashCommands.ArgumentText, UpdateSourceTrigger=PropertyChanged}"
                          AutomationProperties.Name="Slash command arguments" />
               </StackPanel>

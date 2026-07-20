@@ -2,6 +2,14 @@
 
 `plan.md` のフェーズ分割に対応する詳細タスク。各タスクは独立してレビュー可能な小さなスライスを意図する。
 
+## 2026-07-20: PR #89 review and merge validation
+
+- [x] Confirm that the PR branch already contains the current `main` commit without conflicts.
+- [x] Re-base plain text inputs on the Visual Studio TextBox style so slash-command arguments keep a themed foreground/background pair.
+- [x] Preserve hidden default model metadata when only the top-level default identifier is reported.
+- [x] Make the reasoning override test independent from persisted user settings.
+- [x] Validate the Release outputs with 94 Core tests and 218 UI tests passing.
+
 ## 2026-07-20: Reasoning effort picker (#85, #93, #94, #95)
 
 - [x] Upgrade the Extension/Worker contract to version 13 with effort and service-tier presence flags.

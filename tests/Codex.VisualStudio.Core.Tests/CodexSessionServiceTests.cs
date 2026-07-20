@@ -260,6 +260,45 @@ public sealed class CodexSessionServiceTests
     }
 
     [TestMethod]
+    public async Task ListModelsCapturesTopLevelHiddenDefaultMetadata()
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "model/list"
+                ? JsonSerializer.SerializeToElement(new
+                {
+                    data = new object[]
+                    {
+                        new { model = "gpt-5-codex" },
+                        new
+                        {
+                            model = "hidden-default",
+                            hidden = true,
+                            defaultReasoningEffort = "high",
+                            supportedReasoningEfforts = new[]
+                            {
+                                new { reasoningEffort = "high", description = "Deep" },
+                            },
+                        },
+                    },
+                    defaultModel = "hidden-default",
+                })
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        ListModelsResult result = await service.ListModelsAsync(CancellationToken.None);
+
+        CollectionAssert.AreEqual(new[] { "gpt-5-codex" }, result.Models.Select(model => model.Id).ToArray());
+        Assert.AreEqual("hidden-default", result.DefaultModel);
+        Assert.IsNotNull(result.DefaultModelInfo);
+        Assert.AreEqual("hidden-default", result.DefaultModelInfo.Id);
+        Assert.AreEqual("high", result.DefaultModelInfo.DefaultReasoningEffort);
+        Assert.AreEqual("high", result.DefaultModelInfo.SupportedReasoningEfforts.Single().Id);
+    }
+
+    [TestMethod]
     public async Task ListModelsRequestsHiddenModels()
     {
         var connection = new RecordingConnection

@@ -1963,6 +1963,7 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
     {
         var models = new List<ModelInfo>();
         var seen = new HashSet<string>(StringComparer.Ordinal);
+        var modelInfoById = new Dictionary<string, ModelInfo>(StringComparer.Ordinal);
         string? defaultModel = null;
         ModelInfo? defaultModelInfo = null;
 
@@ -1992,6 +1993,7 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
                 }
 
                 ModelInfo modelInfo = ReadModelInfo(model, id);
+                modelInfoById.TryAdd(id, modelInfo);
                 if (GetBool(model, "isDefault") == true)
                 {
                     defaultModelInfo = modelInfo;
@@ -2015,11 +2017,10 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         if (defaultModel is null)
         {
             string? topLevelDefault = NormalizeModelId(GetString(result, "defaultModel"));
-            if (topLevelDefault is not null && seen.Contains(topLevelDefault))
+            if (topLevelDefault is not null && modelInfoById.TryGetValue(topLevelDefault, out ModelInfo? modelInfo))
             {
                 defaultModel = topLevelDefault;
-                defaultModelInfo = models.FirstOrDefault(model =>
-                    string.Equals(model.Id, topLevelDefault, StringComparison.Ordinal));
+                defaultModelInfo = modelInfo;
             }
         }
 
