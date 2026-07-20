@@ -30,6 +30,125 @@
         <Setter Property="TextOptions.TextFormattingMode" Value="Display" />
       </Style>
 
+      <!-- Keep Expander header text inheritable so the themed ToggleButton foreground reaches
+           both the label and glyph in every interaction state. -->
+      <Style x:Key="CommandOutputExpanderHeaderTextStyle" TargetType="TextBlock">
+        <Setter Property="TextOptions.TextFormattingMode" Value="Display" />
+      </Style>
+
+      <!-- The standard Expander control retains its keyboard behavior and ExpandCollapse
+           automation peer. Its header ToggleButton is templated with VS dynamic resources so
+           Dark, Light/Blue, High Contrast, and live theme changes use paired state colors. -->
+      <Style x:Key="CommandOutputExpanderStyle" TargetType="Expander">
+        <Setter Property="Visibility" Value="Collapsed" />
+        <Setter Property="BorderBrush"
+                Value="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBorderBrushKey}}" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="Template">
+          <Setter.Value>
+            <ControlTemplate TargetType="Expander">
+              <Border Background="{TemplateBinding Background}"
+                      BorderBrush="{TemplateBinding BorderBrush}"
+                      BorderThickness="{TemplateBinding BorderThickness}"
+                      CornerRadius="3"
+                      SnapsToDevicePixels="True">
+                <Grid>
+                  <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                  </Grid.RowDefinitions>
+                  <ToggleButton x:Name="HeaderSite"
+                                Grid.Row="0"
+                                Padding="6,4"
+                                HorizontalContentAlignment="Stretch"
+                                Background="{TemplateBinding Background}"
+                                BorderThickness="0"
+                                ClickMode="Release"
+                                Content="{TemplateBinding Header}"
+                                ContentTemplate="{TemplateBinding HeaderTemplate}"
+                                ContentTemplateSelector="{TemplateBinding HeaderTemplateSelector}"
+                                IsChecked="{Binding IsExpanded, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}">
+                    <ToggleButton.Template>
+                      <ControlTemplate TargetType="ToggleButton">
+                        <Border x:Name="HeaderBackground"
+                                Background="{TemplateBinding Background}"
+                                Padding="{TemplateBinding Padding}"
+                                SnapsToDevicePixels="True">
+                          <Grid>
+                            <Grid.ColumnDefinitions>
+                              <ColumnDefinition Width="Auto" />
+                              <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <Path x:Name="HeaderGlyph"
+                                  Grid.Column="0"
+                                  Width="6"
+                                  Height="8"
+                                  Margin="0,0,6,0"
+                                  VerticalAlignment="Center"
+                                  Data="M 0 0 L 6 4 L 0 8 Z"
+                                  Fill="{TemplateBinding Foreground}"
+                                  Stretch="Fill" />
+                            <ContentPresenter Grid.Column="1"
+                                              VerticalAlignment="Center"
+                                              HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                              Content="{TemplateBinding Content}"
+                                              ContentTemplate="{TemplateBinding ContentTemplate}"
+                                              ContentTemplateSelector="{TemplateBinding ContentTemplateSelector}"
+                                              RecognizesAccessKey="True"
+                                              TextElement.Foreground="{TemplateBinding Foreground}" />
+                            <Border x:Name="KeyboardFocusBorder"
+                                    Grid.ColumnSpan="2"
+                                    BorderBrush="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowTextBrushKey}}"
+                                    BorderThickness="1"
+                                    IsHitTestVisible="False"
+                                    Visibility="Collapsed" />
+                          </Grid>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                          <Trigger Property="IsChecked" Value="True">
+                            <Setter TargetName="HeaderGlyph" Property="Data" Value="M 0 0 L 6 0 L 3 5 Z" />
+                          </Trigger>
+                          <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="HeaderBackground" Property="Background"
+                                    Value="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowButtonHoverActiveBrushKey}}" />
+                            <Setter Property="Foreground"
+                                    Value="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowButtonHoverActiveGlyphBrushKey}}" />
+                          </Trigger>
+                          <Trigger Property="IsPressed" Value="True">
+                            <Setter TargetName="HeaderBackground" Property="Background"
+                                    Value="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowButtonDownBrushKey}}" />
+                            <Setter Property="Foreground"
+                                    Value="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowButtonDownActiveGlyphBrushKey}}" />
+                          </Trigger>
+                          <Trigger Property="IsKeyboardFocused" Value="True">
+                            <Setter TargetName="KeyboardFocusBorder" Property="Visibility" Value="Visible" />
+                          </Trigger>
+                        </ControlTemplate.Triggers>
+                      </ControlTemplate>
+                    </ToggleButton.Template>
+                  </ToggleButton>
+                  <ContentPresenter x:Name="ExpandSite"
+                                    Grid.Row="1"
+                                    Margin="8,2,8,8"
+                                    ContentSource="Content"
+                                    Visibility="Collapsed" />
+                </Grid>
+              </Border>
+              <ControlTemplate.Triggers>
+                <Trigger Property="IsExpanded" Value="True">
+                  <Setter TargetName="ExpandSite" Property="Visibility" Value="Visible" />
+                </Trigger>
+              </ControlTemplate.Triggers>
+            </ControlTemplate>
+          </Setter.Value>
+        </Setter>
+        <Style.Triggers>
+          <DataTrigger Binding="{Binding IsCommandOutputCollapsible}" Value="True">
+            <Setter Property="Visibility" Value="Visible" />
+          </DataTrigger>
+        </Style.Triggers>
+      </Style>
+
       <!-- ── Rounded secondary button (outlined ghost style) ── -->
       <Style x:Key="RoundButtonStyle" TargetType="Button">
         <Setter Property="Background" Value="{DynamicResource {x:Static colors:EnvironmentColors.SystemButtonFaceBrushKey}}" />
@@ -724,7 +843,88 @@
                     </ItemsControl.ItemTemplate>
                   </ItemsControl>
 
-                  <!-- Main text content: plain, monospace (command/diff), or hidden (plan/block rendering/collapsed reasoning). -->
+                  <!-- Short command output stays inline without an affordance. Long command output uses
+                       the standard WPF Expander so keyboard and UI Automation expand/collapse behavior
+                       are supplied by the platform. The view model exposes only a bounded preview while
+                       collapsed and the buffered text while explicitly expanded. -->
+                  <ScrollViewer Margin="0,4,0,0"
+                                HorizontalScrollBarVisibility="Auto"
+                                VerticalScrollBarVisibility="Disabled"
+                                AutomationProperties.Name="Command output">
+                    <ScrollViewer.Style>
+                      <Style TargetType="ScrollViewer">
+                        <Setter Property="Visibility" Value="Collapsed" />
+                        <Style.Triggers>
+                          <DataTrigger Binding="{Binding IsCommandItem}" Value="True">
+                            <Setter Property="Visibility" Value="Visible" />
+                          </DataTrigger>
+                          <DataTrigger Binding="{Binding IsCommandOutputCollapsible}" Value="True">
+                            <Setter Property="Visibility" Value="Collapsed" />
+                          </DataTrigger>
+                        </Style.Triggers>
+                      </Style>
+                    </ScrollViewer.Style>
+                    <TextBlock FontFamily="Consolas, Courier New, monospace"
+                               FontSize="11"
+                               Foreground="{DynamicResource {x:Static styles:VsBrushes.WindowTextKey}}"
+                               Text="{Binding Text}"
+                               TextOptions.TextFormattingMode="Display"
+                               TextWrapping="NoWrap" />
+                  </ScrollViewer>
+
+                  <Expander Margin="0,4,0,0"
+                            Style="{StaticResource CommandOutputExpanderStyle}"
+                            Background="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowCodeBlockBackgroundBrushKey}}"
+                            Foreground="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowTextBrushKey}}"
+                            IsExpanded="{Binding IsCommandOutputExpanded, Mode=TwoWay}"
+                            AutomationProperties.Name="{Binding CommandOutputAutomationName}"
+                            AutomationProperties.HelpText="{Binding CommandOutputAutomationHelpText}">
+                    <Expander.Header>
+                      <TextBlock Style="{StaticResource CommandOutputExpanderHeaderTextStyle}"
+                                 Text="{Binding CommandOutputExpansionLabel}"
+                                 TextOptions.TextFormattingMode="Display" />
+                    </Expander.Header>
+                    <ScrollViewer MaxHeight="320"
+                                  HorizontalScrollBarVisibility="Auto"
+                                  VerticalScrollBarVisibility="Auto"
+                                  AutomationProperties.Name="Buffered command output">
+                      <TextBlock FontFamily="Consolas, Courier New, monospace"
+                                 FontSize="11"
+                                 Foreground="{DynamicResource {x:Static styles:VsBrushes.WindowTextKey}}"
+                                 Text="{Binding Text}"
+                                 TextOptions.TextFormattingMode="Display"
+                                 TextWrapping="NoWrap" />
+                    </ScrollViewer>
+                  </Expander>
+
+                  <!-- The bounded three-line preview remains visible next to the collapsed Expander
+                       header. It disappears when the user expands the buffered output. -->
+                  <ScrollViewer Margin="0,4,0,0"
+                                HorizontalScrollBarVisibility="Auto"
+                                VerticalScrollBarVisibility="Disabled"
+                                AutomationProperties.Name="Command output preview">
+                    <ScrollViewer.Style>
+                      <Style TargetType="ScrollViewer">
+                        <Setter Property="Visibility" Value="Collapsed" />
+                        <Style.Triggers>
+                          <DataTrigger Binding="{Binding IsCommandOutputCollapsible}" Value="True">
+                            <Setter Property="Visibility" Value="Visible" />
+                          </DataTrigger>
+                          <DataTrigger Binding="{Binding IsCommandOutputExpanded}" Value="True">
+                            <Setter Property="Visibility" Value="Collapsed" />
+                          </DataTrigger>
+                        </Style.Triggers>
+                      </Style>
+                    </ScrollViewer.Style>
+                    <TextBlock FontFamily="Consolas, Courier New, monospace"
+                               FontSize="11"
+                               Foreground="{DynamicResource {x:Static styles:VsBrushes.WindowTextKey}}"
+                               Text="{Binding Text}"
+                               TextOptions.TextFormattingMode="Display"
+                               TextWrapping="NoWrap" />
+                  </ScrollViewer>
+
+                  <!-- Main text content: plain, monospace diff, or hidden (command/plan/block rendering/collapsed reasoning). -->
                   <TextBlock Margin="0,4,0,0" TextWrapping="Wrap" Text="{Binding Text}">
                     <TextBlock.Style>
                       <Style TargetType="TextBlock">
@@ -740,6 +940,10 @@
                           <DataTrigger Binding="{Binding UsesBlockRendering}" Value="True">
                             <Setter Property="Visibility" Value="Collapsed" />
                           </DataTrigger>
+                          <!-- Command output uses the bounded, horizontally scrollable surfaces above. -->
+                          <DataTrigger Binding="{Binding IsCommandItem}" Value="True">
+                            <Setter Property="Visibility" Value="Collapsed" />
+                          </DataTrigger>
                           <!-- Collapsed reasoning hides its full text. -->
                           <MultiDataTrigger>
                             <MultiDataTrigger.Conditions>
@@ -748,11 +952,6 @@
                             </MultiDataTrigger.Conditions>
                             <Setter Property="Visibility" Value="Collapsed" />
                           </MultiDataTrigger>
-                          <!-- Command output rendered in monospace. -->
-                          <DataTrigger Binding="{Binding IsCommandItem}" Value="True">
-                            <Setter Property="FontFamily" Value="Consolas, Courier New, monospace" />
-                            <Setter Property="FontSize" Value="11" />
-                          </DataTrigger>
                           <!-- Diff rendered in monospace. -->
                           <DataTrigger Binding="{Binding IsDiffItem}" Value="True">
                             <Setter Property="FontFamily" Value="Consolas, Courier New, monospace" />
@@ -785,8 +984,8 @@
                   </ItemsControl>
 
                   <!-- Truncation notice — shown when output was cut due to size limit. -->
-                  <TextBlock Margin="0,6,0,0" FontSize="11" Opacity="0.6"
-                             Text="Output truncated; full output is stored in a temporary file.">
+                  <TextBlock Margin="0,6,0,0" FontSize="11"
+                             Text="{Binding TruncationNotice}">
                     <TextBlock.Style>
                       <Style TargetType="TextBlock">
                         <Setter Property="Foreground" Value="{DynamicResource {x:Static styles:VsBrushes.WindowTextKey}}" />

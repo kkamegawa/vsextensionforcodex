@@ -222,7 +222,24 @@ is missing; transient failures and truncated responses preserve the saved ID. Fu
 confirmed because it disables the Codex sandbox and normal approval prompts. Moving from any turn
 override to Custom starts a new thread because omitted overrides do not reset an existing thread.
 
-## 8. Reasoning effort and service-tier pickers (contract version 13)
+## 8. Bounded command-output projection
+
+Command output crosses two independently bounded stages. The Worker batches deltas and caps its
+visible stream at 2 MiB, while the extension keeps a separate 2 MiB-character sanitized buffer that
+is never serialized as a Remote UI member. `ChatItemViewModel.Text` is only the current projection:
+the complete short output, a three-logical-line/4,096-character collapsed preview, or the buffered
+full output after explicit expansion.
+
+The projection counts CRLF as one break across delta boundaries and preserves empty logical lines.
+After the preview boundary is reached, hidden deltas update only small summary properties unless the
+preview itself changes. Truncated output uses non-exact buffered-output wording because the overflow
+file can contain additional lines that the extension does not scan.
+
+The Remote UI uses a standard WPF `Expander` with a TwoWay expanded-state binding, Visual Studio
+dynamic theme resources, UI Automation name/help text, non-wrapping monospace text, and horizontal
+scrolling. No custom or third-party control is required.
+
+## 9. Reasoning effort and service-tier pickers (contract version 13)
 
 The composer exposes model-aware Reasoning and Speed pickers after the model selector. Their first entry is `Default`, which omits the turn override and inherits Codex configuration. A concrete selection persists only its canonical catalog ID. When a selected model does not support that ID, the UI temporarily displays `Default` without overwriting the saved preference.
 
@@ -232,7 +249,7 @@ Contract version 13 adds explicit presence flags for effort and service tier. Th
 
 `/reasoning` and `/fast` are thread-scoped one-turn overrides consumed only after `turn/start` succeeds. The following turn explicitly restores the persistent selection or captured effective value, including null. Normal and direct Plan turns share the same resolvers.
 
-## 9. Usage presentation and freshness
+## 10. Usage presentation and freshness
 
 The signed-in header exposes one Usage flyout backed by `UsagePresentation`. It converts the
 app-server's used percentage into a clamped remaining percentage, recognizes the five-hour and
@@ -249,7 +266,7 @@ theme resources, and exposes automation names and help text. Raw Remote UI canno
 `Popup.Opened` code to transfer keyboard focus; guaranteed opening focus would require an in-process
 WPF host.
 
-## 10. Empty solution scaffolding
+## 11. Empty solution scaffolding
 
 When the resolved workspace contains no solution or project, the default scaffold choice creates
 only `ROOT/<Name>.slnx`. The generated solution is an empty SLNX document with UTF-8 BOM and CRLF

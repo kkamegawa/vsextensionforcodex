@@ -280,6 +280,28 @@ ChatGPT デスクトップと同等の承認方法選択 UI。レビュー済み
 
 ## Work log
 
+### 2026-07-20: Implemented bounded collapsible command output (issue #80)
+
+Implemented issue #80 and sub-issues #81, #82, and #83. Sanitized command deltas now accumulate
+in a non-serialized extension buffer capped at 2 MiB of characters. Output remains inline through
+three logical lines and 4,096 characters, then starts collapsed with only that bounded preview
+published to Remote UI. Hidden streaming deltas no longer republish the accumulated full text.
+
+The transcript uses a standard WPF Expander with TwoWay state, native keyboard/UI Automation
+behavior, Visual Studio dynamic theme resources, non-wrapping monospace text, and horizontal
+scrolling. CRLF split across deltas is counted once, truncated output avoids unverified total-line
+claims, and no third-party control or package was added. ADR-003 records the projection boundary.
+
+The expanded header now retains its normal themed surface instead of remaining in the pressed
+state. Hover and pressed foregrounds can override the inherited normal foreground, so every state
+keeps a matching Visual Studio foreground/background pair. Non-truncated items also publish an
+empty truncation notice across Remote UI.
+
+- Validation: Release solution build completed with zero warnings and zero errors.
+- Tests: Core tests passed 95/95 with `--no-build`.
+- Tests: UI tests passed 267 with one symlink test skipped when the Windows test process lacked
+  symlink privilege.
+
 ### 2026-07-20: Implemented empty SLNX-only scaffolding (issue #88)
 
 Implemented issue #88 and sub-issues #102, #103, and #104. The empty-workspace prompt now

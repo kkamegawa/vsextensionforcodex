@@ -40,6 +40,27 @@
 - Persisted dynamic selections require a placeholder/loading state so Remote UI null write-back cannot erase them before profile discovery completes.
 - Full access requires an explicit warning and confirmation. Users must not be told that extension-side approval checks remain universally active.
 
+## ADR-003: Command output uses a bounded Remote UI projection
+
+- Date: 2026-07-20
+- Task: GitHub Issue #80 and sub-issues #81, #82, and #83
+
+- Status: Accepted
+
+### Decision
+
+- Keep sanitized command output in an incremental `StringBuilder` that is not a Remote UI `DataMember`. Bound the extension-side buffer to 2 MiB of characters independently of the Worker streaming limit.
+- Publish the complete text only while it is short or while the user has explicitly expanded it. Once output exceeds three logical lines or 4,096 characters, publish only the first three lines capped at 4,096 characters while collapsed.
+- Count CRLF as one logical line break, including when `\r` and `\n` arrive in separate streaming deltas. Do not create a hidden empty line for a trailing line break.
+- Use the standard WPF `Expander` with TwoWay expanded state. Keep all command text non-wrapping and horizontally scrollable, and use Visual Studio dynamic theme resources for the control surface and text.
+- When output is truncated, describe it as buffered output and do not report an exact total or hidden line count. Preserve overflow-file details outside the serialized Remote UI contract.
+
+### Consequences
+
+- Collapsed streaming updates change the serialized `Text` property only while the bounded preview itself changes; later hidden deltas no longer resend the accumulated command output across Remote UI.
+- The standard Expander supplies keyboard focus and the UI Automation ExpandCollapse pattern without a custom control or third-party package.
+- Expanding a large command deliberately republishes the bounded full buffer on subsequent deltas. This cost is user-selected and remains capped.
+
 ## ADR-004: Turn settings use a three-state wire contract and explicit restoration
 
 - Date: 2026-07-20
