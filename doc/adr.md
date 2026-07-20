@@ -39,3 +39,22 @@
 - Permission-profile entries are capability-gated. Unsupported app-server versions retain the built-in modes and Custom behavior without reading `config.toml` directly.
 - Persisted dynamic selections require a placeholder/loading state so Remote UI null write-back cannot erase them before profile discovery completes.
 - Full access requires an explicit warning and confirmation. Users must not be told that extension-side approval checks remain universally active.
+
+## ADR-006: Empty workspaces receive only a root-level SLNX solution
+
+- Date: 2026-07-20
+- Task: GitHub Issue #88 and sub-issues #102, #103, and #104
+- Status: Accepted
+
+### Decision
+
+- Replace the solution-and-project scaffold with an empty solution choice.
+- Create only `ROOT/<Name>.slnx`; do not create `src`, a project file, or source code for this choice.
+- Encode the exact document `<Solution>` + CRLF + `</Solution>` + CRLF as UTF-8 with BOM.
+- Preserve the existing non-overwrite rule and the independent file-based app choice.
+
+### Consequences
+
+- Workspace setup no longer guesses an application type, target framework, or project layout.
+- The generated file remains both valid XML and a solution accepted by the pinned `.NET` SDK.
+- Adding a project becomes an explicit later action by the user or Codex.

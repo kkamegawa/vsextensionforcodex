@@ -27,6 +27,7 @@ The publisher is `kazushikamegawa`. The VSIX identifier is `Kkamegawa.CodexForVi
 - 75 ms streaming batches with bounded reasoning, command output, and diff buffers plus temporary overflow files
 - WPF chat window with history, transcript virtualization, composer, approvals, connected Codex version status, interrupt, and restart controls
 - Agent-only typed permission picker with stable persisted IDs, built-in approval/reviewer/sandbox tuples, capability-gated permission profiles, and theme-aware accessible confirmation for Full access and Custom thread transitions
+- Empty-workspace scaffolding that creates a root-level empty `.slnx` without imposing a project template, while preserving the file-based app alternative
 - Initialize-handshake version discovery from a bounded, validated app-server user-agent product token, propagated through Worker contract version 9
 - Safe text rendering that removes HTML tags, ANSI escapes, and control characters
 - Structured block rendering for agent/reasoning markdown with ordered-list numbering and nested-list indentation (capped at two extra indent steps)
@@ -38,6 +39,10 @@ The publisher is `kazushikamegawa`. The VSIX identifier is `Kkamegawa.CodexForVi
 ## Validation Status
 
 Automated tests cover JSON-RPC round trips, server requests, cancellation, closed-stream disposal, redaction, relative/case-insensitive/symlink path boundaries, approval categories and scopes, WebSocket/retry policy, streaming overflow, thread-list parameters, stale steer rejection, duplicate approval prevention, and safe rendering.
+
+Scaffolding tests additionally verify the exact generated path and bytes, UTF-8 BOM and CRLF,
+non-overwrite behavior, absence of implicit project artifacts, XML validity, and compatibility with
+the pinned `.NET` SDK's `dotnet sln` parser.
 
 The picker keeps the desired default separate from the effective state reported by thread
 responses and Worker status. `ask` maps to `on-request` + `user` + `workspaceWrite`, `auto`

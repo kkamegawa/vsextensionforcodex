@@ -263,6 +263,18 @@ ChatGPT デスクトップと同等の承認方法選択 UI。レビュー済み
 
 ## Work log
 
+### 2026-07-20: Implemented empty SLNX-only scaffolding (issue #88)
+
+Implemented issue #88 and sub-issues #102, #103, and #104. The empty-workspace prompt now
+offers a root-level empty solution that contains no implicit project or source layout. The SLNX
+file uses the sanitized workspace name, exact empty-solution XML, UTF-8 BOM, and CRLF, and the
+existing non-overwrite and file-based app behaviors remain intact. ADR-006 records the decision.
+
+- Validation: Release solution build completed with zero warnings and zero errors.
+- Tests: seven focused scaffold tests are included; Core tests passed 89/89 and UI tests passed
+  214 with one symlink test skipped when the Windows test process lacked symlink privilege.
+- Compatibility: generated SLNX files passed XML parsing and `dotnet sln ... list` validation.
+
 ### 2026-07-20: Implemented the approval mode picker (issue #75)
 
 Implemented issue #75 and sub-issues #76, #77, and #78. The Agent composer now exposes

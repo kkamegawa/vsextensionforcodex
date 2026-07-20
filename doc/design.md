@@ -221,3 +221,15 @@ gated catalog completes. Only a complete successful catalog may fall back to Cus
 is missing; transient failures and truncated responses preserve the saved ID. Full access must be
 confirmed because it disables the Codex sandbox and normal approval prompts. Moving from any turn
 override to Custom starts a new thread because omitted overrides do not reset an existing thread.
+
+## 8. Empty solution scaffolding
+
+When the resolved workspace contains no solution or project, the default scaffold choice creates
+only `ROOT/<Name>.slnx`. The generated solution is an empty SLNX document with UTF-8 BOM and CRLF
+line endings. It deliberately omits `src`, project files, and source files so Codex can shape the
+workspace without inheriting an arbitrary application template.
+
+The operation remains non-destructive: an existing solution is never overwritten, and the separate
+file-based app choice continues to create only a root-level `Program.cs` without a solution or
+project. The generated empty document must remain parseable as XML and accepted by the pinned
+`.NET` SDK's `dotnet sln` command.
