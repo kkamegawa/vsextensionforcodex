@@ -283,9 +283,9 @@ popup is mutually exclusive with History, binds Escape at both host and popup le
 compile-time approved destinations through an exact allowlist. ADR-005 records the freshness and
 Remote UI focus contracts.
 
-- Validation: project-scoped Release builds completed with zero warnings and zero errors. Core tests
-  passed 90/90 and UI tests passed 226/226 with `--no-build`, covering parser, presentation,
-  freshness, read/push races, lifecycle invalidation, links, and embedded XAML structure.
+- Validation: project-scoped Release builds completed with zero warnings and zero errors. Core and UI
+  tests passed with `--no-build`, covering parser, presentation, freshness, read/push races,
+  lifecycle invalidation, links, and embedded XAML structure.
 
 ### 2026-07-20: Implemented the approval mode picker (issue #75)
 

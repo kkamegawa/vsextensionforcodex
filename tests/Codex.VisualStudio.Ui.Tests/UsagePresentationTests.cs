@@ -51,6 +51,31 @@ public sealed class UsagePresentationTests
     }
 
     [TestMethod]
+    public void Update_FormatsUpdatedTextWithInvariantCulture()
+    {
+        System.Globalization.CultureInfo previousCulture = System.Globalization.CultureInfo.CurrentCulture;
+        System.Globalization.CultureInfo previousUiCulture = System.Globalization.CultureInfo.CurrentUICulture;
+        try
+        {
+            System.Globalization.CultureInfo.CurrentCulture = System.Globalization.CultureInfo.GetCultureInfo("ja-JP");
+            System.Globalization.CultureInfo.CurrentUICulture = System.Globalization.CultureInfo.GetCultureInfo("ja-JP");
+            var presentation = new UsagePresentation();
+
+            presentation.Update(
+                Result(new RateLimitInfo { Primary = new RateLimitWindowInfo { UsedPercent = 20 } }),
+                new DateTimeOffset(2027, 5, 6, 12, 34, 0, TimeSpan.Zero),
+                new SafeMarkdownService());
+
+            Assert.AreEqual("Updated May 6, 2027 12:34 UTC", presentation.UpdatedText);
+        }
+        finally
+        {
+            System.Globalization.CultureInfo.CurrentCulture = previousCulture;
+            System.Globalization.CultureInfo.CurrentUICulture = previousUiCulture;
+        }
+    }
+
+    [TestMethod]
     public void Update_SelectsCanonicalOrExactlyOneMapEntryOnly()
     {
         var presentation = new UsagePresentation();

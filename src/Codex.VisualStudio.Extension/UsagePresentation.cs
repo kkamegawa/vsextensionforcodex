@@ -173,7 +173,7 @@ public sealed class UsagePresentation : ObservableObject
         AutomationHelpText = HasData
             ? string.Join(" ", details.Where(value => value.Length > 0))
             : "Usage data is unavailable.";
-        UpdatedText = $"Updated {refreshedAt.ToUniversalTime():MMM d, yyyy HH:mm} UTC";
+        UpdatedText = $"Updated {refreshedAt.ToUniversalTime().ToString("MMM d, yyyy HH:mm 'UTC'", CultureInfo.InvariantCulture)}";
         IsLoading = false;
     }
 
