@@ -9,7 +9,6 @@ namespace Codex.VisualStudio.Ui.Tests;
 public sealed class ExtensionIdentityPackagingTests
 {
     private const string ExtensionProjectDirectory = "Codex.VisualStudio.Extension";
-    private const string SourceManifestFileName = "source.extension.vsixmanifest";
     private static readonly XNamespace VsixNamespace = "http://schemas.microsoft.com/developer/vsx-schema/2011";
 
     [TestMethod]
@@ -25,18 +24,12 @@ public sealed class ExtensionIdentityPackagingTests
         Assert.AreEqual(ExtensionIdentity.AssemblyVersion, metadata.Version);
     }
 
+    // The Extensibility SDK generates extension.vsixmanifest from ExtensionConfiguration, so the
+    // packaged manifest is the only manifest that exists; there is no source.extension.vsixmanifest.
     [TestMethod]
-    public void SourceAndPackagedVsixManifests_MatchCentralIdentity()
+    public void PackagedVsixManifest_MatchesCentralIdentity()
     {
         string repositoryRoot = FindRepositoryRoot();
-        string sourceManifestPath = Path.Combine(
-            repositoryRoot,
-            "src",
-            ExtensionProjectDirectory,
-            SourceManifestFileName);
-
-        AssertManifestIdentity(XDocument.Load(sourceManifestPath), SourceManifestFileName);
-
         string packagedVsixPath = FindPackagedVsix(repositoryRoot);
         using var archive = ZipFile.OpenRead(packagedVsixPath);
         ZipArchiveEntry manifestEntry = archive.GetEntry("extension.vsixmanifest")
@@ -55,7 +48,6 @@ public sealed class ExtensionIdentityPackagingTests
         [
             Path.Combine(extensionProjectRoot, "CodexExtension.cs"),
             Path.Combine(extensionProjectRoot, "ToolWindows", "CodexToolWindow.cs"),
-            Path.Combine(extensionProjectRoot, SourceManifestFileName),
         ];
 
         foreach (string sourcePath in sourcePaths)
@@ -78,6 +70,33 @@ public sealed class ExtensionIdentityPackagingTests
             Assert.IsFalse(
                 manifestText.Contains(legacyIdentity, StringComparison.Ordinal),
                 $"Legacy extension identity found in packaged entry {manifestEntry.FullName}.");
+        }
+    }
+
+    // Bundled documents must stay English only, and the manifest License path must resolve to a
+    // file that is actually packaged.
+    [TestMethod]
+    public void PackagedVsix_BundlesEnglishLicenseOnly()
+    {
+        string packagedVsixPath = FindPackagedVsix(FindRepositoryRoot());
+        using var archive = ZipFile.OpenRead(packagedVsixPath);
+
+        ZipArchiveEntry manifestEntry = archive.GetEntry("extension.vsixmanifest")
+            ?? throw new AssertFailedException("The packaged VSIX does not contain extension.vsixmanifest.");
+        using Stream manifestStream = manifestEntry.Open();
+        XDocument manifest = XDocument.Load(manifestStream);
+        XElement metadata = manifest.Root?.Element(VsixNamespace + "Metadata")
+            ?? throw new AssertFailedException("extension.vsixmanifest does not contain Metadata.");
+        string? license = metadata.Element(VsixNamespace + "License")?.Value;
+
+        Assert.AreEqual(ExtensionIdentity.License, license);
+        Assert.IsNotNull(archive.GetEntry(ExtensionIdentity.License), $"{ExtensionIdentity.License} is not packaged.");
+
+        foreach (ZipArchiveEntry entry in archive.Entries)
+        {
+            Assert.IsFalse(
+                entry.FullName.EndsWith("_ja.md", StringComparison.OrdinalIgnoreCase),
+                $"A Japanese document is packaged: {entry.FullName}.");
         }
     }
 

@@ -15,7 +15,7 @@ VSIX を取得してインストールしてください。公開後に Marketpl
 ## 動作要件
 
 - Windows (x64 または Arm64)
-- Visual Studio 2022 17.9 以降、または Visual Studio 2026 (Community / Professional / Enterprise)
+- Visual Studio 2022 17.14 以降、または Visual Studio 2026 (Community / Professional / Enterprise)
 - Codex CLI 0.145.0 以降 (winget でのインストールを推奨。[制限事項](#制限事項)を参照)
 - `codex login` でサインインできる ChatGPT アカウント
 
@@ -80,7 +80,7 @@ VSIX を取得してインストールしてください。公開後に Marketpl
 ## FAQ
 
 **表示メニューに Codex ツールウィンドウが出てきません。**
-Visual Studio が 17.9 以降であること、**拡張機能 > 拡張機能の管理** に本拡張が表示され有効に
+Visual Studio が 17.14 以降であること、**拡張機能 > 拡張機能の管理** に本拡張が表示され有効に
 なっていることを確認し、VSIX インストール後に Visual Studio を一度再起動してください。
 
 **チャットが応答しない、またはワーカーがすぐ終了します。**
@@ -119,7 +119,7 @@ Visual Studio が 17.9 以降であること、**拡張機能 > 拡張機能の�
 
 開発時の前提条件:
 
-- Visual Studio 2022 17.9 以降 (Visual Studio 拡張機能開発ワークロード)
+- Visual Studio 2022 17.14 以降 (Visual Studio 拡張機能開発ワークロード)
 - .NET 8 SDK
 - ローカルの Codex CLI (ビルド時のプロトコルスキーマ生成に使用)
 

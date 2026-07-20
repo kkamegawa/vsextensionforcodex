@@ -15,7 +15,7 @@ GitHub releases of this repository. A Marketplace link will be added here once i
 ## Requirements
 
 - Windows (x64 or Arm64)
-- Visual Studio 2022 17.9 or later, or Visual Studio 2026 (Community, Professional, or Enterprise)
+- Visual Studio 2022 17.14 or later, or Visual Studio 2026 (Community, Professional, or Enterprise)
 - Codex CLI 0.145.0 or later, installed with winget (see [Limitations](#limitations))
 - A ChatGPT account that can sign in with `codex login`
 
@@ -79,7 +79,7 @@ GitHub releases of this repository. A Marketplace link will be added here once i
 ## FAQ
 
 **The Codex tool window does not appear under View.**
-Check that Visual Studio is 17.9 or later, that the extension is listed and enabled in
+Check that Visual Studio is 17.14 or later, that the extension is listed and enabled in
 **Extensions > Manage Extensions**, and restart Visual Studio once after installing the VSIX.
 
 **Chat never responds, or the worker exits right away.**
@@ -120,7 +120,7 @@ the CLI and its own configuration file.
 
 Prerequisites for development:
 
-- Visual Studio 2022 17.9 or later with the Visual Studio extension development workload
+- Visual Studio 2022 17.14 or later with the Visual Studio extension development workload
 - .NET 8 SDK
 - A local Codex CLI (used to generate protocol schemas during the build)
 
