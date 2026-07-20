@@ -160,8 +160,10 @@ Releases are tag-driven:
 1. Merge the release commit into `main`.
 2. Push a `vX.Y.Z` tag (`vX.Y.Z.W` is also accepted for hotfix re-publishes).
 3. The release workflow verifies that the tag is on `main`, writes the tag into the VSIX
-   `Identity Version` (`vX.Y.Z` becomes `X.Y.Z.0`), builds and tests, and creates the GitHub release
-   with the VSIX attached.
+   `Identity Version` (`vX.Y.Z` becomes `X.Y.Z.0`), builds and tests, and creates a **draft**
+   GitHub release with the VSIX attached.
+4. Review the draft and publish it manually from the GitHub Releases page when it is ready.
+   Publishing is never an automatic side effect of pushing a tag.
 
 Pull requests are validated by the CI workflow, which builds the solution, runs both test projects, and uploads the VSIX as a build artifact.
 

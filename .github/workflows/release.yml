@@ -152,12 +152,15 @@ jobs:
           name: CodexForVisualStudio-vsix
           path: ${{ steps.find_vsix.outputs.vsix_path }}
 
-      - name: Create GitHub release
+      - name: Create GitHub release (draft)
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # Created as a draft: publishing (making it the latest release) is a deliberate manual
+          # step, not an automatic side effect of pushing a tag.
           gh release create "${{ github.ref_name }}" `
             --title "Codex for Visual Studio ${{ github.ref_name }}" `
             --generate-notes `
+            --draft `
             "${{ steps.find_vsix.outputs.vsix_path }}#${{ steps.find_vsix.outputs.vsix_name }}"
