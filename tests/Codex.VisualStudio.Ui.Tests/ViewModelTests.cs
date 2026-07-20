@@ -1160,6 +1160,11 @@ public sealed class ViewModelTests
         Assert.IsTrue(xaml.Contains("{Binding AccountActionText}", StringComparison.Ordinal));
         Assert.IsTrue(xaml.Contains("{Binding ShowAccountAction,", StringComparison.Ordinal));
         Assert.IsTrue(xaml.Contains("{Binding StatusDetailText}", StringComparison.Ordinal));
+        Assert.IsTrue(xaml.Contains("ItemsSource=\"{Binding ServiceTiers}\"", StringComparison.Ordinal));
+        Assert.IsTrue(xaml.Contains("SelectedValue=\"{Binding SelectedServiceTierId, Mode=TwoWay}\"", StringComparison.Ordinal));
+        Assert.IsTrue(xaml.Contains("AutomationProperties.Name=\"Speed\"", StringComparison.Ordinal));
+        Assert.IsTrue(xaml.Contains("ItemsSource=\"{Binding ReasoningEfforts}\"", StringComparison.Ordinal));
+        Assert.IsTrue(xaml.Contains("SelectedValue=\"{Binding SelectedReasoningEffortId, Mode=TwoWay}\"", StringComparison.Ordinal));
         Assert.IsFalse(xaml.Contains("{Binding Account.", StringComparison.Ordinal));
     }
 
@@ -1343,9 +1348,8 @@ public sealed class ViewModelTests
             typeof(UserInputViewModel), typeof(UserInputQuestionViewModel), typeof(UserInputOptionViewModel),
             typeof(SuggestionChip), typeof(SlashCommandPresentationViewModel),
             typeof(SlashCommandSuggestionViewModel), typeof(SlashCommandOptionViewModel),
-            typeof(ReasoningEffortOption),
             typeof(AttachmentChipViewModel), typeof(FileSuggestionPresentationViewModel),
-            typeof(FileSuggestionViewModel),
+            typeof(FileSuggestionViewModel), typeof(ReasoningEffortOption), typeof(ServiceTierOption),
             typeof(WorkerStatus), typeof(ThreadSummary),
         ];
 
@@ -1609,7 +1613,6 @@ public sealed class ViewModelTests
             },
         };
         using var vm = new ChatViewModel(bridge, autoConnect: false);
-
         await vm.PopulateModelsAsync();
 
         Assert.AreEqual("hidden-default", vm.SelectedModel);
@@ -1630,11 +1633,7 @@ public sealed class ViewModelTests
         {
             ModelListResult = new ListModelsResult
             {
-                Models =
-                [
-                    ModelWithReasoning("model-high", "high"),
-                    ModelWithReasoning("model-low", "low"),
-                ],
+                Models = [ModelWithReasoning("model-high", "high"), ModelWithReasoning("model-low", "low")],
                 DefaultModel = "model-high",
             },
         };
@@ -1643,10 +1642,8 @@ public sealed class ViewModelTests
 
         Assert.AreEqual("high", vm.SelectedReasoningEffortId);
         vm.SelectedModel = "model-low";
-
         Assert.AreEqual(ReasoningEffortCatalog.DefaultId, vm.SelectedReasoningEffortId);
         Assert.AreEqual("high", store.Settings.ReasoningEffortId);
-
         vm.SelectedModel = "model-high";
         Assert.AreEqual("high", vm.SelectedReasoningEffortId);
     }
@@ -1673,12 +1670,101 @@ public sealed class ViewModelTests
         await SendMessageAsync(vm, "default turn", clearComposer: false);
         Assert.IsTrue(bridge.LastStartTurnRequest!.HasEffort);
         Assert.AreEqual("high", bridge.LastStartTurnRequest.Effort);
-
         vm.ComposerText = "/plan plan turn";
         await InvokeComposerSendAsync(vm);
         Assert.IsTrue(bridge.LastStartTurnRequest!.HasEffort);
         Assert.AreEqual("high", bridge.LastStartTurnRequest.Effort);
         Assert.AreEqual("high", bridge.LastStartTurnRequest.CollaborationMode!.ReasoningEffort);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_ServiceTiersUseHiddenDefaultMetadataAndSanitizeCatalogText()
+    {
+        var bridge = new FakeWorkerBridge
+        {
+            ModelListResult = new ListModelsResult
+            {
+                Models = [new ModelInfo { Id = "visible" }],
+                DefaultModel = "hidden-default",
+                DefaultModelInfo = new ModelInfo
+                {
+                    Id = "hidden-default",
+                    DefaultServiceTier = "standard",
+                    ServiceTiers =
+                    [
+                        new ServiceTierInfo { Id = "standard", Name = "Standard", Description = "Normal queue" },
+                        new ServiceTierInfo { Id = "FAST", Name = "<b>Fast</b>", Description = "<script>bad()</script> Low latency" },
+                        new ServiceTierInfo { Id = "fast", Name = "Duplicate" },
+                    ],
+                },
+            },
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false);
+
+        await vm.PopulateModelsAsync();
+
+        string[] expectedIds = ["", "standard", "FAST"];
+        CollectionAssert.AreEqual(expectedIds, vm.ServiceTiers.Select(option => option.Id).ToArray());
+        Assert.AreEqual("Fast", vm.ServiceTiers[2].DisplayText);
+        Assert.IsFalse(vm.ServiceTiers[2].Description.Contains("<script>", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_ServiceTierSelectionPreservesUnsupportedPersistedIdAcrossModels()
+    {
+        var store = new MemorySettingsStore(new ExtensionSettings { ServiceTierId = "FAST" });
+        var bridge = new FakeWorkerBridge
+        {
+            ModelListResult = new ListModelsResult
+            {
+                Models =
+                [
+                    new ModelInfo { Id = "fast-model", ServiceTiers = [new ServiceTierInfo { Id = "fast" }] },
+                    new ModelInfo { Id = "standard-model", ServiceTiers = [new ServiceTierInfo { Id = "standard" }] },
+                ],
+                DefaultModel = "fast-model",
+            },
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: store);
+        await vm.PopulateModelsAsync();
+        Assert.AreEqual("fast", vm.SelectedServiceTierId);
+
+        vm.SelectedModel = "standard-model";
+        Assert.AreEqual(ServiceTierCatalog.DefaultId, vm.SelectedServiceTierId);
+        Assert.AreEqual("FAST", store.Settings.ServiceTierId);
+
+        vm.SelectedModel = "fast-model";
+        Assert.AreEqual("fast", vm.SelectedServiceTierId);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_PersistentServiceTierUsesCanonicalValueForNormalAndPlanTurns()
+    {
+        var store = new MemorySettingsStore(new ExtensionSettings { ServiceTierId = "FAST" });
+        var bridge = new FakeWorkerBridge
+        {
+            ModelListResult = new ListModelsResult
+            {
+                Models = [new ModelInfo { Id = "gpt-5", ServiceTiers = [new ServiceTierInfo { Id = "fast" }] }],
+                DefaultModel = "gpt-5",
+            },
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: store)
+        {
+            SelectedThread = new ThreadSummary { Id = "thread-1" },
+        };
+        await vm.PopulateModelsAsync();
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready, ThreadId = "thread-1" });
+
+        await SendMessageAsync(vm, "normal", clearComposer: false);
+        Assert.IsTrue(bridge.LastStartTurnRequest!.HasServiceTier);
+        Assert.AreEqual("fast", bridge.LastStartTurnRequest.ServiceTier);
+
+        vm.ComposerText = "/plan direct plan";
+        await InvokeComposerSendAsync(vm);
+        Assert.IsTrue(bridge.LastStartTurnRequest!.HasServiceTier);
+        Assert.AreEqual("fast", bridge.LastStartTurnRequest.ServiceTier);
+        Assert.AreEqual("plan", bridge.LastStartTurnRequest.CollaborationMode!.Mode);
     }
 
     [TestMethod]
@@ -2159,8 +2245,197 @@ public sealed class ViewModelTests
         await SendMessageAsync(vm, "second", clearComposer: false);
 
         Assert.IsNull(bridge.LastStartTurnRequest!.ServiceTier);
+        Assert.IsTrue(bridge.LastStartTurnRequest.HasServiceTier);
         Assert.IsNull(bridge.LastStartTurnRequest.Effort);
         Assert.IsNull(bridge.LastStartTurnRequest.Personality);
+
+        await SendMessageAsync(vm, "third", clearComposer: false);
+        Assert.IsFalse(bridge.LastStartTurnRequest!.HasServiceTier);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_FastOverrideSurvivesFailureAndRestoresPersistentTier()
+    {
+        var store = new MemorySettingsStore(new ExtensionSettings { ServiceTierId = "standard" });
+        var bridge = new FakeWorkerBridge
+        {
+            ModelListResult = new ListModelsResult
+            {
+                Models =
+                [
+                    new ModelInfo
+                    {
+                        Id = "gpt-5",
+                        ServiceTiers = [new ServiceTierInfo { Id = "standard" }, new ServiceTierInfo { Id = "Fast" }],
+                    },
+                ],
+                DefaultModel = "gpt-5",
+            },
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: store)
+        {
+            SelectedThread = new ThreadSummary { Id = "thread-1", EffectiveServiceTier = "standard" },
+        };
+        await vm.PopulateModelsAsync();
+        await bridge.PublishStateAsync(new WorkerStatus
+        {
+            State = WorkerConnectionState.Ready,
+            ThreadId = "thread-1",
+            EffectiveServiceTier = "standard",
+        });
+        vm.ComposerText = "/fast";
+        await InvokeComposerSendAsync(vm);
+
+        bridge.StartTurnException = new InvalidOperationException("start failed");
+        await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => SendMessageAsync(vm, "fails", clearComposer: false));
+        Assert.AreEqual("Fast", bridge.LastStartTurnRequest!.ServiceTier);
+        bridge.StartTurnException = null;
+        await SendMessageAsync(vm, "fast succeeds", clearComposer: false);
+        Assert.AreEqual("Fast", bridge.LastStartTurnRequest!.ServiceTier);
+        vm.ComposerText = "/status";
+        await InvokeComposerSendAsync(vm);
+        StringAssert.Contains(vm.Items[^1].Text, "Desired service tier: standard");
+        StringAssert.Contains(vm.Items[^1].Text, "Effective service tier: standard");
+        StringAssert.Contains(vm.Items[^1].Text, "Next-turn service tier: standard");
+        await SendMessageAsync(vm, "restore", clearComposer: false);
+        Assert.AreEqual("standard", bridge.LastStartTurnRequest!.ServiceTier);
+        await SendMessageAsync(vm, "stable", clearComposer: false);
+        Assert.AreEqual("standard", bridge.LastStartTurnRequest!.ServiceTier);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_FastOverrideIsIsolatedByThread()
+    {
+        var store = new MemorySettingsStore(new ExtensionSettings { ServiceTierId = "standard" });
+        var bridge = new FakeWorkerBridge
+        {
+            ModelListResult = new ListModelsResult
+            {
+                Models =
+                [
+                    new ModelInfo
+                    {
+                        Id = "gpt-5",
+                        ServiceTiers = [new ServiceTierInfo { Id = "standard" }, new ServiceTierInfo { Id = "fast" }],
+                    },
+                ],
+                DefaultModel = "gpt-5",
+            },
+        };
+        var thread1 = new ThreadSummary { Id = "thread-1", EffectiveServiceTier = "standard" };
+        var thread2 = new ThreadSummary { Id = "thread-2", EffectiveServiceTier = "standard" };
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: store) { SelectedThread = thread1 };
+        await vm.PopulateModelsAsync();
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready, ThreadId = "thread-1" });
+        vm.ComposerText = "/fast";
+        await InvokeComposerSendAsync(vm);
+
+        vm.SelectedThread = thread2;
+        await SendMessageAsync(vm, "thread two", clearComposer: false);
+        Assert.AreEqual("standard", bridge.LastStartTurnRequest!.ServiceTier);
+        vm.SelectedThread = thread1;
+        await SendMessageAsync(vm, "thread one", clearComposer: false);
+        Assert.AreEqual("fast", bridge.LastStartTurnRequest!.ServiceTier);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_RepeatedFastOverridePreservesInheritedRestoreTarget()
+    {
+        var bridge = new FakeWorkerBridge
+        {
+            ModelListResult = new ListModelsResult
+            {
+                Models =
+                [
+                    new ModelInfo
+                    {
+                        Id = "gpt-5",
+                        ServiceTiers = [new ServiceTierInfo { Id = "standard" }, new ServiceTierInfo { Id = "fast" }],
+                    },
+                ],
+                DefaultModel = "gpt-5",
+            },
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false)
+        {
+            SelectedThread = new ThreadSummary { Id = "thread-1", EffectiveServiceTier = "standard" },
+        };
+        await vm.PopulateModelsAsync();
+        await bridge.PublishStateAsync(new WorkerStatus
+        {
+            State = WorkerConnectionState.Ready,
+            ThreadId = "thread-1",
+            EffectiveServiceTier = "standard",
+        });
+
+        vm.ComposerText = "/fast";
+        await InvokeComposerSendAsync(vm);
+        await SendMessageAsync(vm, "first fast", clearComposer: false);
+        Assert.AreEqual("fast", bridge.LastStartTurnRequest!.ServiceTier);
+
+        vm.ComposerText = "/fast";
+        await InvokeComposerSendAsync(vm);
+        await SendMessageAsync(vm, "second fast", clearComposer: false);
+        Assert.AreEqual("fast", bridge.LastStartTurnRequest!.ServiceTier);
+
+        await SendMessageAsync(vm, "restore", clearComposer: false);
+        Assert.IsTrue(bridge.LastStartTurnRequest!.HasServiceTier);
+        Assert.AreEqual("standard", bridge.LastStartTurnRequest.ServiceTier);
+
+        await SendMessageAsync(vm, "inherit", clearComposer: false);
+        Assert.IsFalse(bridge.LastStartTurnRequest!.HasServiceTier);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_FastOverrideAndRestoreWaitForSupportedModel()
+    {
+        var bridge = new FakeWorkerBridge
+        {
+            ModelListResult = new ListModelsResult
+            {
+                Models =
+                [
+                    new ModelInfo
+                    {
+                        Id = "tier-model",
+                        ServiceTiers = [new ServiceTierInfo { Id = "standard" }, new ServiceTierInfo { Id = "fast" }],
+                    },
+                    new ModelInfo { Id = "plain-model" },
+                ],
+                DefaultModel = "tier-model",
+            },
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false)
+        {
+            SelectedThread = new ThreadSummary { Id = "thread-1", EffectiveServiceTier = "standard" },
+        };
+        await vm.PopulateModelsAsync();
+        await bridge.PublishStateAsync(new WorkerStatus
+        {
+            State = WorkerConnectionState.Ready,
+            ThreadId = "thread-1",
+            EffectiveServiceTier = "standard",
+        });
+
+        vm.ComposerText = "/fast";
+        await InvokeComposerSendAsync(vm);
+        vm.SelectedModel = "plain-model";
+        await SendMessageAsync(vm, "unsupported fast", clearComposer: false);
+        Assert.IsFalse(bridge.LastStartTurnRequest!.HasServiceTier);
+
+        vm.SelectedModel = "tier-model";
+        await SendMessageAsync(vm, "supported fast", clearComposer: false);
+        Assert.IsTrue(bridge.LastStartTurnRequest!.HasServiceTier);
+        Assert.AreEqual("fast", bridge.LastStartTurnRequest.ServiceTier);
+
+        vm.SelectedModel = "plain-model";
+        await SendMessageAsync(vm, "unsupported restore", clearComposer: false);
+        Assert.IsFalse(bridge.LastStartTurnRequest!.HasServiceTier);
+
+        vm.SelectedModel = "tier-model";
+        await SendMessageAsync(vm, "supported restore", clearComposer: false);
+        Assert.IsTrue(bridge.LastStartTurnRequest!.HasServiceTier);
+        Assert.AreEqual("standard", bridge.LastStartTurnRequest.ServiceTier);
     }
 
     [TestMethod]
@@ -2189,21 +2464,14 @@ public sealed class ViewModelTests
         vm.ComposerText = "/reasoning HIGH";
         await InvokeComposerSendAsync(vm);
         await SendMessageAsync(vm, "override", clearComposer: false);
-
-        Assert.IsTrue(bridge.LastStartTurnRequest!.HasEffort);
-        Assert.AreEqual("high", bridge.LastStartTurnRequest.Effort);
-
+        Assert.AreEqual("high", bridge.LastStartTurnRequest!.Effort);
         vm.ComposerText = "/status";
         await InvokeComposerSendAsync(vm);
         StringAssert.Contains(vm.Items[^1].Text, "Next-turn reasoning effort: medium");
-
         await SendMessageAsync(vm, "restore", clearComposer: false);
-        Assert.IsTrue(bridge.LastStartTurnRequest!.HasEffort);
-        Assert.AreEqual("medium", bridge.LastStartTurnRequest.Effort);
-
+        Assert.AreEqual("medium", bridge.LastStartTurnRequest!.Effort);
         await SendMessageAsync(vm, "inherit", clearComposer: false);
         Assert.IsFalse(bridge.LastStartTurnRequest!.HasEffort);
-        Assert.IsNull(bridge.LastStartTurnRequest.Effort);
     }
 
     [TestMethod]
@@ -2214,7 +2482,7 @@ public sealed class ViewModelTests
         {
             ModelListResult = new ListModelsResult
             {
-                Models = [ModelWithReasoning("gpt-5", "medium", "high", "xhigh")],
+                Models = [ModelWithReasoning("gpt-5", "low", "medium", "high", "xhigh")],
                 DefaultModel = "gpt-5",
             },
         };
@@ -2232,13 +2500,12 @@ public sealed class ViewModelTests
 
         vm.ComposerText = "/reasoning xhigh";
         await InvokeComposerSendAsync(vm);
-        await SendMessageAsync(vm, "first override", clearComposer: false);
-        vm.ComposerText = "/reasoning medium";
+        await SendMessageAsync(vm, "first", clearComposer: false);
+        vm.ComposerText = "/reasoning low";
         await InvokeComposerSendAsync(vm);
-        await SendMessageAsync(vm, "replacement override", clearComposer: false);
-        Assert.AreEqual("medium", bridge.LastStartTurnRequest!.Effort);
-
-        await SendMessageAsync(vm, "restore persistent", clearComposer: false);
+        await SendMessageAsync(vm, "replacement", clearComposer: false);
+        Assert.AreEqual("low", bridge.LastStartTurnRequest!.Effort);
+        await SendMessageAsync(vm, "restore", clearComposer: false);
         Assert.AreEqual("high", bridge.LastStartTurnRequest!.Effort);
     }
 
@@ -2264,16 +2531,14 @@ public sealed class ViewModelTests
             ThreadId = "thread-1",
             EffectiveReasoningEffort = "medium",
         });
-
         vm.ComposerText = "/reasoning high";
         await InvokeComposerSendAsync(vm);
-        await SendMessageAsync(vm, "first override", clearComposer: false);
+        await SendMessageAsync(vm, "high", clearComposer: false);
         vm.ComposerText = "/reasoning low";
         await InvokeComposerSendAsync(vm);
-        await SendMessageAsync(vm, "replacement override", clearComposer: false);
+        await SendMessageAsync(vm, "low", clearComposer: false);
         Assert.AreEqual("low", bridge.LastStartTurnRequest!.Effort);
-
-        await SendMessageAsync(vm, "restore original", clearComposer: false);
+        await SendMessageAsync(vm, "restore", clearComposer: false);
         Assert.AreEqual("medium", bridge.LastStartTurnRequest!.Effort);
     }
 
@@ -2334,9 +2599,7 @@ public sealed class ViewModelTests
             SelectedThread = new ThreadSummary { Id = "thread-1" },
             ComposerText = "/status",
         };
-
         await InvokeComposerSendAsync(vm);
-
         StringAssert.Contains(vm.Items[^1].Text, "Desired reasoning effort: organization-tier");
         StringAssert.Contains(vm.Items[^1].Text, "Next-turn reasoning effort: (config.toml)");
     }
@@ -2359,18 +2622,12 @@ public sealed class ViewModelTests
         };
         await vm.PopulateModelsAsync();
         await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready, ThreadId = "thread-1" });
-        vm.ComposerText = "/reasoning HIGH";
+        vm.ComposerText = "/reasoning high";
         await InvokeComposerSendAsync(vm);
-
-        await Assert.ThrowsExactlyAsync<InvalidOperationException>(
-            () => SendMessageAsync(vm, "fails", clearComposer: false));
-        Assert.IsTrue(bridge.LastStartTurnRequest!.HasEffort);
-        Assert.AreEqual("high", bridge.LastStartTurnRequest.Effort);
-
+        await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => SendMessageAsync(vm, "fails", clearComposer: false));
         bridge.StartTurnException = null;
         await SendMessageAsync(vm, "succeeds", clearComposer: false);
-        Assert.IsTrue(bridge.LastStartTurnRequest!.HasEffort);
-        Assert.AreEqual("high", bridge.LastStartTurnRequest.Effort);
+        Assert.AreEqual("high", bridge.LastStartTurnRequest!.Effort);
     }
 
     [TestMethod]
@@ -2911,16 +3168,6 @@ public sealed class ViewModelTests
         ConversationEventKind kind)
         => viewModel.Items.Single(item => item.ItemId == itemId && item.Kind == kind);
 
-    private static ModelInfo ModelWithReasoning(string id, params string[] efforts)
-        => new()
-        {
-            Id = id,
-            DefaultReasoningEffort = efforts.FirstOrDefault(),
-            SupportedReasoningEfforts = efforts
-                .Select(effort => new ReasoningEffortInfo { Id = effort, Description = $"{effort} description" })
-                .ToArray(),
-        };
-
     private sealed class FakeFilePickerService(IReadOnlyList<string> files) : IFilePickerService
     {
         public Task<IReadOnlyList<string>> PickFilesAsync(string? initialDirectory, CancellationToken cancellationToken)
@@ -2941,6 +3188,16 @@ public sealed class ViewModelTests
             return Task.FromResult(results);
         }
     }
+
+    private static ModelInfo ModelWithReasoning(string id, params string[] efforts)
+        => new()
+        {
+            Id = id,
+            DefaultReasoningEffort = efforts.FirstOrDefault(),
+            SupportedReasoningEfforts = efforts
+                .Select(effort => new ReasoningEffortInfo { Id = effort, Description = $"{effort} description" })
+                .ToArray(),
+        };
 
     private sealed class MemorySettingsStore : IExtensionSettingsStore
     {

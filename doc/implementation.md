@@ -34,12 +34,9 @@ The publisher is `kazushikamegawa`. The VSIX identifier is `Kkamegawa.CodexForVi
 - Local prose prompt detection for natural-language numbered choices and yes/no confirmation questions, independent of the experimental API toggle
 - Pixel-based transcript scrolling (VirtualizingPanel.ScrollUnit=Pixel) to avoid variable-height item jumps
 - VSIX packaging with PkgDef, WPF package dependencies, .NET 8 worker, and worker dependencies
-- Model-aware reasoning effort picker with sanitized catalog descriptions, stable persisted IDs,
-  hidden-default capability metadata, and Remote UI accessibility bindings
-- Contract version 13 turn-setting presence flags for omit/null/value semantics, plus effective
-  reasoning and service-tier propagation through thread and Worker status contracts
-- Thread-scoped `/reasoning` one-turn overrides with success-only consumption and explicit
-  restoration of the app-server's prior sticky value
+- Model-aware Reasoning and Speed pickers with sanitized catalog content, stable persisted IDs, hidden-default capability metadata, and Remote UI accessibility bindings
+- Contract version 13 turn-setting presence flags for omit/null/value semantics, plus effective reasoning and service-tier propagation
+- Thread-scoped `/reasoning` and `/fast` one-turn overrides with success-only consumption and explicit sticky-value restoration
 
 ## Validation Status
 
@@ -73,15 +70,9 @@ The generated VSIX contents have been inspected and include:
 - `Worker/Codex.VisualStudio.Worker.exe`
 - Worker runtime configuration and dependency assemblies
 
-### Reasoning validation
-
-The Fake app-server publishes visible and hidden-default reasoning catalogs and echoes effective
-thread settings. Core tests cover hidden metadata, omit versus explicit-null serialization, and
-effective settings from thread responses and notifications. UI tests cover sanitization, model
-fallback without preference loss, canonical persistent values, plan-mode consistency, one-turn
-restoration, and failed-start retention.
-
 ## Remaining Manual Validation
+
+Core and UI tests cover catalog sanitation, model fallback without preference loss, canonical persistent values, normal and Plan resolution, one-turn restoration, thread isolation, and failed-start retention.
 
 - Verify the View menu command and WPF tool window under all supported Visual Studio themes.
 - Confirm live approval request and response shapes against the installed Codex version.

@@ -2,15 +2,14 @@
 
 `plan.md` のフェーズ分割に対応する詳細タスク。各タスクは独立してレビュー可能な小さなスライスを意図する。
 
-## 2026-07-20: Reasoning effort picker (#85, #93, #94, #95)
+## 2026-07-20: Reasoning and service-tier pickers (#85, #86, #93-#98)
 
 - [x] Upgrade the Extension/Worker contract to version 13 with effort and service-tier presence flags.
 - [x] Preserve hidden default model capabilities separately from the visible catalog.
-- [x] Track effective reasoning effort and service tier across thread lifecycle and settings updates.
-- [x] Add the sanitized, model-aware persistent Reasoning picker to Remote UI.
-- [x] Make `/reasoning` thread-scoped, canonical, success-consumed, and restore sticky settings.
+- [x] Track effective turn settings across thread lifecycle and settings updates.
+- [x] Add sanitized, model-aware persistent Reasoning and Speed pickers to Remote UI.
+- [x] Make `/reasoning` and `/fast` thread-scoped, canonical, success-consumed, and sticky-restoring.
 - [x] Update the Fake app-server and add Core/UI regression coverage.
-- [x] Validate the Release build with zero warnings and run both test projects separately.
 
 ---
 

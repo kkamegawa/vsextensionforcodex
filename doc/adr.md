@@ -43,26 +43,19 @@
 ## ADR-004: Turn settings use a three-state wire contract and explicit restoration
 
 - Date: 2026-07-20
-- Task: GitHub Issues #85, #93, #94, and #95
+- Task: GitHub Issues #85, #86, and #93 through #98
 - Status: Accepted
 
 ### Decision
 
-- Represent reasoning effort and service tier with a presence flag plus a nullable value. Omission
-  inherits Codex configuration, explicit null clears a sticky thread override, and a non-null value
-  sets a canonical override.
-- Keep the user's persistent reasoning preference separate from the model-compatible visual
-  selection. Unsupported models temporarily fall back to Default without modifying persistence.
-- Preserve hidden default model metadata outside the visible model list so an injected default ID
-  retains its capabilities.
-- Treat `/reasoning` as a thread-scoped one-turn override. Consume it only after a successful turn
-  start, then explicitly restore the effective value captured before the override.
-- Use the same resolved reasoning value for the top-level turn field and Plan collaboration-mode
-  settings. Sanitize all app-server-owned descriptions before display.
+- Represent reasoning effort and service tier with a presence flag plus a nullable value. Omission inherits Codex configuration, explicit null clears a sticky thread override, and a non-null value sets a canonical override.
+- Keep persistent preferences separate from model-compatible visual selections. Unsupported models temporarily display Default without modifying persistence.
+- Preserve hidden default model metadata outside the visible model list so an injected default ID retains its capabilities.
+- Treat `/reasoning` and `/fast` as thread-scoped one-turn overrides. Consume them only after a successful turn start, then explicitly restore the persistent or effective value captured before the override.
+- Use the same resolved settings for normal and direct Plan turns. Sanitize all app-server-owned names and descriptions before display.
 
 ### Consequences
 
 - The Extension/Worker RPC contract advances to version 13 and requires matching binaries.
 - Thread summaries and Worker status expose effective reasoning effort and service tier.
 - A restoration turn can carry explicit null even though a normal Default turn omits the property.
-- The service-tier picker can reuse the same wire semantics without changing contract version 13.
