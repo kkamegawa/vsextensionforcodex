@@ -53,9 +53,10 @@ internal static class ServiceTierCatalog
 
     public static IReadOnlyList<ServiceTierOption> Create(ModelInfo? model, SafeMarkdownService markdown)
     {
-        string defaultDescription = string.IsNullOrEmpty(model?.DefaultServiceTier)
+        string defaultServiceTier = markdown.ToSafeText(model?.DefaultServiceTier ?? string.Empty).Trim();
+        string defaultDescription = defaultServiceTier.Length == 0
             ? "Inherit the service tier from the Codex configuration."
-            : $"Inherit the Codex configuration. The model reports {FormatLabel(model.DefaultServiceTier)} as its default.";
+            : $"Inherit the Codex configuration. The model reports {FormatLabel(defaultServiceTier)} as its default.";
         var options = new List<ServiceTierOption>
         {
             new(DefaultId, "Default", defaultDescription),
@@ -73,11 +74,12 @@ internal static class ServiceTierCatalog
                 continue;
             }
 
+            string safeId = markdown.ToSafeText(tier.Id).Trim();
             string safeName = markdown.ToSafeText(tier.Name ?? string.Empty).Trim();
             string safeDescription = markdown.ToSafeText(tier.Description ?? string.Empty).Trim();
             options.Add(new ServiceTierOption(
                 tier.Id,
-                safeName.Length == 0 ? FormatLabel(tier.Id) : safeName,
+                safeName.Length == 0 ? FormatLabel(safeId) : safeName,
                 safeDescription));
         }
 

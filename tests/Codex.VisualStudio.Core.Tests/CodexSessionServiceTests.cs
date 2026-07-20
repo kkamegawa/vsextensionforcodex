@@ -403,6 +403,22 @@ public sealed class CodexSessionServiceTests
         JsonElement cleared = ParametersFor(connection, "turn/start");
         Assert.AreEqual(JsonValueKind.Null, cleared.GetProperty("effort").ValueKind);
         Assert.AreEqual(JsonValueKind.Null, cleared.GetProperty("serviceTier").ValueKind);
+
+        connection.Requests.Clear();
+        await service.StartTurnAsync(
+            new StartTurnRequest
+            {
+                ThreadId = "thread-1",
+                Text = "override",
+                HasEffort = true,
+                Effort = "high",
+                HasServiceTier = true,
+                ServiceTier = "priority",
+            },
+            CancellationToken.None);
+        JsonElement explicitValues = ParametersFor(connection, "turn/start");
+        Assert.AreEqual("high", explicitValues.GetProperty("effort").GetString());
+        Assert.AreEqual("priority", explicitValues.GetProperty("serviceTier").GetString());
     }
 
     [TestMethod]

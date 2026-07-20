@@ -1693,12 +1693,13 @@ public sealed class ViewModelTests
                 DefaultModelInfo = new ModelInfo
                 {
                     Id = "hidden-default",
-                    DefaultServiceTier = "standard",
+                    DefaultServiceTier = "<script>standard</script>",
                     ServiceTiers =
                     [
                         new ServiceTierInfo { Id = "standard", Name = "Standard", Description = "Normal queue" },
                         new ServiceTierInfo { Id = "FAST", Name = "<b>Fast</b>", Description = "<script>bad()</script> Low latency" },
                         new ServiceTierInfo { Id = "fast", Name = "Duplicate" },
+                        new ServiceTierInfo { Id = "<script>ultra</script>" },
                     ],
                 },
             },
@@ -1707,10 +1708,14 @@ public sealed class ViewModelTests
 
         await vm.PopulateModelsAsync();
 
-        string[] expectedIds = ["", "standard", "FAST"];
+        string[] expectedIds = ["", "standard", "FAST", "<script>ultra</script>"];
         CollectionAssert.AreEqual(expectedIds, vm.ServiceTiers.Select(option => option.Id).ToArray());
         Assert.AreEqual("Fast", vm.ServiceTiers[2].DisplayText);
         Assert.IsFalse(vm.ServiceTiers[2].Description.Contains("<script>", StringComparison.OrdinalIgnoreCase));
+        Assert.IsFalse(vm.ServiceTiers[0].Description.Contains("<script>", StringComparison.OrdinalIgnoreCase));
+        Assert.IsFalse(vm.ServiceTiers[0].AutomationName.Contains("<script>", StringComparison.OrdinalIgnoreCase));
+        Assert.IsFalse(vm.ServiceTiers[3].DisplayText.Contains('<'));
+        Assert.IsFalse(vm.ServiceTiers[3].AutomationName.Contains('<'));
     }
 
     [TestMethod]
