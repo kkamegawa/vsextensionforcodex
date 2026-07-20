@@ -33,7 +33,7 @@ public sealed class StreamingBufferTests
             buffer.Append("command-1", template, "x", 100);
         }
 
-        await Task.Delay(250);
+        await WaitUntilAsync(() => CountEvents(events) >= 1, TimeSpan.FromSeconds(2));
         Assert.AreEqual(1, events.Count);
         ConversationEvent result = events[0];
         Assert.AreEqual(100, result.Text?.Length);
@@ -71,7 +71,7 @@ public sealed class StreamingBufferTests
             buffer.Append("reasoning-1", template, chunk, StreamingBuffer.ReasoningLimit);
         }
 
-        await Task.Delay(250);
+        await WaitUntilAsync(() => CountEvents(events) >= 1, TimeSpan.FromSeconds(2));
         Assert.IsTrue(events.Count >= 1, "Expected at least one emitted event.");
         ConversationEvent last = events[^1];
         Assert.IsTrue(last.Truncated, "Expected Truncated = true after exceeding memory limit.");
@@ -102,9 +102,33 @@ public sealed class StreamingBufferTests
         buffer.Append("item-a", templateA, "hello ", StreamingBuffer.CommandOutputLimit);
         buffer.Append("item-b", templateB, "world", StreamingBuffer.CommandOutputLimit);
 
-        await Task.Delay(250);
+        await WaitUntilAsync(() => CountEvents(events) >= 2, TimeSpan.FromSeconds(2));
         Assert.AreEqual(2, events.Count);
         Assert.IsTrue(events.Any(e => e.ItemId == "item-a"));
         Assert.IsTrue(events.Any(e => e.ItemId == "item-b"));
+    }
+
+    private static int CountEvents(List<ConversationEvent> events)
+    {
+        lock (events)
+        {
+            return events.Count;
+        }
+    }
+
+    // Polls instead of a fixed sleep: the StreamingBuffer flushes on a 75ms PeriodicTimer, so a
+    // fixed delay races the timer under CI load. Returns as soon as the condition is met.
+    private static async Task WaitUntilAsync(Func<bool> condition, TimeSpan timeout)
+    {
+        DateTime deadline = DateTime.UtcNow + timeout;
+        while (!condition())
+        {
+            if (DateTime.UtcNow >= deadline)
+            {
+                Assert.Fail($"Condition not met within {timeout}.");
+            }
+
+            await Task.Delay(25);
+        }
     }
 }
