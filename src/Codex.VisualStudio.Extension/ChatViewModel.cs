@@ -56,6 +56,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     private bool isHistoryOpen;
     private bool ideContextEnabled = true;
     private string? selectedModel;
+    private string selectedReasoningEffortId = ReasoningEffortCatalog.DefaultId;
     private string selectedMode = "Agent";
     private ApprovalModeOption? selectedApprovalMode;
     private ApprovalModeOption? pendingApprovalMode;
@@ -63,7 +64,8 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     private string? approvalModeBeforeConfirmationId;
     private bool confirmationStartsNewThread;
     private string? workingDirectory;
-    private string? nextReasoningEffort;
+    private readonly Dictionary<string, PendingReasoningOverride> pendingReasoningByThread = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, string?> reasoningRestoreByThread = new(StringComparer.Ordinal);
     private string? nextPersonality;
     private string? nextServiceTier;
     private string? nextCollaborationMode;
@@ -72,6 +74,10 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     private readonly HashSet<SlashCommandId> unavailableSlashCommands = [];
     private int drainingSlashQueue;
     private CancellationTokenSource? fileSuggestionRefresh;
+
+    private readonly record struct PendingReasoningOverride(string Effort, string? RestoreEffort);
+
+    private readonly record struct TurnSettingResolution(bool HasValue, string? Value);
 
     public ChatViewModel(OutputChannel? outputChannel = null, VisualStudioExtensibility? extensibility = null)
         : this(new WorkerBridge(outputChannel), outputChannel, extensibility, autoConnect: true)
@@ -143,6 +149,8 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
         Models = ["gpt-5-codex", "gpt-5"];
         selectedModel = Models[0];
+        ReasoningEfforts = [];
+        RefreshReasoningEfforts();
 
         ApprovalModes = ApprovalModeCatalog.CreateBuiltIns();
         selectedApprovalMode = FindApprovalMode(ApprovalModeCatalog.CustomId);
@@ -458,6 +466,9 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     public ObservableCollection<string> Models { get; }
 
     [DataMember]
+    public ObservableCollection<ReasoningEffortOption> ReasoningEfforts { get; }
+
+    [DataMember]
     public string? SelectedModel
     {
         get => selectedModel;
@@ -477,10 +488,42 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
             if (SetProperty(ref selectedModel, value))
             {
+                RefreshReasoningEfforts();
                 UpdateComposerSuggestions(ComposerText);
             }
         }
     }
+
+    [DataMember]
+    public string SelectedReasoningEffortId
+    {
+        get => selectedReasoningEffortId;
+        set
+        {
+            // Ignore transient null/unknown SelectedValue writes produced while Remote UI applies
+            // the collection merge. A model fallback is visual only and must not overwrite the
+            // user's persisted choice.
+            ReasoningEffortOption? option = FindReasoningEffort(value);
+            if (option is null || string.Equals(selectedReasoningEffortId, option.Id, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            selectedReasoningEffortId = option.Id;
+            settings.ReasoningEffortId = option.Id;
+            settingsStore.Save(settings);
+            OnPropertyChanged();
+            OnPropertyChanged(nameof(ReasoningEffortHelpText));
+        }
+    }
+
+    [DataMember]
+    public bool HasReasoningEfforts => ReasoningEfforts.Count > 1;
+
+    [DataMember]
+    public string ReasoningEffortHelpText
+        => FindReasoningEffort(SelectedReasoningEffortId)?.Description
+            ?? "Inherit the reasoning effort from the Codex configuration.";
 
     [DataMember]
     public ObservableCollection<string> Modes { get; } = ["Agent", "Chat"];
@@ -866,6 +909,8 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         await OnUiAsync(() =>
         {
             thread.EffectiveApprovalState = resumed.EffectiveApprovalState;
+            thread.EffectiveReasoningEffort = resumed.EffectiveReasoningEffort;
+            thread.EffectiveServiceTier = resumed.EffectiveServiceTier;
             OnPropertyChanged(nameof(EffectiveApprovalModeText));
             Items.Clear();
         }).ConfigureAwait(false);
@@ -1007,6 +1052,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             }
 
             UpdateComposerSuggestions(ComposerText);
+            RefreshReasoningEfforts();
         }).ConfigureAwait(false);
     }
 
@@ -1125,6 +1171,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 lifetime.Token).ConfigureAwait(false)
             : null;
         string? collaborationMode = forcePlanMode ? "plan" : nextCollaborationMode;
+        TurnSettingResolution reasoning = ResolveReasoningSetting(threadId);
         return new StartTurnRequest
         {
             ThreadId = threadId,
@@ -1134,8 +1181,10 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             ApprovalsReviewer = GetTurnApprovalsReviewer(),
             SandboxMode = GetTurnSandboxMode(),
             Permissions = GetTurnPermissions(),
-            Effort = nextReasoningEffort,
+            HasEffort = reasoning.HasValue,
+            Effort = reasoning.Value,
             Personality = nextPersonality,
+            HasServiceTier = nextServiceTier is not null,
             ServiceTier = nextServiceTier,
             CollaborationMode = collaborationMode is null
                 ? null
@@ -1143,7 +1192,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 {
                     Mode = collaborationMode,
                     Model = SelectedModel ?? string.Empty,
-                    ReasoningEffort = nextReasoningEffort,
+                    ReasoningEffort = reasoning.Value,
                 },
             IdeContext = ideContext,
             Attachments = attachments,
@@ -1154,9 +1203,18 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     // value re-queued while the turn was starting survives for the following turn.
     private void ConsumeNextTurnSettings(StartTurnRequest request)
     {
-        if (string.Equals(nextReasoningEffort, request.Effort, StringComparison.Ordinal))
+        if (pendingReasoningByThread.TryGetValue(request.ThreadId, out PendingReasoningOverride pending)
+            && request.HasEffort
+            && string.Equals(pending.Effort, request.Effort, StringComparison.Ordinal))
         {
-            nextReasoningEffort = null;
+            pendingReasoningByThread.Remove(request.ThreadId);
+            reasoningRestoreByThread[request.ThreadId] = pending.RestoreEffort;
+        }
+        else if (reasoningRestoreByThread.TryGetValue(request.ThreadId, out string? restore)
+            && request.HasEffort
+            && string.Equals(restore, request.Effort, StringComparison.Ordinal))
+        {
+            reasoningRestoreByThread.Remove(request.ThreadId);
         }
 
         if (string.Equals(nextPersonality, request.Personality, StringComparison.Ordinal))
@@ -1471,11 +1529,12 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 new("friendly", "Friendly"),
                 new("pragmatic", "Pragmatic"),
             ],
-            SlashCommandId.Reasoning => GetSelectedModelInfo()?.SupportedReasoningEfforts
+            SlashCommandId.Reasoning => ReasoningEfforts
+                .Skip(1)
                 .Select(effort => new SlashCommandOptionDescriptor(
                     effort.Id,
-                    effort.Id,
-                    effort.Description ?? string.Empty))
+                    effort.DisplayText,
+                    effort.Description))
                 .ToArray(),
             SlashCommandId.Permissions => ApprovalModes
                 .Select(mode => new SlashCommandOptionDescriptor(mode.Id, mode.DisplayText, mode.Description))
@@ -1523,8 +1582,55 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     }
 
     private ModelInfo? GetSelectedModelInfo()
-        => modelCatalog.Models.FirstOrDefault(
-            model => string.Equals(model.Id, SelectedModel, StringComparison.Ordinal));
+        => string.Equals(modelCatalog.DefaultModelInfo?.Id, SelectedModel, StringComparison.Ordinal)
+            ? modelCatalog.DefaultModelInfo
+            : modelCatalog.Models.FirstOrDefault(
+                model => string.Equals(model.Id, SelectedModel, StringComparison.Ordinal));
+
+    private void RefreshReasoningEfforts()
+    {
+        IReadOnlyList<ReasoningEffortOption> options = ReasoningEffortCatalog.Create(GetSelectedModelInfo(), markdown);
+        ReasoningEffortCatalog.Merge(ReasoningEfforts, options);
+        selectedReasoningEffortId = FindReasoningEffort(settings.ReasoningEffortId)?.Id
+            ?? ReasoningEffortCatalog.DefaultId;
+        OnPropertyChanged(nameof(SelectedReasoningEffortId));
+        OnPropertyChanged(nameof(HasReasoningEfforts));
+        OnPropertyChanged(nameof(ReasoningEffortHelpText));
+    }
+
+    private ReasoningEffortOption? FindReasoningEffort(string? id)
+        => id is null
+            ? null
+            : ReasoningEfforts.FirstOrDefault(option =>
+                string.Equals(option.Id, id, StringComparison.OrdinalIgnoreCase));
+
+    private TurnSettingResolution ResolveReasoningSetting(string threadId)
+    {
+        if (pendingReasoningByThread.TryGetValue(threadId, out PendingReasoningOverride pending))
+        {
+            if (SelectedModelSupportsReasoningEffort(pending.Effort))
+            {
+                return new TurnSettingResolution(true, pending.Effort);
+            }
+        }
+
+        if (reasoningRestoreByThread.TryGetValue(threadId, out string? restore))
+        {
+            if (restore is null || SelectedModelSupportsReasoningEffort(restore))
+            {
+                return new TurnSettingResolution(true, restore);
+            }
+        }
+
+        ReasoningEffortOption? persistent = FindReasoningEffort(settings.ReasoningEffortId);
+        return persistent is null || persistent.Id.Length == 0
+            ? new TurnSettingResolution(false, null)
+            : new TurnSettingResolution(true, persistent.Id);
+    }
+
+    private bool SelectedModelSupportsReasoningEffort(string effort)
+        => GetSelectedModelInfo()?.SupportedReasoningEfforts.Any(option =>
+            string.Equals(option.Id, effort, StringComparison.OrdinalIgnoreCase)) == true;
 
     private bool SelectedModelSupportsFastTier()
         => GetSelectedModelInfo()?.ServiceTiers.Any(
@@ -1638,6 +1744,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             SlashCommandId.Compact
             or SlashCommandId.Fork
             or SlashCommandId.Goal
+            or SlashCommandId.Reasoning
             or SlashCommandId.Review
             || (invocation.Definition.Id == SlashCommandId.Plan
                 && !string.IsNullOrWhiteSpace(invocation.Arguments));
@@ -1669,7 +1776,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 SlashCommandId.Model => await ExecuteModelAsync(invocation.Arguments).ConfigureAwait(false),
                 SlashCommandId.Personality => await ExecutePersonalityAsync(invocation.Arguments).ConfigureAwait(false),
                 SlashCommandId.Plan => await ExecutePlanAsync(targetThreadId!, invocation.Arguments).ConfigureAwait(false),
-                SlashCommandId.Reasoning => await ExecuteReasoningAsync(invocation.Arguments).ConfigureAwait(false),
+                SlashCommandId.Reasoning => await ExecuteReasoningAsync(targetThreadId!, invocation.Arguments).ConfigureAwait(false),
                 SlashCommandId.IdeContext => await ExecuteIdeContextAsync().ConfigureAwait(false),
                 SlashCommandId.Init => await ExecuteInitAsync().ConfigureAwait(false),
                 SlashCommandId.Status => await ExecuteStatusAsync(targetThreadId).ConfigureAwait(false),
@@ -1956,22 +2063,50 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         return true;
     }
 
-    private async Task<bool> ExecuteReasoningAsync(string arguments)
+    private async Task<bool> ExecuteReasoningAsync(string threadId, string arguments)
     {
         string effort = arguments.Trim();
         ModelInfo? model = GetSelectedModelInfo();
-        if (effort.Length == 0
-            || model is null
-            || !model.SupportedReasoningEfforts.Any(
-                option => string.Equals(option.Id, effort, StringComparison.OrdinalIgnoreCase)))
+        ReasoningEffortInfo? matched = model?.SupportedReasoningEfforts.FirstOrDefault(
+            option => string.Equals(option.Id, effort, StringComparison.OrdinalIgnoreCase));
+        if (effort.Length == 0 || matched is null)
         {
             await ShowSlashFailureAsync("Select a reasoning effort supported by the current model.").ConfigureAwait(false);
             return false;
         }
 
-        nextReasoningEffort = effort;
-        await ShowSlashStatusAsync($"Reasoning effort set to {effort} for the next turn.").ConfigureAwait(false);
+        string? restoreEffort;
+        if (pendingReasoningByThread.TryGetValue(threadId, out PendingReasoningOverride existing))
+        {
+            restoreEffort = existing.RestoreEffort;
+        }
+        else if (reasoningRestoreByThread.TryGetValue(threadId, out string? queuedRestore))
+        {
+            restoreEffort = queuedRestore;
+        }
+        else
+        {
+            ReasoningEffortOption? persistent = FindReasoningEffort(settings.ReasoningEffortId);
+            restoreEffort = persistent is null || persistent.Id.Length == 0
+                ? GetEffectiveReasoningEffort(threadId)
+                : persistent.Id;
+        }
+        pendingReasoningByThread[threadId] = new PendingReasoningOverride(matched.Id, restoreEffort);
+        await ShowSlashStatusAsync($"Reasoning effort set to {matched.Id} for the next turn in this thread.").ConfigureAwait(false);
         return true;
+    }
+
+    private string? GetEffectiveReasoningEffort(string threadId)
+    {
+        ThreadSummary? thread = SelectedThread;
+        if (thread is not null && string.Equals(thread.Id, threadId, StringComparison.Ordinal))
+        {
+            return thread.EffectiveReasoningEffort;
+        }
+
+        return string.Equals(Status.ThreadId, threadId, StringComparison.Ordinal)
+            ? Status.EffectiveReasoningEffort
+            : null;
     }
 
     private async Task<bool> ExecuteIdeContextAsync()
@@ -2014,12 +2149,23 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         }
 
         string usage = FormatRateLimits(latestRateLimits);
+        string desiredReasoning = string.IsNullOrEmpty(settings.ReasoningEffortId)
+            ? "(config.toml)"
+            : markdown.ToSafeText(settings.ReasoningEffortId);
+        TurnSettingResolution nextReasoning = threadId is null
+            ? new TurnSettingResolution(false, null)
+            : ResolveReasoningSetting(threadId);
+        string nextReasoningText = nextReasoning.HasValue
+            ? nextReasoning.Value ?? "(explicit null)"
+            : "(config.toml)";
         string message = string.Join(
             "\r\n",
             $"Connection: {Status.State}",
             $"Thread: {threadId ?? "(none)"}",
             $"Model: {SelectedModel ?? "(default)"}",
-            $"Reasoning effort: {nextReasoningEffort ?? "(default)"}",
+            $"Desired reasoning effort: {desiredReasoning}",
+            $"Effective reasoning effort: {GetEffectiveReasoningEffort(threadId ?? string.Empty) ?? "(not reported)"}",
+            $"Next-turn reasoning effort: {nextReasoningText}",
             $"Personality: {nextPersonality ?? "(default)"}",
             $"Service tier: {nextServiceTier ?? "(default)"}",
             $"Collaboration mode: {nextCollaborationMode ?? "default"}",
@@ -2457,6 +2603,12 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             WorkerStatus previousStatus = Status;
             WorkerConnectionState previous = previousStatus.State;
             Status = value;
+            if (SelectedThread is not null
+                && string.Equals(SelectedThread.Id, value.ThreadId, StringComparison.Ordinal))
+            {
+                SelectedThread.EffectiveReasoningEffort = value.EffectiveReasoningEffort;
+                SelectedThread.EffectiveServiceTier = value.EffectiveServiceTier;
+            }
             if (value.State is WorkerConnectionState.Disconnected or WorkerConnectionState.Degraded)
             {
                 IReadOnlyList<SlashCommandInvocation> canceled = slashCommandCoordinator.CancelAll();

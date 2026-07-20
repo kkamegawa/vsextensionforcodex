@@ -1304,6 +1304,15 @@
                         ToolTip="Model"
                         ItemsSource="{Binding Models}" SelectedItem="{Binding SelectedModel}"
                         AutomationProperties.Name="Model" />
+              <ComboBox Margin="6,0,0,0" Width="112" VerticalAlignment="Center"
+                        ToolTip="{Binding ReasoningEffortHelpText}"
+                        ItemsSource="{Binding ReasoningEfforts}"
+                        DisplayMemberPath="DisplayText"
+                        SelectedValuePath="Id"
+                        SelectedValue="{Binding SelectedReasoningEffortId, Mode=TwoWay}"
+                        Visibility="{Binding HasReasoningEfforts, Converter={StaticResource BoolToVis}}"
+                        AutomationProperties.Name="Reasoning effort"
+                        AutomationProperties.HelpText="{Binding ReasoningEffortHelpText}" />
               <CheckBox Margin="8,0,0,0" VerticalAlignment="Center"
                         Content="Experimental API"
                         ToolTip="Enable codex experimental APIs for structured prompts after reconnect; natural-language confirmation cards are detected locally."

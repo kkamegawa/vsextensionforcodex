@@ -1343,6 +1343,7 @@ public sealed class ViewModelTests
             typeof(UserInputViewModel), typeof(UserInputQuestionViewModel), typeof(UserInputOptionViewModel),
             typeof(SuggestionChip), typeof(SlashCommandPresentationViewModel),
             typeof(SlashCommandSuggestionViewModel), typeof(SlashCommandOptionViewModel),
+            typeof(ReasoningEffortOption),
             typeof(AttachmentChipViewModel), typeof(FileSuggestionPresentationViewModel),
             typeof(FileSuggestionViewModel),
             typeof(WorkerStatus), typeof(ThreadSummary),
@@ -1581,6 +1582,103 @@ public sealed class ViewModelTests
 
         CollectionAssert.AreEqual(ExpectedModelsWithInjectedDefault, vm.Models);
         Assert.AreEqual("gpt-5.1-codex-max", vm.SelectedModel);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_HiddenDefaultModelExposesSanitizedReasoningOptions()
+    {
+        var bridge = new FakeWorkerBridge
+        {
+            ModelListResult = new ListModelsResult
+            {
+                Models = [new ModelInfo { Id = "gpt-5" }],
+                DefaultModel = "hidden-default",
+                DefaultModelInfo = new ModelInfo
+                {
+                    Id = "hidden-default",
+                    DefaultReasoningEffort = "high",
+                    SupportedReasoningEfforts =
+                    [
+                        new ReasoningEffortInfo
+                        {
+                            Id = "high",
+                            Description = "**Deep**\u001b[31m <script>bad</script>",
+                        },
+                    ],
+                },
+            },
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false);
+
+        await vm.PopulateModelsAsync();
+
+        Assert.AreEqual("hidden-default", vm.SelectedModel);
+        Assert.IsTrue(vm.HasReasoningEfforts);
+        Assert.AreEqual("", vm.ReasoningEfforts[0].Id);
+        Assert.AreEqual("Default", vm.ReasoningEfforts[0].DisplayText);
+        Assert.AreEqual("high", vm.ReasoningEfforts[1].Id);
+        Assert.AreEqual("High", vm.ReasoningEfforts[1].DisplayText);
+        Assert.IsFalse(vm.ReasoningEfforts[1].Description.Contains('\u001b'));
+        Assert.IsFalse(vm.ReasoningEfforts[1].Description.Contains("script", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_ReasoningFallbackDoesNotOverwritePersistedChoice()
+    {
+        var store = new MemorySettingsStore(new ExtensionSettings { ReasoningEffortId = "high" });
+        var bridge = new FakeWorkerBridge
+        {
+            ModelListResult = new ListModelsResult
+            {
+                Models =
+                [
+                    ModelWithReasoning("model-high", "high"),
+                    ModelWithReasoning("model-low", "low"),
+                ],
+                DefaultModel = "model-high",
+            },
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: store);
+        await vm.PopulateModelsAsync();
+
+        Assert.AreEqual("high", vm.SelectedReasoningEffortId);
+        vm.SelectedModel = "model-low";
+
+        Assert.AreEqual(ReasoningEffortCatalog.DefaultId, vm.SelectedReasoningEffortId);
+        Assert.AreEqual("high", store.Settings.ReasoningEffortId);
+
+        vm.SelectedModel = "model-high";
+        Assert.AreEqual("high", vm.SelectedReasoningEffortId);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_PersistentReasoningUsesCanonicalValueForDefaultAndPlanTurns()
+    {
+        var store = new MemorySettingsStore(new ExtensionSettings { ReasoningEffortId = "HIGH" });
+        var bridge = new FakeWorkerBridge
+        {
+            ModelListResult = new ListModelsResult
+            {
+                Models = [ModelWithReasoning("gpt-5", "high")],
+                DefaultModel = "gpt-5",
+            },
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: store)
+        {
+            SelectedThread = new ThreadSummary { Id = "thread-1" },
+        };
+        await vm.PopulateModelsAsync();
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready, ThreadId = "thread-1" });
+
+        await SendMessageAsync(vm, "default turn", clearComposer: false);
+        Assert.IsTrue(bridge.LastStartTurnRequest!.HasEffort);
+        Assert.AreEqual("high", bridge.LastStartTurnRequest.Effort);
+
+        vm.ComposerText = "/plan plan turn";
+        await InvokeComposerSendAsync(vm);
+        Assert.IsTrue(bridge.LastStartTurnRequest!.HasEffort);
+        Assert.AreEqual("high", bridge.LastStartTurnRequest.Effort);
+        Assert.AreEqual("high", bridge.LastStartTurnRequest.CollaborationMode!.ReasoningEffort);
     }
 
     [TestMethod]
@@ -2063,6 +2161,216 @@ public sealed class ViewModelTests
         Assert.IsNull(bridge.LastStartTurnRequest!.ServiceTier);
         Assert.IsNull(bridge.LastStartTurnRequest.Effort);
         Assert.IsNull(bridge.LastStartTurnRequest.Personality);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_ReasoningSlashIsCanonicalThreadScopedAndRestoresStickySetting()
+    {
+        var bridge = new FakeWorkerBridge
+        {
+            ModelListResult = new ListModelsResult
+            {
+                Models = [ModelWithReasoning("gpt-5", "medium", "high")],
+                DefaultModel = "gpt-5",
+            },
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false)
+        {
+            SelectedThread = new ThreadSummary { Id = "thread-1" },
+        };
+        await vm.PopulateModelsAsync();
+        await bridge.PublishStateAsync(new WorkerStatus
+        {
+            State = WorkerConnectionState.Ready,
+            ThreadId = "thread-1",
+            EffectiveReasoningEffort = "medium",
+        });
+
+        vm.ComposerText = "/reasoning HIGH";
+        await InvokeComposerSendAsync(vm);
+        await SendMessageAsync(vm, "override", clearComposer: false);
+
+        Assert.IsTrue(bridge.LastStartTurnRequest!.HasEffort);
+        Assert.AreEqual("high", bridge.LastStartTurnRequest.Effort);
+
+        vm.ComposerText = "/status";
+        await InvokeComposerSendAsync(vm);
+        StringAssert.Contains(vm.Items[^1].Text, "Next-turn reasoning effort: medium");
+
+        await SendMessageAsync(vm, "restore", clearComposer: false);
+        Assert.IsTrue(bridge.LastStartTurnRequest!.HasEffort);
+        Assert.AreEqual("medium", bridge.LastStartTurnRequest.Effort);
+
+        await SendMessageAsync(vm, "inherit", clearComposer: false);
+        Assert.IsFalse(bridge.LastStartTurnRequest!.HasEffort);
+        Assert.IsNull(bridge.LastStartTurnRequest.Effort);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_ReplacingReasoningOverridePreservesPersistentRestoreTarget()
+    {
+        var store = new MemorySettingsStore(new ExtensionSettings { ReasoningEffortId = "high" });
+        var bridge = new FakeWorkerBridge
+        {
+            ModelListResult = new ListModelsResult
+            {
+                Models = [ModelWithReasoning("gpt-5", "medium", "high", "xhigh")],
+                DefaultModel = "gpt-5",
+            },
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: store)
+        {
+            SelectedThread = new ThreadSummary { Id = "thread-1" },
+        };
+        await vm.PopulateModelsAsync();
+        await bridge.PublishStateAsync(new WorkerStatus
+        {
+            State = WorkerConnectionState.Ready,
+            ThreadId = "thread-1",
+            EffectiveReasoningEffort = "medium",
+        });
+
+        vm.ComposerText = "/reasoning xhigh";
+        await InvokeComposerSendAsync(vm);
+        await SendMessageAsync(vm, "first override", clearComposer: false);
+        vm.ComposerText = "/reasoning medium";
+        await InvokeComposerSendAsync(vm);
+        await SendMessageAsync(vm, "replacement override", clearComposer: false);
+        Assert.AreEqual("medium", bridge.LastStartTurnRequest!.Effort);
+
+        await SendMessageAsync(vm, "restore persistent", clearComposer: false);
+        Assert.AreEqual("high", bridge.LastStartTurnRequest!.Effort);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_ReplacingReasoningOverridePreservesOriginalEffectiveRestore()
+    {
+        var bridge = new FakeWorkerBridge
+        {
+            ModelListResult = new ListModelsResult
+            {
+                Models = [ModelWithReasoning("gpt-5", "low", "medium", "high")],
+                DefaultModel = "gpt-5",
+            },
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false)
+        {
+            SelectedThread = new ThreadSummary { Id = "thread-1" },
+        };
+        await vm.PopulateModelsAsync();
+        await bridge.PublishStateAsync(new WorkerStatus
+        {
+            State = WorkerConnectionState.Ready,
+            ThreadId = "thread-1",
+            EffectiveReasoningEffort = "medium",
+        });
+
+        vm.ComposerText = "/reasoning high";
+        await InvokeComposerSendAsync(vm);
+        await SendMessageAsync(vm, "first override", clearComposer: false);
+        vm.ComposerText = "/reasoning low";
+        await InvokeComposerSendAsync(vm);
+        await SendMessageAsync(vm, "replacement override", clearComposer: false);
+        Assert.AreEqual("low", bridge.LastStartTurnRequest!.Effort);
+
+        await SendMessageAsync(vm, "restore original", clearComposer: false);
+        Assert.AreEqual("medium", bridge.LastStartTurnRequest!.Effort);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_ReasoningOverrideAndRestoreWaitForSupportedModel()
+    {
+        var bridge = new FakeWorkerBridge
+        {
+            ModelListResult = new ListModelsResult
+            {
+                Models =
+                [
+                    ModelWithReasoning("reasoning-model", "medium", "high"),
+                    new ModelInfo { Id = "plain-model" },
+                ],
+                DefaultModel = "reasoning-model",
+            },
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false)
+        {
+            SelectedThread = new ThreadSummary { Id = "thread-1", EffectiveReasoningEffort = "medium" },
+        };
+        await vm.PopulateModelsAsync();
+        await bridge.PublishStateAsync(new WorkerStatus
+        {
+            State = WorkerConnectionState.Ready,
+            ThreadId = "thread-1",
+            EffectiveReasoningEffort = "medium",
+        });
+
+        vm.ComposerText = "/reasoning high";
+        await InvokeComposerSendAsync(vm);
+        vm.SelectedModel = "plain-model";
+        await SendMessageAsync(vm, "unsupported override", clearComposer: false);
+        Assert.IsFalse(bridge.LastStartTurnRequest!.HasEffort);
+
+        vm.SelectedModel = "reasoning-model";
+        await SendMessageAsync(vm, "supported override", clearComposer: false);
+        Assert.IsTrue(bridge.LastStartTurnRequest!.HasEffort);
+        Assert.AreEqual("high", bridge.LastStartTurnRequest.Effort);
+
+        vm.SelectedModel = "plain-model";
+        await SendMessageAsync(vm, "unsupported restore", clearComposer: false);
+        Assert.IsFalse(bridge.LastStartTurnRequest!.HasEffort);
+
+        vm.SelectedModel = "reasoning-model";
+        await SendMessageAsync(vm, "supported restore", clearComposer: false);
+        Assert.IsTrue(bridge.LastStartTurnRequest!.HasEffort);
+        Assert.AreEqual("medium", bridge.LastStartTurnRequest.Effort);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_StatusReportsUnsupportedPersistedReasoningId()
+    {
+        var store = new MemorySettingsStore(new ExtensionSettings { ReasoningEffortId = "organization-tier" });
+        using var vm = new ChatViewModel(new FakeWorkerBridge(), autoConnect: false, settingsStore: store)
+        {
+            SelectedThread = new ThreadSummary { Id = "thread-1" },
+            ComposerText = "/status",
+        };
+
+        await InvokeComposerSendAsync(vm);
+
+        StringAssert.Contains(vm.Items[^1].Text, "Desired reasoning effort: organization-tier");
+        StringAssert.Contains(vm.Items[^1].Text, "Next-turn reasoning effort: (config.toml)");
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_FailedTurnDoesNotConsumeReasoningSlashOverride()
+    {
+        var bridge = new FakeWorkerBridge
+        {
+            ModelListResult = new ListModelsResult
+            {
+                Models = [ModelWithReasoning("gpt-5", "high")],
+                DefaultModel = "gpt-5",
+            },
+            StartTurnException = new InvalidOperationException("start failed"),
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false)
+        {
+            SelectedThread = new ThreadSummary { Id = "thread-1" },
+        };
+        await vm.PopulateModelsAsync();
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready, ThreadId = "thread-1" });
+        vm.ComposerText = "/reasoning HIGH";
+        await InvokeComposerSendAsync(vm);
+
+        await Assert.ThrowsExactlyAsync<InvalidOperationException>(
+            () => SendMessageAsync(vm, "fails", clearComposer: false));
+        Assert.IsTrue(bridge.LastStartTurnRequest!.HasEffort);
+        Assert.AreEqual("high", bridge.LastStartTurnRequest.Effort);
+
+        bridge.StartTurnException = null;
+        await SendMessageAsync(vm, "succeeds", clearComposer: false);
+        Assert.IsTrue(bridge.LastStartTurnRequest!.HasEffort);
+        Assert.AreEqual("high", bridge.LastStartTurnRequest.Effort);
     }
 
     [TestMethod]
@@ -2602,6 +2910,16 @@ public sealed class ViewModelTests
         string itemId,
         ConversationEventKind kind)
         => viewModel.Items.Single(item => item.ItemId == itemId && item.Kind == kind);
+
+    private static ModelInfo ModelWithReasoning(string id, params string[] efforts)
+        => new()
+        {
+            Id = id,
+            DefaultReasoningEffort = efforts.FirstOrDefault(),
+            SupportedReasoningEfforts = efforts
+                .Select(effort => new ReasoningEffortInfo { Id = effort, Description = $"{effort} description" })
+                .ToArray(),
+        };
 
     private sealed class FakeFilePickerService(IReadOnlyList<string> files) : IFilePickerService
     {
