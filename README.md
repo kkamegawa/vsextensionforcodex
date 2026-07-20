@@ -1,83 +1,147 @@
 ﻿# Codex for Visual Studio
 
-A Visual Studio 2022+ extension project for running the local Codex app server from inside Visual Studio.
+A Visual Studio extension that runs the local Codex CLI app server from inside the IDE and exposes it
+through a chat tool window: streaming responses, approval-aware command and file-change handling,
+slash commands, and workspace context.
 
-The planned extension starts `codex app-server` as a local subprocess and communicates with it through newline-delimited JSON-RPC over stdio. The product goal is a Copilot-like Visual Studio experience: a chat tool window, streaming responses, approval-aware command and file-change handling, slash commands, and later editor integrations such as inline completion.
+The extension is an out-of-process `Microsoft.VisualStudio.Extensibility` extension (`net8.0`) that
+starts a `net8.0` worker process. The worker owns the `codex app-server` subprocess and talks to it
+with newline-delimited JSON-RPC over stdio. No credentials are handled inside Visual Studio; sign-in
+happens in the Codex CLI.
 
-This repository now contains the Phase 0 through Phase 2.5 implementation foundation. The architecture and implementation checklist live in:
+This extension is not published on the Visual Studio Marketplace yet. Install the VSIX from the
+GitHub releases of this repository. A Marketplace link will be added here once it is available.
 
-- [doc/plan.md](doc/plan.md)
-- [doc/task.md](doc/task.md)
+## Requirements
 
-## Design Priorities
+- Windows (x64 or Arm64)
+- Visual Studio 2022 17.9 or later, or Visual Studio 2026 (Community, Professional, or Enterprise)
+- Codex CLI 0.145.0 or later, installed with winget (see [Limitations](#limitations))
+- A ChatGPT account that can sign in with `codex login`
 
-- Security-first approval boundaries for shell commands, file changes, network access, OAuth, MCP tools, and workspace-outside writes.
-- Stable Visual Studio performance through async JSON-RPC handling, streaming buffers, bounded command output, virtualized diff rendering, and fail-fast process recovery.
-- Reproducible agent context through Microsoft APM, with lockfile-based restores and policy/audit checks.
-- Runtime support for Codex, GitHub Copilot, and Claude agent files while keeping generated assets small.
+## Setup
 
-## Current Status
+1. Install the Codex CLI:
 
-Completed:
+   ```powershell
+   winget install --id OpenAI.Codex --source winget
+   ```
 
-- Repository bootstrap documents.
-- APM manifest, policy, lockfile, and generated agent files.
-- Agent targets for Codex, GitHub Copilot, and Claude.
-- Hybrid Visual Studio extension with a .NET Framework 4.7.2 WPF tool window and a .NET 8 worker.
-- Named-pipe StreamJsonRpc contracts between Visual Studio and the worker.
-- JSONL app-server process host, bidirectional JSON-RPC, thread/turn lifecycle, approvals, redaction, path policy, and bounded streaming.
-- Chat MVVM, history, send/steer/interrupt, approvals, degraded/restart state, and safe text rendering.
-- Account status display and ChatGPT browser sign-in initiation without handling credentials in the extension.
-- A runnable app-server PoC plus build-time protocol schema generation from the local Codex CLI.
-- Loopback/token-gated future WebSocket policy, overload retry policy, resolved-path boundaries, and scoped approval grants.
-- Fake app-server plus Core and UI unit tests.
-- VSIX packaging that includes the worker and its dependencies.
+2. Confirm the version. The extension is verified against 0.145.0; older builds are not supported:
 
-Validated locally:
+   ```powershell
+   codex --version
+   ```
 
-- Visual Studio Enterprise 2026 18.7 loads the .NET 8 OOP tool window in an Experimental Instance.
-- The C# PoC completed `initialize`/`initialized`/`thread/start`/`turn/start` against a live local app-server.
-- Protocol schemas were validated against local `codex-cli 0.139.0`.
+   If the reported version is older than 0.145.0, update it:
 
-This repository can be prepared on macOS, but the Visual Studio extension itself is expected to be built and validated on Windows with Visual Studio 2022.
+   ```powershell
+   winget upgrade --id OpenAI.Codex --source winget
+   ```
 
-## Prerequisites
+3. Sign in once from a terminal. Visual Studio never sees the credentials:
 
-For agent asset setup:
+   ```powershell
+   codex login
+   ```
 
-- Git
-- `uv`
-- Microsoft APM CLI installed with `uv tool install apm-cli`
+4. Download `Codex.VisualStudio.Extension.vsix` from the latest GitHub release of this repository and
+   double-click it to install, or install it from **Extensions > Manage Extensions**.
 
-For extension development:
+5. Restart Visual Studio and open **View > Codex**.
 
-- Windows
-- Visual Studio 2022 17.x or later
+6. Open a solution or folder, type a prompt, and send it. The first turn starts the worker and the
+   `codex app-server` subprocess. If nothing happens, see the [FAQ](#faq).
+
+## Limitations
+
+- **Old Codex CLI versions are not supported.** The verified version is 0.145.0. Earlier builds
+  expose different app-server protocol shapes, so `initialize` or `turn/start` can fail or silently
+  drop events. Issues reproduced only on older versions are out of scope.
+- **Multiple Codex installations can select the wrong version.** Version managers (mise), winget, npm,
+  and the Codex desktop app each place a `codex` executable in a different location, and the one that
+  wins on `PATH` is not necessarily the newest. The worker resolves the executable in this order:
+  1. the `CODEX_PATH` environment variable
+  2. the explicit path in the worker options
+  3. `codex.exe` on `PATH`, skipping the `WindowsApps` execution aliases
+  4. `%LOCALAPPDATA%\OpenAI\Codex\bin`
+
+  Run `where.exe codex` to see every match. When more than one is listed, set `CODEX_PATH` to the
+  executable you want and restart Visual Studio.
+- **npm installs are not recommended.** The `@openai/codex` npm package is known to break in this
+  setup: the shim can stop resolving after a Node.js update, and the app server then exits
+  immediately after start. Use the winget package instead.
+- The winget manifest can lag a few days behind a Codex CLI release. Always confirm with
+  `codex --version` rather than assuming the installed build is current.
+- The extension is Windows-only and targets Visual Studio; there is no Visual Studio Code or
+  cross-platform host.
+
+## FAQ
+
+**The Codex tool window does not appear under View.**
+Check that Visual Studio is 17.9 or later, that the extension is listed and enabled in
+**Extensions > Manage Extensions**, and restart Visual Studio once after installing the VSIX.
+
+**Chat never responds, or the worker exits right away.**
+This is almost always the Codex CLI, not the extension. Run `codex --version` (0.145.0 or later) and
+`codex login` in a terminal. If both succeed there but not in Visual Studio, a different `codex` is
+being launched; pin it with `CODEX_PATH` as described in [Limitations](#limitations).
+
+**How do I pin one specific Codex CLI?**
+Set the environment variable and restart Visual Studio so it inherits the change:
+
+```powershell
+[Environment]::SetEnvironmentVariable('CODEX_PATH', 'C:\path\to\codex.exe', 'User')
+```
+
+**Where are the logs?**
+`%TEMP%\Kkamegawa.CodexForVisualStudio\diagnostics.log`. Extension and worker entries share the file
+and are tagged `[EXTENSION]` and `[WORKER]`. URLs and credential-shaped values are redacted before
+they are written.
+
+**Can I stop being asked for approval on every command?**
+Use `/permissions` (alias `/approve`) in the chat input, or the approval-mode picker in the tool
+window. `ask`, `auto`, `full`, and `custom` are the built-in modes. `full` disables the Codex sandbox
+and normal approval prompts, so it requires an explicit confirmation. See
+[doc/slash-commands.md](doc/slash-commands.md) for the full command catalog, including `/model`,
+`/reasoning`, and `/review`.
+
+**Where are my settings stored?**
+`%APPDATA%\Kkamegawa.CodexForVisualStudio\settings.json`. It holds the approval mode, reasoning
+effort, service tier, and the experimental-API switch. Deleting the file resets everything to the
+defaults; a corrupt file is ignored rather than blocking the tool window.
+
+**Do I need a proxy or firewall exception?**
+The extension itself only talks to a local child process over stdio and a local named pipe. All
+outbound network traffic is made by the Codex CLI, so proxy and firewall configuration belongs to
+the CLI and its own configuration file.
+
+## Build and test
+
+Prerequisites for development:
+
+- Visual Studio 2022 17.9 or later with the Visual Studio extension development workload
 - .NET 8 SDK
-- Visual Studio extensibility workload
-- Local Codex CLI with `codex app-server`
+- A local Codex CLI (used to generate protocol schemas during the build)
 
-## Build And Test
-
-Restore and build the solution:
+Restore and build:
 
 ```powershell
 dotnet restore CodexForVisualStudio.slnx
-dotnet build CodexForVisualStudio.slnx --no-restore
+dotnet build CodexForVisualStudio.slnx -c Release --no-restore
 ```
 
 `schemas/` contains generated output from the Apache-2.0-licensed Codex CLI and is intentionally
-excluded from this MIT-licensed repository.
-When `schemas/codex_app_server_protocol.schemas.json` is missing, building
-`Codex.AppServer.Protocol` on Windows automatically runs:
+excluded from this MIT-licensed repository. When `schemas/codex_app_server_protocol.schemas.json` is
+missing, building `Codex.AppServer.Protocol` on Windows automatically runs:
 
 ```powershell
 codex app-server generate-json-schema --out schemas
 ```
 
-The build prefers `CODEX_PATH` when it is set, then an executable `codex` from `PATH`, and then
-the Codex desktop app's local executable cache. Set `CODEX_PATH` when automatic discovery cannot
-find an executable Codex CLI:
+The build prefers `CODEX_PATH` when it is set, then an executable `codex` from `PATH`, and then the
+Codex desktop app's local executable cache. Set `CODEX_PATH` when automatic discovery cannot find an
+executable Codex CLI:
 
 ```powershell
 $env:CODEX_PATH = "C:\path\to\codex.exe"
@@ -91,97 +155,94 @@ dotnet test tests/Codex.VisualStudio.Core.Tests/Codex.VisualStudio.Core.Tests.cs
 dotnet test tests/Codex.VisualStudio.Ui.Tests/Codex.VisualStudio.Ui.Tests.csproj
 ```
 
-Regenerate schemas manually and run the live app-server PoC:
+Run the live app-server proof of concept and regenerate schemas manually:
 
 ```powershell
 dotnet run --project src/Codex.AppServer.Poc/Codex.AppServer.Poc.csproj -- --schema-out schemas --cwd .
 ```
 
-When Codex is installed through WindowsApps, its execution alias may be blocked for child processes. Pass `--codex <path-to-standalone-codex.exe>` in that environment.
+When Codex is installed through WindowsApps, its execution alias may be blocked for child processes.
+Pass `--codex <path-to-standalone-codex.exe>` in that environment.
 
-The generated VSIX is:
+The VSIX is produced by the out-of-process extension project:
 
 ```text
-src/Codex.VisualStudio.Package/bin/Debug/net472/Codex.VisualStudio.Package.vsix
+src/Codex.VisualStudio.Extension/bin/Release/net8.0-windows10.0.22621.0/Codex.VisualStudio.Extension.vsix
 ```
 
-See [doc/implementation.md](doc/implementation.md) for the implemented boundaries and remaining validation work.
+`src/Codex.VisualStudio.Package` is a `net472` placeholder for future in-process features and does
+not produce a VSIX.
 
-## Debug In Visual Studio
+See [doc/implementation.md](doc/implementation.md) for the implemented boundaries and remaining
+validation work.
 
-Debug builds do not deploy the extension by default. This avoids silently modifying any installed Visual Studio instance. To explicitly enable Experimental Instance deployment on one development machine, first create an ignored `Directory.Build.user.props` file:
+## Debug in Visual Studio
 
-```xml
-<Project>
-  <PropertyGroup>
-    <DeployToExperimentalInstance>true</DeployToExperimentalInstance>
-  </PropertyGroup>
-</Project>
-```
-
-Remove that file, or set the property to `false`, to stop deployment. Command-line `dotnet build` always creates the VSIX without deploying it.
+Debug builds do not deploy the extension by default, so a development build never modifies an
+installed Visual Studio instance silently.
 
 1. Open `CodexForVisualStudio.slnx` in Visual Studio.
-2. Set `Codex.VisualStudio.Package` as the startup project.
-3. Create `Directory.Build.user.props` as shown above.
-4. Select the `Debug` configuration and press `F5`.
-5. A Visual Studio Experimental Instance starts with `/RootSuffix Exp`.
-6. In the Experimental Instance, open `View > Codex`.
+2. Set `Codex.VisualStudio.Extension` as the startup project.
+3. Select the `Debug` configuration and press `F5`. Visual Studio builds, deploys, and starts an
+   experimental instance.
+4. In the experimental instance, open **View > Codex**.
 
-The .NET 8 worker is a child process named `Codex.VisualStudio.Worker.exe`. Visual Studio does not automatically attach the .NET Framework package debugger to this .NET 8 child process. To debug worker code, use `Debug > Attach to Process`, select `Codex.VisualStudio.Worker.exe`, and choose the managed .NET Core code type.
+The worker is a child process named `Codex.VisualStudio.Worker.exe`. To debug worker code, use
+**Debug > Attach to Process**, select `Codex.VisualStudio.Worker.exe`, and choose the managed
+.NET Core code type.
 
-To reset a broken Experimental Instance, close it and run:
+## Release
+
+Releases are tag-driven:
+
+1. Merge the release commit into `main`.
+2. Push a `vX.Y.Z` tag (`vX.Y.Z.W` is also accepted for hotfix re-publishes).
+3. The release workflow verifies that the tag is on `main`, writes the tag into the VSIX
+   `Identity Version` (`vX.Y.Z` becomes `X.Y.Z.0`), builds and tests, and creates the GitHub release
+   with the VSIX attached.
+
+Pull requests are validated by the CI workflow, which builds the solution, runs both test projects,
+and uploads the VSIX as a build artifact.
+
+## Agent setup
+
+Agent assets are managed with Microsoft APM. Install the CLI with `uv`:
 
 ```powershell
-& "C:\Program Files\Microsoft Visual Studio\18\Enterprise\VSSDK\VisualStudioIntegration\Tools\Bin\CreateExpInstance.exe" /Reset /VSInstance=18.0 /RootSuffix=Exp
-```
-
-## Agent Setup
-
-Install APM with `uv`:
-
-```sh
 uv tool install apm-cli
-```
-
-Register the marketplace:
-
-```sh
 apm marketplace add github/awesome-copilot
-```
-
-Restore the project agent assets:
-
-```sh
 apm install
-```
-
-Verify the lockfile, deployed files, allowlist, and drift checks:
-
-```sh
 apm audit --ci --policy apm-policy.yml
 ```
 
-APM deploys only the currently needed agent assets:
+APM deploys `.codex/agents/`, `.github/agents/`, and `.claude/agents/`. The dependency cache in
+`apm_modules/` is ignored by Git; re-run `apm install` to recreate it from `apm.yml` and
+`apm.lock.yaml`.
 
-- `.codex/agents/`
-- `.github/agents/`
-- `.claude/agents/`
+## Architecture
 
-The dependency cache in `apm_modules/` is intentionally ignored by Git. Re-run `apm install` to recreate it from `apm.yml` and `apm.lock.yaml`.
-
-## Planned Architecture
-
-The extension is planned as layered components:
-
-- UI layer: chat tool window, composer, approval dialogs, diff display, and optional inline completion.
+- UI layer: chat tool window, composer, approval prompts, and diff display.
 - Presentation layer: chat view models, streaming buffers, and slash-command suggestions.
-- Application layer: session lifecycle, slash command routing, approval workflows, and workspace context collection.
+- Application layer: session lifecycle, slash command routing, approval workflows, and workspace
+  context collection.
 - Security layer: approval policy, path access checks, secret redaction, and audit logging.
-- Protocol layer: `codex app-server` process hosting, JSON-RPC dispatch, schema/version guards, and notification handling.
+- Protocol layer: `codex app-server` process hosting, JSON-RPC dispatch, schema and version guards,
+  and notification handling.
 
-The default transport is stdio. WebSocket or Unix socket transports are future options only and must stay local/authenticated.
+The transport is stdio. WebSocket or Unix socket transports remain future options and must stay
+local and authenticated.
+
+Design and planning documents: [doc/design.md](doc/design.md), [doc/plan.md](doc/plan.md),
+[doc/task.md](doc/task.md), [doc/implementation.md](doc/implementation.md),
+[doc/adr.md](doc/adr.md).
+
+## Security
+
+Report vulnerabilities as described in [SECURITY.md](SECURITY.md). All `codex app-server` output is
+treated as untrusted input, rendered through a safe Markdown pipeline, and redacted before logging.
 
 ## License
 
 This project is licensed under the MIT License. See [LICENSE](LICENSE).
+
+Japanese translation: [README_ja.md](README_ja.md).
