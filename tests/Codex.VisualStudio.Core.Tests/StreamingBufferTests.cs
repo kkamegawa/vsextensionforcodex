@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Codex.VisualStudio.Contracts;
 using Codex.VisualStudio.Worker;
 
@@ -117,13 +118,15 @@ public sealed class StreamingBufferTests
     }
 
     // Polls instead of a fixed sleep: the StreamingBuffer flushes on a 75ms PeriodicTimer, so a
-    // fixed delay races the timer under CI load. Returns as soon as the condition is met.
+    // fixed delay races the timer under CI load. Returns as soon as the condition is met. Uses
+    // Stopwatch rather than DateTime.UtcNow so an NTP/VM clock jump can't cause a premature
+    // failure or an unexpectedly long wait.
     private static async Task WaitUntilAsync(Func<bool> condition, TimeSpan timeout)
     {
-        DateTime deadline = DateTime.UtcNow + timeout;
+        var stopwatch = Stopwatch.StartNew();
         while (!condition())
         {
-            if (DateTime.UtcNow >= deadline)
+            if (stopwatch.Elapsed >= timeout)
             {
                 Assert.Fail($"Condition not met within {timeout}.");
             }
