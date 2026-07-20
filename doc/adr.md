@@ -129,7 +129,7 @@
 
 ### Decision
 
-- Publish the extension under a Marketplace-style identity `CodexForVisualStudio.KazushiKamegawa.<GUID>` instead of `Kkamegawa.CodexForVisualStudio`. The `%APPDATA%\Kkamegawa.CodexForVisualStudio` settings folder keeps its name so existing user settings survive.
+- Publish the extension under a Marketplace-style identity `relaycodexforvs.KazushiKamegawa.<GUID>` (the extension name is `relaycodexforvs`) instead of `Kkamegawa.CodexForVisualStudio`. Only the identity carries the new name; the display name stays `Codex for Visual Studio`. The `%APPDATA%\Kkamegawa.CodexForVisualStudio` settings folder keeps its name so existing user settings survive.
 - Treat the SDK-generated `extension.vsixmanifest` as the only manifest for the out-of-process extension. `src/Codex.VisualStudio.Extension/source.extension.vsixmanifest` never contributed to the package and is removed; metadata lives in `ExtensionConfiguration`.
 - Re-enable generated assembly info for the extension project so the release workflow can set the VSIX version with `-p:Version=X.Y.Z.W` derived from the git tag, instead of patching a manifest or source file.
 - Bundle only English documents in the VSIX: `LICENSE.txt` and `icon.png` are staged explicitly by the `StageVsixAssets` target, never by wildcard, so `README_ja.md` cannot be packaged.

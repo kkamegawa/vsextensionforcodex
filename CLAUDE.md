@@ -2,7 +2,7 @@
 
 ## Project
 
-- Publisher: `kazushikamegawa` / VSIX ID: `CodexForVisualStudio.KazushiKamegawa.9527382d-b5f4-455c-97bd-a8da43e7c835`
+- Publisher: `kazushikamegawa` / VSIX ID: `relaycodexforvs.KazushiKamegawa.9527382d-b5f4-455c-97bd-a8da43e7c835`
   (the `%APPDATA%\Kkamegawa.CodexForVisualStudio` settings folder name is unrelated and must stay)
 - Source code, comments, and identifiers in **English**
 - Encoding: **UTF-8 with BOM**, line endings: **CRLF**

@@ -10,7 +10,7 @@ internal static class ExtensionIdentity
 {
     // Marketplace identity: Name.Publisher.GUID. Unrelated to the %APPDATA%
     // Kkamegawa.CodexForVisualStudio settings folder, which must stay unchanged.
-    public const string Id = "CodexForVisualStudio.KazushiKamegawa.9527382d-b5f4-455c-97bd-a8da43e7c835";
+    public const string Id = "relaycodexforvs.KazushiKamegawa.9527382d-b5f4-455c-97bd-a8da43e7c835";
     public const string PublisherName = "kazushikamegawa";
     public const string DisplayName = "Codex for Visual Studio";
     public const string Description = "AI coding assistant powered by OpenAI Codex.";
