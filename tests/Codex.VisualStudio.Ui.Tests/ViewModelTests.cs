@@ -840,6 +840,139 @@ public sealed class ViewModelTests
     }
 
     [TestMethod]
+    [DataRow("")]
+    [DataRow("one line")]
+    [DataRow("one\ntwo\nthree")]
+    [DataRow("one\ntwo\nthree\n")]
+    public void ChatItemViewModel_ShortCommandOutput_RemainsInline(string output)
+    {
+        var item = new ChatItemViewModel("Command", output, ConversationEventKind.CommandOutputDelta);
+
+        Assert.IsFalse(item.IsCommandOutputCollapsible);
+        Assert.IsFalse(item.IsCommandOutputExpanded);
+        Assert.AreEqual(output, item.Text);
+    }
+
+    [TestMethod]
+    public void ChatItemViewModel_FourCommandLines_StartCollapsedWithThreeLinePreview()
+    {
+        var item = new ChatItemViewModel(
+            "Command",
+            "one\r\ntwo\r\nthree\r\nfour",
+            ConversationEventKind.CommandOutputDelta);
+
+        Assert.IsTrue(item.IsCommandOutputCollapsible);
+        Assert.IsFalse(item.IsCommandOutputExpanded);
+        Assert.AreEqual("one\r\ntwo\r\nthree", item.Text);
+        Assert.AreEqual("Show 1 more line", item.CommandOutputExpansionLabel);
+        Assert.AreEqual(4, item.BufferedCommandLineCount);
+    }
+
+    [TestMethod]
+    public void ChatItemViewModel_CommandCrLfSplitAcrossDeltas_CountsOneLineBreak()
+    {
+        var item = new ChatItemViewModel("Command", "one\r", ConversationEventKind.CommandOutputDelta);
+
+        item.AppendCommandOutput("\ntwo\r\nthree\r\nfour");
+
+        Assert.AreEqual(4, item.BufferedCommandLineCount);
+        Assert.AreEqual("one\r\ntwo\r\nthree", item.Text);
+        Assert.AreEqual("Show 1 more line", item.CommandOutputExpansionLabel);
+    }
+
+    [TestMethod]
+    public void ChatItemViewModel_LongSingleCommandLine_UsesBoundedPreview()
+    {
+        string output = new('x', ChatItemViewModel.CommandPreviewCharacterLimit + 17);
+        var item = new ChatItemViewModel("Command", output, ConversationEventKind.CommandOutputDelta);
+
+        Assert.IsTrue(item.IsCommandOutputCollapsible);
+        Assert.AreEqual(ChatItemViewModel.CommandPreviewCharacterLimit, item.Text.Length);
+        Assert.AreEqual("Show remaining buffered command output", item.CommandOutputExpansionLabel);
+    }
+
+    [TestMethod]
+    public void ChatItemViewModel_CommandPreview_DoesNotSplitCrLfAtCharacterLimit()
+    {
+        string output = new string('x', ChatItemViewModel.CommandPreviewCharacterLimit - 1) + "\r\nremaining";
+        var item = new ChatItemViewModel("Command", output, ConversationEventKind.CommandOutputDelta);
+
+        Assert.IsTrue(item.IsCommandOutputCollapsible);
+        Assert.AreEqual(ChatItemViewModel.CommandPreviewCharacterLimit - 1, item.Text.Length);
+        Assert.IsFalse(item.Text.EndsWith('\r'));
+    }
+
+    [TestMethod]
+    public void ChatItemViewModel_ExpandedCommandOutput_ProjectsFullBufferAndCanCollapseAgain()
+    {
+        const string output = "one\ntwo\nthree\nfour";
+        var item = new ChatItemViewModel("Command", output, ConversationEventKind.CommandOutputDelta);
+
+        item.IsCommandOutputExpanded = true;
+        Assert.AreEqual(output, item.Text);
+        Assert.AreEqual("Hide command output", item.CommandOutputExpansionLabel);
+        Assert.AreEqual("Collapse command output", item.CommandOutputAutomationName);
+
+        item.IsCommandOutputExpanded = false;
+        Assert.AreEqual("one\ntwo\nthree", item.Text);
+        Assert.AreEqual("Expand command output", item.CommandOutputAutomationName);
+    }
+
+    [TestMethod]
+    public void ChatItemViewModel_CollapsedCommandOutput_DoesNotRepublishFullTextForHiddenDeltas()
+    {
+        var item = new ChatItemViewModel(
+            "Command",
+            "one\ntwo\nthree\nfour",
+            ConversationEventKind.CommandOutputDelta);
+        int textNotifications = 0;
+        item.PropertyChanged += (_, args) =>
+        {
+            if (args.PropertyName == nameof(ChatItemViewModel.Text))
+            {
+                textNotifications++;
+            }
+        };
+
+        item.AppendCommandOutput("\nfive");
+        item.AppendCommandOutput("\nsix");
+
+        Assert.AreEqual(0, textNotifications);
+        Assert.AreEqual("one\ntwo\nthree", item.Text);
+        Assert.AreEqual("Show 3 more lines", item.CommandOutputExpansionLabel);
+        Assert.AreEqual(27, item.BufferedCommandCharacterCount);
+    }
+
+    [TestMethod]
+    public void ChatItemViewModel_CommandBuffer_IsBoundedAndUsesTruncationSafeLabels()
+    {
+        string output = new('x', ChatItemViewModel.CommandBufferCharacterLimit + 1);
+        var item = new ChatItemViewModel("Command", output, ConversationEventKind.CommandOutputDelta);
+
+        Assert.AreEqual(ChatItemViewModel.CommandBufferCharacterLimit, item.BufferedCommandCharacterCount);
+        Assert.IsTrue(item.IsTruncated);
+        Assert.AreEqual("Show buffered command output (truncated)", item.CommandOutputExpansionLabel);
+        Assert.AreEqual("Command output was truncated to the buffered limit.", item.TruncationNotice);
+
+        item.IsCommandOutputExpanded = true;
+        Assert.AreEqual("Hide buffered command output (truncated)", item.CommandOutputExpansionLabel);
+        Assert.AreEqual(ChatItemViewModel.CommandBufferCharacterLimit, item.Text.Length);
+    }
+
+    [TestMethod]
+    public void ChatItemViewModel_CommandBuffer_IsNotPartOfRemoteUiContract()
+    {
+        FieldInfo? buffer = typeof(ChatItemViewModel).GetField(
+            "commandOutputBuffer",
+            BindingFlags.Instance | BindingFlags.NonPublic);
+
+        Assert.IsNotNull(buffer);
+        Assert.IsNull(buffer!.GetCustomAttribute<DataMemberAttribute>());
+        Assert.IsNotNull(typeof(ChatItemViewModel).GetProperty(nameof(ChatItemViewModel.Text))!
+            .GetCustomAttribute<DataMemberAttribute>());
+    }
+
+    [TestMethod]
     public async Task ChatViewModel_AgentMessageDelta_MultipleChunks_NoArtificialNewlines()
     {
         using var vm = new ChatViewModel();
@@ -1022,6 +1155,35 @@ public sealed class ViewModelTests
         Assert.IsTrue(text.Contains("line2", StringComparison.Ordinal));
         Assert.IsFalse(SingleConversationItem(vm, "command-1", ConversationEventKind.CommandOutputDelta).UsesBlockRendering);
         Assert.AreEqual(0, SingleConversationItem(vm, "command-1", ConversationEventKind.CommandOutputDelta).Blocks.Count);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_CommandOutputMetadataOnlyDelta_PreservesTruncationState()
+    {
+        using var vm = new ChatViewModel();
+
+        await RaiseConversationEventAsync(vm, new ConversationEvent
+        {
+            Kind = ConversationEventKind.CommandOutputDelta,
+            ItemId = "command-overflow",
+            Text = "visible output",
+        });
+        await RaiseConversationEventAsync(vm, new ConversationEvent
+        {
+            Kind = ConversationEventKind.CommandOutputDelta,
+            ItemId = "command-overflow",
+            Truncated = true,
+            OverflowFile = "temporary-output.log",
+        });
+
+        ChatItemViewModel item = SingleConversationItem(
+            vm,
+            "command-overflow",
+            ConversationEventKind.CommandOutputDelta);
+        Assert.IsTrue(item.IsTruncated);
+        Assert.IsTrue(item.IsCommandOutputCollapsible);
+        Assert.AreEqual("Show buffered command output (truncated)", item.CommandOutputExpansionLabel);
+        Assert.AreEqual("Output truncated; additional output is stored in a temporary file.", item.TruncationNotice);
     }
 
     [TestMethod]

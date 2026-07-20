@@ -1,5 +1,6 @@
 ﻿using System.Collections.ObjectModel;
 using System.ComponentModel;
+using System.Globalization;
 using System.IO;
 using System.Runtime.CompilerServices;
 using System.Runtime.Serialization;
@@ -2589,6 +2590,21 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                     break;
             }
 
+            // A command-output overflow notification can carry only truncation metadata after the
+            // visible 2 MiB buffer is full. Apply that metadata to the existing item even though
+            // there is no text delta to render.
+            if (value.Kind == ConversationEventKind.CommandOutputDelta && string.IsNullOrEmpty(value.Text))
+            {
+                ChatItemViewModel? commandItem = Items.LastOrDefault(
+                    item => item.ItemId == value.ItemId && item.Kind == value.Kind);
+                if (commandItem is not null)
+                {
+                    commandItem.IsTruncated |= value.Truncated;
+                    commandItem.OverflowFile = value.OverflowFile ?? commandItem.OverflowFile;
+                    return;
+                }
+            }
+
             // Only user-facing Codex content reaches the panel. Lifecycle, protocol, error, and
             // unknown events — and any user-facing kind that arrived without rendered Text (carrying
             // only raw/structured PayloadJson) — are routed to the Output channel so the transcript
@@ -2641,7 +2657,14 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             }
             else
             {
-                existing.Text = renderFromAccumulatedText ? renderedText : existing.Text + renderedText;
+                if (value.Kind == ConversationEventKind.CommandOutputDelta)
+                {
+                    existing.AppendCommandOutput(renderedText);
+                }
+                else
+                {
+                    existing.Text = renderFromAccumulatedText ? renderedText : existing.Text + renderedText;
+                }
                 if (renderFromAccumulatedText)
                 {
                     existing.UpdateBlocks(renderedBlocks);
@@ -3085,17 +3108,34 @@ public sealed class SuggestionChip
 [DataContract]
 public sealed class ChatItemViewModel : ObservableObject
 {
-    private string text;
+    internal const int CommandPreviewLineLimit = 3;
+    internal const int CommandPreviewCharacterLimit = 4 * 1024;
+    internal const int CommandBufferCharacterLimit = 2 * 1024 * 1024;
+
+    private readonly StringBuilder? commandOutputBuffer;
+    private string text = string.Empty;
     private bool isTruncated;
     private string? overflowFile;
     private bool isCollapsed;
+    private bool isCommandOutputExpanded;
+    private int commandLineBreakCount;
+    private bool commandEndsWithLineBreak;
 
     public ChatItemViewModel(string role, string text, ConversationEventKind kind)
     {
         Role = role;
-        this.text = text;
         Kind = kind;
         isCollapsed = kind == ConversationEventKind.ReasoningSummaryDelta;
+        if (kind == ConversationEventKind.CommandOutputDelta)
+        {
+            commandOutputBuffer = new StringBuilder(Math.Min(text.Length, CommandBufferCharacterLimit));
+            AppendCommandOutput(text);
+        }
+        else
+        {
+            this.text = text;
+        }
+
         ToggleCollapseCommand = new AsyncCommand(() =>
         {
             IsCollapsed = !IsCollapsed;
@@ -3121,13 +3161,26 @@ public sealed class ChatItemViewModel : ObservableObject
     public bool IsTruncated
     {
         get => isTruncated;
-        set => SetProperty(ref isTruncated, value);
+        set
+        {
+            if (SetProperty(ref isTruncated, value))
+            {
+                RefreshCommandOutputPresentation();
+                OnPropertyChanged(nameof(TruncationNotice));
+            }
+        }
     }
 
     public string? OverflowFile
     {
         get => overflowFile;
-        set => SetProperty(ref overflowFile, value);
+        set
+        {
+            if (SetProperty(ref overflowFile, value))
+            {
+                OnPropertyChanged(nameof(TruncationNotice));
+            }
+        }
     }
 
     [DataMember]
@@ -3143,6 +3196,64 @@ public sealed class ChatItemViewModel : ObservableObject
 
     [DataMember]
     public string CollapseButtonText => isCollapsed ? "▶ Reasoning" : "▼ Reasoning";
+
+    [DataMember]
+    public bool IsCommandOutputExpanded
+    {
+        get => isCommandOutputExpanded;
+        set
+        {
+            if (SetProperty(ref isCommandOutputExpanded, value))
+            {
+                RefreshCommandOutputPresentation();
+            }
+        }
+    }
+
+    [DataMember]
+    public bool IsCommandOutputCollapsible
+        => IsCommandItem
+            && (BufferedCommandLineCount > CommandPreviewLineLimit
+                || BufferedCommandCharacterCount > CommandPreviewCharacterLimit
+                || IsTruncated);
+
+    [DataMember]
+    public string CommandOutputExpansionLabel
+    {
+        get
+        {
+            if (IsCommandOutputExpanded)
+            {
+                return IsTruncated ? "Hide buffered command output (truncated)" : "Hide command output";
+            }
+
+            if (IsTruncated)
+            {
+                return "Show buffered command output (truncated)";
+            }
+
+            int hiddenLineCount = Math.Max(0, BufferedCommandLineCount - CommandPreviewLineLimit);
+            return hiddenLineCount switch
+            {
+                0 => "Show remaining buffered command output",
+                1 => "Show 1 more line",
+                _ => $"Show {hiddenLineCount.ToString(CultureInfo.InvariantCulture)} more lines",
+            };
+        }
+    }
+
+    [DataMember]
+    public string CommandOutputAutomationName
+        => IsCommandOutputExpanded ? "Collapse command output" : "Expand command output";
+
+    [DataMember]
+    public string CommandOutputAutomationHelpText => CommandOutputExpansionLabel;
+
+    [DataMember]
+    public string TruncationNotice
+        => IsCommandItem && string.IsNullOrEmpty(OverflowFile)
+            ? "Command output was truncated to the buffered limit."
+            : "Output truncated; additional output is stored in a temporary file.";
 
     // Computed kind helpers — used by XAML DataTriggers (bool avoids enum reference in remote XAML).
     [DataMember]
@@ -3165,6 +3276,117 @@ public sealed class ChatItemViewModel : ObservableObject
 
     [DataMember]
     public AsyncCommand ToggleCollapseCommand { get; }
+
+    internal int BufferedCommandCharacterCount => commandOutputBuffer?.Length ?? 0;
+
+    internal int BufferedCommandLineCount
+        => BufferedCommandCharacterCount == 0
+            ? 0
+            : commandLineBreakCount + (commandEndsWithLineBreak ? 0 : 1);
+
+    internal void AppendCommandOutput(string value)
+    {
+        if (!IsCommandItem || string.IsNullOrEmpty(value))
+        {
+            return;
+        }
+
+        StringBuilder buffer = commandOutputBuffer!;
+        int remaining = Math.Max(0, CommandBufferCharacterLimit - buffer.Length);
+        int acceptedLength = Math.Min(remaining, value.Length);
+        int startIndex = buffer.Length;
+        if (acceptedLength > 0)
+        {
+            buffer.Append(value.AsSpan(0, acceptedLength));
+            UpdateCommandLineState(startIndex);
+        }
+
+        if (acceptedLength < value.Length)
+        {
+            IsTruncated = true;
+        }
+
+        RefreshCommandOutputPresentation();
+    }
+
+    private void UpdateCommandLineState(int startIndex)
+    {
+        StringBuilder buffer = commandOutputBuffer!;
+        for (int index = startIndex; index < buffer.Length; index++)
+        {
+            char current = buffer[index];
+            if (current == '\r')
+            {
+                commandLineBreakCount++;
+                commandEndsWithLineBreak = true;
+            }
+            else if (current == '\n')
+            {
+                if (index == 0 || buffer[index - 1] != '\r')
+                {
+                    commandLineBreakCount++;
+                }
+
+                commandEndsWithLineBreak = true;
+            }
+            else
+            {
+                commandEndsWithLineBreak = false;
+            }
+        }
+    }
+
+    private void RefreshCommandOutputPresentation()
+    {
+        if (!IsCommandItem)
+        {
+            return;
+        }
+
+        string projectedText = IsCommandOutputCollapsible && !IsCommandOutputExpanded
+            ? CreateCommandPreview()
+            : commandOutputBuffer!.ToString();
+        SetProperty(ref text, projectedText, nameof(Text));
+        OnPropertyChanged(nameof(IsCommandOutputCollapsible));
+        OnPropertyChanged(nameof(CommandOutputExpansionLabel));
+        OnPropertyChanged(nameof(CommandOutputAutomationName));
+        OnPropertyChanged(nameof(CommandOutputAutomationHelpText));
+    }
+
+    private string CreateCommandPreview()
+    {
+        StringBuilder buffer = commandOutputBuffer!;
+        int previewLength = Math.Min(buffer.Length, CommandPreviewCharacterLimit);
+        int lineBreakCount = 0;
+        for (int index = 0; index < previewLength; index++)
+        {
+            char current = buffer[index];
+            bool isLineBreak = current == '\r'
+                || (current == '\n' && (index == 0 || buffer[index - 1] != '\r'));
+            if (!isLineBreak)
+            {
+                continue;
+            }
+
+            lineBreakCount++;
+            if (lineBreakCount == CommandPreviewLineLimit)
+            {
+                previewLength = index;
+                break;
+            }
+        }
+
+        // Do not split a CRLF pair when the character limit lands between its two characters.
+        if (previewLength > 0
+            && previewLength < buffer.Length
+            && buffer[previewLength - 1] == '\r'
+            && buffer[previewLength] == '\n')
+        {
+            previewLength--;
+        }
+
+        return buffer.ToString(0, previewLength);
+    }
 
     public void UpdatePlanSteps(IReadOnlyList<string> steps)
     {
