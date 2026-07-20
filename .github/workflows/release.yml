@@ -1,0 +1,156 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+
+      - name: Verify tag is on main branch
+        shell: pwsh
+        run: |
+          # Ensure the tagged commit is reachable from origin/main so that releases are only
+          # created from the main branch history.
+          git fetch origin main --no-tags
+          $tagSha = git rev-parse HEAD
+          $mainSha = git rev-parse origin/main
+          git merge-base --is-ancestor $tagSha $mainSha
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "Tagged commit $tagSha is not on the main branch. Release aborted."
+            exit 1
+          }
+
+      - name: Resolve VSIX version from tag
+        id: version
+        shell: pwsh
+        run: |
+          # vX.Y.Z   -> X.Y.Z.0  (three-part tags get a zero revision digit)
+          # vX.Y.Z.W -> X.Y.Z.W  (four-part tags are used as-is for hotfix re-publishes)
+          $rawTag = "${{ github.ref_name }}"
+          $semver = $rawTag.TrimStart('v')
+          if ($semver -notmatch '^\d+\.\d+\.\d+(\.\d+)?$') {
+            throw "Tag '$rawTag' does not match the required version format. Expected vX.Y.Z or vX.Y.Z.W (numeric parts only)."
+          }
+          $vsixVersion = if ($semver.Split('.').Count -eq 3) { "$semver.0" } else { $semver }
+          Write-Host "VSIX version: $vsixVersion"
+          "vsix_version=$vsixVersion" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5.4.0
+        with:
+          # global.json pins the 10.0 SDK; the 8.0 SDK supplies the runtime the net8.0 tests need.
+          dotnet-version: |
+            8.0.x
+            10.0.x
+
+      - name: Install Codex CLI
+        shell: pwsh
+        run: |
+          # Codex.AppServer.Protocol generates schemas/ during the build by calling the Codex CLI,
+          # so the runner needs one. winget is the supported install method for this extension.
+          winget install --id OpenAI.Codex --source winget --silent `
+            --accept-source-agreements --accept-package-agreements --disable-interactivity
+          if ($LASTEXITCODE -ne 0) {
+            throw "winget failed to install the Codex CLI (exit code $LASTEXITCODE)."
+          }
+
+          # winget updates the persisted PATH, which the current process does not see yet.
+          $env:PATH = [Environment]::GetEnvironmentVariable('PATH', 'Machine') + ';' +
+            [Environment]::GetEnvironmentVariable('PATH', 'User')
+          $codex = Get-Command codex -CommandType Application -All -ErrorAction SilentlyContinue |
+            Where-Object { $_.Source -notmatch '[\\/]WindowsApps[\\/]' } |
+            Select-Object -First 1
+          if (-not $codex) {
+            throw "The Codex CLI was installed but no usable executable was found on PATH."
+          }
+
+          & $codex.Source --version
+          "CODEX_PATH=$($codex.Source)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Restore
+        run: dotnet restore CodexForVisualStudio.slnx
+
+      # The Extensibility SDK writes the assembly version into the generated
+      # extension.vsixmanifest, so passing the tag version here embeds it in the VSIX.
+      - name: Build solution
+        run: >-
+          dotnet build CodexForVisualStudio.slnx -c Release --no-restore -v minimal
+          -p:Version=${{ steps.version.outputs.vsix_version }}
+
+      - name: Test core
+        run: >-
+          dotnet test tests\Codex.VisualStudio.Core.Tests\Codex.VisualStudio.Core.Tests.csproj
+          -c Release --no-build -v minimal
+
+      - name: Test UI
+        run: >-
+          dotnet test tests\Codex.VisualStudio.Ui.Tests\Codex.VisualStudio.Ui.Tests.csproj
+          -c Release --no-build -v minimal
+
+      - name: Find VSIX
+        id: find_vsix
+        shell: pwsh
+        run: |
+          # Search recursively so the step is not sensitive to the framework sub-folder name.
+          $vsix = Get-ChildItem -Path .\src\Codex.VisualStudio.Extension\bin\Release -Filter *.vsix -Recurse |
+                    Select-Object -First 1
+          if (-not $vsix) {
+            throw "VSIX artifact was not generated."
+          }
+
+          # Fail fast when the packaged manifest does not carry the tag version.
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $archive = [System.IO.Compression.ZipFile]::OpenRead($vsix.FullName)
+          try {
+            $entry = $archive.GetEntry('extension.vsixmanifest')
+            if (-not $entry) {
+              throw "The packaged VSIX does not contain extension.vsixmanifest."
+            }
+            $reader = New-Object System.IO.StreamReader($entry.Open())
+            $manifestText = $reader.ReadToEnd()
+            $reader.Dispose()
+          }
+          finally {
+            $archive.Dispose()
+          }
+
+          $expected = "${{ steps.version.outputs.vsix_version }}"
+          $manifest = [xml]$manifestText
+          $namespaces = New-Object System.Xml.XmlNamespaceManager($manifest.NameTable)
+          $namespaces.AddNamespace('v', 'http://schemas.microsoft.com/developer/vsx-schema/2011')
+          $identity = $manifest.SelectSingleNode('//v:PackageManifest/v:Metadata/v:Identity', $namespaces)
+          if ($identity.Version -ne $expected) {
+            throw "Packaged VSIX version '$($identity.Version)' does not match tag version '$expected'."
+          }
+
+          Write-Host "Found VSIX: $($vsix.FullName) (version $expected)"
+          "vsix_path=$($vsix.FullName)" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "vsix_name=$($vsix.Name)" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Upload VSIX artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: CodexForVisualStudio-vsix
+          path: ${{ steps.find_vsix.outputs.vsix_path }}
+
+      - name: Create GitHub release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" `
+            --title "Codex for Visual Studio ${{ github.ref_name }}" `
+            --generate-notes `
+            "${{ steps.find_vsix.outputs.vsix_path }}#${{ steps.find_vsix.outputs.vsix_name }}"
