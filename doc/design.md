@@ -248,3 +248,15 @@ enters its content, closes with Escape from either the host or popup, uses Visua
 theme resources, and exposes automation names and help text. Raw Remote UI cannot run VS-side
 `Popup.Opened` code to transfer keyboard focus; guaranteed opening focus would require an in-process
 WPF host.
+
+## 10. Empty solution scaffolding
+
+When the resolved workspace contains no solution or project, the default scaffold choice creates
+only `ROOT/<Name>.slnx`. The generated solution is an empty SLNX document with UTF-8 BOM and CRLF
+line endings. It deliberately omits `src`, project files, and source files so Codex can shape the
+workspace without inheriting an arbitrary application template.
+
+The operation remains non-destructive: an existing solution is never overwritten, and the separate
+file-based app choice continues to create only a root-level `Program.cs` without a solution or
+project. The generated empty document must remain parseable as XML and accepted by the pinned
+`.NET` SDK's `dotnet sln` command.

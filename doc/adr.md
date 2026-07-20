@@ -80,3 +80,22 @@
 - Usage remains stable when a turn changes Ready to Busy and back, while opening the popup can refresh genuinely stale data.
 - Late reads from an old connection or from before a push are harmless.
 - The Remote UI popup shares one sanitized presentation model with `/status`, exposes automation metadata, and remains dismissible with Escape whether keyboard focus stays on the host or enters the popup.
+
+## ADR-006: Empty workspaces receive only a root-level SLNX solution
+
+- Date: 2026-07-20
+- Task: GitHub Issue #88 and sub-issues #102, #103, and #104
+- Status: Accepted
+
+### Decision
+
+- Replace the solution-and-project scaffold with an empty solution choice.
+- Create only `ROOT/<Name>.slnx`; do not create `src`, a project file, or source code for this choice.
+- Encode the exact document `<Solution>` + CRLF + `</Solution>` + CRLF as UTF-8 with BOM.
+- Preserve the existing non-overwrite rule and the independent file-based app choice.
+
+### Consequences
+
+- Workspace setup no longer guesses an application type, target framework, or project layout.
+- The generated file remains both valid XML and a solution accepted by the pinned `.NET` SDK.
+- Adding a project becomes an explicit later action by the user or Codex.
