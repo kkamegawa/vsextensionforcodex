@@ -510,7 +510,7 @@ public sealed class UploadFeedbackResult : AppServerOperationResult
 
 public sealed class RateLimitWindowInfo
 {
-    public int UsedPercent { get; set; }
+    public int? UsedPercent { get; set; }
 
     public long? ResetsAt { get; set; }
 

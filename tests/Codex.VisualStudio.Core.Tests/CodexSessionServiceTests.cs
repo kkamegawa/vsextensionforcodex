@@ -999,6 +999,32 @@ public sealed class CodexSessionServiceTests
     }
 
     [TestMethod]
+    public async Task GetRateLimitsAsync_MissingUsedPercent_RemainsUnknown()
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "account/rateLimits/read"
+                ? JsonSerializer.SerializeToElement(new
+                {
+                    rateLimits = new
+                    {
+                        limitId = "codex",
+                        primary = new { resetsAt = 1_800_000_000L, windowDurationMins = 300L },
+                    },
+                })
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        RateLimitsResult result = await service.GetRateLimitsAsync(CancellationToken.None);
+
+        Assert.IsNull(result.RateLimits?.Primary?.UsedPercent);
+        Assert.AreEqual(1_800_000_000L, result.RateLimits?.Primary?.ResetsAt);
+        Assert.AreEqual(300L, result.RateLimits?.Primary?.WindowDurationMinutes);
+    }
+
+    [TestMethod]
     public async Task MethodNotFoundDisablesOnlyThatOperationForTheSession()
     {
         var connection = new RecordingConnection
