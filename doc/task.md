@@ -2,6 +2,23 @@
 
 `plan.md` のフェーズ分割に対応する詳細タスク。各タスクは独立してレビュー可能な小さなスライスを意図する。
 
+## 2026-07-20: PR #89 review and merge validation
+
+- [x] Confirm that the PR branch already contains the current `main` commit without conflicts.
+- [x] Re-base plain text inputs on the Visual Studio TextBox style so slash-command arguments keep a themed foreground/background pair.
+- [x] Preserve hidden default model metadata when only the top-level default identifier is reported.
+- [x] Make the reasoning override test independent from persisted user settings.
+- [x] Validate the integrated Release outputs with 95 Core tests and 244 UI tests passing.
+
+## 2026-07-20: Reasoning and service-tier pickers (#85, #86, #93-#98)
+
+- [x] Upgrade the Extension/Worker contract to version 13 with effort and service-tier presence flags.
+- [x] Preserve hidden default model capabilities separately from the visible catalog.
+- [x] Track effective turn settings across thread lifecycle and settings updates.
+- [x] Add sanitized, model-aware persistent Reasoning and Speed pickers to Remote UI.
+- [x] Make `/reasoning` and `/fast` thread-scoped, canonical, success-consumed, and sticky-restoring.
+- [x] Update the Fake app-server and add Core/UI regression coverage.
+
 ---
 
 ## Phase 0: リポジトリ準備・PoC
@@ -281,8 +298,36 @@ keeps a matching Visual Studio foreground/background pair. Non-truncated items a
 empty truncation notice across Remote UI.
 
 - Validation: Release solution build completed with zero warnings and zero errors.
-- Tests: Core tests passed 89/89 with `--no-build`.
-- Tests: UI tests passed 224/224 with `--no-build`.
+- Tests: Core tests passed 95/95 with `--no-build`.
+- Tests: UI tests passed 267 with one symlink test skipped when the Windows test process lacked
+  symlink privilege.
+
+### 2026-07-20: Implemented empty SLNX-only scaffolding (issue #88)
+
+Implemented issue #88 and sub-issues #102, #103, and #104. The empty-workspace prompt now
+offers a root-level empty solution that contains no implicit project or source layout. The SLNX
+file uses the sanitized workspace name, exact empty-solution XML, UTF-8 BOM, and CRLF, and the
+existing non-overwrite and file-based app behaviors remain intact. ADR-006 records the decision.
+
+- Validation: Release solution build completed with zero warnings and zero errors.
+- Tests: eight focused scaffold tests are included; Core tests passed 95/95 and UI tests passed
+  251 with one symlink test skipped when the Windows test process lacked symlink privilege.
+- Compatibility: generated SLNX files passed XML parsing and `dotnet sln ... list` validation.
+
+### 2026-07-20: Implemented usage presentation and freshness (issue #87)
+
+Implemented issue #87 and sub-issues #99, #100, and #101. The Worker now preserves missing usage
+percentages, while the extension presents clamped remaining limits, known window labels, Unix reset
+times, and sanitized credits in both the popup and `/status`. Signed-in connection generations fetch
+once; a 60-second popup TTL, monotonic push versions, and lifecycle invalidation prevent stale reads.
+Transient refresh failures preserve the last-good snapshot and remain retryable. The themed Usage
+popup is mutually exclusive with History, binds Escape at both host and popup levels, and opens only
+compile-time approved destinations through an exact allowlist. ADR-005 records the freshness and
+Remote UI focus contracts.
+
+- Validation: project-scoped Release builds completed with zero warnings and zero errors. Core and UI
+  tests passed with `--no-build`, covering parser, presentation, freshness, read/push races,
+  lifecycle invalidation, links, and embedded XAML structure.
 
 ### 2026-07-20: Implemented the approval mode picker (issue #75)
 

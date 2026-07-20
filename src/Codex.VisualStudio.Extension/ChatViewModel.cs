@@ -38,6 +38,9 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     private readonly SlashCommandParser slashCommandParser;
     private readonly SlashCommandCoordinator slashCommandCoordinator = new();
     private readonly IExtensionSettingsStore settingsStore;
+    private readonly IExternalLinkOpener externalLinkOpener;
+    private readonly Func<DateTimeOffset> utcNow;
+    private readonly SemaphoreSlim usageRefreshGate = new(1, 1);
     private readonly ExtensionSettings settings;
     private readonly Queue<UserInputViewModel> userInputQueue = new();
     private readonly Queue<ApprovalViewModel> approvalQueue = new();
@@ -55,8 +58,15 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     private string? nextCursor;
     private bool initialized;
     private bool isHistoryOpen;
+    private bool isUsageOpen;
+    private bool usageConnectionActive;
+    private long usageConnectionGeneration;
+    private long usageFetchedGeneration = -1;
+    private long rateLimitPushVersion;
+    private DateTimeOffset? latestRateLimitsAt;
     private bool ideContextEnabled = true;
     private string? selectedModel;
+    private string selectedReasoningEffortId = ReasoningEffortCatalog.DefaultId;
     private string selectedMode = "Agent";
     private ApprovalModeOption? selectedApprovalMode;
     private ApprovalModeOption? pendingApprovalMode;
@@ -64,15 +74,20 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     private string? approvalModeBeforeConfirmationId;
     private bool confirmationStartsNewThread;
     private string? workingDirectory;
-    private string? nextReasoningEffort;
+    private readonly Dictionary<string, PendingReasoningOverride> pendingReasoningByThread = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, string?> reasoningRestoreByThread = new(StringComparer.Ordinal);
     private string? nextPersonality;
-    private string? nextServiceTier;
     private string? nextCollaborationMode;
+    private string selectedServiceTierId = ServiceTierCatalog.DefaultId;
+    private readonly Dictionary<string, PendingServiceTierOverride> pendingServiceTierByThread = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, string?> serviceTierRestoreByThread = new(StringComparer.Ordinal);
     private ListModelsResult modelCatalog = new();
     private RateLimitsResult? latestRateLimits;
     private readonly HashSet<SlashCommandId> unavailableSlashCommands = [];
     private int drainingSlashQueue;
     private CancellationTokenSource? fileSuggestionRefresh;
+
+    private readonly record struct PendingReasoningOverride(string Effort, string? RestoreEffort);
 
     public ChatViewModel(OutputChannel? outputChannel = null, VisualStudioExtensibility? extensibility = null)
         : this(new WorkerBridge(outputChannel), outputChannel, extensibility, autoConnect: true)
@@ -87,7 +102,9 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         IFilePickerService? filePickerService = null,
         IWorkspaceFileSearchService? workspaceFileSearchService = null,
         IProtectedDirectoryPolicy? protectedDirectoryPolicy = null,
-        IExtensionSettingsStore? settingsStore = null)
+        IExtensionSettingsStore? settingsStore = null,
+        IExternalLinkOpener? externalLinkOpener = null,
+        Func<DateTimeOffset>? utcNow = null)
     {
         this.bridge = bridge;
         this.outputChannel = outputChannel;
@@ -99,6 +116,8 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         this.workspaceFileSearchService = workspaceFileSearchService ?? new WorkspaceFileSearchService(extensibility);
         this.protectedDirectoryPolicy = protectedDirectoryPolicy ?? new ProtectedDirectoryPolicy();
         this.settingsStore = settingsStore ?? new FileExtensionSettingsStore();
+        this.externalLinkOpener = externalLinkOpener ?? new ExternalLinkOpener();
+        this.utcNow = utcNow ?? (() => DateTimeOffset.UtcNow);
         settings = this.settingsStore.Load();
         slashCommandParser = new SlashCommandParser(slashCommandCatalog);
         bridge.StateChanged += OnStateChangedAsync;
@@ -127,6 +146,19 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             IsHistoryOpen = !IsHistoryOpen;
             return Task.CompletedTask;
         });
+        CloseHistoryCommand = new AsyncCommand(() =>
+        {
+            IsHistoryOpen = false;
+            return Task.CompletedTask;
+        });
+        ToggleUsageCommand = new AsyncCommand(ToggleUsageAsync, () => IsUsageAvailable);
+        CloseUsageCommand = new AsyncCommand(() =>
+        {
+            IsUsageOpen = false;
+            return Task.CompletedTask;
+        });
+        OpenUsageDashboardCommand = new AsyncCommand(() => OpenExternalLinkAsync(ExternalLinkTarget.UsageDashboard));
+        OpenUsageHelpCommand = new AsyncCommand(() => OpenExternalLinkAsync(ExternalLinkTarget.UsageHelp));
         AttachCommand = new AsyncCommand(AttachAsync);
         ConfirmApprovalModeCommand = new AsyncCommand(ConfirmApprovalModeAsync, () => HasApprovalModeConfirmation);
         CancelApprovalModeCommand = new AsyncCommand(CancelApprovalModeAsync, () => HasApprovalModeConfirmation);
@@ -144,6 +176,10 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
         Models = ["gpt-5-codex", "gpt-5"];
         selectedModel = Models[0];
+        ReasoningEfforts = [];
+        RefreshReasoningEfforts();
+        ServiceTiers = [];
+        RefreshServiceTiers();
 
         ApprovalModes = ApprovalModeCatalog.CreateBuiltIns();
         selectedApprovalMode = FindApprovalMode(ApprovalModeCatalog.CustomId);
@@ -339,6 +375,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         {
             if (SetProperty(ref status, value))
             {
+                UpdateUsageConnectionLifecycle(value.State);
                 RaiseCommandStates();
                 OnPropertyChanged(nameof(IsDegraded));
                 OnPropertyChanged(nameof(IsTurnActive));
@@ -349,6 +386,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 OnPropertyChanged(nameof(StatusAutomationName));
                 OnPropertyChanged(nameof(StatusAutomationHelpText));
                 OnPropertyChanged(nameof(EffectiveApprovalModeText));
+                OnPropertyChanged(nameof(IsUsageAvailable));
             }
         }
     }
@@ -437,8 +475,36 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     public bool IsHistoryOpen
     {
         get => isHistoryOpen;
-        set => SetProperty(ref isHistoryOpen, value);
+        set
+        {
+            if (SetProperty(ref isHistoryOpen, value) && value && isUsageOpen)
+            {
+                isUsageOpen = false;
+                OnPropertyChanged(nameof(IsUsageOpen));
+            }
+        }
     }
+
+    [DataMember]
+    public bool IsUsageOpen
+    {
+        get => isUsageOpen;
+        set
+        {
+            if (SetProperty(ref isUsageOpen, value) && value && isHistoryOpen)
+            {
+                isHistoryOpen = false;
+                OnPropertyChanged(nameof(IsHistoryOpen));
+            }
+        }
+    }
+
+    [DataMember]
+    public bool IsUsageAvailable
+        => Account.IsSignedIn && IsConnectedState(Status.State);
+
+    [DataMember]
+    public UsagePresentation Usage { get; } = new();
 
     [DataMember]
     public ObservableCollection<SuggestionChip> Suggestions { get; }
@@ -457,6 +523,68 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
     [DataMember]
     public ObservableCollection<string> Models { get; }
+
+    [DataMember]
+    public ObservableCollection<ReasoningEffortOption> ReasoningEfforts { get; }
+
+    [DataMember]
+    public ObservableCollection<ServiceTierOption> ServiceTiers { get; }
+
+    [DataMember]
+    public string SelectedServiceTierId
+    {
+        get => selectedServiceTierId;
+        set
+        {
+            ServiceTierOption? option = ServiceTiers.FirstOrDefault(candidate =>
+                string.Equals(candidate.Id, value, StringComparison.OrdinalIgnoreCase));
+            if (option is null || !SetProperty(ref selectedServiceTierId, option.Id))
+            {
+                return;
+            }
+
+            settings.ServiceTierId = option.Id;
+            settingsStore.Save(settings);
+            OnPropertyChanged(nameof(ServiceTierHelpText));
+        }
+    }
+
+    [DataMember]
+    public bool HasServiceTiers => ServiceTiers.Count > 1;
+
+    [DataMember]
+    public string ServiceTierHelpText
+        => ServiceTiers.FirstOrDefault(option =>
+            string.Equals(option.Id, SelectedServiceTierId, StringComparison.OrdinalIgnoreCase))?.AutomationName
+        ?? "Inherit the service tier from the Codex configuration.";
+
+    [DataMember]
+    public string SelectedReasoningEffortId
+    {
+        get => selectedReasoningEffortId;
+        set
+        {
+            ReasoningEffortOption? option = FindReasoningEffort(value);
+            if (option is null || string.Equals(selectedReasoningEffortId, option.Id, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            selectedReasoningEffortId = option.Id;
+            settings.ReasoningEffortId = option.Id;
+            settingsStore.Save(settings);
+            OnPropertyChanged();
+            OnPropertyChanged(nameof(ReasoningEffortHelpText));
+        }
+    }
+
+    [DataMember]
+    public bool HasReasoningEfforts => ReasoningEfforts.Count > 1;
+
+    [DataMember]
+    public string ReasoningEffortHelpText
+        => FindReasoningEffort(SelectedReasoningEffortId)?.Description
+            ?? "Inherit the reasoning effort from the Codex configuration.";
 
     [DataMember]
     public string? SelectedModel
@@ -478,6 +606,8 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
             if (SetProperty(ref selectedModel, value))
             {
+                RefreshReasoningEfforts();
+                RefreshServiceTiers();
                 UpdateComposerSuggestions(ComposerText);
             }
         }
@@ -615,12 +745,29 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     public AsyncCommand ToggleHistoryCommand { get; }
 
     [DataMember]
+    public AsyncCommand CloseHistoryCommand { get; }
+
+    [DataMember]
+    public AsyncCommand ToggleUsageCommand { get; }
+
+    [DataMember]
+    public AsyncCommand CloseUsageCommand { get; }
+
+    [DataMember]
+    public AsyncCommand OpenUsageDashboardCommand { get; }
+
+    [DataMember]
+    public AsyncCommand OpenUsageHelpCommand { get; }
+
+    [DataMember]
     public AsyncCommand AttachCommand { get; }
 
     public void Dispose()
     {
         if (Interlocked.Exchange(ref disposed, 1) != 0)
             return;
+        Interlocked.Increment(ref usageConnectionGeneration);
+        InvalidateUsage();
         lifetime.Cancel();
         CancelFileSuggestionRefresh();
         slashCommandCoordinator.CancelAll();
@@ -833,6 +980,10 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         {
             UpdateAccount(accountStatus);
         }).ConfigureAwait(false);
+        if (accountStatus.State == AccountState.SignedIn)
+        {
+            await RefreshUsageAsync(force: false).ConfigureAwait(false);
+        }
         if (reloadThreads)
         {
             await ReloadThreadsAsync().ConfigureAwait(false);
@@ -867,6 +1018,8 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         await OnUiAsync(() =>
         {
             thread.EffectiveApprovalState = resumed.EffectiveApprovalState;
+            thread.EffectiveReasoningEffort = resumed.EffectiveReasoningEffort;
+            thread.EffectiveServiceTier = resumed.EffectiveServiceTier;
             OnPropertyChanged(nameof(EffectiveApprovalModeText));
             Items.Clear();
         }).ConfigureAwait(false);
@@ -1007,7 +1160,9 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 }
             }
 
+            RefreshServiceTiers();
             UpdateComposerSuggestions(ComposerText);
+            RefreshReasoningEfforts();
         }).ConfigureAwait(false);
     }
 
@@ -1126,6 +1281,8 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 lifetime.Token).ConfigureAwait(false)
             : null;
         string? collaborationMode = forcePlanMode ? "plan" : nextCollaborationMode;
+        TurnSettingResolution reasoning = ResolveReasoningSetting(threadId);
+        TurnSettingResolution serviceTier = ResolveServiceTierSetting(threadId);
         return new StartTurnRequest
         {
             ThreadId = threadId,
@@ -1135,16 +1292,18 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             ApprovalsReviewer = GetTurnApprovalsReviewer(),
             SandboxMode = GetTurnSandboxMode(),
             Permissions = GetTurnPermissions(),
-            Effort = nextReasoningEffort,
+            HasEffort = reasoning.HasValue,
+            Effort = reasoning.Value,
             Personality = nextPersonality,
-            ServiceTier = nextServiceTier,
+            HasServiceTier = serviceTier.HasValue,
+            ServiceTier = serviceTier.Value,
             CollaborationMode = collaborationMode is null
                 ? null
                 : new CollaborationModeInfo
                 {
                     Mode = collaborationMode,
                     Model = SelectedModel ?? string.Empty,
-                    ReasoningEffort = nextReasoningEffort,
+                    ReasoningEffort = reasoning.Value,
                 },
             IdeContext = ideContext,
             Attachments = attachments,
@@ -1155,9 +1314,18 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     // value re-queued while the turn was starting survives for the following turn.
     private void ConsumeNextTurnSettings(StartTurnRequest request)
     {
-        if (string.Equals(nextReasoningEffort, request.Effort, StringComparison.Ordinal))
+        if (pendingReasoningByThread.TryGetValue(request.ThreadId, out PendingReasoningOverride reasoningPending)
+            && request.HasEffort
+            && string.Equals(reasoningPending.Effort, request.Effort, StringComparison.Ordinal))
         {
-            nextReasoningEffort = null;
+            pendingReasoningByThread.Remove(request.ThreadId);
+            reasoningRestoreByThread[request.ThreadId] = reasoningPending.RestoreEffort;
+        }
+        else if (reasoningRestoreByThread.TryGetValue(request.ThreadId, out string? reasoningRestore)
+            && request.HasEffort
+            && string.Equals(reasoningRestore, request.Effort, StringComparison.Ordinal))
+        {
+            reasoningRestoreByThread.Remove(request.ThreadId);
         }
 
         if (string.Equals(nextPersonality, request.Personality, StringComparison.Ordinal))
@@ -1165,9 +1333,18 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             nextPersonality = null;
         }
 
-        if (string.Equals(nextServiceTier, request.ServiceTier, StringComparison.Ordinal))
+        if (pendingServiceTierByThread.TryGetValue(request.ThreadId, out PendingServiceTierOverride? pending)
+            && request.HasServiceTier
+            && string.Equals(pending.Tier, request.ServiceTier, StringComparison.Ordinal))
         {
-            nextServiceTier = null;
+            pendingServiceTierByThread.Remove(request.ThreadId);
+            serviceTierRestoreByThread[request.ThreadId] = pending.RestoreTier;
+        }
+        else if (serviceTierRestoreByThread.TryGetValue(request.ThreadId, out string? restore)
+            && request.HasServiceTier
+            && string.Equals(restore, request.ServiceTier, StringComparison.Ordinal))
+        {
+            serviceTierRestoreByThread.Remove(request.ThreadId);
         }
 
         if (request.CollaborationMode is not null
@@ -1179,6 +1356,53 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             nextCollaborationMode = null;
         }
     }
+
+    private TurnSettingResolution ResolveServiceTierSetting(string threadId)
+    {
+        if (pendingServiceTierByThread.TryGetValue(threadId, out PendingServiceTierOverride? pending))
+        {
+            if (SelectedModelSupportsServiceTier(pending.Tier))
+            {
+                return new TurnSettingResolution(true, pending.Tier);
+            }
+        }
+
+        if (serviceTierRestoreByThread.TryGetValue(threadId, out string? restore))
+        {
+            if (restore is null || SelectedModelSupportsServiceTier(restore))
+            {
+                return new TurnSettingResolution(true, restore);
+            }
+        }
+
+        ServiceTierOption? configured = ServiceTiers.FirstOrDefault(option =>
+            option.Id.Length > 0
+            && string.Equals(option.Id, settings.ServiceTierId, StringComparison.OrdinalIgnoreCase));
+        return configured is null
+            ? new TurnSettingResolution(false, null)
+            : new TurnSettingResolution(true, configured.Id);
+    }
+
+    private bool SelectedModelSupportsServiceTier(string tier)
+        => GetSelectedModelInfo()?.ServiceTiers.Any(option =>
+            string.Equals(option.Id, tier, StringComparison.OrdinalIgnoreCase)) == true;
+
+    private string? GetEffectiveServiceTier(string threadId)
+    {
+        ThreadSummary? thread = SelectedThread;
+        if (thread is not null && string.Equals(thread.Id, threadId, StringComparison.Ordinal))
+        {
+            return thread.EffectiveServiceTier;
+        }
+
+        return string.Equals(Status.ThreadId, threadId, StringComparison.Ordinal)
+            ? Status.EffectiveServiceTier
+            : null;
+    }
+
+    private sealed record PendingServiceTierOverride(string Tier, string? RestoreTier);
+
+    private readonly record struct TurnSettingResolution(bool HasValue, string? Value);
 
     private void UpdateComposerSuggestions(string text)
     {
@@ -1472,11 +1696,12 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 new("friendly", "Friendly"),
                 new("pragmatic", "Pragmatic"),
             ],
-            SlashCommandId.Reasoning => GetSelectedModelInfo()?.SupportedReasoningEfforts
+            SlashCommandId.Reasoning => ReasoningEfforts
+                .Skip(1)
                 .Select(effort => new SlashCommandOptionDescriptor(
                     effort.Id,
-                    effort.Id,
-                    effort.Description ?? string.Empty))
+                    effort.DisplayText,
+                    effort.Description))
                 .ToArray(),
             SlashCommandId.Permissions => ApprovalModes
                 .Select(mode => new SlashCommandOptionDescriptor(mode.Id, mode.DisplayText, mode.Description))
@@ -1524,8 +1749,77 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     }
 
     private ModelInfo? GetSelectedModelInfo()
-        => modelCatalog.Models.FirstOrDefault(
+    {
+        if (string.Equals(modelCatalog.DefaultModelInfo?.Id, SelectedModel, StringComparison.Ordinal))
+        {
+            return modelCatalog.DefaultModelInfo;
+        }
+
+        return modelCatalog.Models.FirstOrDefault(
             model => string.Equals(model.Id, SelectedModel, StringComparison.Ordinal));
+    }
+
+    private void RefreshServiceTiers()
+    {
+        IReadOnlyList<ServiceTierOption> options = ServiceTierCatalog.Create(GetSelectedModelInfo(), markdown);
+        ServiceTierCatalog.Merge(ServiceTiers, options);
+        ServiceTierOption? configured = ServiceTiers.FirstOrDefault(option =>
+            string.Equals(option.Id, settings.ServiceTierId, StringComparison.OrdinalIgnoreCase));
+        string displayedId = configured?.Id ?? ServiceTierCatalog.DefaultId;
+        if (!string.Equals(selectedServiceTierId, displayedId, StringComparison.Ordinal))
+        {
+            selectedServiceTierId = displayedId;
+            OnPropertyChanged(nameof(SelectedServiceTierId));
+        }
+
+        OnPropertyChanged(nameof(HasServiceTiers));
+        OnPropertyChanged(nameof(ServiceTierHelpText));
+    }
+
+    private void RefreshReasoningEfforts()
+    {
+        IReadOnlyList<ReasoningEffortOption> options = ReasoningEffortCatalog.Create(GetSelectedModelInfo(), markdown);
+        ReasoningEffortCatalog.Merge(ReasoningEfforts, options);
+        selectedReasoningEffortId = FindReasoningEffort(settings.ReasoningEffortId)?.Id
+            ?? ReasoningEffortCatalog.DefaultId;
+        OnPropertyChanged(nameof(SelectedReasoningEffortId));
+        OnPropertyChanged(nameof(HasReasoningEfforts));
+        OnPropertyChanged(nameof(ReasoningEffortHelpText));
+    }
+
+    private ReasoningEffortOption? FindReasoningEffort(string? id)
+        => id is null
+            ? null
+            : ReasoningEfforts.FirstOrDefault(option =>
+                string.Equals(option.Id, id, StringComparison.OrdinalIgnoreCase));
+
+    private TurnSettingResolution ResolveReasoningSetting(string threadId)
+    {
+        if (pendingReasoningByThread.TryGetValue(threadId, out PendingReasoningOverride pending))
+        {
+            if (SelectedModelSupportsReasoningEffort(pending.Effort))
+            {
+                return new TurnSettingResolution(true, pending.Effort);
+            }
+        }
+
+        if (reasoningRestoreByThread.TryGetValue(threadId, out string? restore))
+        {
+            if (restore is null || SelectedModelSupportsReasoningEffort(restore))
+            {
+                return new TurnSettingResolution(true, restore);
+            }
+        }
+
+        ReasoningEffortOption? persistent = FindReasoningEffort(settings.ReasoningEffortId);
+        return persistent is null || persistent.Id.Length == 0
+            ? new TurnSettingResolution(false, null)
+            : new TurnSettingResolution(true, persistent.Id);
+    }
+
+    private bool SelectedModelSupportsReasoningEffort(string effort)
+        => GetSelectedModelInfo()?.SupportedReasoningEfforts.Any(option =>
+            string.Equals(option.Id, effort, StringComparison.OrdinalIgnoreCase)) == true;
 
     private bool SelectedModelSupportsFastTier()
         => GetSelectedModelInfo()?.ServiceTiers.Any(
@@ -1638,7 +1932,9 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         => invocation.Definition.Id is
             SlashCommandId.Compact
             or SlashCommandId.Fork
+            or SlashCommandId.Fast
             or SlashCommandId.Goal
+            or SlashCommandId.Reasoning
             or SlashCommandId.Review
             || (invocation.Definition.Id == SlashCommandId.Plan
                 && !string.IsNullOrWhiteSpace(invocation.Arguments));
@@ -1666,11 +1962,11 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 SlashCommandId.Goal => await ExecuteGoalAsync(targetThreadId!, invocation.Arguments).ConfigureAwait(false),
                 SlashCommandId.Mcp => await ExecuteMcpAsync(targetThreadId).ConfigureAwait(false),
                 SlashCommandId.Review => await ExecuteReviewAsync(targetThreadId!, invocation.Arguments).ConfigureAwait(false),
-                SlashCommandId.Fast => await ExecuteFastAsync().ConfigureAwait(false),
+                SlashCommandId.Fast => await ExecuteFastAsync(targetThreadId!).ConfigureAwait(false),
                 SlashCommandId.Model => await ExecuteModelAsync(invocation.Arguments).ConfigureAwait(false),
                 SlashCommandId.Personality => await ExecutePersonalityAsync(invocation.Arguments).ConfigureAwait(false),
                 SlashCommandId.Plan => await ExecutePlanAsync(targetThreadId!, invocation.Arguments).ConfigureAwait(false),
-                SlashCommandId.Reasoning => await ExecuteReasoningAsync(invocation.Arguments).ConfigureAwait(false),
+                SlashCommandId.Reasoning => await ExecuteReasoningAsync(targetThreadId!, invocation.Arguments).ConfigureAwait(false),
                 SlashCommandId.IdeContext => await ExecuteIdeContextAsync().ConfigureAwait(false),
                 SlashCommandId.Init => await ExecuteInitAsync().ConfigureAwait(false),
                 SlashCommandId.Status => await ExecuteStatusAsync(targetThreadId).ConfigureAwait(false),
@@ -1893,15 +2189,34 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         return await HandleOperationResultAsync(SlashCommandId.Review, result, "Code review started.").ConfigureAwait(false);
     }
 
-    private async Task<bool> ExecuteFastAsync()
+    private async Task<bool> ExecuteFastAsync(string threadId)
     {
-        if (!SelectedModelSupportsFastTier())
+        ServiceTierInfo? fastTier = GetSelectedModelInfo()?.ServiceTiers.FirstOrDefault(
+            tier => string.Equals(tier.Id, "fast", StringComparison.OrdinalIgnoreCase));
+        if (fastTier is null)
         {
             await ShowSlashFailureAsync("The selected model does not support the fast service tier.").ConfigureAwait(false);
             return false;
         }
 
-        nextServiceTier = "fast";
+        string? restoreTier;
+        if (pendingServiceTierByThread.TryGetValue(threadId, out PendingServiceTierOverride? existing))
+        {
+            restoreTier = existing.RestoreTier;
+        }
+        else if (serviceTierRestoreByThread.TryGetValue(threadId, out string? queuedRestore))
+        {
+            restoreTier = queuedRestore;
+        }
+        else
+        {
+            ServiceTierOption? configured = ServiceTiers.FirstOrDefault(option =>
+                option.Id.Length > 0
+                && string.Equals(option.Id, settings.ServiceTierId, StringComparison.OrdinalIgnoreCase));
+            restoreTier = configured?.Id ?? GetEffectiveServiceTier(threadId);
+        }
+
+        pendingServiceTierByThread[threadId] = new PendingServiceTierOverride(fastTier.Id, restoreTier);
         await ShowSlashStatusAsync("Fast service tier will be used for the next turn.").ConfigureAwait(false);
         return true;
     }
@@ -1957,22 +2272,51 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         return true;
     }
 
-    private async Task<bool> ExecuteReasoningAsync(string arguments)
+    private async Task<bool> ExecuteReasoningAsync(string threadId, string arguments)
     {
         string effort = arguments.Trim();
         ModelInfo? model = GetSelectedModelInfo();
-        if (effort.Length == 0
-            || model is null
-            || !model.SupportedReasoningEfforts.Any(
-                option => string.Equals(option.Id, effort, StringComparison.OrdinalIgnoreCase)))
+        ReasoningEffortInfo? matched = model?.SupportedReasoningEfforts.FirstOrDefault(
+            option => string.Equals(option.Id, effort, StringComparison.OrdinalIgnoreCase));
+        if (effort.Length == 0 || matched is null)
         {
             await ShowSlashFailureAsync("Select a reasoning effort supported by the current model.").ConfigureAwait(false);
             return false;
         }
 
-        nextReasoningEffort = effort;
-        await ShowSlashStatusAsync($"Reasoning effort set to {effort} for the next turn.").ConfigureAwait(false);
+        string? restoreEffort;
+        if (pendingReasoningByThread.TryGetValue(threadId, out PendingReasoningOverride existing))
+        {
+            restoreEffort = existing.RestoreEffort;
+        }
+        else if (reasoningRestoreByThread.TryGetValue(threadId, out string? queuedRestore))
+        {
+            restoreEffort = queuedRestore;
+        }
+        else
+        {
+            ReasoningEffortOption? persistent = FindReasoningEffort(settings.ReasoningEffortId);
+            restoreEffort = persistent is null || persistent.Id.Length == 0
+                ? GetEffectiveReasoningEffort(threadId)
+                : persistent.Id;
+        }
+
+        pendingReasoningByThread[threadId] = new PendingReasoningOverride(matched.Id, restoreEffort);
+        await ShowSlashStatusAsync($"Reasoning effort set to {matched.Id} for the next turn in this thread.").ConfigureAwait(false);
         return true;
+    }
+
+    private string? GetEffectiveReasoningEffort(string threadId)
+    {
+        ThreadSummary? thread = SelectedThread;
+        if (thread is not null && string.Equals(thread.Id, threadId, StringComparison.Ordinal))
+        {
+            return thread.EffectiveReasoningEffort;
+        }
+
+        return string.Equals(Status.ThreadId, threadId, StringComparison.Ordinal)
+            ? Status.EffectiveReasoningEffort
+            : null;
     }
 
     private async Task<bool> ExecuteIdeContextAsync()
@@ -2002,27 +2346,50 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
     private async Task<bool> ExecuteStatusAsync(string? threadId)
     {
-        if (Status.State is WorkerConnectionState.Ready or WorkerConnectionState.Busy or WorkerConnectionState.WaitingForApproval)
+        if (IsUsageAvailable)
         {
-            try
-            {
-                latestRateLimits = await bridge.GetRateLimitsAsync(lifetime.Token).ConfigureAwait(false);
-            }
-            catch (Exception ex)
-            {
-                ExtensionDiagnostics.Write("Rate-limit lookup failed while building slash status", ex);
-            }
+            await RefreshUsageAsync(force: true).ConfigureAwait(false);
         }
 
-        string usage = FormatRateLimits(latestRateLimits);
+        string usage = Usage.SlashStatusText;
+        string desiredReasoning = string.IsNullOrEmpty(settings.ReasoningEffortId)
+            ? "(config.toml)"
+            : markdown.ToSafeText(settings.ReasoningEffortId);
+        TurnSettingResolution nextReasoning = threadId is null
+            ? new TurnSettingResolution(false, null)
+            : ResolveReasoningSetting(threadId);
+        string nextReasoningText = nextReasoning.HasValue
+            ? nextReasoning.Value ?? "(explicit null)"
+            : "(config.toml)";
+        string desiredServiceTier = string.IsNullOrEmpty(settings.ServiceTierId)
+            ? "(config.toml)"
+            : markdown.ToSafeText(settings.ServiceTierId);
+        string effectiveServiceTier = threadId is null
+            ? Status.EffectiveServiceTier ?? "(unknown)"
+            : GetEffectiveServiceTier(threadId) ?? "(config/default)";
+        TurnSettingResolution nextServiceTier = threadId is null
+            ? new TurnSettingResolution(false, null)
+            : ResolveServiceTierSetting(threadId);
+        string pendingServiceTier = threadId is not null
+            && pendingServiceTierByThread.TryGetValue(threadId, out PendingServiceTierOverride? pending)
+                ? pending.Tier
+                : "(none)";
+        string nextServiceTierText = nextServiceTier.HasValue
+            ? nextServiceTier.Value ?? "(explicit null)"
+            : "(config.toml)";
         string message = string.Join(
             "\r\n",
             $"Connection: {Status.State}",
             $"Thread: {threadId ?? "(none)"}",
             $"Model: {SelectedModel ?? "(default)"}",
-            $"Reasoning effort: {nextReasoningEffort ?? "(default)"}",
+            $"Desired reasoning effort: {desiredReasoning}",
+            $"Effective reasoning effort: {GetEffectiveReasoningEffort(threadId ?? string.Empty) ?? "(not reported)"}",
+            $"Next-turn reasoning effort: {nextReasoningText}",
             $"Personality: {nextPersonality ?? "(default)"}",
-            $"Service tier: {nextServiceTier ?? "(default)"}",
+            $"Desired service tier: {desiredServiceTier}",
+            $"Effective service tier: {effectiveServiceTier}",
+            $"Pending service-tier override: {pendingServiceTier}",
+            $"Next-turn service tier: {nextServiceTierText}",
             $"Collaboration mode: {nextCollaborationMode ?? "default"}",
             $"Desired permissions: {DesiredApprovalModeText}",
             $"Effective permissions: {EffectiveApprovalModeText}",
@@ -2124,30 +2491,6 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         return result.Goal is null
             ? "No goal is set for this thread."
             : $"Goal: {result.Goal.Objective}\r\nStatus: {result.Goal.Status}\r\nTokens used: {result.Goal.TokensUsed}";
-    }
-
-    private static string FormatRateLimits(RateLimitsResult? result)
-    {
-        if (result is null || !result.IsSupported)
-        {
-            return "unavailable";
-        }
-
-        RateLimitInfo? rateLimit = result.RateLimits ?? result.RateLimitsByLimitId.Values.FirstOrDefault();
-        if (rateLimit is null)
-        {
-            return "not reported";
-        }
-
-        string primary = rateLimit.Primary is null
-            ? "primary window not reported"
-            : $"{rateLimit.Primary.UsedPercent}% used";
-        string credits = rateLimit.Credits is null
-            ? string.Empty
-            : rateLimit.Credits.Unlimited
-                ? "; credits unlimited"
-                : $"; credits {rateLimit.Credits.Balance ?? "unavailable"}";
-        return string.Concat(primary, credits);
     }
 
     private Task ShowSlashStatusAsync(string message)
@@ -2452,12 +2795,19 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             lifetime.Token);
     }
 
-    private Task OnStateChangedAsync(WorkerStatus value)
-        => OnUiAsync(() =>
+    private async Task OnStateChangedAsync(WorkerStatus value)
+    {
+        await OnUiAsync(() =>
         {
             WorkerStatus previousStatus = Status;
             WorkerConnectionState previous = previousStatus.State;
             Status = value;
+            if (SelectedThread is not null
+                && string.Equals(SelectedThread.Id, value.ThreadId, StringComparison.Ordinal))
+            {
+                SelectedThread.EffectiveReasoningEffort = value.EffectiveReasoningEffort;
+                SelectedThread.EffectiveServiceTier = value.EffectiveServiceTier;
+            }
             if (value.State is WorkerConnectionState.Disconnected or WorkerConnectionState.Degraded)
             {
                 IReadOnlyList<SlashCommandInvocation> canceled = slashCommandCoordinator.CancelAll();
@@ -2512,15 +2862,27 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                     Items.Add(new ChatItemViewModel("Error", errorText, ConversationEventKind.Error));
                 }
             }
-        });
+        }).ConfigureAwait(false);
 
-    private Task OnAccountChangedAsync(AccountStatus value)
+        if (value.State == WorkerConnectionState.Ready
+            && Account.IsSignedIn
+            && usageFetchedGeneration != usageConnectionGeneration)
+        {
+            await RefreshUsageAsync(force: false).ConfigureAwait(false);
+        }
+    }
+
+    private async Task OnAccountChangedAsync(AccountStatus value)
     {
         ExtensionDiagnostics.Write($"Account status notification received state={value.State} plan={value.PlanType ?? "none"}");
-        return OnUiAsync(() =>
+        await OnUiAsync(() =>
         {
             UpdateAccount(value);
-        });
+        }).ConfigureAwait(false);
+        if (value.State == AccountState.SignedIn && Status.State == WorkerConnectionState.Ready)
+        {
+            await RefreshUsageAsync(force: false).ConfigureAwait(false);
+        }
     }
 
     private Task OnContextCompactedAsync(ContextCompactionEvent value)
@@ -2550,8 +2912,25 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
     private Task OnRateLimitsChangedAsync(RateLimitsResult value)
     {
+        long generation = Volatile.Read(ref usageConnectionGeneration);
+        long pushVersion = Interlocked.Increment(ref rateLimitPushVersion);
+        return OnUiAsync(() => ApplyRateLimitsPush(value, generation, pushVersion));
+    }
+
+    private void ApplyRateLimitsPush(RateLimitsResult value, long generation, long pushVersion)
+    {
+        if (!IsUsageAvailable
+            || generation != Volatile.Read(ref usageConnectionGeneration)
+            || pushVersion != Volatile.Read(ref rateLimitPushVersion))
+        {
+            return;
+        }
+
+        DateTimeOffset refreshedAt = utcNow();
         latestRateLimits = value;
-        return Task.CompletedTask;
+        latestRateLimitsAt = refreshedAt;
+        usageFetchedGeneration = generation;
+        Usage.Update(value, refreshedAt, markdown);
     }
 
     private Task OnConversationEventAsync(ConversationEvent value)
@@ -2993,13 +3372,151 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         => (Status.State is WorkerConnectionState.Ready or WorkerConnectionState.Busy or WorkerConnectionState.WaitingForApproval)
         && Account.ShowAction;
 
+    private async Task ToggleUsageAsync()
+    {
+        bool opening = !IsUsageOpen;
+        await OnUiAsync(() => IsUsageOpen = opening).ConfigureAwait(false);
+        if (opening)
+        {
+            await RefreshUsageAsync(force: false).ConfigureAwait(false);
+        }
+    }
+
+    private async Task OpenExternalLinkAsync(ExternalLinkTarget target)
+    {
+        try
+        {
+            await externalLinkOpener.OpenAsync(target, lifetime.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+        {
+        }
+        catch (Exception ex)
+        {
+            ExtensionDiagnostics.Write($"Opening an approved usage link failed ({ex.GetType().Name}).");
+        }
+    }
+
+    internal async Task RefreshUsageAsync(bool force)
+    {
+        try
+        {
+            await usageRefreshGate.WaitAsync(lifetime.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+        {
+            return;
+        }
+
+        try
+        {
+            if (!IsUsageAvailable)
+            {
+                return;
+            }
+
+            long generation = Volatile.Read(ref usageConnectionGeneration);
+            DateTimeOffset requestedAt = utcNow();
+            if (!force
+                && usageFetchedGeneration == generation
+                && latestRateLimitsAt.HasValue
+                && requestedAt - latestRateLimitsAt.Value < TimeSpan.FromSeconds(60))
+            {
+                return;
+            }
+
+            long pushVersion = Volatile.Read(ref rateLimitPushVersion);
+            await OnUiAsync(() => Usage.SetLoading(true)).ConfigureAwait(false);
+            RateLimitsResult result;
+            try
+            {
+                result = await bridge.GetRateLimitsAsync(lifetime.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+            {
+                return;
+            }
+            catch (Exception ex)
+            {
+                ExtensionDiagnostics.Write($"Usage lookup failed ({ex.GetType().Name}).");
+                return;
+            }
+
+            await OnUiAsync(() =>
+            {
+                if (generation != Volatile.Read(ref usageConnectionGeneration)
+                    || !IsUsageAvailable
+                    || pushVersion != Volatile.Read(ref rateLimitPushVersion))
+                {
+                    return;
+                }
+
+                DateTimeOffset refreshedAt = utcNow();
+                latestRateLimits = result;
+                latestRateLimitsAt = refreshedAt;
+                usageFetchedGeneration = generation;
+                Usage.Update(result, refreshedAt, markdown);
+            }).ConfigureAwait(false);
+        }
+        finally
+        {
+            await OnUiAsync(() => Usage.SetLoading(false)).ConfigureAwait(false);
+            usageRefreshGate.Release();
+        }
+    }
+
+    private static bool IsConnectedState(WorkerConnectionState state)
+        => state is WorkerConnectionState.Ready or WorkerConnectionState.Busy or WorkerConnectionState.WaitingForApproval;
+
+    private void UpdateUsageConnectionLifecycle(WorkerConnectionState state)
+    {
+        bool isConnected = IsConnectedState(state);
+        if (isConnected && !usageConnectionActive)
+        {
+            usageConnectionActive = true;
+            Interlocked.Increment(ref usageConnectionGeneration);
+            usageFetchedGeneration = -1;
+            latestRateLimits = null;
+            latestRateLimitsAt = null;
+            Usage.Clear();
+        }
+        else if (!isConnected && usageConnectionActive)
+        {
+            usageConnectionActive = false;
+            Interlocked.Increment(ref usageConnectionGeneration);
+            InvalidateUsage();
+        }
+    }
+
+    private void InvalidateUsage()
+    {
+        usageFetchedGeneration = -1;
+        latestRateLimits = null;
+        latestRateLimitsAt = null;
+        Interlocked.Increment(ref rateLimitPushVersion);
+        IsUsageOpen = false;
+        Usage.Clear();
+    }
+
     private void UpdateAccount(AccountStatus value)
     {
+        bool wasSignedIn = Account.IsSignedIn;
         Account.Update(value);
+        if (!Account.IsSignedIn)
+        {
+            if (wasSignedIn)
+            {
+                Interlocked.Increment(ref usageConnectionGeneration);
+            }
+
+            InvalidateUsage();
+        }
         OnPropertyChanged(nameof(StatusDetailText));
         OnPropertyChanged(nameof(ShowAccountAction));
         OnPropertyChanged(nameof(AccountActionText));
+        OnPropertyChanged(nameof(IsUsageAvailable));
         AccountCommand.RaiseCanExecuteChanged();
+        ToggleUsageCommand.RaiseCanExecuteChanged();
     }
 
     // Disconnected is allowed so the user can send with no solution/folder open: SendAsync
@@ -3022,6 +3539,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         SendCommand.RaiseCanExecuteChanged();
         InterruptCommand.RaiseCanExecuteChanged();
         AccountCommand.RaiseCanExecuteChanged();
+        ToggleUsageCommand.RaiseCanExecuteChanged();
     }
 
     // In the OOP extension process, Application.Current is null so the null-conditional

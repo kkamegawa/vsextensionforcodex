@@ -27,6 +27,7 @@ The publisher is `kazushikamegawa`. The VSIX identifier is `Kkamegawa.CodexForVi
 - 75 ms streaming batches with bounded reasoning, command output, and diff buffers plus temporary overflow files
 - WPF chat window with history, transcript virtualization, composer, approvals, connected Codex version status, interrupt, and restart controls
 - Agent-only typed permission picker with stable persisted IDs, built-in approval/reviewer/sandbox tuples, capability-gated permission profiles, and theme-aware accessible confirmation for Full access and Custom thread transitions
+- Empty-workspace scaffolding that creates a root-level empty `.slnx` without imposing a project template, while preserving the file-based app alternative
 - Initialize-handshake version discovery from a bounded, validated app-server user-agent product token, propagated through Worker contract version 9
 - Safe text rendering that removes HTML tags, ANSI escapes, and control characters
 - Structured block rendering for agent/reasoning markdown with ordered-list numbering and nested-list indentation (capped at two extra indent steps)
@@ -35,10 +36,17 @@ The publisher is `kazushikamegawa`. The VSIX identifier is `Kkamegawa.CodexForVi
 - Local prose prompt detection for natural-language numbered choices and yes/no confirmation questions, independent of the experimental API toggle
 - Pixel-based transcript scrolling (VirtualizingPanel.ScrollUnit=Pixel) to avoid variable-height item jumps
 - VSIX packaging with PkgDef, WPF package dependencies, .NET 8 worker, and worker dependencies
+- Model-aware Reasoning and Speed pickers with sanitized catalog content, stable persisted IDs, hidden-default capability metadata, and Remote UI accessibility bindings
+- Contract version 13 turn-setting presence flags for omit/null/value semantics, plus effective reasoning and service-tier propagation
+- Thread-scoped `/reasoning` and `/fast` one-turn overrides with success-only consumption and explicit sticky-value restoration
 
 ## Validation Status
 
 Automated tests cover JSON-RPC round trips, server requests, cancellation, closed-stream disposal, redaction, relative/case-insensitive/symlink path boundaries, approval categories and scopes, WebSocket/retry policy, streaming overflow, thread-list parameters, stale steer rejection, duplicate approval prevention, and safe rendering.
+
+Scaffolding tests additionally verify the exact generated path and bytes, UTF-8 BOM and CRLF,
+non-overwrite behavior, absence of implicit project artifacts, XML validity, and compatibility with
+the pinned `.NET` SDK's `dotnet sln` parser.
 
 The picker keeps the desired default separate from the effective state reported by thread
 responses and Worker status. `ask` maps to `on-request` + `user` + `workspaceWrite`, `auto`
@@ -69,6 +77,8 @@ The generated VSIX contents have been inspected and include:
 - Worker runtime configuration and dependency assemblies
 
 ## Remaining Manual Validation
+
+Core and UI tests cover catalog sanitation, model fallback without preference loss, canonical persistent values, normal and Plan resolution, one-turn restoration, thread isolation, and failed-start retention.
 
 - Verify the View menu command and WPF tool window under all supported Visual Studio themes.
 - Confirm live approval request and response shapes against the installed Codex version.
@@ -115,3 +125,18 @@ To recover without resetting the entire Experimental Instance:
 
 Do not copy a build output manually over the deployment. After the cleanup, use the normal SDK-owned
 F5 flow so the deployed assembly and packaged resources come from one deterministic build.
+
+## Usage pipeline
+
+`CodexSessionService` preserves an absent `usedPercent` as null and redacts credit balance text at
+the Worker boundary. `UsagePresentation` selects only an unambiguous limit, computes remaining
+percentage, and creates the bounded strings serialized by Remote UI. `ChatViewModel` owns the
+connection generation, push version, 60-second TTL, and refresh gate so a stale read cannot replace
+a newer push or survive lifecycle invalidation.
+
+`ExternalLinkOpener` maps commands to two compile-time destinations and validates their exact HTTPS
+host and path before shell activation. No arbitrary URI crosses the view-model command boundary and
+diagnostics do not include destination text. The raw embedded XAML provides the mutually exclusive
+Usage popup with themed WPF controls, cyclic navigation after focus enters the popup, host- and
+popup-level Escape commands, and UI Automation metadata. Raw Remote UI cannot execute VS-side
+`Keyboard.Focus` from `Popup.Opened`; guaranteed focus transfer requires an in-process WPF host.
