@@ -2,6 +2,13 @@
 
 `plan.md` のフェーズ分割に対応する詳細タスク。各タスクは独立してレビュー可能な小さなスライスを意図する。
 
+## 2026-07-21: Stabilize intermittent CI build failures (issue #110)
+
+- [x] Replace the fixed `Task.Delay(250)` in `StreamingBufferTests.cs` (3 tests) with a poll-until-condition-or-timeout wait, removing the race against the `StreamingBuffer`'s 75ms flush timer.
+- [x] Validate: solution builds with 0 warnings/0 errors (Release); `StreamingBufferTests` pass 8/8 consecutive local runs; 95 Core tests and 268 UI tests pass.
+- [ ] Add inline PowerShell retry (max 3 attempts) around the `Test core` / `Test UI` steps in `.github/workflows/ci.yml` — deferred: `Edit(.github/workflows/**)` is denied by this environment's permission settings, so the change is provided as a diff for manual application instead of being committed by the agent.
+- Ref: issue #110.
+
 ## 2026-07-20: PR #89 review and merge validation
 
 - [x] Confirm that the PR branch already contains the current `main` commit without conflicts.
