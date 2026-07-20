@@ -311,6 +311,30 @@ public sealed class SlashCommandPresentationTests
     }
 
     [TestMethod]
+    public void Xaml_SlashArgumentInputUsesVisualStudioTextBoxThemePair()
+    {
+        XDocument document = LoadXaml();
+        XName xKey = XName.Get("Key", "http://schemas.microsoft.com/winfx/2006/xaml");
+        XElement rootGrid = document.Root!.Element(Presentation + "Grid")!;
+        XElement resources = rootGrid.Element(Presentation + "Grid.Resources")!;
+        XElement textBoxStyle = resources
+            .Elements(Presentation + "Style")
+            .Single(element => element.Attribute("TargetType")?.Value == "TextBox"
+                && element.Attribute(xKey) is null);
+
+        StringAssert.Contains(textBoxStyle.Attribute("BasedOn")?.Value, "VsResourceKeys.TextBoxStyleKey");
+
+        XElement argumentInput = document
+            .Descendants(Presentation + "TextBox")
+            .Single(element => element.Attribute("AutomationProperties.Name")?.Value == "Slash command arguments");
+        Assert.IsNull(argumentInput.Attribute("Background"));
+        Assert.IsNull(argumentInput.Attribute("Foreground"));
+        Assert.IsNull(argumentInput.Attribute("CaretBrush"));
+        Assert.IsNull(argumentInput.Attribute("SelectionBrush"));
+        Assert.IsNull(argumentInput.Element(Presentation + "TextBox.Style"));
+    }
+
+    [TestMethod]
     public void ClosedSuggestions_RemoveKeyCommandsSoNormalEditorGesturesContinue()
     {
         var viewModel = new SlashCommandPresentationViewModel();

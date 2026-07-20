@@ -221,3 +221,30 @@ gated catalog completes. Only a complete successful catalog may fall back to Cus
 is missing; transient failures and truncated responses preserve the saved ID. Full access must be
 confirmed because it disables the Codex sandbox and normal approval prompts. Moving from any turn
 override to Custom starts a new thread because omitted overrides do not reset an existing thread.
+
+## 8. Reasoning effort and service-tier pickers (contract version 13)
+
+The composer exposes model-aware Reasoning and Speed pickers after the model selector. Their first entry is `Default`, which omits the turn override and inherits Codex configuration. A concrete selection persists only its canonical catalog ID. When a selected model does not support that ID, the UI temporarily displays `Default` without overwriting the saved preference.
+
+Hidden default models remain absent from the normal model catalog but are represented by `ListModelsResult.DefaultModelInfo`. This preserves reasoning and service-tier capabilities when the default model ID is injected into the picker. Every app-server name and description passes through `SafeMarkdownService` before it reaches Remote UI, while server ordering, canonical casing, and case-insensitive deduplication are retained.
+
+Contract version 13 adds explicit presence flags for effort and service tier. The Worker can send an omitted property to inherit configuration, an explicit null to clear a sticky thread override, or a canonical value. Effective settings are tracked after start, resume, fork, turn start, and thread-settings updates.
+
+`/reasoning` and `/fast` are thread-scoped one-turn overrides consumed only after `turn/start` succeeds. The following turn explicitly restores the persistent selection or captured effective value, including null. Normal and direct Plan turns share the same resolvers.
+
+## 9. Usage presentation and freshness
+
+The signed-in header exposes one Usage flyout backed by `UsagePresentation`. It converts the
+app-server's used percentage into a clamped remaining percentage, recognizes the five-hour and
+weekly windows, formats reset values as Unix seconds, and sanitizes bounded credit text before it
+crosses Remote UI. Missing usage percentages and ambiguous multi-limit maps are not presented as
+zero usage.
+
+Usage freshness is scoped to a connection generation and a monotonic push version. The first
+signed-in Ready state fetches once, Busy-to-Ready transitions do not fetch, and opening the flyout
+refreshes only after a 60-second TTL. Disconnect, sign-out, and disposal invalidate the snapshot.
+The Usage and History flyouts are mutually exclusive; the Usage popup cycles Tab focus after focus
+enters its content, closes with Escape from either the host or popup, uses Visual Studio dynamic
+theme resources, and exposes automation names and help text. Raw Remote UI cannot run VS-side
+`Popup.Opened` code to transfer keyboard focus; guaranteed opening focus would require an in-process
+WPF host.
