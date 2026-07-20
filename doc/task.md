@@ -263,6 +263,21 @@ ChatGPT デスクトップと同等の承認方法選択 UI。レビュー済み
 
 ## Work log
 
+### 2026-07-20: Implemented bounded collapsible command output (issue #80)
+
+Implemented issue #80 and sub-issues #81, #82, and #83. Sanitized command deltas now accumulate
+in a non-serialized extension buffer capped at 2 MiB of characters. Output remains inline through
+three logical lines and 4,096 characters, then starts collapsed with only that bounded preview
+published to Remote UI. Hidden streaming deltas no longer republish the accumulated full text.
+
+The transcript uses a standard WPF Expander with TwoWay state, native keyboard/UI Automation
+behavior, Visual Studio dynamic theme resources, non-wrapping monospace text, and horizontal
+scrolling. CRLF split across deltas is counted once, truncated output avoids unverified total-line
+claims, and no third-party control or package was added. ADR-003 records the projection boundary.
+
+- Validation: Release UI build completed with zero warnings and zero errors.
+- Tests: UI tests passed 224/224 with `--no-build`.
+
 ### 2026-07-20: Implemented the approval mode picker (issue #75)
 
 Implemented issue #75 and sub-issues #76, #77, and #78. The Agent composer now exposes

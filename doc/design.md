@@ -221,3 +221,20 @@ gated catalog completes. Only a complete successful catalog may fall back to Cus
 is missing; transient failures and truncated responses preserve the saved ID. Full access must be
 confirmed because it disables the Codex sandbox and normal approval prompts. Moving from any turn
 override to Custom starts a new thread because omitted overrides do not reset an existing thread.
+
+## 8. Bounded command-output projection
+
+Command output crosses two independently bounded stages. The Worker batches deltas and caps its
+visible stream at 2 MiB, while the extension keeps a separate 2 MiB-character sanitized buffer that
+is never serialized as a Remote UI member. `ChatItemViewModel.Text` is only the current projection:
+the complete short output, a three-logical-line/4,096-character collapsed preview, or the buffered
+full output after explicit expansion.
+
+The projection counts CRLF as one break across delta boundaries and preserves empty logical lines.
+After the preview boundary is reached, hidden deltas update only small summary properties unless the
+preview itself changes. Truncated output uses non-exact buffered-output wording because the overflow
+file can contain additional lines that the extension does not scan.
+
+The Remote UI uses a standard WPF `Expander` with a TwoWay expanded-state binding, Visual Studio
+dynamic theme resources, UI Automation name/help text, non-wrapping monospace text, and horizontal
+scrolling. No custom or third-party control is required.

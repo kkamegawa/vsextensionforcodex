@@ -30,6 +30,7 @@ The publisher is `kazushikamegawa`. The VSIX identifier is `Kkamegawa.CodexForVi
 - Initialize-handshake version discovery from a bounded, validated app-server user-agent product token, propagated through Worker contract version 9
 - Safe text rendering that removes HTML tags, ANSI escapes, and control characters
 - Structured block rendering for agent/reasoning markdown with ordered-list numbering and nested-list indentation (capped at two extra indent steps)
+- Bounded command-output projection with a non-serialized 2 MiB incremental buffer, a three-line/4,096-character collapsed preview, truncation-safe summaries, and a theme-aware standard WPF Expander
 - Result-only transcript lines after approval and choice resolution ("Accepted — <target>", "Selected — <option>"), sanitized through SafeMarkdownService
 - Local prose prompt detection for natural-language numbered choices and yes/no confirmation questions, independent of the experimental API toggle
 - Pixel-based transcript scrolling (VirtualizingPanel.ScrollUnit=Pixel) to avoid variable-height item jumps
