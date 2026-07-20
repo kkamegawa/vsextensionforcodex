@@ -1,16 +1,9 @@
 ﻿# Codex for Visual Studio
 
-ローカルの Codex CLI app server を Visual Studio 内から起動し、チャットツールウィンドウとして
-利用できるようにする拡張機能です。ストリーミング応答、承認を伴うコマンド実行とファイル変更、
-スラッシュコマンド、ワークスペースコンテキストの受け渡しに対応します。
+ローカルの Codex CLI app server を Visual Studio 内から起動し、チャットツールウィンドウとして利用できるようにする拡張機能です。ストリーミング応答、承認を伴うコマンド実行とファイル変更、スラッシュコマンド、ワークスペースコンテキストの受け渡しに対応します。
 
-本拡張はアウトプロセスの `Microsoft.VisualStudio.Extensibility` 拡張 (`net8.0`) で、`net8.0` の
-ワーカープロセスを起動します。ワーカーが `codex app-server` の子プロセスを保持し、改行区切りの
-JSON-RPC を stdio 経由でやり取りします。資格情報を Visual Studio 側で扱うことはありません。
+本拡張はアウトプロセスの `Microsoft.VisualStudio.Extensibility` 拡張 (`net8.0`) で、`net8.0` のワーカープロセスを起動します。ワーカーが `codex app-server` の子プロセスを保持し、改行区切りの JSON-RPC を stdio 経由でやり取りします。資格情報を Visual Studio 側で扱うことはありません。
 サインインは Codex CLI で行います。
-
-本拡張はまだ Visual Studio Marketplace で公開されていません。本リポジトリの GitHub リリースから
-VSIX を取得してインストールしてください。公開後に Marketplace へのリンクをここへ追記します。
 
 ## 動作要件
 
@@ -55,27 +48,18 @@ VSIX を取得してインストールしてください。公開後に Marketpl
 
 ## 制限事項
 
-- **古い Codex CLI はサポートしません。** 動作確認済みバージョンは 0.145.0 です。それより古い
-  ビルドは app-server のプロトコル形状が異なるため、`initialize` や `turn/start` が失敗したり、
-  イベントが欠落したりします。古いバージョンでのみ再現する問題は対応対象外です。
+- **古い Codex CLI はサポートしません。** 動作確認済みバージョンは 0.145.0 です。それより古いビルドは app-server のプロトコル形状が異なるため、`initialize` や `turn/start` が失敗したり、イベントが欠落したりします。古いバージョンでのみ再現する問題は対応対象外です。
 - **codex が複数インストールされていると、意図しないバージョンが起動することがあります。**
-  バージョン管理ツール (mise)、winget、npm、Codex デスクトップアプリはそれぞれ別の場所に `codex`
-  実行ファイルを配置し、`PATH` 上で先に見つかるものが最新とは限りません。ワーカーは次の順序で
-  実行ファイルを解決します。
+  バージョン管理ツール (mise)、winget、npm、Codex デスクトップアプリはそれぞれ別の場所に `codex`実行ファイルを配置し、`PATH` 上で先に見つかるものが最新とは限りません。ワーカーは次の順序で実行ファイルを解決します。
   1. 環境変数 `CODEX_PATH`
   2. ワーカーオプションで指定された明示パス
   3. `PATH` 上の `codex.exe` (`WindowsApps` の実行エイリアスは除外)
   4. `%LOCALAPPDATA%\OpenAI\Codex\bin`
 
-  `where.exe codex` ですべての候補を確認できます。複数表示される場合は使用したい実行ファイルを
-  `CODEX_PATH` に設定し、Visual Studio を再起動してください。
-- **npm 経由のインストールは推奨しません。** `@openai/codex` npm パッケージはこの構成で問題が
-  出ることが分かっています。Node.js の更新後にシムが解決できなくなり、app server が起動直後に
-  終了します。winget パッケージを使用してください。
-- winget のマニフェストは Codex CLI のリリースから数日遅れることがあります。インストール済みの
-  ビルドが最新であると仮定せず、必ず `codex --version` で確認してください。
-- 本拡張は Windows 上の Visual Studio 専用です。Visual Studio Code 版やクロスプラットフォーム版は
-  ありません。
+  `where.exe codex` ですべての候補を確認できます。複数表示される場合は使用したい実行ファイルを`CODEX_PATH` に設定し、Visual Studio を再起動してください。
+- **npm 経由のインストールは推奨しません。** `@openai/codex` npm パッケージはこの構成で問題が出ることが分かっています。Node.js の更新後にシムが解決できなくなり、app server が起動直後に終了します。winget パッケージを使用してください。
+- winget のマニフェストは Codex CLI のリリースから数日遅れることがあります。インストール済みのビルドが最新であると仮定せず、必ず `codex --version` で確認してください。
+- 本拡張は Windows 上の Visual Studio 専用です。Visual Studio Code 版やクロスプラットフォーム版はありません。
 
 ## FAQ
 
@@ -96,24 +80,16 @@ Visual Studio が 17.14 以降であること、**拡張機能 > 拡張機能の
 ```
 
 **ログはどこにありますか？**
-`%TEMP%\Kkamegawa.CodexForVisualStudio\diagnostics.log` です。拡張とワーカーが同じファイルに
-書き込み、それぞれ `[EXTENSION]` と `[WORKER]` のタグが付きます。URL や資格情報らしき値は書き込み
-前にマスクされます。
+`%TEMP%\Kkamegawa.CodexForVisualStudio\diagnostics.log` です。拡張とワーカーが同じファイルに書き込み、それぞれ `[EXTENSION]` と `[WORKER]` のタグが付きます。URL や資格情報らしき値は書き込み前にマスクされます。
 
 **毎回の承認プロンプトを止められますか？**
-チャット入力での `/permissions` (別名 `/approve`)、またはツールウィンドウの承認モードピッカーを
-使用します。組み込みモードは `ask`、`auto`、`full`、`custom` です。`full` は Codex のサンドボックスと
-通常の承認プロンプトを無効化するため、明示的な確認を求めます。`/model`、`/reasoning`、`/review`
-などを含むコマンド一覧は [doc/slash-commands_ja.md](doc/slash-commands_ja.md) を参照してください。
+チャット入力での `/permissions` (別名 `/approve`)、またはツールウィンドウの承認モードピッカーを使用します。組み込みモードは `ask`、`auto`、`full`、`custom` です。`full` は Codex のサンドボックスと通常の承認プロンプトを無効化するため、明示的な確認を求めます。`/model`、`/reasoning`、`/review`などを含むコマンド一覧は [doc/slash-commands_ja.md](doc/slash-commands_ja.md) を参照してください。
 
 **設定はどこに保存されますか？**
-`%APPDATA%\Kkamegawa.CodexForVisualStudio\settings.json` です。承認モード、reasoning effort、
-サービスティア、実験 API の有効/無効を保持します。ファイルを削除すると既定値に戻ります。破損して
-いる場合は無視され、ツールウィンドウがブロックされることはありません。
+`%APPDATA%\Kkamegawa.CodexForVisualStudio\settings.json` です。承認モード、reasoning effort、サービスティア、実験 API の有効/無効を保持します。ファイルを削除すると既定値に戻ります。破損している場合は無視され、ツールウィンドウがブロックされることはありません。
 
 **プロキシやファイアウォールの設定は必要ですか？**
-拡張自体は stdio によるローカル子プロセスとローカル名前付きパイプしか使いません。外部への通信は
-すべて Codex CLI が行うため、プロキシやファイアウォールの設定は CLI 側の構成で行ってください。
+拡張自体は stdio によるローカル子プロセスとローカル名前付きパイプしか使いません。外部への通信はすべて Codex CLI が行うため、プロキシやファイアウォールの設定は CLI 側の構成で行ってください。
 
 ## ビルドとテスト
 
@@ -131,8 +107,7 @@ dotnet build CodexForVisualStudio.slnx -c Release --no-restore
 ```
 
 `schemas/` は Apache-2.0 ライセンスの Codex CLI が生成する出力であり、MIT ライセンスの本リポジトリ
-からは意図的に除外しています。`schemas/codex_app_server_protocol.schemas.json` が存在しない場合、
-Windows 上での `Codex.AppServer.Protocol` のビルドが次を自動実行します。
+からは意図的に除外しています。`schemas/codex_app_server_protocol.schemas.json` が存在しない場合、Windows 上での `Codex.AppServer.Protocol` のビルドが次を自動実行します。
 
 ```powershell
 codex app-server generate-json-schema --out schemas
@@ -159,8 +134,7 @@ app-server の PoC 実行とスキーマの手動生成:
 dotnet run --project src/Codex.AppServer.Poc/Codex.AppServer.Poc.csproj -- --schema-out schemas --cwd .
 ```
 
-WindowsApps 経由でインストールされた Codex は、実行エイリアスが子プロセスからブロックされる
-ことがあります。その環境では `--codex <standalone-codex.exe のパス>` を指定してください。
+WindowsApps 経由でインストールされた Codex は、実行エイリアスが子プロセスからブロックされることがあります。その環境では `--codex <standalone-codex.exe のパス>` を指定してください。
 
 VSIX はアウトプロセス拡張プロジェクトが生成します。
 
@@ -175,17 +149,14 @@ src/Codex.VisualStudio.Extension/bin/Release/net8.0-windows10.0.22621.0/Codex.Vi
 
 ## Visual Studio でのデバッグ
 
-Debug ビルドは既定では配置を行わないため、開発ビルドがインストール済みの Visual Studio を暗黙に
-書き換えることはありません。
+Debug ビルドは既定では配置を行わないため、開発ビルドがインストール済みの Visual Studio を暗黙に書き換えることはありません。
 
 1. Visual Studio で `CodexForVisualStudio.slnx` を開きます。
 2. `Codex.VisualStudio.Extension` をスタートアッププロジェクトに設定します。
 3. `Debug` 構成を選択し `F5` を押します。ビルド、配置、実験用インスタンスの起動が行われます。
 4. 実験用インスタンスで **表示 > Codex** を開きます。
 
-ワーカーは `Codex.VisualStudio.Worker.exe` という子プロセスです。ワーカーのコードをデバッグする
-場合は **デバッグ > プロセスにアタッチ** から `Codex.VisualStudio.Worker.exe` を選び、マネージド
-(.NET Core) のコードの種類を指定してください。
+ワーカーは `Codex.VisualStudio.Worker.exe` という子プロセスです。ワーカーのコードをデバッグする場合は **デバッグ > プロセスにアタッチ** から `Codex.VisualStudio.Worker.exe` を選び、マネージド(.NET Core) のコードの種類を指定してください。
 
 ## リリース
 
@@ -197,15 +168,16 @@ Debug ビルドは既定では配置を行わないため、開発ビルドが�
    (`vX.Y.Z` は `X.Y.Z.0` になります)、ビルドとテストを実行して、VSIX を添付した GitHub リリースを
    作成します。
 
-プルリクエストは CI ワークフローで検証され、ソリューションのビルド、両テストプロジェクトの実行、
-VSIX のビルドアーティファクトへのアップロードが行われます。
+プルリクエストは CI ワークフローで検証され、ソリューションのビルド、両テストプロジェクトの実行、VSIX のビルドアーティファクトへのアップロードが行われます。
 
 ## エージェント資産のセットアップ
 
-エージェント資産は Microsoft APM で管理します。`uv` で CLI をインストールします。
+エージェント資産は Microsoft APM で管理します。`winget` で CLI をインストールします。
 
 ```powershell
-uv tool install apm-cli
+winget install microsoft.apm
+```
+```powershell
 apm marketplace add github/awesome-copilot
 apm install
 apm audit --ci --policy apm-policy.yml
@@ -224,8 +196,7 @@ APM は `.codex/agents/`、`.github/agents/`、`.claude/agents/` を配置しま
 - プロトコル層: `codex app-server` のプロセスホスト、JSON-RPC ディスパッチ、スキーマとバージョンの
   ガード、通知処理
 
-トランスポートは stdio です。WebSocket や Unix ソケットは将来の選択肢であり、採用する場合も
-ローカルかつ認証付きに限定します。
+トランスポートは stdio です。WebSocket や Unix ソケットは将来の選択肢であり、採用する場合もローカルかつ認証付きに限定します。
 
 設計・計画ドキュメント: [doc/design.md](doc/design.md)、[doc/plan.md](doc/plan.md)、
 [doc/task.md](doc/task.md)、[doc/implementation.md](doc/implementation.md)、
@@ -233,9 +204,7 @@ APM は `.codex/agents/`、`.github/agents/`、`.claude/agents/` を配置しま
 
 ## セキュリティ
 
-脆弱性の報告方法は [SECURITY.md](SECURITY.md) を参照してください。`codex app-server` の出力はすべて
-信頼できない入力として扱い、安全な Markdown パイプラインを通して表示し、ログ出力前に秘匿処理を
-行います。
+脆弱性の報告方法は [SECURITY.md](SECURITY.md) を参照してください。`codex app-server` の出力はすべて信頼できない入力として扱い、安全な Markdown パイプラインを通して表示し、ログ出力前に秘匿処理を行います。
 
 ## ライセンス
 
