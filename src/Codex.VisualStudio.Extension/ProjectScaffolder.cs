@@ -130,6 +130,15 @@ public sealed class ProjectScaffolder : IProjectScaffolder
 
     private static void WriteFileIfMissing(string path, string contents)
     {
+        if (PathEntryExists(path))
+        {
+            // Covers a dangling symlink whose target does not exist yet: on Windows,
+            // FileStream(..., FileMode.CreateNew) transparently follows a reparse point, so
+            // without this upfront check it would silently create contents at the link's target
+            // instead of leaving the pre-existing leaf entry alone.
+            return;
+        }
+
         try
         {
             using var stream = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None);
@@ -142,8 +151,8 @@ public sealed class ProjectScaffolder : IProjectScaffolder
         }
         catch (IOException ex) when (IsExistingPathException(ex))
         {
-            // FileMode.CreateNew makes the non-overwrite guarantee atomic. An existing file,
-            // directory, or leaf reparse-point entry wins without being opened or followed.
+            // FileMode.CreateNew makes the non-overwrite guarantee atomic for the race between
+            // the check above and this open call.
         }
         catch (UnauthorizedAccessException) when (PathEntryExists(path))
         {
@@ -167,7 +176,11 @@ public sealed class ProjectScaffolder : IProjectScaffolder
             or UnauthorizedAccessException
             or IOException)
         {
-            return false;
+            // File.GetAttributes resolves a symlink before reading attributes, so it throws for a
+            // dangling link whose target does not exist. FileInfo.LinkTarget instead reads the
+            // reparse point's own data without following it, so it still reports the leaf entry
+            // as present when the link itself exists but is broken.
+            return new FileInfo(path).LinkTarget is not null;
         }
     }
 

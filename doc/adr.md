@@ -120,3 +120,23 @@
 - Workspace setup no longer guesses an application type, target framework, or project layout.
 - The generated file remains both valid XML and a solution accepted by the pinned `.NET` SDK.
 - Adding a project becomes an explicit later action by the user or Codex.
+
+## ADR-007: Release identity, tag-driven versioning, and CI
+
+- Date: 2026-07-20
+- Task: GitHub Issue #105 and sub-issues #106, #107, and #108
+- Status: Accepted
+
+### Decision
+
+- Publish the extension under a Marketplace-style identity `relaycodexforvs.KazushiKamegawa.<GUID>` (the extension name is `relaycodexforvs`) instead of `Kkamegawa.CodexForVisualStudio`. Only the identity carries the new name; the display name stays `Codex for Visual Studio`. The `%APPDATA%\Kkamegawa.CodexForVisualStudio` settings folder keeps its name so existing user settings survive.
+- Treat the SDK-generated `extension.vsixmanifest` as the only manifest for the out-of-process extension. `src/Codex.VisualStudio.Extension/source.extension.vsixmanifest` never contributed to the package and is removed; metadata lives in `ExtensionConfiguration`.
+- Re-enable generated assembly info for the extension project so the release workflow can set the VSIX version with `-p:Version=X.Y.Z.W` derived from the git tag, instead of patching a manifest or source file.
+- Bundle only English documents in the VSIX: `LICENSE.txt` and `icon.png` are staged explicitly by the `StageVsixAssets` target, never by wildcard, so `README_ja.md` cannot be packaged.
+- Install the Codex CLI with winget on the CI runner so `Codex.AppServer.Protocol` can generate `schemas/` during the build, rather than committing Apache-2.0 generated output to this MIT repository.
+
+### Consequences
+
+- The VSIX version is always the git tag; a release cannot silently ship a stale hardcoded version.
+- Extension metadata changes are C# changes covered by unit tests, and the packaging tests assert the bundled license and the absence of Japanese documents.
+- CI depends on winget and the `OpenAI.Codex` package being installable on the runner; a winget failure fails the build loudly instead of producing an unverified VSIX.

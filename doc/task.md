@@ -394,3 +394,34 @@ one accessible live-region announcement.
 - Tests: Core.Tests 75/75 and Ui.Tests 179/179 passed from the Release build.
 - Documentation: implementation notes, worker contract notes, the security
   policy, and the approved Wiki plan were updated.
+
+### 2026-07-20: Release readiness — docs, VSIX identity, and CI (issue #105)
+
+Prepared the first Marketplace-bound release. Rewrote `README.md` for end users
+(requirements, setup, limitations, FAQ, release flow), added `README_ja.md`, moved the
+VSIX identity to `relaycodexforvs.KazushiKamegawa.<GUID>`, bundled the English
+license and the extension icon into the VSIX, and made the VSIX version follow the git
+tag through the generated assembly version.
+
+- Issues: #105 (parent), #106 (README), #107 (VSIX identity and bundled assets),
+  #108 (CI and release workflows).
+- Documented limitations: Codex CLI older than the verified 0.145.0 is unsupported,
+  multiple Codex installations can launch an older build (`CODEX_PATH` pins it), and npm
+  installs are known to misbehave so winget is recommended.
+- Validation: Release build with 0 warnings; Core.Tests 95/95 and Ui.Tests 268/268 passed.
+  A build with `-p:Version=1.2.3.4` produced a VSIX whose `Identity Version` was `1.2.3.4`.
+- Decision record: `doc/adr.md` ADR-007.
+
+### 2026-07-20: Fixed a dangling-symlink write bypass found by CI (PR #109)
+
+The GitHub-hosted Windows CI runner has symlink-creation privilege that local
+development machines typically lack, so `CreateEmptySolution_DoesNotFollowDanglingSolutionSymlink`
+had always been skipped locally and never actually exercised. On CI it failed for real:
+`ProjectScaffolder.WriteFileIfMissing` opened the target path with
+`FileMode.CreateNew` without first checking for an existing leaf entry, and Windows
+transparently follows a dangling symbolic link for that open mode, so scaffolding could
+write a new file at the link's target instead of leaving the existing link alone.
+Added an upfront `PathEntryExists` check before the open.
+
+- Validation: Release build 0 warnings; Ui.Tests 268/268 passed locally (the symlink
+  test itself still reports Inconclusive/skipped locally, lacking the OS privilege).

@@ -6,7 +6,14 @@
     <EnableWindowsTargeting Condition="'$(OS)' != 'Windows_NT'">true</EnableWindowsTargeting>
     <AssemblyName>Codex.VisualStudio.Extension</AssemblyName>
     <RootNamespace>Codex.VisualStudio.Extension</RootNamespace>
-    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+    <!-- Assembly info is generated so the VSIX version can be set from the git tag with
+         -p:Version=X.Y.Z.W: ExtensionMetadata takes it from the assembly version. Properties/
+         AssemblyInfo.cs only declares InternalsVisibleTo to avoid duplicate attributes. -->
+    <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
+    <AssemblyTitle>Codex for Visual Studio</AssemblyTitle>
+    <Product>Codex for Visual Studio</Product>
+    <Description>Codex chat integration for Visual Studio — out-of-process extension</Description>
+    <ComVisible>false</ComVisible>
     <!-- Out-of-process VisualStudio.Extensibility extension: do NOT add legacy VSSDK deploy
          properties (CreateVsixContainer / DeployExtension / IncludeAssemblyInVSIXContainer /
          VSSDKTargetPlatformRegRootSuffix / StartAction / StartProgram / StartArguments).
@@ -50,10 +57,24 @@
     <EmbeddedResource Include="ToolWindows\ChatToolWindowContent.xaml">
       <LogicalName>Codex.VisualStudio.Extension.ToolWindows.ChatToolWindowContent.xaml</LogicalName>
     </EmbeddedResource>
-    <Content Include="source.extension.vsixmanifest">
-      <IncludeInVSIX>true</IncludeInVSIX>
-    </Content>
   </ItemGroup>
+  <!-- Ship the assets referenced by the generated manifest: the MIT license text and the extension
+       icon. Both are renamed on the way in (the repository license file has no extension and
+       Content/Link does not rename inside the VSIX), so they are staged first. Bundled documents
+       are English only: files are listed explicitly and never by wildcard, so README_ja.md can
+       never be packaged. -->
+  <Target Name="StageVsixAssets" BeforeTargets="GetVsixSourceItems">
+    <Copy SourceFiles="../../LICENSE"
+          DestinationFiles="$(IntermediateOutputPath)LICENSE.txt"
+          SkipUnchangedFiles="true" />
+    <Copy SourceFiles="../media/icon/relaycodex.png"
+          DestinationFiles="$(IntermediateOutputPath)icon.png"
+          SkipUnchangedFiles="true" />
+    <ItemGroup>
+      <VSIXSourceItem Include="$(IntermediateOutputPath)LICENSE.txt" />
+      <VSIXSourceItem Include="$(IntermediateOutputPath)icon.png" />
+    </ItemGroup>
+  </Target>
   <!-- Build Worker (net8.0) before VSIX packaging and embed under Worker/ -->
   <Target Name="BuildCodexWorker" BeforeTargets="GetVsixSourceItems">
     <MSBuild Projects="../Codex.VisualStudio.Worker/Codex.VisualStudio.Worker.csproj"
