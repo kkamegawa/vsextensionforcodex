@@ -399,7 +399,7 @@ one accessible live-region announcement.
 
 Prepared the first Marketplace-bound release. Rewrote `README.md` for end users
 (requirements, setup, limitations, FAQ, release flow), added `README_ja.md`, moved the
-VSIX identity to `CodexForVisualStudio.KazushiKamegawa.<GUID>`, bundled the English
+VSIX identity to `relaycodexforvs.KazushiKamegawa.<GUID>`, bundled the English
 license and the extension icon into the VSIX, and made the VSIX version follow the git
 tag through the generated assembly version.
 
