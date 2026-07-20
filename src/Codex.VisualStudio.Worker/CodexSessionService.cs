@@ -2209,13 +2209,13 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
 
         return new RateLimitWindowInfo
         {
-            UsedPercent = GetInt32(window, "usedPercent") ?? 0,
+            UsedPercent = GetInt32(window, "usedPercent"),
             ResetsAt = GetInt64(window, "resetsAt"),
             WindowDurationMinutes = GetInt64(window, "windowDurationMins"),
         };
     }
 
-    private static CreditsInfo? ReadCredits(JsonElement value)
+    private CreditsInfo? ReadCredits(JsonElement value)
     {
         if (!value.TryGetProperty("credits", out JsonElement credits)
             || credits.ValueKind != JsonValueKind.Object)
@@ -2227,7 +2227,7 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         {
             HasCredits = GetBool(credits, "hasCredits") == true,
             Unlimited = GetBool(credits, "unlimited") == true,
-            Balance = GetString(credits, "balance"),
+            Balance = redactor.Redact(GetString(credits, "balance")),
         };
     }
 

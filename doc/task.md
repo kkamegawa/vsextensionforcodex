@@ -8,17 +8,16 @@
 - [x] Re-base plain text inputs on the Visual Studio TextBox style so slash-command arguments keep a themed foreground/background pair.
 - [x] Preserve hidden default model metadata when only the top-level default identifier is reported.
 - [x] Make the reasoning override test independent from persisted user settings.
-- [x] Validate the Release outputs with 94 Core tests and 218 UI tests passing.
+- [x] Validate the integrated Release outputs with 95 Core tests and 244 UI tests passing.
 
-## 2026-07-20: Reasoning effort picker (#85, #93, #94, #95)
+## 2026-07-20: Reasoning and service-tier pickers (#85, #86, #93-#98)
 
 - [x] Upgrade the Extension/Worker contract to version 13 with effort and service-tier presence flags.
 - [x] Preserve hidden default model capabilities separately from the visible catalog.
-- [x] Track effective reasoning effort and service tier across thread lifecycle and settings updates.
-- [x] Add the sanitized, model-aware persistent Reasoning picker to Remote UI.
-- [x] Make `/reasoning` thread-scoped, canonical, success-consumed, and restore sticky settings.
+- [x] Track effective turn settings across thread lifecycle and settings updates.
+- [x] Add sanitized, model-aware persistent Reasoning and Speed pickers to Remote UI.
+- [x] Make `/reasoning` and `/fast` thread-scoped, canonical, success-consumed, and sticky-restoring.
 - [x] Update the Fake app-server and add Core/UI regression coverage.
-- [x] Validate the Release build with zero warnings and run both test projects separately.
 
 ---
 
@@ -280,6 +279,21 @@ ChatGPT デスクトップと同等の承認方法選択 UI。レビュー済み
 ---
 
 ## Work log
+
+### 2026-07-20: Implemented usage presentation and freshness (issue #87)
+
+Implemented issue #87 and sub-issues #99, #100, and #101. The Worker now preserves missing usage
+percentages, while the extension presents clamped remaining limits, known window labels, Unix reset
+times, and sanitized credits in both the popup and `/status`. Signed-in connection generations fetch
+once; a 60-second popup TTL, monotonic push versions, and lifecycle invalidation prevent stale reads.
+Transient refresh failures preserve the last-good snapshot and remain retryable. The themed Usage
+popup is mutually exclusive with History, binds Escape at both host and popup levels, and opens only
+compile-time approved destinations through an exact allowlist. ADR-005 records the freshness and
+Remote UI focus contracts.
+
+- Validation: project-scoped Release builds completed with zero warnings and zero errors. Core and UI
+  tests passed with `--no-build`, covering parser, presentation, freshness, read/push races,
+  lifecycle invalidation, links, and embedded XAML structure.
 
 ### 2026-07-20: Implemented the approval mode picker (issue #75)
 

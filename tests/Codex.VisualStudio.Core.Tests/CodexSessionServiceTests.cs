@@ -240,6 +240,8 @@ public sealed class CodexSessionServiceTests
                             {
                                 new { reasoningEffort = "high", description = "Deep" },
                             },
+                            defaultServiceTier = "standard",
+                            serviceTiers = new[] { new { id = "fast", name = "Fast", description = "Lower latency" } },
                         },
                     },
                     nextCursor = (string?)null,
@@ -253,10 +255,11 @@ public sealed class CodexSessionServiceTests
 
         CollectionAssert.AreEqual(ExpectedModels, result.Models.Select(model => model.Id).ToArray());
         Assert.AreEqual("gpt-5.1-codex-max", result.DefaultModel);
-        Assert.IsNotNull(result.DefaultModelInfo);
-        Assert.AreEqual("gpt-5.1-codex-max", result.DefaultModelInfo.Id);
+        Assert.AreEqual("gpt-5.1-codex-max", result.DefaultModelInfo!.Id);
         Assert.AreEqual("high", result.DefaultModelInfo.DefaultReasoningEffort);
         Assert.AreEqual("high", result.DefaultModelInfo.SupportedReasoningEfforts.Single().Id);
+        Assert.AreEqual("standard", result.DefaultModelInfo.DefaultServiceTier);
+        Assert.AreEqual("fast", result.DefaultModelInfo.ServiceTiers[0].Id);
     }
 
     [TestMethod]
@@ -408,6 +411,56 @@ public sealed class CodexSessionServiceTests
     }
 
     [TestMethod]
+    public async Task StartTurnDistinguishesOmittedExplicitNullAndValueSettings()
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "turn/start"
+                ? JsonSerializer.SerializeToElement(new { turn = new { id = "turn-1" } })
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        await service.StartTurnAsync(
+            new StartTurnRequest { ThreadId = "thread-1", Text = "inherit" },
+            CancellationToken.None);
+        JsonElement omitted = ParametersFor(connection, "turn/start");
+        Assert.IsFalse(omitted.TryGetProperty("effort", out _));
+        Assert.IsFalse(omitted.TryGetProperty("serviceTier", out _));
+
+        connection.Requests.Clear();
+        await service.StartTurnAsync(
+            new StartTurnRequest
+            {
+                ThreadId = "thread-1",
+                Text = "clear",
+                HasEffort = true,
+                HasServiceTier = true,
+            },
+            CancellationToken.None);
+        JsonElement cleared = ParametersFor(connection, "turn/start");
+        Assert.AreEqual(JsonValueKind.Null, cleared.GetProperty("effort").ValueKind);
+        Assert.AreEqual(JsonValueKind.Null, cleared.GetProperty("serviceTier").ValueKind);
+
+        connection.Requests.Clear();
+        await service.StartTurnAsync(
+            new StartTurnRequest
+            {
+                ThreadId = "thread-1",
+                Text = "override",
+                HasEffort = true,
+                Effort = "high",
+                HasServiceTier = true,
+                ServiceTier = "priority",
+            },
+            CancellationToken.None);
+        JsonElement explicitValues = ParametersFor(connection, "turn/start");
+        Assert.AreEqual("high", explicitValues.GetProperty("effort").GetString());
+        Assert.AreEqual("priority", explicitValues.GetProperty("serviceTier").GetString());
+    }
+
+    [TestMethod]
     public async Task StartTurnBuildsValidatedAttachmentInputsAndDeduplicatesIdeContext()
     {
         string workspace = Path.Combine(Path.GetTempPath(), $"codex-attachments-{Guid.NewGuid():N}");
@@ -530,35 +583,6 @@ public sealed class CodexSessionServiceTests
         Assert.IsFalse(parameters.TryGetProperty("personality", out _));
         Assert.IsFalse(parameters.TryGetProperty("serviceTier", out _));
         Assert.IsFalse(parameters.TryGetProperty("collaborationMode", out _));
-    }
-
-    [TestMethod]
-    public async Task StartTurnDistinguishesExplicitNullTurnSettingsFromOmittedSettings()
-    {
-        var connection = new RecordingConnection
-        {
-            Handler = (method, _) => method == "turn/start"
-                ? JsonSerializer.SerializeToElement(new { turn = new { id = "turn-1" } })
-                : JsonSerializer.SerializeToElement(new { }),
-        };
-        await using var service = CreateService();
-        await service.InitializeAsync(connection, Options(), CancellationToken.None);
-
-        await service.StartTurnAsync(
-            new StartTurnRequest
-            {
-                ThreadId = "thread-1",
-                Text = "clear sticky settings",
-                HasEffort = true,
-                HasServiceTier = true,
-            },
-            CancellationToken.None);
-
-        JsonElement parameters = ParametersFor(connection, "turn/start");
-        Assert.AreEqual(JsonValueKind.Null, parameters.GetProperty("effort").ValueKind);
-        Assert.AreEqual(JsonValueKind.Null, parameters.GetProperty("serviceTier").ValueKind);
-        Assert.IsNull(service.EffectiveReasoningEffort);
-        Assert.IsNull(service.EffectiveServiceTier);
     }
 
     [TestMethod]
@@ -754,7 +778,7 @@ public sealed class CodexSessionServiceTests
                     approvalsReviewer = "auto_review",
                     sandbox = new { type = "workspaceWrite" },
                     effort = "medium",
-                    serviceTier = "fast",
+                    serviceTier = "standard",
                 })
                 : JsonSerializer.SerializeToElement(new { }),
         };
@@ -766,7 +790,7 @@ public sealed class CodexSessionServiceTests
         Assert.AreEqual("review", thread.EffectiveApprovalState!.ActivePermissionProfile);
         Assert.AreEqual("auto_review", service.EffectiveApprovalState!.ApprovalsReviewer);
         Assert.AreEqual("medium", thread.EffectiveReasoningEffort);
-        Assert.AreEqual("fast", service.EffectiveServiceTier);
+        Assert.AreEqual("standard", thread.EffectiveServiceTier);
         var changed = new TaskCompletionSource<EffectiveApprovalState>(TaskCreationOptions.RunContinuationsAsynchronously);
         service.EffectiveApprovalStateChanged += (value, _) =>
         {
@@ -785,7 +809,7 @@ public sealed class CodexSessionServiceTests
                     approvalsReviewer = "user",
                     sandboxPolicy = new { type = "dangerFullAccess" },
                     effort = "high",
-                    serviceTier = "priority",
+                    serviceTier = "fast",
                 },
             });
 
@@ -795,7 +819,7 @@ public sealed class CodexSessionServiceTests
         Assert.AreEqual("user", updated.ApprovalsReviewer);
         Assert.AreEqual("dangerFullAccess", updated.SandboxMode);
         Assert.AreEqual("high", service.EffectiveReasoningEffort);
-        Assert.AreEqual("priority", service.EffectiveServiceTier);
+        Assert.AreEqual("fast", service.EffectiveServiceTier);
 
         await connection.EmitNotificationAsync(
             "thread/settings/updated",
@@ -1027,6 +1051,32 @@ public sealed class CodexSessionServiceTests
         Assert.AreEqual("toolsAndAuthOnly", mcpParameters.GetProperty("detail").GetString());
         JsonElement feedbackParameters = ParametersFor(connection, "feedback/upload");
         Assert.IsFalse(feedbackParameters.GetProperty("includeLogs").GetBoolean());
+    }
+
+    [TestMethod]
+    public async Task GetRateLimitsAsync_MissingUsedPercent_RemainsUnknown()
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "account/rateLimits/read"
+                ? JsonSerializer.SerializeToElement(new
+                {
+                    rateLimits = new
+                    {
+                        limitId = "codex",
+                        primary = new { resetsAt = 1_800_000_000L, windowDurationMins = 300L },
+                    },
+                })
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        RateLimitsResult result = await service.GetRateLimitsAsync(CancellationToken.None);
+
+        Assert.IsNull(result.RateLimits?.Primary?.UsedPercent);
+        Assert.AreEqual(1_800_000_000L, result.RateLimits?.Primary?.ResetsAt);
+        Assert.AreEqual(300L, result.RateLimits?.Primary?.WindowDurationMinutes);
     }
 
     [TestMethod]
