@@ -17,6 +17,13 @@ public sealed class ExtensionSettings
     // without invalidating user settings.
     public string ApprovalModeId { get; set; } = ApprovalModeCatalog.CustomId;
 
+    // Empty means that Codex config.toml supplies the reasoning effort. A non-empty value is a
+    // stable catalog ID; display text and descriptions remain app-server owned and are not stored.
+    public string ReasoningEffortId { get; set; } = ReasoningEffortCatalog.DefaultId;
+
+    // Stable app-server service-tier ID. An empty value means inherit config.toml.
+    public string ServiceTierId { get; set; } = ServiceTierCatalog.DefaultId;
+
     private static string SettingsPath => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
         "Kkamegawa.CodexForVisualStudio",

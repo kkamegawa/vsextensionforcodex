@@ -55,6 +55,27 @@ public sealed class ProjectScaffolderTests
     }
 
     [TestMethod]
+    public void CreateEmptySolution_LeavesExistingDirectoryEntryUnchanged()
+    {
+        string directory = CreateTemporaryDirectory("ExistingDirectory");
+        string solutionPath = Path.Combine(directory, "ExistingDirectory.slnx");
+        Directory.CreateDirectory(solutionPath);
+        string markerPath = Path.Combine(solutionPath, "marker.txt");
+        File.WriteAllText(markerPath, "keep");
+        try
+        {
+            ProjectScaffolder.CreateEmptySolution(directory);
+
+            Assert.IsTrue(Directory.Exists(solutionPath));
+            Assert.AreEqual("keep", File.ReadAllText(markerPath));
+        }
+        finally
+        {
+            DeleteTemporaryDirectory(directory);
+        }
+    }
+
+    [TestMethod]
     public void CreateEmptySolution_DoesNotFollowDanglingSolutionSymlink()
     {
         string directory = CreateTemporaryDirectory("SymlinkSafe");

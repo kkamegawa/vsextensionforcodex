@@ -40,6 +40,10 @@ public interface ICodexSessionService : IAsyncDisposable
 
     EffectiveApprovalState? EffectiveApprovalState { get; }
 
+    string? EffectiveReasoningEffort { get; }
+
+    string? EffectiveServiceTier { get; }
+
     Task InitializeAsync(IJsonRpcConnection connection, WorkerOptions options, CancellationToken cancellationToken);
 
     Task<AccountStatus> GetAccountStatusAsync(CancellationToken cancellationToken);
@@ -152,10 +156,16 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
 
     public EffectiveApprovalState? EffectiveApprovalState { get; private set; }
 
+    public string? EffectiveReasoningEffort { get; private set; }
+
+    public string? EffectiveServiceTier { get; private set; }
+
     public async Task InitializeAsync(IJsonRpcConnection connection, WorkerOptions options, CancellationToken cancellationToken)
     {
         CodexVersion = null;
         EffectiveApprovalState = null;
+        EffectiveReasoningEffort = null;
+        EffectiveServiceTier = null;
         foreach (PendingApproval approval in pendingApprovals.Values)
         {
             approval.Completion.TrySetResult("cancel");
@@ -359,7 +369,14 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
     {
         JsonElement result = await SendAsync("thread/start", new { cwd = options.WorkingDirectory }, cancellationToken).ConfigureAwait(false);
         EffectiveApprovalState = ReadEffectiveApprovalState(result);
-        ThreadSummary summary = ReadThread(result.GetProperty("thread"), EffectiveApprovalState);
+        ReadEffectiveTurnSettings(result, out string? reasoningEffort, out string? serviceTier);
+        EffectiveReasoningEffort = reasoningEffort;
+        EffectiveServiceTier = serviceTier;
+        ThreadSummary summary = ReadThread(
+            result.GetProperty("thread"),
+            EffectiveApprovalState,
+            EffectiveReasoningEffort,
+            EffectiveServiceTier);
         ActiveThreadId = summary.Id;
         return summary;
     }
@@ -471,7 +488,14 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
     {
         JsonElement result = await SendAsync("thread/resume", new { threadId }, cancellationToken).ConfigureAwait(false);
         EffectiveApprovalState = ReadEffectiveApprovalState(result);
-        ThreadSummary summary = ReadThread(result.GetProperty("thread"), EffectiveApprovalState);
+        ReadEffectiveTurnSettings(result, out string? reasoningEffort, out string? serviceTier);
+        EffectiveReasoningEffort = reasoningEffort;
+        EffectiveServiceTier = serviceTier;
+        ThreadSummary summary = ReadThread(
+            result.GetProperty("thread"),
+            EffectiveApprovalState,
+            EffectiveReasoningEffort,
+            EffectiveServiceTier);
         ActiveThreadId = summary.Id;
         return summary;
     }
@@ -598,37 +622,78 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
     {
         ValidateTurnApprovalOverrides(request);
         List<object> input = BuildTurnInput(request);
+        var parameters = new Dictionary<string, object?>
+        {
+            ["threadId"] = request.ThreadId,
+            ["input"] = input,
+        };
+        AddOptional(parameters, "model", request.Model);
+        AddOptional(parameters, "approvalPolicy", request.ApprovalPolicy);
+        AddOptional(parameters, "approvalsReviewer", request.ApprovalsReviewer);
+        if (request.SandboxMode is not null)
+        {
+            parameters["sandboxPolicy"] = new { type = request.SandboxMode };
+        }
+
+        AddOptional(parameters, "permissions", request.Permissions);
+        if (request.HasEffort)
+        {
+            parameters["effort"] = request.Effort;
+        }
+
+        AddOptional(parameters, "personality", request.Personality);
+        if (request.HasServiceTier)
+        {
+            parameters["serviceTier"] = request.ServiceTier;
+        }
+
+        if (request.CollaborationMode is not null)
+        {
+            var collaborationSettings = new Dictionary<string, object?>
+            {
+                ["model"] = request.CollaborationMode.Model,
+            };
+            if (request.HasEffort)
+            {
+                collaborationSettings["reasoning_effort"] = request.CollaborationMode.ReasoningEffort;
+            }
+
+            AddOptional(
+                collaborationSettings,
+                "developer_instructions",
+                request.CollaborationMode.DeveloperInstructions);
+            parameters["collaborationMode"] = new Dictionary<string, object?>
+            {
+                ["mode"] = request.CollaborationMode.Mode,
+                ["settings"] = collaborationSettings,
+            };
+        }
+
         JsonElement result = await SendAsync(
             "turn/start",
-            new
-            {
-                threadId = request.ThreadId,
-                input,
-                model = request.Model,
-                approvalPolicy = request.ApprovalPolicy,
-                approvalsReviewer = request.ApprovalsReviewer,
-                sandboxPolicy = request.SandboxMode is null ? null : new { type = request.SandboxMode },
-                permissions = request.Permissions,
-                effort = request.Effort,
-                personality = request.Personality,
-                serviceTier = request.ServiceTier,
-                collaborationMode = request.CollaborationMode is null
-                    ? null
-                    : new
-                    {
-                        mode = request.CollaborationMode.Mode,
-                        settings = new
-                        {
-                            model = request.CollaborationMode.Model,
-                            reasoning_effort = request.CollaborationMode.ReasoningEffort,
-                            developer_instructions = request.CollaborationMode.DeveloperInstructions,
-                        },
-                    },
-            },
+            parameters,
             cancellationToken).ConfigureAwait(false);
         ActiveThreadId = request.ThreadId;
         ActiveTurnId = result.GetProperty("turn").GetProperty("id").GetString();
+        if (request.HasEffort)
+        {
+            EffectiveReasoningEffort = request.Effort;
+        }
+
+        if (request.HasServiceTier)
+        {
+            EffectiveServiceTier = request.ServiceTier;
+        }
+
         return ActiveTurnId ?? string.Empty;
+    }
+
+    private static void AddOptional(Dictionary<string, object?> values, string name, object? value)
+    {
+        if (value is not null)
+        {
+            values[name] = value;
+        }
     }
 
     public async Task<string> SteerTurnAsync(SteerTurnRequest request, CancellationToken cancellationToken)
@@ -725,8 +790,15 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         }
 
         EffectiveApprovalState = ReadEffectiveApprovalState(call.Result);
+        ReadEffectiveTurnSettings(call.Result, out string? reasoningEffort, out string? serviceTier);
+        EffectiveReasoningEffort = reasoningEffort;
+        EffectiveServiceTier = serviceTier;
         ThreadSummary? thread = call.Result.TryGetProperty("thread", out JsonElement threadElement)
-            ? ReadThread(threadElement, EffectiveApprovalState)
+            ? ReadThread(
+                threadElement,
+                EffectiveApprovalState,
+                EffectiveReasoningEffort,
+                EffectiveServiceTier)
             : null;
         ActiveThreadId = thread?.Id ?? ActiveThreadId;
         ActiveTurnId = null;
@@ -1358,10 +1430,14 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
             if (isActiveThread && hasSettings)
             {
                 EffectiveApprovalState = ReadEffectiveApprovalState(threadSettings);
+                ReadEffectiveTurnSettings(threadSettings, out string? reasoningEffort, out string? serviceTier);
+                EffectiveReasoningEffort = reasoningEffort;
+                EffectiveServiceTier = serviceTier;
                 if (EffectiveApprovalStateChanged is not null)
                 {
                     await EffectiveApprovalStateChanged(EffectiveApprovalState, cancellationToken).ConfigureAwait(false);
                 }
+
             }
 
             return;
@@ -1682,14 +1758,56 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
 
     private static ThreadSummary ReadThread(
         JsonElement thread,
-        EffectiveApprovalState? effectiveApprovalState = null) => new()
+        EffectiveApprovalState? effectiveApprovalState = null,
+        string? effectiveReasoningEffort = null,
+        string? effectiveServiceTier = null) => new()
         {
             Id = GetString(thread, "id") ?? string.Empty,
             Preview = GetString(thread, "preview"),
             Cwd = GetString(thread, "cwd"),
             UpdatedAt = thread.TryGetProperty("updatedAt", out JsonElement updated) && updated.TryGetInt64(out long value) ? value : null,
             EffectiveApprovalState = effectiveApprovalState,
+            EffectiveReasoningEffort = effectiveReasoningEffort,
+            EffectiveServiceTier = effectiveServiceTier,
         };
+
+    private static void ReadEffectiveTurnSettings(
+        JsonElement value,
+        out string? reasoningEffort,
+        out string? serviceTier)
+    {
+        JsonElement settings = value;
+        if ((value.TryGetProperty("threadSettings", out JsonElement nested)
+                || value.TryGetProperty("settings", out nested))
+            && nested.ValueKind == JsonValueKind.Object)
+        {
+            settings = nested;
+        }
+        else if (value.TryGetProperty("thread", out JsonElement thread)
+            && thread.ValueKind == JsonValueKind.Object)
+        {
+            settings = thread;
+            if ((thread.TryGetProperty("threadSettings", out nested)
+                    || thread.TryGetProperty("settings", out nested))
+                && nested.ValueKind == JsonValueKind.Object)
+            {
+                settings = nested;
+            }
+        }
+
+        reasoningEffort = NormalizeWireIdentifier(
+            GetString(settings, "effort")
+            ?? GetString(settings, "reasoningEffort")
+            ?? GetString(settings, "reasoning_effort")
+            ?? GetString(value, "effort")
+            ?? GetString(value, "reasoningEffort")
+            ?? GetString(value, "reasoning_effort"));
+        serviceTier = NormalizeWireIdentifier(
+            GetString(settings, "serviceTier")
+            ?? GetString(settings, "service_tier")
+            ?? GetString(value, "serviceTier")
+            ?? GetString(value, "service_tier"));
+    }
 
     private static EffectiveApprovalState ReadEffectiveApprovalState(JsonElement value)
     {
@@ -1845,7 +1963,9 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
     {
         var models = new List<ModelInfo>();
         var seen = new HashSet<string>(StringComparer.Ordinal);
+        var modelInfoById = new Dictionary<string, ModelInfo>(StringComparer.Ordinal);
         string? defaultModel = null;
+        ModelInfo? defaultModelInfo = null;
 
         // The codex app-server model/list response uses "data"; tolerate a legacy "models" key as well.
         if ((result.TryGetProperty("data", out JsonElement modelArray)
@@ -1872,6 +1992,13 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
                     defaultModel = id;
                 }
 
+                ModelInfo modelInfo = ReadModelInfo(model, id);
+                modelInfoById.TryAdd(id, modelInfo);
+                if (GetBool(model, "isDefault") == true)
+                {
+                    defaultModelInfo = modelInfo;
+                }
+
                 if (GetBool(model, "hidden") == true)
                 {
                     continue;
@@ -1882,17 +2009,7 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
                     continue;
                 }
 
-                string? displayName = GetString(model, "displayName");
-                models.Add(new ModelInfo
-                {
-                    Id = id,
-                    DisplayName = displayName is null ? null : redactor.Redact(displayName),
-                    DefaultReasoningEffort = NormalizeWireIdentifier(GetString(model, "defaultReasoningEffort")),
-                    SupportedReasoningEfforts = ReadReasoningEfforts(model),
-                    SupportsPersonality = GetBool(model, "supportsPersonality") == true,
-                    DefaultServiceTier = NormalizeWireIdentifier(GetString(model, "defaultServiceTier")),
-                    ServiceTiers = ReadServiceTiers(model),
-                });
+                models.Add(modelInfo);
             }
         }
 
@@ -1900,9 +2017,10 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         if (defaultModel is null)
         {
             string? topLevelDefault = NormalizeModelId(GetString(result, "defaultModel"));
-            if (topLevelDefault is not null && seen.Contains(topLevelDefault))
+            if (topLevelDefault is not null && modelInfoById.TryGetValue(topLevelDefault, out ModelInfo? modelInfo))
             {
                 defaultModel = topLevelDefault;
+                defaultModelInfo = modelInfo;
             }
         }
 
@@ -1913,6 +2031,22 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         {
             Models = models,
             DefaultModel = defaultModel,
+            DefaultModelInfo = defaultModelInfo,
+        };
+    }
+
+    private ModelInfo ReadModelInfo(JsonElement model, string id)
+    {
+        string? displayName = GetString(model, "displayName");
+        return new ModelInfo
+        {
+            Id = id,
+            DisplayName = displayName is null ? null : redactor.Redact(displayName),
+            DefaultReasoningEffort = NormalizeWireIdentifier(GetString(model, "defaultReasoningEffort")),
+            SupportedReasoningEfforts = ReadReasoningEfforts(model),
+            SupportsPersonality = GetBool(model, "supportsPersonality") == true,
+            DefaultServiceTier = NormalizeWireIdentifier(GetString(model, "defaultServiceTier")),
+            ServiceTiers = ReadServiceTiers(model),
         };
     }
 
@@ -2075,13 +2209,13 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
 
         return new RateLimitWindowInfo
         {
-            UsedPercent = GetInt32(window, "usedPercent") ?? 0,
+            UsedPercent = GetInt32(window, "usedPercent"),
             ResetsAt = GetInt64(window, "resetsAt"),
             WindowDurationMinutes = GetInt64(window, "windowDurationMins"),
         };
     }
 
-    private static CreditsInfo? ReadCredits(JsonElement value)
+    private CreditsInfo? ReadCredits(JsonElement value)
     {
         if (!value.TryGetProperty("credits", out JsonElement credits)
             || credits.ValueKind != JsonValueKind.Object)
@@ -2093,7 +2227,7 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         {
             HasCredits = GetBool(credits, "hasCredits") == true,
             Unlimited = GetBool(credits, "unlimited") == true,
-            Balance = GetString(credits, "balance"),
+            Balance = redactor.Redact(GetString(credits, "balance")),
         };
     }
 

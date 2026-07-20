@@ -281,6 +281,8 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
             ProcessId = processHost.ProcessId,
             CodexVersion = ShouldIncludeCodexVersion(state) ? session.CodexVersion : null,
             EffectiveApprovalState = session.EffectiveApprovalState,
+            EffectiveReasoningEffort = session.EffectiveReasoningEffort,
+            EffectiveServiceTier = session.EffectiveServiceTier,
         };
         if (clientRpc is not null)
         {
@@ -481,6 +483,8 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
         status.ProcessId = processHost.ProcessId;
         status.CodexVersion = ShouldIncludeCodexVersion(status.State) ? session.CodexVersion : null;
         status.EffectiveApprovalState = session.EffectiveApprovalState;
+        status.EffectiveReasoningEffort = session.EffectiveReasoningEffort;
+        status.EffectiveServiceTier = session.EffectiveServiceTier;
     }
 
     private static bool ShouldIncludeCodexVersion(WorkerConnectionState state)
@@ -497,6 +501,8 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
         ProcessId = status.ProcessId,
         CodexVersion = status.CodexVersion,
         EffectiveApprovalState = status.EffectiveApprovalState,
+        EffectiveReasoningEffort = status.EffectiveReasoningEffort,
+        EffectiveServiceTier = status.EffectiveServiceTier,
     };
 
     private AccountStatus CloneAccountStatus() => new()

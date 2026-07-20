@@ -143,12 +143,33 @@ public sealed class ProjectScaffolder : IProjectScaffolder
         catch (IOException ex) when (IsExistingPathException(ex))
         {
             // FileMode.CreateNew makes the non-overwrite guarantee atomic. An existing file,
-            // directory, or reparse-point entry wins without being opened or followed.
+            // directory, or leaf reparse-point entry wins without being opened or followed.
+        }
+        catch (UnauthorizedAccessException) when (PathEntryExists(path))
+        {
+            // Windows can report access denied when the leaf entry is an existing directory or
+            // directory reparse point. Ignore only a leaf entry whose attributes can be read.
         }
     }
 
     private static bool IsExistingPathException(IOException exception)
         => (exception.HResult & 0xFFFF) is ErrorFileExists or ErrorAlreadyExists;
+
+    private static bool PathEntryExists(string path)
+    {
+        try
+        {
+            _ = File.GetAttributes(path);
+            return true;
+        }
+        catch (Exception ex) when (ex is FileNotFoundException
+            or DirectoryNotFoundException
+            or UnauthorizedAccessException
+            or IOException)
+        {
+            return false;
+        }
+    }
 
     /// <summary>
     /// Derives a project name from the working directory's folder name, falling back to
