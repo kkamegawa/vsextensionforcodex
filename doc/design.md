@@ -35,9 +35,9 @@ CEE0028（コンパイル時評価エラー）で失敗する。最低限の設�
 public override ExtensionConfiguration ExtensionConfiguration => new()
 {
     Metadata = new(
-        id: "Kkamegawa.CodexForVisualStudio",
+        id: "<publisher>.<name>.<guid>",      // 実際の値は CodexExtension.cs の ExtensionIdentity.Id を参照
         version: ExtensionAssemblyVersion,   // 基底クラスのプロパティ
-        publisherName: "kazushikamegawa",
+        publisherName: "<publisher>",         // 実際の値は ExtensionIdentity.PublisherName を参照
         displayName: "Codex for Visual Studio",
         description: "AI coding assistant powered by OpenAI Codex."),
 };
