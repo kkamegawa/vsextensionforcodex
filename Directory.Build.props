@@ -7,8 +7,8 @@
     <ContinuousIntegrationBuild Condition="'$(CI)' == 'true'">true</ContinuousIntegrationBuild>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <AnalysisLevel>latest-recommended</AnalysisLevel>
-    <Authors>kazushikamegawa</Authors>
-    <Company>kazushikamegawa</Company>
+    <Authors>kkamegawa</Authors>
+    <Company>kkamegawa</Company>
     <RepositoryUrl>https://github.com/kkamegawa/vsextensionforcodex</RepositoryUrl>
     <VersionPrefix>0.1.0</VersionPrefix>
   </PropertyGroup>

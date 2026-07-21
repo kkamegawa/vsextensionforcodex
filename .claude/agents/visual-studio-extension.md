@@ -451,7 +451,7 @@ When producing a solution, include:
 
 Follow `.github/copilot-instructions.md` and `CLAUDE.md` for repository-wide expectations:
 
-- Publisher: `kazushikamegawa` / VSIX ID: `Kkamegawa.CodexForVisualStudio`
+- Publisher: `kkamegawa` (must match the Marketplace publisher display name) / VSIX ID: `Kkamegawa.CodexForVisualStudio`
 - Source code, comments, and identifiers in **English**
 - **UTF-8 with BOM** and **CRLF** for all source files
 - `TreatWarningsAsErrors=true` is enforced — treat every warning as a blocker
