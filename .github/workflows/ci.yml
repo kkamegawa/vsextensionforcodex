@@ -96,16 +96,24 @@ jobs:
             Start-Sleep -Seconds 5
           }
 
-      - name: Verify VSIX exists
+      - name: Find VSIX
+        id: find_vsix
         shell: pwsh
         run: |
-          $vsix = Get-ChildItem -Path .\src\Codex.VisualStudio.Extension\bin\Release -Filter *.vsix -Recurse
+          # Search recursively so the step is not sensitive to the framework sub-folder name.
+          # Resolving a single literal path (rather than a glob) keeps the .vsix at the root
+          # of the uploaded artifact zip instead of nested under a TFM sub-folder.
+          $vsix = Get-ChildItem -Path .\src\Codex.VisualStudio.Extension\bin\Release -Filter *.vsix -Recurse |
+                    Select-Object -First 1
           if (-not $vsix) {
             throw "VSIX artifact was not generated."
           }
+          Write-Host "Found VSIX: $($vsix.FullName)"
+          "vsix_path=$($vsix.FullName)" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
 
       - name: Upload VSIX artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: CodexForVisualStudio-vsix
-          path: src\Codex.VisualStudio.Extension\bin\Release\**\*.vsix
+          path: ${{ steps.find_vsix.outputs.vsix_path }}
+
