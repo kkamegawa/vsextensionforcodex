@@ -37,7 +37,7 @@ public override ExtensionConfiguration ExtensionConfiguration => new()
     Metadata = new(
         id: "Kkamegawa.CodexForVisualStudio",
         version: ExtensionAssemblyVersion,   // 基底クラスのプロパティ
-        publisherName: "kazushikamegawa",
+        publisherName: "kkamegawa",
         displayName: "Codex for Visual Studio",
         description: "AI coding assistant powered by OpenAI Codex."),
 };

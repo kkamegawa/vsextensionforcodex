@@ -1,6 +1,6 @@
 # Repository Instructions
 
-- The extension publisher is `kazushikamegawa`.
+- The extension publisher is `kkamegawa`.
 - The VSIX identifier is `Kkamegawa.CodexForVisualStudio`.
 - Write source code, code comments, identifiers, and diagnostics in English.
 - Use UTF-8 with BOM and CRLF for source files.

@@ -2,7 +2,7 @@
 
 ## Project
 
-- Publisher: `kazushikamegawa` / VSIX ID: `Kkamegawa.CodexForVisualStudio`
+- Publisher: `kkamegawa` (matches the Marketplace publisher display name) / VSIX ID: `Kkamegawa.CodexForVisualStudio`
 - Source code, comments, and identifiers in **English**
 - Encoding: **UTF-8 with BOM**, line endings: **CRLF**
 - `TreatWarningsAsErrors=true` — every warning is a blocker

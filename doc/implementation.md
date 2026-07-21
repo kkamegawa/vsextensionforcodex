@@ -14,7 +14,7 @@
   Worker が `codex app-server` を spawn・仲介する。
 - Extension と `codex app-server` は stdio（JSONL）で通信する。
 
-The publisher is `kazushikamegawa`. The VSIX identifier is `Kkamegawa.CodexForVisualStudio`.
+The publisher is `kkamegawa` (see CLAUDE.md for the current VSIX identity string).
 
 ## Implemented Behavior
 
@@ -104,9 +104,13 @@ The Extension OOP process and Visual Studio run on different runtimes:
 
 ### Duplicate deployment diagnosis
 
-The active extension identity must be `Kkamegawa.CodexForVisualStudio` with publisher
-`kazushikamegawa`. The former identity `CodexForVisualStudio.kkamegawa` and former publisher
-`kkamegawa` must not appear in the Experimental Instance metadata cache or hot-load registration.
+The active extension identity and publisher must match `ExtensionIdentity.Id` / `ExtensionIdentity.PublisherName`
+in `CodexExtension.cs` (see CLAUDE.md for the current values) exactly, everywhere: the packaged
+manifest, diagnostics, and any Experimental Instance metadata cache or hot-load registration. Any
+deployment reporting a different identity or publisher string is stale — this codebase's identity
+and publisher have changed more than once (most recently to align with the `kkamegawa` Marketplace
+publisher), and a leftover deployment from a prior value is the recurring failure mode described
+below.
 
 If both identities are present, a command contributed by the stale deployment can open a tool
 window backed by an older assembly. Slash-command candidates are then unavailable even though the
