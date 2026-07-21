@@ -104,6 +104,7 @@ jobs:
           # Resolving a single literal path (rather than a glob) keeps the .vsix at the root
           # of the uploaded artifact zip instead of nested under a TFM sub-folder.
           $vsix = Get-ChildItem -Path .\src\Codex.VisualStudio.Extension\bin\Release -Filter *.vsix -Recurse |
+                    Sort-Object LastWriteTimeUtc -Descending |
                     Select-Object -First 1
           if (-not $vsix) {
             throw "VSIX artifact was not generated."
