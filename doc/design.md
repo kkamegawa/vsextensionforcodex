@@ -37,7 +37,7 @@ public override ExtensionConfiguration ExtensionConfiguration => new()
     Metadata = new(
         id: "<publisher>.<name>.<guid>",      // 実際の値は CodexExtension.cs の ExtensionIdentity.Id を参照
         version: ExtensionAssemblyVersion,   // 基底クラスのプロパティ
-        publisherName: "kkamegawa",
+        publisherName: "<publisher>",         // 実際の値は ExtensionIdentity.PublisherName を参照
         displayName: "Codex for Visual Studio",
         description: "AI coding assistant powered by OpenAI Codex."),
 };
