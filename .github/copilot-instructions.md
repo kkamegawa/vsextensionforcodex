@@ -1,7 +1,7 @@
 # Repository Instructions
 
 - The extension publisher is `kkamegawa`.
-- The VSIX identifier is `Kkamegawa.CodexForVisualStudio`.
+- The Marketplace VSIX identity is `relaycodexforvs.KazushiKamegawa.<GUID>` (see `ExtensionIdentity.Id` in `CodexExtension.cs`). `Kkamegawa.CodexForVisualStudio` is only the `%APPDATA%` settings folder name — do not use it as the VSIX identifier.
 - Write source code, code comments, identifiers, and diagnostics in English.
 - Use UTF-8 with BOM and CRLF for source files.
 - Keep Codex protocol, security policy, and process management outside the Visual Studio process.
