@@ -103,7 +103,7 @@ while (await Console.In.ReadLineAsync().ConfigureAwait(false) is { } line)
                     cwd = Environment.CurrentDirectory,
                     errors = new object[]
                     {
-                        new { message = "SKILL.md front matter is not valid YAML.", path = "/repo/.codex/skills/broken/SKILL.md" },
+                        new { message = "SKILL.md front matter is not valid YAML.", path = RepoSkillPath("broken", "SKILL.md") },
                     },
                     skills = new object[]
                     {
@@ -112,7 +112,7 @@ while (await Console.In.ReadLineAsync().ConfigureAwait(false) is { } line)
                             name = "review-diff",
                             description = "Review the current diff for correctness and style issues.",
                             enabled = true,
-                            path = "/repo/.codex/skills/review-diff",
+                            path = RepoSkillPath("review-diff"),
                             scope = "repo",
                         },
                         new
@@ -120,7 +120,7 @@ while (await Console.In.ReadLineAsync().ConfigureAwait(false) is { } line)
                             name = "write-tests",
                             description = "Draft unit tests for the selected file.",
                             enabled = true,
-                            path = "/repo/.codex/skills/write-tests",
+                            path = RepoSkillPath("write-tests"),
                             scope = "repo",
                         },
                         new
@@ -128,7 +128,7 @@ while (await Console.In.ReadLineAsync().ConfigureAwait(false) is { } line)
                             name = "summarize-thread",
                             description = "Summarize the current conversation thread.",
                             enabled = true,
-                            path = "/home/fake-user/.codex/skills/summarize-thread",
+                            path = UserSkillPath("summarize-thread"),
                             scope = "user",
                         },
                         new
@@ -136,7 +136,7 @@ while (await Console.In.ReadLineAsync().ConfigureAwait(false) is { } line)
                             name = "legacy-formatter",
                             description = "Disabled by the user; kept for reference.",
                             enabled = false,
-                            path = "/repo/.codex/skills/legacy-formatter",
+                            path = RepoSkillPath("legacy-formatter"),
                             scope = "repo",
                         },
                     },
@@ -167,6 +167,15 @@ object CreateThread()
     threads.Add(thread);
     return ThreadResponse(thread);
 }
+
+// Platform-native absolute paths (not hardcoded POSIX strings) so manual verification on
+// Windows exercises the same path shapes CodexSessionService.NormalizeSkillPath sees from a
+// real codex app-server, instead of masking Windows-specific path-handling issues.
+static string RepoSkillPath(params string[] segments)
+    => Path.Combine([Environment.CurrentDirectory, ".codex", "skills", .. segments]);
+
+static string UserSkillPath(params string[] segments)
+    => Path.Combine([Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".codex", "skills", .. segments]);
 
 static object ThreadResponse(object thread) => new
 {

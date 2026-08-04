@@ -107,7 +107,11 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
     private const int MaxSkillErrors = 50;
     private const int MaxSkillNameLength = 128;
     private const int MaxSkillTextLength = 512;
-    private const int MaxSkillPathLength = 260;
+
+    // Not the legacy Windows MAX_PATH (260): that limit only applies without the long-paths
+    // opt-in and would silently drop valid skills under deep workspaces or long user-profile
+    // paths. 1024 is a generous display/memory bound while still rejecting pathological input.
+    private const int MaxSkillPathLength = 1024;
 
     private readonly IApprovalPolicyEngine approvalPolicy;
     private readonly ISecretRedactor redactor;
