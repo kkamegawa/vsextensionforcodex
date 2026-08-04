@@ -2170,6 +2170,16 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         {
             foreach (JsonElement entry in data.EnumerateArray())
             {
+                if (skills.Count >= MaxSkills && errors.Count >= MaxSkillErrors)
+                {
+                    // Both caps were already reached by an earlier entry. skills/list is
+                    // untrusted and unbounded, so stop enumerating remaining server-supplied
+                    // entries entirely rather than paying per-entry sanitization and
+                    // property-lookup cost on data that would be dropped anyway.
+                    truncated = true;
+                    break;
+                }
+
                 if (entry.ValueKind != JsonValueKind.Object)
                 {
                     continue;

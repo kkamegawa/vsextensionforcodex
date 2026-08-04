@@ -985,6 +985,57 @@ public sealed class CodexSessionServiceTests
     }
 
     [TestMethod]
+    public async Task ListSkills_StopsScanningEntriesOnceBothCapsAreReached()
+    {
+        // skills/list is untrusted and unbounded: once one entry alone fills both the skill and
+        // error caps, a second entry must not be scanned at all (not just capped) so a
+        // pathological response with a huge "data" array cannot force unbounded per-entry work.
+        object[] fillerSkills = Enumerable.Range(0, 200)
+            .Select(index => (object)new
+            {
+                name = $"skill-{index}",
+                description = "d",
+                enabled = true,
+                path = $"/repo/.codex/skills/skill-{index}",
+                scope = "repo",
+            })
+            .ToArray();
+        object[] fillerErrors = Enumerable.Range(0, 50)
+            .Select(index => (object)new { message = $"error-{index}", path = "/repo/.codex/skills/broken/SKILL.md" })
+            .ToArray();
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "skills/list"
+                ? JsonSerializer.SerializeToElement(new
+                {
+                    data = new object[]
+                    {
+                        new { cwd = "/repo-a", errors = fillerErrors, skills = fillerSkills },
+                        new
+                        {
+                            cwd = "/repo-b",
+                            errors = Array.Empty<object>(),
+                            skills = new object[]
+                            {
+                                new { name = "should-not-appear", description = "d", enabled = true, path = "/repo-b/.codex/skills/should-not-appear", scope = "repo" },
+                            },
+                        },
+                    },
+                })
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        ListSkillsResult result = await service.ListSkillsAsync(forceReload: false, CancellationToken.None);
+
+        Assert.AreEqual(200, result.Skills.Count);
+        Assert.AreEqual(50, result.Errors.Count);
+        Assert.IsTrue(result.IsTruncated);
+        Assert.IsFalse(result.Skills.Any(skill => skill.Name == "should-not-appear"));
+    }
+
+    [TestMethod]
     public async Task ListSkills_ReturnsUnsupportedWhenMethodUnknown()
     {
         var connection = new RecordingConnection
