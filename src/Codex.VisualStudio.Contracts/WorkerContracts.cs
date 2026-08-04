@@ -5,7 +5,7 @@ namespace Codex.VisualStudio.Contracts;
 
 public static class ContractVersions
 {
-    public const int Current = 15;
+    public const int Current = 16;
 }
 
 public enum WorkerConnectionState
@@ -325,6 +325,20 @@ public sealed class StartTurnRequest
     public IdeContextInfo? IdeContext { get; set; }
 
     public IReadOnlyList<AttachmentInfo> Attachments { get; set; } = Array.Empty<AttachmentInfo>();
+
+    // Deliberately separate from Attachments: BuildTurnInput's attachment loop requires
+    // File.Exists and (by default) workspace containment, which many skill paths fail by
+    // design (scope: "user"/"system"/"admin" paths live outside the workspace, and some are
+    // directories, not files). Resolved only from a $<skill-name> token matched against the
+    // skills/list catalog, never from free-form user text.
+    public IReadOnlyList<SkillInvocation> Skills { get; set; } = Array.Empty<SkillInvocation>();
+}
+
+public sealed class SkillInvocation
+{
+    public string Name { get; set; } = string.Empty;
+
+    public string Path { get; set; } = string.Empty;
 }
 
 public sealed class AttachmentInfo

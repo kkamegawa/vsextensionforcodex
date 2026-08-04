@@ -204,6 +204,10 @@ object StartTurn(JsonElement request)
     string turnText = ExtractTurnText(parameters);
     string turnId = $"fake-turn-{nextTurn++}";
     Console.Error.WriteLine($"fake turn/start model={Sanitize(model) ?? "(default)"} approvalPolicy={Sanitize(approvalPolicy) ?? "(default)"} approvalsReviewer={Sanitize(approvalsReviewer) ?? "(default)"} sandbox={Sanitize(sandboxMode) ?? "(default)"} permissions={Sanitize(permissions) ?? "(default)"} effort={Sanitize(effort) ?? "(default)"} serviceTier={Sanitize(serviceTier) ?? "(default)"}");
+    foreach (JsonElement skillItem in ExtractSkillInputItems(parameters))
+    {
+        Console.Error.WriteLine($"fake turn/start skill name={Sanitize(GetOptionalString(skillItem, "name"))} path={Sanitize(GetOptionalString(skillItem, "path"))}");
+    }
     _ = Task.Run(async () =>
     {
         await Task.Delay(25).ConfigureAwait(false);
@@ -257,6 +261,22 @@ static string ExtractTurnText(JsonElement parameters)
     }
 
     return string.Empty;
+}
+
+static IEnumerable<JsonElement> ExtractSkillInputItems(JsonElement parameters)
+{
+    if (!parameters.TryGetProperty("input", out JsonElement input) || input.ValueKind != JsonValueKind.Array)
+    {
+        yield break;
+    }
+
+    foreach (JsonElement item in input.EnumerateArray())
+    {
+        if (item.ValueKind == JsonValueKind.Object && GetOptionalString(item, "type") == "skill")
+        {
+            yield return item;
+        }
+    }
 }
 
 object StartLogin()

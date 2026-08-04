@@ -559,6 +559,134 @@ public sealed class CodexSessionServiceTests
     }
 
     [TestMethod]
+    public async Task BuildTurnInput_EmitsSkillItemsOutsideAttachmentBudget()
+    {
+        string workspace = Path.Combine(Path.GetTempPath(), $"codex-skill-budget-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(workspace);
+        var attachments = new List<AttachmentInfo>();
+        for (int index = 0; index < 10; index++)
+        {
+            string path = Path.Combine(workspace, $"file-{index}.txt");
+            await File.WriteAllTextAsync(path, index.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            attachments.Add(new AttachmentInfo(path, "mention"));
+        }
+
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "turn/start"
+                ? JsonSerializer.SerializeToElement(new { turn = new { id = "turn-1" } })
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(workspace), CancellationToken.None);
+
+        await service.StartTurnAsync(
+            new StartTurnRequest
+            {
+                ThreadId = "thread-1",
+                Text = "inspect",
+                Attachments = attachments,
+                Skills = [new SkillInvocation { Name = "review-diff", Path = Path.Combine(workspace, ".codex", "skills", "review-diff") }],
+            },
+            CancellationToken.None);
+
+        JsonElement[] input = ParametersFor(connection, "turn/start").GetProperty("input").EnumerateArray().ToArray();
+        Assert.AreEqual(1, input.Count(item => item.GetProperty("type").GetString() == "skill"));
+        Assert.AreEqual(10, input.Count(item => item.GetProperty("type").GetString() == "mention"));
+
+        Directory.Delete(workspace, recursive: true);
+    }
+
+    [TestMethod]
+    public async Task BuildTurnInput_EmitsSkillItemForDirectoryPathOutsideWorkspace()
+    {
+        // Proves skills are exempt from TryNormalizeReadableFile: the path here is a directory
+        // that does not exist and lives outside the workspace, both of which would drop an
+        // AttachmentInfo entry, but a SkillInvocation only needs structural path validity because
+        // it originates from the app-server's own skills/list output, not from user input.
+        string workspace = Path.Combine(Path.GetTempPath(), $"codex-skill-outside-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(workspace);
+        string userScopePath = OperatingSystem.IsWindows()
+            ? @"C:\Users\fake-user\.codex\skills\summarize-thread"
+            : "/home/fake-user/.codex/skills/summarize-thread";
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "turn/start"
+                ? JsonSerializer.SerializeToElement(new { turn = new { id = "turn-1" } })
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(workspace), CancellationToken.None);
+
+        await service.StartTurnAsync(
+            new StartTurnRequest
+            {
+                ThreadId = "thread-1",
+                Text = "summarize",
+                Skills = [new SkillInvocation { Name = "summarize-thread", Path = userScopePath }],
+            },
+            CancellationToken.None);
+
+        JsonElement[] input = ParametersFor(connection, "turn/start").GetProperty("input").EnumerateArray().ToArray();
+        JsonElement skillItem = input.Single(item => item.GetProperty("type").GetString() == "skill");
+        Assert.AreEqual(userScopePath, skillItem.GetProperty("path").GetString());
+
+        Directory.Delete(workspace, recursive: true);
+    }
+
+    [TestMethod]
+    public async Task BuildTurnInput_RejectsRelativeSkillPath()
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "turn/start"
+                ? JsonSerializer.SerializeToElement(new { turn = new { id = "turn-1" } })
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        await service.StartTurnAsync(
+            new StartTurnRequest
+            {
+                ThreadId = "thread-1",
+                Text = "inspect",
+                Skills = [new SkillInvocation { Name = "review-diff", Path = "relative/skills/review-diff" }],
+            },
+            CancellationToken.None);
+
+        JsonElement[] input = ParametersFor(connection, "turn/start").GetProperty("input").EnumerateArray().ToArray();
+        Assert.AreEqual(0, input.Count(item => item.GetProperty("type").GetString() == "skill"));
+    }
+
+    [TestMethod]
+    public async Task BuildTurnInput_LimitsSkillTurnItems()
+    {
+        string workspace = Path.Combine(Path.GetTempPath(), $"codex-skill-limit-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(workspace);
+        var skills = Enumerable.Range(0, 8)
+            .Select(index => new SkillInvocation { Name = $"skill-{index}", Path = Path.Combine(workspace, ".codex", "skills", $"skill-{index}") })
+            .ToArray();
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "turn/start"
+                ? JsonSerializer.SerializeToElement(new { turn = new { id = "turn-1" } })
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(workspace), CancellationToken.None);
+
+        await service.StartTurnAsync(
+            new StartTurnRequest { ThreadId = "thread-1", Text = "inspect", Skills = skills },
+            CancellationToken.None);
+
+        JsonElement[] input = ParametersFor(connection, "turn/start").GetProperty("input").EnumerateArray().ToArray();
+        Assert.AreEqual(5, input.Count(item => item.GetProperty("type").GetString() == "skill"));
+
+        Directory.Delete(workspace, recursive: true);
+    }
+
+    [TestMethod]
     public async Task StartTurnOmitsModelAndModeOverridesWhenUnset()
     {
         var connection = new RecordingConnection

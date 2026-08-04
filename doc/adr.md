@@ -178,3 +178,21 @@
 - A stale skill shown in `/skills` output can persist for the life of the session if the app-server ever fails to emit `skills/changed` for a change; there is no polling fallback.
 - Adding a *method* to `IWorkerBridge` can use a default interface implementation so `FakeWorkerBridge` is unaffected; adding an *event* cannot (C# has no default event implementation with a backing store), so every new observer-style event requires touching the test double in the same change.
 - The cache key is implicitly `(cwds: [], forceReload: false)` — i.e. session-scoped, not thread-scoped, since all threads in this extension share `options.WorkingDirectory`. A future multi-root change would need to key the cache by `cwds` instead of assuming a single entry.
+
+## ADR-010: Skill turn items deliberately bypass the path-access policy
+
+- Date: 2026-08-04
+- Task: GitHub Issue #119 and sub-issue #123, Codex custom skills support
+- Status: Accepted
+
+### Decision
+
+- `StartTurnRequest.Skills` is a field separate from `Attachments`, and `BuildTurnInput` validates each `SkillInvocation` with the same `NormalizeSkillName`/`NormalizeSkillPath` helpers `ReadSkills` already uses for `skills/list` — structural validity only (rooted, length-capped, no control characters). It does **not** run `TryNormalizeReadableFile`, so there is no `File.Exists` check and no workspace-containment check.
+- This is deliberate, not an oversight: `SkillUserInput.path` (`schemas/ClientRequest.json`) is the app-server's own `skills/list` output, not a user-selected file. `scope: "user"` skill paths are directories under the user profile (`File.Exists` is false for a directory); `scope: "system"`/`"admin"` paths routinely live outside the workspace. Requiring either check would silently drop the exact skills those scopes exist to represent.
+- The trust boundary this relies on: `ChatViewModel.ResolveSkillInvocationsAsync` (`src/Codex.VisualStudio.Extension/ChatViewModel.cs`) only ever constructs a `SkillInvocation` from a `SkillInfo.Name`/`SkillInfo.Path` pair already returned by `skills/list` — never from a `$<token>` string typed by the user. The `$` token is used purely to look up a catalog entry; an unmatched token never reaches `StartTurnRequest.Skills`.
+- Skill turn items get their own budget (`MaxSkillTurnInputs = 5`), independent of the attachment cap of 10, and their own dedupe-by-path set, so a workspace with 10 attachments already queued does not crowd out a skill mention.
+
+### Consequences
+
+- If `ResolveSkillInvocationsAsync` or any future caller is changed to build a `SkillInvocation` from free-form text instead of a `skills/list` entry, this ADR's trust assumption breaks and the missing `TryNormalizeReadableFile` checks become a real gap. Any such change must re-add path validation at that point, not rely on `BuildTurnInput` to catch it.
+- A compromised or buggy app-server could return a `skills/list` entry whose `path` is a sensitive file elsewhere on disk; `BuildTurnInput` will forward it to `turn/start` verbatim (as `{ type: "skill", name, path }`) since it trusts the app-server's own catalog for this input kind. This mirrors how `mention`/`localImage` attachments already trust user-selected paths, but for skills the trusted party is the app-server rather than the user.

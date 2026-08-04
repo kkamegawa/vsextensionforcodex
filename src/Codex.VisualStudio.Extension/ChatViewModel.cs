@@ -1283,6 +1283,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         string? collaborationMode = forcePlanMode ? "plan" : nextCollaborationMode;
         TurnSettingResolution reasoning = ResolveReasoningSetting(threadId);
         TurnSettingResolution serviceTier = ResolveServiceTierSetting(threadId);
+        IReadOnlyList<SkillInvocation> skills = await ResolveSkillInvocationsAsync(text).ConfigureAwait(false);
         return new StartTurnRequest
         {
             ThreadId = threadId,
@@ -1307,8 +1308,75 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 },
             IdeContext = ideContext,
             Attachments = attachments,
+            Skills = skills,
         };
     }
+
+    // The composer never constructs a skill invocation from free-form user text: a $<name>
+    // token is only ever resolved by exact (case-insensitive) match against the skills/list
+    // catalog, and an unmatched or disabled-only match stays literal text with no turn item.
+    // Uses the worker's already-warm skill cache (ADR-009) rather than a second extension-side
+    // cache, so this only costs a real round trip the first time skills are needed in a session.
+    private async Task<IReadOnlyList<SkillInvocation>> ResolveSkillInvocationsAsync(string text)
+    {
+        IReadOnlyList<string> tokens = SkillMentionParser.ExtractSkillTokens(text);
+        if (tokens.Count == 0)
+        {
+            return Array.Empty<SkillInvocation>();
+        }
+
+        ListSkillsResult result;
+        try
+        {
+            result = await bridge.ListSkillsAsync(forceReload: false, lifetime.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+        {
+            return Array.Empty<SkillInvocation>();
+        }
+        catch (Exception ex)
+        {
+            ExtensionDiagnostics.Write("Skill mention resolution failed; sending mentions as plain text", ex);
+            return Array.Empty<SkillInvocation>();
+        }
+
+        if (!result.IsSupported)
+        {
+            return Array.Empty<SkillInvocation>();
+        }
+
+        var invocations = new List<SkillInvocation>();
+        foreach (string token in tokens)
+        {
+            SkillInfo? match = ResolveSkillToken(token, result.Skills);
+            if (match is not null && match.Enabled)
+            {
+                invocations.Add(new SkillInvocation { Name = match.Name, Path = match.Path });
+            }
+        }
+
+        return invocations;
+    }
+
+    // Deterministic pick on a name collision across scopes: enabled skills before disabled
+    // ones (a disabled match must not silently win over an enabled one with the same name),
+    // then repo > user > system > admin, then path for a stable tie-break.
+    private static SkillInfo? ResolveSkillToken(string token, IReadOnlyList<SkillInfo> skills)
+        => skills
+            .Where(skill => string.Equals(skill.Name, token, StringComparison.OrdinalIgnoreCase))
+            .OrderByDescending(skill => skill.Enabled)
+            .ThenBy(skill => SkillScopePriority(skill.Scope))
+            .ThenBy(skill => skill.Path, StringComparer.Ordinal)
+            .FirstOrDefault();
+
+    private static int SkillScopePriority(string scope) => scope switch
+    {
+        "repo" => 0,
+        "user" => 1,
+        "system" => 2,
+        "admin" => 3,
+        _ => 4,
+    };
 
     // Next-turn settings apply to exactly one started turn. Compare against the request so a
     // value re-queued while the turn was starting survives for the following turn.

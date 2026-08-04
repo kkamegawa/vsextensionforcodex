@@ -2104,6 +2104,95 @@ public sealed class ViewModelTests
     }
 
     [TestMethod]
+    public async Task StartTurn_IncludesSkillInputForResolvedMention()
+    {
+        var bridge = new FakeWorkerBridge
+        {
+            SkillsResult = new ListSkillsResult
+            {
+                Skills = [new SkillInfo { Name = "review-diff", Scope = "repo", Enabled = true, Path = "/repo/.codex/skills/review-diff" }],
+            },
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false)
+        {
+            SelectedThread = new ThreadSummary { Id = "thread-1" },
+        };
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready });
+
+        await SendMessageAsync(vm, "$review-diff please", clearComposer: false);
+
+        Assert.IsNotNull(bridge.LastStartTurnRequest);
+        Assert.AreEqual(1, bridge.LastStartTurnRequest!.Skills.Count);
+        Assert.AreEqual("review-diff", bridge.LastStartTurnRequest.Skills[0].Name);
+        Assert.AreEqual("/repo/.codex/skills/review-diff", bridge.LastStartTurnRequest.Skills[0].Path);
+        Assert.AreEqual("$review-diff please", bridge.LastStartTurnRequest.Text);
+    }
+
+    [TestMethod]
+    public async Task StartTurn_LeavesUnresolvedSkillMentionAsPlainText()
+    {
+        var bridge = new FakeWorkerBridge();
+        using var vm = new ChatViewModel(bridge, autoConnect: false)
+        {
+            SelectedThread = new ThreadSummary { Id = "thread-1" },
+        };
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready });
+
+        await SendMessageAsync(vm, "$unknown-skill please", clearComposer: false);
+
+        Assert.IsNotNull(bridge.LastStartTurnRequest);
+        Assert.AreEqual(0, bridge.LastStartTurnRequest!.Skills.Count);
+        Assert.AreEqual("$unknown-skill please", bridge.LastStartTurnRequest.Text);
+    }
+
+    [TestMethod]
+    public async Task StartTurn_PrefersEnabledSkillOnNameCollision()
+    {
+        var bridge = new FakeWorkerBridge
+        {
+            SkillsResult = new ListSkillsResult
+            {
+                Skills =
+                [
+                    new SkillInfo { Name = "helper", Scope = "admin", Enabled = false, Path = "/admin/.codex/skills/helper" },
+                    new SkillInfo { Name = "helper", Scope = "user", Enabled = true, Path = "/home/fake-user/.codex/skills/helper" },
+                ],
+            },
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false)
+        {
+            SelectedThread = new ThreadSummary { Id = "thread-1" },
+        };
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready });
+
+        await SendMessageAsync(vm, "$helper go", clearComposer: false);
+
+        Assert.AreEqual(1, bridge.LastStartTurnRequest!.Skills.Count);
+        Assert.AreEqual("/home/fake-user/.codex/skills/helper", bridge.LastStartTurnRequest.Skills[0].Path);
+    }
+
+    [TestMethod]
+    public async Task StartTurn_SkipsDisabledOnlyMatch()
+    {
+        var bridge = new FakeWorkerBridge
+        {
+            SkillsResult = new ListSkillsResult
+            {
+                Skills = [new SkillInfo { Name = "legacy-formatter", Scope = "repo", Enabled = false, Path = "/repo/.codex/skills/legacy-formatter" }],
+            },
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false)
+        {
+            SelectedThread = new ThreadSummary { Id = "thread-1" },
+        };
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready });
+
+        await SendMessageAsync(vm, "$legacy-formatter go", clearComposer: false);
+
+        Assert.AreEqual(0, bridge.LastStartTurnRequest!.Skills.Count);
+    }
+
+    [TestMethod]
     public async Task ChatViewModel_SendMessage_UsesAgentPresetForAgentMode()
     {
         var bridge = new FakeWorkerBridge();

@@ -115,6 +115,9 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
     // paths. 1024 is a generous display/memory bound while still rejecting pathological input.
     private const int MaxSkillPathLength = 1024;
 
+    // Independent of the attachment cap (10): skill turn items are a different input kind.
+    private const int MaxSkillTurnInputs = 5;
+
     private readonly IApprovalPolicyEngine approvalPolicy;
     private readonly ISecretRedactor redactor;
     private readonly IPathAccessPolicy pathAccessPolicy;
@@ -1140,6 +1143,30 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         {
             new { type = "text", text = request.Text },
         };
+
+        // Separate from the attachment loop below: skill paths are the app-server's own
+        // skills/list output, not user-selected files, so they get structural validation only
+        // (NormalizeSkillPath) rather than TryNormalizeReadableFile's File.Exists and
+        // workspace-containment checks, which many skill paths fail by design.
+        var includedSkillPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        int skillCount = 0;
+        foreach (SkillInvocation skill in request.Skills)
+        {
+            if (skillCount == MaxSkillTurnInputs)
+            {
+                break;
+            }
+
+            string? name = NormalizeSkillName(skill.Name);
+            string? path = NormalizeSkillPath(skill.Path);
+            if (name is null || path is null || !includedSkillPaths.Add(path))
+            {
+                continue;
+            }
+
+            skillCount++;
+            input.Add(new { type = "skill", name, path });
+        }
 
         var includedPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         int attachmentCount = 0;
