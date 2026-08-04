@@ -604,7 +604,8 @@ public sealed class RateLimitsResult : AppServerOperationResult
         new Dictionary<string, RateLimitInfo>();
 }
 
-// The skills/changed app-server notification carries no params at all. Every existing
+// The skills/changed app-server notification carries an empty params object ("params": {}),
+// not no params at all — but it has no properties of its own today. Every existing
 // ICodexWorkerObserver method takes exactly one parameter and StreamJsonRpc's
 // NotifyWithParameterObjectAsync matches the anonymous-object property name to it, so this
 // carries a reserved (currently always-null) Cwd field instead of introducing a parameterless
