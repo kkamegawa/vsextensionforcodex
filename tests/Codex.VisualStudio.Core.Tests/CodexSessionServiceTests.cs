@@ -949,7 +949,7 @@ public sealed class CodexSessionServiceTests
         ListSkillsResult result = await service.ListSkillsAsync(forceReload: false, CancellationToken.None);
 
         StringAssert.Contains(result.Skills[0].Description, "[REDACTED]");
-        StringAssert.DoesNotMatch(result.Skills[0].Description!, new System.Text.RegularExpressions.Regex("secret-value"));
+        StringAssert.DoesNotMatch(result.Skills[0].Description, new System.Text.RegularExpressions.Regex("secret-value"));
         StringAssert.Contains(result.Errors[0].Message, "[REDACTED]");
     }
 

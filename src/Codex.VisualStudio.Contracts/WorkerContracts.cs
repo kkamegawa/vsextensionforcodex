@@ -498,7 +498,11 @@ public sealed class SkillInfo
 {
     public string Name { get; set; } = string.Empty;
 
-    public string? Description { get; set; }
+    // Required by SkillMetadata (schemas/v2/SkillsListResponse.json). ReadSkill drops any skill
+    // whose "description" property is absent and otherwise always assigns a non-null string
+    // (falling back to string.Empty when the sanitized value is blank), so this stays non-nullable
+    // to match actual producer/consumer behavior rather than introducing an unreachable null state.
+    public string Description { get; set; } = string.Empty;
 
     // Legacy short_description from SKILL.md; prefer SKILL.json interface.short_description
     // when both are present. Kept as a single field since v1 does not surface the distinction.
