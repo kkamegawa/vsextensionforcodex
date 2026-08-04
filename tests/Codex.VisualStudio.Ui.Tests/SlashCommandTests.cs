@@ -36,6 +36,31 @@ public sealed class SlashCommandTests
     }
 
     [TestMethod]
+    public void SlashCommandParser_ParsesSkillsCommand()
+    {
+        var parser = new SlashCommandParser(catalog);
+
+        SlashCommandParseResult result = parser.Parse("/skills");
+
+        Assert.AreEqual(SlashCommandParseKind.Command, result.Kind);
+        Assert.AreEqual(SlashCommandId.Skills, result.Invocation!.Definition.Id);
+        Assert.AreEqual(string.Empty, result.Invocation.Arguments);
+        Assert.IsFalse(result.Invocation.StartsTurn);
+    }
+
+    [TestMethod]
+    public void SlashCommandParser_ParsesSkillsReloadArgument()
+    {
+        var parser = new SlashCommandParser(catalog);
+
+        SlashCommandParseResult result = parser.Parse("/skills reload");
+
+        Assert.AreEqual(SlashCommandParseKind.Command, result.Kind);
+        Assert.AreEqual(SlashCommandId.Skills, result.Invocation!.Definition.Id);
+        Assert.AreEqual("reload", result.Invocation.Arguments);
+    }
+
+    [TestMethod]
     public void Parser_DoubleSlashProducesLiteralPrompt()
     {
         var parser = new SlashCommandParser(catalog);

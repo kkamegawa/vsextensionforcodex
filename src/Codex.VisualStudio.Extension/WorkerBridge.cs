@@ -76,6 +76,16 @@ internal interface IWorkerBridge : IAsyncDisposable
 
     Task<McpServerListResult> ListMcpServersAsync(string? threadId, CancellationToken cancellationToken);
 
+    // Default implementation so the hand-written FakeWorkerBridge test double in
+    // ViewModelTests.cs does not need to change for this addition (unlike a new event, a new
+    // interface method with a default body is source-compatible with existing implementers).
+    Task<ListSkillsResult> ListSkillsAsync(bool forceReload, CancellationToken cancellationToken)
+        => Task.FromResult(new ListSkillsResult
+        {
+            IsSupported = false,
+            UnavailableReason = "Skills are not available through this bridge.",
+        });
+
     Task<UploadFeedbackResult> UploadFeedbackAsync(UploadFeedbackRequest request, CancellationToken cancellationToken);
 
     Task<RateLimitsResult> GetRateLimitsAsync(CancellationToken cancellationToken);
@@ -287,6 +297,12 @@ public sealed class WorkerBridge : IWorkerBridge, ICodexWorkerObserver
         => RequireRpc().InvokeWithCancellationAsync<McpServerListResult>(
             "worker/mcp/list",
             new object?[] { threadId },
+            cancellationToken);
+
+    public Task<ListSkillsResult> ListSkillsAsync(bool forceReload, CancellationToken cancellationToken)
+        => RequireRpc().InvokeWithCancellationAsync<ListSkillsResult>(
+            "worker/skills/list",
+            new object[] { forceReload },
             cancellationToken);
 
     public Task<UploadFeedbackResult> UploadFeedbackAsync(UploadFeedbackRequest request, CancellationToken cancellationToken)

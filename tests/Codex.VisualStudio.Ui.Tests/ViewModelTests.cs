@@ -2937,6 +2937,122 @@ public sealed class ViewModelTests
     }
 
     [TestMethod]
+    public async Task SkillsSlashCommand_WritesSkillNamesIntoTranscript()
+    {
+        var bridge = new FakeWorkerBridge
+        {
+            SkillsResult = new ListSkillsResult
+            {
+                Skills =
+                [
+                    new SkillInfo { Name = "review-diff", Scope = "repo", Enabled = true, Description = "Review the diff." },
+                    new SkillInfo { Name = "legacy-formatter", Scope = "repo", Enabled = false, Description = "Kept for reference." },
+                ],
+            },
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false)
+        {
+            ComposerText = "/skills",
+        };
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready });
+
+        await InvokeComposerSendAsync(vm);
+
+        StringAssert.Contains(vm.Items.Last().Text, "review-diff");
+        StringAssert.Contains(vm.Items.Last().Text, "legacy-formatter");
+        StringAssert.Contains(vm.Items.Last().Text, "[disabled]");
+        Assert.AreEqual(string.Empty, vm.ComposerText);
+    }
+
+    [TestMethod]
+    public async Task SkillsSlashCommand_WritesLoadErrorsIntoTranscript()
+    {
+        var bridge = new FakeWorkerBridge
+        {
+            SkillsResult = new ListSkillsResult
+            {
+                Errors =
+                [
+                    new SkillLoadError { Path = "/repo/.codex/skills/broken/SKILL.md", Message = "Invalid YAML front matter." },
+                ],
+            },
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false)
+        {
+            ComposerText = "/skills",
+        };
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready });
+
+        await InvokeComposerSendAsync(vm);
+
+        StringAssert.Contains(vm.Items.Last().Text, "Invalid YAML front matter.");
+        StringAssert.Contains(vm.Items.Last().Text, "No skills are configured.");
+    }
+
+    [TestMethod]
+    public async Task SkillsSlashCommand_ReportsUnavailableWhenUnsupported()
+    {
+        var bridge = new FakeWorkerBridge
+        {
+            SkillsResult = new ListSkillsResult
+            {
+                IsSupported = false,
+                UnavailableReason = "Skills are not supported by this app-server.",
+            },
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false)
+        {
+            ComposerText = "/skills",
+        };
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready });
+
+        await InvokeComposerSendAsync(vm);
+
+        StringAssert.Contains(vm.Items.Last().Text, "Skills are not supported by this app-server.");
+    }
+
+    [TestMethod]
+    public async Task SkillsSlashCommand_SanitizesSkillDescriptionBeforeDisplay()
+    {
+        var bridge = new FakeWorkerBridge
+        {
+            SkillsResult = new ListSkillsResult
+            {
+                Skills =
+                [
+                    new SkillInfo { Name = "html-skill", Scope = "repo", Enabled = true, Description = "<b>bold</b> description" },
+                ],
+            },
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false)
+        {
+            ComposerText = "/skills",
+        };
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready });
+
+        await InvokeComposerSendAsync(vm);
+
+        StringAssert.DoesNotMatch(vm.Items.Last().Text, new System.Text.RegularExpressions.Regex("<b>"));
+        StringAssert.Contains(vm.Items.Last().Text, "bold");
+    }
+
+    [TestMethod]
+    public async Task SkillsSlashCommand_PassesForceReloadForReloadArgument()
+    {
+        var bridge = new FakeWorkerBridge();
+        using var vm = new ChatViewModel(bridge, autoConnect: false)
+        {
+            ComposerText = "/skills reload",
+        };
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready });
+
+        await InvokeComposerSendAsync(vm);
+
+        Assert.AreEqual(1, bridge.SkillsCallCount);
+        Assert.AreEqual(true, bridge.LastSkillsForceReload);
+    }
+
+    [TestMethod]
     public async Task ChatViewModel_ModelCommandMatchesCatalogCaseInsensitively()
     {
         var bridge = new FakeWorkerBridge();
@@ -3629,6 +3745,12 @@ public sealed class ViewModelTests
 
         public ListPermissionProfilesResult PermissionProfilesResult { get; set; } = new();
 
+        public ListSkillsResult SkillsResult { get; set; } = new();
+
+        public int SkillsCallCount { get; private set; }
+
+        public bool? LastSkillsForceReload { get; private set; }
+
         public int ModelListCallCount { get; private set; }
 
         public StartTurnRequest? LastStartTurnRequest { get; private set; }
@@ -3746,6 +3868,13 @@ public sealed class ViewModelTests
 
         public Task<McpServerListResult> ListMcpServersAsync(string? threadId, CancellationToken cancellationToken)
             => Task.FromResult(new McpServerListResult());
+
+        public Task<ListSkillsResult> ListSkillsAsync(bool forceReload, CancellationToken cancellationToken)
+        {
+            SkillsCallCount++;
+            LastSkillsForceReload = forceReload;
+            return Task.FromResult(SkillsResult);
+        }
 
         public Task<UploadFeedbackResult> UploadFeedbackAsync(UploadFeedbackRequest request, CancellationToken cancellationToken)
             => Task.FromResult(new UploadFeedbackResult { ThreadId = request.ThreadId });

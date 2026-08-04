@@ -1946,6 +1946,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             or SlashCommandId.Fork
             or SlashCommandId.Goal
             or SlashCommandId.Mcp
+            or SlashCommandId.Skills
             or SlashCommandId.Review;
 
     private async Task<bool> ExecuteSlashCommandAsync(
@@ -1961,6 +1962,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 SlashCommandId.Fork => await ExecuteForkAsync(targetThreadId!).ConfigureAwait(false),
                 SlashCommandId.Goal => await ExecuteGoalAsync(targetThreadId!, invocation.Arguments).ConfigureAwait(false),
                 SlashCommandId.Mcp => await ExecuteMcpAsync(targetThreadId).ConfigureAwait(false),
+                SlashCommandId.Skills => await ExecuteSkillsAsync(invocation.Arguments).ConfigureAwait(false),
                 SlashCommandId.Review => await ExecuteReviewAsync(targetThreadId!, invocation.Arguments).ConfigureAwait(false),
                 SlashCommandId.Fast => await ExecuteFastAsync(targetThreadId!).ConfigureAwait(false),
                 SlashCommandId.Model => await ExecuteModelAsync(invocation.Arguments).ConfigureAwait(false),
@@ -2156,6 +2158,46 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 result.Servers.Select(server =>
                     $"- {server.DisplayName ?? server.Name}: {server.AuthStatus}; {server.ToolNames.Count} tools, {server.ResourceCount} resources, {server.ResourceTemplateCount} templates"));
         await ShowSlashStatusAsync(message).ConfigureAwait(false);
+        return true;
+    }
+
+    private async Task<bool> ExecuteSkillsAsync(string? arguments)
+    {
+        bool forceReload = string.Equals(arguments?.Trim(), "reload", StringComparison.OrdinalIgnoreCase);
+        ListSkillsResult result = await bridge.ListSkillsAsync(forceReload, lifetime.Token).ConfigureAwait(false);
+        if (!await EnsureOperationSupportedAsync(SlashCommandId.Skills, result).ConfigureAwait(false))
+        {
+            return false;
+        }
+
+        var lines = new List<string>();
+        if (result.Skills.Count == 0)
+        {
+            lines.Add("No skills are configured.");
+        }
+        else
+        {
+            lines.AddRange(result.Skills.Select(skill =>
+                $"- {skill.DisplayName ?? skill.Name} ({skill.Scope}){(skill.Enabled ? string.Empty : " [disabled]")}: {skill.ShortDescription ?? skill.Description}"));
+        }
+
+        if (result.Errors.Count > 0)
+        {
+            lines.Add(string.Empty);
+            lines.Add("Errors:");
+            lines.AddRange(result.Errors.Select(error => $"- {error.Path}: {error.Message}"));
+        }
+
+        if (result.IsTruncated)
+        {
+            lines.Add(string.Empty);
+            lines.Add("Showing a truncated list; use '/skills reload' to refresh.");
+        }
+
+        // ShowSlashStatusAsync runs the composed message through SafeMarkdownService.ToSafeText
+        // before it reaches Remote UI; individual fields are not sanitized again here, matching
+        // ExecuteMcpAsync.
+        await ShowSlashStatusAsync(string.Join("\r\n", lines)).ConfigureAwait(false);
         return true;
     }
 
