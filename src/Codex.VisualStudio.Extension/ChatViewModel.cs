@@ -1340,16 +1340,30 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             return Array.Empty<SkillInvocation>();
         }
 
-        if (!result.IsSupported)
+        // A truncated catalog (MaxSkills/MaxSkillErrors reached worker-side) cannot be trusted to
+        // resolve a name collision correctly -- the preferred entry (e.g. a higher-priority scope)
+        // may be exactly what got cut off. Matches the PopulatePermissionProfilesAsync precedent
+        // of refusing to act on an incomplete catalog for a resolution decision.
+        if (!result.IsSupported || result.IsTruncated)
         {
             return Array.Empty<SkillInvocation>();
         }
 
+        // Capped and deduped by path client-side (in addition to BuildTurnInput's own budget and
+        // dedupe) so a message with many repeated $tokens cannot balloon the wire payload or CPU
+        // cost before it ever reaches the worker. Must match CodexSessionService.MaxSkillTurnInputs.
+        const int maxSkillMentionsPerTurn = 5;
         var invocations = new List<SkillInvocation>();
+        var seenPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (string token in tokens)
         {
+            if (invocations.Count >= maxSkillMentionsPerTurn)
+            {
+                break;
+            }
+
             SkillInfo? match = ResolveSkillToken(token, result.Skills);
-            if (match is not null && match.Enabled)
+            if (match is not null && match.Enabled && seenPaths.Add(match.Path))
             {
                 invocations.Add(new SkillInvocation { Name = match.Name, Path = match.Path });
             }

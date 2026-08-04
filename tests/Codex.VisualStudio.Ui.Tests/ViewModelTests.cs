@@ -2193,6 +2193,54 @@ public sealed class ViewModelTests
     }
 
     [TestMethod]
+    public async Task StartTurn_SkipsResolutionWhenCatalogIsTruncated()
+    {
+        // A truncated catalog cannot be trusted to resolve a name collision correctly -- the
+        // preferred entry may be exactly what was cut off worker-side. Every token must stay
+        // unresolved rather than risk picking the wrong skill.
+        var bridge = new FakeWorkerBridge
+        {
+            SkillsResult = new ListSkillsResult
+            {
+                IsTruncated = true,
+                Skills = [new SkillInfo { Name = "review-diff", Scope = "repo", Enabled = true, Path = "/repo/.codex/skills/review-diff" }],
+            },
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false)
+        {
+            SelectedThread = new ThreadSummary { Id = "thread-1" },
+        };
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready });
+
+        await SendMessageAsync(vm, "$review-diff go", clearComposer: false);
+
+        Assert.AreEqual(0, bridge.LastStartTurnRequest!.Skills.Count);
+    }
+
+    [TestMethod]
+    public async Task StartTurn_CapsAndDedupesRepeatedSkillMentions()
+    {
+        var skills = Enumerable.Range(0, 8)
+            .Select(index => new SkillInfo { Name = $"skill-{index}", Scope = "repo", Enabled = true, Path = $"/repo/.codex/skills/skill-{index}" })
+            .ToArray();
+        var bridge = new FakeWorkerBridge
+        {
+            SkillsResult = new ListSkillsResult { Skills = skills },
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false)
+        {
+            SelectedThread = new ThreadSummary { Id = "thread-1" },
+        };
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready });
+
+        string text = "$skill-0 $skill-0 $skill-1 $skill-2 $skill-3 $skill-4 $skill-5 $skill-6 $skill-7";
+        await SendMessageAsync(vm, text, clearComposer: false);
+
+        Assert.AreEqual(5, bridge.LastStartTurnRequest!.Skills.Count);
+        Assert.AreEqual(5, bridge.LastStartTurnRequest.Skills.Select(skill => skill.Path).Distinct(StringComparer.OrdinalIgnoreCase).Count());
+    }
+
+    [TestMethod]
     public async Task ChatViewModel_SendMessage_UsesAgentPresetForAgentMode()
     {
         var bridge = new FakeWorkerBridge();
