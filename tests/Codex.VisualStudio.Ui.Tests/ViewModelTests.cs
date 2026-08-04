@@ -2261,6 +2261,29 @@ public sealed class ViewModelTests
     }
 
     [TestMethod]
+    public async Task SkillSuggestions_DoNotOpenWhenCatalogIsTruncated()
+    {
+        // Matches ResolveSkillInvocationsAsync's own truncated-catalog guard: suggesting (and
+        // letting the user accept) a skill from a truncated result would let send-time
+        // resolution silently refuse to turn the accepted token into a skill invocation.
+        var bridge = new FakeWorkerBridge
+        {
+            SkillsResult = new ListSkillsResult
+            {
+                IsTruncated = true,
+                Skills = [new SkillInfo { Name = "review-diff", Scope = "repo", Enabled = true, Path = "/repo/.codex/skills/review-diff" }],
+            },
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false);
+
+        vm.ComposerText = "$review";
+        await WaitForAsync(() => bridge.SkillsCallCount > 0);
+        await Task.Delay(50);
+
+        Assert.IsFalse(vm.SkillSuggestions.IsSuggestionOpen);
+    }
+
+    [TestMethod]
     public async Task SkillSuggestions_CloseWhenTokenIsEscaped()
     {
         var bridge = new FakeWorkerBridge

@@ -776,6 +776,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         InvalidateUsage();
         lifetime.Cancel();
         CancelFileSuggestionRefresh();
+        CancelSkillSuggestionRefresh();
         slashCommandCoordinator.CancelAll();
         lifetime.Dispose();
         ValueTask bridgeDisposal = bridge.DisposeAsync();
@@ -1684,7 +1685,11 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 return;
             }
 
-            if (!result.IsSupported)
+            // Matches ResolveSkillInvocationsAsync's truncated-catalog guard: suggesting a skill
+            // from a truncated result would let the user accept a token that send-time
+            // resolution then refuses to turn into a skill invocation, silently downgrading it
+            // to plain text with no explanation.
+            if (!result.IsSupported || result.IsTruncated)
             {
                 await OnUiAsync(SkillSuggestions.CloseSuggestions).ConfigureAwait(false);
                 return;
