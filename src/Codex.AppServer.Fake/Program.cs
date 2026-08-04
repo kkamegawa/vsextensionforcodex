@@ -94,6 +94,55 @@ while (await Console.In.ReadLineAsync().ConfigureAwait(false) is { } line)
             },
             nextCursor = (string?)null,
         },
+        "skills/list" => new
+        {
+            data = new object[]
+            {
+                new
+                {
+                    cwd = Environment.CurrentDirectory,
+                    errors = new object[]
+                    {
+                        new { message = "SKILL.md front matter is not valid YAML.", path = "/repo/.codex/skills/broken/SKILL.md" },
+                    },
+                    skills = new object[]
+                    {
+                        new
+                        {
+                            name = "review-diff",
+                            description = "Review the current diff for correctness and style issues.",
+                            enabled = true,
+                            path = "/repo/.codex/skills/review-diff",
+                            scope = "repo",
+                        },
+                        new
+                        {
+                            name = "write-tests",
+                            description = "Draft unit tests for the selected file.",
+                            enabled = true,
+                            path = "/repo/.codex/skills/write-tests",
+                            scope = "repo",
+                        },
+                        new
+                        {
+                            name = "summarize-thread",
+                            description = "Summarize the current conversation thread.",
+                            enabled = true,
+                            path = "/home/fake-user/.codex/skills/summarize-thread",
+                            scope = "user",
+                        },
+                        new
+                        {
+                            name = "legacy-formatter",
+                            description = "Disabled by the user; kept for reference.",
+                            enabled = false,
+                            path = "/repo/.codex/skills/legacy-formatter",
+                            scope = "repo",
+                        },
+                    },
+                },
+            },
+        },
         "turn/start" => StartTurn(root),
         "turn/steer" => new { turnId = root.GetProperty("params").GetProperty("expectedTurnId").GetString() },
         "turn/interrupt" => new { },

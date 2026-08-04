@@ -65,6 +65,52 @@ public sealed class WorkerRpcServiceTests
     }
 
     [TestMethod]
+    public async Task ListSkills_DelegatesToSession()
+    {
+        var connection = new StubConnection
+        {
+            Handler = method => method == "skills/list"
+                ? JsonSerializer.SerializeToElement(new
+                {
+                    data = new object[]
+                    {
+                        new
+                        {
+                            cwd = "/repo",
+                            errors = Array.Empty<object>(),
+                            skills = new object[]
+                            {
+                                new { name = "review-diff", description = "d", enabled = true, path = "/repo/.codex/skills/review-diff", scope = "repo" },
+                            },
+                        },
+                    },
+                })
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+
+        var session = new CodexSessionService(new ApprovalPolicyEngine(new PathAccessPolicy()), new SecretRedactor());
+        await session.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        await using var worker = new WorkerRpcService(new SecretRedactor(), new FakeProcessHost(), session);
+
+        ListSkillsResult result = await worker.ListSkillsAsync(forceReload: false, CancellationToken.None);
+
+        Assert.IsTrue(result.IsSupported);
+        Assert.AreEqual(1, result.Skills.Count);
+        Assert.AreEqual("review-diff", result.Skills[0].Name);
+    }
+
+    [TestMethod]
+    public async Task Connect_RejectsPreviousContractVersion()
+    {
+        var session = new CodexSessionService(new ApprovalPolicyEngine(new PathAccessPolicy()), new SecretRedactor());
+        await using var worker = new WorkerRpcService(new SecretRedactor(), new FakeProcessHost(), session);
+
+        await Assert.ThrowsExactlyAsync<InvalidOperationException>(
+            () => worker.ConnectAsync(new WorkerOptions { ContractVersion = ContractVersions.Current - 1 }, CancellationToken.None));
+    }
+
+    [TestMethod]
     public async Task UnsupportedSlashOperationDoesNotDegradeConnection()
     {
         var connection = new StubConnection

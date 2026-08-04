@@ -250,6 +250,9 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
     public Task<McpServerListResult> ListMcpServersAsync(string? threadId, CancellationToken cancellationToken)
         => session.ListMcpServersAsync(threadId, cancellationToken);
 
+    public Task<ListSkillsResult> ListSkillsAsync(bool forceReload, CancellationToken cancellationToken)
+        => session.ListSkillsAsync(forceReload, cancellationToken);
+
     public Task<UploadFeedbackResult> UploadFeedbackAsync(
         UploadFeedbackRequest request,
         CancellationToken cancellationToken)

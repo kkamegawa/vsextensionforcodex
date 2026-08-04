@@ -5,7 +5,7 @@ namespace Codex.VisualStudio.Contracts;
 
 public static class ContractVersions
 {
-    public const int Current = 13;
+    public const int Current = 14;
 }
 
 public enum WorkerConnectionState
@@ -490,6 +490,55 @@ public sealed class McpServerListResult : AppServerOperationResult
     public IReadOnlyList<McpServerStatusInfo> Servers { get; set; } = Array.Empty<McpServerStatusInfo>();
 }
 
+// SkillMetadata (schemas/v2/SkillsListResponse.json) has no id field; identity is the
+// (Name, Scope, Path) tuple. Scope is a string, not an enum, both because Newtonsoft has no
+// naming policy on this hop and because Remote-UI-bound presentation types built on top of
+// this DTO cannot reference enums from XAML.
+public sealed class SkillInfo
+{
+    public string Name { get; set; } = string.Empty;
+
+    public string? Description { get; set; }
+
+    // Legacy short_description from SKILL.md; prefer SKILL.json interface.short_description
+    // when both are present. Kept as a single field since v1 does not surface the distinction.
+    public string? ShortDescription { get; set; }
+
+    public string? DisplayName { get; set; }
+
+    public string Scope { get; set; } = string.Empty;
+
+    public string Path { get; set; } = string.Empty;
+
+    public bool Enabled { get; set; }
+
+    // The cwd this skill was discovered under. Always the single session working directory in
+    // v1 (skills/list is always called with cwds: []), but kept per-item so a future multi-root
+    // change does not require another contract bump.
+    public string? Cwd { get; set; }
+}
+
+public sealed class SkillLoadError
+{
+    public string? Cwd { get; set; }
+
+    public string? Path { get; set; }
+
+    public string Message { get; set; } = string.Empty;
+}
+
+// Flattened across every SkillsListEntry in SkillsListResponse.data. Lossless for v1 because
+// skills/list is always called with cwds: [] and therefore always returns exactly one entry;
+// SkillInfo.Cwd/SkillLoadError.Cwd preserve per-entry attribution if that ever changes.
+public sealed class ListSkillsResult : AppServerOperationResult
+{
+    public IReadOnlyList<SkillInfo> Skills { get; set; } = Array.Empty<SkillInfo>();
+
+    public IReadOnlyList<SkillLoadError> Errors { get; set; } = Array.Empty<SkillLoadError>();
+
+    public bool IsTruncated { get; set; }
+}
+
 public sealed class UploadFeedbackRequest
 {
     public string Classification { get; set; } = string.Empty;
@@ -801,6 +850,9 @@ public interface ICodexWorkerClient
 
     [JsonRpcMethod("worker/mcp/list")]
     Task<McpServerListResult> ListMcpServersAsync(string? threadId, CancellationToken cancellationToken);
+
+    [JsonRpcMethod("worker/skills/list")]
+    Task<ListSkillsResult> ListSkillsAsync(bool forceReload, CancellationToken cancellationToken);
 
     [JsonRpcMethod("worker/feedback/upload")]
     Task<UploadFeedbackResult> UploadFeedbackAsync(UploadFeedbackRequest request, CancellationToken cancellationToken);

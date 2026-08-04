@@ -82,6 +82,8 @@ public interface ICodexSessionService : IAsyncDisposable
 
     Task<McpServerListResult> ListMcpServersAsync(string? threadId, CancellationToken cancellationToken);
 
+    Task<ListSkillsResult> ListSkillsAsync(bool forceReload, CancellationToken cancellationToken);
+
     Task<UploadFeedbackResult> UploadFeedbackAsync(UploadFeedbackRequest request, CancellationToken cancellationToken);
 
     Task<RateLimitsResult> GetRateLimitsAsync(CancellationToken cancellationToken);
@@ -98,6 +100,14 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
     private const int MaxPermissionProfilePages = 10;
     private const int MaxPermissionProfiles = 500;
     private const int MaxPermissionProfileIdLength = 256;
+
+    // skills/list has no pagination cursor (unlike model/list and permissionProfile/list), so the
+    // array is server-supplied and unbounded. Cap it instead of trusting the server to be small.
+    private const int MaxSkills = 200;
+    private const int MaxSkillErrors = 50;
+    private const int MaxSkillNameLength = 128;
+    private const int MaxSkillTextLength = 512;
+    private const int MaxSkillPathLength = 260;
 
     private readonly IApprovalPolicyEngine approvalPolicy;
     private readonly ISecretRedactor redactor;
@@ -877,6 +887,24 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         }
 
         return new McpServerListResult { Servers = ReadMcpServers(call.Result) };
+    }
+
+    public async Task<ListSkillsResult> ListSkillsAsync(bool forceReload, CancellationToken cancellationToken)
+    {
+        // No experimentalApi gate: nothing in the app-server protocol marks skills/list as
+        // experimental (unlike permissionProfile/list), and that gate's failure mode is sticky
+        // for the rest of the session. Rely purely on the -32601 capability probe below.
+        OperationCallResult call = await TrySendOperationAsync(
+            "skills/list",
+            new { cwds = Array.Empty<string>(), forceReload },
+            TimeSpan.FromSeconds(30),
+            cancellationToken).ConfigureAwait(false);
+        if (!call.IsSupported)
+        {
+            return Unsupported<ListSkillsResult>("Skills are not supported by this app-server.");
+        }
+
+        return ReadSkills(call.Result);
     }
 
     public async Task<UploadFeedbackResult> UploadFeedbackAsync(
@@ -2122,6 +2150,183 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         CreatedAt = GetInt64(goal, "createdAt") ?? 0,
         UpdatedAt = GetInt64(goal, "updatedAt") ?? 0,
     };
+
+    // SkillsListResponse.data is SkillsListEntry[] (one entry per requested cwd). skills/list is
+    // always called with cwds: [] in v1, so the app-server returns exactly one entry, but this
+    // still walks the array defensively: the Fake app-server's unmatched-method fallback (`_ =>
+    // new { }`) has no "data" property at all, and a naive result.GetProperty("data") would throw
+    // KeyNotFoundException outside the -32601 capability probe in TrySendOperationAsync.
+    private ListSkillsResult ReadSkills(JsonElement result)
+    {
+        var skills = new List<SkillInfo>();
+        var errors = new List<SkillLoadError>();
+        bool truncated = false;
+
+        if (result.TryGetProperty("data", out JsonElement data) && data.ValueKind == JsonValueKind.Array)
+        {
+            foreach (JsonElement entry in data.EnumerateArray())
+            {
+                if (entry.ValueKind != JsonValueKind.Object)
+                {
+                    continue;
+                }
+
+                string? cwd = SanitizeSkillText(GetString(entry, "cwd"));
+
+                if (entry.TryGetProperty("errors", out JsonElement errorArray)
+                    && errorArray.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (JsonElement error in errorArray.EnumerateArray())
+                    {
+                        if (error.ValueKind != JsonValueKind.Object)
+                        {
+                            continue;
+                        }
+
+                        if (errors.Count >= MaxSkillErrors)
+                        {
+                            truncated = true;
+                            break;
+                        }
+
+                        string? message = SanitizeSkillText(GetString(error, "message"));
+                        if (message is null)
+                        {
+                            continue;
+                        }
+
+                        errors.Add(new SkillLoadError
+                        {
+                            Cwd = cwd,
+                            Path = SanitizeSkillText(GetString(error, "path"), MaxSkillPathLength),
+                            Message = message,
+                        });
+                    }
+                }
+
+                if (entry.TryGetProperty("skills", out JsonElement skillArray)
+                    && skillArray.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (JsonElement skill in skillArray.EnumerateArray())
+                    {
+                        if (skill.ValueKind != JsonValueKind.Object)
+                        {
+                            continue;
+                        }
+
+                        if (skills.Count >= MaxSkills)
+                        {
+                            truncated = true;
+                            break;
+                        }
+
+                        SkillInfo? info = ReadSkill(skill, cwd);
+                        if (info is not null)
+                        {
+                            skills.Add(info);
+                        }
+                    }
+                }
+            }
+        }
+
+        return new ListSkillsResult
+        {
+            Skills = skills,
+            Errors = errors,
+            IsTruncated = truncated,
+        };
+    }
+
+    private SkillInfo? ReadSkill(JsonElement skill, string? cwd)
+    {
+        // name/path/scope/enabled/description are all required by SkillMetadata
+        // (schemas/v2/SkillsListResponse.json). A response missing any of them is treated as
+        // malformed for that entry and the skill is dropped rather than surfaced half-populated.
+        string? name = NormalizeSkillName(GetString(skill, "name"));
+        string? path = NormalizeSkillPath(GetString(skill, "path"));
+        string? scope = NormalizeWireIdentifier(GetString(skill, "scope"));
+        bool? enabled = GetBool(skill, "enabled");
+        string? rawDescription = GetString(skill, "description");
+        if (name is null || path is null || scope is null || enabled is null || rawDescription is null)
+        {
+            return null;
+        }
+
+        string? shortDescription = SanitizeSkillText(GetString(skill, "shortDescription"));
+        string? displayName = null;
+        if (skill.TryGetProperty("interface", out JsonElement skillInterface)
+            && skillInterface.ValueKind == JsonValueKind.Object)
+        {
+            // interface.brandColor, interface.iconSmall/iconLarge, and interface.defaultPrompt are
+            // deliberately not read here: brandColor is a free-form attacker-supplied string that
+            // would have to be interpreted as a WPF brush, the icon paths are AbsolutePathBuf values
+            // that would bind an Image.Source to a file the app-server chose, and defaultPrompt is
+            // attacker-controlled text destined for the composer (a prompt-injection vector). None
+            // of the three are exposed by this contract; see doc/adr.md.
+            displayName = SanitizeSkillText(GetString(skillInterface, "displayName"));
+            shortDescription ??= SanitizeSkillText(GetString(skillInterface, "shortDescription"));
+        }
+
+        return new SkillInfo
+        {
+            Name = name,
+            Description = SanitizeSkillText(rawDescription) ?? string.Empty,
+            ShortDescription = shortDescription,
+            DisplayName = displayName,
+            Scope = scope,
+            Path = path,
+            Enabled = enabled.Value,
+            Cwd = cwd,
+        };
+    }
+
+    private string? SanitizeSkillText(string? value, int maxLength = MaxSkillTextLength)
+    {
+        if (string.IsNullOrEmpty(value))
+        {
+            return null;
+        }
+
+        string redacted = redactor.Redact(value);
+        string sanitized = new(redacted.Where(character => !char.IsControl(character)).Take(maxLength).ToArray());
+        return string.IsNullOrWhiteSpace(sanitized) ? null : sanitized.Trim();
+    }
+
+    private static string? NormalizeSkillName(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        // Unlike NormalizeWireIdentifier, this does not restrict to [A-Za-z0-9_-]: real skill
+        // names may legitimately contain other characters (spaces, dots, etc.), and applying that
+        // narrower charset here would silently drop otherwise-valid skills.
+        string trimmed = value.Trim();
+        return trimmed.Length <= MaxSkillNameLength && trimmed.All(character => !char.IsControl(character))
+            ? trimmed
+            : null;
+    }
+
+    private static string? NormalizeSkillPath(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        string trimmed = value.Trim();
+        if (trimmed.Length > MaxSkillPathLength || trimmed.Any(char.IsControl))
+        {
+            return null;
+        }
+
+        // No File.Exists / workspace-containment check: this path is the app-server's own
+        // skills/list output, not user input, and scope: "user"/"system"/"admin" skills routinely
+        // live outside the workspace (or are directories). Only structural validity is enforced.
+        return Path.IsPathRooted(trimmed) ? trimmed : null;
+    }
 
     private IReadOnlyList<McpServerStatusInfo> ReadMcpServers(JsonElement result)
     {
