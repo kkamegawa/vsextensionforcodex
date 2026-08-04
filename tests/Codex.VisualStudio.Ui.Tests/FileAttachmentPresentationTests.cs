@@ -103,9 +103,14 @@ public sealed class FileAttachmentPresentationTests
             .Descendants(Presentation + "TextBox")
             .Single(element => (element.Attribute("Text")?.Value ?? string.Empty)
                 .Contains("ComposerText", StringComparison.Ordinal));
+        // Multiple ancestor scopes now carry their own Grid.InputBindings (file, skill); select
+        // the one whose bindings actually reference FileSuggestions rather than the nearest one.
         XElement composerScope = composer
             .Ancestors(Presentation + "Grid")
-            .First(element => element.Element(Presentation + "Grid.InputBindings") is not null);
+            .First(element => element.Element(Presentation + "Grid.InputBindings")?
+                .Elements(Presentation + "KeyBinding")
+                .Any(binding => (binding.Attribute("Command")?.Value ?? string.Empty)
+                    .Contains("FileSuggestions", StringComparison.Ordinal)) == true);
         XElement[] bindings = composerScope
             .Element(Presentation + "Grid.InputBindings")!
             .Elements(Presentation + "KeyBinding")

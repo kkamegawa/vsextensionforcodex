@@ -86,6 +86,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     private readonly HashSet<SlashCommandId> unavailableSlashCommands = [];
     private int drainingSlashQueue;
     private CancellationTokenSource? fileSuggestionRefresh;
+    private CancellationTokenSource? skillSuggestionRefresh;
 
     private readonly record struct PendingReasoningOverride(string Effort, string? RestoreEffort);
 
@@ -131,6 +132,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         bridge.ReviewModeChanged += OnReviewModeChangedAsync;
         bridge.ThreadGoalChanged += OnThreadGoalChangedAsync;
         bridge.RateLimitsChanged += OnRateLimitsChangedAsync;
+        bridge.SkillsChanged += OnSkillsChangedAsync;
         // The welcome/empty state is driven by IsThreadEmpty; keep it in sync with every
         // mutation of Items (Add/Clear from any call site) via a single subscription.
         Items.CollectionChanged += (_, _) => OnPropertyChanged(nameof(IsThreadEmpty));
@@ -164,6 +166,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         CancelApprovalModeCommand = new AsyncCommand(CancelApprovalModeAsync, () => HasApprovalModeConfirmation);
         SlashCommands.Configure(OnSlashSuggestionAcceptedAsync, ExecuteSlashSubmissionAsync, OnSlashCommandClearedAsync);
         FileSuggestions.Configure(OnFileSuggestionAcceptedAsync);
+        SkillSuggestions.Configure(OnSkillSuggestionAcceptedAsync);
 
         // Suggestion chips for the empty state. Selecting one populates the composer; the
         // user then presses Send. Keeps behavior simple and avoids needing editor context.
@@ -514,6 +517,9 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
     [DataMember]
     public FileSuggestionPresentationViewModel FileSuggestions { get; } = new();
+
+    [DataMember]
+    public SkillSuggestionPresentationViewModel SkillSuggestions { get; } = new();
 
     [DataMember]
     public ObservableCollection<AttachmentChipViewModel> PendingAttachments { get; } = [];
@@ -1491,12 +1497,24 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         if (TryGetFileSuggestionQuery(text, out string query))
         {
             SlashCommands.CloseSuggestions();
+            SkillSuggestions.CloseSuggestions();
+            CancelSkillSuggestionRefresh();
             QueueFileSuggestionRefresh(query);
             return;
         }
 
         CancelFileSuggestionRefresh();
         FileSuggestions.CloseSuggestions();
+
+        if (TryGetSkillSuggestionQuery(text, out string skillQuery))
+        {
+            SlashCommands.CloseSuggestions();
+            QueueSkillSuggestionRefresh(skillQuery);
+            return;
+        }
+
+        CancelSkillSuggestionRefresh();
+        SkillSuggestions.CloseSuggestions();
 
         if (SlashCommands.HasActiveCommand)
         {
@@ -1623,6 +1641,129 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             && trimmed.Length <= 256
             && !trimmed.Any(char.IsControl);
     }
+
+    private static bool TryGetSkillSuggestionQuery(string text, out string query)
+    {
+        query = string.Empty;
+        if (string.IsNullOrEmpty(text))
+        {
+            return false;
+        }
+
+        int tokenStart = text.LastIndexOfAny([' ', '\t', '\r', '\n']) + 1;
+        string token = text[tokenStart..];
+        if (token.Length == 0
+            || token[0] != '$'
+            || token.StartsWith("$$", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        query = token[1..];
+        return true;
+    }
+
+    // No debounce delay (unlike QueueFileSuggestionRefresh): the catalog comes from the
+    // worker's already-warm skill cache (ADR-009), not a per-keystroke filesystem search, so a
+    // fixed delay before every refresh would only add latency without saving real work.
+    private void QueueSkillSuggestionRefresh(string query)
+    {
+        CancelSkillSuggestionRefresh();
+        var refresh = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
+        skillSuggestionRefresh = refresh;
+        _ = RefreshSkillSuggestionsAsync(query, refresh);
+    }
+
+    private async Task RefreshSkillSuggestionsAsync(string query, CancellationTokenSource refresh)
+    {
+        try
+        {
+            ListSkillsResult result = await bridge.ListSkillsAsync(forceReload: false, refresh.Token).ConfigureAwait(false);
+            if (!ReferenceEquals(skillSuggestionRefresh, refresh))
+            {
+                return;
+            }
+
+            if (!result.IsSupported)
+            {
+                await OnUiAsync(SkillSuggestions.CloseSuggestions).ConfigureAwait(false);
+                return;
+            }
+
+            SkillSuggestionDescriptor[] descriptors = result.Skills
+                .Where(skill => skill.Name.Contains(query, StringComparison.OrdinalIgnoreCase))
+                .OrderByDescending(skill => skill.Enabled)
+                .ThenBy(skill => skill.Name, StringComparer.OrdinalIgnoreCase)
+                .Select(skill => new SkillSuggestionDescriptor(
+                    skill.Name,
+                    skill.DisplayName ?? skill.Name,
+                    skill.Scope,
+                    skill.ShortDescription ?? skill.Description,
+                    skill.Enabled))
+                .ToArray();
+            await OnUiAsync(() => SkillSuggestions.ShowSuggestions(descriptors)).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (refresh.IsCancellationRequested)
+        {
+        }
+        catch (Exception ex)
+        {
+            ExtensionDiagnostics.Write("Refreshing skill suggestions failed", ex);
+            await OnUiAsync(SkillSuggestions.CloseSuggestions).ConfigureAwait(false);
+        }
+        finally
+        {
+            CompleteSkillSuggestionRefresh(ref skillSuggestionRefresh, refresh);
+        }
+    }
+
+    internal static void CompleteSkillSuggestionRefresh(
+        ref CancellationTokenSource? currentRefresh,
+        CancellationTokenSource completedRefresh)
+    {
+        CancellationTokenSource? released = Interlocked.CompareExchange(
+            ref currentRefresh,
+            null,
+            completedRefresh);
+        if (ReferenceEquals(released, completedRefresh))
+        {
+            completedRefresh.Dispose();
+        }
+    }
+
+    private void CancelSkillSuggestionRefresh()
+    {
+        CancellationTokenSource? previous = Interlocked.Exchange(ref skillSuggestionRefresh, null);
+        if (previous is null)
+        {
+            return;
+        }
+
+        previous.Cancel();
+        previous.Dispose();
+    }
+
+    private Task OnSkillSuggestionAcceptedAsync(SkillSuggestionViewModel suggestion)
+    {
+        string text = ComposerText;
+        int tokenStart = text.LastIndexOfAny([' ', '\t', '\r', '\n']) + 1;
+        string replacement = string.Concat("$", suggestion.Name, " ");
+        SetComposerText(string.Concat(text.AsSpan(0, tokenStart), replacement));
+        return Task.CompletedTask;
+    }
+
+    private Task OnSkillsChangedAsync(SkillsChangedEvent value)
+        => OnUiAsync(() =>
+        {
+            // The open overlay may be showing a catalog that just changed; closing it (rather
+            // than trying to refresh in place) avoids an accepted suggestion inserting a $token
+            // for a skill that no longer exists or no longer matches the typed query.
+            if (SkillSuggestions.IsSuggestionOpen)
+            {
+                CancelSkillSuggestionRefresh();
+                SkillSuggestions.CloseSuggestions();
+            }
+        });
 
     private static bool TryGetFileSuggestionQuery(string text, out string query)
     {

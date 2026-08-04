@@ -1514,6 +1514,7 @@ public sealed class ViewModelTests
             typeof(AttachmentChipViewModel), typeof(FileSuggestionPresentationViewModel),
             typeof(FileSuggestionViewModel), typeof(ReasoningEffortOption), typeof(ServiceTierOption),
             typeof(UsagePresentation),
+            typeof(SkillSuggestionPresentationViewModel), typeof(SkillSuggestionViewModel),
             typeof(WorkerStatus), typeof(ThreadSummary),
         ];
 
@@ -2238,6 +2239,140 @@ public sealed class ViewModelTests
 
         Assert.AreEqual(5, bridge.LastStartTurnRequest!.Skills.Count);
         Assert.AreEqual(5, bridge.LastStartTurnRequest.Skills.Select(skill => skill.Path).Distinct(StringComparer.OrdinalIgnoreCase).Count());
+    }
+
+    [TestMethod]
+    public async Task SkillSuggestions_OpenOnDollarToken()
+    {
+        var bridge = new FakeWorkerBridge
+        {
+            SkillsResult = new ListSkillsResult
+            {
+                Skills = [new SkillInfo { Name = "review-diff", Scope = "repo", Enabled = true, Path = "/repo/.codex/skills/review-diff", ShortDescription = "Review the diff." }],
+            },
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false);
+
+        vm.ComposerText = "$review";
+        await WaitForAsync(() => vm.SkillSuggestions.IsSuggestionOpen);
+
+        Assert.AreEqual(1, vm.SkillSuggestions.Suggestions.Count);
+        Assert.AreEqual("review-diff", vm.SkillSuggestions.Suggestions[0].DisplayName);
+    }
+
+    [TestMethod]
+    public async Task SkillSuggestions_CloseWhenTokenIsEscaped()
+    {
+        var bridge = new FakeWorkerBridge
+        {
+            SkillsResult = new ListSkillsResult
+            {
+                Skills = [new SkillInfo { Name = "review-diff", Scope = "repo", Enabled = true, Path = "/repo/.codex/skills/review-diff" }],
+            },
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false);
+        vm.ComposerText = "$review";
+        await WaitForAsync(() => vm.SkillSuggestions.IsSuggestionOpen);
+
+        vm.ComposerText = "$$review";
+
+        Assert.IsFalse(vm.SkillSuggestions.IsSuggestionOpen);
+    }
+
+    [TestMethod]
+    public async Task SkillSuggestions_AreMutuallyExclusiveWithFileSuggestions()
+    {
+        string directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        try
+        {
+            var search = new FakeWorkspaceFileSearchService(
+                [new WorkspaceFileSearchResult(Path.Combine(directory, "Program.cs"), "src/Program.cs")]);
+            var bridge = new FakeWorkerBridge
+            {
+                SkillsResult = new ListSkillsResult
+                {
+                    Skills = [new SkillInfo { Name = "review-diff", Scope = "repo", Enabled = true, Path = "/repo/.codex/skills/review-diff" }],
+                },
+            };
+            using var vm = new ChatViewModel(
+                bridge,
+                autoConnect: false,
+                workspaceFileSearchService: search,
+                protectedDirectoryPolicy: new ProtectedDirectoryPolicy([]));
+            SetWorkingDirectory(vm, directory);
+
+            vm.ComposerText = "$review";
+            await WaitForAsync(() => vm.SkillSuggestions.IsSuggestionOpen);
+            Assert.IsFalse(vm.FileSuggestions.IsSuggestionOpen);
+
+            vm.ComposerText = "review #prog";
+            await WaitForAsync(() => vm.FileSuggestions.IsSuggestionOpen);
+            Assert.IsFalse(vm.SkillSuggestions.IsSuggestionOpen);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public async Task SkillSuggestions_AcceptReplacesFinalToken()
+    {
+        var bridge = new FakeWorkerBridge
+        {
+            SkillsResult = new ListSkillsResult
+            {
+                Skills = [new SkillInfo { Name = "review-diff", Scope = "repo", Enabled = true, Path = "/repo/.codex/skills/review-diff" }],
+            },
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false);
+
+        vm.ComposerText = "please $rev";
+        await WaitForAsync(() => vm.SkillSuggestions.IsSuggestionOpen);
+        vm.SkillSuggestions.AcceptSuggestionCommand.Execute(null);
+
+        Assert.AreEqual("please $review-diff ", vm.ComposerText);
+        Assert.IsFalse(vm.SkillSuggestions.IsSuggestionOpen);
+    }
+
+    [TestMethod]
+    public async Task SkillSuggestions_ShowDisabledSkillsWithMarker()
+    {
+        var bridge = new FakeWorkerBridge
+        {
+            SkillsResult = new ListSkillsResult
+            {
+                Skills = [new SkillInfo { Name = "legacy-formatter", Scope = "repo", Enabled = false, Path = "/repo/.codex/skills/legacy-formatter" }],
+            },
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false);
+
+        vm.ComposerText = "$legacy";
+        await WaitForAsync(() => vm.SkillSuggestions.IsSuggestionOpen);
+
+        Assert.AreEqual(1, vm.SkillSuggestions.Suggestions.Count);
+        StringAssert.Contains(vm.SkillSuggestions.Suggestions[0].DisplayName, "(disabled)");
+        Assert.IsFalse(vm.SkillSuggestions.Suggestions[0].Enabled);
+    }
+
+    [TestMethod]
+    public async Task SkillsChanged_ClosesOpenSkillSuggestions()
+    {
+        var bridge = new FakeWorkerBridge
+        {
+            SkillsResult = new ListSkillsResult
+            {
+                Skills = [new SkillInfo { Name = "review-diff", Scope = "repo", Enabled = true, Path = "/repo/.codex/skills/review-diff" }],
+            },
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false);
+        vm.ComposerText = "$review";
+        await WaitForAsync(() => vm.SkillSuggestions.IsSuggestionOpen);
+
+        await bridge.PublishSkillsChangedAsync(new SkillsChangedEvent());
+
+        Assert.IsFalse(vm.SkillSuggestions.IsSuggestionOpen);
     }
 
     [TestMethod]
@@ -3897,11 +4032,7 @@ public sealed class ViewModelTests
 
         public event Func<RateLimitsResult, Task>? RateLimitsChanged;
 
-        // No default-implementation escape hatch exists for a new interface event (unlike a new
-        // method), so this stub is required for IWorkerBridge conformance the moment
-        // WorkerBridge.SkillsChanged is added — independent of whether any test yet needs to
-        // raise it through this fake.
-        public event Func<SkillsChangedEvent, Task>? SkillsChanged { add { } remove { } }
+        public event Func<SkillsChangedEvent, Task>? SkillsChanged;
 
         public ListModelsResult ModelListResult { get; set; } = new();
 
@@ -3943,6 +4074,9 @@ public sealed class ViewModelTests
 
         public Task PublishRateLimitsAsync(RateLimitsResult result)
             => RateLimitsChanged?.Invoke(result) ?? Task.CompletedTask;
+
+        public Task PublishSkillsChangedAsync(SkillsChangedEvent value)
+            => SkillsChanged?.Invoke(value) ?? Task.CompletedTask;
 
         public Task<WorkerStatus> ConnectAsync(string workingDirectory, bool experimentalApi, CancellationToken cancellationToken)
             => Task.FromResult(new WorkerStatus { State = WorkerConnectionState.Ready });

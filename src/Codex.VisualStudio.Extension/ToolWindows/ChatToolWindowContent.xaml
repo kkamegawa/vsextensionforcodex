@@ -1333,6 +1333,55 @@
             </ListBox>
           </Border>
 
+          <!-- Inline $ skill-mention suggestions. Not a Popup, for the same Remote UI focus-scope
+               reasons as the file and slash surfaces above. -->
+          <Border Grid.Row="0"
+                  MaxHeight="200"
+                  Margin="6,6,6,0"
+                  CornerRadius="6"
+                  BorderThickness="1"
+                  Background="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBackgroundBrushKey}}"
+                  BorderBrush="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBorderBrushKey}}"
+                  Visibility="{Binding SkillSuggestions.IsSuggestionOpen, Converter={StaticResource BoolToVis}}"
+                  AutomationProperties.Name="Skill suggestions"
+                  AutomationProperties.HelpText="Use Up and Down to move, Enter or Tab to insert, and Escape to close.">
+            <ListBox MaxHeight="198"
+                     Background="Transparent"
+                     BorderThickness="0"
+                     ItemsSource="{Binding SkillSuggestions.Suggestions}"
+                     SelectedItem="{Binding SkillSuggestions.SelectedSuggestion, Mode=TwoWay}"
+                     ItemContainerStyle="{StaticResource SelectableRowStyle}"
+                     ScrollViewer.VerticalScrollBarVisibility="Auto"
+                     ScrollViewer.CanContentScroll="True"
+                     VirtualizingPanel.IsVirtualizing="True"
+                     VirtualizingPanel.VirtualizationMode="Recycling">
+              <ListBox.ItemTemplate>
+                <DataTemplate>
+                  <Button Command="{Binding UseCommand}"
+                          Style="{StaticResource SlashSuggestionButtonStyle}"
+                          AutomationProperties.Name="{Binding AutomationName}">
+                    <Grid>
+                      <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                      </Grid.ColumnDefinitions>
+                      <TextBlock Grid.Column="0"
+                                 MinWidth="108"
+                                 FontWeight="SemiBold"
+                                 Style="{x:Null}"
+                                 Text="{Binding DisplayName}" />
+                      <TextBlock Grid.Column="1"
+                                 Margin="10,0,0,0"
+                                 Style="{x:Null}"
+                                 Text="{Binding ShortDescription}"
+                                 TextTrimming="CharacterEllipsis" />
+                    </Grid>
+                  </Button>
+                </DataTemplate>
+              </ListBox.ItemTemplate>
+            </ListBox>
+          </Border>
+
           <!-- Pending attachments are compact, removable chips above the prompt. -->
           <ItemsControl Grid.Row="1"
                         Margin="10,8,10,0"
@@ -1372,6 +1421,17 @@
           </ItemsControl>
 
           <Grid Grid.Row="2">
+            <!-- $ skill-suggestion bindings live on this intermediate scope: an ancestor of the
+                 TextBox below, distinct from both the composer-wide file scope and the TextBox's
+                 own slash scope, so all three surfaces can each own Up/Down/Enter/Tab/Escape
+                 without duplicate gestures in one InputBindings collection. -->
+            <Grid.InputBindings>
+              <KeyBinding Key="Up" Command="{Binding SkillSuggestions.MovePreviousKeyCommand}" />
+              <KeyBinding Key="Down" Command="{Binding SkillSuggestions.MoveNextKeyCommand}" />
+              <KeyBinding Key="Return" Command="{Binding SkillSuggestions.AcceptSuggestionKeyCommand}" />
+              <KeyBinding Key="Tab" Command="{Binding SkillSuggestions.AcceptSuggestionKeyCommand}" />
+              <KeyBinding Key="Escape" Command="{Binding SkillSuggestions.DismissSuggestionsKeyCommand}" />
+            </Grid.InputBindings>
             <!-- Normal prompt textarea. Selecting a suggestion replaces this surface with a
                  command chip instead of asynchronously writing command text back into it. -->
             <Grid Visibility="{Binding SlashCommands.HasNoActiveCommand, Converter={StaticResource BoolToVis}}">
@@ -1512,6 +1572,15 @@
                      TextWrapping="Wrap"
                      Visibility="{Binding SlashCommands.HasStatusAnnouncement, Converter={StaticResource BoolToVis}}"
                      AutomationProperties.Name="Slash command status"
+                     AutomationProperties.LiveSetting="Polite" />
+            <TextBlock
+                     Margin="12,2,12,4"
+                     FontSize="11"
+                     Opacity="0.75"
+                     Text="{Binding SkillSuggestions.StatusAnnouncement}"
+                     TextWrapping="Wrap"
+                     Visibility="{Binding SkillSuggestions.HasStatusAnnouncement, Converter={StaticResource BoolToVis}}"
+                     AutomationProperties.Name="Skill suggestion status"
                      AutomationProperties.LiveSetting="Polite" />
           </StackPanel>
 
