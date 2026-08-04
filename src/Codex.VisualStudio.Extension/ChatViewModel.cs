@@ -2190,8 +2190,11 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
         if (result.IsTruncated)
         {
+            // IsTruncated means the worker hit its MaxSkills/MaxSkillErrors display cap, not that
+            // the cache is stale — 'reload' re-runs the same capped listing, so the message must
+            // not imply it will show more.
             lines.Add(string.Empty);
-            lines.Add("Showing a truncated list; use '/skills reload' to refresh.");
+            lines.Add($"Showing the first {result.Skills.Count} skills and {result.Errors.Count} errors; the full catalog is larger than this listing can display.");
         }
 
         // ShowSlashStatusAsync runs the composed message through SafeMarkdownService.ToSafeText
