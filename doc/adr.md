@@ -158,3 +158,23 @@
 - A future skills UI that wants scope-aware disambiguation (e.g. resolving a name collision across `repo`/`user`/`system`/`admin`) must use `SkillInfo.Scope` plus `SkillInfo.Path`, since there is no server-assigned `id`.
 - Re-adding any of the excluded `interface`/`dependencies` fields later requires its own security review (icon paths in particular need a decision on whether to fetch/display them at all) and is not merely a contract-widening change.
 - `ReadSkills` in `CodexSessionService` must keep tolerating a missing or non-array `data` property, since the Fake app-server's catch-all response for an unhandled method is `{ }` and does not carry `data`.
+
+## ADR-009: Skills cache lives in the Worker, not the extension
+
+- Date: 2026-08-04
+- Task: GitHub Issue #119 and sub-issue #122, Codex custom skills support
+- Status: Accepted
+
+### Decision
+
+- Cache the `skills/list` result in `CodexSessionService`, not in `ChatViewModel`. `doc/plan.md` already calls for caching `skills/list` with invalidation on `skills/changed` or an explicit reload; putting that cache in the worker means the invalidation signal (`skills/changed`, which arrives in the worker) can clear it directly, without a second hop back into the extension and without duplicating the generation/push-version race-guard machinery `RefreshUsageAsync` already needs to reconcile a polled value against a later pushed one. It also means any future second consumer of the skill catalog gets a correct, already-warm cache for free.
+- This is the worker's first *positive* result cache — `unsupportedMethods` is negative-only. It is cleared in `InitializeAsync` next to `unsupportedMethods.Clear()` (a new app-server process may expose an entirely different skill set), on a `skills/changed` notification, and (starting with the `skills/config/write` PR) on a successful mutation.
+- `skills/changed` carries an empty `params: {}` object, not no params at all. It is intercepted in `DispatchNotificationAsync` with an early `return` before the generic notification tail, or every skill file save would otherwise surface as an `Unknown` conversation event in the chat transcript.
+- Do not use the `initialize` handshake's `optOutNotificationMethods` field to suppress `skills/changed` instead of handling it. Opting out would leave the cache stale until the next reconnect, which is strictly worse than the three-branch early-return handler.
+- `ChatViewModel`/`WorkerBridge` do not yet subscribe to the new `SkillsChanged` event in this change — there is no extension-side cached state to invalidate until a later PR introduces one (the composer suggestion overlay and skills panel). Adding an unused subscription now would be dead code; `FakeWorkerBridge` still implements the event (as a no-op stub, matching `ConversationEventReceived`) because `IWorkerBridge` conformance requires it regardless of whether a consumer exists yet.
+
+### Consequences
+
+- A stale skill shown in `/skills` output can persist for the life of the session if the app-server ever fails to emit `skills/changed` for a change; there is no polling fallback.
+- Adding a *method* to `IWorkerBridge` can use a default interface implementation so `FakeWorkerBridge` is unaffected; adding an *event* cannot (C# has no default event implementation with a backing store), so every new observer-style event requires touching the test double in the same change.
+- The cache key is implicitly `(cwds: [], forceReload: false)` — i.e. session-scoped, not thread-scoped, since all threads in this extension share `options.WorkingDirectory`. A future multi-root change would need to key the cache by `cwds` instead of assuming a single entry.

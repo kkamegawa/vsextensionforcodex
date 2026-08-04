@@ -31,6 +31,11 @@ internal interface IWorkerBridge : IAsyncDisposable
 
     event Func<RateLimitsResult, Task>? RateLimitsChanged;
 
+    // No default-implementation escape hatch is possible for a new interface event (unlike a
+    // new method — see ListSkillsAsync above), so FakeWorkerBridge in ViewModelTests.cs must be
+    // updated in this same change.
+    event Func<SkillsChangedEvent, Task>? SkillsChanged;
+
     Task<WorkerStatus> ConnectAsync(string workingDirectory, bool experimentalApi, CancellationToken cancellationToken);
 
     Task<WorkerStatus> RestartAsync(CancellationToken cancellationToken);
@@ -135,6 +140,8 @@ public sealed class WorkerBridge : IWorkerBridge, ICodexWorkerObserver
     public event Func<ThreadGoalEvent, Task>? ThreadGoalChanged;
 
     public event Func<RateLimitsResult, Task>? RateLimitsChanged;
+
+    public event Func<SkillsChangedEvent, Task>? SkillsChanged;
 
     public async Task<WorkerStatus> ConnectAsync(string workingDirectory, bool experimentalApi, CancellationToken cancellationToken)
     {
@@ -358,6 +365,9 @@ public sealed class WorkerBridge : IWorkerBridge, ICodexWorkerObserver
 
     public Task OnRateLimitsChangedAsync(RateLimitsResult value, CancellationToken cancellationToken)
         => RateLimitsChanged?.Invoke(value) ?? Task.CompletedTask;
+
+    public Task OnSkillsChangedAsync(SkillsChangedEvent value, CancellationToken cancellationToken)
+        => SkillsChanged?.Invoke(value) ?? Task.CompletedTask;
 
     public Task OnApprovalAuditAsync(ApprovalAuditRecord record, CancellationToken cancellationToken)
     {

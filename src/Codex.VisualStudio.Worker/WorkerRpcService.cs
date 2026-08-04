@@ -33,6 +33,7 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
         session.ReviewModeChanged += PublishReviewModeChangedAsync;
         session.ThreadGoalChanged += PublishThreadGoalChangedAsync;
         session.RateLimitsChanged += PublishRateLimitsChangedAsync;
+        session.SkillsChanged += PublishSkillsChangedAsync;
         session.EffectiveApprovalStateChanged += PublishEffectiveApprovalStateAsync;
     }
 
@@ -426,6 +427,14 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
         if (clientRpc is not null)
         {
             await clientRpc.NotifyWithParameterObjectAsync("observer/rateLimitsChanged", new { value }).ConfigureAwait(false);
+        }
+    }
+
+    private async Task PublishSkillsChangedAsync(SkillsChangedEvent value, CancellationToken cancellationToken)
+    {
+        if (clientRpc is not null)
+        {
+            await clientRpc.NotifyWithParameterObjectAsync("observer/skillsChanged", new { value }).ConfigureAwait(false);
         }
     }
 

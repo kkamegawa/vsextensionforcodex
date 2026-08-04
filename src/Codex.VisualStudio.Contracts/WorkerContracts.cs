@@ -5,7 +5,7 @@ namespace Codex.VisualStudio.Contracts;
 
 public static class ContractVersions
 {
-    public const int Current = 14;
+    public const int Current = 15;
 }
 
 public enum WorkerConnectionState
@@ -604,6 +604,16 @@ public sealed class RateLimitsResult : AppServerOperationResult
         new Dictionary<string, RateLimitInfo>();
 }
 
+// The skills/changed app-server notification carries no params at all. Every existing
+// ICodexWorkerObserver method takes exactly one parameter and StreamJsonRpc's
+// NotifyWithParameterObjectAsync matches the anonymous-object property name to it, so this
+// carries a reserved (currently always-null) Cwd field instead of introducing a parameterless
+// observer method the publisher pattern does not otherwise support.
+public sealed class SkillsChangedEvent
+{
+    public string? Cwd { get; set; }
+}
+
 public sealed class ContextCompactionEvent
 {
     public string ThreadId { get; set; } = string.Empty;
@@ -788,6 +798,9 @@ public interface ICodexWorkerObserver
 
     [JsonRpcMethod("observer/rateLimitsChanged")]
     Task OnRateLimitsChangedAsync(RateLimitsResult value, CancellationToken cancellationToken);
+
+    [JsonRpcMethod("observer/skillsChanged")]
+    Task OnSkillsChangedAsync(SkillsChangedEvent value, CancellationToken cancellationToken);
 }
 
 public interface ICodexWorkerClient

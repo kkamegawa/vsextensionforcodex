@@ -1056,6 +1056,156 @@ public sealed class CodexSessionServiceTests
     }
 
     [TestMethod]
+    public async Task ListSkills_ServesSecondCallFromCache()
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "skills/list"
+                ? JsonSerializer.SerializeToElement(new
+                {
+                    data = new object[]
+                    {
+                        new
+                        {
+                            cwd = "/repo",
+                            errors = Array.Empty<object>(),
+                            skills = new object[]
+                            {
+                                new { name = "review-diff", description = "d", enabled = true, path = "/repo/.codex/skills/review-diff", scope = "repo" },
+                            },
+                        },
+                    },
+                })
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        ListSkillsResult first = await service.ListSkillsAsync(forceReload: false, CancellationToken.None);
+        ListSkillsResult second = await service.ListSkillsAsync(forceReload: false, CancellationToken.None);
+
+        Assert.AreEqual(1, first.Skills.Count);
+        Assert.AreEqual(1, second.Skills.Count);
+        Assert.AreEqual(1, connection.Requests.Count(item => item.Method == "skills/list"));
+    }
+
+    [TestMethod]
+    public async Task ListSkills_ForceReloadBypassesCache()
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "skills/list"
+                ? JsonSerializer.SerializeToElement(new
+                {
+                    data = new object[] { new { cwd = "/repo", errors = Array.Empty<object>(), skills = Array.Empty<object>() } },
+                })
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        await service.ListSkillsAsync(forceReload: false, CancellationToken.None);
+        await service.ListSkillsAsync(forceReload: true, CancellationToken.None);
+
+        RecordedRequest[] requests = connection.Requests.Where(item => item.Method == "skills/list").ToArray();
+        Assert.AreEqual(2, requests.Length);
+        JsonElement firstParameters = JsonSerializer.SerializeToElement(requests[0].Parameters, WireJsonOptions);
+        JsonElement secondParameters = JsonSerializer.SerializeToElement(requests[1].Parameters, WireJsonOptions);
+        Assert.IsFalse(firstParameters.GetProperty("forceReload").GetBoolean());
+        Assert.IsTrue(secondParameters.GetProperty("forceReload").GetBoolean());
+    }
+
+    [TestMethod]
+    public async Task SkillsChanged_DoesNotEmitConversationEvent()
+    {
+        var connection = new RecordingConnection();
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+        var conversationEvents = new List<ConversationEvent>();
+        service.ConversationEventReceived += (value, _) =>
+        {
+            conversationEvents.Add(value);
+            return Task.CompletedTask;
+        };
+
+        await connection.EmitNotificationAsync("skills/changed", new { });
+
+        Assert.AreEqual(0, conversationEvents.Count);
+    }
+
+    [TestMethod]
+    public async Task SkillsChanged_ClearsCachedSkillList()
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "skills/list"
+                ? JsonSerializer.SerializeToElement(new
+                {
+                    data = new object[] { new { cwd = "/repo", errors = Array.Empty<object>(), skills = Array.Empty<object>() } },
+                })
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        await service.ListSkillsAsync(forceReload: false, CancellationToken.None);
+        await connection.EmitNotificationAsync("skills/changed", new { });
+        await service.ListSkillsAsync(forceReload: false, CancellationToken.None);
+
+        Assert.AreEqual(2, connection.Requests.Count(item => item.Method == "skills/list"));
+    }
+
+    [TestMethod]
+    public async Task SkillsChanged_RaisesSkillsChangedEvent()
+    {
+        var connection = new RecordingConnection();
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+        var raised = new List<SkillsChangedEvent>();
+        service.SkillsChanged += (value, _) =>
+        {
+            raised.Add(value);
+            return Task.CompletedTask;
+        };
+
+        await connection.EmitNotificationAsync("skills/changed", new { });
+
+        Assert.AreEqual(1, raised.Count);
+    }
+
+    [TestMethod]
+    public async Task Initialize_ClearsCachedSkillList()
+    {
+        var firstConnection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "skills/list"
+                ? JsonSerializer.SerializeToElement(new
+                {
+                    data = new object[] { new { cwd = "/repo", errors = Array.Empty<object>(), skills = Array.Empty<object>() } },
+                })
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(firstConnection, Options(), CancellationToken.None);
+        await service.ListSkillsAsync(forceReload: false, CancellationToken.None);
+
+        var secondConnection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "skills/list"
+                ? JsonSerializer.SerializeToElement(new
+                {
+                    data = new object[] { new { cwd = "/repo", errors = Array.Empty<object>(), skills = Array.Empty<object>() } },
+                })
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        await service.InitializeAsync(secondConnection, Options(), CancellationToken.None);
+        await service.ListSkillsAsync(forceReload: false, CancellationToken.None);
+
+        Assert.AreEqual(1, firstConnection.Requests.Count(item => item.Method == "skills/list"));
+        Assert.AreEqual(1, secondConnection.Requests.Count(item => item.Method == "skills/list"));
+    }
+
+    [TestMethod]
     public async Task ThreadResponsesAndSettingsNotificationTrackEffectiveApprovalState()
     {
         var connection = new RecordingConnection

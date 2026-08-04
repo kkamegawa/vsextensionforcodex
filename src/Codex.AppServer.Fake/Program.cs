@@ -201,6 +201,7 @@ object StartTurn(JsonElement request)
     string? sandboxMode = parameters.TryGetProperty("sandboxPolicy", out JsonElement sandbox)
         ? GetOptionalString(sandbox, "type")
         : null;
+    string turnText = ExtractTurnText(parameters);
     string turnId = $"fake-turn-{nextTurn++}";
     Console.Error.WriteLine($"fake turn/start model={Sanitize(model) ?? "(default)"} approvalPolicy={Sanitize(approvalPolicy) ?? "(default)"} approvalsReviewer={Sanitize(approvalsReviewer) ?? "(default)"} sandbox={Sanitize(sandboxMode) ?? "(default)"} permissions={Sanitize(permissions) ?? "(default)"} effort={Sanitize(effort) ?? "(default)"} serviceTier={Sanitize(serviceTier) ?? "(default)"}");
     _ = Task.Run(async () =>
@@ -226,8 +227,36 @@ object StartTurn(JsonElement request)
         }).ConfigureAwait(false);
         await WriteAsync(new { method = "item/agentMessage/delta", @params = new { threadId, turnId, itemId = "agent-1", delta = "Hello from the fake app-server." } }).ConfigureAwait(false);
         await WriteAsync(new { method = "turn/completed", @params = new { threadId, turnId, turn = new { id = turnId, status = "completed" } } }).ConfigureAwait(false);
+
+        // Manual trigger for skills/changed: send a turn whose text contains this sentinel to
+        // exercise the invalidation path end-to-end. Real skills/changed notifications carry an
+        // empty params object, not no params at all.
+        if (turnText.Contains("trigger-skills-changed", StringComparison.OrdinalIgnoreCase))
+        {
+            await WriteAsync(new { method = "skills/changed", @params = new { } }).ConfigureAwait(false);
+        }
     });
     return new { turn = new { id = turnId, status = "inProgress" } };
+}
+
+static string ExtractTurnText(JsonElement parameters)
+{
+    if (!parameters.TryGetProperty("input", out JsonElement input) || input.ValueKind != JsonValueKind.Array)
+    {
+        return string.Empty;
+    }
+
+    foreach (JsonElement item in input.EnumerateArray())
+    {
+        if (item.ValueKind == JsonValueKind.Object
+            && GetOptionalString(item, "type") == "text"
+            && GetOptionalString(item, "text") is { } text)
+        {
+            return text;
+        }
+    }
+
+    return string.Empty;
 }
 
 object StartLogin()

@@ -30,6 +30,8 @@ public interface ICodexSessionService : IAsyncDisposable
 
     event Func<RateLimitsResult, CancellationToken, Task>? RateLimitsChanged;
 
+    event Func<SkillsChangedEvent, CancellationToken, Task>? SkillsChanged;
+
     event Func<EffectiveApprovalState, CancellationToken, Task>? EffectiveApprovalStateChanged;
 
     string? ActiveThreadId { get; }
@@ -122,6 +124,14 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
     private readonly ApprovalGrantStore approvalGrants = new();
     private readonly object unsupportedMethodsLock = new();
     private readonly HashSet<string> unsupportedMethods = new(StringComparer.Ordinal);
+
+    // The worker's first positive result cache (unsupportedMethods above is negative-only).
+    // skills/list is always called with cwds: [] (session working directory), so a single
+    // cached result is valid for the whole session until skills/changed invalidates it, a
+    // skills/config/write mutation succeeds, or InitializeAsync runs against a new app-server
+    // process that may have an entirely different skill set.
+    private readonly object skillCacheLock = new();
+    private ListSkillsResult? cachedSkills;
     private IJsonRpcConnection? connection;
     private WorkerOptions options = new();
     private StreamingBuffer? streamingBuffer;
@@ -160,6 +170,8 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
 
     public event Func<RateLimitsResult, CancellationToken, Task>? RateLimitsChanged;
 
+    public event Func<SkillsChangedEvent, CancellationToken, Task>? SkillsChanged;
+
     public event Func<EffectiveApprovalState, CancellationToken, Task>? EffectiveApprovalStateChanged;
 
     public string? ActiveThreadId { get; private set; }
@@ -190,6 +202,11 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         lock (unsupportedMethodsLock)
         {
             unsupportedMethods.Clear();
+        }
+
+        lock (skillCacheLock)
+        {
+            cachedSkills = null;
         }
 
         this.connection = connection;
@@ -895,9 +912,21 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
 
     public async Task<ListSkillsResult> ListSkillsAsync(bool forceReload, CancellationToken cancellationToken)
     {
+        if (!forceReload)
+        {
+            lock (skillCacheLock)
+            {
+                if (cachedSkills is not null)
+                {
+                    return cachedSkills;
+                }
+            }
+        }
+
         // No experimentalApi gate: nothing in the app-server protocol marks skills/list as
         // experimental (unlike permissionProfile/list), and that gate's failure mode is sticky
         // for the rest of the session. Rely purely on the -32601 capability probe below.
+        // forceReload is forwarded to the app-server too, bypassing its own server-side cache.
         OperationCallResult call = await TrySendOperationAsync(
             "skills/list",
             new { cwds = Array.Empty<string>(), forceReload },
@@ -908,7 +937,13 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
             return Unsupported<ListSkillsResult>("Skills are not supported by this app-server.");
         }
 
-        return ReadSkills(call.Result);
+        ListSkillsResult result = ReadSkills(call.Result);
+        lock (skillCacheLock)
+        {
+            cachedSkills = result;
+        }
+
+        return result;
     }
 
     public async Task<UploadFeedbackResult> UploadFeedbackAsync(
@@ -1484,6 +1519,21 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
             return;
         }
 
+        if (method == "skills/changed")
+        {
+            // Carries an empty params object, not no params at all — without this early return
+            // the generic tail below would emit it as an Unknown conversation event on every
+            // skill file save. Clear the cache before raising the event so a consumer that
+            // reacts to SkillsChanged by calling ListSkillsAsync always observes fresh data.
+            lock (skillCacheLock)
+            {
+                cachedSkills = null;
+            }
+
+            await EmitSkillsChangedAsync(new SkillsChangedEvent(), cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
         if (method == "thread/goal/updated")
         {
             await EmitThreadGoalChangedAsync(
@@ -1722,6 +1772,9 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
 
     private Task EmitRateLimitsChangedAsync(RateLimitsResult value, CancellationToken cancellationToken)
         => RateLimitsChanged?.Invoke(value, cancellationToken) ?? Task.CompletedTask;
+
+    private Task EmitSkillsChangedAsync(SkillsChangedEvent value, CancellationToken cancellationToken)
+        => SkillsChanged?.Invoke(value, cancellationToken) ?? Task.CompletedTask;
 
     private async Task EmitAccountStatusAsync(AccountStatus status, CancellationToken cancellationToken)
     {

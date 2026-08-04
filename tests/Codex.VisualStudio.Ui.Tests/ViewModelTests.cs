@@ -3760,6 +3760,12 @@ public sealed class ViewModelTests
 
         public event Func<RateLimitsResult, Task>? RateLimitsChanged;
 
+        // No default-implementation escape hatch exists for a new interface event (unlike a new
+        // method), so this stub is required for IWorkerBridge conformance the moment
+        // WorkerBridge.SkillsChanged is added — independent of whether any test yet needs to
+        // raise it through this fake.
+        public event Func<SkillsChangedEvent, Task>? SkillsChanged { add { } remove { } }
+
         public ListModelsResult ModelListResult { get; set; } = new();
 
         public ListPermissionProfilesResult PermissionProfilesResult { get; set; } = new();

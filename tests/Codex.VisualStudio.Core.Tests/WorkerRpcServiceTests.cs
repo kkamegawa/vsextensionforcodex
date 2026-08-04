@@ -262,6 +262,21 @@ public sealed class WorkerRpcServiceTests
     }
 
     [TestMethod]
+    public async Task SkillsChanged_PublishesObserverNotificationWithValueParameterName()
+    {
+        var connection = new StubConnection();
+        var session = new CodexSessionService(new ApprovalPolicyEngine(new PathAccessPolicy()), new SecretRedactor());
+        await session.InitializeAsync(connection, Options(), CancellationToken.None);
+        await using var worker = new WorkerRpcService(new SecretRedactor(), new FakeProcessHost(), session);
+        await using var client = new ClientChannel(worker);
+
+        await connection.EmitNotificationAsync("skills/changed", new { });
+
+        SkillsChangedEvent published = await client.SkillsChangedSeen.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.IsNotNull(published);
+    }
+
+    [TestMethod]
     public async Task ThreadSettingsUpdatePublishesEffectiveApprovalStateAcrossWorkerContract()
     {
         var connection = new StubConnection
@@ -376,6 +391,8 @@ public sealed class WorkerRpcServiceTests
 
         public Task<WorkerStatus> EffectiveStateSeen => observer.EffectiveStateSeen;
 
+        public Task<SkillsChangedEvent> SkillsChangedSeen => observer.SkillsChangedSeen;
+
         public ValueTask DisposeAsync()
         {
             workerRpc.Dispose();
@@ -389,10 +406,14 @@ public sealed class WorkerRpcServiceTests
                 new(TaskCreationOptions.RunContinuationsAsynchronously);
             private readonly TaskCompletionSource<WorkerStatus> effectiveStateSeen =
                 new(TaskCreationOptions.RunContinuationsAsynchronously);
+            private readonly TaskCompletionSource<SkillsChangedEvent> skillsChangedSeen =
+                new(TaskCreationOptions.RunContinuationsAsynchronously);
 
             public Task<WorkerStatus> TurnIdSeen => turnIdSeen.Task;
 
             public Task<WorkerStatus> EffectiveStateSeen => effectiveStateSeen.Task;
+
+            public Task<SkillsChangedEvent> SkillsChangedSeen => skillsChangedSeen.Task;
 
             [JsonRpcMethod("observer/stateChanged", UseSingleObjectParameterDeserialization = true)]
             public void OnStateChanged(StateChangedArgs args)
@@ -407,12 +428,31 @@ public sealed class WorkerRpcServiceTests
                     effectiveStateSeen.TrySetResult(args.Status);
                 }
             }
+
+            // Deserializing "value" here into SkillsChangedArgs.Value proves the worker's
+            // publisher used the anonymous property name the observer method's parameter
+            // ("value") expects — StreamJsonRpc matches by name, so a mismatched publisher
+            // property would leave Value null and this would never complete.
+            [JsonRpcMethod("observer/skillsChanged", UseSingleObjectParameterDeserialization = true)]
+            public void OnSkillsChanged(SkillsChangedArgs args)
+            {
+                if (args.Value is not null)
+                {
+                    skillsChangedSeen.TrySetResult(args.Value);
+                }
+            }
         }
 
         private sealed class StateChangedArgs
         {
             [JsonPropertyName("status")]
             public WorkerStatus? Status { get; set; }
+        }
+
+        private sealed class SkillsChangedArgs
+        {
+            [JsonPropertyName("value")]
+            public SkillsChangedEvent? Value { get; set; }
         }
     }
 
