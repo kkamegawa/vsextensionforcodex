@@ -1071,7 +1071,7 @@ public sealed class CodexSessionServiceTests
                             errors = Array.Empty<object>(),
                             skills = new object[]
                             {
-                                new { name = "review-diff", description = "d", enabled = true, path = "/repo/.codex/skills/review-diff", scope = "repo" },
+                                new { name = "review-diff", description = "d", enabled = true, path = "/repo/.codex/skills/review-diff/SKILL.md", scope = "repo" },
                             },
                         },
                     },
@@ -1150,6 +1150,41 @@ public sealed class CodexSessionServiceTests
 
         await service.ListSkillsAsync(forceReload: false, CancellationToken.None);
         await connection.EmitNotificationAsync("skills/changed", new { });
+        await service.ListSkillsAsync(forceReload: false, CancellationToken.None);
+
+        Assert.AreEqual(2, connection.Requests.Count(item => item.Method == "skills/list"));
+    }
+
+    [TestMethod]
+    public async Task SkillsChanged_PreventsInFlightListFromRepopulatingCache()
+    {
+        var requestStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var response = new TaskCompletionSource<JsonElement>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var connection = new RecordingConnection
+        {
+            AsyncHandler = (method, _, _) =>
+            {
+                if (method != "skills/list")
+                {
+                    return Task.FromResult(JsonSerializer.SerializeToElement(new { }));
+                }
+
+                requestStarted.TrySetResult();
+                return response.Task;
+            },
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        Task<ListSkillsResult> staleList = service.ListSkillsAsync(forceReload: false, CancellationToken.None);
+        await requestStarted.Task;
+        await connection.EmitNotificationAsync("skills/changed", new { });
+        response.SetResult(JsonSerializer.SerializeToElement(new
+        {
+            data = new object[] { new { cwd = "/repo", errors = Array.Empty<object>(), skills = Array.Empty<object>() } },
+        }));
+        await staleList;
+
         await service.ListSkillsAsync(forceReload: false, CancellationToken.None);
 
         Assert.AreEqual(2, connection.Requests.Count(item => item.Method == "skills/list"));
@@ -1987,6 +2022,8 @@ public sealed class CodexSessionServiceTests
 
         public Func<string, object?, JsonElement> Handler { get; set; } = (_, _) => JsonSerializer.SerializeToElement(new { });
 
+        public Func<string, object?, CancellationToken, Task<JsonElement>>? AsyncHandler { get; set; }
+
         public List<RecordedRequest> Requests { get; } = new();
 
         public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
@@ -1995,7 +2032,8 @@ public sealed class CodexSessionServiceTests
         {
             cancellationToken.ThrowIfCancellationRequested();
             Requests.Add(new RecordedRequest(method, parameters, timeout));
-            return Task.FromResult(Handler(method, parameters));
+            return AsyncHandler?.Invoke(method, parameters, cancellationToken)
+                ?? Task.FromResult(Handler(method, parameters));
         }
 
         public Task SendNotificationAsync(string method, object? parameters, CancellationToken cancellationToken)

@@ -132,6 +132,7 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
     // process that may have an entirely different skill set.
     private readonly object skillCacheLock = new();
     private ListSkillsResult? cachedSkills;
+    private long skillCacheGeneration;
     private IJsonRpcConnection? connection;
     private WorkerOptions options = new();
     private StreamingBuffer? streamingBuffer;
@@ -204,10 +205,7 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
             unsupportedMethods.Clear();
         }
 
-        lock (skillCacheLock)
-        {
-            cachedSkills = null;
-        }
+        InvalidateSkillCache();
 
         this.connection = connection;
         this.options = options;
@@ -912,15 +910,15 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
 
     public async Task<ListSkillsResult> ListSkillsAsync(bool forceReload, CancellationToken cancellationToken)
     {
-        if (!forceReload)
+        long generation;
+        lock (skillCacheLock)
         {
-            lock (skillCacheLock)
+            if (!forceReload && cachedSkills is not null)
             {
-                if (cachedSkills is not null)
-                {
-                    return cachedSkills;
-                }
+                return cachedSkills;
             }
+
+            generation = skillCacheGeneration;
         }
 
         // No experimentalApi gate: nothing in the app-server protocol marks skills/list as
@@ -940,10 +938,22 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         ListSkillsResult result = ReadSkills(call.Result);
         lock (skillCacheLock)
         {
-            cachedSkills = result;
+            if (generation == skillCacheGeneration)
+            {
+                cachedSkills = result;
+            }
         }
 
         return result;
+    }
+
+    private void InvalidateSkillCache()
+    {
+        lock (skillCacheLock)
+        {
+            skillCacheGeneration++;
+            cachedSkills = null;
+        }
     }
 
     public async Task<UploadFeedbackResult> UploadFeedbackAsync(
@@ -1525,10 +1535,7 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
             // the generic tail below would emit it as an Unknown conversation event on every
             // skill file save. Clear the cache before raising the event so a consumer that
             // reacts to SkillsChanged by calling ListSkillsAsync always observes fresh data.
-            lock (skillCacheLock)
-            {
-                cachedSkills = null;
-            }
+            InvalidateSkillCache();
 
             await EmitSkillsChangedAsync(new SkillsChangedEvent(), cancellationToken).ConfigureAwait(false);
             return;
