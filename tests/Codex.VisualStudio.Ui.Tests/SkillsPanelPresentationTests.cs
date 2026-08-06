@@ -248,5 +248,23 @@ public sealed class SkillsPanelPresentationTests
         Assert.AreEqual("True", list.Attribute("VirtualizingPanel.IsVirtualizing")?.Value);
         Assert.AreEqual("Recycling", list.Attribute("VirtualizingPanel.VirtualizationMode")?.Value);
         Assert.IsNotNull(list.Attribute("MaxHeight"));
+
+        string[] essentialTextValues =
+        [
+            "{Binding ScopeLabel}",
+            "{Binding ShortDescription}",
+            "{Binding Path}",
+            "Showing the first skills and errors; the full catalog is larger than this listing can display.",
+        ];
+        foreach (string textValue in essentialTextValues)
+        {
+            XElement text = border.Descendants(presentation + "TextBlock")
+                .Single(value => value.Attribute("Text")?.Value == textValue);
+            Assert.IsNull(text.Attribute("Opacity"), $"Essential text '{textValue}' must remain opaque in High Contrast.");
+            StringAssert.Contains(
+                text.Attribute("Foreground")?.Value,
+                "EnvironmentColors.ToolWindowTextBrushKey",
+                $"Essential text '{textValue}' must use the Visual Studio tool-window foreground.");
+        }
     }
 }

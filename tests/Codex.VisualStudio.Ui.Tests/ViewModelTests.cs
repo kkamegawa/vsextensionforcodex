@@ -2579,6 +2579,44 @@ public sealed class ViewModelTests
     }
 
     [TestMethod]
+    public async Task SkillsPanel_DoesNotApplyResultFromPreviousConnectionGeneration()
+    {
+        var staleResponse = new TaskCompletionSource<ListSkillsResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+#pragma warning disable VSTHRD003
+        var bridge = new FakeWorkerBridge
+        {
+            SkillsHandler = (_, _) => staleResponse.Task,
+        };
+#pragma warning restore VSTHRD003
+        using var vm = new ChatViewModel(bridge, autoConnect: false);
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready });
+
+        Task staleRefresh = vm.RefreshSkillsPanelAsync(forceReload: false);
+        await WaitForAsync(() => bridge.SkillsCallCount == 1);
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Disconnected });
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready });
+        staleResponse.SetResult(new ListSkillsResult
+        {
+            Skills = [new SkillInfo { Name = "stale-skill", Scope = "repo", Enabled = true, Path = "/repo/.codex/skills/stale-skill/SKILL.md" }],
+        });
+
+        await staleRefresh;
+
+        Assert.IsFalse(vm.SkillsPanel.HasData);
+        Assert.IsEmpty(vm.SkillsPanel.Skills);
+
+        bridge.SkillsHandler = (_, _) => Task.FromResult(new ListSkillsResult
+        {
+            Skills = [new SkillInfo { Name = "current-skill", Scope = "repo", Enabled = true, Path = "/repo/.codex/skills/current-skill/SKILL.md" }],
+        });
+        await vm.RefreshSkillsPanelAsync(forceReload: false);
+
+        Assert.IsTrue(vm.SkillsPanel.HasData);
+        Assert.AreEqual("current-skill", vm.SkillsPanel.Skills.Single().Name);
+        Assert.AreEqual(2, bridge.SkillsCallCount);
+    }
+
+    [TestMethod]
     public async Task ChatViewModel_SendMessage_UsesAgentPresetForAgentMode()
     {
         var bridge = new FakeWorkerBridge();

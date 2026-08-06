@@ -63,6 +63,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     private bool isUsageOpen;
     private bool isSkillsOpen;
     private bool skillsConnectionActive;
+    private long skillsConnectionGeneration;
     private DateTimeOffset? lastSkillsFetchedAt;
     private bool usageConnectionActive;
     private long usageConnectionGeneration;
@@ -839,6 +840,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         if (Interlocked.Exchange(ref disposed, 1) != 0)
             return;
         Interlocked.Increment(ref usageConnectionGeneration);
+        Interlocked.Increment(ref skillsConnectionGeneration);
         InvalidateUsage();
         lifetime.Cancel();
         CancelFileSuggestionRefresh();
@@ -3780,6 +3782,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 return;
             }
 
+            long generation = Volatile.Read(ref skillsConnectionGeneration);
             DateTimeOffset requestedAt = utcNow();
 
             // Only the explicit reload path is throttled: opening the panel always asks the
@@ -3809,8 +3812,16 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 return;
             }
 
-            lastSkillsFetchedAt = requestedAt;
-            await OnUiAsync(() => SkillsPanel.Update(result, markdown)).ConfigureAwait(false);
+            await OnUiAsync(() =>
+            {
+                if (generation != Volatile.Read(ref skillsConnectionGeneration) || !IsSkillsAvailable)
+                {
+                    return;
+                }
+
+                lastSkillsFetchedAt = requestedAt;
+                SkillsPanel.Update(result, markdown);
+            }).ConfigureAwait(false);
         }
         finally
         {
@@ -3824,7 +3835,12 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         bool isConnected = IsConnectedState(state);
         if (isConnected)
         {
-            skillsConnectionActive = true;
+            if (!skillsConnectionActive)
+            {
+                skillsConnectionActive = true;
+                Interlocked.Increment(ref skillsConnectionGeneration);
+            }
+
             return;
         }
 
@@ -3834,6 +3850,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         }
 
         skillsConnectionActive = false;
+        Interlocked.Increment(ref skillsConnectionGeneration);
         lastSkillsFetchedAt = null;
         IsSkillsOpen = false;
         SkillsPanel.Clear();
