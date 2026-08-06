@@ -80,7 +80,7 @@ public sealed class WorkerRpcServiceTests
                             errors = Array.Empty<object>(),
                             skills = new object[]
                             {
-                                new { name = "review-diff", description = "d", enabled = true, path = "/repo/.codex/skills/review-diff", scope = "repo" },
+                                new { name = "review-diff", description = "d", enabled = true, path = "/repo/.codex/skills/review-diff/SKILL.md", scope = "repo" },
                             },
                         },
                     },

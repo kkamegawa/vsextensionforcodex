@@ -788,7 +788,7 @@ public sealed class CodexSessionServiceTests
                                     name = "review-diff",
                                     description = "Review the current diff.",
                                     enabled = true,
-                                    path = "/repo/.codex/skills/review-diff",
+                                    path = "/repo/.codex/skills/review-diff/SKILL.md",
                                     scope = "repo",
                                 },
                             },
@@ -807,7 +807,7 @@ public sealed class CodexSessionServiceTests
         Assert.AreEqual(1, result.Skills.Count);
         Assert.AreEqual("review-diff", result.Skills[0].Name);
         Assert.AreEqual("repo", result.Skills[0].Scope);
-        Assert.AreEqual("/repo/.codex/skills/review-diff", result.Skills[0].Path);
+        Assert.AreEqual("/repo/.codex/skills/review-diff/SKILL.md", result.Skills[0].Path);
         Assert.IsTrue(result.Skills[0].Enabled);
         Assert.AreEqual("/repo", result.Skills[0].Cwd);
         Assert.AreEqual(1, result.Errors.Count);
@@ -859,9 +859,9 @@ public sealed class CodexSessionServiceTests
                                 // Missing "path" — required by SkillMetadata, must be dropped.
                                 new { name = "no-path", description = "d", enabled = true, scope = "repo" },
                                 // Missing "scope" — required by SkillMetadata, must be dropped.
-                                new { name = "no-scope", description = "d", enabled = true, path = "/repo/.codex/skills/no-scope" },
+                                new { name = "no-scope", description = "d", enabled = true, path = "/repo/.codex/skills/no-scope/SKILL.md" },
                                 // Complete entry — must survive.
-                                new { name = "complete", description = "d", enabled = true, path = "/repo/.codex/skills/complete", scope = "repo" },
+                                new { name = "complete", description = "d", enabled = true, path = "/repo/.codex/skills/complete/SKILL.md", scope = "repo" },
                             },
                         },
                     },
@@ -894,7 +894,7 @@ public sealed class CodexSessionServiceTests
                             skills = new object[]
                             {
                                 new { name = "relative", description = "d", enabled = true, path = "relative/path", scope = "repo" },
-                                new { name = "rooted", description = "d", enabled = true, path = "/repo/.codex/skills/rooted", scope = "repo" },
+                                new { name = "rooted", description = "d", enabled = true, path = "/repo/.codex/skills/rooted/SKILL.md", scope = "repo" },
                             },
                         },
                     },
@@ -934,7 +934,7 @@ public sealed class CodexSessionServiceTests
                                     name = "leaky",
                                     description = "Uses api_key=secret-value internally.",
                                     enabled = true,
-                                    path = "/repo/.codex/skills/leaky",
+                                    path = "/repo/.codex/skills/leaky/SKILL.md",
                                     scope = "repo",
                                 },
                             },
@@ -1017,7 +1017,7 @@ public sealed class CodexSessionServiceTests
                             errors = Array.Empty<object>(),
                             skills = new object[]
                             {
-                                new { name = "should-not-appear", description = "d", enabled = true, path = "/repo-b/.codex/skills/should-not-appear", scope = "repo" },
+                                new { name = "should-not-appear", description = "d", enabled = true, path = "/repo-b/.codex/skills/should-not-appear/SKILL.md", scope = "repo" },
                             },
                         },
                     },

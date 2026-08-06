@@ -112,7 +112,7 @@ while (await Console.In.ReadLineAsync().ConfigureAwait(false) is { } line)
                             name = "review-diff",
                             description = "Review the current diff for correctness and style issues.",
                             enabled = true,
-                            path = RepoSkillPath("review-diff"),
+                            path = RepoSkillPath("review-diff", "SKILL.md"),
                             scope = "repo",
                         },
                         new
@@ -120,7 +120,7 @@ while (await Console.In.ReadLineAsync().ConfigureAwait(false) is { } line)
                             name = "write-tests",
                             description = "Draft unit tests for the selected file.",
                             enabled = true,
-                            path = RepoSkillPath("write-tests"),
+                            path = RepoSkillPath("write-tests", "SKILL.md"),
                             scope = "repo",
                         },
                         new
@@ -128,7 +128,7 @@ while (await Console.In.ReadLineAsync().ConfigureAwait(false) is { } line)
                             name = "summarize-thread",
                             description = "Summarize the current conversation thread.",
                             enabled = true,
-                            path = UserSkillPath("summarize-thread"),
+                            path = UserSkillPath("summarize-thread", "SKILL.md"),
                             scope = "user",
                         },
                         new
@@ -136,7 +136,7 @@ while (await Console.In.ReadLineAsync().ConfigureAwait(false) is { } line)
                             name = "legacy-formatter",
                             description = "Disabled by the user; kept for reference.",
                             enabled = false,
-                            path = RepoSkillPath("legacy-formatter"),
+                            path = RepoSkillPath("legacy-formatter", "SKILL.md"),
                             scope = "repo",
                         },
                     },
