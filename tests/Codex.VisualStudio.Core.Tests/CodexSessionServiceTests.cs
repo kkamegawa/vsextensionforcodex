@@ -1249,7 +1249,7 @@ public sealed class CodexSessionServiceTests
         var connection = new RecordingConnection();
         await using var service = CreateService();
         await service.InitializeAsync(connection, Options(), CancellationToken.None);
-        var request = new WriteSkillConfigRequest { Name = "review-diff", Path = "/repo/.codex/skills/review-diff", Enabled = false };
+        var request = new WriteSkillConfigRequest { Name = "review-diff", Path = "/repo/.codex/skills/review-diff/SKILL.md", Enabled = false };
 
         await Assert.ThrowsExactlyAsync<ArgumentException>(
             () => service.WriteSkillConfigAsync(request, CancellationToken.None));
@@ -1282,13 +1282,13 @@ public sealed class CodexSessionServiceTests
         };
         await using var service = CreateService();
         await service.InitializeAsync(connection, Options(), CancellationToken.None);
-        var request = new WriteSkillConfigRequest { Path = "/repo/.codex/skills/review-diff", Enabled = false };
+        var request = new WriteSkillConfigRequest { Path = "/repo/.codex/skills/review-diff/SKILL.md", Enabled = false };
 
         await service.WriteSkillConfigAsync(request, CancellationToken.None);
 
         RecordedRequest recorded = connection.Requests.Single(item => item.Method == "skills/config/write");
         JsonElement parameters = JsonSerializer.SerializeToElement(recorded.Parameters, WireJsonOptions);
-        Assert.AreEqual("/repo/.codex/skills/review-diff", parameters.GetProperty("path").GetString());
+        Assert.AreEqual("/repo/.codex/skills/review-diff/SKILL.md", parameters.GetProperty("path").GetString());
         Assert.IsFalse(parameters.TryGetProperty("name", out _));
         Assert.IsFalse(parameters.GetProperty("enabled").GetBoolean());
     }
@@ -1329,7 +1329,7 @@ public sealed class CodexSessionServiceTests
         };
         await using var service = CreateService();
         await service.InitializeAsync(connection, Options(), CancellationToken.None);
-        var request = new WriteSkillConfigRequest { Path = "/admin/.codex/skills/org-policy", Enabled = false };
+        var request = new WriteSkillConfigRequest { Path = "/admin/.codex/skills/org-policy/SKILL.md", Enabled = false };
 
         WriteSkillConfigResult result = await service.WriteSkillConfigAsync(request, CancellationToken.None);
 
@@ -1348,7 +1348,7 @@ public sealed class CodexSessionServiceTests
         };
         await using var service = CreateService();
         await service.InitializeAsync(connection, Options(), CancellationToken.None);
-        var request = new WriteSkillConfigRequest { Path = "/repo/.codex/skills/review-diff", Enabled = false };
+        var request = new WriteSkillConfigRequest { Path = "/repo/.codex/skills/review-diff/SKILL.md", Enabled = false };
 
         WriteSkillConfigResult result = await service.WriteSkillConfigAsync(request, CancellationToken.None);
 
@@ -1380,11 +1380,52 @@ public sealed class CodexSessionServiceTests
         await service.ListSkillsAsync(forceReload: false, CancellationToken.None);
 
         await service.WriteSkillConfigAsync(
-            new WriteSkillConfigRequest { Path = "/repo/.codex/skills/review-diff", Enabled = false },
+            new WriteSkillConfigRequest { Path = "/repo/.codex/skills/review-diff/SKILL.md", Enabled = false },
             CancellationToken.None);
         await service.ListSkillsAsync(forceReload: false, CancellationToken.None);
 
         Assert.AreEqual(2, connection.Requests.Count(item => item.Method == "skills/list"));
+    }
+
+    [TestMethod]
+    public async Task WriteSkillConfig_PreventsInFlightListFromRepopulatingCache()
+    {
+        var requestStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var response = new TaskCompletionSource<JsonElement>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var connection = new RecordingConnection
+        {
+            AsyncHandler = (method, _, _) => method switch
+            {
+                "skills/list" => StartStaleListAsync(requestStarted, response),
+                "skills/config/write" => Task.FromResult(JsonSerializer.SerializeToElement(new { effectiveEnabled = false })),
+                _ => Task.FromResult(JsonSerializer.SerializeToElement(new { })),
+            },
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        Task<ListSkillsResult> staleList = service.ListSkillsAsync(forceReload: false, CancellationToken.None);
+        await requestStarted.Task;
+        await service.WriteSkillConfigAsync(
+            new WriteSkillConfigRequest { Path = "/repo/.codex/skills/review-diff/SKILL.md", Enabled = false },
+            CancellationToken.None);
+        response.SetResult(JsonSerializer.SerializeToElement(new
+        {
+            data = new object[] { new { cwd = "/repo", errors = Array.Empty<object>(), skills = Array.Empty<object>() } },
+        }));
+        await staleList;
+
+        await service.ListSkillsAsync(forceReload: false, CancellationToken.None);
+
+        Assert.AreEqual(2, connection.Requests.Count(item => item.Method == "skills/list"));
+
+        static Task<JsonElement> StartStaleListAsync(
+            TaskCompletionSource requestStarted,
+            TaskCompletionSource<JsonElement> response)
+        {
+            requestStarted.TrySetResult();
+            return response.Task;
+        }
     }
 
     [TestMethod]

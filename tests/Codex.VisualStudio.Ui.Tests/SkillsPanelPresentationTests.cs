@@ -24,7 +24,7 @@ public sealed class SkillsPanelPresentationTests
         {
             Skills =
             [
-                new SkillInfo { Name = "review-diff", DisplayName = "Review Diff", Scope = "repo", Enabled = true, Path = "/repo/.codex/skills/review-diff", ShortDescription = "Review the diff." },
+                new SkillInfo { Name = "review-diff", DisplayName = "Review Diff", Scope = "repo", Enabled = true, Path = "/repo/.codex/skills/review-diff/SKILL.md", ShortDescription = "Review the diff." },
             ],
         };
 
@@ -44,7 +44,7 @@ public sealed class SkillsPanelPresentationTests
         panel.Update(
             new ListSkillsResult
             {
-                Skills = [new SkillInfo { Name = "review-diff", Scope = "repo", Enabled = true, Path = "/repo/.codex/skills/review-diff", ShortDescription = "Old description." }],
+                Skills = [new SkillInfo { Name = "review-diff", Scope = "repo", Enabled = true, Path = "/repo/.codex/skills/review-diff/SKILL.md", ShortDescription = "Old description." }],
             },
             markdown);
 
@@ -53,7 +53,7 @@ public sealed class SkillsPanelPresentationTests
         panel.Update(
             new ListSkillsResult
             {
-                Skills = [new SkillInfo { Name = "review-diff", Scope = "repo", Enabled = true, Path = "/repo/.codex/skills/review-diff", ShortDescription = "New description." }],
+                Skills = [new SkillInfo { Name = "review-diff", Scope = "repo", Enabled = true, Path = "/repo/.codex/skills/review-diff/SKILL.md", ShortDescription = "New description." }],
             },
             markdown);
 
@@ -71,8 +71,8 @@ public sealed class SkillsPanelPresentationTests
             {
                 Skills =
                 [
-                    new SkillInfo { Name = "a", Scope = "repo", Enabled = true, Path = "/repo/.codex/skills/a" },
-                    new SkillInfo { Name = "b", Scope = "repo", Enabled = true, Path = "/repo/.codex/skills/b" },
+                    new SkillInfo { Name = "a", Scope = "repo", Enabled = true, Path = "/repo/.codex/skills/a/SKILL.md" },
+                    new SkillInfo { Name = "b", Scope = "repo", Enabled = true, Path = "/repo/.codex/skills/b/SKILL.md" },
                 ],
             },
             markdown);
@@ -82,8 +82,8 @@ public sealed class SkillsPanelPresentationTests
             {
                 Skills =
                 [
-                    new SkillInfo { Name = "b", Scope = "repo", Enabled = true, Path = "/repo/.codex/skills/b" },
-                    new SkillInfo { Name = "a", Scope = "repo", Enabled = true, Path = "/repo/.codex/skills/a" },
+                    new SkillInfo { Name = "b", Scope = "repo", Enabled = true, Path = "/repo/.codex/skills/b/SKILL.md" },
+                    new SkillInfo { Name = "a", Scope = "repo", Enabled = true, Path = "/repo/.codex/skills/a/SKILL.md" },
                 ],
             },
             markdown);
@@ -99,7 +99,7 @@ public sealed class SkillsPanelPresentationTests
         panel.Update(
             new ListSkillsResult
             {
-                Skills = [new SkillInfo { Name = "review-diff", Scope = "repo", Enabled = true, Path = "/repo/.codex/skills/review-diff" }],
+                Skills = [new SkillInfo { Name = "review-diff", Scope = "repo", Enabled = true, Path = "/repo/.codex/skills/review-diff/SKILL.md" }],
             },
             markdown);
 
@@ -144,7 +144,7 @@ public sealed class SkillsPanelPresentationTests
         panel.Update(
             new ListSkillsResult
             {
-                Skills = [new SkillInfo { Name = "review-diff", Scope = "repo", Enabled = true, Path = "/repo/.codex/skills/review-diff" }],
+                Skills = [new SkillInfo { Name = "review-diff", Scope = "repo", Enabled = true, Path = "/repo/.codex/skills/review-diff/SKILL.md" }],
             },
             markdown);
 
@@ -180,7 +180,7 @@ public sealed class SkillsPanelPresentationTests
         panel.Update(
             new ListSkillsResult
             {
-                Skills = [new SkillInfo { Name = "legacy-formatter", DisplayName = "Legacy Formatter", Scope = "repo", Enabled = false, Path = "/repo/.codex/skills/legacy-formatter" }],
+                Skills = [new SkillInfo { Name = "legacy-formatter", DisplayName = "Legacy Formatter", Scope = "repo", Enabled = false, Path = "/repo/.codex/skills/legacy-formatter/SKILL.md" }],
             },
             markdown);
 
@@ -198,7 +198,7 @@ public sealed class SkillsPanelPresentationTests
         panel.Update(
             new ListSkillsResult
             {
-                Skills = [new SkillInfo { Name = "review-diff", Scope = "repo", Enabled = true, Path = "/repo/.codex/skills/review-diff" }],
+                Skills = [new SkillInfo { Name = "review-diff", Scope = "repo", Enabled = true, Path = "/repo/.codex/skills/review-diff/SKILL.md" }],
             },
             markdown);
 
@@ -212,7 +212,7 @@ public sealed class SkillsPanelPresentationTests
         panel.Update(
             new ListSkillsResult
             {
-                Skills = [new SkillInfo { Name = "review-diff", Scope = "repo", Enabled = true, Path = "/repo/.codex/skills/review-diff" }],
+                Skills = [new SkillInfo { Name = "review-diff", Scope = "repo", Enabled = true, Path = "/repo/.codex/skills/review-diff/SKILL.md" }],
             },
             markdown);
 

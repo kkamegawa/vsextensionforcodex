@@ -116,7 +116,7 @@ public sealed class WorkerRpcServiceTests
         await using var worker = new WorkerRpcService(new SecretRedactor(), new FakeProcessHost(), session);
 
         WriteSkillConfigResult result = await worker.WriteSkillConfigAsync(
-            new WriteSkillConfigRequest { Path = "/repo/.codex/skills/review-diff", Enabled = true },
+            new WriteSkillConfigRequest { Path = "/repo/.codex/skills/review-diff/SKILL.md", Enabled = true },
             CancellationToken.None);
 
         Assert.IsTrue(result.IsSupported);

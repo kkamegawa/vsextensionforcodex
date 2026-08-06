@@ -86,6 +86,8 @@ public interface ICodexSessionService : IAsyncDisposable
 
     Task<ListSkillsResult> ListSkillsAsync(bool forceReload, CancellationToken cancellationToken);
 
+    Task<WriteSkillConfigResult> WriteSkillConfigAsync(WriteSkillConfigRequest request, CancellationToken cancellationToken);
+
     Task<UploadFeedbackResult> UploadFeedbackAsync(UploadFeedbackRequest request, CancellationToken cancellationToken);
 
     Task<RateLimitsResult> GetRateLimitsAsync(CancellationToken cancellationToken);

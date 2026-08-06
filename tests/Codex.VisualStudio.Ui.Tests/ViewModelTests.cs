@@ -2434,7 +2434,7 @@ public sealed class ViewModelTests
         {
             SkillsResult = new ListSkillsResult
             {
-                Skills = [new SkillInfo { Name = "review-diff", DisplayName = "Review Diff", Scope = "repo", Enabled = true, Path = "/repo/.codex/skills/review-diff" }],
+                Skills = [new SkillInfo { Name = "review-diff", DisplayName = "Review Diff", Scope = "repo", Enabled = true, Path = "/repo/.codex/skills/review-diff/SKILL.md" }],
             },
         };
         using var vm = new ChatViewModel(bridge, autoConnect: false);
@@ -2506,7 +2506,7 @@ public sealed class ViewModelTests
         {
             SkillsResult = new ListSkillsResult
             {
-                Skills = [new SkillInfo { Name = "review-diff", Scope = "repo", Enabled = true, Path = "/repo/.codex/skills/review-diff" }],
+                Skills = [new SkillInfo { Name = "review-diff", Scope = "repo", Enabled = true, Path = "/repo/.codex/skills/review-diff/SKILL.md" }],
             },
         };
         using var vm = new ChatViewModel(bridge, autoConnect: false);
@@ -2518,8 +2518,8 @@ public sealed class ViewModelTests
         {
             Skills =
             [
-                new SkillInfo { Name = "review-diff", Scope = "repo", Enabled = true, Path = "/repo/.codex/skills/review-diff" },
-                new SkillInfo { Name = "write-tests", Scope = "repo", Enabled = true, Path = "/repo/.codex/skills/write-tests" },
+                new SkillInfo { Name = "review-diff", Scope = "repo", Enabled = true, Path = "/repo/.codex/skills/review-diff/SKILL.md" },
+                new SkillInfo { Name = "write-tests", Scope = "repo", Enabled = true, Path = "/repo/.codex/skills/write-tests/SKILL.md" },
             ],
         };
         await bridge.PublishSkillsChangedAsync(new SkillsChangedEvent());
@@ -2537,7 +2537,7 @@ public sealed class ViewModelTests
         {
             SkillsResult = new ListSkillsResult
             {
-                Skills = [new SkillInfo { Name = "review-diff", Scope = "repo", Enabled = true, Path = "/repo/.codex/skills/review-diff" }],
+                Skills = [new SkillInfo { Name = "review-diff", Scope = "repo", Enabled = true, Path = "/repo/.codex/skills/review-diff/SKILL.md" }],
             },
         };
         using var vm = new ChatViewModel(bridge, autoConnect: false, utcNow: () => now);
@@ -2563,7 +2563,7 @@ public sealed class ViewModelTests
         {
             SkillsResult = new ListSkillsResult
             {
-                Skills = [new SkillInfo { Name = "review-diff", Scope = "repo", Enabled = true, Path = "/repo/.codex/skills/review-diff" }],
+                Skills = [new SkillInfo { Name = "review-diff", Scope = "repo", Enabled = true, Path = "/repo/.codex/skills/review-diff/SKILL.md" }],
             },
         };
         using var vm = new ChatViewModel(bridge, autoConnect: false);
