@@ -57,9 +57,9 @@ deterministically: enabled skills win over disabled ones, then `repo` > `user` >
 `admin`, then ordinal path comparison.
 
 Skill paths bypass the path-access policy that governs file attachments and mentions: they come
-from the app-server's own `skills/list` response, not from user-selected files, and `scope: user`
-paths are directories (which fail a `File.Exists` check) while `scope: system`/`admin` paths
-routinely live outside the workspace. See ADR-010 for the full trust-boundary argument.
+from the app-server's own `skills/list` response, not from user-selected files. Each `path` is an
+absolute path to the skill's `SKILL.md` file, and `scope: user`/`system`/`admin` files routinely
+live outside the workspace. See ADR-010 for the full trust-boundary argument.
 
 ## Skills panel
 

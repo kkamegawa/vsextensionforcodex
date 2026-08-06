@@ -56,10 +56,9 @@ Visual Studio拡張機能は、現在のワークスペースのCodexスキル�
 `repo` > `user` > `system` > `admin`、最後にパスの序数比較）。
 
 スキルパスは、ファイル添付・メンションを管理するpath-access policyを通しません。これらのパスは
-ユーザーが選択したファイルではなく、App Server自身の`skills/list`応答由来だからです。
-`scope: user`のパスはディレクトリ（`File.Exists`チェックに失敗する）であり、
-`scope: system`/`admin`のパスは日常的にワークスペース外に存在します。信頼境界の詳細な論拠は
-ADR-010を参照してください。
+ユーザーが選択したファイルではなく、App Server自身の`skills/list`応答由来だからです。各`path`は
+スキルの`SKILL.md`ファイルを指す絶対パスであり、`scope: user`/`system`/`admin`のファイルは日常的に
+ワークスペース外に存在します。信頼境界の詳細な論拠はADR-010を参照してください。
 
 ## スキルパネル
 
