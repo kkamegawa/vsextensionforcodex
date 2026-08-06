@@ -2163,7 +2163,22 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
     private async Task<bool> ExecuteSkillsAsync(string? arguments)
     {
-        bool forceReload = string.Equals(arguments?.Trim(), "reload", StringComparison.OrdinalIgnoreCase);
+        string normalizedArguments = arguments?.Trim() ?? string.Empty;
+        bool forceReload;
+        if (normalizedArguments.Length == 0)
+        {
+            forceReload = false;
+        }
+        else if (string.Equals(normalizedArguments, "reload", StringComparison.OrdinalIgnoreCase))
+        {
+            forceReload = true;
+        }
+        else
+        {
+            await ShowSlashStatusAsync("Usage: /skills [reload].").ConfigureAwait(false);
+            return false;
+        }
+
         ListSkillsResult result = await bridge.ListSkillsAsync(forceReload, lifetime.Token).ConfigureAwait(false);
         if (!await EnsureOperationSupportedAsync(SlashCommandId.Skills, result).ConfigureAwait(false))
         {

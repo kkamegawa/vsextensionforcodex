@@ -3053,6 +3053,25 @@ public sealed class ViewModelTests
     }
 
     [TestMethod]
+    [DataRow("unknown")]
+    [DataRow("reload extra")]
+    public async Task SkillsSlashCommand_RejectsUnsupportedArguments(string arguments)
+    {
+        var bridge = new FakeWorkerBridge();
+        using var vm = new ChatViewModel(bridge, autoConnect: false)
+        {
+            ComposerText = $"/skills {arguments}",
+        };
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready });
+
+        await InvokeComposerSendAsync(vm);
+
+        Assert.AreEqual(0, bridge.SkillsCallCount);
+        StringAssert.Contains(vm.Items.Last().Text, "Usage: /skills [reload].");
+        Assert.AreEqual($"/skills {arguments}", vm.ComposerText);
+    }
+
+    [TestMethod]
     public async Task ChatViewModel_ModelCommandMatchesCatalogCaseInsensitively()
     {
         var bridge = new FakeWorkerBridge();
