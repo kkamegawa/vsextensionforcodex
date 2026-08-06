@@ -277,3 +277,37 @@ The operation remains non-destructive: an existing solution is never overwritten
 file-based app choice continues to create only a root-level `Program.cs` without a solution or
 project. The generated empty document must remain parseable as XML and accepted by the pinned
 `.NET` SDK's `dotnet sln` command.
+
+## 12. Codex custom skills (contract versions 14-17)
+
+Skill discovery, mention resolution, composer suggestions, panel display, and enable/disable form
+one feature built as a stack of eight PRs against GitHub Issue #119 (sub-issues #120-#127), each
+recording its own design deviation from the closest existing precedent as a numbered entry in
+[doc/adr.md](adr.md) (ADR-008 through ADR-013). See [doc/skills.md](skills.md) for the
+user-facing protocol, contract, and UI summary; this section covers points not obvious from
+reading that file alone.
+
+`skills/list`'s response shape (`SkillsListResponse.data`, an array of per-cwd entries) does not
+match any existing paginated list in this codebase, so `ListModelsResult`/`ListPermissionProfilesResult`'s
+cursor/page machinery was deliberately not reused: `skills/list` has no `nextCursor`, and the
+correct response to an unbounded server-supplied array is a hard cap (`MaxSkills`, `MaxSkillErrors`)
+with an `IsTruncated` flag, not pagination.
+
+The skill catalog is the Worker's first *positive* result cache (`unsupportedMethods` in the same
+class is negative-only). `ChatViewModel` does not gain its own second-level cache; every consumer
+(the `/skills` slash command, mention resolution, composer suggestions, and the panel) calls
+`bridge.ListSkillsAsync` directly and relies on the Worker cache for cost control, matching the
+plan's original allocation of the cache to the Worker layer (ADR-009).
+
+Composer suggestions (`SkillSuggestionPresentation.cs`) and the panel (`SkillsPanelPresentation.cs`)
+are separate Remote UI presentation types with no shared base class, even though both wrap a
+`SkillInfo`: the suggestion overlay's `SkillSuggestionViewModel` is immutable and rebuilt on every
+keystroke, while the panel's `SkillPresentation` is a long-lived `ObservableObject` merged in place
+across refreshes and carries an `IsEnabled`/`ToggleCommand` pair the suggestion row has no use for.
+Sharing a base type across those two very different lifecycles was judged more confusing than two
+small, independently readable types.
+
+`SkillPresentation.ApplyEffectiveEnabled` is the single path that may change `IsEnabled`: it runs
+from a fresh `skills/list` readback and from a completed `skills/config/write` response, never from
+the toggle click itself, so there is exactly one place to audit for the "no optimistic update"
+invariant ADR-013 depends on.

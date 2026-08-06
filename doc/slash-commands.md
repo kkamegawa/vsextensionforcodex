@@ -13,7 +13,7 @@ The implementation is tracked by GitHub Issue #46 and its four sub-issues.
 
 | Category | Commands | Behavior |
 |---|---|---|
-| App Server operations | `/compact`, `/feedback`, `/fork`, `/goal`, `/mcp`, `/review` | Invoke dedicated typed Worker RPC methods. |
+| App Server operations | `/compact`, `/feedback`, `/fork`, `/goal`, `/mcp`, `/review`, `/skills` | Invoke dedicated typed Worker RPC methods. |
 | Next-turn settings | `/fast`, `/model`, `/permissions` (`/approve` alias), `/personality`, `/plan`, `/reasoning` | Update typed fields used by the next `turn/start`. Except for picker selections, these settings are consumed by the next started turn. |
 | Visual Studio operations | `/ide-context`, `/init`, `/status` | Toggle bounded editor context, safely create `AGENTS.md`, or show local session state. |
 
@@ -26,6 +26,11 @@ and `/side`. Direct input produces a local unsupported message.
 instructions. `/goal` supports show (alias: get), set, edit, pause, resume,
 and clear. Goal objectives contain between 1 and 4,000 characters. `/model`
 matches the catalog case-insensitively and applies the canonical model id.
+
+`/skills` lists the workspace's Codex skills catalog (name, scope, enabled state,
+description) and any per-skill load errors. `/skills reload` bypasses the Worker's
+cached result and re-queries the app-server. See [doc/skills.md](skills.md) for the
+full skills feature, including the composer's `$<name>` mentions and the skills panel.
 
 `/permissions` is the canonical approval-mode command; `/approve` is a compatibility
 alias. With no argument it shows the desired default, the app-server-reported effective

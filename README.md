@@ -183,7 +183,7 @@ APM deploys `.codex/agents/`, `.github/agents/`, and `.claude/agents/`. The depe
 ## Architecture
 
 - UI layer: chat tool window, composer, approval prompts, and diff display.
-- Presentation layer: chat view models, streaming buffers, and slash-command suggestions.
+- Presentation layer: chat view models, streaming buffers, slash-command suggestions, and Codex skill discovery, mention, and panel presentation.
 - Application layer: session lifecycle, slash command routing, approval workflows, and workspace context collection.
 - Security layer: approval policy, path access checks, secret redaction, and audit logging.
 - Protocol layer: `codex app-server` process hosting, JSON-RPC dispatch, schema and version guards, and notification handling.
@@ -192,7 +192,7 @@ The transport is stdio. WebSocket or Unix socket transports remain future option
 
 Design and planning documents: [doc/design.md](doc/design.md), [doc/plan.md](doc/plan.md),
 [doc/task.md](doc/task.md), [doc/implementation.md](doc/implementation.md),
-[doc/adr.md](doc/adr.md).
+[doc/adr.md](doc/adr.md), [doc/skills.md](doc/skills.md).
 
 ## Security
 

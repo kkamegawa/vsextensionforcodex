@@ -13,7 +13,7 @@ Visual Studio拡張機能は、入力の先頭文字が`/`の場合だけCodex�
 
 | 分類 | コマンド | 動作 |
 |---|---|---|
-| App Server操作 | `/compact`, `/feedback`, `/fork`, `/goal`, `/mcp`, `/review` | 専用の型付きWorker RPCを呼び出します。 |
+| App Server操作 | `/compact`, `/feedback`, `/fork`, `/goal`, `/mcp`, `/review`, `/skills` | 専用の型付きWorker RPCを呼び出します。 |
 | 次ターン設定 | `/fast`, `/model`, `/permissions`（`/approve`は互換エイリアス）, `/personality`, `/plan`, `/reasoning` | 次の`turn/start`へ渡す型付きフィールドを更新します。ピッカー選択以外は次のターン開始時に消費されます。 |
 | Visual Studio操作 | `/ide-context`, `/init`, `/status` | 上限付きIDEコンテキスト、`AGENTS.md`の安全な生成、ローカル状態表示を行います。 |
 
@@ -25,6 +25,12 @@ Visual Studio拡張機能は、入力の先頭文字が`/`の場合だけCodex�
 `/goal`は表示（`show`または`get`）、設定、編集、一時停止、再開、クリアに
 対応し、目的は1～4,000文字です。`/model`はカタログと大文字小文字を区別せず
 照合し、正規のモデルIDを適用します。
+
+`/skills`はワークスペースのCodexスキルカタログ（名前、スコープ、有効状態、
+説明）とスキルごとの読み込みエラーを一覧表示します。`/skills reload`は
+Workerのキャッシュ済み結果を迂回し、App Serverへ再問い合わせします。
+コンポーザーの`$<name>`メンションやスキルパネルを含むスキル機能全体は
+[doc/skills_ja.md](skills_ja.md)を参照してください。
 
 承認モードの正式コマンドは`/permissions`で、`/approve`は互換エイリアスです。
 引数なしでは希望する既定値、App Serverが報告した実効状態、利用可能な安定IDを表示します。

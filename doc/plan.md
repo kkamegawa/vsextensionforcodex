@@ -165,7 +165,7 @@ Protocol          AppServerClient / JsonRpcDispatcher / SchemaVersionGuard / Cod
 | モデル一覧 | `model/list`（picker UI） |
 | スキル | `skills/list` / `skills/config/write` / `skills/changed` |
 | プラグイン/マーケット | `plugin/list` / `plugin/install` / `marketplace/add` |
-| アプリ（コネクタ） | `app/list` / `$<app-slug>` mention |
+| アプリ（コネクタ） | `app/list` / `$<app-slug>` mention（本拡張では未実装。`$` は v1 ではスキルメンション専用に予約済み。doc/adr.md の ADR-011 参照） |
 | MCP | `mcpServerStatus/list` / `mcpServer/tool/call` / `mcpServer/oauth/login` |
 | 承認 | `item/commandExecution/requestApproval` / `item/fileChange/requestApproval` |
 | 承認/サンドボックスポリシー | `turn/start` の `approvalPolicy`、`approvalsReviewer`、`sandboxPolicy` を一体で扱う。手動承認は `on-request` + `user`、代理承認は `on-request` + `auto_review`、Full access は `never` + `dangerFullAccess`。カスタム permission profile は、対応する app-server で `permissionProfile/list` と turn の `permissions` override を使う |

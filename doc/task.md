@@ -182,10 +182,10 @@
   - The VSIX manifest, packaged assembly, embedded Remote UI XAML, and SDK-managed Experimental deployment were inspected; packaged, build, and deployed assembly hashes matched.
 
 ### 3.2 スキル
-- [ ] `skills/list`（`cwds` スコープ、`forceReload`）でスキル一覧取得（キャッシュ + invalidation）
-- [ ] `$<skill-name>` + `skill` 入力アイテムでスキル明示呼び出し
-- [ ] `skills/config/write` で有効/無効切替
-- [ ] `skills/changed` 通知で一覧を再取得（invalidation）
+- [x] `skills/list`（`cwds` スコープ、`forceReload`）でスキル一覧取得（キャッシュ + invalidation、GitHub Issue #119 sub-issue #120）
+- [x] `$<skill-name>` + `skill` 入力アイテムでスキル明示呼び出し（GitHub Issue #119 sub-issue #123）
+- [x] `skills/config/write` で有効/無効切替（GitHub Issue #119 sub-issue #126）
+- [x] `skills/changed` 通知で一覧を再取得（invalidation、GitHub Issue #119 sub-issue #122）
 
 ### 3.3 apm との連携（スキル/プラグイン導入）
 - [ ] awesome-copilot から必要スキル/プラグイン/エージェントを `apm install` で導入する手順をドキュメント化

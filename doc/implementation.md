@@ -39,6 +39,7 @@ The publisher is `kkamegawa` (see CLAUDE.md for the current VSIX identity string
 - Model-aware Reasoning and Speed pickers with sanitized catalog content, stable persisted IDs, hidden-default capability metadata, and Remote UI accessibility bindings
 - Contract version 13 turn-setting presence flags for omit/null/value semantics, plus effective reasoning and service-tier propagation
 - Thread-scoped `/reasoning` and `/fast` one-turn overrides with success-only consumption and explicit sticky-value restoration
+- Codex custom skills (contract versions 14-17): `skills/list` discovery with Worker-side caching and `skills/changed` invalidation, `/skills` transcript listing, `$<name>` mention resolution and turn input items, inline composer suggestions, a skills panel with in-place merge and per-skill load errors, and a `skills/config/write` enable/disable toggle reconciled from `effectiveEnabled` (see [doc/skills.md](skills.md) and ADR-008 through ADR-013)
 
 ## Validation Status
 

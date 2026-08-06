@@ -191,7 +191,8 @@ APM は `.codex/agents/`、`.github/agents/`、`.claude/agents/` を配置しま
 ## アーキテクチャ
 
 - UI 層: チャットツールウィンドウ、コンポーザー、承認プロンプト、差分表示
-- プレゼンテーション層: チャット ViewModel、ストリーミングバッファー、スラッシュコマンド候補
+- プレゼンテーション層: チャット ViewModel、ストリーミングバッファー、スラッシュコマンド候補、
+  Codexスキルの検出・メンション・パネル表示
 - アプリケーション層: セッションライフサイクル、スラッシュコマンドのルーティング、承認ワークフロー、
   ワークスペースコンテキスト収集
 - セキュリティ層: 承認ポリシー、パスアクセス検査、シークレットの秘匿、監査ログ
@@ -202,7 +203,7 @@ APM は `.codex/agents/`、`.github/agents/`、`.claude/agents/` を配置しま
 
 設計・計画ドキュメント: [doc/design.md](doc/design.md)、[doc/plan.md](doc/plan.md)、
 [doc/task.md](doc/task.md)、[doc/implementation.md](doc/implementation.md)、
-[doc/adr.md](doc/adr.md)。
+[doc/adr.md](doc/adr.md)、[doc/skills_ja.md](doc/skills_ja.md)。
 
 ## セキュリティ
 
