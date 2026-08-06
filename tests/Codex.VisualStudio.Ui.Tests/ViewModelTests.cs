@@ -2104,13 +2104,13 @@ public sealed class ViewModelTests
     }
 
     [TestMethod]
-    public async Task StartTurn_IncludesSkillInputForResolvedMention()
+    public async Task StartTurn_IncludesSkillInputForResolvedPunctuatedMention()
     {
         var bridge = new FakeWorkerBridge
         {
             SkillsResult = new ListSkillsResult
             {
-                Skills = [new SkillInfo { Name = "review-diff", Scope = "repo", Enabled = true, Path = "/repo/.codex/skills/review-diff" }],
+                Skills = [new SkillInfo { Name = "review-diff", Scope = "repo", Enabled = true, Path = "/repo/.codex/skills/review-diff/SKILL.md" }],
             },
         };
         using var vm = new ChatViewModel(bridge, autoConnect: false)
@@ -2119,13 +2119,13 @@ public sealed class ViewModelTests
         };
         await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready });
 
-        await SendMessageAsync(vm, "$review-diff please", clearComposer: false);
+        await SendMessageAsync(vm, "$review-diff, please", clearComposer: false);
 
         Assert.IsNotNull(bridge.LastStartTurnRequest);
         Assert.AreEqual(1, bridge.LastStartTurnRequest!.Skills.Count);
         Assert.AreEqual("review-diff", bridge.LastStartTurnRequest.Skills[0].Name);
-        Assert.AreEqual("/repo/.codex/skills/review-diff", bridge.LastStartTurnRequest.Skills[0].Path);
-        Assert.AreEqual("$review-diff please", bridge.LastStartTurnRequest.Text);
+        Assert.AreEqual("/repo/.codex/skills/review-diff/SKILL.md", bridge.LastStartTurnRequest.Skills[0].Path);
+        Assert.AreEqual("$review-diff, please", bridge.LastStartTurnRequest.Text);
     }
 
     [TestMethod]
@@ -2154,8 +2154,8 @@ public sealed class ViewModelTests
             {
                 Skills =
                 [
-                    new SkillInfo { Name = "helper", Scope = "admin", Enabled = false, Path = "/admin/.codex/skills/helper" },
-                    new SkillInfo { Name = "helper", Scope = "user", Enabled = true, Path = "/home/fake-user/.codex/skills/helper" },
+                    new SkillInfo { Name = "helper", Scope = "admin", Enabled = false, Path = "/admin/.codex/skills/helper/SKILL.md" },
+                    new SkillInfo { Name = "helper", Scope = "user", Enabled = true, Path = "/home/fake-user/.codex/skills/helper/SKILL.md" },
                 ],
             },
         };
@@ -2168,7 +2168,7 @@ public sealed class ViewModelTests
         await SendMessageAsync(vm, "$helper go", clearComposer: false);
 
         Assert.AreEqual(1, bridge.LastStartTurnRequest!.Skills.Count);
-        Assert.AreEqual("/home/fake-user/.codex/skills/helper", bridge.LastStartTurnRequest.Skills[0].Path);
+        Assert.AreEqual("/home/fake-user/.codex/skills/helper/SKILL.md", bridge.LastStartTurnRequest.Skills[0].Path);
     }
 
     [TestMethod]
@@ -2178,7 +2178,7 @@ public sealed class ViewModelTests
         {
             SkillsResult = new ListSkillsResult
             {
-                Skills = [new SkillInfo { Name = "legacy-formatter", Scope = "repo", Enabled = false, Path = "/repo/.codex/skills/legacy-formatter" }],
+                Skills = [new SkillInfo { Name = "legacy-formatter", Scope = "repo", Enabled = false, Path = "/repo/.codex/skills/legacy-formatter/SKILL.md" }],
             },
         };
         using var vm = new ChatViewModel(bridge, autoConnect: false)
@@ -2203,7 +2203,7 @@ public sealed class ViewModelTests
             SkillsResult = new ListSkillsResult
             {
                 IsTruncated = true,
-                Skills = [new SkillInfo { Name = "review-diff", Scope = "repo", Enabled = true, Path = "/repo/.codex/skills/review-diff" }],
+                Skills = [new SkillInfo { Name = "review-diff", Scope = "repo", Enabled = true, Path = "/repo/.codex/skills/review-diff/SKILL.md" }],
             },
         };
         using var vm = new ChatViewModel(bridge, autoConnect: false)
@@ -2221,7 +2221,7 @@ public sealed class ViewModelTests
     public async Task StartTurn_CapsAndDedupesRepeatedSkillMentions()
     {
         var skills = Enumerable.Range(0, 8)
-            .Select(index => new SkillInfo { Name = $"skill-{index}", Scope = "repo", Enabled = true, Path = $"/repo/.codex/skills/skill-{index}" })
+            .Select(index => new SkillInfo { Name = $"skill-{index}", Scope = "repo", Enabled = true, Path = $"/repo/.codex/skills/skill-{index}/SKILL.md" })
             .ToArray();
         var bridge = new FakeWorkerBridge
         {

@@ -1,4 +1,4 @@
-namespace Codex.VisualStudio.Extension;
+﻿namespace Codex.VisualStudio.Extension;
 
 // Resolution-time counterpart to the file-suggestion '#' trigger. Unlike
 // TryGetFileSuggestionQuery (which only inspects the trailing token being typed, for the live
@@ -33,7 +33,7 @@ internal static class SkillMentionParser
             }
 
             int nameEnd = nameStart;
-            while (nameEnd < text.Length && !char.IsWhiteSpace(text[nameEnd]))
+            while (nameEnd < text.Length && IsSkillNameCharacter(text[nameEnd]))
             {
                 nameEnd++;
             }
@@ -48,4 +48,7 @@ internal static class SkillMentionParser
 
         return tokens;
     }
+
+    private static bool IsSkillNameCharacter(char value)
+        => char.IsLetterOrDigit(value) || value is '-' or '_' or ':';
 }

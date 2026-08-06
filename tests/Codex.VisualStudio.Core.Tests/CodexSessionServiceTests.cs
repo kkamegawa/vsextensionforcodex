@@ -586,7 +586,7 @@ public sealed class CodexSessionServiceTests
                 ThreadId = "thread-1",
                 Text = "inspect",
                 Attachments = attachments,
-                Skills = [new SkillInvocation { Name = "review-diff", Path = Path.Combine(workspace, ".codex", "skills", "review-diff") }],
+                Skills = [new SkillInvocation { Name = "review-diff", Path = Path.Combine(workspace, ".codex", "skills", "review-diff", "SKILL.md") }],
             },
             CancellationToken.None);
 
@@ -598,17 +598,17 @@ public sealed class CodexSessionServiceTests
     }
 
     [TestMethod]
-    public async Task BuildTurnInput_EmitsSkillItemForDirectoryPathOutsideWorkspace()
+    public async Task BuildTurnInput_EmitsSkillItemForSkillFileOutsideWorkspace()
     {
-        // Proves skills are exempt from TryNormalizeReadableFile: the path here is a directory
-        // that does not exist and lives outside the workspace, both of which would drop an
+        // Proves skills are exempt from TryNormalizeReadableFile: the SKILL.md path here does
+        // not exist and lives outside the workspace, both of which would drop an
         // AttachmentInfo entry, but a SkillInvocation only needs structural path validity because
         // it originates from the app-server's own skills/list output, not from user input.
         string workspace = Path.Combine(Path.GetTempPath(), $"codex-skill-outside-{Guid.NewGuid():N}");
         Directory.CreateDirectory(workspace);
         string userScopePath = OperatingSystem.IsWindows()
-            ? @"C:\Users\fake-user\.codex\skills\summarize-thread"
-            : "/home/fake-user/.codex/skills/summarize-thread";
+            ? @"C:\Users\fake-user\.codex\skills\summarize-thread\SKILL.md"
+            : "/home/fake-user/.codex/skills/summarize-thread/SKILL.md";
         var connection = new RecordingConnection
         {
             Handler = (method, _) => method == "turn/start"
@@ -665,7 +665,7 @@ public sealed class CodexSessionServiceTests
         string workspace = Path.Combine(Path.GetTempPath(), $"codex-skill-limit-{Guid.NewGuid():N}");
         Directory.CreateDirectory(workspace);
         var skills = Enumerable.Range(0, 8)
-            .Select(index => new SkillInvocation { Name = $"skill-{index}", Path = Path.Combine(workspace, ".codex", "skills", $"skill-{index}") })
+            .Select(index => new SkillInvocation { Name = $"skill-{index}", Path = Path.Combine(workspace, ".codex", "skills", $"skill-{index}", "SKILL.md") })
             .ToArray();
         var connection = new RecordingConnection
         {
@@ -1090,7 +1090,7 @@ public sealed class CodexSessionServiceTests
                 name = $"skill-{index}",
                 description = "d",
                 enabled = true,
-                path = $"/repo/.codex/skills/skill-{index}",
+                path = $"/repo/.codex/skills/skill-{index}/SKILL.md",
                 scope = "repo",
             })
             .ToArray();
@@ -1124,7 +1124,7 @@ public sealed class CodexSessionServiceTests
                 name = $"skill-{index}",
                 description = "d",
                 enabled = true,
-                path = $"/repo/.codex/skills/skill-{index}",
+                path = $"/repo/.codex/skills/skill-{index}/SKILL.md",
                 scope = "repo",
             })
             .ToArray();

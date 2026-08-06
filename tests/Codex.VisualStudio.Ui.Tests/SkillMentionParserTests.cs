@@ -1,4 +1,4 @@
-using Codex.VisualStudio.Extension;
+﻿using Codex.VisualStudio.Extension;
 
 namespace Codex.VisualStudio.Ui.Tests;
 
@@ -7,6 +7,7 @@ public sealed class SkillMentionParserTests
 {
     private static readonly string[] SingleToken = ["review-diff"];
     private static readonly string[] TwoTokens = ["review-diff", "write-tests"];
+    private static readonly string[] NamespacedAndUnderscoredTokens = ["github:yeet", "custom_skill"];
 
     [TestMethod]
     public void SkillMentionParser_ExtractsTokenAtStart()
@@ -22,6 +23,26 @@ public sealed class SkillMentionParserTests
         IReadOnlyList<string> tokens = SkillMentionParser.ExtractSkillTokens("run $review-diff then $write-tests please");
 
         CollectionAssert.AreEqual(TwoTokens, tokens.ToArray());
+    }
+
+    [TestMethod]
+    [DataRow("$review-diff, please")]
+    [DataRow("$review-diff. Please")]
+    [DataRow("$review-diff) please")]
+    [DataRow("$review-diff! please")]
+    public void SkillMentionParser_StopsAtSentencePunctuation(string text)
+    {
+        IReadOnlyList<string> tokens = SkillMentionParser.ExtractSkillTokens(text);
+
+        CollectionAssert.AreEqual(SingleToken, tokens.ToArray());
+    }
+
+    [TestMethod]
+    public void SkillMentionParser_PreservesNamespacedAndUnderscoredNames()
+    {
+        IReadOnlyList<string> tokens = SkillMentionParser.ExtractSkillTokens("$github:yeet then $custom_skill");
+
+        CollectionAssert.AreEqual(NamespacedAndUnderscoredTokens, tokens.ToArray());
     }
 
     [TestMethod]

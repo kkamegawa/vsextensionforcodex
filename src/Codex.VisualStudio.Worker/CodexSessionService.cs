@@ -2424,8 +2424,8 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         }
 
         // No File.Exists / workspace-containment check: this path is the app-server's own
-        // skills/list output, not user input, and scope: "user"/"system"/"admin" skills routinely
-        // live outside the workspace (or are directories). Only structural validity is enforced.
+        // skills/list output, not user input, and scope: "user"/"system"/"admin" SKILL.md files
+        // routinely live outside the workspace. Only structural validity is enforced.
         return Path.IsPathRooted(trimmed) ? trimmed : null;
     }
 
