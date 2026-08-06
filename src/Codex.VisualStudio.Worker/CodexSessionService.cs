@@ -2185,7 +2185,10 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
                     continue;
                 }
 
-                string? cwd = SanitizeSkillText(GetString(entry, "cwd"));
+                // cwd is a filesystem path, not prose; cap it like path fields (MaxSkillPathLength)
+                // rather than the shorter MaxSkillTextLength used for descriptions and messages,
+                // or a long-but-valid working directory would be truncated to null.
+                string? cwd = SanitizeSkillText(GetString(entry, "cwd"), MaxSkillPathLength);
 
                 if (entry.TryGetProperty("errors", out JsonElement errorArray)
                     && errorArray.ValueKind == JsonValueKind.Array)
@@ -2212,7 +2215,11 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
                         errors.Add(new SkillLoadError
                         {
                             Cwd = cwd,
-                            Path = SanitizeSkillText(GetString(error, "path"), MaxSkillPathLength),
+                            // Same rooted-path validation as SkillInfo.Path (NormalizeSkillPath),
+                            // not just length/control-character sanitization, so a malformed or
+                            // relative error path is dropped rather than forwarded over the
+                            // contract as if it were a real absolute path.
+                            Path = NormalizeSkillPath(GetString(error, "path")),
                             Message = message,
                         });
                     }
