@@ -139,10 +139,19 @@ while (await Console.In.ReadLineAsync().ConfigureAwait(false) is { } line)
                             path = RepoSkillPath("legacy-formatter", "SKILL.md"),
                             scope = "repo",
                         },
+                        new
+                        {
+                            name = "org-policy",
+                            description = "Managed by organization policy; toggling is a no-op.",
+                            enabled = true,
+                            path = AdminSkillPath("org-policy"),
+                            scope = "admin",
+                        },
                     },
                 },
             },
         },
+        "skills/config/write" => WriteSkillConfig(root),
         "turn/start" => StartTurn(root),
         "turn/steer" => new { turnId = root.GetProperty("params").GetProperty("expectedTurnId").GetString() },
         "turn/interrupt" => new { },
@@ -176,6 +185,22 @@ static string RepoSkillPath(params string[] segments)
 
 static string UserSkillPath(params string[] segments)
     => Path.Combine([Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".codex", "skills", .. segments]);
+
+static string AdminSkillPath(params string[] segments)
+    => Path.Combine([Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "codex", "skills", .. segments]);
+
+// Every scope except "admin" reflects the requested value verbatim; the admin-scope seed always
+// reports effectiveEnabled=true regardless of what was requested, so a manual toggle attempt
+// against it exercises the "an org policy overrode the request" reconciliation path.
+object WriteSkillConfig(JsonElement request)
+{
+    JsonElement parameters = request.GetProperty("params");
+    bool requestedEnabled = parameters.GetProperty("enabled").GetBoolean();
+    string? path = GetOptionalString(parameters, "path");
+    bool isAdminSkill = path is not null
+        && string.Equals(path, AdminSkillPath("org-policy"), StringComparison.OrdinalIgnoreCase);
+    return new { effectiveEnabled = isAdminSkill ? true : requestedEnabled };
+}
 
 static object ThreadResponse(object thread) => new
 {

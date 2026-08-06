@@ -2579,6 +2579,88 @@ public sealed class ViewModelTests
     }
 
     [TestMethod]
+    public async Task SkillToggle_ReconcilesStateToEffectiveEnabled()
+    {
+        var bridge = new FakeWorkerBridge
+        {
+            SkillsResult = new ListSkillsResult
+            {
+                Skills = [new SkillInfo { Name = "review-diff", Scope = "repo", Enabled = true, Path = "/repo/.codex/skills/review-diff/SKILL.md" }],
+            },
+            WriteSkillConfigResult = new WriteSkillConfigResult { EffectiveEnabled = true },
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false);
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready });
+        vm.ToggleSkillsCommand.Execute(null);
+        await WaitForAsync(() => vm.SkillsPanel.HasData);
+        SkillPresentation skill = vm.SkillsPanel.Skills[0];
+        Assert.IsTrue(skill.IsEnabled);
+
+        skill.ToggleCommand.Execute(null);
+        await WaitForAsync(() => bridge.WriteSkillConfigCallCount > 0);
+        await Task.Delay(50);
+
+        Assert.AreEqual(1, bridge.WriteSkillConfigCallCount);
+        Assert.AreEqual("/repo/.codex/skills/review-diff/SKILL.md", bridge.LastWriteSkillConfigRequest!.Path);
+        Assert.IsFalse(bridge.LastWriteSkillConfigRequest.Enabled);
+        Assert.IsTrue(skill.IsEnabled);
+        Assert.AreEqual("Disable", skill.ToggleButtonText);
+    }
+
+    [TestMethod]
+    public async Task SkillToggle_IsDisabledForAdminScope()
+    {
+        var bridge = new FakeWorkerBridge
+        {
+            SkillsResult = new ListSkillsResult
+            {
+                Skills = [new SkillInfo { Name = "org-policy", Scope = "admin", Enabled = true, Path = "/admin/.codex/skills/org-policy/SKILL.md" }],
+            },
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false);
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready });
+        vm.ToggleSkillsCommand.Execute(null);
+        await WaitForAsync(() => vm.SkillsPanel.HasData);
+        SkillPresentation skill = vm.SkillsPanel.Skills[0];
+
+        Assert.IsFalse(skill.CanToggle);
+        Assert.IsFalse(skill.ToggleCommand.CanExecute);
+
+        skill.ToggleCommand.Execute(null);
+        await Task.Delay(50);
+
+        Assert.AreEqual(0, bridge.WriteSkillConfigCallCount);
+    }
+
+    [TestMethod]
+    public async Task SkillsPanel_ShowsFailureWhenToggleUnsupported()
+    {
+        var bridge = new FakeWorkerBridge
+        {
+            SkillsResult = new ListSkillsResult
+            {
+                Skills = [new SkillInfo { Name = "review-diff", Scope = "repo", Enabled = true, Path = "/repo/.codex/skills/review-diff/SKILL.md" }],
+            },
+            WriteSkillConfigResult = new WriteSkillConfigResult
+            {
+                IsSupported = false,
+                UnavailableReason = "Enabling or disabling skills is not supported by this app-server.",
+            },
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false);
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready });
+        vm.ToggleSkillsCommand.Execute(null);
+        await WaitForAsync(() => vm.SkillsPanel.HasData);
+        SkillPresentation skill = vm.SkillsPanel.Skills[0];
+
+        skill.ToggleCommand.Execute(null);
+        await WaitForAsync(() => vm.Items.Count > 0);
+
+        StringAssert.Contains(vm.Items.Last().Text, "not supported");
+        Assert.IsTrue(skill.IsEnabled);
+    }
+
+    [TestMethod]
     public async Task SkillsPanel_DoesNotApplyResultFromPreviousConnectionGeneration()
     {
         var staleResponse = new TaskCompletionSource<ListSkillsResult>(TaskCreationOptions.RunContinuationsAsynchronously);

@@ -16,6 +16,7 @@ public sealed class SkillsPanelPresentation : ObservableObject
     private bool isLoading;
     private bool isTruncated;
     private string statusText = "Skills are not available.";
+    private Func<SkillPresentation, bool, Task>? onToggleRequested;
 
     [DataMember]
     public ObservableCollection<SkillPresentation> Skills { get; } = [];
@@ -56,6 +57,12 @@ public sealed class SkillsPanelPresentation : ObservableObject
     {
         get => statusText;
         private set => SetProperty(ref statusText, value);
+    }
+
+    public void Configure(Func<SkillPresentation, bool, Task> onToggleRequested)
+    {
+        ArgumentNullException.ThrowIfNull(onToggleRequested);
+        this.onToggleRequested = onToggleRequested;
     }
 
     public void SetLoading(bool value) => IsLoading = value;
@@ -128,7 +135,7 @@ public sealed class SkillsPanelPresentation : ObservableObject
             int existingIndex = IndexOfSkill(info.Path);
             if (existingIndex < 0)
             {
-                Skills.Insert(index, new SkillPresentation(info, markdown));
+                Skills.Insert(index, new SkillPresentation(info, markdown, RequestToggleAsync));
             }
             else
             {
@@ -180,6 +187,12 @@ public sealed class SkillsPanelPresentation : ObservableObject
         }
     }
 
+    // Bound to every SkillPresentation.ToggleCommand regardless of when it was created; reads
+    // the delegate through the field each call so a toggle wired up before Configure() runs
+    // (unlikely, but not impossible with async construction) still reaches the real handler.
+    private Task RequestToggleAsync(SkillPresentation skill, bool requestedEnabled)
+        => onToggleRequested?.Invoke(skill, requestedEnabled) ?? Task.CompletedTask;
+
     private int IndexOfSkill(string path)
     {
         for (int i = 0; i < Skills.Count; i++)
@@ -210,7 +223,9 @@ public sealed class SkillsPanelPresentation : ObservableObject
 [DataContract]
 public sealed class SkillPresentation : ObservableObject
 {
+    private readonly Func<SkillPresentation, bool, Task> requestToggle;
     private string name = string.Empty;
+    private string baseDisplayName = string.Empty;
     private string displayName = string.Empty;
     private string shortDescription = string.Empty;
     private string scopeLabel = string.Empty;
@@ -218,12 +233,15 @@ public sealed class SkillPresentation : ObservableObject
     private bool isEnabled;
     private bool canToggle;
 
-    internal SkillPresentation(SkillInfo info, SafeMarkdownService markdown)
+    internal SkillPresentation(SkillInfo info, SafeMarkdownService markdown, Func<SkillPresentation, bool, Task> requestToggle)
     {
         ArgumentNullException.ThrowIfNull(info);
         ArgumentNullException.ThrowIfNull(markdown);
+        ArgumentNullException.ThrowIfNull(requestToggle);
 
         Path = info.Path;
+        this.requestToggle = requestToggle;
+        ToggleCommand = new AsyncCommand(ToggleAsync, () => CanToggle);
         Update(info, markdown);
     }
 
@@ -279,37 +297,67 @@ public sealed class SkillPresentation : ObservableObject
     public bool IsEnabled
     {
         get => isEnabled;
-        internal set => SetProperty(ref isEnabled, value);
+        private set
+        {
+            if (SetProperty(ref isEnabled, value))
+            {
+                OnPropertyChanged(nameof(ToggleButtonText));
+            }
+        }
     }
+
+    // No XAML converter can turn CanToggle=false into a hidden or disabled toggle control
+    // (Remote UI cannot resolve custom converters); the panel binds this string directly instead.
+    [DataMember]
+    public string ToggleButtonText => IsEnabled ? "Disable" : "Enable";
 
     [DataMember]
     public bool CanToggle
     {
         get => canToggle;
-        private set => SetProperty(ref canToggle, value);
+        private set
+        {
+            if (SetProperty(ref canToggle, value))
+            {
+                ToggleCommand.RaiseCanExecuteChanged();
+            }
+        }
     }
+
+    [DataMember]
+    public AsyncCommand ToggleCommand { get; }
 
     internal void Update(SkillInfo info, SafeMarkdownService markdown)
     {
         Name = markdown.ToSafeText(info.Name).Trim();
-        DisplayName = FormatDisplayName(info, markdown);
+        baseDisplayName = markdown.ToSafeText(
+            string.IsNullOrWhiteSpace(info.DisplayName) ? info.Name : info.DisplayName!).Trim();
         ShortDescription = markdown.ToSafeText(
             string.IsNullOrWhiteSpace(info.ShortDescription) ? info.Description : info.ShortDescription!).Trim();
         ScopeLabel = FormatScopeLabel(info.Scope);
         PathTooltip = markdown.ToSafeText(info.Path).Trim();
         CanToggle = !string.Equals(info.Scope, "system", StringComparison.OrdinalIgnoreCase)
             && !string.Equals(info.Scope, "admin", StringComparison.OrdinalIgnoreCase);
-        IsEnabled = info.Enabled;
+        ApplyEffectiveEnabled(info.Enabled);
     }
 
-    // Matches SkillSuggestionViewModel's suffix convention (S4: disabled skills stay visible,
-    // marked rather than hidden, so "my skill is missing" always has an answer in the panel).
-    private static string FormatDisplayName(SkillInfo info, SafeMarkdownService markdown)
+    // The only path that may set IsEnabled: called from a fresh catalog readback (Update, above)
+    // or from ChatViewModel after skills/config/write returns -- always from the server's own
+    // EffectiveEnabled, never optimistically from what the user requested (S2-3: an org policy
+    // can silently override the request, and this view must reflect what actually took effect).
+    internal void ApplyEffectiveEnabled(bool effectiveEnabled)
     {
-        string baseName = markdown.ToSafeText(
-            string.IsNullOrWhiteSpace(info.DisplayName) ? info.Name : info.DisplayName!).Trim();
-        return info.Enabled ? baseName : $"{baseName} (disabled)";
+        // Matches SkillSuggestionViewModel's suffix convention (S4: disabled skills stay visible,
+        // marked rather than hidden, so "my skill is missing" always has an answer in the panel).
+        DisplayName = effectiveEnabled ? baseDisplayName : $"{baseDisplayName} (disabled)";
+        IsEnabled = effectiveEnabled;
     }
+
+    // Defense in depth, matching FileSuggestionPresentationViewModel.MoveSelectionAsync: AsyncCommand.Execute
+    // only guards re-entrancy, not CanExecute, so a caller that bypasses the bound Button (as a
+    // test invoking ToggleCommand.Execute directly does) must still be refused here.
+    private Task ToggleAsync()
+        => CanToggle ? requestToggle(this, !IsEnabled) : Task.CompletedTask;
 
     private static string FormatScopeLabel(string scope) => scope switch
     {

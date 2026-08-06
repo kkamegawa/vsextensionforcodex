@@ -1244,6 +1244,145 @@ public sealed class CodexSessionServiceTests
     }
 
     [TestMethod]
+    public async Task WriteSkillConfig_RejectsRequestWithBothSelectors()
+    {
+        var connection = new RecordingConnection();
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+        var request = new WriteSkillConfigRequest { Name = "review-diff", Path = "/repo/.codex/skills/review-diff", Enabled = false };
+
+        await Assert.ThrowsExactlyAsync<ArgumentException>(
+            () => service.WriteSkillConfigAsync(request, CancellationToken.None));
+
+        Assert.IsFalse(connection.Requests.Any(item => item.Method == "skills/config/write"));
+    }
+
+    [TestMethod]
+    public async Task WriteSkillConfig_RejectsRequestWithNeitherSelector()
+    {
+        var connection = new RecordingConnection();
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+        var request = new WriteSkillConfigRequest { Enabled = false };
+
+        await Assert.ThrowsExactlyAsync<ArgumentException>(
+            () => service.WriteSkillConfigAsync(request, CancellationToken.None));
+
+        Assert.IsFalse(connection.Requests.Any(item => item.Method == "skills/config/write"));
+    }
+
+    [TestMethod]
+    public async Task WriteSkillConfig_SendsPathSelectorWhenNameOmitted()
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "skills/config/write"
+                ? JsonSerializer.SerializeToElement(new { effectiveEnabled = false })
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+        var request = new WriteSkillConfigRequest { Path = "/repo/.codex/skills/review-diff", Enabled = false };
+
+        await service.WriteSkillConfigAsync(request, CancellationToken.None);
+
+        RecordedRequest recorded = connection.Requests.Single(item => item.Method == "skills/config/write");
+        JsonElement parameters = JsonSerializer.SerializeToElement(recorded.Parameters, WireJsonOptions);
+        Assert.AreEqual("/repo/.codex/skills/review-diff", parameters.GetProperty("path").GetString());
+        Assert.IsFalse(parameters.TryGetProperty("name", out _));
+        Assert.IsFalse(parameters.GetProperty("enabled").GetBoolean());
+    }
+
+    [TestMethod]
+    public async Task WriteSkillConfig_SendsNameSelectorWhenPathOmitted()
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "skills/config/write"
+                ? JsonSerializer.SerializeToElement(new { effectiveEnabled = true })
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+        var request = new WriteSkillConfigRequest { Name = "review-diff", Enabled = true };
+
+        await service.WriteSkillConfigAsync(request, CancellationToken.None);
+
+        RecordedRequest recorded = connection.Requests.Single(item => item.Method == "skills/config/write");
+        JsonElement parameters = JsonSerializer.SerializeToElement(recorded.Parameters, WireJsonOptions);
+        Assert.AreEqual("review-diff", parameters.GetProperty("name").GetString());
+        Assert.IsFalse(parameters.TryGetProperty("path", out _));
+        Assert.IsTrue(parameters.GetProperty("enabled").GetBoolean());
+    }
+
+    [TestMethod]
+    public async Task WriteSkillConfig_ReturnsEffectiveEnabledFromServer()
+    {
+        // The app-server's effectiveEnabled can differ from the requested value (an org policy
+        // can override it); the result must carry exactly what the server reported, not an echo
+        // of the request.
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "skills/config/write"
+                ? JsonSerializer.SerializeToElement(new { effectiveEnabled = true })
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+        var request = new WriteSkillConfigRequest { Path = "/admin/.codex/skills/org-policy", Enabled = false };
+
+        WriteSkillConfigResult result = await service.WriteSkillConfigAsync(request, CancellationToken.None);
+
+        Assert.IsTrue(result.IsSupported);
+        Assert.IsTrue(result.EffectiveEnabled);
+    }
+
+    [TestMethod]
+    public async Task WriteSkillConfig_ReturnsUnsupportedWhenMethodUnknown()
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "skills/config/write"
+                ? throw new JsonRpcRemoteException(-32601, "Method not found")
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+        var request = new WriteSkillConfigRequest { Path = "/repo/.codex/skills/review-diff", Enabled = false };
+
+        WriteSkillConfigResult result = await service.WriteSkillConfigAsync(request, CancellationToken.None);
+
+        Assert.IsFalse(result.IsSupported);
+    }
+
+    [TestMethod]
+    public async Task WriteSkillConfig_ClearsCachedSkillList()
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method switch
+            {
+                "skills/list" => JsonSerializer.SerializeToElement(new
+                {
+                    data = new object[] { new { cwd = "/repo", errors = Array.Empty<object>(), skills = Array.Empty<object>() } },
+                }),
+                "skills/config/write" => JsonSerializer.SerializeToElement(new { effectiveEnabled = false }),
+                _ => JsonSerializer.SerializeToElement(new { }),
+            },
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+        await service.ListSkillsAsync(forceReload: false, CancellationToken.None);
+
+        await service.WriteSkillConfigAsync(
+            new WriteSkillConfigRequest { Path = "/repo/.codex/skills/review-diff", Enabled = false },
+            CancellationToken.None);
+        await service.ListSkillsAsync(forceReload: false, CancellationToken.None);
+
+        Assert.AreEqual(2, connection.Requests.Count(item => item.Method == "skills/list"));
+    }
+
+    [TestMethod]
     public async Task SkillsChanged_DoesNotEmitConversationEvent()
     {
         var connection = new RecordingConnection();

@@ -101,6 +101,29 @@ public sealed class WorkerRpcServiceTests
     }
 
     [TestMethod]
+    public async Task WriteSkillConfig_DelegatesToSession()
+    {
+        var connection = new StubConnection
+        {
+            Handler = method => method == "skills/config/write"
+                ? JsonSerializer.SerializeToElement(new { effectiveEnabled = false })
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+
+        var session = new CodexSessionService(new ApprovalPolicyEngine(new PathAccessPolicy()), new SecretRedactor());
+        await session.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        await using var worker = new WorkerRpcService(new SecretRedactor(), new FakeProcessHost(), session);
+
+        WriteSkillConfigResult result = await worker.WriteSkillConfigAsync(
+            new WriteSkillConfigRequest { Path = "/repo/.codex/skills/review-diff", Enabled = true },
+            CancellationToken.None);
+
+        Assert.IsTrue(result.IsSupported);
+        Assert.IsFalse(result.EffectiveEnabled);
+    }
+
+    [TestMethod]
     public async Task Connect_RejectsPreviousContractVersion()
     {
         var session = new CodexSessionService(new ApprovalPolicyEngine(new PathAccessPolicy()), new SecretRedactor());

@@ -5,7 +5,7 @@ namespace Codex.VisualStudio.Contracts;
 
 public static class ContractVersions
 {
-    public const int Current = 16;
+    public const int Current = 17;
 }
 
 public enum WorkerConnectionState
@@ -557,6 +557,25 @@ public sealed class ListSkillsResult : AppServerOperationResult
     public bool IsTruncated { get; set; }
 }
 
+// Selector is name XOR path (schemas/v2/SkillsConfigWriteParams.json requires only "enabled";
+// the worker enforces the XOR itself since the schema does not).
+public sealed class WriteSkillConfigRequest
+{
+    public string? Name { get; set; }
+
+    public string? Path { get; set; }
+
+    public bool Enabled { get; set; }
+}
+
+// effectiveEnabled is required by schemas/v2/SkillsConfigWriteResponse.json and can differ from
+// the requested Enabled value when an org/admin policy overrides it -- callers must reconcile UI
+// state from this field, never from the request they sent.
+public sealed class WriteSkillConfigResult : AppServerOperationResult
+{
+    public bool EffectiveEnabled { get; set; }
+}
+
 public sealed class UploadFeedbackRequest
 {
     public string Classification { get; set; } = string.Empty;
@@ -885,6 +904,9 @@ public interface ICodexWorkerClient
 
     [JsonRpcMethod("worker/skills/list")]
     Task<ListSkillsResult> ListSkillsAsync(bool forceReload, CancellationToken cancellationToken);
+
+    [JsonRpcMethod("worker/skills/config/write")]
+    Task<WriteSkillConfigResult> WriteSkillConfigAsync(WriteSkillConfigRequest request, CancellationToken cancellationToken);
 
     [JsonRpcMethod("worker/feedback/upload")]
     Task<UploadFeedbackResult> UploadFeedbackAsync(UploadFeedbackRequest request, CancellationToken cancellationToken);

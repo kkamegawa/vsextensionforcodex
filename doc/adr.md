@@ -230,3 +230,20 @@
 
 - A future reader diffing this feature against the permission-profile precedent should not "fix" this panel to match `PopulatePermissionProfilesAsync`'s refuse-on-truncation behavior; the two are intentionally different for the reason above.
 - If skill *selection* is ever added to this panel (as opposed to display), that interaction would need to inherit the same truncation guard `ResolveSkillInvocationsAsync` already uses, not this ADR's display-only leniency.
+
+## ADR-013: The skill enable/disable toggle does not show a confirmation dialog
+
+- Date: 2026-08-06
+- Task: GitHub Issue #119 and sub-issue #126, Codex custom skills support
+- Status: Accepted
+
+### Decision
+
+- Clicking a skill's toggle button in the panel calls `skills/config/write` directly, with no "Are you sure?" prompt. This is a deliberate contrast with `/feedback`, the one other place in this extension that shows a confirmation dialog before an app-server call (`ChatViewModel.cs`, "Send this feedback to Codex?"): `/feedback` prompts because it uploads user-authored text to an external service, an action with a real (if small) privacy/irreversibility cost. `skills/config/write` only flips a local, per-item boolean in the user's own Codex configuration on their own machine — nothing leaves the workstation, and disabling a skill is exactly as reversible as re-enabling it (another click).
+- The two safeguards this feature does add are cheaper than a dialog and target the actual risk: `SkillPresentation.CanToggle` disables the control entirely for `scope: "system"`/`"admin"` skills (so a user cannot even attempt to override an organization policy from this UI), and `ChatViewModel.OnSkillToggleRequestedAsync` sets the row's `IsEnabled` from the server's `EffectiveEnabled` response rather than from what was requested (ADR-010's sibling concern: the app-server, not the client, gets the final say, and the UI must not lie about it).
+- No optimistic update happens between the click and the response: `SkillPresentation.IsEnabled` is `private set`, changed only via `ApplyEffectiveEnabled`, which is called from `Update` (fresh catalog reads) and from the toggle's completion handler -- never from the click itself.
+
+### Consequences
+
+- A user can toggle a skill off, see it flip back on because org policy overrode the request, and get no interstitial warning about that possibility beforehand -- the row's state after the click is the only feedback. If this proves confusing in practice, the fix is a status message on override (not a blocking confirmation before every click, which would defeat the point of this ADR).
+- If a future skill mutation acquires an externally-visible side effect (e.g. syncing config to a team-shared location), it would need its own confirmation gate matching `/feedback`'s reasoning above -- this ADR's no-dialog decision does not automatically extend to it.

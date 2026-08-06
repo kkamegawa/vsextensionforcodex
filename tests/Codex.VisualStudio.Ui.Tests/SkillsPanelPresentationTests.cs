@@ -235,16 +235,28 @@ public sealed class SkillsPanelPresentationTests
                 && value.Attribute("Command")?.Value == "{Binding CloseSkillsCommand}"));
         StringAssert.Contains(border.Attribute("Background")?.Value, "EnvironmentColors.ToolWindowBackgroundBrushKey");
         StringAssert.Contains(border.Attribute("BorderBrush")?.Value, "EnvironmentColors.ToolWindowBorderBrushKey");
+        XElement list = border.Descendants(presentation + "ListBox")
+            .Single(value => value.Attribute("ItemsSource")?.Value == "{Binding SkillsPanel.Skills}");
+
+        // Panel-chrome buttons only: excludes the per-row toggle button living inside the
+        // ListBox's DataTemplate, whose DataContext is a SkillPresentation, not the panel itself.
+        // (The whole document's root element is itself a <DataTemplate>, so an Ancestors("DataTemplate")
+        // check would exclude every button in the file -- comparing against this specific list's
+        // own descendants is what actually isolates the per-row template content.)
+        HashSet<XElement> rowButtons = list.Descendants(presentation + "Button").ToHashSet();
         CollectionAssert.AreEquivalent(
             SkillsPanelCommands,
             border.Descendants(presentation + "Button")
+                .Where(value => !rowButtons.Contains(value))
                 .Select(value => value.Attribute("Command")?.Value)
                 .Where(value => value is not null)
                 .Cast<string>()
                 .ToArray());
 
-        XElement list = border.Descendants(presentation + "ListBox")
-            .Single(value => value.Attribute("ItemsSource")?.Value == "{Binding SkillsPanel.Skills}");
+        XElement toggleButton = list
+            .Descendants(presentation + "Button")
+            .Single(value => value.Attribute("Command")?.Value == "{Binding ToggleCommand}");
+        Assert.AreEqual("{Binding ToggleButtonText}", toggleButton.Attribute("Content")?.Value);
         Assert.AreEqual("True", list.Attribute("VirtualizingPanel.IsVirtualizing")?.Value);
         Assert.AreEqual("Recycling", list.Attribute("VirtualizingPanel.VirtualizationMode")?.Value);
         Assert.IsNotNull(list.Attribute("MaxHeight"));

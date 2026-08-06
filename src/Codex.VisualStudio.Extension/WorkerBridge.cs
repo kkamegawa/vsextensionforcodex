@@ -91,6 +91,15 @@ internal interface IWorkerBridge : IAsyncDisposable
             UnavailableReason = "Skills are not available through this bridge.",
         });
 
+    // Default implementation for the same reason as ListSkillsAsync above: a new interface
+    // method with a body does not force FakeWorkerBridge to change.
+    Task<WriteSkillConfigResult> WriteSkillConfigAsync(WriteSkillConfigRequest request, CancellationToken cancellationToken)
+        => Task.FromResult(new WriteSkillConfigResult
+        {
+            IsSupported = false,
+            UnavailableReason = "Skills are not available through this bridge.",
+        });
+
     Task<UploadFeedbackResult> UploadFeedbackAsync(UploadFeedbackRequest request, CancellationToken cancellationToken);
 
     Task<RateLimitsResult> GetRateLimitsAsync(CancellationToken cancellationToken);
@@ -310,6 +319,12 @@ public sealed class WorkerBridge : IWorkerBridge, ICodexWorkerObserver
         => RequireRpc().InvokeWithCancellationAsync<ListSkillsResult>(
             "worker/skills/list",
             new object[] { forceReload },
+            cancellationToken);
+
+    public Task<WriteSkillConfigResult> WriteSkillConfigAsync(WriteSkillConfigRequest request, CancellationToken cancellationToken)
+        => RequireRpc().InvokeWithCancellationAsync<WriteSkillConfigResult>(
+            "worker/skills/config/write",
+            new object[] { request },
             cancellationToken);
 
     public Task<UploadFeedbackResult> UploadFeedbackAsync(UploadFeedbackRequest request, CancellationToken cancellationToken)

@@ -254,6 +254,11 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
     public Task<ListSkillsResult> ListSkillsAsync(bool forceReload, CancellationToken cancellationToken)
         => session.ListSkillsAsync(forceReload, cancellationToken);
 
+    public Task<WriteSkillConfigResult> WriteSkillConfigAsync(
+        WriteSkillConfigRequest request,
+        CancellationToken cancellationToken)
+        => session.WriteSkillConfigAsync(request, cancellationToken);
+
     public Task<UploadFeedbackResult> UploadFeedbackAsync(
         UploadFeedbackRequest request,
         CancellationToken cancellationToken)

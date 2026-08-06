@@ -180,6 +180,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         SlashCommands.Configure(OnSlashSuggestionAcceptedAsync, ExecuteSlashSubmissionAsync, OnSlashCommandClearedAsync);
         FileSuggestions.Configure(OnFileSuggestionAcceptedAsync);
         SkillSuggestions.Configure(OnSkillSuggestionAcceptedAsync);
+        SkillsPanel.Configure(OnSkillToggleRequestedAsync);
 
         // Suggestion chips for the empty state. Selecting one populates the composer; the
         // user then presses Send. Keeps behavior simple and avoids needing editor context.
@@ -3828,6 +3829,38 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             await OnUiAsync(() => SkillsPanel.SetLoading(false)).ConfigureAwait(false);
             skillsRefreshGate.Release();
         }
+    }
+
+    private async Task OnSkillToggleRequestedAsync(SkillPresentation skill, bool requestedEnabled)
+    {
+        var request = new WriteSkillConfigRequest { Path = skill.Path, Enabled = requestedEnabled };
+        WriteSkillConfigResult result;
+        try
+        {
+            result = await bridge.WriteSkillConfigAsync(request, lifetime.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+        {
+            return;
+        }
+        catch (Exception ex)
+        {
+            ExtensionDiagnostics.Write($"Skill toggle failed ({ex.GetType().Name}).");
+            return;
+        }
+
+        if (!result.IsSupported)
+        {
+            await ShowSlashFailureAsync(string.IsNullOrWhiteSpace(result.UnavailableReason)
+                ? "Enabling or disabling skills is not supported by this app-server."
+                : result.UnavailableReason!).ConfigureAwait(false);
+            return;
+        }
+
+        // Never set IsEnabled from requestedEnabled: an org/admin policy can override the
+        // request server-side, and EffectiveEnabled is the only value that reflects what the
+        // app-server actually did (S2-3). No optimistic update happens before this point either.
+        await OnUiAsync(() => skill.ApplyEffectiveEnabled(result.EffectiveEnabled)).ConfigureAwait(false);
     }
 
     private void UpdateSkillsConnectionLifecycle(WorkerConnectionState state)

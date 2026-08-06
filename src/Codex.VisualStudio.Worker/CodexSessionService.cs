@@ -950,6 +950,53 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         return result;
     }
 
+    public async Task<WriteSkillConfigResult> WriteSkillConfigAsync(
+        WriteSkillConfigRequest request,
+        CancellationToken cancellationToken)
+    {
+        (string? name, string? path) = ValidateWriteSkillConfigRequest(request);
+
+        OperationCallResult call = await TrySendOperationAsync(
+            "skills/config/write",
+            new { name, path, enabled = request.Enabled },
+            TimeSpan.FromSeconds(30),
+            cancellationToken).ConfigureAwait(false);
+        if (!call.IsSupported)
+        {
+            return Unsupported<WriteSkillConfigResult>("Skills are not supported by this app-server.");
+        }
+
+        InvalidateSkillCache();
+        return new WriteSkillConfigResult { EffectiveEnabled = GetBool(call.Result, "effectiveEnabled") == true };
+    }
+
+    private static (string? Name, string? Path) ValidateWriteSkillConfigRequest(WriteSkillConfigRequest request)
+    {
+        string? name = NormalizeSkillName(request.Name);
+        string? path = NormalizeSkillPath(request.Path);
+        bool hasName = !string.IsNullOrWhiteSpace(request.Name);
+        bool hasPath = !string.IsNullOrWhiteSpace(request.Path);
+
+        if (hasName == hasPath)
+        {
+            throw new ArgumentException(
+                "Exactly one of Name or Path must be set to select the skill to reconfigure.",
+                nameof(request));
+        }
+
+        if (hasName && name is null)
+        {
+            throw new ArgumentException("Name is invalid.", nameof(request));
+        }
+
+        if (hasPath && path is null)
+        {
+            throw new ArgumentException("Path must be an absolute path with no control characters.", nameof(request));
+        }
+
+        return (name, path);
+    }
+
     private void InvalidateSkillCache()
     {
         lock (skillCacheLock)
