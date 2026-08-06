@@ -911,6 +911,79 @@ public sealed class CodexSessionServiceTests
     }
 
     [TestMethod]
+    public async Task ListSkills_NormalizesErrorPathToNullWhenNotRooted()
+    {
+        // SkillLoadError.Path must go through the same rooted-path validation as SkillInfo.Path
+        // (NormalizeSkillPath), not just length/control-character sanitization -- a relative or
+        // malformed path must not be forwarded over the contract as if it were absolute.
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "skills/list"
+                ? JsonSerializer.SerializeToElement(new
+                {
+                    data = new object[]
+                    {
+                        new
+                        {
+                            cwd = "/repo",
+                            errors = new object[]
+                            {
+                                new { message = "relative path error", path = "relative/SKILL.md" },
+                                new { message = "rooted path error", path = "/repo/.codex/skills/broken/SKILL.md" },
+                            },
+                            skills = Array.Empty<object>(),
+                        },
+                    },
+                })
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        ListSkillsResult result = await service.ListSkillsAsync(forceReload: false, CancellationToken.None);
+
+        Assert.HasCount(2, result.Errors);
+        Assert.IsNull(result.Errors[0].Path);
+        Assert.AreEqual("/repo/.codex/skills/broken/SKILL.md", result.Errors[1].Path);
+    }
+
+    [TestMethod]
+    public async Task ListSkills_PreservesLongCwdInsteadOfTruncatingToNull()
+    {
+        // cwd is a filesystem path, so it must be capped at MaxSkillPathLength (1024) like other
+        // path fields, not the shorter MaxSkillTextLength (512) used for prose descriptions --
+        // otherwise a long-but-valid working directory would be silently dropped to null.
+        string longCwd = "/" + string.Join('/', Enumerable.Repeat("segment", 80));
+        Assert.IsTrue(longCwd.Length > 512 && longCwd.Length <= 1024);
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "skills/list"
+                ? JsonSerializer.SerializeToElement(new
+                {
+                    data = new object[]
+                    {
+                        new
+                        {
+                            cwd = longCwd,
+                            errors = Array.Empty<object>(),
+                            skills = new object[]
+                            {
+                                new { name = "review-diff", description = "d", enabled = true, path = "/repo/.codex/skills/review-diff", scope = "repo" },
+                            },
+                        },
+                    },
+                })
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        ListSkillsResult result = await service.ListSkillsAsync(forceReload: false, CancellationToken.None);
+
+        Assert.AreEqual(longCwd, result.Skills[0].Cwd);
+    }
+
+    [TestMethod]
     public async Task ListSkills_RedactsSecretsInDescriptionAndErrorMessage()
     {
         var connection = new RecordingConnection
