@@ -534,6 +534,101 @@
             </Popup>
           </Grid>
 
+          <!-- Skills panel flyout: a read-only listing of the Codex skills catalog discovered
+               for this workspace (scope, enabled state, and any per-skill load errors). Enabling
+               or disabling a skill is a later addition; this panel only displays. -->
+          <Grid Margin="0,0,6,0"
+                Visibility="{Binding IsSkillsAvailable, Converter={StaticResource BoolToVis}}">
+            <Grid.InputBindings>
+              <KeyBinding Key="Escape" Command="{Binding CloseSkillsCommand}" />
+            </Grid.InputBindings>
+            <Button Content="Skills"
+                    Command="{Binding ToggleSkillsCommand}"
+                    ToolTip="{Binding SkillsPanel.StatusText}"
+                    AutomationProperties.Name="Codex skills"
+                    AutomationProperties.HelpText="Shows the Codex skills catalog for this workspace."
+                    Style="{StaticResource SmallRoundButtonStyle}" />
+            <Popup IsOpen="{Binding IsSkillsOpen, Mode=TwoWay}"
+                   StaysOpen="False"
+                   Placement="Bottom"
+                   VerticalOffset="2"
+                   AllowsTransparency="True"
+                   PopupAnimation="Fade"
+                   Focusable="True">
+              <Border Width="340" MaxHeight="440" Padding="12" CornerRadius="6" BorderThickness="1"
+                      Focusable="True"
+                      FocusManager.IsFocusScope="True"
+                      FocusManager.FocusedElement="{Binding ElementName=SkillsCloseButton}"
+                      KeyboardNavigation.TabNavigation="Cycle"
+                      Background="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBackgroundBrushKey}}"
+                      BorderBrush="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBorderBrushKey}}"
+                      AutomationProperties.Name="Codex skills catalog"
+                      AutomationProperties.HelpText="Lists Codex skills discovered for this workspace, their scope, and any load errors.">
+                <Border.InputBindings>
+                  <KeyBinding Key="Escape" Command="{Binding CloseSkillsCommand}" />
+                </Border.InputBindings>
+                <DockPanel>
+                  <TextBlock DockPanel.Dock="Top" Text="Codex skills" FontWeight="SemiBold" FontSize="14" />
+                  <TextBlock DockPanel.Dock="Top" Margin="0,6,0,6" Text="{Binding SkillsPanel.StatusText}"
+                             AutomationProperties.LiveSetting="Polite" />
+                  <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" Margin="0,10,0,0"
+                              HorizontalAlignment="Right">
+                    <Button Content="Reload" Margin="0,0,6,0"
+                            Command="{Binding RefreshSkillsCommand}"
+                            AutomationProperties.Name="Reload Codex skills"
+                            AutomationProperties.HelpText="Re-scans the workspace for Codex skills."
+                            Style="{StaticResource SmallRoundButtonStyle}" />
+                    <Button x:Name="SkillsCloseButton" Content="Close"
+                            Command="{Binding CloseSkillsCommand}"
+                            AutomationProperties.Name="Close skills details"
+                            Style="{StaticResource SmallRoundButtonStyle}" />
+                  </StackPanel>
+                  <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel>
+                      <ListBox ItemsSource="{Binding SkillsPanel.Skills}"
+                               Background="Transparent"
+                               BorderThickness="0"
+                               Foreground="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowTextBrushKey}}"
+                               ItemContainerStyle="{StaticResource SelectableRowStyle}"
+                               MaxHeight="230"
+                               ScrollViewer.CanContentScroll="True"
+                               VirtualizingPanel.IsVirtualizing="True"
+                               VirtualizingPanel.VirtualizationMode="Recycling">
+                        <ListBox.ItemTemplate>
+                          <DataTemplate>
+                            <StackPanel ToolTip="{Binding PathTooltip}">
+                              <TextBlock Text="{Binding DisplayName}" Style="{x:Null}" TextTrimming="CharacterEllipsis" />
+                              <TextBlock Opacity="0.65" FontSize="10" Text="{Binding ScopeLabel}" TextTrimming="CharacterEllipsis" />
+                              <TextBlock Opacity="0.85" FontSize="11" Text="{Binding ShortDescription}"
+                                         TextWrapping="Wrap"
+                                         Visibility="{Binding HasShortDescription, Converter={StaticResource BoolToVis}}" />
+                            </StackPanel>
+                          </DataTemplate>
+                        </ListBox.ItemTemplate>
+                      </ListBox>
+                      <TextBlock Margin="0,6,0,0" FontSize="10" Opacity="0.85" TextWrapping="Wrap"
+                                 Text="Showing the first skills and errors; the full catalog is larger than this listing can display."
+                                 Visibility="{Binding SkillsPanel.IsTruncated, Converter={StaticResource BoolToVis}}" />
+                      <TextBlock Margin="0,10,0,4" FontWeight="SemiBold" Text="Load errors"
+                                 Visibility="{Binding SkillsPanel.HasErrors, Converter={StaticResource BoolToVis}}" />
+                      <ItemsControl ItemsSource="{Binding SkillsPanel.Errors}"
+                                    Visibility="{Binding SkillsPanel.HasErrors, Converter={StaticResource BoolToVis}}">
+                        <ItemsControl.ItemTemplate>
+                          <DataTemplate>
+                            <StackPanel Margin="0,4,0,0">
+                              <TextBlock Text="{Binding Path}" Opacity="0.65" FontSize="10" TextTrimming="CharacterEllipsis" />
+                              <TextBlock Text="{Binding Message}" TextWrapping="Wrap" />
+                            </StackPanel>
+                          </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                      </ItemsControl>
+                    </StackPanel>
+                  </ScrollViewer>
+                </DockPanel>
+              </Border>
+            </Popup>
+          </Grid>
+
           <!-- Thread-history flyout. The Popup's PlacementTarget defaults to its parent grid
                (which wraps the history button), so it anchors directly beneath the icon. -->
           <Grid>

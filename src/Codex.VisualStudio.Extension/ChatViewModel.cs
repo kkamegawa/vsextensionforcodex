@@ -41,6 +41,8 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     private readonly IExternalLinkOpener externalLinkOpener;
     private readonly Func<DateTimeOffset> utcNow;
     private readonly SemaphoreSlim usageRefreshGate = new(1, 1);
+    private readonly SemaphoreSlim skillsRefreshGate = new(1, 1);
+    private static readonly TimeSpan SkillsReloadMinInterval = TimeSpan.FromSeconds(5);
     private readonly ExtensionSettings settings;
     private readonly Queue<UserInputViewModel> userInputQueue = new();
     private readonly Queue<ApprovalViewModel> approvalQueue = new();
@@ -59,6 +61,9 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     private bool initialized;
     private bool isHistoryOpen;
     private bool isUsageOpen;
+    private bool isSkillsOpen;
+    private bool skillsConnectionActive;
+    private DateTimeOffset? lastSkillsFetchedAt;
     private bool usageConnectionActive;
     private long usageConnectionGeneration;
     private long usageFetchedGeneration = -1;
@@ -161,6 +166,13 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         });
         OpenUsageDashboardCommand = new AsyncCommand(() => OpenExternalLinkAsync(ExternalLinkTarget.UsageDashboard));
         OpenUsageHelpCommand = new AsyncCommand(() => OpenExternalLinkAsync(ExternalLinkTarget.UsageHelp));
+        ToggleSkillsCommand = new AsyncCommand(ToggleSkillsAsync, () => IsSkillsAvailable);
+        CloseSkillsCommand = new AsyncCommand(() =>
+        {
+            IsSkillsOpen = false;
+            return Task.CompletedTask;
+        });
+        RefreshSkillsCommand = new AsyncCommand(() => RefreshSkillsPanelAsync(forceReload: true));
         AttachCommand = new AsyncCommand(AttachAsync);
         ConfirmApprovalModeCommand = new AsyncCommand(ConfirmApprovalModeAsync, () => HasApprovalModeConfirmation);
         CancelApprovalModeCommand = new AsyncCommand(CancelApprovalModeAsync, () => HasApprovalModeConfirmation);
@@ -379,6 +391,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             if (SetProperty(ref status, value))
             {
                 UpdateUsageConnectionLifecycle(value.State);
+                UpdateSkillsConnectionLifecycle(value.State);
                 RaiseCommandStates();
                 OnPropertyChanged(nameof(IsDegraded));
                 OnPropertyChanged(nameof(IsTurnActive));
@@ -390,6 +403,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 OnPropertyChanged(nameof(StatusAutomationHelpText));
                 OnPropertyChanged(nameof(EffectiveApprovalModeText));
                 OnPropertyChanged(nameof(IsUsageAvailable));
+                OnPropertyChanged(nameof(IsSkillsAvailable));
             }
         }
     }
@@ -480,10 +494,9 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         get => isHistoryOpen;
         set
         {
-            if (SetProperty(ref isHistoryOpen, value) && value && isUsageOpen)
+            if (SetProperty(ref isHistoryOpen, value) && value)
             {
-                isUsageOpen = false;
-                OnPropertyChanged(nameof(IsUsageOpen));
+                CloseOtherPanels(closeHistory: false);
             }
         }
     }
@@ -494,10 +507,24 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         get => isUsageOpen;
         set
         {
-            if (SetProperty(ref isUsageOpen, value) && value && isHistoryOpen)
+            if (SetProperty(ref isUsageOpen, value) && value)
             {
-                isHistoryOpen = false;
-                OnPropertyChanged(nameof(IsHistoryOpen));
+                CloseOtherPanels(closeUsage: false);
+            }
+        }
+    }
+
+    // Two-way bound to the skills-panel Popup.IsOpen. Mutually exclusive with history/usage,
+    // same as those two are with each other.
+    [DataMember]
+    public bool IsSkillsOpen
+    {
+        get => isSkillsOpen;
+        set
+        {
+            if (SetProperty(ref isSkillsOpen, value) && value)
+            {
+                CloseOtherPanels(closeSkills: false);
             }
         }
     }
@@ -507,7 +534,37 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         => Account.IsSignedIn && IsConnectedState(Status.State);
 
     [DataMember]
+    public bool IsSkillsAvailable
+        => IsConnectedState(Status.State);
+
+    [DataMember]
     public UsagePresentation Usage { get; } = new();
+
+    [DataMember]
+    public SkillsPanelPresentation SkillsPanel { get; } = new();
+
+    // History, usage, and skills flyouts share one toolbar row and must not overlap. Each
+    // panel's setter calls this (naming itself as the one NOT to close) whenever it opens.
+    private void CloseOtherPanels(bool closeHistory = true, bool closeUsage = true, bool closeSkills = true)
+    {
+        if (closeHistory && isHistoryOpen)
+        {
+            isHistoryOpen = false;
+            OnPropertyChanged(nameof(IsHistoryOpen));
+        }
+
+        if (closeUsage && isUsageOpen)
+        {
+            isUsageOpen = false;
+            OnPropertyChanged(nameof(IsUsageOpen));
+        }
+
+        if (closeSkills && isSkillsOpen)
+        {
+            isSkillsOpen = false;
+            OnPropertyChanged(nameof(IsSkillsOpen));
+        }
+    }
 
     [DataMember]
     public ObservableCollection<SuggestionChip> Suggestions { get; }
@@ -764,6 +821,15 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
     [DataMember]
     public AsyncCommand OpenUsageHelpCommand { get; }
+
+    [DataMember]
+    public AsyncCommand ToggleSkillsCommand { get; }
+
+    [DataMember]
+    public AsyncCommand CloseSkillsCommand { get; }
+
+    [DataMember]
+    public AsyncCommand RefreshSkillsCommand { get; }
 
     [DataMember]
     public AsyncCommand AttachCommand { get; }
@@ -1760,8 +1826,10 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         return Task.CompletedTask;
     }
 
-    private Task OnSkillsChangedAsync(SkillsChangedEvent value)
-        => OnUiAsync(() =>
+    private async Task OnSkillsChangedAsync(SkillsChangedEvent value)
+    {
+        bool skillsPanelOpen = false;
+        await OnUiAsync(() =>
         {
             // The open overlay may be showing a catalog that just changed; closing it (rather
             // than trying to refresh in place) avoids an accepted suggestion inserting a $token
@@ -1771,7 +1839,18 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 CancelSkillSuggestionRefresh();
                 SkillSuggestions.CloseSuggestions();
             }
-        });
+
+            skillsPanelOpen = IsSkillsOpen;
+        }).ConfigureAwait(false);
+
+        // The panel, unlike the mention overlay, has no user-typed query to invalidate, so it is
+        // refreshed in place instead of closed -- the worker cache was already cleared by the
+        // notification that triggered this handler, so this call reaches the app-server.
+        if (skillsPanelOpen)
+        {
+            await RefreshSkillsPanelAsync(forceReload: false).ConfigureAwait(false);
+        }
+    }
 
     private static bool TryGetFileSuggestionQuery(string text, out string query)
     {
@@ -3673,6 +3752,93 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         }
     }
 
+    private async Task ToggleSkillsAsync()
+    {
+        bool opening = !IsSkillsOpen;
+        await OnUiAsync(() => IsSkillsOpen = opening).ConfigureAwait(false);
+        if (opening)
+        {
+            await RefreshSkillsPanelAsync(forceReload: false).ConfigureAwait(false);
+        }
+    }
+
+    internal async Task RefreshSkillsPanelAsync(bool forceReload)
+    {
+        try
+        {
+            await skillsRefreshGate.WaitAsync(lifetime.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+        {
+            return;
+        }
+
+        try
+        {
+            if (!IsSkillsAvailable)
+            {
+                return;
+            }
+
+            DateTimeOffset requestedAt = utcNow();
+
+            // Only the explicit reload path is throttled: opening the panel always asks the
+            // worker, whose own cache (CodexSessionService) already serves that cheaply, but a
+            // user mashing the reload button should not be able to force the app-server to
+            // rescan disk on every click.
+            if (forceReload
+                && lastSkillsFetchedAt.HasValue
+                && requestedAt - lastSkillsFetchedAt.Value < SkillsReloadMinInterval)
+            {
+                return;
+            }
+
+            await OnUiAsync(() => SkillsPanel.SetLoading(true)).ConfigureAwait(false);
+            ListSkillsResult result;
+            try
+            {
+                result = await bridge.ListSkillsAsync(forceReload, lifetime.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+            {
+                return;
+            }
+            catch (Exception ex)
+            {
+                ExtensionDiagnostics.Write($"Skills panel refresh failed ({ex.GetType().Name}).");
+                return;
+            }
+
+            lastSkillsFetchedAt = requestedAt;
+            await OnUiAsync(() => SkillsPanel.Update(result, markdown)).ConfigureAwait(false);
+        }
+        finally
+        {
+            await OnUiAsync(() => SkillsPanel.SetLoading(false)).ConfigureAwait(false);
+            skillsRefreshGate.Release();
+        }
+    }
+
+    private void UpdateSkillsConnectionLifecycle(WorkerConnectionState state)
+    {
+        bool isConnected = IsConnectedState(state);
+        if (isConnected)
+        {
+            skillsConnectionActive = true;
+            return;
+        }
+
+        if (!skillsConnectionActive)
+        {
+            return;
+        }
+
+        skillsConnectionActive = false;
+        lastSkillsFetchedAt = null;
+        IsSkillsOpen = false;
+        SkillsPanel.Clear();
+    }
+
     private async Task OpenExternalLinkAsync(ExternalLinkTarget target)
     {
         try
@@ -3831,6 +3997,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         InterruptCommand.RaiseCanExecuteChanged();
         AccountCommand.RaiseCanExecuteChanged();
         ToggleUsageCommand.RaiseCanExecuteChanged();
+        ToggleSkillsCommand.RaiseCanExecuteChanged();
     }
 
     // In the OOP extension process, Application.Current is null so the null-conditional

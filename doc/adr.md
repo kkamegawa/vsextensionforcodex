@@ -196,3 +196,37 @@
 
 - If `ResolveSkillInvocationsAsync` or any future caller is changed to build a `SkillInvocation` from free-form text instead of a `skills/list` entry, this ADR's trust assumption breaks and the missing `TryNormalizeReadableFile` checks become a real gap. Any such change must re-add path validation at that point, not rely on `BuildTurnInput` to catch it.
 - A compromised or buggy app-server could return a `skills/list` entry whose `path` is a sensitive file elsewhere on disk; `BuildTurnInput` will forward it to `turn/start` verbatim (as `{ type: "skill", name, path }`) since it trusts the app-server's own catalog for this input kind. This mirrors how `mention`/`localImage` attachments already trust user-selected paths, but for skills the trusted party is the app-server rather than the user.
+
+## ADR-011: `$` is reserved for skill mentions only in v1
+
+- Date: 2026-08-06
+- Task: GitHub Issue #119 and sub-issue #125, Codex custom skills support
+- Status: Accepted
+
+### Decision
+
+- `TryGetSkillSuggestionQuery`/`SkillMentionParser.ExtractSkillTokens` (`src/Codex.VisualStudio.Extension/ChatViewModel.cs`, `SkillMentionParser.cs`) are the only consumers of a leading `$` in the composer. `doc/plan.md`'s app-server API table lists `app/list` alongside a `$<app-slug>` mention convention for the (separate, not-yet-implemented) apps/connectors feature; that convention is explicitly deferred rather than adopted here.
+- Reusing `$` for two unrelated features (skills now, apps later) without a namespacing scheme (e.g. `$app:` vs a bare `$name`) would make token resolution ambiguous the moment both catalogs exist, and would force `ResolveSkillInvocationsAsync`/`SkillSuggestionPresentationViewModel` to also carry an apps catalog they have no other reason to depend on.
+- Existing inline mention triggers in this composer are not uniform: file references use `#`, not `@`; skills now use `$`. There is no reserved trigger character convention across the codebase to violate — this ADR is what establishes `$`'s scope going forward.
+
+### Consequences
+
+- Implementing apps/connector mentions later requires either a different trigger character or a `$app:`-style prefix inside the existing `$` scope, plus its own resolution path — it cannot silently reuse `SkillMentionParser` as-is.
+- If `doc/plan.md`'s API table is read as a UI commitment to `$<app-slug>`, this ADR overrides it for v1; the table describes the app-server surface, not the composer's trigger-character allocation.
+
+## ADR-012: The skills panel displays a truncated catalog rather than refusing to show one
+
+- Date: 2026-08-06
+- Task: GitHub Issue #119 and sub-issue #125, Codex custom skills support
+- Status: Accepted
+
+### Decision
+
+- `SkillsPanelPresentation.Update` renders `ListSkillsResult.Skills`/`Errors` whenever `IsSupported` is true, even when `IsTruncated` is also true (the worker's `MaxSkills`/`MaxSkillErrors` display cap was hit). A `TextBlock` bound to `SkillsPanel.IsTruncated` tells the user the listing is a prefix of a larger catalog.
+- This is the deliberate opposite of `PopulatePermissionProfilesAsync`, which refuses to populate the permission-mode picker at all when its list is truncated. That refusal exists because picking a permission profile from an incomplete list is a security decision — the omitted entries could be the safer or more restrictive ones. A skills catalog listing is purely additive/informational: a truncated view is strictly more useful than an empty one, and there is no safety property lost by showing 200 of 250 skills.
+- The same asymmetry already exists between `ResolveSkillInvocationsAsync`/`RefreshSkillSuggestionsAsync` (both refuse to resolve or suggest against a truncated catalog, since a wrong scope-collision resolution there has send-time consequences) and this read-only panel (which has none).
+
+### Consequences
+
+- A future reader diffing this feature against the permission-profile precedent should not "fix" this panel to match `PopulatePermissionProfilesAsync`'s refuse-on-truncation behavior; the two are intentionally different for the reason above.
+- If skill *selection* is ever added to this panel (as opposed to display), that interaction would need to inherit the same truncation guard `ResolveSkillInvocationsAsync` already uses, not this ADR's display-only leniency.

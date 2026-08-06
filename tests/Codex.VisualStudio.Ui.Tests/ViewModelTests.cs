@@ -1515,6 +1515,7 @@ public sealed class ViewModelTests
             typeof(FileSuggestionViewModel), typeof(ReasoningEffortOption), typeof(ServiceTierOption),
             typeof(UsagePresentation),
             typeof(SkillSuggestionPresentationViewModel), typeof(SkillSuggestionViewModel),
+            typeof(SkillsPanelPresentation), typeof(SkillPresentation), typeof(SkillLoadErrorPresentation),
             typeof(WorkerStatus), typeof(ThreadSummary),
         ];
 
@@ -2424,6 +2425,157 @@ public sealed class ViewModelTests
         await bridge.PublishSkillsChangedAsync(new SkillsChangedEvent());
 
         Assert.IsFalse(vm.SkillSuggestions.IsSuggestionOpen);
+    }
+
+    [TestMethod]
+    public async Task SkillsPanel_OpensAndPopulatesFromCatalog()
+    {
+        var bridge = new FakeWorkerBridge
+        {
+            SkillsResult = new ListSkillsResult
+            {
+                Skills = [new SkillInfo { Name = "review-diff", DisplayName = "Review Diff", Scope = "repo", Enabled = true, Path = "/repo/.codex/skills/review-diff" }],
+            },
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false);
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready });
+
+        vm.ToggleSkillsCommand.Execute(null);
+        await WaitForAsync(() => vm.SkillsPanel.HasData);
+
+        Assert.IsTrue(vm.IsSkillsOpen);
+        Assert.AreEqual(1, bridge.SkillsCallCount);
+        Assert.AreEqual(false, bridge.LastSkillsForceReload);
+        Assert.HasCount(1, vm.SkillsPanel.Skills);
+        Assert.AreEqual("Review Diff", vm.SkillsPanel.Skills[0].DisplayName);
+    }
+
+    [TestMethod]
+    public async Task SkillsPanel_ClosesUsageAndHistoryWhenOpened()
+    {
+        var bridge = new FakeWorkerBridge();
+        using var vm = new ChatViewModel(bridge, autoConnect: false);
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready });
+        vm.IsHistoryOpen = true;
+
+        vm.ToggleSkillsCommand.Execute(null);
+        await WaitForAsync(() => vm.IsSkillsOpen);
+
+        Assert.IsFalse(vm.IsHistoryOpen);
+        Assert.IsFalse(vm.IsUsageOpen);
+    }
+
+    [TestMethod]
+    public async Task UsagePanel_ClosesSkillsPanelWhenOpened()
+    {
+        var bridge = new FakeWorkerBridge();
+        using var vm = new ChatViewModel(bridge, autoConnect: false);
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready });
+        vm.ToggleSkillsCommand.Execute(null);
+        await WaitForAsync(() => vm.IsSkillsOpen);
+
+        vm.IsUsageOpen = true;
+
+        Assert.IsFalse(vm.IsSkillsOpen);
+    }
+
+    [TestMethod]
+    public async Task SkillsPanel_ShowsLoadErrorsFromCatalog()
+    {
+        var bridge = new FakeWorkerBridge
+        {
+            SkillsResult = new ListSkillsResult
+            {
+                Errors = [new SkillLoadError { Cwd = "/repo", Path = "/repo/.codex/skills/broken/SKILL.md", Message = "invalid YAML frontmatter" }],
+            },
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false);
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready });
+
+        vm.ToggleSkillsCommand.Execute(null);
+        await WaitForAsync(() => vm.SkillsPanel.HasErrors);
+
+        Assert.HasCount(1, vm.SkillsPanel.Errors);
+        StringAssert.Contains(vm.SkillsPanel.Errors[0].Message, "invalid YAML frontmatter");
+    }
+
+    [TestMethod]
+    public async Task SkillsPanel_RefreshesInPlaceWhenSkillsChangeWhileOpen()
+    {
+        var bridge = new FakeWorkerBridge
+        {
+            SkillsResult = new ListSkillsResult
+            {
+                Skills = [new SkillInfo { Name = "review-diff", Scope = "repo", Enabled = true, Path = "/repo/.codex/skills/review-diff" }],
+            },
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false);
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready });
+        vm.ToggleSkillsCommand.Execute(null);
+        await WaitForAsync(() => vm.SkillsPanel.HasData);
+
+        bridge.SkillsResult = new ListSkillsResult
+        {
+            Skills =
+            [
+                new SkillInfo { Name = "review-diff", Scope = "repo", Enabled = true, Path = "/repo/.codex/skills/review-diff" },
+                new SkillInfo { Name = "write-tests", Scope = "repo", Enabled = true, Path = "/repo/.codex/skills/write-tests" },
+            ],
+        };
+        await bridge.PublishSkillsChangedAsync(new SkillsChangedEvent());
+        await WaitForAsync(() => vm.SkillsPanel.Skills.Count == 2);
+
+        Assert.AreEqual(2, bridge.SkillsCallCount);
+        Assert.HasCount(2, vm.SkillsPanel.Skills);
+    }
+
+    [TestMethod]
+    public async Task SkillsPanel_ThrottlesRepeatedForceReloads()
+    {
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        var bridge = new FakeWorkerBridge
+        {
+            SkillsResult = new ListSkillsResult
+            {
+                Skills = [new SkillInfo { Name = "review-diff", Scope = "repo", Enabled = true, Path = "/repo/.codex/skills/review-diff" }],
+            },
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false, utcNow: () => now);
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready });
+        vm.ToggleSkillsCommand.Execute(null);
+        await WaitForAsync(() => vm.SkillsPanel.HasData);
+        Assert.AreEqual(1, bridge.SkillsCallCount);
+
+        vm.RefreshSkillsCommand.Execute(null);
+        await Task.Delay(50);
+        Assert.AreEqual(1, bridge.SkillsCallCount);
+
+        now = now.AddSeconds(6);
+        vm.RefreshSkillsCommand.Execute(null);
+        await WaitForAsync(() => bridge.SkillsCallCount == 2);
+        Assert.AreEqual(true, bridge.LastSkillsForceReload);
+    }
+
+    [TestMethod]
+    public async Task SkillsPanel_ClosesAndClearsWhenConnectionDrops()
+    {
+        var bridge = new FakeWorkerBridge
+        {
+            SkillsResult = new ListSkillsResult
+            {
+                Skills = [new SkillInfo { Name = "review-diff", Scope = "repo", Enabled = true, Path = "/repo/.codex/skills/review-diff" }],
+            },
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false);
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready });
+        vm.ToggleSkillsCommand.Execute(null);
+        await WaitForAsync(() => vm.SkillsPanel.HasData);
+
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Disconnected });
+
+        Assert.IsFalse(vm.IsSkillsOpen);
+        Assert.IsFalse(vm.SkillsPanel.HasData);
+        Assert.IsEmpty(vm.SkillsPanel.Skills);
     }
 
     [TestMethod]
