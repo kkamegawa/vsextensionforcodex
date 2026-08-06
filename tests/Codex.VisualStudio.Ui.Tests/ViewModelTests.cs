@@ -2699,6 +2699,30 @@ public sealed class ViewModelTests
     }
 
     [TestMethod]
+    public async Task SkillsPanel_ShowsFailureWhenToggleRpcThrows()
+    {
+        var bridge = new FakeWorkerBridge
+        {
+            SkillsResult = new ListSkillsResult
+            {
+                Skills = [new SkillInfo { Name = "review-diff", Scope = "repo", Enabled = true, Path = "/repo/.codex/skills/review-diff/SKILL.md" }],
+            },
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false);
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready });
+        vm.ToggleSkillsCommand.Execute(null);
+        await WaitForAsync(() => vm.SkillsPanel.HasData);
+        SkillPresentation skill = vm.SkillsPanel.Skills[0];
+        bridge.WriteSkillConfigException = new InvalidOperationException("disconnected");
+
+        skill.ToggleCommand.Execute(null);
+        await WaitForAsync(() => vm.Items.Count > 0);
+
+        StringAssert.Contains(vm.Items.Last().Text, "failed");
+        Assert.IsTrue(skill.IsEnabled);
+    }
+
+    [TestMethod]
     public async Task ChatViewModel_SendMessage_UsesAgentPresetForAgentMode()
     {
         var bridge = new FakeWorkerBridge();
@@ -4369,6 +4393,13 @@ public sealed class ViewModelTests
 
         public bool? LastSkillsForceReload { get; private set; }
 
+        public WriteSkillConfigResult WriteSkillConfigResult { get; set; } = new() { EffectiveEnabled = true };
+
+        public int WriteSkillConfigCallCount { get; private set; }
+
+        public WriteSkillConfigRequest? LastWriteSkillConfigRequest { get; private set; }
+
+        public Exception? WriteSkillConfigException { get; set; }
         public int ModelListCallCount { get; private set; }
 
         public StartTurnRequest? LastStartTurnRequest { get; private set; }
@@ -4495,6 +4526,15 @@ public sealed class ViewModelTests
             SkillsCallCount++;
             LastSkillsForceReload = forceReload;
             return SkillsHandler?.Invoke(SkillsCallCount, cancellationToken) ?? Task.FromResult(SkillsResult);
+        }
+
+        public Task<WriteSkillConfigResult> WriteSkillConfigAsync(WriteSkillConfigRequest request, CancellationToken cancellationToken)
+        {
+            WriteSkillConfigCallCount++;
+            LastWriteSkillConfigRequest = request;
+            return WriteSkillConfigException is null
+                ? Task.FromResult(WriteSkillConfigResult)
+                : Task.FromException<WriteSkillConfigResult>(WriteSkillConfigException);
         }
 
         public Task<UploadFeedbackResult> UploadFeedbackAsync(UploadFeedbackRequest request, CancellationToken cancellationToken)

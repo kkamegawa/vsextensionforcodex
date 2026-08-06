@@ -963,7 +963,7 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
             cancellationToken).ConfigureAwait(false);
         if (!call.IsSupported)
         {
-            return Unsupported<WriteSkillConfigResult>("Skills are not supported by this app-server.");
+            return Unsupported<WriteSkillConfigResult>("Enabling or disabling skills is not supported by this app-server.");
         }
 
         InvalidateSkillCache();

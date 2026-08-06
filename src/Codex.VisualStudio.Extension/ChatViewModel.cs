@@ -3846,6 +3846,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         catch (Exception ex)
         {
             ExtensionDiagnostics.Write("Skill toggle failed", ex);
+            await ShowSlashFailureAsync("Enabling or disabling this skill failed. See diagnostics.log.").ConfigureAwait(false);
             return;
         }
 

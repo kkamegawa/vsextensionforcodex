@@ -1353,6 +1353,11 @@ public sealed class CodexSessionServiceTests
         WriteSkillConfigResult result = await service.WriteSkillConfigAsync(request, CancellationToken.None);
 
         Assert.IsFalse(result.IsSupported);
+        // Distinct from ListSkillsAsync's "Skills are not supported..." message: a server can
+        // support skills/list while lacking skills/config/write, and the two messages must not
+        // be interchangeable or a user toggling a skill would be told the wrong capability is
+        // missing.
+        StringAssert.Contains(result.UnavailableReason, "Enabling or disabling skills");
     }
 
     [TestMethod]

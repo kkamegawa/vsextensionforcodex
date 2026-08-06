@@ -190,6 +190,22 @@ public sealed class SkillsPanelPresentationTests
     }
 
     [TestMethod]
+    public void SkillPresentation_ToggleAutomationNameCombinesActionAndRawName()
+    {
+        // The button's Content ("Enable"/"Disable") is ambiguous once the panel has more than one
+        // row; automation must announce which skill it applies to.
+        var panel = new SkillsPanelPresentation();
+        panel.Update(
+            new ListSkillsResult
+            {
+                Skills = [new SkillInfo { Name = "review-diff", Scope = "repo", Enabled = true, Path = "/repo/.codex/skills/review-diff" }],
+            },
+            markdown);
+
+        Assert.AreEqual("Disable review-diff", panel.Skills[0].ToggleAutomationName);
+    }
+
+    [TestMethod]
     public void Clear_ResetsToUnavailableState()
     {
         var panel = new SkillsPanelPresentation();
@@ -257,6 +273,7 @@ public sealed class SkillsPanelPresentationTests
             .Descendants(presentation + "Button")
             .Single(value => value.Attribute("Command")?.Value == "{Binding ToggleCommand}");
         Assert.AreEqual("{Binding ToggleButtonText}", toggleButton.Attribute("Content")?.Value);
+        Assert.AreEqual("{Binding ToggleAutomationName}", toggleButton.Attribute("AutomationProperties.Name")?.Value);
         Assert.AreEqual("True", list.Attribute("VirtualizingPanel.IsVirtualizing")?.Value);
         Assert.AreEqual("Recycling", list.Attribute("VirtualizingPanel.VirtualizationMode")?.Value);
         Assert.IsNotNull(list.Attribute("MaxHeight"));

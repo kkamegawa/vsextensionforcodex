@@ -613,7 +613,7 @@
                               <Button Grid.Column="1" VerticalAlignment="Center"
                                       Content="{Binding ToggleButtonText}"
                                       Command="{Binding ToggleCommand}"
-                                      AutomationProperties.Name="{Binding ToggleButtonText}"
+                                      AutomationProperties.Name="{Binding ToggleAutomationName}"
                                       Style="{StaticResource SmallRoundButtonStyle}" />
                             </Grid>
                           </DataTemplate>

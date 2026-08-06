@@ -196,9 +196,13 @@ object WriteSkillConfig(JsonElement request)
 {
     JsonElement parameters = request.GetProperty("params");
     bool requestedEnabled = parameters.GetProperty("enabled").GetBoolean();
+    string? name = GetOptionalString(parameters, "name");
     string? path = GetOptionalString(parameters, "path");
-    bool isAdminSkill = path is not null
-        && string.Equals(path, AdminSkillPath("org-policy"), StringComparison.OrdinalIgnoreCase);
+    // The worker contract allows selecting by either name or path; a client picking either one
+    // must still hit the same seeded admin skill's override, or this seed would only exercise
+    // the "server overrode the request" path for path-based callers.
+    bool isAdminSkill = (path is not null && string.Equals(path, AdminSkillPath("org-policy"), StringComparison.OrdinalIgnoreCase))
+        || (name is not null && string.Equals(name, "org-policy", StringComparison.Ordinal));
     return new { effectiveEnabled = isAdminSkill ? true : requestedEnabled };
 }
 

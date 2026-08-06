@@ -253,7 +253,13 @@ public sealed class SkillPresentation : ObservableObject
     public string Name
     {
         get => name;
-        private set => SetProperty(ref name, value);
+        private set
+        {
+            if (SetProperty(ref name, value))
+            {
+                OnPropertyChanged(nameof(ToggleAutomationName));
+            }
+        }
     }
 
     [DataMember]
@@ -302,14 +308,25 @@ public sealed class SkillPresentation : ObservableObject
             if (SetProperty(ref isEnabled, value))
             {
                 OnPropertyChanged(nameof(ToggleButtonText));
+                OnPropertyChanged(nameof(ToggleAutomationName));
             }
         }
     }
 
-    // No XAML converter can turn CanToggle=false into a hidden or disabled toggle control
-    // (Remote UI cannot resolve custom converters); the panel binds this string directly instead.
+    // No XAML converter can format "Enable"/"Disable" text from a bool (Remote UI cannot resolve
+    // custom converters), so the label is precomputed here. Disabling the control itself for
+    // CanToggle=false needs no such workaround: the Button's Command is bound directly to
+    // ToggleCommand, and Remote UI drives Button.IsEnabled from AsyncCommand.CanExecute (which
+    // already incorporates CanToggle) the same way every other command-bound button in this
+    // extension is disabled.
     [DataMember]
     public string ToggleButtonText => IsEnabled ? "Disable" : "Enable";
+
+    // The button's plain "Enable"/"Disable" Content is ambiguous to screen reader users once the
+    // panel has more than one row; this combines the action with the raw (unsuffixed) skill name
+    // so automation announces e.g. "Disable review-diff" rather than just "Disable".
+    [DataMember]
+    public string ToggleAutomationName => $"{ToggleButtonText} {Name}";
 
     [DataMember]
     public bool CanToggle
