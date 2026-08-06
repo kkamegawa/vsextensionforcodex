@@ -2248,7 +2248,7 @@ public sealed class ViewModelTests
         {
             SkillsResult = new ListSkillsResult
             {
-                Skills = [new SkillInfo { Name = "review-diff", Scope = "repo", Enabled = true, Path = "/repo/.codex/skills/review-diff", ShortDescription = "Review the diff." }],
+                Skills = [new SkillInfo { Name = "review-diff", Scope = "repo", Enabled = true, Path = "/repo/.codex/skills/review-diff/SKILL.md", ShortDescription = "Review the diff." }],
             },
         };
         using var vm = new ChatViewModel(bridge, autoConnect: false);
@@ -2258,6 +2258,34 @@ public sealed class ViewModelTests
 
         Assert.AreEqual(1, vm.SkillSuggestions.Suggestions.Count);
         Assert.AreEqual("review-diff", vm.SkillSuggestions.Suggestions[0].DisplayName);
+    }
+
+    [TestMethod]
+    public async Task SkillSuggestions_StaleFailureDoesNotCloseNewerSuggestions()
+    {
+        var staleResponse = new TaskCompletionSource<ListSkillsResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var bridge = new FakeWorkerBridge
+        {
+            SkillsHandler = (callCount, _) => callCount == 1
+                ? staleResponse.Task
+                : Task.FromResult(new ListSkillsResult
+                {
+                    Skills = [new SkillInfo { Name = "beta-skill", Scope = "repo", Enabled = true, Path = "/repo/.codex/skills/beta-skill/SKILL.md" }],
+                }),
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false);
+
+        vm.ComposerText = "$alpha";
+        await WaitForAsync(() => bridge.SkillsCallCount == 1);
+        vm.ComposerText = "$beta";
+        await WaitForAsync(() => vm.SkillSuggestions.IsSuggestionOpen);
+
+        staleResponse.SetException(new InvalidOperationException("stale request failed"));
+        await Task.Delay(50);
+
+        Assert.IsTrue(vm.SkillSuggestions.IsSuggestionOpen);
+        Assert.AreEqual(1, vm.SkillSuggestions.Suggestions.Count);
+        Assert.AreEqual("beta-skill", vm.SkillSuggestions.Suggestions[0].Name);
     }
 
     [TestMethod]
@@ -2271,7 +2299,7 @@ public sealed class ViewModelTests
             SkillsResult = new ListSkillsResult
             {
                 IsTruncated = true,
-                Skills = [new SkillInfo { Name = "review-diff", Scope = "repo", Enabled = true, Path = "/repo/.codex/skills/review-diff" }],
+                Skills = [new SkillInfo { Name = "review-diff", Scope = "repo", Enabled = true, Path = "/repo/.codex/skills/review-diff/SKILL.md" }],
             },
         };
         using var vm = new ChatViewModel(bridge, autoConnect: false);
@@ -2290,7 +2318,7 @@ public sealed class ViewModelTests
         {
             SkillsResult = new ListSkillsResult
             {
-                Skills = [new SkillInfo { Name = "review-diff", Scope = "repo", Enabled = true, Path = "/repo/.codex/skills/review-diff" }],
+                Skills = [new SkillInfo { Name = "review-diff", Scope = "repo", Enabled = true, Path = "/repo/.codex/skills/review-diff/SKILL.md" }],
             },
         };
         using var vm = new ChatViewModel(bridge, autoConnect: false);
@@ -2315,7 +2343,7 @@ public sealed class ViewModelTests
             {
                 SkillsResult = new ListSkillsResult
                 {
-                    Skills = [new SkillInfo { Name = "review-diff", Scope = "repo", Enabled = true, Path = "/repo/.codex/skills/review-diff" }],
+                    Skills = [new SkillInfo { Name = "review-diff", Scope = "repo", Enabled = true, Path = "/repo/.codex/skills/review-diff/SKILL.md" }],
                 },
             };
             using var vm = new ChatViewModel(
@@ -2346,7 +2374,7 @@ public sealed class ViewModelTests
         {
             SkillsResult = new ListSkillsResult
             {
-                Skills = [new SkillInfo { Name = "review-diff", Scope = "repo", Enabled = true, Path = "/repo/.codex/skills/review-diff" }],
+                Skills = [new SkillInfo { Name = "review-diff", Scope = "repo", Enabled = true, Path = "/repo/.codex/skills/review-diff/SKILL.md" }],
             },
         };
         using var vm = new ChatViewModel(bridge, autoConnect: false);
@@ -2366,7 +2394,7 @@ public sealed class ViewModelTests
         {
             SkillsResult = new ListSkillsResult
             {
-                Skills = [new SkillInfo { Name = "legacy-formatter", Scope = "repo", Enabled = false, Path = "/repo/.codex/skills/legacy-formatter" }],
+                Skills = [new SkillInfo { Name = "legacy-formatter", Scope = "repo", Enabled = false, Path = "/repo/.codex/skills/legacy-formatter/SKILL.md" }],
             },
         };
         using var vm = new ChatViewModel(bridge, autoConnect: false);
@@ -2386,7 +2414,7 @@ public sealed class ViewModelTests
         {
             SkillsResult = new ListSkillsResult
             {
-                Skills = [new SkillInfo { Name = "review-diff", Scope = "repo", Enabled = true, Path = "/repo/.codex/skills/review-diff" }],
+                Skills = [new SkillInfo { Name = "review-diff", Scope = "repo", Enabled = true, Path = "/repo/.codex/skills/review-diff/SKILL.md" }],
             },
         };
         using var vm = new ChatViewModel(bridge, autoConnect: false);
@@ -4063,6 +4091,8 @@ public sealed class ViewModelTests
 
         public ListSkillsResult SkillsResult { get; set; } = new();
 
+        public Func<int, CancellationToken, Task<ListSkillsResult>>? SkillsHandler { get; set; }
+
         public int SkillsCallCount { get; private set; }
 
         public bool? LastSkillsForceReload { get; private set; }
@@ -4192,7 +4222,7 @@ public sealed class ViewModelTests
         {
             SkillsCallCount++;
             LastSkillsForceReload = forceReload;
-            return Task.FromResult(SkillsResult);
+            return SkillsHandler?.Invoke(SkillsCallCount, cancellationToken) ?? Task.FromResult(SkillsResult);
         }
 
         public Task<UploadFeedbackResult> UploadFeedbackAsync(UploadFeedbackRequest request, CancellationToken cancellationToken)

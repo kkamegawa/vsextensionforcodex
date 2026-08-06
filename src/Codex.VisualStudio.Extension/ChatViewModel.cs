@@ -1714,7 +1714,10 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         catch (Exception ex)
         {
             ExtensionDiagnostics.Write("Refreshing skill suggestions failed", ex);
-            await OnUiAsync(SkillSuggestions.CloseSuggestions).ConfigureAwait(false);
+            if (ReferenceEquals(skillSuggestionRefresh, refresh))
+            {
+                await OnUiAsync(SkillSuggestions.CloseSuggestions).ConfigureAwait(false);
+            }
         }
         finally
         {
