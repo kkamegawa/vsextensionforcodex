@@ -3805,7 +3805,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             }
             catch (Exception ex)
             {
-                ExtensionDiagnostics.Write($"Skills panel refresh failed ({ex.GetType().Name}).");
+                ExtensionDiagnostics.Write("Skills panel refresh failed", ex);
                 return;
             }
 

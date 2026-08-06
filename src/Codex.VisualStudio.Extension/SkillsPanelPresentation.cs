@@ -114,9 +114,14 @@ public sealed class SkillsPanelPresentation : ObservableObject
         {
             if (string.IsNullOrWhiteSpace(info.Path) || !seenKeys.Add(info.Path))
             {
-                // Path is the only globally unique identity (schemas/v2/SkillsListResponse.json);
-                // a blank or duplicate path cannot be merged in place, so it is dropped from the
-                // panel rather than risking two entries racing over the same key.
+                // WorkerContracts.cs documents SkillInfo's identity as the (Name, Scope, Path)
+                // tuple (SkillMetadata has no id field), but merging by the full tuple would
+                // still require a single field to key the ObservableCollection lookup, and two
+                // distinct skills cannot legitimately share one filesystem path. Path is used
+                // as that key for exactly that reason -- not because the contract asserts path
+                // alone is globally unique. A blank or duplicate path cannot be merged in place,
+                // so it is dropped from the panel rather than risking two entries racing over
+                // the same key.
                 continue;
             }
 
