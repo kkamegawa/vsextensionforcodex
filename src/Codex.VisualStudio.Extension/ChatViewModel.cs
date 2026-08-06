@@ -3845,7 +3845,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         }
         catch (Exception ex)
         {
-            ExtensionDiagnostics.Write($"Skill toggle failed ({ex.GetType().Name}).");
+            ExtensionDiagnostics.Write("Skill toggle failed", ex);
             return;
         }
 
