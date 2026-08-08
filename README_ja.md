@@ -5,9 +5,9 @@
 本拡張はアウトプロセスの `Microsoft.VisualStudio.Extensibility` 拡張 (`net8.0`) で、`net8.0` のワーカープロセスを起動します。ワーカーが `codex app-server` の子プロセスを保持し、改行区切りの JSON-RPC を stdio 経由でやり取りします。資格情報を Visual Studio 側で扱うことはありません。
 サインインは Codex CLI で行います。
 
-## How to use
+## 使い方
 
-[![How to use Codex for Visual Studio](https://img.youtube.com/vi/J5mvALbV8Mk/0.jpg)](https://youtu.be/J5mvALbV8Mk)
+[![Codex for Visual Studio の使い方](https://img.youtube.com/vi/J5mvALbV8Mk/0.jpg)](https://youtu.be/J5mvALbV8Mk)
 
 ## 動作要件
 
