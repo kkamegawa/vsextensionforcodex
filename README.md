@@ -4,6 +4,10 @@ A Visual Studio extension that runs the local Codex CLI app server from inside t
 
 The extension is an out-of-process `Microsoft.VisualStudio.Extensibility` extension (`net8.0`) that starts a `net8.0` worker process. The worker owns the `codex app-server` subprocess and talks to it with newline-delimited JSON-RPC over stdio. No credentials are handled inside Visual Studio; sign-in happens in the Codex CLI.
 
+## How to use
+
+[![How to use Codex for Visual Studio](https://img.youtube.com/vi/J5mvALbV8Mk/0.jpg)](https://youtu.be/J5mvALbV8Mk)
+
 ## Requirements
 
 - Windows (x64 or Arm64)
