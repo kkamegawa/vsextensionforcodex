@@ -9,6 +9,11 @@ public sealed class SlashCommandPresentationTests
 {
     private const string ResourceName = "Codex.VisualStudio.Extension.ToolWindows.ChatToolWindowContent.xaml";
     private static readonly XNamespace Presentation = "http://schemas.microsoft.com/winfx/2006/xaml/presentation";
+    private static readonly string[] SelectedChipCommands =
+    [
+        "{Binding RemoveCommand}",
+        "{Binding SlashCommands.ClearCommandCommand}",
+    ];
 
     [TestMethod]
     public void ShowSuggestions_OpensInlineListAndSelectsFirstAvailableCommand()
@@ -447,11 +452,7 @@ public sealed class SlashCommandPresentationTests
             .ToArray();
         Assert.HasCount(2, selectedChipActions);
         CollectionAssert.AreEquivalent(
-            new[]
-            {
-                "{Binding RemoveCommand}",
-                "{Binding SlashCommands.ClearCommandCommand}",
-            },
+            SelectedChipCommands,
             selectedChipActions.Select(element => element.Attribute("Command")?.Value).ToArray());
     }
 
