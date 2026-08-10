@@ -278,22 +278,40 @@ public sealed class SkillsPanelPresentationTests
         Assert.AreEqual("Recycling", list.Attribute("VirtualizingPanel.VirtualizationMode")?.Value);
         Assert.IsNotNull(list.Attribute("MaxHeight"));
 
-        string[] essentialTextValues =
+        string[] rowTextValues =
         [
+            "{Binding DisplayName}",
             "{Binding ScopeLabel}",
             "{Binding ShortDescription}",
+        ];
+        foreach (string textValue in rowTextValues)
+        {
+            XElement text = list.Descendants(presentation + "TextBlock")
+                .Single(value => value.Attribute("Text")?.Value == textValue);
+            Assert.IsNull(text.Attribute("Opacity"), $"Essential row text '{textValue}' must remain opaque in High Contrast.");
+            Assert.AreEqual(
+                "{x:Null}",
+                text.Attribute("Style")?.Value,
+                $"Row text '{textValue}' must bypass the implicit TextBlock style and inherit SelectableRowStyle.Foreground.");
+            Assert.IsNull(
+                text.Attribute("Foreground"),
+                $"Row text '{textValue}' must inherit normal, hover, and selected foregrounds from SelectableRowStyle.");
+        }
+
+        string[] panelTextValues =
+        [
             "{Binding Path}",
             "Showing the first skills and errors; the full catalog is larger than this listing can display.",
         ];
-        foreach (string textValue in essentialTextValues)
+        foreach (string textValue in panelTextValues)
         {
             XElement text = border.Descendants(presentation + "TextBlock")
                 .Single(value => value.Attribute("Text")?.Value == textValue);
-            Assert.IsNull(text.Attribute("Opacity"), $"Essential text '{textValue}' must remain opaque in High Contrast.");
+            Assert.IsNull(text.Attribute("Opacity"), $"Essential panel text '{textValue}' must remain opaque in High Contrast.");
             StringAssert.Contains(
                 text.Attribute("Foreground")?.Value,
                 "EnvironmentColors.ToolWindowTextBrushKey",
-                $"Essential text '{textValue}' must use the Visual Studio tool-window foreground.");
+                $"Essential panel text '{textValue}' must use the Visual Studio tool-window foreground.");
         }
     }
 }

@@ -603,10 +603,9 @@
                               </Grid.ColumnDefinitions>
                               <StackPanel Grid.Column="0" Margin="0,0,6,0">
                                 <TextBlock Text="{Binding DisplayName}" Style="{x:Null}" TextTrimming="CharacterEllipsis" />
-                                <TextBlock FontSize="10" Text="{Binding ScopeLabel}" TextTrimming="CharacterEllipsis"
-                                           Foreground="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowTextBrushKey}}" />
-                                <TextBlock FontSize="11" Text="{Binding ShortDescription}"
-                                           Foreground="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowTextBrushKey}}"
+                                <TextBlock FontSize="10" Text="{Binding ScopeLabel}" Style="{x:Null}"
+                                           TextTrimming="CharacterEllipsis" />
+                                <TextBlock FontSize="11" Text="{Binding ShortDescription}" Style="{x:Null}"
                                            TextWrapping="Wrap"
                                            Visibility="{Binding HasShortDescription, Converter={StaticResource BoolToVis}}" />
                               </StackPanel>

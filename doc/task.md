@@ -287,6 +287,20 @@ ChatGPT デスクトップと同等の承認方法選択 UI。レビュー済み
 
 ## Work log
 
+### 2026-08-10: Fixed Skills selected-row text contrast (issue #137)
+
+Removed local tool-window foreground overrides from the Skills row name, scope, and description.
+Those text elements now bypass the implicit `TextBlock` style narrowly and inherit the
+`SelectableRowStyle` foreground across normal, hover, and selected surfaces. Essential panel text
+outside selectable rows continues to use the Visual Studio tool-window foreground explicitly, and
+all essential Skills text remains fully opaque for High Contrast themes.
+
+- Validation: structural XAML tests distinguish selectable-row foreground inheritance from
+  out-of-row tool-window foreground usage.
+- Validation: focused UI test compilation was blocked before source compilation because the
+  sandbox denied access to the local Windows SDK discovery directory.
+- Formatting: modified XAML, C#, and Markdown files retain UTF-8 BOM and CRLF line endings.
+
 ### 2026-07-20: Implemented bounded collapsible command output (issue #80)
 
 Implemented issue #80 and sub-issues #81, #82, and #83. Sanitized command deltas now accumulate
