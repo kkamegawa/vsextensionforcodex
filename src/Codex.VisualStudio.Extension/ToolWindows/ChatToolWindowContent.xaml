@@ -280,13 +280,19 @@
         </Setter>
       </Style>
 
-      <!-- Remove glyphs sit on the selected/down attachment-chip surface. The base template's
-           hover and pressed triggers still replace this foreground with their paired glyph key. -->
-      <Style x:Key="AttachmentRemoveButtonStyle"
+      <!-- Chip action glyphs sit on a selected/down surface. The base template's hover and
+           pressed triggers still replace this foreground with their paired glyph key. -->
+      <Style x:Key="SelectedChipIconButtonStyle"
              TargetType="Button"
              BasedOn="{StaticResource IconButtonStyle}">
         <Setter Property="Foreground"
                 Value="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowButtonDownActiveGlyphBrushKey}}" />
+      </Style>
+
+      <!-- Text inside selectable controls inherits the owning Button/ListBoxItem foreground.
+           This explicit style avoids the implicit TextBlock foreground overriding state colors. -->
+      <Style x:Key="SelectableContentTextStyle" TargetType="TextBlock">
+        <Setter Property="TextOptions.TextFormattingMode" Value="Display" />
       </Style>
 
       <!-- ── Accent icon button (Send / Steer) ── -->
@@ -569,8 +575,15 @@
                     <ListBox.ItemTemplate>
                       <DataTemplate>
                         <StackPanel>
-                          <TextBlock FontWeight="SemiBold" Text="{Binding Preview}" TextTrimming="CharacterEllipsis" />
-                          <TextBlock Opacity="0.65" FontSize="10" Text="{Binding Cwd}" TextTrimming="CharacterEllipsis" />
+                          <TextBlock FontWeight="SemiBold"
+                                     Style="{StaticResource SelectableContentTextStyle}"
+                                     Text="{Binding Preview}"
+                                     TextTrimming="CharacterEllipsis" />
+                          <TextBlock Opacity="0.65"
+                                     FontSize="10"
+                                     Style="{StaticResource SelectableContentTextStyle}"
+                                     Text="{Binding Cwd}"
+                                     TextTrimming="CharacterEllipsis" />
                         </StackPanel>
                       </DataTemplate>
                     </ListBox.ItemTemplate>
@@ -1363,7 +1376,7 @@
                             MinWidth="18"
                             Content="&#xE711;"
                             Command="{Binding RemoveCommand}"
-                            Style="{StaticResource AttachmentRemoveButtonStyle}"
+                            Style="{StaticResource SelectedChipIconButtonStyle}"
                             AutomationProperties.Name="{Binding AutomationName}" />
                   </StackPanel>
                 </Border>
@@ -1434,13 +1447,14 @@
                   <StackPanel Orientation="Horizontal">
                     <TextBlock FontWeight="SemiBold"
                                VerticalAlignment="Center"
+                               Foreground="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowButtonDownActiveGlyphBrushKey}}"
                                Text="{Binding SlashCommands.ActiveCommand.CommandName}" />
                     <Button Margin="6,0,0,0"
                             Padding="2,0"
                             MinWidth="18"
                             Content="&#xE711;"
                             Command="{Binding SlashCommands.ClearCommandCommand}"
-                            Style="{StaticResource IconButtonStyle}"
+                            Style="{StaticResource SelectedChipIconButtonStyle}"
                             AutomationProperties.Name="Clear selected slash command" />
                   </StackPanel>
                 </Border>
@@ -1465,10 +1479,12 @@
                             Style="{StaticResource SlashOptionButtonStyle}"
                             AutomationProperties.Name="{Binding AutomationName}">
                       <StackPanel Orientation="Horizontal">
-                        <TextBlock Text="{Binding DisplayText}" />
+                        <TextBlock Style="{StaticResource SelectableContentTextStyle}"
+                                   Text="{Binding DisplayText}" />
                         <TextBlock Margin="6,0,0,0"
                                    FontSize="10"
                                    FontWeight="SemiBold"
+                                   Style="{StaticResource SelectableContentTextStyle}"
                                    Text="Selected"
                                    Visibility="{Binding IsSelected, Converter={StaticResource BoolToVis}}" />
                       </StackPanel>

@@ -140,6 +140,9 @@ public sealed class FileAttachmentPresentationTests
         XElement remove = chip.Descendants(Presentation + "Button").Single();
         Assert.AreEqual("{Binding RemoveCommand}", remove.Attribute("Command")?.Value);
         Assert.AreEqual(
+            "{StaticResource SelectedChipIconButtonStyle}",
+            remove.Attribute("Style")?.Value);
+        Assert.AreEqual(
             "{Binding AutomationName}",
             remove.Attribute(XName.Get("AutomationProperties.Name"))?.Value);
     }

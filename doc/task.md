@@ -432,3 +432,16 @@ Added an upfront `PathEntryExists` check before the open.
 
 - Validation: Release build 0 warnings; Ui.Tests 268/268 passed locally (the symlink
   test itself still reports Inconclusive/skipped locally, lacking the OS privilege).
+
+### 2026-08-10: Restored selected-surface foreground contrast (issue #137)
+
+Paired the active slash-command chip background with the Visual Studio selected glyph
+foreground and generalized the selected-chip icon style for both attachment removal and
+slash-command clearing. Fixed slash-command option labels and thread-history text now inherit
+their owning selectable control's state foreground without an implicit `TextBlock` foreground
+overriding it. Structural regression coverage verifies the exact selected, hover, and pressed
+theme-resource pairs and both inheritance paths.
+
+- Validation: focused UI test compilation was blocked before source compilation because the
+  sandbox denied access to the local Windows SDK discovery directory.
+- Formatting: modified XAML, C#, and Markdown files retain UTF-8 BOM and CRLF line endings.
