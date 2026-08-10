@@ -361,9 +361,19 @@ public sealed class SlashCommandPresentationTests
     {
         XDocument document = LoadXaml();
 
-        Assert.IsNotNull(document
+        XElement commandName = document
             .Descendants(Presentation + "TextBlock")
-            .SingleOrDefault(element => element.Attribute("Text")?.Value == "{Binding SlashCommands.ActiveCommand.CommandName}"));
+            .Single(element => element.Attribute("Text")?.Value == "{Binding SlashCommands.ActiveCommand.CommandName}");
+        XElement commandChip = commandName.Ancestors(Presentation + "Border").First();
+        AssertThemeAttribute(commandChip, "Background", "ToolWindowButtonDownBrushKey");
+        AssertThemeAttribute(commandName, "Foreground", "ToolWindowButtonDownActiveGlyphBrushKey");
+
+        XElement clearCommand = commandChip
+            .Descendants(Presentation + "Button")
+            .Single(element => element.Attribute("Command")?.Value == "{Binding SlashCommands.ClearCommandCommand}");
+        Assert.AreEqual(
+            "{StaticResource SelectedChipIconButtonStyle}",
+            clearCommand.Attribute("Style")?.Value);
         Assert.IsNotNull(document
             .Descendants(Presentation + "ItemsControl")
             .SingleOrDefault(element => element.Attribute("ItemsSource")?.Value == "{Binding SlashCommands.Options}"));
@@ -393,6 +403,112 @@ public sealed class SlashCommandPresentationTests
             .SingleOrDefault(element =>
                 element.Attribute("Key")?.Value == "Escape"
                 && element.Attribute("Command")?.Value == "{Binding SlashCommands.ClearKeyCommand}"));
+    }
+
+    [TestMethod]
+    public void Xaml_SelectedChipIconStyleUsesPairedThemeBrushesForBothChipActions()
+    {
+        XDocument document = LoadXaml();
+        XName xKey = XName.Get("Key", "http://schemas.microsoft.com/winfx/2006/xaml");
+
+        XElement selectedChipIconStyle = document
+            .Descendants(Presentation + "Style")
+            .Single(element => element.Attribute(xKey)?.Value == "SelectedChipIconButtonStyle");
+        Assert.AreEqual(
+            "{StaticResource IconButtonStyle}",
+            selectedChipIconStyle.Attribute("BasedOn")?.Value);
+        XElement selectedForeground = selectedChipIconStyle
+            .Elements(Presentation + "Setter")
+            .Single(element => element.Attribute("Property")?.Value == "Foreground");
+        AssertThemeAttribute(
+            selectedForeground,
+            "Value",
+            "ToolWindowButtonDownActiveGlyphBrushKey");
+
+        XElement iconButtonStyle = document
+            .Descendants(Presentation + "Style")
+            .Single(element => element.Attribute(xKey)?.Value == "IconButtonStyle");
+        XElement[] iconTriggers = iconButtonStyle
+            .Descendants(Presentation + "ControlTemplate.Triggers")
+            .Elements(Presentation + "Trigger")
+            .ToArray();
+        AssertThemeBrushPair(
+            iconTriggers.Single(element => element.Attribute("Property")?.Value == "IsMouseOver"),
+            "ToolWindowButtonHoverActiveBrushKey",
+            "ToolWindowButtonHoverActiveGlyphBrushKey");
+        AssertThemeBrushPair(
+            iconTriggers.Single(element => element.Attribute("Property")?.Value == "IsPressed"),
+            "ToolWindowButtonDownBrushKey",
+            "ToolWindowButtonDownActiveGlyphBrushKey");
+
+        XElement[] selectedChipActions = document
+            .Descendants(Presentation + "Button")
+            .Where(element => element.Attribute("Style")?.Value == "{StaticResource SelectedChipIconButtonStyle}")
+            .ToArray();
+        Assert.HasCount(2, selectedChipActions);
+        CollectionAssert.AreEquivalent(
+            new[]
+            {
+                "{Binding RemoveCommand}",
+                "{Binding SlashCommands.ClearCommandCommand}",
+            },
+            selectedChipActions.Select(element => element.Attribute("Command")?.Value).ToArray());
+    }
+
+    [TestMethod]
+    public void Xaml_SelectableOptionAndHistoryTextInheritOwningControlForeground()
+    {
+        XDocument document = LoadXaml();
+        XName xKey = XName.Get("Key", "http://schemas.microsoft.com/winfx/2006/xaml");
+        const string inheritingStyle = "{StaticResource SelectableContentTextStyle}";
+
+        XElement textStyle = document
+            .Descendants(Presentation + "Style")
+            .Single(element => element.Attribute(xKey)?.Value == "SelectableContentTextStyle");
+        Assert.IsFalse(textStyle
+            .Elements(Presentation + "Setter")
+            .Any(element => element.Attribute("Property")?.Value == "Foreground"));
+
+        XElement options = document
+            .Descendants(Presentation + "ItemsControl")
+            .Single(element => element.Attribute("ItemsSource")?.Value == "{Binding SlashCommands.Options}");
+        XElement optionButton = options
+            .Descendants(Presentation + "Button")
+            .Single(element => element.Attribute("Command")?.Value == "{Binding UseCommand}");
+        Assert.AreEqual(
+            "{StaticResource SlashOptionButtonStyle}",
+            optionButton.Attribute("Style")?.Value);
+        XElement optionStyle = document
+            .Descendants(Presentation + "Style")
+            .Single(element => element.Attribute(xKey)?.Value == "SlashOptionButtonStyle");
+        XElement optionSelectedTrigger = optionStyle
+            .Descendants(Presentation + "DataTrigger")
+            .Single(element => element.Attribute("Binding")?.Value == "{Binding IsSelected}");
+        AssertThemeBrushPair(
+            optionSelectedTrigger,
+            "ToolWindowButtonDownBrushKey",
+            "ToolWindowButtonDownActiveGlyphBrushKey");
+        XElement[] optionText = options
+            .Descendants(Presentation + "TextBlock")
+            .Where(element => element.Attribute("Text")?.Value is "{Binding DisplayText}" or "Selected")
+            .ToArray();
+        Assert.HasCount(2, optionText);
+        Assert.IsTrue(optionText.All(element => element.Attribute("Style")?.Value == inheritingStyle));
+        Assert.IsTrue(optionText.All(element => element.Attribute("Foreground") is null));
+
+        XElement history = document
+            .Descendants(Presentation + "ListBox")
+            .Single(element => element.Attribute("ItemsSource")?.Value == "{Binding Threads}");
+        Assert.AreEqual(
+            "{StaticResource SelectableRowStyle}",
+            history.Attribute("ItemContainerStyle")?.Value);
+        XElement[] historyText = history
+            .Descendants(Presentation + "TextBlock")
+            .Where(element => element.Attribute("Text")?.Value is "{Binding Preview}" or "{Binding Cwd}")
+            .ToArray();
+        Assert.HasCount(2, historyText);
+        Assert.IsTrue(historyText.All(element => element.Attribute("Style")?.Value == inheritingStyle));
+        Assert.IsTrue(historyText.All(element => element.Attribute("Foreground") is null));
     }
 
     [TestMethod]
@@ -466,6 +582,16 @@ public sealed class SlashCommandPresentationTests
 
         Assert.IsTrue(foregroundSetter.Attribute("Value")?.Value?.Contains(
             expectedForegroundKey,
+            StringComparison.Ordinal) == true);
+    }
+
+    private static void AssertThemeAttribute(
+        XElement element,
+        string attributeName,
+        string expectedThemeKey)
+    {
+        Assert.IsTrue(element.Attribute(attributeName)?.Value?.Contains(
+            expectedThemeKey,
             StringComparison.Ordinal) == true);
     }
 
