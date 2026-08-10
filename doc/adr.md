@@ -140,3 +140,21 @@
 - The VSIX version is always the git tag; a release cannot silently ship a stale hardcoded version.
 - Extension metadata changes are C# changes covered by unit tests, and the packaging tests assert the bundled license and the absence of Japanese documents.
 - CI depends on winget and the `OpenAI.Codex` package being installable on the runner; a winget failure fails the build loudly instead of producing an unverified VSIX.
+
+## ADR-008: Skills catalog retrieval — capability probing, flattening, and contract scope
+
+- Date: 2026-08-04
+- Task: GitHub Issue #119 and sub-issue #120, Codex custom skills support
+- Status: Accepted
+
+### Decision
+
+- Do not gate `skills/list` behind `WorkerOptions.ExperimentalApi`. Nothing in the vendored `schemas/` marks any `skills/*` method as experimental (verified against a freshly generated schema set from codex-cli 0.145.0, the current CLI at implementation time), and the existing `ExperimentalApi` hard gate (used for `permissionProfile/list`) is sticky for the life of the session and does not react to a settings change until reconnect. Rely purely on the `-32601` capability probe in `TrySendOperationAsync`.
+- Flatten `SkillsListResponse.data` (an array of per-cwd `SkillsListEntry`) into a single `ListSkillsResult { Skills, Errors }` rather than mirroring the nested per-cwd shape. This is lossless in v1 because `skills/list` is always called with `cwds: []`, which the app-server documents as resolving to the single session working directory and therefore always returns exactly one entry. `SkillInfo.Cwd` and `SkillLoadError.Cwd` are carried per item so a future multi-root change does not require another contract bump. The per-cwd `errors[]` array is preserved as its own list rather than being dropped, since a skill's `SKILL.md` parse failure is the most common and most actionable failure a user can hit.
+- Exclude `interface.brandColor`, `interface.iconSmall`/`iconLarge`, `interface.defaultPrompt`, and `dependencies.tools[]` from the `SkillInfo` contract entirely, rather than carrying and hiding them. `brandColor` is a free-form attacker-supplied string that would have to be interpreted as a WPF brush; the icon paths are `AbsolutePathBuf` values that would bind a WPF `Image.Source` to a file the app-server chose (a file-read/image-decoder attack surface); `defaultPrompt` is attacker-controlled text destined for the composer (a prompt-injection vector) with no v1 UI to review it before use; `dependencies.tools[]` describes external processes with no v1 consumer.
+
+### Consequences
+
+- A future skills UI that wants scope-aware disambiguation (e.g. resolving a name collision across `repo`/`user`/`system`/`admin`) must use `SkillInfo.Scope` plus `SkillInfo.Path`, since there is no server-assigned `id`.
+- Re-adding any of the excluded `interface`/`dependencies` fields later requires its own security review (icon paths in particular need a decision on whether to fetch/display them at all) and is not merely a contract-widening change.
+- `ReadSkills` in `CodexSessionService` must keep tolerating a missing or non-array `data` property, since the Fake app-server's catch-all response for an unhandled method is `{ }` and does not carry `data`.

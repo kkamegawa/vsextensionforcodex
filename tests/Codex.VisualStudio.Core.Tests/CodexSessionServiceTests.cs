@@ -765,6 +765,370 @@ public sealed class CodexSessionServiceTests
     }
 
     [TestMethod]
+    public async Task ListSkills_ReturnsSkillsAndErrorsFromEveryEntry()
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "skills/list"
+                ? JsonSerializer.SerializeToElement(new
+                {
+                    data = new object[]
+                    {
+                        new
+                        {
+                            cwd = "/repo",
+                            errors = new object[]
+                            {
+                                new { message = "SKILL.md front matter is not valid YAML.", path = "/repo/.codex/skills/broken/SKILL.md" },
+                            },
+                            skills = new object[]
+                            {
+                                new
+                                {
+                                    name = "review-diff",
+                                    description = "Review the current diff.",
+                                    enabled = true,
+                                    path = "/repo/.codex/skills/review-diff/SKILL.md",
+                                    scope = "repo",
+                                },
+                            },
+                        },
+                    },
+                })
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        ListSkillsResult result = await service.ListSkillsAsync(forceReload: false, CancellationToken.None);
+
+        Assert.IsTrue(result.IsSupported);
+        Assert.IsFalse(result.IsTruncated);
+        Assert.AreEqual(1, result.Skills.Count);
+        Assert.AreEqual("review-diff", result.Skills[0].Name);
+        Assert.AreEqual("repo", result.Skills[0].Scope);
+        Assert.AreEqual("/repo/.codex/skills/review-diff/SKILL.md", result.Skills[0].Path);
+        Assert.IsTrue(result.Skills[0].Enabled);
+        Assert.AreEqual("/repo", result.Skills[0].Cwd);
+        Assert.AreEqual(1, result.Errors.Count);
+        Assert.AreEqual("SKILL.md front matter is not valid YAML.", result.Errors[0].Message);
+        Assert.AreEqual("/repo/.codex/skills/broken/SKILL.md", result.Errors[0].Path);
+        Assert.AreEqual("/repo", result.Errors[0].Cwd);
+
+        JsonElement parameters = ParametersFor(connection, "skills/list");
+        Assert.AreEqual(0, parameters.GetProperty("cwds").GetArrayLength());
+        Assert.IsFalse(parameters.GetProperty("forceReload").GetBoolean());
+    }
+
+    [TestMethod]
+    public async Task ListSkills_ReturnsEmptyWhenDataPropertyMissing()
+    {
+        // Matches the Fake app-server's catch-all response (`_ => new { }`) for an unhandled
+        // method: no "data" property at all. A naive result.GetProperty("data") would throw
+        // KeyNotFoundException here instead of degrading gracefully.
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => JsonSerializer.SerializeToElement(new { }),
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        ListSkillsResult result = await service.ListSkillsAsync(forceReload: false, CancellationToken.None);
+
+        Assert.IsTrue(result.IsSupported);
+        Assert.AreEqual(0, result.Skills.Count);
+        Assert.AreEqual(0, result.Errors.Count);
+    }
+
+    [TestMethod]
+    public async Task ListSkills_DropsSkillsMissingRequiredFields()
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "skills/list"
+                ? JsonSerializer.SerializeToElement(new
+                {
+                    data = new object[]
+                    {
+                        new
+                        {
+                            cwd = "/repo",
+                            errors = Array.Empty<object>(),
+                            skills = new object[]
+                            {
+                                // Missing "path" — required by SkillMetadata, must be dropped.
+                                new { name = "no-path", description = "d", enabled = true, scope = "repo" },
+                                // Missing "scope" — required by SkillMetadata, must be dropped.
+                                new { name = "no-scope", description = "d", enabled = true, path = "/repo/.codex/skills/no-scope/SKILL.md" },
+                                // Complete entry — must survive.
+                                new { name = "complete", description = "d", enabled = true, path = "/repo/.codex/skills/complete/SKILL.md", scope = "repo" },
+                            },
+                        },
+                    },
+                })
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        ListSkillsResult result = await service.ListSkillsAsync(forceReload: false, CancellationToken.None);
+
+        Assert.AreEqual(1, result.Skills.Count);
+        Assert.AreEqual("complete", result.Skills[0].Name);
+    }
+
+    [TestMethod]
+    public async Task ListSkills_DropsSkillsWithNonRootedPath()
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "skills/list"
+                ? JsonSerializer.SerializeToElement(new
+                {
+                    data = new object[]
+                    {
+                        new
+                        {
+                            cwd = "/repo",
+                            errors = Array.Empty<object>(),
+                            skills = new object[]
+                            {
+                                new { name = "relative", description = "d", enabled = true, path = "relative/path", scope = "repo" },
+                                new { name = "rooted", description = "d", enabled = true, path = "/repo/.codex/skills/rooted/SKILL.md", scope = "repo" },
+                            },
+                        },
+                    },
+                })
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        ListSkillsResult result = await service.ListSkillsAsync(forceReload: false, CancellationToken.None);
+
+        Assert.AreEqual(1, result.Skills.Count);
+        Assert.AreEqual("rooted", result.Skills[0].Name);
+    }
+
+    [TestMethod]
+    public async Task ListSkills_NormalizesErrorPathToNullWhenNotRooted()
+    {
+        // SkillLoadError.Path must go through the same rooted-path validation as SkillInfo.Path
+        // (NormalizeSkillPath), not just length/control-character sanitization -- a relative or
+        // malformed path must not be forwarded over the contract as if it were absolute.
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "skills/list"
+                ? JsonSerializer.SerializeToElement(new
+                {
+                    data = new object[]
+                    {
+                        new
+                        {
+                            cwd = "/repo",
+                            errors = new object[]
+                            {
+                                new { message = "relative path error", path = "relative/SKILL.md" },
+                                new { message = "rooted path error", path = "/repo/.codex/skills/broken/SKILL.md" },
+                            },
+                            skills = Array.Empty<object>(),
+                        },
+                    },
+                })
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        ListSkillsResult result = await service.ListSkillsAsync(forceReload: false, CancellationToken.None);
+
+        Assert.HasCount(2, result.Errors);
+        Assert.IsNull(result.Errors[0].Path);
+        Assert.AreEqual("/repo/.codex/skills/broken/SKILL.md", result.Errors[1].Path);
+    }
+
+    [TestMethod]
+    public async Task ListSkills_PreservesLongCwdInsteadOfTruncatingToNull()
+    {
+        // cwd is a filesystem path, so it must be capped at MaxSkillPathLength (1024) like other
+        // path fields, not the shorter MaxSkillTextLength (512) used for prose descriptions --
+        // otherwise a long-but-valid working directory would be silently dropped to null.
+        string longCwd = "/" + string.Join('/', Enumerable.Repeat("segment", 80));
+        Assert.IsTrue(longCwd.Length > 512 && longCwd.Length <= 1024);
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "skills/list"
+                ? JsonSerializer.SerializeToElement(new
+                {
+                    data = new object[]
+                    {
+                        new
+                        {
+                            cwd = longCwd,
+                            errors = Array.Empty<object>(),
+                            skills = new object[]
+                            {
+                                new { name = "review-diff", description = "d", enabled = true, path = "/repo/.codex/skills/review-diff", scope = "repo" },
+                            },
+                        },
+                    },
+                })
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        ListSkillsResult result = await service.ListSkillsAsync(forceReload: false, CancellationToken.None);
+
+        Assert.AreEqual(longCwd, result.Skills[0].Cwd);
+    }
+
+    [TestMethod]
+    public async Task ListSkills_RedactsSecretsInDescriptionAndErrorMessage()
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "skills/list"
+                ? JsonSerializer.SerializeToElement(new
+                {
+                    data = new object[]
+                    {
+                        new
+                        {
+                            cwd = "/repo",
+                            errors = new object[]
+                            {
+                                new { message = "Failed with token=secret-value", path = "/repo/.codex/skills/broken/SKILL.md" },
+                            },
+                            skills = new object[]
+                            {
+                                new
+                                {
+                                    name = "leaky",
+                                    description = "Uses api_key=secret-value internally.",
+                                    enabled = true,
+                                    path = "/repo/.codex/skills/leaky/SKILL.md",
+                                    scope = "repo",
+                                },
+                            },
+                        },
+                    },
+                })
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        ListSkillsResult result = await service.ListSkillsAsync(forceReload: false, CancellationToken.None);
+
+        StringAssert.Contains(result.Skills[0].Description, "[REDACTED]");
+        StringAssert.DoesNotMatch(result.Skills[0].Description, new System.Text.RegularExpressions.Regex("secret-value"));
+        StringAssert.Contains(result.Errors[0].Message, "[REDACTED]");
+    }
+
+    [TestMethod]
+    public async Task ListSkills_TruncatesBeyondMaximumSkillCount()
+    {
+        object[] skills = Enumerable.Range(0, 205)
+            .Select(index => (object)new
+            {
+                name = $"skill-{index}",
+                description = "d",
+                enabled = true,
+                path = $"/repo/.codex/skills/skill-{index}",
+                scope = "repo",
+            })
+            .ToArray();
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "skills/list"
+                ? JsonSerializer.SerializeToElement(new
+                {
+                    data = new object[] { new { cwd = "/repo", errors = Array.Empty<object>(), skills } },
+                })
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        ListSkillsResult result = await service.ListSkillsAsync(forceReload: false, CancellationToken.None);
+
+        Assert.AreEqual(200, result.Skills.Count);
+        Assert.IsTrue(result.IsTruncated);
+    }
+
+    [TestMethod]
+    public async Task ListSkills_StopsScanningEntriesOnceBothCapsAreReached()
+    {
+        // skills/list is untrusted and unbounded: once one entry alone fills both the skill and
+        // error caps, a second entry must not be scanned at all (not just capped) so a
+        // pathological response with a huge "data" array cannot force unbounded per-entry work.
+        object[] fillerSkills = Enumerable.Range(0, 200)
+            .Select(index => (object)new
+            {
+                name = $"skill-{index}",
+                description = "d",
+                enabled = true,
+                path = $"/repo/.codex/skills/skill-{index}",
+                scope = "repo",
+            })
+            .ToArray();
+        object[] fillerErrors = Enumerable.Range(0, 50)
+            .Select(index => (object)new { message = $"error-{index}", path = "/repo/.codex/skills/broken/SKILL.md" })
+            .ToArray();
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "skills/list"
+                ? JsonSerializer.SerializeToElement(new
+                {
+                    data = new object[]
+                    {
+                        new { cwd = "/repo-a", errors = fillerErrors, skills = fillerSkills },
+                        new
+                        {
+                            cwd = "/repo-b",
+                            errors = Array.Empty<object>(),
+                            skills = new object[]
+                            {
+                                new { name = "should-not-appear", description = "d", enabled = true, path = "/repo-b/.codex/skills/should-not-appear/SKILL.md", scope = "repo" },
+                            },
+                        },
+                    },
+                })
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        ListSkillsResult result = await service.ListSkillsAsync(forceReload: false, CancellationToken.None);
+
+        Assert.AreEqual(200, result.Skills.Count);
+        Assert.AreEqual(50, result.Errors.Count);
+        Assert.IsTrue(result.IsTruncated);
+        Assert.IsFalse(result.Skills.Any(skill => skill.Name == "should-not-appear"));
+    }
+
+    [TestMethod]
+    public async Task ListSkills_ReturnsUnsupportedWhenMethodUnknown()
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "skills/list"
+                ? throw new JsonRpcRemoteException(-32601, "Method not found")
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        ListSkillsResult first = await service.ListSkillsAsync(forceReload: false, CancellationToken.None);
+        ListSkillsResult second = await service.ListSkillsAsync(forceReload: false, CancellationToken.None);
+
+        Assert.IsFalse(first.IsSupported);
+        Assert.IsFalse(second.IsSupported);
+        Assert.AreEqual(1, connection.Requests.Count(item => item.Method == "skills/list"));
+    }
+
+    [TestMethod]
     public async Task ThreadResponsesAndSettingsNotificationTrackEffectiveApprovalState()
     {
         var connection = new RecordingConnection
