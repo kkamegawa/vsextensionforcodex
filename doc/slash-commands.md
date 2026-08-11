@@ -3,9 +3,9 @@
 ## Scope
 
 The Visual Studio extension recognizes Codex commands only when `/` is the first
-input character. Commands are resolved by an allowlisted catalog and are never
-sent to the model as prompt text. A leading `//` escapes command mode and sends
-one literal leading slash.
+input character. Built-in commands and structured skills share one inline,
+virtualized suggestion list. Built-in commands are never sent to the model as
+prompt text. A leading `//` escapes command mode and sends one literal leading slash.
 
 The implementation is tracked by GitHub Issue #46 and its four sub-issues.
 
@@ -54,8 +54,12 @@ turn's thread, the selected thread, and the session queue, continues past a
 failed command, and pauses as soon as a queued command starts another turn.
 
 Queues are memory-only. They are canceled on disconnect, Worker restart, or
-confirmed thread removal. A slash command is never sent through `turn/steer`;
-the existing steering behavior remains unchanged for normal prompts.
+confirmed thread removal. A built-in slash command is never sent through
+`turn/steer`; selected skills are held in one independent chip and sent only as
+the structured `turn/start` input item `{ type: "skill", name, path }`. Scope and
+raw path are used for Worker validation and are not bound to Remote UI. While a
+skill chip is pending, send/steer is disabled until the chip is removed or its
+turn starts successfully.
 
 ## Worker contract
 
@@ -91,10 +95,11 @@ the preview and write.
 
 ## Remote UI and safety
 
-The composer uses an inline, height-bounded suggestion list rather than a
-popup. Selecting a command creates a chip and leaves free-form arguments in a
-separate text box, avoiding asynchronous `ComposerText` echo and caret reset.
-Fixed arguments use themed option buttons.
+The composer uses one inline, virtualized suggestion list rather than a popup.
+It shows at most eight built-ins and twenty skills plus non-selectable state rows.
+Selecting a built-in creates its command chip; selecting a skill creates an
+independent skill chip, clears only the slash query through `SetComposerText("")`,
+and keeps the ordinary composer visible. Fixed arguments use themed option buttons.
 
 Up and Down move selection, Enter or Tab accepts a suggestion, Escape closes
 the list, and Ctrl+Enter executes. Enter remains a newline when suggestions

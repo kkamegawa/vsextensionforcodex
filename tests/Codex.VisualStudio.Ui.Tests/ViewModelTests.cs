@@ -1513,7 +1513,7 @@ public sealed class ViewModelTests
             typeof(SlashCommandSuggestionViewModel), typeof(SlashCommandOptionViewModel),
             typeof(AttachmentChipViewModel), typeof(FileSuggestionPresentationViewModel),
             typeof(FileSuggestionViewModel), typeof(ReasoningEffortOption), typeof(ServiceTierOption),
-            typeof(UsagePresentation),
+            typeof(PendingSkillViewModel), typeof(UsagePresentation),
             typeof(WorkerStatus), typeof(ThreadSummary),
         ];
 
@@ -3177,14 +3177,15 @@ public sealed class ViewModelTests
     }
 
     [TestMethod]
-    public void ChatViewModel_LeadingSlash_OpensEightSlashCommandSuggestions()
+    public void ChatViewModel_LeadingSlash_OpensUnifiedSlashSuggestions()
     {
         using var vm = new ChatViewModel(new FakeWorkerBridge(), autoConnect: false);
 
         vm.ComposerText = "/";
 
         Assert.IsTrue(vm.SlashCommands.IsSuggestionOpen);
-        Assert.HasCount(8, vm.SlashCommands.Suggestions);
+        Assert.HasCount(8, vm.SlashCommands.Suggestions.Where(static item => item.IsSelectable && !item.IsSkill));
+        Assert.IsTrue(vm.SlashCommands.Suggestions.Any(static item => !item.IsSelectable && item.CommandName == "Skills"));
         Assert.AreEqual("/compact", vm.SlashCommands.SelectedSuggestion?.CommandName);
     }
 
@@ -3351,9 +3352,10 @@ public sealed class ViewModelTests
         vm.ComposerText = "/re";
 
         Assert.IsTrue(vm.SlashCommands.IsSuggestionOpen);
-        Assert.HasCount(2, vm.SlashCommands.Suggestions);
-        Assert.AreEqual("/reasoning", vm.SlashCommands.Suggestions[0].CommandName);
-        Assert.AreEqual("/review", vm.SlashCommands.Suggestions[1].CommandName);
+        var builtIns = vm.SlashCommands.Suggestions.Where(static item => item.IsSelectable && !item.IsSkill).ToArray();
+        Assert.HasCount(2, builtIns);
+        Assert.AreEqual("/reasoning", builtIns[0].CommandName);
+        Assert.AreEqual("/review", builtIns[1].CommandName);
     }
 
     [TestMethod]
@@ -3400,11 +3402,10 @@ public sealed class ViewModelTests
             slashPropertyChanges,
             nameof(SlashCommandPresentationViewModel.IsSuggestionOpen));
         Assert.AreEqual(NotifyCollectionChangedAction.Reset, suggestionCollectionChanges[0]);
-        Assert.AreEqual(
-            8,
-            suggestionCollectionChanges.Count(static action => action == NotifyCollectionChangedAction.Add));
+        Assert.IsTrue(
+            suggestionCollectionChanges.Count(static action => action == NotifyCollectionChangedAction.Add) >= 8);
         Assert.IsTrue(vm.SlashCommands.IsSuggestionOpen);
-        Assert.HasCount(8, vm.SlashCommands.Suggestions);
+        Assert.HasCount(8, vm.SlashCommands.Suggestions.Where(static item => item.IsSelectable && !item.IsSkill));
     }
 
     [TestMethod]
@@ -3625,6 +3626,8 @@ public sealed class ViewModelTests
 
         public event Func<RateLimitsResult, Task>? RateLimitsChanged;
 
+        public event Func<Task>? SkillsChanged;
+
         public ListModelsResult ModelListResult { get; set; } = new();
 
         public ListPermissionProfilesResult PermissionProfilesResult { get; set; } = new();
@@ -3643,6 +3646,8 @@ public sealed class ViewModelTests
 
         public RateLimitsResult RateLimitsResult { get; set; } = new();
 
+        public ListSkillsResult SkillsResult { get; set; } = new() { IsSupported = true };
+
         public Func<int, Task<RateLimitsResult>>? RateLimitHandler { get; set; }
 
         public Exception? ResolveApprovalException { get; set; }
@@ -3659,6 +3664,9 @@ public sealed class ViewModelTests
 
         public Task PublishRateLimitsAsync(RateLimitsResult result)
             => RateLimitsChanged?.Invoke(result) ?? Task.CompletedTask;
+
+        public Task PublishSkillsChangedAsync()
+            => SkillsChanged?.Invoke() ?? Task.CompletedTask;
 
         public Task<WorkerStatus> ConnectAsync(string workingDirectory, bool experimentalApi, CancellationToken cancellationToken)
             => Task.FromResult(new WorkerStatus { State = WorkerConnectionState.Ready });
@@ -3746,6 +3754,9 @@ public sealed class ViewModelTests
 
         public Task<McpServerListResult> ListMcpServersAsync(string? threadId, CancellationToken cancellationToken)
             => Task.FromResult(new McpServerListResult());
+
+        public Task<ListSkillsResult> ListSkillsAsync(bool forceReload, CancellationToken cancellationToken)
+            => Task.FromResult(SkillsResult);
 
         public Task<UploadFeedbackResult> UploadFeedbackAsync(UploadFeedbackRequest request, CancellationToken cancellationToken)
             => Task.FromResult(new UploadFeedbackResult { ThreadId = request.ThreadId });

@@ -110,8 +110,7 @@ Protocol          AppServerClient / JsonRpcDispatcher / SchemaVersionGuard / Cod
   symlink や相対パスを正規化して workspace 外ファイル変更を検出する。
 - **SecretRedactor / AuditLogService**: stderr、command output、承認要求、監査ログに含まれる token、
   connection string、credential らしき値を redaction し、VS ActivityLog へ安全に記録する。
-- **SlashCommandRouter**: 入力テキストの先頭が `/` の場合に CLI スラッシュコマンドへマッピング。
-  スキル呼び出し（`$<skill-name>` + `skill` 入力アイテム）も処理。
+- **SlashCommandRouter**: 入力テキストの先頭が `/` の場合に組み込みコマンドと構造化スキルを一つの候補面へ平坦化する。組み込みは8件、スキルは20件までとし、スキルは選択チップから `turn/start` の単一 `skill` 入力アイテムへ変換する。
 - **StreamingBuffer / StreamingRenderer**: `item/agentMessage/delta`、`item/reasoning/summaryTextDelta`、
   `item/commandExecution/outputDelta`、`turn/diff/updated`、`turn/plan/updated` を 50-100ms 程度でバッチ化し、
   UI スレッドへの反映を抑制する。巨大な command output と diff は仮想化・折りたたみ・上限超過時の
@@ -143,7 +142,8 @@ Protocol          AppServerClient / JsonRpcDispatcher / SchemaVersionGuard / Cod
 - **巨大出力の制限**: command output、reasoning summary、diff はメモリ上限を持つ。上限超過時は折りたたみ、
   truncated 表示、または一時ログファイルへの退避を行う。
 - **キャッシュと invalidation**: `model/list`、`skills/list`、`plugin/list`、`app/list` はキャッシュし、
-  `skills/changed` などの通知や明示 reload で再取得する。
+  `skills/changed` などの通知や明示 reload で再取得する。スキルは60秒TTL、世代番号、single-flight、
+  `TimeProvider`を使い、turn開始直前にforce reloadして `Name + Scope + Path` を完全一致検証する。
 - **障害時 fail fast**: app-server 終了、protocol mismatch、timeout 時は pending RPC をすべて失敗させ、
   Visual Studio の UI をブロックしない。
 
@@ -224,7 +224,17 @@ dependencies:
 - `apm audit` を CI の必須チェックにし、Unicode spoofing、transitive MCP、未固定参照を検出する。
 - plugin/agent/skill の有効化はユーザーまたは管理者ポリシーで明示する。
 
-## 8. フェーズ分割
+## 8. Issue #140 統合スラッシュメニュー実装
+
+- Worker契約をv15へ更新し、`skills/list`を60秒TTL・TimeProvider・single-flight・generation付きauthoritative cacheへ統合する。
+- `/`の単一非Popup仮想化ListBoxへ組み込み8件、Skills header、スキル20件、Loading/Empty/Unsupported/Failed/Truncated行を平坦化する。
+- スキル選択は不透明IDを現行snapshotの完全identityへ解決し、最大1件の独立チップへ置換する。`SetComposerText("")`で検索文字列だけを消し、通常Composerは表示し続ける。
+- Readyではテキストなしのskill-only turnを許可し、Busy/WaitingForApproval中もチップ操作を許可する。ただしpending中のsend/steerは無効化し、成功したturn/start後だけ同一identityのチップを消す。
+- `brandColor`、redacted bounded `defaultPrompt`、plain-text dependenciesを表示専用で扱う。アイコンspikeが成功するまでraw icon path/RPC/DTOは公開せず固定glyphへfallbackする。
+- stale/disabled/unsupported、unknown skill approval、scope/pathのRemote UI漏えい、`skill_approval` outbound混入をfail-closedで検証する。
+- Issue #140、英日Wiki、ADR-009を設計正本として更新し、実装後にCore/UIテスト、Debug/Release build、VSIX/DLL/XAML hashを検証する。
+
+## 9. フェーズ分割
 
 | Phase | 目的 | 主な成果物 |
 |-------|------|-----------|
@@ -237,7 +247,7 @@ dependencies:
 
 各フェーズの詳細タスクは `task.md` を参照。
 
-## 9. 主要リスクと対応
+## 10. 主要リスクと対応
 
 - **VisualStudio.Extensibility の .NET 8 対応範囲**: Phase 0 で検証。ギャップは in-proc
   (.NET Framework 4.7.2) フォールバック。
@@ -254,7 +264,7 @@ dependencies:
 - **WebSocket transport の露出**: WebSocket は将来検討に留め、使用時は loopback 限定と認証必須にする。
 - **apm/plugin/MCP の supply chain**: lockfile、allowlist、audit、既定無効化で未検証資産の実行を防ぐ。
 
-## 10. 参考
+## 11. 参考
 
 - Codex App Server: https://developers.openai.com/codex/app-server
 - Codex IDE Slash commands: https://developers.openai.com/codex/ide/slash-commands

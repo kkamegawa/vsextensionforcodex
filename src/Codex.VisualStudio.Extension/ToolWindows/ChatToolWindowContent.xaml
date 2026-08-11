@@ -1276,10 +1276,17 @@
                           AutomationProperties.Name="{Binding AutomationName}">
                     <Grid>
                       <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="3" />
+                        <ColumnDefinition Width="Auto" />
                         <ColumnDefinition Width="Auto" />
                         <ColumnDefinition Width="*" />
                       </Grid.ColumnDefinitions>
-                      <TextBlock Grid.Column="0"
+                      <Border Grid.Column="0"
+                              Width="3"
+                              Margin="0,1,6,1"
+                              Background="{Binding BrandColor}"
+                              CornerRadius="1" />
+                      <TextBlock Grid.Column="1"
                                  MinWidth="108"
                                  FontWeight="SemiBold"
                                  Style="{x:Null}"
@@ -1299,7 +1306,7 @@
           <!-- Inline slash-command suggestions. This is deliberately not a Popup: Remote UI
                keeps the surface in the composer focus scope and preserves keyboard navigation. -->
           <Border Grid.Row="0"
-                  MaxHeight="200"
+                  MaxHeight="320"
                   Margin="6,6,6,0"
                   CornerRadius="6"
                   BorderThickness="1"
@@ -1308,7 +1315,7 @@
                   Visibility="{Binding SlashCommands.IsSuggestionOpen, Converter={StaticResource BoolToVis}}"
                   AutomationProperties.Name="Slash command suggestions"
                   AutomationProperties.HelpText="Use Up and Down to move, Enter or Tab to select, and Escape to close.">
-            <ListBox MaxHeight="198"
+            <ListBox MaxHeight="318"
                      Background="Transparent"
                      BorderThickness="0"
                      ItemsSource="{Binding SlashCommands.Suggestions}"
@@ -1326,15 +1333,27 @@
                           AutomationProperties.Name="{Binding AutomationName}">
                     <Grid>
                       <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="3" />
+                        <ColumnDefinition Width="Auto" />
                         <ColumnDefinition Width="Auto" />
                         <ColumnDefinition Width="*" />
                       </Grid.ColumnDefinitions>
-                      <TextBlock Grid.Column="0"
+                      <Border Grid.Column="0"
+                              Width="3"
+                              Margin="0,1,6,1"
+                              Background="{Binding BrandColor}"
+                              CornerRadius="1" />
+                      <TextBlock Grid.Column="1"
                                  MinWidth="108"
                                  FontWeight="SemiBold"
                                  Style="{x:Null}"
                                  Text="{Binding CommandName}" />
-                      <TextBlock Grid.Column="1"
+                      <TextBlock Grid.Column="2"
+                                 Margin="8,0,0,0"
+                                 Foreground="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowButtonDownActiveGlyphBrushKey}}"
+                                 Style="{x:Null}"
+                                 Text="{Binding ScopeLabel}" />
+                      <TextBlock Grid.Column="3"
                                  Margin="10,0,0,0"
                                  Style="{x:Null}"
                                  Text="{Binding Description}"
@@ -1378,6 +1397,52 @@
                             Command="{Binding RemoveCommand}"
                             Style="{StaticResource SelectedChipIconButtonStyle}"
                             AutomationProperties.Name="{Binding AutomationName}" />
+                  </StackPanel>
+                </Border>
+              </DataTemplate>
+            </ItemsControl.ItemTemplate>
+          </ItemsControl>
+
+          <!-- A selected skill is independent from ActiveCommand; the ordinary composer stays
+               visible so text can be added, and the chip can be removed while a turn is busy. -->
+          <ItemsControl Grid.Row="1"
+                        Margin="10,8,10,0"
+                        ItemsSource="{Binding PendingSkills}"
+                        Visibility="{Binding HasPendingSkill, Converter={StaticResource BoolToVis}}"
+                        AutomationProperties.Name="Pending skill">
+            <ItemsControl.ItemTemplate>
+              <DataTemplate>
+                <Border Padding="10,4"
+                        Margin="0,0,6,6"
+                        CornerRadius="12"
+                        Background="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowButtonDownBrushKey}}"
+                        BorderBrush="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBorderBrushKey}}"
+                        BorderThickness="1">
+                  <StackPanel Orientation="Horizontal">
+                    <TextBlock VerticalAlignment="Center"
+                               Foreground="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowButtonDownActiveGlyphBrushKey}}"
+                               Text="{Binding DisplayName}"
+                               TextTrimming="CharacterEllipsis"
+                               MaxWidth="220" />
+                    <TextBlock Margin="6,0,0,0"
+                               VerticalAlignment="Center"
+                               Foreground="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowTextBrushKey}}"
+                               Text="{Binding ScopeLabel}" />
+                    <Button Margin="8,0,0,0"
+                            Padding="4,0"
+                            Content="Use prompt"
+                            Command="{Binding UseDefaultPromptCommand}"
+                            Visibility="{Binding HasDefaultPrompt, Converter={StaticResource BoolToVis}}"
+                            Style="{StaticResource SlashSuggestionButtonStyle}"
+                            ToolTip="{Binding DefaultPromptPreview}"
+                            AutomationProperties.Name="Use suggested skill prompt" />
+                    <Button Margin="6,0,0,0"
+                            Padding="2,0"
+                            MinWidth="18"
+                            Content="&#xE711;"
+                            Command="{Binding RemoveCommand}"
+                            Style="{StaticResource SelectedChipIconButtonStyle}"
+                            AutomationProperties.Name="Remove pending skill" />
                   </StackPanel>
                 </Border>
               </DataTemplate>

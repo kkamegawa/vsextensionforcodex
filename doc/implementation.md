@@ -144,3 +144,28 @@ diagnostics do not include destination text. The raw embedded XAML provides the 
 Usage popup with themed WPF controls, cyclic navigation after focus enters the popup, host- and
 popup-level Escape commands, and UI Automation metadata. Raw Remote UI cannot execute VS-side
 `Keyboard.Focus` from `Popup.Opened`; guaranteed focus transfer requires an in-process WPF host.
+
+## Issue #140 unified slash menu
+
+The Worker/Extension contract is v15. `skills/list` is cached for 60 seconds with `TimeProvider`,
+single-flight locking, generation invalidation, and sticky `-32601` probing. Before a turn starts,
+the Worker force-reloads the catalog and requires an enabled exact `(Name, Scope, Path)` identity;
+the app-server receives only the structured skill item `{ type, name, path }`.
+
+The Remote UI now uses one inline virtualized ListBox (built-in cap 8, skill cap 20) and a separate
+one-slot PendingSkill chip. Selecting a skill clears only the slash query and leaves the composer
+visible. Ready skill-only turns are allowed; Busy/WaitingForApproval selection and removal remain
+available, but pending skills disable send/steer. The chip is cleared only after a matching
+successful `turn/start`. Brand color, default prompt, and dependency metadata are bounded and
+display-only; the default prompt requires an explicit empty-composer action. Icon RPC/cache is
+still gated behind the Remote UI spike and therefore uses fixed-glyph fallback.
+
+Validation on 2026-08-11:
+
+- Debug and Release VSIX builds: 0 warnings, 0 errors.
+- Core tests: 108 passed; UI tests: 271 passed.
+- Debug Extension DLL SHA-256: `B44177DA6E18DEB3010963634B3508A20B48CF9971219D53CB030DB4500E8812`.
+- Debug VSIX SHA-256: `44C39A410DE6D0D11742B523E81B8E666460C90AE20772C68A70CB4F51F45D28`.
+- Release Extension DLL SHA-256: `9E7682DF3970289CDD0ACF09661EBD9463DE602C6B7E3154A12B48C497B7DBDF`.
+- Release VSIX SHA-256: `5856BD3E6C7C50D915A6AE6436F625F64C3929B8F4526C4B10B81AFBF7714E91`.
+- Embedded `ChatToolWindowContent.xaml` SHA-256 matches the source: `3c20ba653dee0c08ab3dcacb4c737b4bbc8b0b52f4628d97828ec10b069b03b9`.

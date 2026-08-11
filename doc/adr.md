@@ -158,3 +158,25 @@
 - A future skills UI that wants scope-aware disambiguation (e.g. resolving a name collision across `repo`/`user`/`system`/`admin`) must use `SkillInfo.Scope` plus `SkillInfo.Path`, since there is no server-assigned `id`.
 - Re-adding any of the excluded `interface`/`dependencies` fields later requires its own security review (icon paths in particular need a decision on whether to fetch/display them at all) and is not merely a contract-widening change.
 - `ReadSkills` in `CodexSessionService` must keep tolerating a missing or non-array `data` property, since the Fake app-server's catch-all response for an unhandled method is `{ }` and does not carry `data`.
+
+## ADR-009: Unified slash menu and structured skill invocation
+
+- Date: 2026-08-11
+- Task: GitHub Issue #140
+- Status: Accepted
+
+### Decision
+
+- Treat the existing Worker `skills/list` implementation as the only pre-existing skill capability. The Extension presents built-in commands and skills in one non-popup, virtualized list; the current main branch does not contain a skill-selection UI.
+- Raise the Extension/Worker contract to v15. A selected skill is represented by one `SkillInvocationInfo { Name, Scope, Path }` chip. Scope and Path are used for exact Extension/Worker identity validation and never become Remote UI-bound raw path data. The app-server input is exactly `{ type: "skill", name, path }`; `skill_approval` is not sent or auto-granted.
+- Keep one pending skill. Selecting another replaces it, clearing only the slash query through `SetComposerText("")` while the ordinary composer remains visible. Busy and approval-waiting states allow chip changes/removal, but a pending chip disables send/steer until the current turn finishes or the chip is removed.
+- Cache the authoritative catalog for 60 seconds using `TimeProvider`, single-flight locking, immutable snapshots, generation invalidation, and sticky `-32601` probing. A turn start force-reloads and revalidates the complete identity against an enabled catalog item before app-server I/O.
+- Accept `brandColor`, redacted bounded `defaultPrompt`, and bounded dependency metadata as display-only data. The default prompt is inserted only through an explicit button when the composer is empty and never auto-sends. Dependencies remain plain-text badges/tooltips; they do not execute or install anything.
+- The icon spike is not part of this initial release until the Remote UI image/cache containment test is proven. Fixed glyph fallback remains mandatory; no raw icon path is exposed.
+- Keep built-in candidates capped at eight and skill candidates capped at twenty. Headers and state rows are non-selectable. Same-name skills display a fixed scope label; path collisions use an opaque selection key and a safe ordinal suffix rather than exposing the path.
+
+### Consequences
+
+- Structured skills can start a text-free turn without conflating them with `SlashCommands.ActiveCommand` or text-only steering.
+- Stale, disabled, unsupported, and transient catalog states fail closed without leaving Worker status Busy.
+- ADR-008 is superseded only for the metadata fields explicitly admitted above. Its capability probe, flattened catalog, identity tuple, and missing-data tolerance remain in force.

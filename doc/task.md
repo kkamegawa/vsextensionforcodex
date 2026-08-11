@@ -2,6 +2,17 @@
 
 `plan.md` のフェーズ分割に対応する詳細タスク。各タスクは独立してレビュー可能な小さなスライスを意図する。
 
+## 2026-08-11: Unified slash menu and structured skill invocation (Issue #140)
+
+- [x] Update Issue #140 and the English/Japanese Wiki plan with the reviewed v15 contract, busy-state, candidate limits, identity validation, metadata boundaries, and icon spike gate.
+- [x] Add ADR-009. ADR-008 remains authoritative for capability probing, flattened catalogs, complete identity, and missing-data tolerance; only explicitly admitted metadata fields are superseded.
+- [x] Raise the Worker contract to v15 with `SkillInvocationInfo`, metadata DTOs, skills invalidation observer, 60-second `TimeProvider` cache, generation guard, and exact enabled-skill revalidation before `turn/start`.
+- [x] Add one unified virtualized slash list with built-in rows, skill rows, scope labels, loading/unsupported/empty/truncated states, stable ranking, and non-selectable state rows.
+- [x] Add one independent pending skill chip. It replaces the previous chip, clears only the slash query, permits text-free Ready turns, blocks pending send/steer while Busy, and clears only after successful matching `turn/start`.
+- [x] Bound and sanitize brand color, default prompt preview, and dependency badges. Keep default prompt insertion explicit and non-sending; keep icon data behind the fixed-glyph spike gate.
+- [ ] Add final Remote UI screenshot and Experimental Instance hash verification after the icon spike is accepted.
+- [ ] Complete Core/UI regression coverage for cache TTL/generation, metadata fallback, ranking/collisions, chip lifecycle, and structured input serialization.
+
 ## 2026-07-21: Stabilize intermittent CI build failures (issue #110)
 
 - [x] Replace the fixed `Task.Delay(250)` in `StreamingBufferTests.cs` (3 tests) with a poll-until-condition-or-timeout wait, removing the race against the `StreamingBuffer`'s 75ms flush timer.

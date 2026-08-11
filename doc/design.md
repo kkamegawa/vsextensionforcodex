@@ -277,3 +277,23 @@ The operation remains non-destructive: an existing solution is never overwritten
 file-based app choice continues to create only a root-level `Program.cs` without a solution or
 project. The generated empty document must remain parseable as XML and accepted by the pinned
 `.NET` SDK's `dotnet sln` command.
+## Unified slash menu and skill boundary (Issue #140)
+
+The main branch provides Worker-side `skills/list` only. The Extension uses one non-popup,
+virtualized ListBox for the eight built-in candidates and up to twenty enabled skills. Skill
+selection is not `SlashCommands.ActiveCommand`: it creates one `PendingSkill` chip while the
+normal composer remains visible. Accepting a row resolves an opaque selection key against the
+current `(Name, Scope, Path)` snapshot and clears only the slash query.
+
+Worker contract v15 force-reloads and validates the complete identity immediately before
+`turn/start`; only `{ type: "skill", name, path }` is serialized to app-server. Scope and raw
+path never enter Remote UI-bound data. Busy and approval-waiting states permit chip changes, but
+pending skills disable send/steer until removal or successful start. Catalog snapshots use a
+60-second `TimeProvider` TTL, single-flight locking, generation invalidation, and sticky
+`-32601` capability probing.
+
+Metadata is untrusted display data: brand colors accept only normalized `#RRGGBB`, default
+prompts are redacted/bounded and require an explicit empty-composer button, and dependencies are
+plain-text badges with no execution or installation behavior. The icon spike is gated; until a
+Remote UI image/cache containment proof exists, the presentation uses a fixed glyph and exposes
+no raw icon path.

@@ -86,6 +86,12 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     private readonly HashSet<SlashCommandId> unavailableSlashCommands = [];
     private int drainingSlashQueue;
     private CancellationTokenSource? fileSuggestionRefresh;
+    private ListSkillsResult? skillsSnapshot;
+    private DateTimeOffset skillsSnapshotExpiresAt;
+    private Task? skillsLoadTask;
+    private string? skillsLoadFailure;
+    private long skillSelectionSequence;
+    private readonly Dictionary<string, SkillInfo> skillSelections = new(StringComparer.Ordinal);
 
     private readonly record struct PendingReasoningOverride(string Effort, string? RestoreEffort);
 
@@ -131,9 +137,15 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         bridge.ReviewModeChanged += OnReviewModeChangedAsync;
         bridge.ThreadGoalChanged += OnThreadGoalChangedAsync;
         bridge.RateLimitsChanged += OnRateLimitsChangedAsync;
+        bridge.SkillsChanged += OnSkillsChangedAsync;
         // The welcome/empty state is driven by IsThreadEmpty; keep it in sync with every
         // mutation of Items (Add/Clear from any call site) via a single subscription.
         Items.CollectionChanged += (_, _) => OnPropertyChanged(nameof(IsThreadEmpty));
+        PendingSkills.CollectionChanged += (_, _) =>
+        {
+            OnPropertyChanged(nameof(HasPendingSkill));
+            RaiseCommandStates();
+        };
         ConnectCommand = new AsyncCommand(ConnectAsync, () => Status.State is WorkerConnectionState.Disconnected or WorkerConnectionState.Degraded);
         RestartCommand = new AsyncCommand(RestartAsync, () => Status.State == WorkerConnectionState.Degraded);
         NewThreadCommand = new AsyncCommand(NewThreadAsync, () => Status.State == WorkerConnectionState.Ready);
@@ -517,6 +529,12 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
     [DataMember]
     public ObservableCollection<AttachmentChipViewModel> PendingAttachments { get; } = [];
+
+    [DataMember]
+    public ObservableCollection<PendingSkillViewModel> PendingSkills { get; } = [];
+
+    [DataMember]
+    public bool HasPendingSkill => PendingSkills.Count > 0;
 
     [DataMember]
     public bool HasPendingAttachments => PendingAttachments.Count > 0;
@@ -1206,6 +1224,12 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     // (clearComposer: false), which sends the picked option text as the next turn.
     private async Task SendMessageAsync(string text, bool clearComposer)
     {
+        if (HasPendingSkill && Status.State is WorkerConnectionState.Busy or WorkerConnectionState.WaitingForApproval)
+        {
+            await ShowSlashStatusAsync("A skill is pending. Wait for the current turn or remove the skill chip before sending.").ConfigureAwait(false);
+            return;
+        }
+
         if (Status.State is not (WorkerConnectionState.Ready or WorkerConnectionState.Busy or WorkerConnectionState.WaitingForApproval))
         {
             // Not connected yet: this is the user's first send with no solution/folder open.
@@ -1220,7 +1244,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         }
 
         if (string.IsNullOrWhiteSpace(text)
-            && (Status.TurnId is not null || !HasPendingAttachments))
+            && (Status.TurnId is not null || (!HasPendingAttachments && !HasPendingSkill)))
         {
             return;
         }
@@ -1238,7 +1262,9 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         if (Status.TurnId is null)
         {
             string displayText = string.IsNullOrWhiteSpace(text)
-                ? PendingAttachments.Count == 1 ? "Attached 1 file." : $"Attached {PendingAttachments.Count} files."
+                ? HasPendingSkill
+                    ? $"Invoked skill: {PendingSkills[0].DisplayName}."
+                    : PendingAttachments.Count == 1 ? "Attached 1 file." : $"Attached {PendingAttachments.Count} files."
                 : markdown.ToSafeText(text);
             await OnUiAsync(() => Items.Add(new ChatItemViewModel("You", displayText, ConversationEventKind.ItemStarted))).ConfigureAwait(false);
             StartTurnRequest request = await CreateStartTurnRequestAsync(
@@ -1247,6 +1273,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 forcePlanMode: false).ConfigureAwait(false);
             await bridge.StartTurnAsync(request, lifetime.Token).ConfigureAwait(false);
             await OnUiAsync(() => ClearSentAttachments(request.Attachments)).ConfigureAwait(false);
+            await OnUiAsync(() => ClearSentSkill(request.Skill)).ConfigureAwait(false);
             ConsumeNextTurnSettings(request);
         }
         else
@@ -1307,6 +1334,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 },
             IdeContext = ideContext,
             Attachments = attachments,
+            Skill = PendingSkills.FirstOrDefault()?.Invocation,
         };
     }
 
@@ -1431,12 +1459,230 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
         int separator = text.IndexOfAny([' ', '\t', '\r', '\n']);
         string filter = separator < 0 ? text : text[..separator];
-        IReadOnlyList<SlashCommandSuggestionDescriptor> descriptors = slashCommandCatalog
+        IReadOnlyList<SlashCommandSuggestionDescriptor> builtIns = slashCommandCatalog
             .Filter(filter)
             .Select(CreateSlashCommandSuggestion)
             .ToArray();
-        SlashCommands.ShowSuggestions(descriptors);
+        SlashCommands.ShowSuggestions(BuildUnifiedSlashSuggestions(builtIns, text[1..]));
+        if (skillsSnapshot is null || utcNow() >= skillsSnapshotExpiresAt)
+        {
+            _ = EnsureSkillsLoadedAsync();
+        }
     }
+
+    private List<SlashCommandSuggestionDescriptor> BuildUnifiedSlashSuggestions(
+        IReadOnlyList<SlashCommandSuggestionDescriptor> builtIns,
+        string skillQuery)
+    {
+        var result = new List<SlashCommandSuggestionDescriptor>(builtIns.Count + 22);
+        result.AddRange(builtIns);
+        result.Add(new SlashCommandSuggestionDescriptor(
+            "Skills",
+            "Structured skill invocation",
+            IsAvailable: true,
+            IsSkill: false,
+            IsSelectable: false));
+
+        if (skillsSnapshot is null)
+        {
+            if (!string.IsNullOrWhiteSpace(skillsLoadFailure))
+            {
+                result.Add(new SlashCommandSuggestionDescriptor(
+                    "Skills temporarily unavailable",
+                    skillsLoadFailure,
+                    IsAvailable: true,
+                    IsSelectable: false));
+                return result;
+            }
+
+            result.Add(new SlashCommandSuggestionDescriptor(
+                "Loading skills…",
+                "Fetching the skill catalog.",
+                IsAvailable: true,
+                IsSelectable: false));
+            return result;
+        }
+
+        if (!skillsSnapshot.IsSupported)
+        {
+            result.Add(new SlashCommandSuggestionDescriptor(
+                "Skills unavailable",
+                skillsSnapshot.UnavailableReason ?? "This app-server does not expose skills.",
+                IsAvailable: true,
+                IsSelectable: false));
+            return result;
+        }
+
+        SkillInfo[] matches = skillsSnapshot.Skills
+            .Where(skill => SkillMatches(skill, skillQuery))
+            .GroupBy(skill => string.Concat(skill.Name, "\0", skill.Scope, "\0", skill.Path), StringComparer.Ordinal)
+            .Select(group => group.First())
+            .OrderBy(skill => SkillRank(skill, skillQuery))
+            .ThenByDescending(skill => skill.Enabled)
+            .ThenBy(skill => ScopeRank(skill.Scope))
+            .ThenBy(skill => skill.DisplayName ?? skill.Name, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(skill => skill.Name, StringComparer.Ordinal)
+            .ThenBy(skill => skill.Path, StringComparer.Ordinal)
+            .Take(20)
+            .ToArray();
+
+        foreach (SkillInfo skill in matches)
+        {
+            string id = $"skill-{Interlocked.Increment(ref skillSelectionSequence)}";
+            skillSelections[id] = skill;
+            string displayName = string.IsNullOrWhiteSpace(skill.DisplayName) ? skill.Name : skill.DisplayName!;
+            SkillInfo[] pathCollision = skillsSnapshot.Skills
+                .Where(candidate => string.Equals(candidate.Name, skill.Name, StringComparison.Ordinal)
+                    && string.Equals(candidate.Scope, skill.Scope, StringComparison.Ordinal))
+                .OrderBy(candidate => candidate.Path, StringComparer.Ordinal)
+                .ToArray();
+            string scopeLabel = FormatSkillScope(skill.Scope);
+            if (pathCollision.Length > 1)
+            {
+                int ordinal = Array.FindIndex(pathCollision, candidate => string.Equals(candidate.Path, skill.Path, StringComparison.Ordinal)) + 1;
+                scopeLabel = $"{scopeLabel} {ordinal} of {pathCollision.Length}";
+            }
+            result.Add(new SlashCommandSuggestionDescriptor(
+                $"/{displayName}",
+                skill.Description,
+                IsAvailable: skill.Enabled,
+                UnavailableReason: skill.Enabled ? string.Empty : "Skill is disabled.",
+                IsSkill: true,
+                ScopeLabel: scopeLabel,
+                SelectionId: id,
+                BrandColor: skill.BrandColor ?? string.Empty));
+        }
+
+        if (skillsSnapshot.IsTruncated || skillsSnapshot.Skills.Count(skill => skill.Enabled && SkillMatches(skill, skillQuery)) > 20)
+        {
+            result.Add(new SlashCommandSuggestionDescriptor(
+                "More skills available",
+                skillsSnapshot.IsTruncated ? "The app-server returned a truncated catalog." : "Refine the search to see more skills.",
+                IsAvailable: true,
+                IsSelectable: false));
+        }
+        else if (matches.Length == 0)
+        {
+            result.Add(new SlashCommandSuggestionDescriptor(
+                "No matching skills",
+                "Try the skill name or description.",
+                IsAvailable: true,
+                IsSelectable: false));
+        }
+
+        return result;
+    }
+
+    private async Task EnsureSkillsLoadedAsync()
+    {
+        Task load = skillsLoadTask ??= LoadSkillsAsync();
+        try
+        {
+            await load.ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+        {
+        }
+        catch (Exception ex)
+        {
+            skillsLoadFailure = markdown.ToSafeText(ex.Message).Trim();
+            skillsSnapshotExpiresAt = utcNow().AddSeconds(60);
+            ExtensionDiagnostics.Write("Skill discovery failed.", ex);
+            await OnUiAsync(() =>
+            {
+                if (!string.IsNullOrEmpty(ComposerText) && ComposerText[0] == '/')
+                {
+                    UpdateComposerSuggestions(ComposerText);
+                }
+            }).ConfigureAwait(false);
+        }
+        finally
+        {
+            if (ReferenceEquals(skillsLoadTask, load))
+            {
+                skillsLoadTask = null;
+            }
+        }
+    }
+
+    private async Task LoadSkillsAsync()
+    {
+        ListSkillsResult result = await bridge.ListSkillsAsync(forceReload: false, lifetime.Token).ConfigureAwait(false);
+        await OnUiAsync(() =>
+        {
+            skillsLoadFailure = null;
+            skillsSnapshot = result;
+            skillsSnapshotExpiresAt = utcNow().AddSeconds(60);
+            if (!string.IsNullOrEmpty(ComposerText) && ComposerText[0] == '/' && !ComposerText.StartsWith("//", StringComparison.Ordinal))
+            {
+                UpdateComposerSuggestions(ComposerText);
+            }
+        }).ConfigureAwait(false);
+    }
+
+    private Task OnSkillsChangedAsync()
+    {
+        skillsSnapshot = null;
+        skillsLoadFailure = null;
+        skillsSnapshotExpiresAt = default;
+        if (!string.IsNullOrEmpty(ComposerText) && ComposerText[0] == '/')
+        {
+            UpdateComposerSuggestions(ComposerText);
+        }
+
+        return Task.CompletedTask;
+    }
+
+    private static bool SkillMatches(SkillInfo skill, string query)
+    {
+        if (query.Length == 0)
+        {
+            return true;
+        }
+
+        string name = skill.Name;
+        string display = skill.DisplayName ?? string.Empty;
+        return name.Contains(query, StringComparison.OrdinalIgnoreCase)
+            || display.Contains(query, StringComparison.OrdinalIgnoreCase)
+            || skill.Description.Contains(query, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static int SkillRank(SkillInfo skill, string query)
+    {
+        if (query.Length == 0) return 6;
+        string display = skill.DisplayName ?? string.Empty;
+        if (string.Equals(skill.Name, query, StringComparison.OrdinalIgnoreCase)) return 0;
+        if (string.Equals(display, query, StringComparison.OrdinalIgnoreCase)) return 1;
+        if (skill.Name.StartsWith(query, StringComparison.OrdinalIgnoreCase)) return 2;
+        if (display.StartsWith(query, StringComparison.OrdinalIgnoreCase)) return 3;
+        if (IsWordBoundary(skill.Name, query) || IsWordBoundary(display, query)) return 4;
+        if (skill.Name.Contains(query, StringComparison.OrdinalIgnoreCase) || display.Contains(query, StringComparison.OrdinalIgnoreCase)) return 5;
+        return 6;
+    }
+
+    private static bool IsWordBoundary(string value, string query)
+        => value.Split([' ', '.', '-', '_'], StringSplitOptions.RemoveEmptyEntries)
+            .Any(word => word.StartsWith(query, StringComparison.OrdinalIgnoreCase));
+
+    private static int ScopeRank(string scope)
+        => scope.ToLowerInvariant() switch
+        {
+            "repo" => 0,
+            "user" => 1,
+            "system" => 2,
+            "admin" => 3,
+            _ => 4,
+        };
+
+    private static string FormatSkillScope(string scope)
+        => scope.ToLowerInvariant() switch
+        {
+            "repo" => "Repository",
+            "user" => "User",
+            "system" => "System",
+            "admin" => "Admin",
+            _ => "Unknown",
+        };
 
     internal async Task PopulatePermissionProfilesAsync()
     {
@@ -1825,10 +2071,80 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         => GetSelectedModelInfo()?.ServiceTiers.Any(
             tier => string.Equals(tier.Id, "fast", StringComparison.OrdinalIgnoreCase)) == true;
 
-    private Task OnSlashSuggestionAcceptedAsync(SlashCommandSuggestionViewModel _)
+    private Task OnSlashSuggestionAcceptedAsync(SlashCommandSuggestionViewModel suggestion)
     {
+        if (suggestion.IsSkill)
+        {
+            if (!skillSelections.TryGetValue(suggestion.SelectionId, out SkillInfo? skill))
+            {
+                SlashCommands.ShowFailure("The selected skill is no longer available. Reopen the menu and try again.");
+                return Task.CompletedTask;
+            }
+
+            var invocation = new SkillInvocationInfo
+            {
+                Name = skill.Name,
+                Scope = skill.Scope,
+                Path = skill.Path,
+            };
+            PendingSkillViewModel chip = new(
+                string.IsNullOrWhiteSpace(skill.DisplayName) ? skill.Name : skill.DisplayName!,
+                FormatSkillScope(skill.Scope),
+                skill.Description,
+                invocation,
+                RemovePendingSkillAsync,
+                skill.DefaultPrompt,
+                UsePendingSkillPromptAsync,
+                markdown);
+            PendingSkills.Clear();
+            PendingSkills.Add(chip);
+            // Only the slash query is removed. The normal composer remains visible so the
+            // user can add text, or start a skill-only turn when it is empty.
+            SetComposerText(string.Empty);
+            SlashCommands.ShowStatus("Skill selected. Add text or send when ready.");
+            return Task.CompletedTask;
+        }
+
         SetComposerText(string.Empty);
         return Task.CompletedTask;
+    }
+
+    private Task RemovePendingSkillAsync()
+    {
+        PendingSkills.Clear();
+        SlashCommands.ShowStatus("Skill removed. Text-only sending is available again.");
+        return Task.CompletedTask;
+    }
+
+    private Task UsePendingSkillPromptAsync(string prompt)
+    {
+        if (!IsComposerEmpty)
+        {
+            SlashCommands.ShowStatus("Clear the composer before using the suggested prompt.");
+            return Task.CompletedTask;
+        }
+
+        SetComposerText(prompt);
+        // A suggested prompt is ordinary composer text. If it begins with '/', keep the
+        // integrated menu closed until the user explicitly types a new slash trigger.
+        SlashCommands.CloseSuggestions();
+        return Task.CompletedTask;
+    }
+
+    private void ClearSentSkill(SkillInvocationInfo? skill)
+    {
+        if (skill is null || PendingSkills.Count == 0)
+        {
+            return;
+        }
+
+        SkillInvocationInfo pending = PendingSkills[0].Invocation;
+        if (string.Equals(pending.Name, skill.Name, StringComparison.Ordinal)
+            && string.Equals(pending.Scope, skill.Scope, StringComparison.Ordinal)
+            && string.Equals(pending.Path, skill.Path, StringComparison.Ordinal))
+        {
+            PendingSkills.Clear();
+        }
     }
 
     private Task OnSlashCommandClearedAsync()
@@ -3525,7 +3841,8 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     // Restart. Disconnected is also gated on connecting == 0: if ConnectWithDirectoryAsync has
     // already started (and will reject a second attempt), disable Send until that attempt settles.
     private bool CanSend()
-        => (!string.IsNullOrWhiteSpace(ComposerText) || (Status.TurnId is null && HasPendingAttachments))
+        => (!string.IsNullOrWhiteSpace(ComposerText) || (Status.TurnId is null && (HasPendingAttachments || HasPendingSkill)))
+        && !(HasPendingSkill && (Status.State is WorkerConnectionState.Busy or WorkerConnectionState.WaitingForApproval))
         && (Status.State is WorkerConnectionState.Ready or WorkerConnectionState.Busy
                 or WorkerConnectionState.WaitingForApproval
             || (Status.State is WorkerConnectionState.Disconnected && Volatile.Read(ref connecting) == 0));

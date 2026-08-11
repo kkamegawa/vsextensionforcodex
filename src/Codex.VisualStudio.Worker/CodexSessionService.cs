@@ -32,6 +32,8 @@ public interface ICodexSessionService : IAsyncDisposable
 
     event Func<EffectiveApprovalState, CancellationToken, Task>? EffectiveApprovalStateChanged;
 
+    event Func<CancellationToken, Task>? SkillsChanged;
+
     string? ActiveThreadId { get; }
 
     string? ActiveTurnId { get; }
@@ -107,6 +109,11 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
     private const int MaxSkillErrors = 50;
     private const int MaxSkillNameLength = 128;
     private const int MaxSkillTextLength = 512;
+    private const int MaxSkillDefaultPromptLength = 4096;
+    private const int MaxSkillDependencyCount = 16;
+    private const int MaxSkillDependencyTypeLength = 64;
+    private const int MaxSkillDependencyValueLength = 256;
+    private const int MaxSkillDependencyDescriptionLength = 512;
 
     // Not the legacy Windows MAX_PATH (260): that limit only applies without the long-paths
     // opt-in and would silently drop valid skills under deep workspaces or long user-profile
@@ -122,6 +129,11 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
     private readonly ApprovalGrantStore approvalGrants = new();
     private readonly object unsupportedMethodsLock = new();
     private readonly HashSet<string> unsupportedMethods = new(StringComparer.Ordinal);
+    private readonly SemaphoreSlim skillsCacheGate = new(1, 1);
+    private readonly TimeProvider timeProvider;
+    private ListSkillsResult? skillsSnapshot;
+    private DateTimeOffset skillsSnapshotExpiresAt;
+    private long skillsGeneration;
     private IJsonRpcConnection? connection;
     private WorkerOptions options = new();
     private StreamingBuffer? streamingBuffer;
@@ -130,12 +142,14 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         IApprovalPolicyEngine approvalPolicy,
         ISecretRedactor redactor,
         IPathAccessPolicy? pathAccessPolicy = null,
-        IProtectedDirectoryPolicy? protectedDirectoryPolicy = null)
+        IProtectedDirectoryPolicy? protectedDirectoryPolicy = null,
+        TimeProvider? timeProvider = null)
     {
         this.approvalPolicy = approvalPolicy;
         this.redactor = redactor;
         this.pathAccessPolicy = pathAccessPolicy ?? new PathAccessPolicy();
         this.protectedDirectoryPolicy = protectedDirectoryPolicy ?? new ProtectedDirectoryPolicy();
+        this.timeProvider = timeProvider ?? TimeProvider.System;
     }
 
     public event Func<ConversationEvent, CancellationToken, Task>? ConversationEventReceived;
@@ -162,6 +176,8 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
 
     public event Func<EffectiveApprovalState, CancellationToken, Task>? EffectiveApprovalStateChanged;
 
+    public event Func<CancellationToken, Task>? SkillsChanged;
+
     public string? ActiveThreadId { get; private set; }
 
     public string? ActiveTurnId { get; private set; }
@@ -176,6 +192,7 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
 
     public async Task InitializeAsync(IJsonRpcConnection connection, WorkerOptions options, CancellationToken cancellationToken)
     {
+        InvalidateSkillsCache();
         CodexVersion = null;
         EffectiveApprovalState = null;
         EffectiveReasoningEffort = null;
@@ -635,6 +652,11 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
     public async Task<string> StartTurnAsync(StartTurnRequest request, CancellationToken cancellationToken)
     {
         ValidateTurnApprovalOverrides(request);
+        if (request.Skill is not null)
+        {
+            await ValidateSkillInvocationAsync(request.Skill, cancellationToken).ConfigureAwait(false);
+        }
+
         List<object> input = BuildTurnInput(request);
         var parameters = new Dictionary<string, object?>
         {
@@ -895,6 +917,42 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
 
     public async Task<ListSkillsResult> ListSkillsAsync(bool forceReload, CancellationToken cancellationToken)
     {
+        DateTimeOffset now = timeProvider.GetUtcNow();
+        if (!forceReload && skillsSnapshot is not null && now < skillsSnapshotExpiresAt)
+        {
+            return skillsSnapshot;
+        }
+
+        await skillsCacheGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            now = timeProvider.GetUtcNow();
+            if (!forceReload && skillsSnapshot is not null && now < skillsSnapshotExpiresAt)
+            {
+                return skillsSnapshot;
+            }
+
+            long generation = Volatile.Read(ref skillsGeneration);
+            ListSkillsResult loaded = await ReadSkillsFromServerAsync(forceReload, cancellationToken).ConfigureAwait(false);
+            if (generation != Volatile.Read(ref skillsGeneration))
+            {
+                // A skills/changed notification arrived while the request was in flight. Do not
+                // publish the stale completion; one retry establishes a fresh immutable snapshot.
+                loaded = await ReadSkillsFromServerAsync(forceReload: true, cancellationToken).ConfigureAwait(false);
+            }
+
+            skillsSnapshot = loaded;
+            skillsSnapshotExpiresAt = timeProvider.GetUtcNow().AddSeconds(60);
+            return loaded;
+        }
+        finally
+        {
+            skillsCacheGate.Release();
+        }
+    }
+
+    private async Task<ListSkillsResult> ReadSkillsFromServerAsync(bool forceReload, CancellationToken cancellationToken)
+    {
         // No experimentalApi gate: nothing in the app-server protocol marks skills/list as
         // experimental (unlike permissionProfile/list), and that gate's failure mode is sticky
         // for the rest of the session. Rely purely on the -32601 capability probe below.
@@ -1096,6 +1154,16 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
             new { type = "text", text = request.Text },
         };
 
+        if (request.Skill is not null)
+        {
+            input.Add(new
+            {
+                type = "skill",
+                name = request.Skill.Name,
+                path = request.Skill.Path,
+            });
+        }
+
         var includedPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         int attachmentCount = 0;
         foreach (AttachmentInfo attachment in request.Attachments)
@@ -1183,6 +1251,30 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         }
 
         return input;
+    }
+
+    private async Task ValidateSkillInvocationAsync(
+        SkillInvocationInfo invocation,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(invocation.Name)
+            || string.IsNullOrWhiteSpace(invocation.Scope)
+            || string.IsNullOrWhiteSpace(invocation.Path))
+        {
+            throw new InvalidOperationException("The selected skill identity is incomplete.");
+        }
+
+        ListSkillsResult catalog = await ListSkillsAsync(forceReload: true, cancellationToken).ConfigureAwait(false);
+        bool exactEnabled = catalog.IsSupported
+            && catalog.Skills.Any(skill =>
+                skill.Enabled
+                && string.Equals(skill.Name, invocation.Name, StringComparison.Ordinal)
+                && string.Equals(skill.Scope, invocation.Scope, StringComparison.Ordinal)
+                && string.Equals(skill.Path, invocation.Path, StringComparison.Ordinal));
+        if (!exactEnabled)
+        {
+            throw new InvalidOperationException("The selected skill is stale, disabled, or unavailable.");
+        }
     }
 
     private bool IsWorkspacePath(string? path)
@@ -1348,6 +1440,7 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         }
 
         pendingUserInputs.Clear();
+        skillsCacheGate.Dispose();
     }
 
     private async Task<JsonElement> OnServerRequestAsync(JsonRpcMessage message, CancellationToken cancellationToken)
@@ -1361,6 +1454,14 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         if (IsUserInputRequest(method, parameters))
         {
             return await HandleUserInputRequestAsync(requestId, parameters, cancellationToken).ConfigureAwait(false);
+        }
+
+        // Skill-specific approval is intentionally not part of the extension contract. Never
+        // route an unknown skill approval through an existing grant, which would broaden its
+        // scope accidentally; fail closed instead.
+        if (method.Contains("skill", StringComparison.OrdinalIgnoreCase))
+        {
+            return ApprovalResponse("decline");
         }
 
         ApprovalRequest request = CreateApprovalRequest(requestId, method, parameters);
@@ -1411,6 +1512,17 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
     {
         string method = message.Method ?? string.Empty;
         JsonElement parameters = message.Params ?? JsonSerializer.SerializeToElement(new { });
+        if (method == "skills/changed")
+        {
+            InvalidateSkillsCache();
+            if (SkillsChanged is not null)
+            {
+                await SkillsChanged(cancellationToken).ConfigureAwait(false);
+            }
+
+            return;
+        }
+
         string? threadId = GetString(parameters, "threadId");
         string? turnId = GetString(parameters, "turnId");
         string? itemId = GetString(parameters, "itemId");
@@ -1647,6 +1759,13 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
             WorkerDiagnostics.Write($"app-server method disabled for this session method={method}", ex);
             return OperationCallResult.Unsupported;
         }
+    }
+
+    private void InvalidateSkillsCache()
+    {
+        Interlocked.Increment(ref skillsGeneration);
+        skillsSnapshot = null;
+        skillsSnapshotExpiresAt = default;
     }
 
     private static T Unsupported<T>(string reason)
@@ -2279,14 +2398,60 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         if (skill.TryGetProperty("interface", out JsonElement skillInterface)
             && skillInterface.ValueKind == JsonValueKind.Object)
         {
-            // interface.brandColor, interface.iconSmall/iconLarge, and interface.defaultPrompt are
-            // deliberately not read here: brandColor is a free-form attacker-supplied string that
-            // would have to be interpreted as a WPF brush, the icon paths are AbsolutePathBuf values
-            // that would bind an Image.Source to a file the app-server chose, and defaultPrompt is
-            // attacker-controlled text destined for the composer (a prompt-injection vector). None
-            // of the three are exposed by this contract; see doc/adr.md.
             displayName = SanitizeSkillText(GetString(skillInterface, "displayName"));
             shortDescription ??= SanitizeSkillText(GetString(skillInterface, "shortDescription"));
+        }
+
+        string? brandColor = null;
+        string? defaultPrompt = null;
+        bool hasIconSmall = false;
+        var dependencies = new List<SkillToolDependencyInfo>();
+        if (skill.TryGetProperty("interface", out skillInterface)
+            && skillInterface.ValueKind == JsonValueKind.Object)
+        {
+            string? candidateColor = GetString(skillInterface, "brandColor");
+            if (candidateColor is not null
+                && candidateColor.Length == 7
+                && candidateColor[0] == '#'
+                && candidateColor.Skip(1).All(c => Uri.IsHexDigit(c)))
+            {
+                brandColor = candidateColor.ToUpperInvariant();
+            }
+
+            defaultPrompt = SanitizeSkillText(
+                GetString(skillInterface, "defaultPrompt"),
+                MaxSkillDefaultPromptLength);
+            hasIconSmall = skillInterface.TryGetProperty("iconSmall", out JsonElement icon)
+                && icon.ValueKind == JsonValueKind.String
+                && !string.IsNullOrWhiteSpace(icon.GetString());
+        }
+
+        if (skill.TryGetProperty("dependencies", out JsonElement dependenciesElement)
+            && dependenciesElement.ValueKind == JsonValueKind.Object
+            && dependenciesElement.TryGetProperty("tools", out JsonElement tools)
+            && tools.ValueKind == JsonValueKind.Array)
+        {
+            foreach (JsonElement tool in tools.EnumerateArray().Take(MaxSkillDependencyCount))
+            {
+                if (tool.ValueKind != JsonValueKind.Object)
+                {
+                    continue;
+                }
+
+                string? type = SanitizeSkillText(GetString(tool, "type"), MaxSkillDependencyTypeLength);
+                string? value = SanitizeSkillText(GetString(tool, "value"), MaxSkillDependencyValueLength);
+                if (type is null || value is null)
+                {
+                    continue;
+                }
+
+                dependencies.Add(new SkillToolDependencyInfo
+                {
+                    Type = type,
+                    Value = value,
+                    Description = SanitizeSkillText(GetString(tool, "description"), MaxSkillDependencyDescriptionLength),
+                });
+            }
         }
 
         return new SkillInfo
@@ -2299,6 +2464,10 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
             Path = path,
             Enabled = enabled.Value,
             Cwd = cwd,
+            BrandColor = brandColor,
+            DefaultPrompt = defaultPrompt,
+            HasIconSmall = hasIconSmall,
+            ToolDependencies = dependencies,
         };
     }
 

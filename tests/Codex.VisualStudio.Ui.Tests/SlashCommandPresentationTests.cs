@@ -12,6 +12,7 @@ public sealed class SlashCommandPresentationTests
     private static readonly string[] SelectedChipCommands =
     [
         "{Binding RemoveCommand}",
+        "{Binding RemoveCommand}",
         "{Binding SlashCommands.ClearCommandCommand}",
     ];
 
@@ -202,7 +203,7 @@ public sealed class SlashCommandPresentationTests
         Assert.IsNull(
             list.Ancestors(Presentation + "Popup").FirstOrDefault(),
             "Slash-command suggestions must remain inline rather than using a Popup.");
-        Assert.AreEqual("198", list.Attribute("MaxHeight")?.Value);
+        Assert.AreEqual("318", list.Attribute("MaxHeight")?.Value);
         Assert.AreEqual("Auto", list.Attribute("ScrollViewer.VerticalScrollBarVisibility")?.Value);
 
         XElement composer = document
@@ -450,7 +451,7 @@ public sealed class SlashCommandPresentationTests
             .Descendants(Presentation + "Button")
             .Where(element => element.Attribute("Style")?.Value == "{StaticResource SelectedChipIconButtonStyle}")
             .ToArray();
-        Assert.HasCount(2, selectedChipActions);
+        Assert.HasCount(3, selectedChipActions);
         CollectionAssert.AreEquivalent(
             SelectedChipCommands,
             selectedChipActions.Select(element => element.Attribute("Command")?.Value).ToArray());

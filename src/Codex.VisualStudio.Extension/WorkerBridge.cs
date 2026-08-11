@@ -31,6 +31,8 @@ internal interface IWorkerBridge : IAsyncDisposable
 
     event Func<RateLimitsResult, Task>? RateLimitsChanged;
 
+    event Func<Task>? SkillsChanged;
+
     Task<WorkerStatus> ConnectAsync(string workingDirectory, bool experimentalApi, CancellationToken cancellationToken);
 
     Task<WorkerStatus> RestartAsync(CancellationToken cancellationToken);
@@ -75,6 +77,8 @@ internal interface IWorkerBridge : IAsyncDisposable
     Task<ThreadGoalResult> ClearThreadGoalAsync(string threadId, CancellationToken cancellationToken);
 
     Task<McpServerListResult> ListMcpServersAsync(string? threadId, CancellationToken cancellationToken);
+
+    Task<ListSkillsResult> ListSkillsAsync(bool forceReload, CancellationToken cancellationToken);
 
     Task<UploadFeedbackResult> UploadFeedbackAsync(UploadFeedbackRequest request, CancellationToken cancellationToken);
 
@@ -125,6 +129,8 @@ public sealed class WorkerBridge : IWorkerBridge, ICodexWorkerObserver
     public event Func<ThreadGoalEvent, Task>? ThreadGoalChanged;
 
     public event Func<RateLimitsResult, Task>? RateLimitsChanged;
+
+    public event Func<Task>? SkillsChanged;
 
     public async Task<WorkerStatus> ConnectAsync(string workingDirectory, bool experimentalApi, CancellationToken cancellationToken)
     {
@@ -259,6 +265,12 @@ public sealed class WorkerBridge : IWorkerBridge, ICodexWorkerObserver
             new object[] { request },
             cancellationToken);
 
+    public Task<ListSkillsResult> ListSkillsAsync(bool forceReload, CancellationToken cancellationToken)
+        => RequireRpc().InvokeWithCancellationAsync<ListSkillsResult>(
+            "worker/skills/list",
+            new object[] { forceReload },
+            cancellationToken);
+
     public Task<ForkThreadResult> ForkThreadAsync(ForkThreadRequest request, CancellationToken cancellationToken)
         => RequireRpc().InvokeWithCancellationAsync<ForkThreadResult>(
             "worker/thread/fork",
@@ -342,6 +354,9 @@ public sealed class WorkerBridge : IWorkerBridge, ICodexWorkerObserver
 
     public Task OnRateLimitsChangedAsync(RateLimitsResult value, CancellationToken cancellationToken)
         => RateLimitsChanged?.Invoke(value) ?? Task.CompletedTask;
+
+    public Task OnSkillsChangedAsync(SkillsChangedEvent value, CancellationToken cancellationToken)
+        => SkillsChanged?.Invoke() ?? Task.CompletedTask;
 
     public Task OnApprovalAuditAsync(ApprovalAuditRecord record, CancellationToken cancellationToken)
     {
