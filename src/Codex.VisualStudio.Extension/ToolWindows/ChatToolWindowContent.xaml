@@ -1410,6 +1410,13 @@
                           ItemsSource="{Binding PendingSkills}"
                           Visibility="{Binding HasPendingSkill, Converter={StaticResource BoolToVis}}"
                           AutomationProperties.Name="Pending skill">
+              <!-- WrapPanel, not the default vertical StackPanel: StackPanel stretches the chip
+                   border to the full composer width instead of sizing it to its content. -->
+              <ItemsControl.ItemsPanel>
+                <ItemsPanelTemplate>
+                  <WrapPanel />
+                </ItemsPanelTemplate>
+              </ItemsControl.ItemsPanel>
               <ItemsControl.ItemTemplate>
                 <DataTemplate>
                   <Border Padding="10,4"
@@ -1426,7 +1433,7 @@
                                  MaxWidth="220" />
                       <TextBlock Margin="6,0,0,0"
                                  VerticalAlignment="Center"
-                                 Foreground="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowTextBrushKey}}"
+                                 Foreground="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowButtonDownActiveGlyphBrushKey}}"
                                  Text="{Binding ScopeLabel}" />
                       <Button Margin="8,0,0,0"
                               Padding="4,0"

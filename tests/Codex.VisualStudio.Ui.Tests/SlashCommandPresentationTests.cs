@@ -465,6 +465,33 @@ public sealed class SlashCommandPresentationTests
     }
 
     [TestMethod]
+    public void Xaml_PendingSkillChipIsContentSizedWithPairedThemeForeground()
+    {
+        XDocument document = LoadXaml();
+
+        XElement pendingSkills = document
+            .Descendants(Presentation + "ItemsControl")
+            .Single(element => element.Attribute("ItemsSource")?.Value == "{Binding PendingSkills}");
+
+        // The default ItemsControl panel is a vertical StackPanel, which stretches each chip's
+        // Border to the full composer width instead of sizing it to its content (regression:
+        // https://github.com/kkamegawa/vsextensionforcodex/issues -- skill chip spanned the panel).
+        Assert.IsNotNull(pendingSkills
+            .Element(Presentation + "ItemsControl.ItemsPanel")?
+            .Descendants(Presentation + "WrapPanel")
+            .SingleOrDefault());
+
+        XElement displayName = pendingSkills
+            .Descendants(Presentation + "TextBlock")
+            .Single(element => element.Attribute("Text")?.Value == "{Binding DisplayName}");
+        XElement scopeLabel = pendingSkills
+            .Descendants(Presentation + "TextBlock")
+            .Single(element => element.Attribute("Text")?.Value == "{Binding ScopeLabel}");
+        AssertThemeAttribute(displayName, "Foreground", "ToolWindowButtonDownActiveGlyphBrushKey");
+        AssertThemeAttribute(scopeLabel, "Foreground", "ToolWindowButtonDownActiveGlyphBrushKey");
+    }
+
+    [TestMethod]
     public void Xaml_SelectableOptionAndHistoryTextInheritOwningControlForeground()
     {
         XDocument document = LoadXaml();
