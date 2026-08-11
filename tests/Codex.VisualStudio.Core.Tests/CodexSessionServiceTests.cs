@@ -411,6 +411,65 @@ public sealed class CodexSessionServiceTests
     }
 
     [TestMethod]
+    public async Task StartTurnValidatesSkillIdentityAndSendsOnlyStructuredSkillFields()
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method switch
+            {
+                "skills/list" => JsonSerializer.SerializeToElement(new
+                {
+                    data = new object[]
+                    {
+                        new
+                        {
+                            cwd = "/repo",
+                            errors = Array.Empty<object>(),
+                            skills = new object[]
+                            {
+                                new
+                                {
+                                    name = "space.dot",
+                                    description = "Run the skill.",
+                                    enabled = true,
+                                    path = "/repo/.codex/skills/space.dot/SKILL.md",
+                                    scope = "repo",
+                                },
+                            },
+                        },
+                    },
+                }),
+                "turn/start" => JsonSerializer.SerializeToElement(new { turn = new { id = "turn-1" } }),
+                _ => JsonSerializer.SerializeToElement(new { }),
+            },
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        await service.StartTurnAsync(
+            new StartTurnRequest
+            {
+                ThreadId = "thread-1",
+                Text = string.Empty,
+                Skill = new SkillInvocationInfo
+                {
+                    Name = "space.dot",
+                    Scope = "repo",
+                    Path = "/repo/.codex/skills/space.dot/SKILL.md",
+                },
+            },
+            CancellationToken.None);
+
+        JsonElement parameters = ParametersFor(connection, "turn/start");
+        JsonElement[] input = parameters.GetProperty("input").EnumerateArray().ToArray();
+        Assert.AreEqual(2, input.Length);
+        Assert.AreEqual("skill", input[1].GetProperty("type").GetString());
+        Assert.AreEqual("space.dot", input[1].GetProperty("name").GetString());
+        Assert.AreEqual("/repo/.codex/skills/space.dot/SKILL.md", input[1].GetProperty("path").GetString());
+        Assert.IsFalse(input[1].TryGetProperty("scope", out _));
+    }
+
+    [TestMethod]
     public async Task StartTurnDistinguishesOmittedExplicitNullAndValueSettings()
     {
         var connection = new RecordingConnection
@@ -1882,7 +1941,13 @@ public sealed class CodexSessionServiceTests
     }
 
     private static CodexSessionService CreateService()
-        => new(new ApprovalPolicyEngine(new PathAccessPolicy()), new SecretRedactor());
+        => new(
+            new ApprovalPolicyEngine(new PathAccessPolicy()),
+            new SecretRedactor(),
+            null,
+            null,
+            null,
+            new NullSkillCatalogStore());
 
     private static WorkerOptions Options(string? workingDirectory = null, bool experimentalApi = false) => new()
     {
@@ -1948,4 +2013,25 @@ public sealed class CodexSessionServiceTests
     }
 
     private sealed record RecordedRequest(string Method, object? Parameters, TimeSpan Timeout);
+
+    private sealed class NullSkillCatalogStore : ISkillCatalogStore
+    {
+        public ValueTask<ListSkillsResult?> TryReadAsync(
+            string workspace,
+            string? codexVersion,
+            DateTimeOffset now,
+            CancellationToken cancellationToken)
+            => ValueTask.FromResult<ListSkillsResult?>(null);
+
+        public ValueTask WriteAsync(
+            string workspace,
+            string? codexVersion,
+            ListSkillsResult result,
+            DateTimeOffset now,
+            CancellationToken cancellationToken)
+            => ValueTask.CompletedTask;
+
+        public ValueTask DeleteAsync(string workspace, CancellationToken cancellationToken)
+            => ValueTask.CompletedTask;
+    }
 }

@@ -1,5 +1,6 @@
 ﻿using System.Collections.ObjectModel;
 using System.Runtime.Serialization;
+using System.Windows;
 
 namespace Codex.VisualStudio.Extension;
 
@@ -15,7 +16,12 @@ public sealed record SlashCommandSuggestionDescriptor(
     bool ShowArgumentInput = false,
     bool IsAvailable = true,
     string UnavailableReason = "",
-    IReadOnlyList<SlashCommandOptionDescriptor>? Options = null);
+    IReadOnlyList<SlashCommandOptionDescriptor>? Options = null,
+    bool IsSkill = false,
+    string ScopeLabel = "",
+    string SelectionId = "",
+    string BrandColor = "",
+    bool IsSelectable = true);
 
 public sealed record SlashCommandSubmission(
     string CommandName,
@@ -228,7 +234,7 @@ public sealed class SlashCommandPresentationViewModel : ObservableObject
             Suggestions.Add(new SlashCommandSuggestionViewModel(descriptor, AcceptSuggestionAsync, markdown));
         }
 
-        SelectedSuggestion = Suggestions.FirstOrDefault(item => item.IsAvailable)
+        SelectedSuggestion = Suggestions.FirstOrDefault(item => item.IsAvailable && item.IsSelectable)
             ?? Suggestions.FirstOrDefault();
         IsSuggestionOpen = Suggestions.Count > 0;
         StatusAnnouncement = Suggestions.Count switch
@@ -271,7 +277,7 @@ public sealed class SlashCommandPresentationViewModel : ObservableObject
         => IsSuggestionOpen && Suggestions.Count > 0;
 
     private bool CanAcceptSuggestion()
-        => IsSuggestionOpen && SelectedSuggestion is { IsAvailable: true };
+        => IsSuggestionOpen && SelectedSuggestion is { IsAvailable: true, IsSelectable: true };
 
     private Task MoveSelectionAsync(int offset)
     {
@@ -290,7 +296,7 @@ public sealed class SlashCommandPresentationViewModel : ObservableObject
         for (int attempt = 0; attempt < Suggestions.Count; attempt++)
         {
             SlashCommandSuggestionViewModel candidate = Suggestions[nextIndex];
-            if (candidate.IsAvailable)
+            if (candidate.IsAvailable && candidate.IsSelectable)
             {
                 SelectedSuggestion = candidate;
                 StatusAnnouncement = $"{candidate.CommandName}: {candidate.Description}";
@@ -310,9 +316,21 @@ public sealed class SlashCommandPresentationViewModel : ObservableObject
 
     private async Task AcceptSuggestionAsync(SlashCommandSuggestionViewModel suggestion)
     {
-        if (!suggestion.IsAvailable)
+        if (!suggestion.IsAvailable || !suggestion.IsSelectable)
         {
             StatusAnnouncement = suggestion.UnavailableReason;
+            return;
+        }
+
+        if (suggestion.IsSkill)
+        {
+            CloseSuggestions();
+            StatusAnnouncement = $"{suggestion.CommandName} selected.";
+            if (suggestionAccepted is not null)
+            {
+                await suggestionAccepted(suggestion).ConfigureAwait(false);
+            }
+
             return;
         }
 
@@ -442,9 +460,19 @@ public sealed class SlashCommandSuggestionViewModel
         ArgumentHint = markdown.ToSafeText(descriptor.ArgumentHint).Trim();
         ShowArgumentInput = descriptor.ShowArgumentInput;
         IsAvailable = descriptor.IsAvailable;
+        IsSelectable = descriptor.IsSelectable;
+        IsSkill = descriptor.IsSkill;
+        ScopeLabel = markdown.ToSafeText(descriptor.ScopeLabel).Trim();
+        SelectionId = descriptor.SelectionId;
+        // "Transparent" (not an empty string) so every row remains a valid BrushConverter
+        // input. High Contrast never honors an app-server-supplied color: it always falls
+        // back to Visual Studio theme resources, so the accent is suppressed entirely.
+        BrandColor = !SystemParameters.HighContrast && IsSafeBrandColor(descriptor.BrandColor)
+            ? descriptor.BrandColor.ToUpperInvariant()
+            : "Transparent";
         UnavailableReason = markdown.ToSafeText(descriptor.UnavailableReason).Trim();
         OptionDescriptors = descriptor.Options ?? [];
-        UseCommand = new AsyncCommand(UseAsync, () => IsAvailable);
+        UseCommand = new AsyncCommand(UseAsync, () => IsAvailable && IsSelectable);
     }
 
     [DataMember]
@@ -463,6 +491,21 @@ public sealed class SlashCommandSuggestionViewModel
     public bool IsAvailable { get; }
 
     [DataMember]
+    public bool IsSelectable { get; }
+
+    [DataMember]
+    public bool IsSkill { get; }
+
+    [DataMember]
+    public string ScopeLabel { get; }
+
+    [DataMember]
+    public string BrandColor { get; }
+
+    // Opaque per-snapshot key. It is not a path or an app-server identifier.
+    internal string SelectionId { get; }
+
+    [DataMember]
     public string UnavailableReason { get; }
 
     [DataMember]
@@ -479,6 +522,11 @@ public sealed class SlashCommandSuggestionViewModel
 
     private Task UseAsync()
         => use(this);
+
+    private static bool IsSafeBrandColor(string value)
+        => value.Length == 7
+            && value[0] == '#'
+            && value.Skip(1).All(Uri.IsHexDigit);
 }
 
 [DataContract]

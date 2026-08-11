@@ -1,6 +1,6 @@
 ﻿# Codex for Visual Studio
 
-A Visual Studio extension that runs the local Codex CLI app server from inside the IDE and exposes it through a chat tool window: streaming responses, approval-aware command and file-change handling, slash commands, and workspace context.
+A Visual Studio extension that runs the local Codex CLI app server from inside the IDE and exposes it through a chat tool window: streaming responses, approval-aware command and file-change handling, slash commands, custom skill invocation, and workspace context.
 
 The extension is an out-of-process `Microsoft.VisualStudio.Extensibility` extension (`net8.0`) that starts a `net8.0` worker process. The worker owns the `codex app-server` subprocess and talks to it with newline-delimited JSON-RPC over stdio. No credentials are handled inside Visual Studio; sign-in happens in the Codex CLI.
 
@@ -60,6 +60,11 @@ The extension is an out-of-process `Microsoft.VisualStudio.Extensibility` extens
   Run `where.exe codex` to see every match. When more than one is listed, set `CODEX_PATH` to the executable you want and restart Visual Studio.
 - **npm installs are not recommended.** The `@openai/codex` npm package is known to break in this
   setup: the shim can stop resolving after a Node.js update, and the app server then exits immediately after start. Use the winget package instead.
+- **Skill support depends on the Codex CLI.** Skills come from the app server's `skills/list`. A CLI
+  that does not implement it makes the `Skills` group report that the catalog is unavailable, and the
+  slash menu keeps working with built-in commands only for the rest of the session. Skill icons
+  declared by `interface.iconSmall` are not rendered; every row uses a fixed glyph. Skill-specific
+  approval requests are declined rather than granted.
 - The winget manifest can lag a few days behind a Codex CLI release. Always confirm with `codex --version` rather than assuming the installed build is current.
 - The extension is Windows-only and targets Visual Studio; there is no Visual Studio Code or cross-platform host.
 
@@ -85,8 +90,19 @@ they are written.
 **Can I stop being asked for approval on every command?**
 Use `/permissions` (alias `/approve`) in the chat input, or the approval-mode picker in the tool window. `ask`, `auto`, `full`, and `custom` are the built-in modes. `full` disables the Codex sandbox and normal approval prompts, so it requires an explicit confirmation. See [doc/slash-commands.md](doc/slash-commands.md) for the full command catalog, including `/model`, `/reasoning`, and `/review`.
 
+**How do I run one of my Codex skills?**
+Type `/` in the chat input. Built-in commands come first, then a `Skills` group listing the skills the
+Codex CLI reports for the current workspace. Selecting a skill adds a removable chip above the
+composer and leaves the composer editable, so you can add a prompt or send the skill on its own. One
+skill is attached per turn, and selecting another replaces it. Disabled skills stay visible but
+cannot be selected. Because a skill is delivered as structured `turn/start` input rather than
+steering text, sending is disabled while a turn is still running; wait for it to finish or remove the
+chip.
+
 **Where are my settings stored?**
 `%APPDATA%\Kkamegawa.CodexForVisualStudio\settings.json`. It holds the approval mode, reasoning effort, service tier, and the experimental-API switch. Deleting the file resets everything to the defaults; a corrupt file is ignored rather than blocking the tool window.
+
+The skill catalog is cached separately under `%LOCALAPPDATA%\Kkamegawa.CodexForVisualStudio\skill-catalog\v1`, keyed per workspace, so the menu opens without waiting for the CLI. Cached rows are shown as stale and cannot be selected until a live refresh lands, and a turn always revalidates the skill against the live catalog. Deleting the folder only costs one refresh.
 
 **Do I need a proxy or firewall exception?**
 The extension itself only talks to a local child process over stdio and a local named pipe. All outbound network traffic is made by the Codex CLI, so proxy and firewall configuration belongs to the CLI and its own configuration file.
@@ -187,8 +203,8 @@ APM deploys `.codex/agents/`, `.github/agents/`, and `.claude/agents/`. The depe
 ## Architecture
 
 - UI layer: chat tool window, composer, approval prompts, and diff display.
-- Presentation layer: chat view models, streaming buffers, and slash-command suggestions.
-- Application layer: session lifecycle, slash command routing, approval workflows, and workspace context collection.
+- Presentation layer: chat view models, streaming buffers, and the unified slash command and skill suggestion list.
+- Application layer: session lifecycle, slash command routing, skill catalog caching and identity validation, approval workflows, and workspace context collection.
 - Security layer: approval policy, path access checks, secret redaction, and audit logging.
 - Protocol layer: `codex app-server` process hosting, JSON-RPC dispatch, schema and version guards, and notification handling.
 

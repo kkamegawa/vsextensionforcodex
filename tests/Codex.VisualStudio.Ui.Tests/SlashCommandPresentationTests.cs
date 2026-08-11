@@ -12,6 +12,7 @@ public sealed class SlashCommandPresentationTests
     private static readonly string[] SelectedChipCommands =
     [
         "{Binding RemoveCommand}",
+        "{Binding RemoveCommand}",
         "{Binding SlashCommands.ClearCommandCommand}",
     ];
 
@@ -202,8 +203,15 @@ public sealed class SlashCommandPresentationTests
         Assert.IsNull(
             list.Ancestors(Presentation + "Popup").FirstOrDefault(),
             "Slash-command suggestions must remain inline rather than using a Popup.");
-        Assert.AreEqual("198", list.Attribute("MaxHeight")?.Value);
+        Assert.AreEqual("318", list.Attribute("MaxHeight")?.Value);
         Assert.AreEqual("Auto", list.Attribute("ScrollViewer.VerticalScrollBarVisibility")?.Value);
+        Assert.AreEqual("True", list.Attribute("ScrollViewer.CanContentScroll")?.Value);
+        Assert.AreEqual("True", list.Attribute("VirtualizingPanel.IsVirtualizing")?.Value);
+        Assert.AreEqual("Recycling", list.Attribute("VirtualizingPanel.VirtualizationMode")?.Value);
+        Assert.IsNotNull(list
+            .Element(Presentation + "ListBox.ItemsPanel")?
+            .Descendants(Presentation + "VirtualizingStackPanel")
+            .SingleOrDefault());
 
         XElement composer = document
             .Descendants(Presentation + "TextBox")
@@ -450,10 +458,37 @@ public sealed class SlashCommandPresentationTests
             .Descendants(Presentation + "Button")
             .Where(element => element.Attribute("Style")?.Value == "{StaticResource SelectedChipIconButtonStyle}")
             .ToArray();
-        Assert.HasCount(2, selectedChipActions);
+        Assert.HasCount(3, selectedChipActions);
         CollectionAssert.AreEquivalent(
             SelectedChipCommands,
             selectedChipActions.Select(element => element.Attribute("Command")?.Value).ToArray());
+    }
+
+    [TestMethod]
+    public void Xaml_PendingSkillChipIsContentSizedWithPairedThemeForeground()
+    {
+        XDocument document = LoadXaml();
+
+        XElement pendingSkills = document
+            .Descendants(Presentation + "ItemsControl")
+            .Single(element => element.Attribute("ItemsSource")?.Value == "{Binding PendingSkills}");
+
+        // The default ItemsControl panel is a vertical StackPanel, which stretches each chip's
+        // Border to the full composer width instead of sizing it to its content (regression:
+        // https://github.com/kkamegawa/vsextensionforcodex/issues -- skill chip spanned the panel).
+        Assert.IsNotNull(pendingSkills
+            .Element(Presentation + "ItemsControl.ItemsPanel")?
+            .Descendants(Presentation + "WrapPanel")
+            .SingleOrDefault());
+
+        XElement displayName = pendingSkills
+            .Descendants(Presentation + "TextBlock")
+            .Single(element => element.Attribute("Text")?.Value == "{Binding DisplayName}");
+        XElement scopeLabel = pendingSkills
+            .Descendants(Presentation + "TextBlock")
+            .Single(element => element.Attribute("Text")?.Value == "{Binding ScopeLabel}");
+        AssertThemeAttribute(displayName, "Foreground", "ToolWindowButtonDownActiveGlyphBrushKey");
+        AssertThemeAttribute(scopeLabel, "Foreground", "ToolWindowButtonDownActiveGlyphBrushKey");
     }
 
     [TestMethod]

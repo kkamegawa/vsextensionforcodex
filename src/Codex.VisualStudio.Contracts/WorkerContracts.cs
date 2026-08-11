@@ -5,7 +5,7 @@ namespace Codex.VisualStudio.Contracts;
 
 public static class ContractVersions
 {
-    public const int Current = 14;
+    public const int Current = 15;
 }
 
 public enum WorkerConnectionState
@@ -316,6 +316,10 @@ public sealed class StartTurnRequest
 
     public string? Personality { get; set; }
 
+    // Structured skill input. Scope is used only for Extension/Worker identity
+    // validation; the app-server receives Name and Path in the input item.
+    public SkillInvocationInfo? Skill { get; set; }
+
     public bool HasServiceTier { get; set; }
 
     public string? ServiceTier { get; set; }
@@ -520,6 +524,37 @@ public sealed class SkillInfo
     // v1 (skills/list is always called with cwds: []), but kept per-item so a future multi-root
     // change does not require another contract bump.
     public string? Cwd { get; set; }
+
+    public string? BrandColor { get; set; }
+
+    public string? DefaultPrompt { get; set; }
+
+    public bool HasIconSmall { get; set; }
+
+    public IReadOnlyList<SkillToolDependencyInfo> ToolDependencies { get; set; } = Array.Empty<SkillToolDependencyInfo>();
+}
+
+public sealed class SkillInvocationInfo
+{
+    public string Name { get; set; } = string.Empty;
+
+    public string Scope { get; set; } = string.Empty;
+
+    public string Path { get; set; } = string.Empty;
+}
+
+public sealed class SkillToolDependencyInfo
+{
+    public string Type { get; set; } = string.Empty;
+
+    public string Value { get; set; } = string.Empty;
+
+    public string? Description { get; set; }
+}
+
+public sealed class SkillsChangedEvent
+{
+    public long Generation { get; set; }
 }
 
 public sealed class SkillLoadError
@@ -541,6 +576,10 @@ public sealed class ListSkillsResult : AppServerOperationResult
     public IReadOnlyList<SkillLoadError> Errors { get; set; } = Array.Empty<SkillLoadError>();
 
     public bool IsTruncated { get; set; }
+
+    public bool IsStale { get; set; }
+
+    public long Generation { get; set; }
 }
 
 public sealed class UploadFeedbackRequest
@@ -788,6 +827,9 @@ public interface ICodexWorkerObserver
 
     [JsonRpcMethod("observer/rateLimitsChanged")]
     Task OnRateLimitsChangedAsync(RateLimitsResult value, CancellationToken cancellationToken);
+
+    [JsonRpcMethod("observer/skillsChanged")]
+    Task OnSkillsChangedAsync(SkillsChangedEvent value, CancellationToken cancellationToken);
 }
 
 public interface ICodexWorkerClient

@@ -3,8 +3,8 @@
 ## 対象範囲
 
 Visual Studio拡張機能は、入力の先頭文字が`/`の場合だけCodexコマンドとして
-解釈します。コマンドは許可リスト付きカタログで解決し、プロンプトとして
-モデルへ送りません。先頭`//`はコマンドモードをエスケープし、先頭`/`を
+解釈します。組み込みコマンドと構造化スキルは一つのインライン仮想化候補一覧に
+表示します。組み込みコマンドはプロンプトとしてモデルへ送りません。先頭`//`はコマンドモードをエスケープし、先頭`/`を
 1文字含む通常プロンプトとして送信します。
 
 実装はGitHub Issue #46と4件のsub-issueで管理しています。
@@ -51,11 +51,22 @@ Full accessはCodex sandboxと通常の承認promptを無効化し、拡張へ�
 
 キューはメモリ内だけに保持します。切断、Worker再起動、スレッド消失確定時に
 取り消します。通常プロンプトのsteer動作は維持しますが、スラッシュコマンドを
-steerとして送ることはありません。
+steerとして送ることはありません。選択スキルは独立チップに保持し、`turn/start`へ
+`{ type: "skill", name, path }`だけを送ります。scopeとraw pathはWorker検証専用で、
+Remote UIへバインドしません。pending中はチップを外すまでsend/steerを無効にします。
+
+liveのApp Server `skills/list`応答をスキルカタログの正本とします。Workerは60秒の
+memory snapshotと、version付き・workspace単位の永続stale-while-revalidate
+snapshotを保持します。永続cacheが見つかった場合は、一つのlive refreshを実行する間、
+`Cached - refreshing`の選択不可行を表示できます。ただしcacheはturnを許可しません。
+`turn/start`ではliveカタログをforce reloadし、有効な`Name + Scope + Path`の
+完全一致を必須とします。
 
 ## Worker契約
 
-Worker契約バージョン8で、compact、review、fork、goal、MCP状態、feedback、
+Worker契約バージョン15で、構造化skill呼び出し、catalog freshness、invalidation、
+live identityの完全一致検証を追加しました。バージョン9で接続中Codex versionを、
+バージョン8でcompact、review、fork、goal、MCP状態、feedback、
 rate limitsの型付きDTOとRPCを追加しました。`StartTurnRequest`にはreasoning
 effort、personality、service tier、collaboration mode、上限付きIDE contextを
 追加しています。モデル情報には対応effort、既定effort、personality対応、
@@ -81,10 +92,13 @@ IDEコンテキストは`/ide-context`で切り替え、既定は有効です。
 
 ## Remote UIと安全性
 
-コンポーザー内に高さ制限付き候補一覧を表示し、Popupは使いません。選択した
-コマンドはチップへ変換し、自由入力引数は別TextBoxへ置くため、非同期の
-`ComposerText`反映によるキャレット移動を避けられます。固定引数はテーマ対応
-ボタンで選択します。
+コンポーザー内に一つの仮想化候補一覧を表示し、Popupは使いません。組み込みは8件、
+スキルは無効行も含め、Workerが安全に受理した重複のない全identityを表示します。
+Workerが信頼できない入力として受理する上限は200件で、上限到達時は受動的な
+catalog truncated行を表示します。UI独自の20件上限は設けず、キーボード操作と
+UI Automationで21件目から最後の受理済み行まで到達できます。
+スキル選択は独立チップへ変換し、`SetComposerText("")`で
+検索文字列だけを消して通常Composerを表示し続けます。固定引数はテーマ対応ボタンで選択します。
 
 上下キーで移動、EnterまたはTabで候補選択、Escapeで閉じ、Ctrl+Enterで
 実行します。候補が閉じているときのEnterは改行のままです。バインド型は
@@ -92,3 +106,33 @@ IDEコンテキストは`/ide-context`で切り替え、既定は有効です。
 
 UIへ表示するApp Server由来文字列は`SafeMarkdownService`を通し、Workerログは
 secret redactionを維持します。未加工のpayload JSONは表示しません。
+
+永続カタログsnapshotはworkspaceのSHA-256 fingerprintをkeyとして、
+`%LOCALAPPDATA%\Kkamegawa.CodexForVisualStudio\skill-catalog\v1`配下へ保存します。
+最大200件、workspaceあたり4 MiB、HardExpiry 24時間、全体64 MiBに制限し、atomic replace、LRU cleanup、
+時間制限付きcross-process lockを適用します。cacheファイルも信頼せず、読み込み時に再検証します。
+default prompt、dependency value、icon source path、raw App Server JSON、Remote UI selection IDは
+永続化しません。cache障害時はComposerをblockせずlive discoveryへfallbackします。
+
+## 既知の未対応事項
+
+skill iconは描画しません。`interface.iconSmall`は有無のflagにのみ縮退し、Remote UIの
+image/cache containment spikeで安全なbindingが確認できるまで全行が固定glyphを使用します。
+`dependencies.tools`はparseとbound済みですがbadge/tooltipが未実装のため、この2つのfieldは
+現状consumerのないままcontractを越えています。brand color accentにはHigh Contrast分岐がなく、
+High Contrast themeでもVisual Studio theme resourceではなくApp Serverの色が表示されます。
+`turn/start`のlive identity検証でrejectされたskillはdiagnosticsに記録されますが、
+chat surfaceには通知されません。
+
+## 検証
+
+CoreテストではApp Server method/parameterの完全一致、型付き通知、timeout、cancel、crash、
+method-not-found capability fallback、非retry動作を確認します。UIテストではparse、escape、
+複数行argument、alias、未知入力、入力上限、候補filter、queue順序と置換、thread分離、
+disconnect時cancel、command/steer分離、`DataContract`/`IAsyncCommand`要件、XAML構造、
+keyboard、accessibility、入力保持を確認します。
+
+skill catalogテストではApp Server項目数0/1/20/21/200/201、全行への仮想化navigation、
+stale-to-fresh置換、empty/unsupported/failed/truncated、workspace分離、破損・期限切れ・
+oversize cache、generation race、複数instance、LRU cleanup、skill呼び出し前のlive
+force-reload検証を確認します。

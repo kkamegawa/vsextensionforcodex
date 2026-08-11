@@ -34,6 +34,7 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
         session.ThreadGoalChanged += PublishThreadGoalChangedAsync;
         session.RateLimitsChanged += PublishRateLimitsChangedAsync;
         session.EffectiveApprovalStateChanged += PublishEffectiveApprovalStateAsync;
+        session.SkillsChanged += PublishSkillsChangedAsync;
     }
 
     public void AttachClient(JsonRpc rpc)
@@ -185,7 +186,16 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
     public async Task<string> StartTurnAsync(StartTurnRequest request, CancellationToken cancellationToken)
     {
         await SetStatusAsync(WorkerConnectionState.Busy, "Turn in progress.", cancellationToken).ConfigureAwait(false);
-        string turnId = await session.StartTurnAsync(request, cancellationToken).ConfigureAwait(false);
+        string turnId;
+        try
+        {
+            turnId = await session.StartTurnAsync(request, cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            await SetStatusAsync(WorkerConnectionState.Ready, "Ready.", CancellationToken.None).ConfigureAwait(false);
+            throw;
+        }
 
         // Re-publish Busy now that the turn id is known. The first SetStatusAsync above ran before
         // session.StartTurnAsync set ActiveTurnId, so the client received Busy with TurnId = null and
@@ -252,6 +262,11 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
 
     public Task<ListSkillsResult> ListSkillsAsync(bool forceReload, CancellationToken cancellationToken)
         => session.ListSkillsAsync(forceReload, cancellationToken);
+
+    private Task PublishSkillsChangedAsync(SkillsChangedEvent value, CancellationToken cancellationToken)
+        => clientRpc is null
+            ? Task.CompletedTask
+            : clientRpc.NotifyWithParameterObjectAsync("observer/skillsChanged", new { value });
 
     public Task<UploadFeedbackResult> UploadFeedbackAsync(
         UploadFeedbackRequest request,
