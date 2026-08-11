@@ -102,6 +102,22 @@
 - Late reads from an old connection or from before a push are harmless.
 - The Remote UI popup shares one sanitized presentation model with `/status`, exposes automation metadata, and remains dismissible with Escape whether keyboard focus stays on the host or enters the popup.
 
+### Amendment — 2026-08-12: Refresh after turn completion
+
+- Task: Refresh the Codex usage display after every conversation turn.
+- Status: Accepted
+
+The connection-generation, 60-second TTL, push-version ordering, and lifecycle invalidation
+decisions above remain in force. `TurnCompleted` is additionally treated as an explicit
+usage-consumption boundary, independent of the Busy-to-Ready state transition. After the existing
+conversation-event projection completes, the Extension forces one `account/rateLimits/read` request
+for every terminal turn outcome, including interruption or failure. If that request fails, the
+last successful snapshot and its timestamp remain visible and the next supported refresh path may
+retry it. The existing refresh gate and push-version check continue to reject stale responses.
+
+This amendment changes only the trigger for a fresh read; it does not alter the Worker/RPC
+contract, usage presentation model, or Remote UI surface.
+
 ## ADR-006: Empty workspaces receive only a root-level SLNX solution
 
 - Date: 2026-07-20

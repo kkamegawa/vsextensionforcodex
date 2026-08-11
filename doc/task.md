@@ -471,3 +471,18 @@ theme-resource pairs and both inheritance paths.
 - Validation: focused UI test compilation was blocked before source compilation because the
   sandbox denied access to the local Windows SDK discovery directory.
 - Formatting: modified XAML, C#, and Markdown files retain UTF-8 BOM and CRLF line endings.
+
+### 2026-08-12: Refresh usage after conversation turn completion
+
+Added the approved turn-completion usage refresh. The Extension now forces the existing
+`worker/account/rateLimits` read after every `TurnCompleted` event, including interrupted or failed
+turns, after the transcript projection has finished. Existing connection-generation, TTL,
+push-version, cancellation, and last-good-snapshot behavior remain unchanged; no Worker, RPC
+contract, XAML, or package changes are required.
+
+- Tests: added UI regression coverage for TTL-bypassing refresh, unavailable-account no-op behavior,
+  and retry after a failed post-turn read.
+- Validation: Release UI test execution rebuilt the Extension, Worker, and VSIX with no reported
+  warnings and passed the focused usage/turn set 21/21. Full Core.Tests/UI.Tests and the Visual
+  Studio Experimental Instance check remain to be run in an environment with the required test
+  execution approval and Visual Studio host.

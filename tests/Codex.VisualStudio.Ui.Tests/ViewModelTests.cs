@@ -3018,6 +3018,72 @@ public sealed class ViewModelTests
     }
 
     [TestMethod]
+    public async Task ChatViewModel_TurnCompleted_ForcesUsageRefreshWithinTtl()
+    {
+        DateTimeOffset now = new(2026, 8, 12, 1, 0, 30, TimeSpan.Zero);
+        var bridge = new FakeWorkerBridge { RateLimitsResult = UsageResult(20) };
+        using var vm = new ChatViewModel(bridge, autoConnect: false, utcNow: () => now);
+        await bridge.PublishAccountAsync(new AccountStatus { State = AccountState.SignedIn });
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready });
+
+        string initialUpdatedText = vm.Usage.UpdatedText;
+        Assert.AreEqual(1, bridge.RateLimitCallCount);
+        Assert.AreEqual("80% remaining", vm.Usage.ToolbarText);
+
+        bridge.RateLimitsResult = UsageResult(60);
+        now = now.AddSeconds(40);
+        await RaiseConversationEventAsync(vm, new ConversationEvent { Kind = ConversationEventKind.TurnCompleted });
+
+        Assert.AreEqual(2, bridge.RateLimitCallCount);
+        Assert.AreEqual("40% remaining", vm.Usage.ToolbarText);
+        Assert.AreNotEqual(initialUpdatedText, vm.Usage.UpdatedText);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_TurnCompleted_DoesNotRefreshWhenUsageUnavailable()
+    {
+        var bridge = new FakeWorkerBridge { RateLimitsResult = UsageResult(20) };
+        using var vm = new ChatViewModel(bridge, autoConnect: false);
+        await bridge.PublishAccountAsync(new AccountStatus { State = AccountState.SignedIn });
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready });
+
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Disconnected });
+        await RaiseConversationEventAsync(vm, new ConversationEvent { Kind = ConversationEventKind.TurnCompleted });
+        Assert.AreEqual(1, bridge.RateLimitCallCount);
+
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready });
+        Assert.AreEqual(2, bridge.RateLimitCallCount);
+        await bridge.PublishAccountAsync(new AccountStatus { State = AccountState.SignedOut });
+        await RaiseConversationEventAsync(vm, new ConversationEvent { Kind = ConversationEventKind.TurnCompleted });
+        Assert.AreEqual(2, bridge.RateLimitCallCount);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_TurnCompleted_RefreshFailurePreservesSnapshotAndRetries()
+    {
+        var bridge = new FakeWorkerBridge
+        {
+            RateLimitHandler = call => call switch
+            {
+                1 => Task.FromResult(UsageResult(20)),
+                2 => Task.FromException<RateLimitsResult>(new InvalidOperationException("transient")),
+                _ => Task.FromResult(UsageResult(60)),
+            },
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false);
+        await bridge.PublishAccountAsync(new AccountStatus { State = AccountState.SignedIn });
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready });
+
+        await RaiseConversationEventAsync(vm, new ConversationEvent { Kind = ConversationEventKind.TurnCompleted });
+        Assert.AreEqual(2, bridge.RateLimitCallCount);
+        Assert.AreEqual("80% remaining", vm.Usage.ToolbarText);
+
+        await RaiseConversationEventAsync(vm, new ConversationEvent { Kind = ConversationEventKind.TurnCompleted });
+        Assert.AreEqual(3, bridge.RateLimitCallCount);
+        Assert.AreEqual("40% remaining", vm.Usage.ToolbarText);
+    }
+
+    [TestMethod]
     public async Task ChatViewModel_UsagePopupRefreshesOnlyAfterTtl()
     {
         DateTimeOffset now = DateTimeOffset.UnixEpoch;

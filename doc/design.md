@@ -258,8 +258,11 @@ crosses Remote UI. Missing usage percentages and ambiguous multi-limit maps are 
 zero usage.
 
 Usage freshness is scoped to a connection generation and a monotonic push version. The first
-signed-in Ready state fetches once, Busy-to-Ready transitions do not fetch, and opening the flyout
-refreshes only after a 60-second TTL. Disconnect, sign-out, and disposal invalidate the snapshot.
+signed-in Ready state fetches once, and a Busy-to-Ready transition by itself does not fetch. Each
+`TurnCompleted` event is an explicit usage-consumption boundary: it forces a rate-limit read even
+inside the 60-second TTL so the header and flyout reflect the completed turn. Opening the flyout
+still refreshes only after the TTL. Disconnect, sign-out, and disposal invalidate the snapshot;
+failed forced reads keep the last successful snapshot eligible for a later retry.
 The Usage and History flyouts are mutually exclusive; the Usage popup cycles Tab focus after focus
 enters its content, closes with Escape from either the host or popup, uses Visual Studio dynamic
 theme resources, and exposes automation names and help text. Raw Remote UI cannot run VS-side

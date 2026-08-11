@@ -3367,8 +3367,10 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         Usage.Update(value, refreshedAt, markdown);
     }
 
-    private Task OnConversationEventAsync(ConversationEvent value)
-        => OnUiAsync(() =>
+    private async Task OnConversationEventAsync(ConversationEvent value)
+    {
+        bool isTurnCompleted = value.Kind == ConversationEventKind.TurnCompleted;
+        await OnUiAsync(() =>
         {
             // Plan events carry a full replacement payload — handle separately to avoid text append.
             if (value.Kind == ConversationEventKind.PlanUpdated)
@@ -3486,7 +3488,16 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 existing.IsTruncated |= value.Truncated;
                 existing.OverflowFile = value.OverflowFile ?? existing.OverflowFile;
             }
-        });
+        }).ConfigureAwait(false);
+
+        // A completed turn is an explicit usage-consumption boundary. Refresh after the
+        // transcript projection so the header and flyout show the post-turn snapshot without
+        // blocking UI-bound collection updates on the rate-limit RPC.
+        if (isTurnCompleted)
+        {
+            await RefreshUsageAsync(force: true).ConfigureAwait(false);
+        }
+    }
 
     private string AppendAccumulatedText(ConversationEvent value, string text)
     {
