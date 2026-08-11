@@ -156,10 +156,23 @@ The Remote UI now uses one inline virtualized ListBox (built-in cap 8, every ski
 Worker's safety-bounded catalog) and a separate one-slot PendingSkill chip. Selecting a skill clears
 only the slash query and leaves the composer visible. Ready skill-only turns are allowed;
 Busy/WaitingForApproval selection and removal remain available, but pending skills disable
-send/steer. The chip is cleared only after a matching successful `turn/start`. Brand color, default
-prompt, and dependency metadata are bounded and display-only; the default prompt requires an
-explicit empty-composer action. Icon RPC/cache is still gated behind the Remote UI spike and
-therefore uses fixed-glyph fallback.
+send/steer. The chip is cleared only after a matching successful `turn/start`. Brand color and the
+default prompt are bounded and display-only; the default prompt requires an explicit empty-composer
+action. Icon RPC/cache is still gated behind the Remote UI spike and therefore uses fixed-glyph
+fallback.
+
+Not yet implemented against `doc/design.md`:
+
+- `SkillInfo.ToolDependencies` and `SkillInfo.HasIconSmall` are parsed, bounded, and carried across
+  the v15 contract, but no Remote UI surface consumes them; the dependency badge/tooltip described
+  in the design is still outstanding. Until it lands, these two fields are contract-only data,
+  which is the pattern ADR-008 rejected, so they must either gain their surface or be removed.
+- The brand-color accent binds `#RRGGBB` straight to a `Border.Background` with no High Contrast
+  branch, so a High Contrast theme still renders the app-server colour instead of falling back to
+  Visual Studio theme resources as ADR-009 requires.
+- A `turn/start` rejected by Worker-side skill identity validation surfaces only through
+  `ExtensionDiagnostics`, because `AsyncCommand` swallows the exception. The user's message is
+  already in the transcript and the chip is retained, but no failure text is shown.
 
 ADR-010 adds a Worker-owned persistent stale-while-revalidate catalog snapshot under the local
 application data profile. The cache is keyed by a workspace SHA-256, expires after 24 hours, is

@@ -131,6 +131,17 @@ Default prompts, dependency values, icon source paths, raw app-server JSON, and
 Remote UI selection IDs are never persisted. Cache failure falls back to live
 discovery without blocking the composer.
 
+## Known gaps
+
+Skill icons are not rendered. `interface.iconSmall` is reduced to a presence flag
+and every row uses a fixed glyph until the Remote UI image and cache containment
+spike proves a safe binding. `dependencies.tools` is parsed and bounded but has
+no badge or tooltip yet, so both fields currently cross the contract without a
+consumer. The brand-color accent has no High Contrast branch, so a High Contrast
+theme still shows the app-server color rather than a Visual Studio theme
+resource. A skill rejected by live identity validation at `turn/start` is
+recorded in diagnostics but is not reported in the chat surface.
+
 ## Validation
 
 Core tests cover exact app-server method and parameter mappings, typed

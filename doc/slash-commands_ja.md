@@ -114,6 +114,16 @@ secret redactionを維持します。未加工のpayload JSONは表示しませ�
 default prompt、dependency value、icon source path、raw App Server JSON、Remote UI selection IDは
 永続化しません。cache障害時はComposerをblockせずlive discoveryへfallbackします。
 
+## 既知の未対応事項
+
+skill iconは描画しません。`interface.iconSmall`は有無のflagにのみ縮退し、Remote UIの
+image/cache containment spikeで安全なbindingが確認できるまで全行が固定glyphを使用します。
+`dependencies.tools`はparseとbound済みですがbadge/tooltipが未実装のため、この2つのfieldは
+現状consumerのないままcontractを越えています。brand color accentにはHigh Contrast分岐がなく、
+High Contrast themeでもVisual Studio theme resourceではなくApp Serverの色が表示されます。
+`turn/start`のlive identity検証でrejectされたskillはdiagnosticsに記録されますが、
+chat surfaceには通知されません。
+
 ## 検証
 
 CoreテストではApp Server method/parameterの完全一致、型付き通知、timeout、cancel、crash、

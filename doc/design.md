@@ -307,8 +307,11 @@ paths, raw app-server JSON, and Remote UI selection IDs are not persisted. Cache
 to live discovery; a stale snapshot can never authorize a turn because `turn/start` force-reloads
 and validates an enabled exact identity.
 
-Metadata is untrusted display data: brand colors accept only normalized `#RRGGBB`, default
-prompts are redacted/bounded and require an explicit empty-composer button, and dependencies are
-plain-text badges with no execution or installation behavior. The icon spike is gated; until a
-Remote UI image/cache containment proof exists, the presentation uses a fixed glyph and exposes
-no raw icon path.
+Metadata is untrusted display data: brand colors accept only normalized `#RRGGBB` and are applied
+as a narrow accent that must fall back to Visual Studio theme resources under High Contrast,
+default prompts are redacted/bounded and require an explicit empty-composer button, and
+dependencies are plain-text badges with no execution or installation behavior. Metadata that has
+no Remote UI surface is not carried across the contract, so `dependencies.tools` and the
+`iconSmall` presence flag belong in the contract only once their surface exists. The icon spike is
+gated; until a Remote UI image/cache containment proof exists, the presentation uses a fixed glyph
+and exposes no raw icon path.
