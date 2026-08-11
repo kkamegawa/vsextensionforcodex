@@ -279,18 +279,33 @@ project. The generated empty document must remain parseable as XML and accepted 
 `.NET` SDK's `dotnet sln` command.
 ## Unified slash menu and skill boundary (Issue #140)
 
-The main branch provides Worker-side `skills/list` only. The Extension uses one non-popup,
-virtualized ListBox for the eight built-in candidates and up to twenty enabled skills. Skill
-selection is not `SlashCommands.ActiveCommand`: it creates one `PendingSkill` chip while the
-normal composer remains visible. Accepting a row resolves an opaque selection key against the
-current `(Name, Scope, Path)` snapshot and clears only the slash query.
+The Extension uses one non-popup, virtualized ListBox for the eight built-in candidates and every
+distinct skill identity safely accepted by the Worker. ADR-008's 200-skill input bound remains the
+security limit, but there is no separate UI cap: empty and filtered queries can render all accepted
+enabled and disabled rows. `IsTruncated` produces a passive Worker-truncation row and never a claim
+that the catalog is complete. Skill selection is not `SlashCommands.ActiveCommand`: it creates one
+`PendingSkill` chip while the normal composer remains visible. Accepting a live row resolves an
+opaque selection key against the current `(Name, Scope, Path)` snapshot and clears only the slash
+query.
 
 Worker contract v15 force-reloads and validates the complete identity immediately before
 `turn/start`; only `{ type: "skill", name, path }` is serialized to app-server. Scope and raw
 path never enter Remote UI-bound data. Busy and approval-waiting states permit chip changes, but
-pending skills disable send/steer until removal or successful start. Catalog snapshots use a
-60-second `TimeProvider` TTL, single-flight locking, generation invalidation, and sticky
-`-32601` capability probing.
+pending skills disable send/steer until removal or successful start. The live app-server
+`skills/list` response is the catalog system of record. The Worker owns both a 60-second in-memory
+hot snapshot and a versioned, per-workspace persistent stale-while-revalidate snapshot. A cached
+snapshot may populate non-selectable rows marked `Cached - refreshing` while one live refresh is in
+flight. Successful refresh publishes and atomically persists the new generation; `skills/changed`
+marks the snapshot stale, and sticky `-32601` remains distinct from an empty catalog.
+
+Persistent snapshots live below
+`%LOCALAPPDATA%\Kkamegawa.CodexForVisualStudio\skill-catalog\v1`, keyed by a SHA-256 workspace
+fingerprint. They are untrusted, limited to 200 skills and 4 MiB per workspace, a 24-hour hard
+expiry, and 64 MiB total, with LRU cleanup, atomic replacement, and a bounded cross-process lock. The Worker
+reapplies live-response bounds when loading them. Default prompts, dependency values, icon source
+paths, raw app-server JSON, and Remote UI selection IDs are not persisted. Cache failures fall back
+to live discovery; a stale snapshot can never authorize a turn because `turn/start` force-reloads
+and validates an enabled exact identity.
 
 Metadata is untrusted display data: brand colors accept only normalized `#RRGGBB`, default
 prompts are redacted/bounded and require an explicit empty-composer button, and dependencies are

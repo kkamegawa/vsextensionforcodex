@@ -263,10 +263,10 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
     public Task<ListSkillsResult> ListSkillsAsync(bool forceReload, CancellationToken cancellationToken)
         => session.ListSkillsAsync(forceReload, cancellationToken);
 
-    private Task PublishSkillsChangedAsync(CancellationToken cancellationToken)
+    private Task PublishSkillsChangedAsync(SkillsChangedEvent value, CancellationToken cancellationToken)
         => clientRpc is null
             ? Task.CompletedTask
-            : clientRpc.NotifyWithParameterObjectAsync("observer/skillsChanged", new { value = new SkillsChangedEvent() });
+            : clientRpc.NotifyWithParameterObjectAsync("observer/skillsChanged", new { value });
 
     public Task<UploadFeedbackResult> UploadFeedbackAsync(
         UploadFeedbackRequest request,

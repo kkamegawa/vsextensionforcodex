@@ -32,7 +32,7 @@ public interface ICodexSessionService : IAsyncDisposable
 
     event Func<EffectiveApprovalState, CancellationToken, Task>? EffectiveApprovalStateChanged;
 
-    event Func<CancellationToken, Task>? SkillsChanged;
+    event Func<SkillsChangedEvent, CancellationToken, Task>? SkillsChanged;
 
     string? ActiveThreadId { get; }
 
@@ -131,6 +131,10 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
     private readonly HashSet<string> unsupportedMethods = new(StringComparer.Ordinal);
     private readonly SemaphoreSlim skillsCacheGate = new(1, 1);
     private readonly TimeProvider timeProvider;
+    private readonly ISkillCatalogStore skillCatalogStore;
+    private readonly object skillsBackgroundRefreshLock = new();
+    private CancellationTokenSource skillsBackgroundRefreshCancellation = new();
+    private Task? skillsBackgroundRefreshTask;
     private ListSkillsResult? skillsSnapshot;
     private DateTimeOffset skillsSnapshotExpiresAt;
     private long skillsGeneration;
@@ -144,12 +148,24 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         IPathAccessPolicy? pathAccessPolicy = null,
         IProtectedDirectoryPolicy? protectedDirectoryPolicy = null,
         TimeProvider? timeProvider = null)
+        : this(approvalPolicy, redactor, pathAccessPolicy, protectedDirectoryPolicy, timeProvider, null)
+    {
+    }
+
+    internal CodexSessionService(
+        IApprovalPolicyEngine approvalPolicy,
+        ISecretRedactor redactor,
+        IPathAccessPolicy? pathAccessPolicy,
+        IProtectedDirectoryPolicy? protectedDirectoryPolicy,
+        TimeProvider? timeProvider,
+        ISkillCatalogStore? skillCatalogStore)
     {
         this.approvalPolicy = approvalPolicy;
         this.redactor = redactor;
         this.pathAccessPolicy = pathAccessPolicy ?? new PathAccessPolicy();
         this.protectedDirectoryPolicy = protectedDirectoryPolicy ?? new ProtectedDirectoryPolicy();
         this.timeProvider = timeProvider ?? TimeProvider.System;
+        this.skillCatalogStore = skillCatalogStore ?? new FileSkillCatalogStore(redactor);
     }
 
     public event Func<ConversationEvent, CancellationToken, Task>? ConversationEventReceived;
@@ -176,7 +192,7 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
 
     public event Func<EffectiveApprovalState, CancellationToken, Task>? EffectiveApprovalStateChanged;
 
-    public event Func<CancellationToken, Task>? SkillsChanged;
+    public event Func<SkillsChangedEvent, CancellationToken, Task>? SkillsChanged;
 
     public string? ActiveThreadId { get; private set; }
 
@@ -192,6 +208,7 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
 
     public async Task InitializeAsync(IJsonRpcConnection connection, WorkerOptions options, CancellationToken cancellationToken)
     {
+        await ResetSkillsBackgroundRefreshAsync().ConfigureAwait(false);
         InvalidateSkillsCache();
         CodexVersion = null;
         EffectiveApprovalState = null;
@@ -920,34 +937,150 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         DateTimeOffset now = timeProvider.GetUtcNow();
         if (!forceReload && skillsSnapshot is not null && now < skillsSnapshotExpiresAt)
         {
-            return skillsSnapshot;
+            return CloneSkillsResult(skillsSnapshot);
         }
 
+        bool startBackgroundRefresh = false;
+        long backgroundGeneration = 0;
+        ListSkillsResult result;
         await skillsCacheGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
             now = timeProvider.GetUtcNow();
             if (!forceReload && skillsSnapshot is not null && now < skillsSnapshotExpiresAt)
             {
-                return skillsSnapshot;
+                result = CloneSkillsResult(skillsSnapshot);
             }
-
-            long generation = Volatile.Read(ref skillsGeneration);
-            ListSkillsResult loaded = await ReadSkillsFromServerAsync(forceReload, cancellationToken).ConfigureAwait(false);
-            if (generation != Volatile.Read(ref skillsGeneration))
+            else if (!forceReload
+                && await skillCatalogStore.TryReadAsync(
+                    options.WorkingDirectory,
+                    CodexVersion,
+                    now,
+                    cancellationToken).ConfigureAwait(false) is { } persisted)
             {
-                // A skills/changed notification arrived while the request was in flight. Do not
-                // publish the stale completion; one retry establishes a fresh immutable snapshot.
-                loaded = await ReadSkillsFromServerAsync(forceReload: true, cancellationToken).ConfigureAwait(false);
+                backgroundGeneration = Volatile.Read(ref skillsGeneration);
+                persisted.Generation = backgroundGeneration;
+                persisted.IsStale = true;
+                skillsSnapshot = CloneSkillsResult(persisted);
+                skillsSnapshotExpiresAt = now.AddSeconds(60);
+                result = CloneSkillsResult(persisted);
+                startBackgroundRefresh = true;
             }
-
-            skillsSnapshot = loaded;
-            skillsSnapshotExpiresAt = timeProvider.GetUtcNow().AddSeconds(60);
-            return loaded;
+            else
+            {
+                result = await LoadLiveSkillsAsync(forceReload, cancellationToken).ConfigureAwait(false);
+            }
         }
         finally
         {
             skillsCacheGate.Release();
+        }
+
+        if (startBackgroundRefresh)
+        {
+            StartSkillsBackgroundRefresh(backgroundGeneration);
+        }
+
+        return result;
+    }
+
+    private async Task<ListSkillsResult> LoadLiveSkillsAsync(bool forceReload, CancellationToken cancellationToken)
+    {
+        const int maximumAttempts = 2;
+        for (int attempt = 0; attempt < maximumAttempts; attempt++)
+        {
+            long generation = Volatile.Read(ref skillsGeneration);
+            ListSkillsResult loaded = await ReadSkillsFromServerAsync(
+                forceReload || attempt > 0,
+                cancellationToken).ConfigureAwait(false);
+            loaded = CloneSkillsResult(loaded, isStale: false, generation);
+            if (generation != Volatile.Read(ref skillsGeneration))
+            {
+                continue;
+            }
+
+            if (loaded.IsSupported)
+            {
+                try
+                {
+                    await skillCatalogStore.WriteAsync(
+                        options.WorkingDirectory,
+                        CodexVersion,
+                        loaded,
+                        timeProvider.GetUtcNow(),
+                        cancellationToken).ConfigureAwait(false);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    WorkerDiagnostics.Write("skill catalog cache write failed", ex);
+                }
+            }
+
+            if (generation != Volatile.Read(ref skillsGeneration))
+            {
+                await DeletePersistedSkillsAsync(CancellationToken.None).ConfigureAwait(false);
+                continue;
+            }
+
+            skillsSnapshot = CloneSkillsResult(loaded);
+            skillsSnapshotExpiresAt = timeProvider.GetUtcNow().AddSeconds(60);
+            return CloneSkillsResult(loaded);
+        }
+
+        throw new InvalidOperationException("The skill catalog changed repeatedly while it was loading.");
+    }
+
+    private void StartSkillsBackgroundRefresh(long expectedGeneration)
+    {
+        lock (skillsBackgroundRefreshLock)
+        {
+            if (skillsBackgroundRefreshTask is { IsCompleted: false })
+            {
+                return;
+            }
+
+            skillsBackgroundRefreshTask = RefreshSkillsInBackgroundAsync(
+                expectedGeneration,
+                skillsBackgroundRefreshCancellation.Token);
+        }
+    }
+
+    private async Task RefreshSkillsInBackgroundAsync(long expectedGeneration, CancellationToken cancellationToken)
+    {
+        try
+        {
+            // Do not let an in-memory/test connection that completes synchronously turn the
+            // display-only cache path back into a blocking live scan.
+            await Task.Yield();
+            await skillsCacheGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            ListSkillsResult loaded;
+            try
+            {
+                if (expectedGeneration != Volatile.Read(ref skillsGeneration))
+                {
+                    return;
+                }
+
+                loaded = await LoadLiveSkillsAsync(forceReload: false, cancellationToken).ConfigureAwait(false);
+            }
+            finally
+            {
+                skillsCacheGate.Release();
+            }
+
+            if (SkillsChanged is not null)
+            {
+                await SkillsChanged(
+                    new SkillsChangedEvent { Generation = loaded.Generation },
+                    cancellationToken).ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+        }
+        catch (Exception ex)
+        {
+            WorkerDiagnostics.Write("skill catalog background refresh failed", ex);
         }
     }
 
@@ -1266,6 +1399,7 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
 
         ListSkillsResult catalog = await ListSkillsAsync(forceReload: true, cancellationToken).ConfigureAwait(false);
         bool exactEnabled = catalog.IsSupported
+            && !catalog.IsStale
             && catalog.Skills.Any(skill =>
                 skill.Enabled
                 && string.Equals(skill.Name, invocation.Name, StringComparison.Ordinal)
@@ -1422,6 +1556,9 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
+        await ResetSkillsBackgroundRefreshAsync().ConfigureAwait(false);
+        skillsBackgroundRefreshCancellation.Cancel();
+        skillsBackgroundRefreshCancellation.Dispose();
         if (streamingBuffer is not null)
         {
             await streamingBuffer.DisposeAsync().ConfigureAwait(false);
@@ -1514,10 +1651,11 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         JsonElement parameters = message.Params ?? JsonSerializer.SerializeToElement(new { });
         if (method == "skills/changed")
         {
-            InvalidateSkillsCache();
+            long generation = InvalidateSkillsCache();
+            await DeletePersistedSkillsAsync(cancellationToken).ConfigureAwait(false);
             if (SkillsChanged is not null)
             {
-                await SkillsChanged(cancellationToken).ConfigureAwait(false);
+                await SkillsChanged(new SkillsChangedEvent { Generation = generation }, cancellationToken).ConfigureAwait(false);
             }
 
             return;
@@ -1761,12 +1899,91 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         }
     }
 
-    private void InvalidateSkillsCache()
+    private long InvalidateSkillsCache()
     {
-        Interlocked.Increment(ref skillsGeneration);
+        long generation = Interlocked.Increment(ref skillsGeneration);
         skillsSnapshot = null;
         skillsSnapshotExpiresAt = default;
+        return generation;
     }
+
+    private async Task DeletePersistedSkillsAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            await skillCatalogStore.DeleteAsync(options.WorkingDirectory, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            WorkerDiagnostics.Write("skill catalog cache invalidation failed", ex);
+        }
+    }
+
+    private async Task ResetSkillsBackgroundRefreshAsync()
+    {
+        Task? pending;
+        CancellationTokenSource previousCancellation;
+        lock (skillsBackgroundRefreshLock)
+        {
+            pending = skillsBackgroundRefreshTask;
+            skillsBackgroundRefreshTask = null;
+            previousCancellation = skillsBackgroundRefreshCancellation;
+            skillsBackgroundRefreshCancellation = new CancellationTokenSource();
+        }
+
+        previousCancellation.Cancel();
+        if (pending is not null)
+        {
+            try
+            {
+                await pending.ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (previousCancellation.IsCancellationRequested)
+            {
+            }
+        }
+
+        previousCancellation.Dispose();
+    }
+
+    private static ListSkillsResult CloneSkillsResult(
+        ListSkillsResult source,
+        bool? isStale = null,
+        long? generation = null)
+        => new()
+        {
+            IsSupported = source.IsSupported,
+            UnavailableReason = source.UnavailableReason,
+            IsTruncated = source.IsTruncated,
+            IsStale = isStale ?? source.IsStale,
+            Generation = generation ?? source.Generation,
+            Skills = source.Skills.Select(skill => new SkillInfo
+            {
+                Name = skill.Name,
+                Description = skill.Description,
+                ShortDescription = skill.ShortDescription,
+                DisplayName = skill.DisplayName,
+                Scope = skill.Scope,
+                Path = skill.Path,
+                Enabled = skill.Enabled,
+                Cwd = skill.Cwd,
+                BrandColor = skill.BrandColor,
+                DefaultPrompt = skill.DefaultPrompt,
+                HasIconSmall = skill.HasIconSmall,
+                ToolDependencies = skill.ToolDependencies.Select(dependency => new SkillToolDependencyInfo
+                {
+                    Type = dependency.Type,
+                    Value = dependency.Value,
+                    Description = dependency.Description,
+                }).ToArray(),
+            }).ToArray(),
+            Errors = source.Errors.Select(error => new SkillLoadError
+            {
+                Cwd = error.Cwd,
+                Path = error.Path,
+                Message = error.Message,
+            }).ToArray(),
+        };
 
     private static T Unsupported<T>(string reason)
         where T : AppServerOperationResult, new()

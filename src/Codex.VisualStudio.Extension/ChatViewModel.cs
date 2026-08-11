@@ -90,8 +90,14 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     private DateTimeOffset skillsSnapshotExpiresAt;
     private Task? skillsLoadTask;
     private string? skillsLoadFailure;
+    private bool skillsRefreshPending;
+    private long minimumSkillsGeneration;
     private long skillSelectionSequence;
-    private readonly Dictionary<string, SkillInfo> skillSelections = new(StringComparer.Ordinal);
+    private Dictionary<string, SkillInfo> skillSelections = new(StringComparer.Ordinal);
+
+    private sealed record UnifiedSlashSuggestionSnapshot(
+        List<SlashCommandSuggestionDescriptor> Suggestions,
+        Dictionary<string, SkillInfo> SkillSelections);
 
     private readonly record struct PendingReasoningOverride(string Effort, string? RestoreEffort);
 
@@ -1463,18 +1469,29 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             .Filter(filter)
             .Select(CreateSlashCommandSuggestion)
             .ToArray();
-        SlashCommands.ShowSuggestions(BuildUnifiedSlashSuggestions(builtIns, text[1..]));
-        if (skillsSnapshot is null || utcNow() >= skillsSnapshotExpiresAt)
+        bool requiresSkillRefresh = skillsSnapshot is null
+            || utcNow() >= skillsSnapshotExpiresAt;
+        if (requiresSkillRefresh)
+        {
+            skillsRefreshPending = true;
+        }
+
+        UnifiedSlashSuggestionSnapshot suggestionSnapshot = BuildUnifiedSlashSuggestions(builtIns, text[1..]);
+        skillSelections = suggestionSnapshot.SkillSelections;
+        SlashCommands.ShowSuggestions(suggestionSnapshot.Suggestions);
+        if (requiresSkillRefresh)
         {
             _ = EnsureSkillsLoadedAsync();
         }
     }
 
-    private List<SlashCommandSuggestionDescriptor> BuildUnifiedSlashSuggestions(
+    private UnifiedSlashSuggestionSnapshot BuildUnifiedSlashSuggestions(
         IReadOnlyList<SlashCommandSuggestionDescriptor> builtIns,
         string skillQuery)
     {
-        var result = new List<SlashCommandSuggestionDescriptor>(builtIns.Count + 22);
+        var selections = new Dictionary<string, SkillInfo>(StringComparer.Ordinal);
+        int skillCapacity = skillsSnapshot?.Skills.Count ?? 0;
+        var result = new List<SlashCommandSuggestionDescriptor>(builtIns.Count + skillCapacity + 4);
         result.AddRange(builtIns);
         result.Add(new SlashCommandSuggestionDescriptor(
             "Skills",
@@ -1492,7 +1509,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                     skillsLoadFailure,
                     IsAvailable: true,
                     IsSelectable: false));
-                return result;
+                return new UnifiedSlashSuggestionSnapshot(result, selections);
             }
 
             result.Add(new SlashCommandSuggestionDescriptor(
@@ -1500,7 +1517,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 "Fetching the skill catalog.",
                 IsAvailable: true,
                 IsSelectable: false));
-            return result;
+            return new UnifiedSlashSuggestionSnapshot(result, selections);
         }
 
         if (!skillsSnapshot.IsSupported)
@@ -1510,58 +1527,69 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 skillsSnapshot.UnavailableReason ?? "This app-server does not expose skills.",
                 IsAvailable: true,
                 IsSelectable: false));
-            return result;
+            return new UnifiedSlashSuggestionSnapshot(result, selections);
         }
 
-        SkillInfo[] matches = skillsSnapshot.Skills
-            .Where(skill => SkillMatches(skill, skillQuery))
+        SkillInfo[] uniqueSkills = skillsSnapshot.Skills
             .GroupBy(skill => string.Concat(skill.Name, "\0", skill.Scope, "\0", skill.Path), StringComparer.Ordinal)
             .Select(group => group.First())
+            .ToArray();
+        SkillInfo[] matches = uniqueSkills
+            .Where(skill => SkillMatches(skill, skillQuery))
             .OrderBy(skill => SkillRank(skill, skillQuery))
             .ThenByDescending(skill => skill.Enabled)
             .ThenBy(skill => ScopeRank(skill.Scope))
             .ThenBy(skill => skill.DisplayName ?? skill.Name, StringComparer.OrdinalIgnoreCase)
             .ThenBy(skill => skill.Name, StringComparer.Ordinal)
             .ThenBy(skill => skill.Path, StringComparer.Ordinal)
-            .Take(20)
             .ToArray();
+        Dictionary<(string Name, string Scope), SkillInfo[]> pathCollisions = uniqueSkills
+            .GroupBy(skill => (skill.Name, skill.Scope))
+            .ToDictionary(
+                group => group.Key,
+                group => group.OrderBy(skill => skill.Path, StringComparer.Ordinal).ToArray());
 
         foreach (SkillInfo skill in matches)
         {
-            string id = $"skill-{Interlocked.Increment(ref skillSelectionSequence)}";
-            skillSelections[id] = skill;
+            string id = $"skill-{skillsSnapshot.Generation}-{Interlocked.Increment(ref skillSelectionSequence)}";
+            bool isLiveCatalog = !skillsRefreshPending
+                && !skillsSnapshot.IsStale
+                && skillsSnapshot.Generation >= minimumSkillsGeneration;
+            bool canSelect = isLiveCatalog && skill.Enabled;
+            if (canSelect)
+            {
+                selections[id] = skill;
+            }
+
             string displayName = string.IsNullOrWhiteSpace(skill.DisplayName) ? skill.Name : skill.DisplayName!;
-            SkillInfo[] pathCollision = skillsSnapshot.Skills
-                .Where(candidate => string.Equals(candidate.Name, skill.Name, StringComparison.Ordinal)
-                    && string.Equals(candidate.Scope, skill.Scope, StringComparison.Ordinal))
-                .OrderBy(candidate => candidate.Path, StringComparer.Ordinal)
-                .ToArray();
+            SkillInfo[] pathCollision = pathCollisions[(skill.Name, skill.Scope)];
             string scopeLabel = FormatSkillScope(skill.Scope);
             if (pathCollision.Length > 1)
             {
                 int ordinal = Array.FindIndex(pathCollision, candidate => string.Equals(candidate.Path, skill.Path, StringComparison.Ordinal)) + 1;
                 scopeLabel = $"{scopeLabel} {ordinal} of {pathCollision.Length}";
             }
+
+            if (!isLiveCatalog)
+            {
+                scopeLabel = $"{scopeLabel} · Cached";
+            }
+
             result.Add(new SlashCommandSuggestionDescriptor(
                 $"/{displayName}",
                 skill.Description,
-                IsAvailable: skill.Enabled,
-                UnavailableReason: skill.Enabled ? string.Empty : "Skill is disabled.",
+                IsAvailable: canSelect,
+                UnavailableReason: !isLiveCatalog
+                    ? "Cached skill metadata cannot be selected until the catalog refresh completes."
+                    : skill.Enabled ? string.Empty : "Skill is disabled.",
                 IsSkill: true,
                 ScopeLabel: scopeLabel,
                 SelectionId: id,
-                BrandColor: skill.BrandColor ?? string.Empty));
+                BrandColor: skill.BrandColor ?? string.Empty,
+                IsSelectable: canSelect));
         }
 
-        if (skillsSnapshot.IsTruncated || skillsSnapshot.Skills.Count(skill => skill.Enabled && SkillMatches(skill, skillQuery)) > 20)
-        {
-            result.Add(new SlashCommandSuggestionDescriptor(
-                "More skills available",
-                skillsSnapshot.IsTruncated ? "The app-server returned a truncated catalog." : "Refine the search to see more skills.",
-                IsAvailable: true,
-                IsSelectable: false));
-        }
-        else if (matches.Length == 0)
+        if (matches.Length == 0)
         {
             result.Add(new SlashCommandSuggestionDescriptor(
                 "No matching skills",
@@ -1570,7 +1598,33 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 IsSelectable: false));
         }
 
-        return result;
+        if (skillsRefreshPending)
+        {
+            result.Add(new SlashCommandSuggestionDescriptor(
+                "Cached skill catalog",
+                "Showing cached skills while the Worker refreshes the catalog in the background.",
+                IsAvailable: true,
+                IsSelectable: false));
+        }
+        else if (!string.IsNullOrWhiteSpace(skillsLoadFailure))
+        {
+            result.Add(new SlashCommandSuggestionDescriptor(
+                "Skill refresh failed",
+                $"{skillsLoadFailure} Cached skills remain visible; reopen the menu later to retry.",
+                IsAvailable: true,
+                IsSelectable: false));
+        }
+
+        if (skillsSnapshot.IsTruncated)
+        {
+            result.Add(new SlashCommandSuggestionDescriptor(
+                "Skill catalog incomplete",
+                "Showing every skill returned by the Worker; additional app-server skills were omitted by its safety limit.",
+                IsAvailable: true,
+                IsSelectable: false));
+        }
+
+        return new UnifiedSlashSuggestionSnapshot(result, selections);
     }
 
     private async Task EnsureSkillsLoadedAsync()
@@ -1585,11 +1639,12 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         }
         catch (Exception ex)
         {
-            skillsLoadFailure = markdown.ToSafeText(ex.Message).Trim();
-            skillsSnapshotExpiresAt = utcNow().AddSeconds(60);
             ExtensionDiagnostics.Write("Skill discovery failed.", ex);
             await OnUiAsync(() =>
             {
+                skillsRefreshPending = false;
+                skillsLoadFailure = markdown.ToSafeText(ex.Message).Trim();
+                skillsSnapshotExpiresAt = utcNow().AddSeconds(60);
                 if (!string.IsNullOrEmpty(ComposerText) && ComposerText[0] == '/')
                 {
                     UpdateComposerSuggestions(ComposerText);
@@ -1607,22 +1662,67 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
     private async Task LoadSkillsAsync()
     {
-        ListSkillsResult result = await bridge.ListSkillsAsync(forceReload: false, lifetime.Token).ConfigureAwait(false);
+        bool forceReload = skillsSnapshot is not null
+            && minimumSkillsGeneration > skillsSnapshot.Generation;
+        for (int attempt = 0; attempt < 3; attempt++)
+        {
+            ListSkillsResult result = await bridge.ListSkillsAsync(forceReload, lifetime.Token).ConfigureAwait(false);
+            bool accepted = false;
+            await OnUiAsync(() =>
+            {
+                long currentGeneration = skillsSnapshot?.Generation ?? long.MinValue;
+                if (result.Generation < minimumSkillsGeneration
+                    || result.Generation < currentGeneration
+                    || (result.Generation == currentGeneration
+                        && result.IsStale
+                        && skillsSnapshot?.IsStale == false))
+                {
+                    return;
+                }
+
+                accepted = true;
+                skillsLoadFailure = null;
+                skillsSnapshot = result;
+                minimumSkillsGeneration = Math.Max(minimumSkillsGeneration, result.Generation);
+                skillsRefreshPending = result.IsStale;
+                skillsSnapshotExpiresAt = utcNow().AddSeconds(60);
+                if (!string.IsNullOrEmpty(ComposerText)
+                    && ComposerText[0] == '/'
+                    && !ComposerText.StartsWith("//", StringComparison.Ordinal))
+                {
+                    UpdateComposerSuggestions(ComposerText);
+                }
+            }).ConfigureAwait(false);
+
+            if (accepted)
+            {
+                return;
+            }
+
+            // Only a generation mismatch retries here. A stale cache result is final for this
+            // call because the Worker owns its single background refresh and emits skills/changed
+            // after that refresh succeeds.
+            forceReload = true;
+        }
+
         await OnUiAsync(() =>
         {
-            skillsLoadFailure = null;
-            skillsSnapshot = result;
+            skillsRefreshPending = false;
+            skillsLoadFailure = "The cached skill catalog could not be refreshed.";
             skillsSnapshotExpiresAt = utcNow().AddSeconds(60);
-            if (!string.IsNullOrEmpty(ComposerText) && ComposerText[0] == '/' && !ComposerText.StartsWith("//", StringComparison.Ordinal))
+            if (!string.IsNullOrEmpty(ComposerText)
+                && ComposerText[0] == '/'
+                && !ComposerText.StartsWith("//", StringComparison.Ordinal))
             {
                 UpdateComposerSuggestions(ComposerText);
             }
         }).ConfigureAwait(false);
     }
 
-    private Task OnSkillsChangedAsync()
+    private Task OnSkillsChangedAsync(SkillsChangedEvent value)
     {
-        skillsSnapshot = null;
+        minimumSkillsGeneration = Math.Max(minimumSkillsGeneration, value.Generation);
+        skillsRefreshPending = true;
         skillsLoadFailure = null;
         skillsSnapshotExpiresAt = default;
         if (!string.IsNullOrEmpty(ComposerText) && ComposerText[0] == '/')
@@ -1630,6 +1730,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             UpdateComposerSuggestions(ComposerText);
         }
 
+        _ = EnsureSkillsLoadedAsync();
         return Task.CompletedTask;
     }
 

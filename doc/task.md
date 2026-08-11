@@ -2,7 +2,21 @@
 
 `plan.md` のフェーズ分割に対応する詳細タスク。各タスクは独立してレビュー可能な小さなスライスを意図する。
 
+## 2026-08-11: Complete skill catalog and persistent cache (Issue #140, ADR-010)
+
+- [x] Add ADR-010 and synchronize the repository design, plan, task, and English/Japanese slash-command specifications. ADR-010 supersedes only ADR-009's twenty-skill presentation cap and volatile-cache-only assumption.
+- [x] Remove the UI `.Take(20)` path and render every distinct Worker-accepted skill identity, including disabled rows, while retaining the Worker safety cap of 200 and a distinct `IsTruncated` state.
+- [x] Add a Worker-owned, versioned, per-workspace persistent stale-while-revalidate snapshot alongside the existing 60-second memory cache. Return cached rows as stale and non-selectable, single-flight the live refresh, and publish only the newest generation.
+- [x] Implement bounded cache storage under `%LOCALAPPDATA%\Kkamegawa.CodexForVisualStudio\skill-catalog\v1`: at most 200 skills, 4 MiB per workspace, a 24-hour hard expiry, 64 MiB total, atomic replacement, LRU cleanup, bounded cross-process locking, and fail-open-to-live handling for corrupt or unavailable cache files.
+- [x] Exclude `defaultPrompt`, dependency values, icon source paths, raw app-server JSON, and Remote UI selection IDs from persistence. Revalidate all loaded fields and keep raw paths outside Remote UI data members.
+- [x] Preserve live `skills/list` as the catalog system of record. A `turn/start` must bypass memory and disk snapshots, force reload, require an enabled exact `Name + Scope + Path`, and retain the pending chip on refresh or validation failure.
+- [x] Add Core/UI/file-store coverage for 0/1/20/21/200/201 entries, full keyboard/UI Automation reachability, stale-to-fresh replacement, empty/unsupported/failed/truncated states, workspace isolation, corrupt/expired/oversize files, generation races, concurrent instances, cleanup, and force-reload invocation safety.
+- [ ] Update Issue #140 and both Wiki languages with the approved ADR-010 amendment. After implementation and validation, update `doc/implementation.md`, rerun Debug/Release and full tests, and replace all VSIX/DLL/embedded-XAML/deployed-artifact evidence.
+
 ## 2026-08-11: Unified slash menu and structured skill invocation (Issue #140)
+
+This section records the original ADR-009 implementation. ADR-010 supersedes its skill presentation
+cap and cache durability decisions without rewriting the completed history below.
 
 - [x] Update Issue #140 and the English/Japanese Wiki plan with the reviewed v15 contract, busy-state, candidate limits, identity validation, metadata boundaries, and icon spike gate.
 - [x] Add ADR-009. ADR-008 remains authoritative for capability probing, flattened catalogs, complete identity, and missing-data tolerance; only explicitly admitted metadata fields are superseded.
@@ -11,7 +25,7 @@
 - [x] Add one independent pending skill chip. It replaces the previous chip, clears only the slash query, permits text-free Ready turns, blocks pending send/steer while Busy, and clears only after successful matching `turn/start`.
 - [x] Bound and sanitize brand color, default prompt preview, and dependency badges. Keep default prompt insertion explicit and non-sending; keep icon data behind the fixed-glyph spike gate.
 - [ ] Add final Remote UI screenshot and Experimental Instance hash verification after the icon spike is accepted.
-- [ ] Complete Core/UI regression coverage for cache TTL/generation, metadata fallback, ranking/collisions, chip lifecycle, and structured input serialization.
+- [x] Complete Core/UI regression coverage for cache TTL/generation, metadata fallback, ranking/collisions, chip lifecycle, and structured input serialization.
 
 ## 2026-07-21: Stabilize intermittent CI build failures (issue #110)
 
@@ -193,10 +207,11 @@
   - The VSIX manifest, packaged assembly, embedded Remote UI XAML, and SDK-managed Experimental deployment were inspected; packaged, build, and deployed assembly hashes matched.
 
 ### 3.2 スキル
-- [ ] `skills/list`（`cwds` スコープ、`forceReload`）でスキル一覧取得（キャッシュ + invalidation）
-- [ ] `$<skill-name>` + `skill` 入力アイテムでスキル明示呼び出し
+- [x] `skills/list`（`cwds` スコープ、`forceReload`）でスキル一覧取得（60秒memory cache + invalidation）
+- [x] 統合Slashメニューの独立チップ + `skill` 入力アイテムでスキル明示呼び出し
 - [ ] `skills/config/write` で有効/無効切替
-- [ ] `skills/changed` 通知で一覧を再取得（invalidation）
+- [x] `skills/changed` 通知で一覧を再取得（invalidation）
+- [ ] ADR-010に従い、全件仮想化表示とWorker永続stale-while-revalidate cacheを実装
 
 ### 3.3 apm との連携（スキル/プラグイン導入）
 - [ ] awesome-copilot から必要スキル/プラグイン/エージェントを `apm install` で導入する手順をドキュメント化

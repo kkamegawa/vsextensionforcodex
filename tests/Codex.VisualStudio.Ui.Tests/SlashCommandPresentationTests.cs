@@ -205,6 +205,13 @@ public sealed class SlashCommandPresentationTests
             "Slash-command suggestions must remain inline rather than using a Popup.");
         Assert.AreEqual("318", list.Attribute("MaxHeight")?.Value);
         Assert.AreEqual("Auto", list.Attribute("ScrollViewer.VerticalScrollBarVisibility")?.Value);
+        Assert.AreEqual("True", list.Attribute("ScrollViewer.CanContentScroll")?.Value);
+        Assert.AreEqual("True", list.Attribute("VirtualizingPanel.IsVirtualizing")?.Value);
+        Assert.AreEqual("Recycling", list.Attribute("VirtualizingPanel.VirtualizationMode")?.Value);
+        Assert.IsNotNull(list
+            .Element(Presentation + "ListBox.ItemsPanel")?
+            .Descendants(Presentation + "VirtualizingStackPanel")
+            .SingleOrDefault());
 
         XElement composer = document
             .Descendants(Presentation + "TextBox")

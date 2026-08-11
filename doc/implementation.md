@@ -152,20 +152,30 @@ single-flight locking, generation invalidation, and sticky `-32601` probing. Bef
 the Worker force-reloads the catalog and requires an enabled exact `(Name, Scope, Path)` identity;
 the app-server receives only the structured skill item `{ type, name, path }`.
 
-The Remote UI now uses one inline virtualized ListBox (built-in cap 8, skill cap 20) and a separate
-one-slot PendingSkill chip. Selecting a skill clears only the slash query and leaves the composer
-visible. Ready skill-only turns are allowed; Busy/WaitingForApproval selection and removal remain
-available, but pending skills disable send/steer. The chip is cleared only after a matching
-successful `turn/start`. Brand color, default prompt, and dependency metadata are bounded and
-display-only; the default prompt requires an explicit empty-composer action. Icon RPC/cache is
-still gated behind the Remote UI spike and therefore uses fixed-glyph fallback.
+The Remote UI now uses one inline virtualized ListBox (built-in cap 8, every skill accepted by the
+Worker's safety-bounded catalog) and a separate one-slot PendingSkill chip. Selecting a skill clears
+only the slash query and leaves the composer visible. Ready skill-only turns are allowed;
+Busy/WaitingForApproval selection and removal remain available, but pending skills disable
+send/steer. The chip is cleared only after a matching successful `turn/start`. Brand color, default
+prompt, and dependency metadata are bounded and display-only; the default prompt requires an
+explicit empty-composer action. Icon RPC/cache is still gated behind the Remote UI spike and
+therefore uses fixed-glyph fallback.
+
+ADR-010 adds a Worker-owned persistent stale-while-revalidate catalog snapshot under the local
+application data profile. The cache is keyed by a workspace SHA-256, expires after 24 hours, is
+limited to 4 MiB per workspace and 64 MiB overall, and is written atomically under a bounded
+cross-process lock. It contains only validated catalog display/identity fields; default prompts,
+dependency values, errors, raw app-server JSON, icon paths, and Remote UI selection IDs are not
+persisted. A cached catalog is never authoritative: it is shown as stale and non-selectable until
+the live generation is received, and `turn/start` always performs a live force reload and exact
+identity validation.
 
 Validation on 2026-08-11:
 
 - Debug and Release VSIX builds: 0 warnings, 0 errors.
-- Core tests: 108 passed; UI tests: 271 passed.
-- Debug Extension DLL SHA-256: `B44177DA6E18DEB3010963634B3508A20B48CF9971219D53CB030DB4500E8812`.
-- Debug VSIX SHA-256: `44C39A410DE6D0D11742B523E81B8E666460C90AE20772C68A70CB4F51F45D28`.
-- Release Extension DLL SHA-256: `9E7682DF3970289CDD0ACF09661EBD9463DE602C6B7E3154A12B48C497B7DBDF`.
-- Release VSIX SHA-256: `5856BD3E6C7C50D915A6AE6436F625F64C3929B8F4526C4B10B81AFBF7714E91`.
-- Embedded `ChatToolWindowContent.xaml` SHA-256 matches the source: `3c20ba653dee0c08ab3dcacb4c737b4bbc8b0b52f4628d97828ec10b069b03b9`.
+- Core tests: 113 passed; UI tests: 279 passed.
+- Debug Extension DLL SHA-256: `04B6F6BED4C2983EC241F1F86735505B0FAA47F4B0DC7F469F4114D15D7D2BE1`.
+- Debug VSIX SHA-256: `58E3AC9F0B7C8B16C60B8A97531D97CAC22DA1B21895BA63093AA05C672E80DE`.
+- Release Extension DLL SHA-256: `7511CD158CD3DCD122E5A4938349935EAE819806F1A3722C470F192AD5C66E7C`.
+- Release VSIX SHA-256: `260191253EA4AB66BDC0C83A621D8AC9E4D7274158B486138DB2731E765E6249`.
+- Embedded `ChatToolWindowContent.xaml` SHA-256 matches the source: `93AD99EE57AFB1D8A09C98071D69CB6D231D8FBBBB6345558876540076D726C0`.

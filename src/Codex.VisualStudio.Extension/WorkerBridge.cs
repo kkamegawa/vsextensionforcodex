@@ -31,7 +31,7 @@ internal interface IWorkerBridge : IAsyncDisposable
 
     event Func<RateLimitsResult, Task>? RateLimitsChanged;
 
-    event Func<Task>? SkillsChanged;
+    event Func<SkillsChangedEvent, Task>? SkillsChanged;
 
     Task<WorkerStatus> ConnectAsync(string workingDirectory, bool experimentalApi, CancellationToken cancellationToken);
 
@@ -130,7 +130,7 @@ public sealed class WorkerBridge : IWorkerBridge, ICodexWorkerObserver
 
     public event Func<RateLimitsResult, Task>? RateLimitsChanged;
 
-    public event Func<Task>? SkillsChanged;
+    public event Func<SkillsChangedEvent, Task>? SkillsChanged;
 
     public async Task<WorkerStatus> ConnectAsync(string workingDirectory, bool experimentalApi, CancellationToken cancellationToken)
     {
@@ -356,7 +356,7 @@ public sealed class WorkerBridge : IWorkerBridge, ICodexWorkerObserver
         => RateLimitsChanged?.Invoke(value) ?? Task.CompletedTask;
 
     public Task OnSkillsChangedAsync(SkillsChangedEvent value, CancellationToken cancellationToken)
-        => SkillsChanged?.Invoke() ?? Task.CompletedTask;
+        => SkillsChanged?.Invoke(value) ?? Task.CompletedTask;
 
     public Task OnApprovalAuditAsync(ApprovalAuditRecord record, CancellationToken cancellationToken)
     {

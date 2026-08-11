@@ -3190,6 +3190,96 @@ public sealed class ViewModelTests
     }
 
     [TestMethod]
+    [DataRow(0)]
+    [DataRow(20)]
+    [DataRow(21)]
+    [DataRow(200)]
+    [DataRow(201)]
+    public async Task ChatViewModel_SlashMenuShowsEverySkillReturnedByWorker(int skillCount)
+    {
+        var bridge = new FakeWorkerBridge
+        {
+            SkillsResult = CreateSkillsResult(skillCount, generation: 1),
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false);
+
+        vm.ComposerText = "/";
+        await WaitForAsync(() => skillCount == 0
+            ? vm.SlashCommands.Suggestions.Any(item => item.CommandName == "No matching skills")
+            : vm.SlashCommands.Suggestions.Count(static item => item.IsSkill) == skillCount);
+
+        Assert.HasCount(skillCount, vm.SlashCommands.Suggestions.Where(static item => item.IsSkill));
+        Assert.IsFalse(vm.SlashCommands.Suggestions.Any(item => item.CommandName == "More skills available"));
+        Assert.AreEqual(
+            skillCount == 0,
+            vm.SlashCommands.Suggestions.Any(item => item.CommandName == "No matching skills"));
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_TruncatedWorkerCatalogShowsAllReturnedSkillsAndOnlyWorkerStatusRow()
+    {
+        var bridge = new FakeWorkerBridge
+        {
+            SkillsResult = CreateSkillsResult(21, generation: 4, isTruncated: true),
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false);
+
+        vm.ComposerText = "/";
+        await WaitForAsync(() => vm.SlashCommands.Suggestions.Count(static item => item.IsSkill) == 21);
+
+        Assert.IsTrue(vm.SlashCommands.Suggestions.Any(item => item.CommandName == "Skill catalog incomplete"));
+        Assert.IsFalse(vm.SlashCommands.Suggestions.Any(item => item.CommandName == "More skills available"));
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_StaleSkillsRemainVisibleUntilNewGenerationReplacesThem()
+    {
+        var bridge = new FakeWorkerBridge
+        {
+            SkillsResult = CreateSkillsResult(1, generation: 1, isStale: true, namePrefix: "cached"),
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false);
+
+        vm.ComposerText = "/";
+        await WaitForAsync(() => vm.SlashCommands.Suggestions.Any(item => item.CommandName == "/cached-000")
+            && vm.SlashCommands.Suggestions.Any(item => item.CommandName == "Cached skill catalog"));
+        SlashCommandSuggestionViewModel cached = vm.SlashCommands.Suggestions.Single(item => item.CommandName == "/cached-000");
+        Assert.IsFalse(cached.IsAvailable);
+        Assert.IsFalse(cached.IsSelectable);
+        StringAssert.Contains(cached.ScopeLabel, "Cached");
+        Assert.AreEqual(1, bridge.SkillsListCallCount, "The UI must not duplicate the Worker's background refresh.");
+
+        bridge.SkillsResult = CreateSkillsResult(1, generation: 2, namePrefix: "fresh");
+        await bridge.PublishSkillsChangedAsync(new SkillsChangedEvent { Generation = 2 });
+        await WaitForAsync(() => vm.SlashCommands.Suggestions.Any(item => item.CommandName == "/fresh-000"));
+
+        Assert.IsFalse(vm.SlashCommands.Suggestions.Any(item => item.CommandName == "/cached-000"));
+        Assert.IsFalse(vm.SlashCommands.Suggestions.Any(item => item.CommandName == "Cached skill catalog"));
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_RebuildReplacesSkillSelectionSnapshot()
+    {
+        var bridge = new FakeWorkerBridge
+        {
+            SkillsResult = CreateSkillsResult(21, generation: 3),
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false);
+        vm.ComposerText = "/";
+        await WaitForAsync(() => vm.SlashCommands.Suggestions.Count(static item => item.IsSkill) == 21);
+        SlashCommandSuggestionViewModel staleSuggestion = vm.SlashCommands.Suggestions.First(static item => item.IsSkill);
+
+        vm.ComposerText = "/skill-019";
+
+        Assert.AreEqual(1, GetPrivateDictionaryCount(vm, "skillSelections"));
+        await bridge.PublishSkillsChangedAsync(new SkillsChangedEvent { Generation = 4 });
+        await WaitForAsync(() => GetPrivateDictionaryCount(vm, "skillSelections") == 0);
+        staleSuggestion.UseCommand.Execute(null);
+        await WaitForAsync(() => vm.SlashCommands.StatusAnnouncement.Contains("no longer available", StringComparison.Ordinal));
+        Assert.IsFalse(vm.HasPendingSkill);
+    }
+
+    [TestMethod]
     public async Task ChatViewModel_AttachAndStartTurn_CopiesAndClearsAttachments()
     {
         string filePath = Path.GetTempFileName();
@@ -3475,6 +3565,37 @@ public sealed class ViewModelTests
         return (long)field.GetValue(viewModel)!;
     }
 
+    private static int GetPrivateDictionaryCount(ChatViewModel viewModel, string fieldName)
+    {
+        FieldInfo? field = typeof(ChatViewModel).GetField(fieldName, BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.IsNotNull(field);
+        object value = field.GetValue(viewModel)!;
+        return (int)value.GetType().GetProperty("Count")!.GetValue(value)!;
+    }
+
+    private static ListSkillsResult CreateSkillsResult(
+        int count,
+        long generation,
+        bool isStale = false,
+        bool isTruncated = false,
+        string namePrefix = "skill")
+        => new()
+        {
+            Generation = generation,
+            IsStale = isStale,
+            IsTruncated = isTruncated,
+            Skills = Enumerable.Range(0, count)
+                .Select(index => new SkillInfo
+                {
+                    Name = $"{namePrefix}-{index:000}",
+                    Description = $"Description {index}",
+                    Scope = "repo",
+                    Path = $@"C:\skills\{namePrefix}-{index:000}\SKILL.md",
+                    Enabled = index % 5 != 0,
+                })
+                .ToArray(),
+        };
+
     private static void ApplyRateLimitsPush(
         ChatViewModel viewModel,
         RateLimitsResult result,
@@ -3626,7 +3747,7 @@ public sealed class ViewModelTests
 
         public event Func<RateLimitsResult, Task>? RateLimitsChanged;
 
-        public event Func<Task>? SkillsChanged;
+        public event Func<SkillsChangedEvent, Task>? SkillsChanged;
 
         public ListModelsResult ModelListResult { get; set; } = new();
 
@@ -3648,6 +3769,10 @@ public sealed class ViewModelTests
 
         public ListSkillsResult SkillsResult { get; set; } = new() { IsSupported = true };
 
+        public Func<int, bool, Task<ListSkillsResult>>? SkillsListHandler { get; set; }
+
+        public int SkillsListCallCount { get; private set; }
+
         public Func<int, Task<RateLimitsResult>>? RateLimitHandler { get; set; }
 
         public Exception? ResolveApprovalException { get; set; }
@@ -3665,8 +3790,8 @@ public sealed class ViewModelTests
         public Task PublishRateLimitsAsync(RateLimitsResult result)
             => RateLimitsChanged?.Invoke(result) ?? Task.CompletedTask;
 
-        public Task PublishSkillsChangedAsync()
-            => SkillsChanged?.Invoke() ?? Task.CompletedTask;
+        public Task PublishSkillsChangedAsync(SkillsChangedEvent? value = null)
+            => SkillsChanged?.Invoke(value ?? new SkillsChangedEvent()) ?? Task.CompletedTask;
 
         public Task<WorkerStatus> ConnectAsync(string workingDirectory, bool experimentalApi, CancellationToken cancellationToken)
             => Task.FromResult(new WorkerStatus { State = WorkerConnectionState.Ready });
@@ -3756,7 +3881,10 @@ public sealed class ViewModelTests
             => Task.FromResult(new McpServerListResult());
 
         public Task<ListSkillsResult> ListSkillsAsync(bool forceReload, CancellationToken cancellationToken)
-            => Task.FromResult(SkillsResult);
+        {
+            SkillsListCallCount++;
+            return SkillsListHandler?.Invoke(SkillsListCallCount, forceReload) ?? Task.FromResult(SkillsResult);
+        }
 
         public Task<UploadFeedbackResult> UploadFeedbackAsync(UploadFeedbackRequest request, CancellationToken cancellationToken)
             => Task.FromResult(new UploadFeedbackResult { ThreadId = request.ThreadId });

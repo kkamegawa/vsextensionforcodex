@@ -1941,7 +1941,13 @@ public sealed class CodexSessionServiceTests
     }
 
     private static CodexSessionService CreateService()
-        => new(new ApprovalPolicyEngine(new PathAccessPolicy()), new SecretRedactor());
+        => new(
+            new ApprovalPolicyEngine(new PathAccessPolicy()),
+            new SecretRedactor(),
+            null,
+            null,
+            null,
+            new NullSkillCatalogStore());
 
     private static WorkerOptions Options(string? workingDirectory = null, bool experimentalApi = false) => new()
     {
@@ -2007,4 +2013,25 @@ public sealed class CodexSessionServiceTests
     }
 
     private sealed record RecordedRequest(string Method, object? Parameters, TimeSpan Timeout);
+
+    private sealed class NullSkillCatalogStore : ISkillCatalogStore
+    {
+        public ValueTask<ListSkillsResult?> TryReadAsync(
+            string workspace,
+            string? codexVersion,
+            DateTimeOffset now,
+            CancellationToken cancellationToken)
+            => ValueTask.FromResult<ListSkillsResult?>(null);
+
+        public ValueTask WriteAsync(
+            string workspace,
+            string? codexVersion,
+            ListSkillsResult result,
+            DateTimeOffset now,
+            CancellationToken cancellationToken)
+            => ValueTask.CompletedTask;
+
+        public ValueTask DeleteAsync(string workspace, CancellationToken cancellationToken)
+            => ValueTask.CompletedTask;
+    }
 }

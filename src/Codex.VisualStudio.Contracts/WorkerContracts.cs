@@ -554,6 +554,7 @@ public sealed class SkillToolDependencyInfo
 
 public sealed class SkillsChangedEvent
 {
+    public long Generation { get; set; }
 }
 
 public sealed class SkillLoadError
@@ -575,6 +576,10 @@ public sealed class ListSkillsResult : AppServerOperationResult
     public IReadOnlyList<SkillLoadError> Errors { get; set; } = Array.Empty<SkillLoadError>();
 
     public bool IsTruncated { get; set; }
+
+    public bool IsStale { get; set; }
+
+    public long Generation { get; set; }
 }
 
 public sealed class UploadFeedbackRequest
