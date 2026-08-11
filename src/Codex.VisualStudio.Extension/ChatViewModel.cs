@@ -1277,7 +1277,20 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 SelectedThread.Id,
                 text,
                 forcePlanMode: false).ConfigureAwait(false);
-            await bridge.StartTurnAsync(request, lifetime.Token).ConfigureAwait(false);
+            try
+            {
+                await bridge.StartTurnAsync(request, lifetime.Token).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (request.Skill is not null && ex is not OperationCanceledException)
+            {
+                // Worker-side skill identity validation (stale/disabled/removed since selection)
+                // throws before the turn starts. Surface it instead of letting AsyncCommand
+                // swallow it into diagnostics only, and keep the pending chip so the selection
+                // is never silently discarded.
+                await ShowSlashFailureAsync($"The skill could not be started: {ex.Message}").ConfigureAwait(false);
+                return;
+            }
+
             await OnUiAsync(() => ClearSentAttachments(request.Attachments)).ConfigureAwait(false);
             await OnUiAsync(() => ClearSentSkill(request.Skill)).ConfigureAwait(false);
             ConsumeNextTurnSettings(request);
@@ -1720,19 +1733,23 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     }
 
     private Task OnSkillsChangedAsync(SkillsChangedEvent value)
-    {
-        minimumSkillsGeneration = Math.Max(minimumSkillsGeneration, value.Generation);
-        skillsRefreshPending = true;
-        skillsLoadFailure = null;
-        skillsSnapshotExpiresAt = default;
-        if (!string.IsNullOrEmpty(ComposerText) && ComposerText[0] == '/')
+        // Worker notifications arrive on the StreamJsonRpc dispatch thread; mutating
+        // skillsRefreshPending/skillsLoadFailure and rebuilding SlashCommands.Suggestions
+        // from that thread races with LoadSkillsAsync's own OnUiAsync-marshaled writes and
+        // touches Remote UI-bound collections off the UI thread.
+        => OnUiAsync(() =>
         {
-            UpdateComposerSuggestions(ComposerText);
-        }
+            minimumSkillsGeneration = Math.Max(minimumSkillsGeneration, value.Generation);
+            skillsRefreshPending = true;
+            skillsLoadFailure = null;
+            skillsSnapshotExpiresAt = default;
+            if (!string.IsNullOrEmpty(ComposerText) && ComposerText[0] == '/')
+            {
+                UpdateComposerSuggestions(ComposerText);
+            }
 
-        _ = EnsureSkillsLoadedAsync();
-        return Task.CompletedTask;
-    }
+            _ = EnsureSkillsLoadedAsync();
+        });
 
     private static bool SkillMatches(SkillInfo skill, string query)
     {

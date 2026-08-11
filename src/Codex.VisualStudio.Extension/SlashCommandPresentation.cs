@@ -1,5 +1,6 @@
 ﻿using System.Collections.ObjectModel;
 using System.Runtime.Serialization;
+using System.Windows;
 
 namespace Codex.VisualStudio.Extension;
 
@@ -463,7 +464,12 @@ public sealed class SlashCommandSuggestionViewModel
         IsSkill = descriptor.IsSkill;
         ScopeLabel = markdown.ToSafeText(descriptor.ScopeLabel).Trim();
         SelectionId = descriptor.SelectionId;
-        BrandColor = IsSafeBrandColor(descriptor.BrandColor) ? descriptor.BrandColor.ToUpperInvariant() : string.Empty;
+        // "Transparent" (not an empty string) so every row remains a valid BrushConverter
+        // input. High Contrast never honors an app-server-supplied color: it always falls
+        // back to Visual Studio theme resources, so the accent is suppressed entirely.
+        BrandColor = !SystemParameters.HighContrast && IsSafeBrandColor(descriptor.BrandColor)
+            ? descriptor.BrandColor.ToUpperInvariant()
+            : "Transparent";
         UnavailableReason = markdown.ToSafeText(descriptor.UnavailableReason).Trim();
         OptionDescriptors = descriptor.Options ?? [];
         UseCommand = new AsyncCommand(UseAsync, () => IsAvailable && IsSelectable);
