@@ -1,6 +1,7 @@
 name: codex-visual-studio-extension
 version: 0.1.0
-description: Agent assets for building a Codex integration extension for Visual Studio.
+description: Agent assets for building a Codex integration extension for Visual 
+  Studio.
 includes: auto
 target:
   - codex
@@ -10,3 +11,6 @@ dependencies:
   apm:
     - github/awesome-copilot/agents/api-architect.agent.md
   mcp: []
+devDependencies:
+  apm:
+    - tfsugjp/skills/plugins/github-plan-wiki
