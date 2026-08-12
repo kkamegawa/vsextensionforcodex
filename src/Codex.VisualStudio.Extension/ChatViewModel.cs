@@ -3319,10 +3319,21 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         }
     }
 
-    private Task OnContextCompactedAsync(ContextCompactionEvent value)
-        => value.IsCompleted
-            ? ShowSlashStatusAsync("Context compaction completed.")
-            : Task.CompletedTask;
+    private async Task OnContextCompactedAsync(ContextCompactionEvent value)
+    {
+        if (!value.IsCompleted)
+        {
+            return;
+        }
+
+        await ShowSlashStatusAsync("Context compaction completed.").ConfigureAwait(false);
+
+        // Compaction consumes model calls but the app-server does not always follow it with a
+        // turn/completed notification (see WorkerRpcService.PublishContextCompactedAsync). Treat
+        // completed compaction as its own usage-consumption boundary so the header and flyout do
+        // not go stale until the next turn or TTL-driven refresh.
+        await RefreshUsageAsync(force: true).ConfigureAwait(false);
+    }
 
     private Task OnReviewModeChangedAsync(ReviewModeEvent value)
     {

@@ -3084,6 +3084,44 @@ public sealed class ViewModelTests
     }
 
     [TestMethod]
+    public async Task ChatViewModel_ContextCompacted_ForcesUsageRefreshWithinTtl()
+    {
+        DateTimeOffset now = new(2026, 8, 12, 1, 0, 30, TimeSpan.Zero);
+        var bridge = new FakeWorkerBridge { RateLimitsResult = UsageResult(20) };
+        using var vm = new ChatViewModel(bridge, autoConnect: false, utcNow: () => now);
+        await bridge.PublishAccountAsync(new AccountStatus { State = AccountState.SignedIn });
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready });
+
+        string initialUpdatedText = vm.Usage.UpdatedText;
+        Assert.AreEqual(1, bridge.RateLimitCallCount);
+        Assert.AreEqual("80% remaining", vm.Usage.ToolbarText);
+
+        bridge.RateLimitsResult = UsageResult(60);
+        now = now.AddSeconds(40);
+        await RaiseContextCompactedAsync(vm, new ContextCompactionEvent { IsCompleted = true });
+
+        Assert.AreEqual(2, bridge.RateLimitCallCount);
+        Assert.AreEqual("40% remaining", vm.Usage.ToolbarText);
+        Assert.AreNotEqual(initialUpdatedText, vm.Usage.UpdatedText);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_ContextCompacted_InProgressDoesNotRefreshUsage()
+    {
+        var bridge = new FakeWorkerBridge { RateLimitsResult = UsageResult(20) };
+        using var vm = new ChatViewModel(bridge, autoConnect: false);
+        await bridge.PublishAccountAsync(new AccountStatus { State = AccountState.SignedIn });
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready });
+        Assert.AreEqual(1, bridge.RateLimitCallCount);
+
+        bridge.RateLimitsResult = UsageResult(60);
+        await RaiseContextCompactedAsync(vm, new ContextCompactionEvent { IsCompleted = false });
+
+        Assert.AreEqual(1, bridge.RateLimitCallCount);
+        Assert.AreEqual("80% remaining", vm.Usage.ToolbarText);
+    }
+
+    [TestMethod]
     public async Task ChatViewModel_UsagePopupRefreshesOnlyAfterTtl()
     {
         DateTimeOffset now = DateTimeOffset.UnixEpoch;
@@ -3715,6 +3753,16 @@ public sealed class ViewModelTests
             "OnConversationEventAsync",
             BindingFlags.NonPublic | BindingFlags.Instance)
             ?? throw new InvalidOperationException("Could not find OnConversationEventAsync.");
+
+        return (Task)method.Invoke(viewModel, [value])!;
+    }
+
+    private static Task RaiseContextCompactedAsync(ChatViewModel viewModel, ContextCompactionEvent value)
+    {
+        MethodInfo method = typeof(ChatViewModel).GetMethod(
+            "OnContextCompactedAsync",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("Could not find OnContextCompactedAsync.");
 
         return (Task)method.Invoke(viewModel, [value])!;
     }
