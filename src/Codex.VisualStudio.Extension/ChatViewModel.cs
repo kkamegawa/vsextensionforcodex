@@ -3319,10 +3319,21 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         }
     }
 
-    private Task OnContextCompactedAsync(ContextCompactionEvent value)
-        => value.IsCompleted
-            ? ShowSlashStatusAsync("Context compaction completed.")
-            : Task.CompletedTask;
+    private async Task OnContextCompactedAsync(ContextCompactionEvent value)
+    {
+        if (!value.IsCompleted)
+        {
+            return;
+        }
+
+        await ShowSlashStatusAsync("Context compaction completed.").ConfigureAwait(false);
+
+        // Compaction consumes model calls but the app-server does not always follow it with a
+        // turn/completed notification (see WorkerRpcService.PublishContextCompactedAsync). Treat
+        // completed compaction as its own usage-consumption boundary so the header and flyout do
+        // not go stale until the next turn or TTL-driven refresh.
+        await RefreshUsageAsync(force: true).ConfigureAwait(false);
+    }
 
     private Task OnReviewModeChangedAsync(ReviewModeEvent value)
     {
@@ -3367,8 +3378,10 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         Usage.Update(value, refreshedAt, markdown);
     }
 
-    private Task OnConversationEventAsync(ConversationEvent value)
-        => OnUiAsync(() =>
+    private async Task OnConversationEventAsync(ConversationEvent value)
+    {
+        bool isTurnCompleted = value.Kind == ConversationEventKind.TurnCompleted;
+        await OnUiAsync(() =>
         {
             // Plan events carry a full replacement payload — handle separately to avoid text append.
             if (value.Kind == ConversationEventKind.PlanUpdated)
@@ -3486,7 +3499,16 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 existing.IsTruncated |= value.Truncated;
                 existing.OverflowFile = value.OverflowFile ?? existing.OverflowFile;
             }
-        });
+        }).ConfigureAwait(false);
+
+        // A completed turn is an explicit usage-consumption boundary. Refresh after the
+        // transcript projection so the header and flyout show the post-turn snapshot without
+        // blocking UI-bound collection updates on the rate-limit RPC.
+        if (isTurnCompleted)
+        {
+            await RefreshUsageAsync(force: true).ConfigureAwait(false);
+        }
+    }
 
     private string AppendAccumulatedText(ConversationEvent value, string text)
     {

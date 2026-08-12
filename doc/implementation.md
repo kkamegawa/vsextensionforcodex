@@ -136,7 +136,11 @@ F5 flow so the deployed assembly and packaged resources come from one determinis
 the Worker boundary. `UsagePresentation` selects only an unambiguous limit, computes remaining
 percentage, and creates the bounded strings serialized by Remote UI. `ChatViewModel` owns the
 connection generation, push version, 60-second TTL, and refresh gate so a stale read cannot replace
-a newer push or survive lifecycle invalidation.
+a newer push or survive lifecycle invalidation. After each `TurnCompleted` conversation event and
+each completed `context/compacted` event, the view model awaits a forced rate-limit read after
+completing the existing transcript/status projection; this bypasses the TTL while preserving the
+last successful snapshot when the read fails. A turn that ends via `Degraded` (no `TurnCompleted`)
+is not a forced-refresh trigger; the last successful snapshot remains visible until reconnection.
 
 `ExternalLinkOpener` maps commands to two compile-time destinations and validates their exact HTTPS
 host and path before shell activation. No arbitrary URI crosses the view-model command boundary and

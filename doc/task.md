@@ -471,3 +471,41 @@ theme-resource pairs and both inheritance paths.
 - Validation: focused UI test compilation was blocked before source compilation because the
   sandbox denied access to the local Windows SDK discovery directory.
 - Formatting: modified XAML, C#, and Markdown files retain UTF-8 BOM and CRLF line endings.
+
+### 2026-08-12: Refresh usage after conversation turn completion
+
+Added the approved turn-completion usage refresh. The Extension now forces the existing
+`worker/account/rateLimits` read after every `TurnCompleted` event, after the transcript projection
+has finished. `TurnCompleted` covers turns the app-server reports as interrupted (it still arrives
+as `turn/completed`); a transport-level failure instead reports `Degraded`, under which no forced
+read is attempted (see the ADR-005 amendment). Existing connection-generation, TTL, push-version,
+cancellation, and last-good-snapshot behavior remain unchanged; no Worker, RPC contract, XAML, or
+package changes are required.
+
+- Tests: added UI regression coverage for TTL-bypassing refresh, unavailable-account no-op behavior,
+  and retry after a failed post-turn read.
+- Validation: CI (`ci.yml`, commit `f04cfd0`) built the solution in Release with zero warnings and
+  ran the full `Codex.VisualStudio.Core.Tests` and `Codex.VisualStudio.Ui.Tests` suites, not only the
+  focused usage/turn subset reported at design time. Result: `build` check SUCCESS. The Visual Studio
+  Experimental Instance check (real turn completion, header/popup/updated-time sync) remains to be
+  run interactively and is tracked as its own sub-issue rather than closed by this entry.
+- Tracking: no parent/sub-issue set was created before this branch was pushed, so the branch name
+  omits an issue number (`codex/feature-refresh-usage-after-turn` instead of
+  `codex/feature-<parent-issue>-refresh-usage-after-turn` per the original plan). A parent issue and
+  sub-issues were opened retroactively and linked from PR #142; the branch itself was not renamed to
+  avoid disrupting the open PR.
+
+### 2026-08-12: Also refresh usage after context compaction
+
+Code review of PR #142 found that `/compact` consumes model calls but does not always raise
+`TurnCompleted` — the app-server may report completion only through `context/compacted`
+(`WorkerRpcService.PublishContextCompactedAsync` already special-cases this for `Ready` recovery).
+`ChatViewModel.OnContextCompactedAsync` now also forces a `worker/account/rateLimits` read when
+`IsCompleted` is true, using the same post-projection ordering and `force: true` gate as the
+turn-completion path. In-progress compaction events remain a no-op.
+
+- Tests: added `ChatViewModel_ContextCompacted_ForcesUsageRefreshWithinTtl` and
+  `ChatViewModel_ContextCompacted_InProgressDoesNotRefreshUsage`.
+- Validation: `dotnet build CodexForVisualStudio.slnx -c Release` — 0 warnings, 0 errors. Full suite
+  run locally: `Codex.VisualStudio.Core.Tests` 113/113, `Codex.VisualStudio.Ui.Tests` 285/285.
+  Visual Studio Experimental Instance check still pending (tracked in the sub-issue above).
