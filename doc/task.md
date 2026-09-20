@@ -4,13 +4,13 @@
 
 ## 2026-09-13: Codex App Server update and remote connection (approved plan)
 
-- [ ] Phase 1: update the CLI 0.154.0 contract baseline, schema cache metadata, exact request routing, capability probes, and connection-generation state.
+- [ ] Phase 1: target the CLI 0.155.1 contract, compare 0.154.0 and 0.155.1 standard/experimental schemas, update schema cache metadata, exact request routing, capability probes, and connection-generation state.
 - [ ] Phase 2: add explicitly enabled secure WebSocket transport for already running remote servers, authentication, health distinction, and bounded reconnect.
-- [ ] Phase 3: add component-wise local/server root mapping and connection/account/workspace state partitioning.
-- [ ] Phase 4: retain in-memory drafts, reconnect and page history, merge notifications, and prevent uncertain mutation replay.
-- [ ] Phase 5: raise the Worker contract for questions, permissions, and MCP forms/authentication with safe secret handling.
-- [ ] Phase 6: add plan/status/artifact rendering, model catalog capabilities, explicit `thread/shellCommand`, and local sandbox setup status.
-- [ ] Phase 7: run contract, race, transport, path, interaction, UI accessibility, build, VSIX, and Experimental Instance validation.
+- [ ] Phase 3: add component-wise local/server root mapping and connection/account/authentication-principal/workspace state partitioning, including invalidation of the previous owner's session, WebSocket state, model catalog, caches, and late events.
+- [ ] Phase 4: retain in-memory drafts, reconnect and page history plus stored attachments, merge notifications, and prevent uncertain message/approval/attachment mutation replay.
+- [ ] Phase 5: raise the Worker contract for questions, permissions, native user verification, MCP forms/authentication and OAuth revocation recovery with safe secret/proof handling.
+- [ ] Phase 6: add plan/status/artifact and stored attachment rendering, model catalog capabilities, explicit `thread/shellCommand`, and local sandbox setup status.
+- [ ] Phase 7: run 0.154.0-to-0.155.1 contract-diff, race, auth-owner switch, transport, path, stored attachment, verification/MCP reauthentication, UI accessibility, build, VSIX, and Experimental Instance validation.
 - [ ] Tracking: parent Issue and seven linked child Issues; English/Japanese Wiki plan and Home indexes.
 
 ## 2026-08-11: Complete skill catalog and persistent cache (Issue #140, ADR-010)
