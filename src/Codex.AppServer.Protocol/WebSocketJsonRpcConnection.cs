@@ -39,9 +39,11 @@ public sealed class WebSocketJsonRpcConnection : IJsonRpcConnection
             throw new ArgumentException("The endpoint must use ws or wss.", nameof(endpoint));
         }
 
-        if (string.IsNullOrWhiteSpace(bearerToken))
+        WebSocketTransportValidation validation = new WebSocketTransportSecurityPolicy()
+            .Validate(enabled: true, endpoint, bearerToken);
+        if (!validation.IsAllowed)
         {
-            throw new ArgumentException("A bearer token is required.", nameof(bearerToken));
+            throw new ArgumentException(validation.Reason, nameof(endpoint));
         }
 
         this.endpoint = endpoint;
