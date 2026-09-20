@@ -14,7 +14,7 @@
   Worker が `codex app-server` を spawn・仲介する。
 - Extension と `codex app-server` は stdio（JSONL）で通信する。
 
-The publisher is `kazushikamegawa`. The VSIX identifier is `Kkamegawa.CodexForVisualStudio`.
+The publisher is `kkamegawa` (see CLAUDE.md for the current VSIX identity string).
 
 ## Implemented Behavior
 
@@ -104,9 +104,13 @@ The Extension OOP process and Visual Studio run on different runtimes:
 
 ### Duplicate deployment diagnosis
 
-The active extension identity must be `Kkamegawa.CodexForVisualStudio` with publisher
-`kazushikamegawa`. The former identity `CodexForVisualStudio.kkamegawa` and former publisher
-`kkamegawa` must not appear in the Experimental Instance metadata cache or hot-load registration.
+The active extension identity and publisher must match `ExtensionIdentity.Id` / `ExtensionIdentity.PublisherName`
+in `CodexExtension.cs` (see CLAUDE.md for the current values) exactly, everywhere: the packaged
+manifest, diagnostics, and any Experimental Instance metadata cache or hot-load registration. Any
+deployment reporting a different identity or publisher string is stale — this codebase's identity
+and publisher have changed more than once (most recently to align with the `kkamegawa` Marketplace
+publisher), and a leftover deployment from a prior value is the recurring failure mode described
+below.
 
 If both identities are present, a command contributed by the stale deployment can open a tool
 window backed by an older assembly. Slash-command candidates are then unavailable even though the
@@ -132,7 +136,11 @@ F5 flow so the deployed assembly and packaged resources come from one determinis
 the Worker boundary. `UsagePresentation` selects only an unambiguous limit, computes remaining
 percentage, and creates the bounded strings serialized by Remote UI. `ChatViewModel` owns the
 connection generation, push version, 60-second TTL, and refresh gate so a stale read cannot replace
-a newer push or survive lifecycle invalidation.
+a newer push or survive lifecycle invalidation. After each `TurnCompleted` conversation event and
+each completed `context/compacted` event, the view model awaits a forced rate-limit read after
+completing the existing transcript/status projection; this bypasses the TTL while preserving the
+last successful snapshot when the read fails. A turn that ends via `Degraded` (no `TurnCompleted`)
+is not a forced-refresh trigger; the last successful snapshot remains visible until reconnection.
 
 `ExternalLinkOpener` maps commands to two compile-time destinations and validates their exact HTTPS
 host and path before shell activation. No arbitrary URI crosses the view-model command boundary and
@@ -140,3 +148,51 @@ diagnostics do not include destination text. The raw embedded XAML provides the 
 Usage popup with themed WPF controls, cyclic navigation after focus enters the popup, host- and
 popup-level Escape commands, and UI Automation metadata. Raw Remote UI cannot execute VS-side
 `Keyboard.Focus` from `Popup.Opened`; guaranteed focus transfer requires an in-process WPF host.
+
+## Issue #140 unified slash menu
+
+The Worker/Extension contract is v15. `skills/list` is cached for 60 seconds with `TimeProvider`,
+single-flight locking, generation invalidation, and sticky `-32601` probing. Before a turn starts,
+the Worker force-reloads the catalog and requires an enabled exact `(Name, Scope, Path)` identity;
+the app-server receives only the structured skill item `{ type, name, path }`.
+
+The Remote UI now uses one inline virtualized ListBox (built-in cap 8, every skill accepted by the
+Worker's safety-bounded catalog) and a separate one-slot PendingSkill chip. Selecting a skill clears
+only the slash query and leaves the composer visible. Ready skill-only turns are allowed;
+Busy/WaitingForApproval selection and removal remain available, but pending skills disable
+send/steer. The chip is cleared only after a matching successful `turn/start`. Brand color and the
+default prompt are bounded and display-only; the default prompt requires an explicit empty-composer
+action. Icon RPC/cache is still gated behind the Remote UI spike and therefore uses fixed-glyph
+fallback.
+
+Not yet implemented against `doc/design.md`:
+
+- `SkillInfo.ToolDependencies` and `SkillInfo.HasIconSmall` are parsed, bounded, and carried across
+  the v15 contract, but no Remote UI surface consumes them; the dependency badge/tooltip described
+  in the design is still outstanding. Until it lands, these two fields are contract-only data,
+  which is the pattern ADR-008 rejected, so they must either gain their surface or be removed.
+- The brand-color accent binds `#RRGGBB` straight to a `Border.Background` with no High Contrast
+  branch, so a High Contrast theme still renders the app-server colour instead of falling back to
+  Visual Studio theme resources as ADR-009 requires.
+- A `turn/start` rejected by Worker-side skill identity validation surfaces only through
+  `ExtensionDiagnostics`, because `AsyncCommand` swallows the exception. The user's message is
+  already in the transcript and the chip is retained, but no failure text is shown.
+
+ADR-010 adds a Worker-owned persistent stale-while-revalidate catalog snapshot under the local
+application data profile. The cache is keyed by a workspace SHA-256, expires after 24 hours, is
+limited to 4 MiB per workspace and 64 MiB overall, and is written atomically under a bounded
+cross-process lock. It contains only validated catalog display/identity fields; default prompts,
+dependency values, errors, raw app-server JSON, icon paths, and Remote UI selection IDs are not
+persisted. A cached catalog is never authoritative: it is shown as stale and non-selectable until
+the live generation is received, and `turn/start` always performs a live force reload and exact
+identity validation.
+
+Validation on 2026-08-11:
+
+- Debug and Release VSIX builds: 0 warnings, 0 errors.
+- Core tests: 113 passed; UI tests: 279 passed.
+- Debug Extension DLL SHA-256: `04B6F6BED4C2983EC241F1F86735505B0FAA47F4B0DC7F469F4114D15D7D2BE1`.
+- Debug VSIX SHA-256: `58E3AC9F0B7C8B16C60B8A97531D97CAC22DA1B21895BA63093AA05C672E80DE`.
+- Release Extension DLL SHA-256: `7511CD158CD3DCD122E5A4938349935EAE819806F1A3722C470F192AD5C66E7C`.
+- Release VSIX SHA-256: `260191253EA4AB66BDC0C83A621D8AC9E4D7274158B486138DB2731E765E6249`.
+- Embedded `ChatToolWindowContent.xaml` SHA-256 matches the source: `93AD99EE57AFB1D8A09C98071D69CB6D231D8FBBBB6345558876540076D726C0`.

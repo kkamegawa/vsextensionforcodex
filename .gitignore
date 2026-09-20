@@ -34,6 +34,7 @@ packages/
 project.assets.json
 project.nuget.cache
 *.binlog
+extended.xml
 
 # Rider / JetBrains
 .idea/

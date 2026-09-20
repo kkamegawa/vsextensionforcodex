@@ -18,7 +18,122 @@ dependencies:
     .codex/agents/api-architect.toml: sha256:a067567cb324a19484096a72d29f85bc00affebb74a07a6be8b2908c18f22e85
     .github/agents/api-architect.agent.md: sha256:0a503c0c0d18b1e78645262e12d70857978f14463e1bbb1db8fc80451ed50e41
   content_hash: sha256:9737dd83c02900b1f1f4ed0ca6aeb438f90a1d36d20272f83cf4d52fe270e2b1
+- repo_url: tfsugjp/skills
+  name: github-plan-wiki
+  host: github.com
+  resolved_commit: 73b3e0070c901ebb34c0cb17a42352dccfd0b0e3
+  version: 0.1.0
+  virtual_path: plugins/github-plan-wiki
+  is_virtual: true
+  package_type: marketplace_plugin
+  deployed_files:
+  - .agents/skills/github-plan-issues
+  - .agents/skills/github-plan-issues/SKILL.md
+  - .agents/skills/github-plan-issues/references/gh-subissue-commands.md
+  - .agents/skills/github-wiki-plan
+  - .agents/skills/github-wiki-plan/SKILL.md
+  - .agents/skills/github-wiki-plan/templates/home.md
+  - .agents/skills/github-wiki-plan/templates/home_ja.md
+  - .agents/skills/github-wiki-plan/templates/plan-page.md
+  - .claude/skills/github-plan-issues
+  - .claude/skills/github-plan-issues/SKILL.md
+  - .claude/skills/github-plan-issues/references/gh-subissue-commands.md
+  - .claude/skills/github-wiki-plan
+  - .claude/skills/github-wiki-plan/SKILL.md
+  - .claude/skills/github-wiki-plan/templates/home.md
+  - .claude/skills/github-wiki-plan/templates/home_ja.md
+  - .claude/skills/github-wiki-plan/templates/plan-page.md
+  deployed_file_hashes:
+    .agents/skills/github-plan-issues/SKILL.md: sha256:24c4e18bcc0a4dd9f85d1d5b7562873514c5335520333747e34e963f8c19163c
+    .agents/skills/github-plan-issues/references/gh-subissue-commands.md: sha256:abde9e32cde71880cc00aeaefcb5471ab67d91a047f564017c56eab3afaa315e
+    .agents/skills/github-wiki-plan/SKILL.md: sha256:d02ae81606906af07f921bc697f2d0f07895ac2203278b151995c3ded5212a36
+    .agents/skills/github-wiki-plan/templates/home.md: sha256:29b0801f3f5683e8274dbb8dfca1d8c9d1d05883088394452a9c72b22f8ce1a3
+    .agents/skills/github-wiki-plan/templates/home_ja.md: sha256:d4ac677bca804a85e507b297fbec4be0b8ec029e1529d22045ac6e2b86a0d6aa
+    .agents/skills/github-wiki-plan/templates/plan-page.md: sha256:71f8c24b52302123e62b9fcaed5f94eecd248b90e0f5f85f67a9931a4ced5c98
+    .claude/skills/github-plan-issues/SKILL.md: sha256:24c4e18bcc0a4dd9f85d1d5b7562873514c5335520333747e34e963f8c19163c
+    .claude/skills/github-plan-issues/references/gh-subissue-commands.md: sha256:abde9e32cde71880cc00aeaefcb5471ab67d91a047f564017c56eab3afaa315e
+    .claude/skills/github-wiki-plan/SKILL.md: sha256:d02ae81606906af07f921bc697f2d0f07895ac2203278b151995c3ded5212a36
+    .claude/skills/github-wiki-plan/templates/home.md: sha256:29b0801f3f5683e8274dbb8dfca1d8c9d1d05883088394452a9c72b22f8ce1a3
+    .claude/skills/github-wiki-plan/templates/home_ja.md: sha256:d4ac677bca804a85e507b297fbec4be0b8ec029e1529d22045ac6e2b86a0d6aa
+    .claude/skills/github-wiki-plan/templates/plan-page.md: sha256:71f8c24b52302123e62b9fcaed5f94eecd248b90e0f5f85f67a9931a4ced5c98
+  content_hash: sha256:c32a2d7f50ccd2b06ba3437b0e8478dcf27b582751904ef779d2bb8463d576b9
+  is_dev: true
+  discovered_via: tfsugjp-agent-skills
+  marketplace_plugin_name: github-plan-wiki
+  declared_license: MIT
 deployments:
+- kind: project-relative
+  target: agents
+  value: .agents/skills/github-plan-issues
+  runtime: null
+  scope: project
+  owners:
+  - tfsugjp/skills/plugins/github-plan-wiki
+  active_owner: tfsugjp/skills/plugins/github-plan-wiki
+  content_hash: null
+- kind: project-relative
+  target: agents
+  value: .agents/skills/github-plan-issues/SKILL.md
+  runtime: null
+  scope: project
+  owners:
+  - tfsugjp/skills/plugins/github-plan-wiki
+  active_owner: tfsugjp/skills/plugins/github-plan-wiki
+  content_hash: sha256:24c4e18bcc0a4dd9f85d1d5b7562873514c5335520333747e34e963f8c19163c
+- kind: project-relative
+  target: agents
+  value: .agents/skills/github-plan-issues/references/gh-subissue-commands.md
+  runtime: null
+  scope: project
+  owners:
+  - tfsugjp/skills/plugins/github-plan-wiki
+  active_owner: tfsugjp/skills/plugins/github-plan-wiki
+  content_hash: sha256:abde9e32cde71880cc00aeaefcb5471ab67d91a047f564017c56eab3afaa315e
+- kind: project-relative
+  target: agents
+  value: .agents/skills/github-wiki-plan
+  runtime: null
+  scope: project
+  owners:
+  - tfsugjp/skills/plugins/github-plan-wiki
+  active_owner: tfsugjp/skills/plugins/github-plan-wiki
+  content_hash: null
+- kind: project-relative
+  target: agents
+  value: .agents/skills/github-wiki-plan/SKILL.md
+  runtime: null
+  scope: project
+  owners:
+  - tfsugjp/skills/plugins/github-plan-wiki
+  active_owner: tfsugjp/skills/plugins/github-plan-wiki
+  content_hash: sha256:d02ae81606906af07f921bc697f2d0f07895ac2203278b151995c3ded5212a36
+- kind: project-relative
+  target: agents
+  value: .agents/skills/github-wiki-plan/templates/home.md
+  runtime: null
+  scope: project
+  owners:
+  - tfsugjp/skills/plugins/github-plan-wiki
+  active_owner: tfsugjp/skills/plugins/github-plan-wiki
+  content_hash: sha256:29b0801f3f5683e8274dbb8dfca1d8c9d1d05883088394452a9c72b22f8ce1a3
+- kind: project-relative
+  target: agents
+  value: .agents/skills/github-wiki-plan/templates/home_ja.md
+  runtime: null
+  scope: project
+  owners:
+  - tfsugjp/skills/plugins/github-plan-wiki
+  active_owner: tfsugjp/skills/plugins/github-plan-wiki
+  content_hash: sha256:d4ac677bca804a85e507b297fbec4be0b8ec029e1529d22045ac6e2b86a0d6aa
+- kind: project-relative
+  target: agents
+  value: .agents/skills/github-wiki-plan/templates/plan-page.md
+  runtime: null
+  scope: project
+  owners:
+  - tfsugjp/skills/plugins/github-plan-wiki
+  active_owner: tfsugjp/skills/plugins/github-plan-wiki
+  content_hash: sha256:71f8c24b52302123e62b9fcaed5f94eecd248b90e0f5f85f67a9931a4ced5c98
 - kind: project-relative
   target: claude
   value: .claude/agents/api-architect.md
@@ -28,6 +143,78 @@ deployments:
   - github/awesome-copilot/agents/api-architect.agent.md
   active_owner: github/awesome-copilot/agents/api-architect.agent.md
   content_hash: sha256:0a503c0c0d18b1e78645262e12d70857978f14463e1bbb1db8fc80451ed50e41
+- kind: project-relative
+  target: claude
+  value: .claude/skills/github-plan-issues
+  runtime: null
+  scope: project
+  owners:
+  - tfsugjp/skills/plugins/github-plan-wiki
+  active_owner: tfsugjp/skills/plugins/github-plan-wiki
+  content_hash: null
+- kind: project-relative
+  target: claude
+  value: .claude/skills/github-plan-issues/SKILL.md
+  runtime: null
+  scope: project
+  owners:
+  - tfsugjp/skills/plugins/github-plan-wiki
+  active_owner: tfsugjp/skills/plugins/github-plan-wiki
+  content_hash: sha256:24c4e18bcc0a4dd9f85d1d5b7562873514c5335520333747e34e963f8c19163c
+- kind: project-relative
+  target: claude
+  value: .claude/skills/github-plan-issues/references/gh-subissue-commands.md
+  runtime: null
+  scope: project
+  owners:
+  - tfsugjp/skills/plugins/github-plan-wiki
+  active_owner: tfsugjp/skills/plugins/github-plan-wiki
+  content_hash: sha256:abde9e32cde71880cc00aeaefcb5471ab67d91a047f564017c56eab3afaa315e
+- kind: project-relative
+  target: claude
+  value: .claude/skills/github-wiki-plan
+  runtime: null
+  scope: project
+  owners:
+  - tfsugjp/skills/plugins/github-plan-wiki
+  active_owner: tfsugjp/skills/plugins/github-plan-wiki
+  content_hash: null
+- kind: project-relative
+  target: claude
+  value: .claude/skills/github-wiki-plan/SKILL.md
+  runtime: null
+  scope: project
+  owners:
+  - tfsugjp/skills/plugins/github-plan-wiki
+  active_owner: tfsugjp/skills/plugins/github-plan-wiki
+  content_hash: sha256:d02ae81606906af07f921bc697f2d0f07895ac2203278b151995c3ded5212a36
+- kind: project-relative
+  target: claude
+  value: .claude/skills/github-wiki-plan/templates/home.md
+  runtime: null
+  scope: project
+  owners:
+  - tfsugjp/skills/plugins/github-plan-wiki
+  active_owner: tfsugjp/skills/plugins/github-plan-wiki
+  content_hash: sha256:29b0801f3f5683e8274dbb8dfca1d8c9d1d05883088394452a9c72b22f8ce1a3
+- kind: project-relative
+  target: claude
+  value: .claude/skills/github-wiki-plan/templates/home_ja.md
+  runtime: null
+  scope: project
+  owners:
+  - tfsugjp/skills/plugins/github-plan-wiki
+  active_owner: tfsugjp/skills/plugins/github-plan-wiki
+  content_hash: sha256:d4ac677bca804a85e507b297fbec4be0b8ec029e1529d22045ac6e2b86a0d6aa
+- kind: project-relative
+  target: claude
+  value: .claude/skills/github-wiki-plan/templates/plan-page.md
+  runtime: null
+  scope: project
+  owners:
+  - tfsugjp/skills/plugins/github-plan-wiki
+  active_owner: tfsugjp/skills/plugins/github-plan-wiki
+  content_hash: sha256:71f8c24b52302123e62b9fcaed5f94eecd248b90e0f5f85f67a9931a4ced5c98
 - kind: project-relative
   target: codex
   value: .codex/agents/api-architect.toml

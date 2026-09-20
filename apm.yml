@@ -10,3 +10,6 @@ dependencies:
   apm:
     - github/awesome-copilot/agents/api-architect.agent.md
   mcp: []
+devDependencies:
+  apm:
+    - tfsugjp/skills/plugins/github-plan-wiki

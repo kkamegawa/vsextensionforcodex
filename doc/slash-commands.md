@@ -3,9 +3,9 @@
 ## Scope
 
 The Visual Studio extension recognizes Codex commands only when `/` is the first
-input character. Commands are resolved by an allowlisted catalog and are never
-sent to the model as prompt text. A leading `//` escapes command mode and sends
-one literal leading slash.
+input character. Built-in commands and structured skills share one inline,
+virtualized suggestion list. Built-in commands are never sent to the model as
+prompt text. A leading `//` escapes command mode and sends one literal leading slash.
 
 The implementation is tracked by GitHub Issue #46 and its four sub-issues.
 
@@ -54,12 +54,24 @@ turn's thread, the selected thread, and the session queue, continues past a
 failed command, and pauses as soon as a queued command starts another turn.
 
 Queues are memory-only. They are canceled on disconnect, Worker restart, or
-confirmed thread removal. A slash command is never sent through `turn/steer`;
-the existing steering behavior remains unchanged for normal prompts.
+confirmed thread removal. A built-in slash command is never sent through
+`turn/steer`; selected skills are held in one independent chip and sent only as
+the structured `turn/start` input item `{ type: "skill", name, path }`. Scope and
+raw path are used for Worker validation and are not bound to Remote UI. While a
+skill chip is pending, send/steer is disabled until the chip is removed or its
+turn starts successfully.
+
+The live app-server `skills/list` response is the skill catalog system of record.
+The Worker keeps a 60-second memory snapshot and a versioned, per-workspace
+persistent stale-while-revalidate snapshot. A persisted hit can populate
+non-selectable `Cached - refreshing` rows while one live refresh runs. It never
+authorizes a turn: `turn/start` force reloads the live catalog and requires an
+enabled exact `Name + Scope + Path` identity.
 
 ## Worker contract
 
-Worker contract version 9 adds the validated connected Codex version to
+Worker contract version 15 adds structured skill invocation, catalog freshness,
+invalidation, and exact live identity validation. Version 9 added the validated connected Codex version to
 `WorkerStatus` for Remote UI status presentation. Version 8 added typed DTOs
 and RPC methods for compact, review, fork, goals, MCP status, feedback, and
 rate limits. `StartTurnRequest` includes
@@ -91,10 +103,15 @@ the preview and write.
 
 ## Remote UI and safety
 
-The composer uses an inline, height-bounded suggestion list rather than a
-popup. Selecting a command creates a chip and leaves free-form arguments in a
-separate text box, avoiding asynchronous `ComposerText` echo and caret reset.
-Fixed arguments use themed option buttons.
+The composer uses one inline, virtualized suggestion list rather than a popup.
+It shows at most eight built-ins and every distinct skill identity safely accepted
+by the Worker, including disabled rows. The Worker accepts at most 200 untrusted
+entries; reaching that safety bound produces a passive catalog-truncated row.
+There is no separate twenty-row UI cap, so keyboard navigation and UI Automation
+can reach the twenty-first through final accepted row.
+Selecting a built-in creates its command chip; selecting a skill creates an
+independent skill chip, clears only the slash query through `SetComposerText("")`,
+and keeps the ordinary composer visible. Fixed arguments use themed option buttons.
 
 Up and Down move selection, Enter or Tab accepts a suggestion, Escape closes
 the list, and Ctrl+Enter executes. Enter remains a newline when suggestions
@@ -104,6 +121,26 @@ implement the Remote UI `IAsyncCommand` contract.
 All app-server text displayed in the UI passes through `SafeMarkdownService`.
 Worker diagnostics continue to pass through secret redaction. Raw payload JSON
 is not rendered.
+
+Persistent catalog snapshots are stored below
+`%LOCALAPPDATA%\Kkamegawa.CodexForVisualStudio\skill-catalog\v1`, keyed by a
+workspace SHA-256 fingerprint. They are limited to 200 skills, 4 MiB per
+workspace, a 24-hour hard expiry, and 64 MiB total, and use atomic replacement,
+LRU cleanup, and a bounded cross-process lock. Cache files are untrusted and revalidated on read.
+Default prompts, dependency values, icon source paths, raw app-server JSON, and
+Remote UI selection IDs are never persisted. Cache failure falls back to live
+discovery without blocking the composer.
+
+## Known gaps
+
+Skill icons are not rendered. `interface.iconSmall` is reduced to a presence flag
+and every row uses a fixed glyph until the Remote UI image and cache containment
+spike proves a safe binding. `dependencies.tools` is parsed and bounded but has
+no badge or tooltip yet, so both fields currently cross the contract without a
+consumer. The brand-color accent has no High Contrast branch, so a High Contrast
+theme still shows the app-server color rather than a Visual Studio theme
+resource. A skill rejected by live identity validation at `turn/start` is
+recorded in diagnostics but is not reported in the chat surface.
 
 ## Validation
 
@@ -116,3 +153,9 @@ input limits, candidate filtering, queue order and replacement, thread
 separation, disconnect cancellation, command-versus-steer separation,
 DataContract and IAsyncCommand requirements, XAML structure, keyboard
 bindings, accessibility, and input preservation.
+
+Skill-catalog tests cover 0, 1, 20, 21, 200, and 201 server entries; complete
+virtualized navigation; stale-to-fresh replacement; empty, unsupported, failed,
+and truncated states; workspace isolation; corrupt, expired, and oversized cache
+files; generation races; concurrent instances; LRU cleanup; and mandatory live
+force-reload validation before skill invocation.

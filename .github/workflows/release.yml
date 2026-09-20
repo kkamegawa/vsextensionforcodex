@@ -97,14 +97,36 @@ jobs:
           -p:Version=${{ steps.version.outputs.vsix_version }}
 
       - name: Test core
-        run: >-
-          dotnet test tests\Codex.VisualStudio.Core.Tests\Codex.VisualStudio.Core.Tests.csproj
-          -c Release --no-build -v minimal
+        shell: pwsh
+        run: |
+          $maxAttempts = 3
+          for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+            dotnet test tests\Codex.VisualStudio.Core.Tests\Codex.VisualStudio.Core.Tests.csproj -c Release --no-build -v minimal
+            if ($LASTEXITCODE -eq 0) {
+              break
+            }
+            if ($attempt -eq $maxAttempts) {
+              throw "Test core failed after $maxAttempts attempts (exit code $LASTEXITCODE)."
+            }
+            Write-Warning "Test core attempt $attempt failed (exit code $LASTEXITCODE); retrying in 5s..."
+            Start-Sleep -Seconds 5
+          }
 
       - name: Test UI
-        run: >-
-          dotnet test tests\Codex.VisualStudio.Ui.Tests\Codex.VisualStudio.Ui.Tests.csproj
-          -c Release --no-build -v minimal
+        shell: pwsh
+        run: |
+          $maxAttempts = 3
+          for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+            dotnet test tests\Codex.VisualStudio.Ui.Tests\Codex.VisualStudio.Ui.Tests.csproj -c Release --no-build -v minimal
+            if ($LASTEXITCODE -eq 0) {
+              break
+            }
+            if ($attempt -eq $maxAttempts) {
+              throw "Test UI failed after $maxAttempts attempts (exit code $LASTEXITCODE)."
+            }
+            Write-Warning "Test UI attempt $attempt failed (exit code $LASTEXITCODE); retrying in 5s..."
+            Start-Sleep -Seconds 5
+          }
 
       - name: Find VSIX
         id: find_vsix

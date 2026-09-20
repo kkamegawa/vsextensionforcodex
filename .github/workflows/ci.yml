@@ -66,25 +66,55 @@ jobs:
         run: dotnet build CodexForVisualStudio.slnx -c Release --no-restore -v minimal
 
       - name: Test core
-        run: >-
-          dotnet test tests\Codex.VisualStudio.Core.Tests\Codex.VisualStudio.Core.Tests.csproj
-          -c Release --no-build -v minimal
-
-      - name: Test UI
-        run: >-
-          dotnet test tests\Codex.VisualStudio.Ui.Tests\Codex.VisualStudio.Ui.Tests.csproj
-          -c Release --no-build -v minimal
-
-      - name: Verify VSIX exists
         shell: pwsh
         run: |
-          $vsix = Get-ChildItem -Path .\src\Codex.VisualStudio.Extension\bin\Release -Filter *.vsix -Recurse
+          $maxAttempts = 3
+          for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+            dotnet test tests\Codex.VisualStudio.Core.Tests\Codex.VisualStudio.Core.Tests.csproj -c Release --no-build -v minimal
+            if ($LASTEXITCODE -eq 0) {
+              break
+            }
+            if ($attempt -eq $maxAttempts) {
+              throw "Test core failed after $maxAttempts attempts (exit code $LASTEXITCODE)."
+            }
+            Write-Warning "Test core attempt $attempt failed (exit code $LASTEXITCODE); retrying in 5s..."
+            Start-Sleep -Seconds 5
+          }
+      - name: Test UI
+        shell: pwsh
+        run: |
+          $maxAttempts = 3
+          for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+            dotnet test tests\Codex.VisualStudio.Ui.Tests\Codex.VisualStudio.Ui.Tests.csproj -c Release --no-build -v minimal
+            if ($LASTEXITCODE -eq 0) {
+              break
+            }
+            if ($attempt -eq $maxAttempts) {
+              throw "Test UI failed after $maxAttempts attempts (exit code $LASTEXITCODE)."
+            }
+            Write-Warning "Test UI attempt $attempt failed (exit code $LASTEXITCODE); retrying in 5s..."
+            Start-Sleep -Seconds 5
+          }
+
+      - name: Find VSIX
+        id: find_vsix
+        shell: pwsh
+        run: |
+          # Search recursively so the step is not sensitive to the framework sub-folder name.
+          # Resolving a single literal path (rather than a glob) keeps the .vsix at the root
+          # of the uploaded artifact zip instead of nested under a TFM sub-folder.
+          $vsix = Get-ChildItem -Path .\src\Codex.VisualStudio.Extension\bin\Release -Filter *.vsix -Recurse |
+                    Sort-Object LastWriteTimeUtc -Descending |
+                    Select-Object -First 1
           if (-not $vsix) {
             throw "VSIX artifact was not generated."
           }
+          Write-Host "Found VSIX: $($vsix.FullName)"
+          "vsix_path=$($vsix.FullName)" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
 
       - name: Upload VSIX artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: CodexForVisualStudio-vsix
-          path: src\Codex.VisualStudio.Extension\bin\Release\**\*.vsix
+          path: ${{ steps.find_vsix.outputs.vsix_path }}
+

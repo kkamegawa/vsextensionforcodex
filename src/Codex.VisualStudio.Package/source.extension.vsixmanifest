@@ -4,7 +4,7 @@
      Kept for future diff-view and other in-proc features. -->
 <PackageManifest Version="2.0.0" xmlns="http://schemas.microsoft.com/developer/vsx-schema/2011" xmlns:d="http://schemas.microsoft.com/developer/vsx-schema-design/2011">
   <Metadata>
-    <Identity Id="relaycodexforvs.KazushiKamegawa.eb6fe54d-41f0-493e-b6eb-43d9f52f02c9" Version="0.1.0" Language="en-US" Publisher="kazushikamegawa" />
+    <Identity Id="relaycodexforvs.KazushiKamegawa.eb6fe54d-41f0-493e-b6eb-43d9f52f02c9" Version="0.1.0" Language="en-US" Publisher="kkamegawa" />
     <DisplayName>Codex for Visual Studio (In-Proc Package)</DisplayName>
     <Description xml:space="preserve">In-proc net472 shim for features requiring VS process access (diff views, etc.).</Description>
   </Metadata>

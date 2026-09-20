@@ -32,6 +32,8 @@ public interface ICodexSessionService : IAsyncDisposable
 
     event Func<EffectiveApprovalState, CancellationToken, Task>? EffectiveApprovalStateChanged;
 
+    event Func<SkillsChangedEvent, CancellationToken, Task>? SkillsChanged;
+
     string? ActiveThreadId { get; }
 
     string? ActiveTurnId { get; }
@@ -82,6 +84,8 @@ public interface ICodexSessionService : IAsyncDisposable
 
     Task<McpServerListResult> ListMcpServersAsync(string? threadId, CancellationToken cancellationToken);
 
+    Task<ListSkillsResult> ListSkillsAsync(bool forceReload, CancellationToken cancellationToken);
+
     Task<UploadFeedbackResult> UploadFeedbackAsync(UploadFeedbackRequest request, CancellationToken cancellationToken);
 
     Task<RateLimitsResult> GetRateLimitsAsync(CancellationToken cancellationToken);
@@ -99,6 +103,23 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
     private const int MaxPermissionProfiles = 500;
     private const int MaxPermissionProfileIdLength = 256;
 
+    // skills/list has no pagination cursor (unlike model/list and permissionProfile/list), so the
+    // array is server-supplied and unbounded. Cap it instead of trusting the server to be small.
+    private const int MaxSkills = 200;
+    private const int MaxSkillErrors = 50;
+    private const int MaxSkillNameLength = 128;
+    private const int MaxSkillTextLength = 512;
+    private const int MaxSkillDefaultPromptLength = 4096;
+    private const int MaxSkillDependencyCount = 16;
+    private const int MaxSkillDependencyTypeLength = 64;
+    private const int MaxSkillDependencyValueLength = 256;
+    private const int MaxSkillDependencyDescriptionLength = 512;
+
+    // Not the legacy Windows MAX_PATH (260): that limit only applies without the long-paths
+    // opt-in and would silently drop valid skills under deep workspaces or long user-profile
+    // paths. 1024 is a generous display/memory bound while still rejecting pathological input.
+    private const int MaxSkillPathLength = 1024;
+
     private readonly IApprovalPolicyEngine approvalPolicy;
     private readonly ISecretRedactor redactor;
     private readonly IPathAccessPolicy pathAccessPolicy;
@@ -108,6 +129,15 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
     private readonly ApprovalGrantStore approvalGrants = new();
     private readonly object unsupportedMethodsLock = new();
     private readonly HashSet<string> unsupportedMethods = new(StringComparer.Ordinal);
+    private readonly SemaphoreSlim skillsCacheGate = new(1, 1);
+    private readonly TimeProvider timeProvider;
+    private readonly ISkillCatalogStore skillCatalogStore;
+    private readonly object skillsBackgroundRefreshLock = new();
+    private CancellationTokenSource skillsBackgroundRefreshCancellation = new();
+    private Task? skillsBackgroundRefreshTask;
+    private ListSkillsResult? skillsSnapshot;
+    private DateTimeOffset skillsSnapshotExpiresAt;
+    private long skillsGeneration;
     private IJsonRpcConnection? connection;
     private WorkerOptions options = new();
     private StreamingBuffer? streamingBuffer;
@@ -116,12 +146,26 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         IApprovalPolicyEngine approvalPolicy,
         ISecretRedactor redactor,
         IPathAccessPolicy? pathAccessPolicy = null,
-        IProtectedDirectoryPolicy? protectedDirectoryPolicy = null)
+        IProtectedDirectoryPolicy? protectedDirectoryPolicy = null,
+        TimeProvider? timeProvider = null)
+        : this(approvalPolicy, redactor, pathAccessPolicy, protectedDirectoryPolicy, timeProvider, null)
+    {
+    }
+
+    internal CodexSessionService(
+        IApprovalPolicyEngine approvalPolicy,
+        ISecretRedactor redactor,
+        IPathAccessPolicy? pathAccessPolicy,
+        IProtectedDirectoryPolicy? protectedDirectoryPolicy,
+        TimeProvider? timeProvider,
+        ISkillCatalogStore? skillCatalogStore)
     {
         this.approvalPolicy = approvalPolicy;
         this.redactor = redactor;
         this.pathAccessPolicy = pathAccessPolicy ?? new PathAccessPolicy();
         this.protectedDirectoryPolicy = protectedDirectoryPolicy ?? new ProtectedDirectoryPolicy();
+        this.timeProvider = timeProvider ?? TimeProvider.System;
+        this.skillCatalogStore = skillCatalogStore ?? new FileSkillCatalogStore(redactor);
     }
 
     public event Func<ConversationEvent, CancellationToken, Task>? ConversationEventReceived;
@@ -148,6 +192,8 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
 
     public event Func<EffectiveApprovalState, CancellationToken, Task>? EffectiveApprovalStateChanged;
 
+    public event Func<SkillsChangedEvent, CancellationToken, Task>? SkillsChanged;
+
     public string? ActiveThreadId { get; private set; }
 
     public string? ActiveTurnId { get; private set; }
@@ -162,6 +208,8 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
 
     public async Task InitializeAsync(IJsonRpcConnection connection, WorkerOptions options, CancellationToken cancellationToken)
     {
+        await ResetSkillsBackgroundRefreshAsync().ConfigureAwait(false);
+        InvalidateSkillsCache();
         CodexVersion = null;
         EffectiveApprovalState = null;
         EffectiveReasoningEffort = null;
@@ -621,6 +669,11 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
     public async Task<string> StartTurnAsync(StartTurnRequest request, CancellationToken cancellationToken)
     {
         ValidateTurnApprovalOverrides(request);
+        if (request.Skill is not null)
+        {
+            await ValidateSkillInvocationAsync(request.Skill, cancellationToken).ConfigureAwait(false);
+        }
+
         List<object> input = BuildTurnInput(request);
         var parameters = new Dictionary<string, object?>
         {
@@ -879,6 +932,176 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         return new McpServerListResult { Servers = ReadMcpServers(call.Result) };
     }
 
+    public async Task<ListSkillsResult> ListSkillsAsync(bool forceReload, CancellationToken cancellationToken)
+    {
+        DateTimeOffset now = timeProvider.GetUtcNow();
+        if (!forceReload && skillsSnapshot is not null && now < skillsSnapshotExpiresAt)
+        {
+            return CloneSkillsResult(skillsSnapshot);
+        }
+
+        bool startBackgroundRefresh = false;
+        long backgroundGeneration = 0;
+        ListSkillsResult result;
+        await skillsCacheGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            now = timeProvider.GetUtcNow();
+            if (!forceReload && skillsSnapshot is not null && now < skillsSnapshotExpiresAt)
+            {
+                result = CloneSkillsResult(skillsSnapshot);
+            }
+            else if (!forceReload
+                && await skillCatalogStore.TryReadAsync(
+                    options.WorkingDirectory,
+                    CodexVersion,
+                    now,
+                    cancellationToken).ConfigureAwait(false) is { } persisted)
+            {
+                backgroundGeneration = Volatile.Read(ref skillsGeneration);
+                persisted.Generation = backgroundGeneration;
+                persisted.IsStale = true;
+                skillsSnapshot = CloneSkillsResult(persisted);
+                skillsSnapshotExpiresAt = now.AddSeconds(60);
+                result = CloneSkillsResult(persisted);
+                startBackgroundRefresh = true;
+            }
+            else
+            {
+                result = await LoadLiveSkillsAsync(forceReload, cancellationToken).ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            skillsCacheGate.Release();
+        }
+
+        if (startBackgroundRefresh)
+        {
+            StartSkillsBackgroundRefresh(backgroundGeneration);
+        }
+
+        return result;
+    }
+
+    private async Task<ListSkillsResult> LoadLiveSkillsAsync(bool forceReload, CancellationToken cancellationToken)
+    {
+        const int maximumAttempts = 2;
+        for (int attempt = 0; attempt < maximumAttempts; attempt++)
+        {
+            long generation = Volatile.Read(ref skillsGeneration);
+            ListSkillsResult loaded = await ReadSkillsFromServerAsync(
+                forceReload || attempt > 0,
+                cancellationToken).ConfigureAwait(false);
+            loaded = CloneSkillsResult(loaded, isStale: false, generation);
+            if (generation != Volatile.Read(ref skillsGeneration))
+            {
+                continue;
+            }
+
+            if (loaded.IsSupported)
+            {
+                try
+                {
+                    await skillCatalogStore.WriteAsync(
+                        options.WorkingDirectory,
+                        CodexVersion,
+                        loaded,
+                        timeProvider.GetUtcNow(),
+                        cancellationToken).ConfigureAwait(false);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    WorkerDiagnostics.Write("skill catalog cache write failed", ex);
+                }
+            }
+
+            if (generation != Volatile.Read(ref skillsGeneration))
+            {
+                await DeletePersistedSkillsAsync(CancellationToken.None).ConfigureAwait(false);
+                continue;
+            }
+
+            skillsSnapshot = CloneSkillsResult(loaded);
+            skillsSnapshotExpiresAt = timeProvider.GetUtcNow().AddSeconds(60);
+            return CloneSkillsResult(loaded);
+        }
+
+        throw new InvalidOperationException("The skill catalog changed repeatedly while it was loading.");
+    }
+
+    private void StartSkillsBackgroundRefresh(long expectedGeneration)
+    {
+        lock (skillsBackgroundRefreshLock)
+        {
+            if (skillsBackgroundRefreshTask is { IsCompleted: false })
+            {
+                return;
+            }
+
+            skillsBackgroundRefreshTask = RefreshSkillsInBackgroundAsync(
+                expectedGeneration,
+                skillsBackgroundRefreshCancellation.Token);
+        }
+    }
+
+    private async Task RefreshSkillsInBackgroundAsync(long expectedGeneration, CancellationToken cancellationToken)
+    {
+        try
+        {
+            // Do not let an in-memory/test connection that completes synchronously turn the
+            // display-only cache path back into a blocking live scan.
+            await Task.Yield();
+            await skillsCacheGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            ListSkillsResult loaded;
+            try
+            {
+                if (expectedGeneration != Volatile.Read(ref skillsGeneration))
+                {
+                    return;
+                }
+
+                loaded = await LoadLiveSkillsAsync(forceReload: false, cancellationToken).ConfigureAwait(false);
+            }
+            finally
+            {
+                skillsCacheGate.Release();
+            }
+
+            if (SkillsChanged is not null)
+            {
+                await SkillsChanged(
+                    new SkillsChangedEvent { Generation = loaded.Generation },
+                    cancellationToken).ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+        }
+        catch (Exception ex)
+        {
+            WorkerDiagnostics.Write("skill catalog background refresh failed", ex);
+        }
+    }
+
+    private async Task<ListSkillsResult> ReadSkillsFromServerAsync(bool forceReload, CancellationToken cancellationToken)
+    {
+        // No experimentalApi gate: nothing in the app-server protocol marks skills/list as
+        // experimental (unlike permissionProfile/list), and that gate's failure mode is sticky
+        // for the rest of the session. Rely purely on the -32601 capability probe below.
+        OperationCallResult call = await TrySendOperationAsync(
+            "skills/list",
+            new { cwds = Array.Empty<string>(), forceReload },
+            TimeSpan.FromSeconds(30),
+            cancellationToken).ConfigureAwait(false);
+        if (!call.IsSupported)
+        {
+            return Unsupported<ListSkillsResult>("Skills are not supported by this app-server.");
+        }
+
+        return ReadSkills(call.Result);
+    }
+
     public async Task<UploadFeedbackResult> UploadFeedbackAsync(
         UploadFeedbackRequest request,
         CancellationToken cancellationToken)
@@ -1064,6 +1287,16 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
             new { type = "text", text = request.Text },
         };
 
+        if (request.Skill is not null)
+        {
+            input.Add(new
+            {
+                type = "skill",
+                name = request.Skill.Name,
+                path = request.Skill.Path,
+            });
+        }
+
         var includedPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         int attachmentCount = 0;
         foreach (AttachmentInfo attachment in request.Attachments)
@@ -1151,6 +1384,31 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         }
 
         return input;
+    }
+
+    private async Task ValidateSkillInvocationAsync(
+        SkillInvocationInfo invocation,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(invocation.Name)
+            || string.IsNullOrWhiteSpace(invocation.Scope)
+            || string.IsNullOrWhiteSpace(invocation.Path))
+        {
+            throw new InvalidOperationException("The selected skill identity is incomplete.");
+        }
+
+        ListSkillsResult catalog = await ListSkillsAsync(forceReload: true, cancellationToken).ConfigureAwait(false);
+        bool exactEnabled = catalog.IsSupported
+            && !catalog.IsStale
+            && catalog.Skills.Any(skill =>
+                skill.Enabled
+                && string.Equals(skill.Name, invocation.Name, StringComparison.Ordinal)
+                && string.Equals(skill.Scope, invocation.Scope, StringComparison.Ordinal)
+                && string.Equals(skill.Path, invocation.Path, StringComparison.Ordinal));
+        if (!exactEnabled)
+        {
+            throw new InvalidOperationException("The selected skill is stale, disabled, or unavailable.");
+        }
     }
 
     private bool IsWorkspacePath(string? path)
@@ -1298,6 +1556,9 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
+        await ResetSkillsBackgroundRefreshAsync().ConfigureAwait(false);
+        skillsBackgroundRefreshCancellation.Cancel();
+        skillsBackgroundRefreshCancellation.Dispose();
         if (streamingBuffer is not null)
         {
             await streamingBuffer.DisposeAsync().ConfigureAwait(false);
@@ -1316,6 +1577,7 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         }
 
         pendingUserInputs.Clear();
+        skillsCacheGate.Dispose();
     }
 
     private async Task<JsonElement> OnServerRequestAsync(JsonRpcMessage message, CancellationToken cancellationToken)
@@ -1329,6 +1591,14 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         if (IsUserInputRequest(method, parameters))
         {
             return await HandleUserInputRequestAsync(requestId, parameters, cancellationToken).ConfigureAwait(false);
+        }
+
+        // Skill-specific approval is intentionally not part of the extension contract. Never
+        // route an unknown skill approval through an existing grant, which would broaden its
+        // scope accidentally; fail closed instead.
+        if (method.Contains("skill", StringComparison.OrdinalIgnoreCase))
+        {
+            return ApprovalResponse("decline");
         }
 
         ApprovalRequest request = CreateApprovalRequest(requestId, method, parameters);
@@ -1379,6 +1649,18 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
     {
         string method = message.Method ?? string.Empty;
         JsonElement parameters = message.Params ?? JsonSerializer.SerializeToElement(new { });
+        if (method == "skills/changed")
+        {
+            long generation = InvalidateSkillsCache();
+            await DeletePersistedSkillsAsync(cancellationToken).ConfigureAwait(false);
+            if (SkillsChanged is not null)
+            {
+                await SkillsChanged(new SkillsChangedEvent { Generation = generation }, cancellationToken).ConfigureAwait(false);
+            }
+
+            return;
+        }
+
         string? threadId = GetString(parameters, "threadId");
         string? turnId = GetString(parameters, "turnId");
         string? itemId = GetString(parameters, "itemId");
@@ -1616,6 +1898,92 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
             return OperationCallResult.Unsupported;
         }
     }
+
+    private long InvalidateSkillsCache()
+    {
+        long generation = Interlocked.Increment(ref skillsGeneration);
+        skillsSnapshot = null;
+        skillsSnapshotExpiresAt = default;
+        return generation;
+    }
+
+    private async Task DeletePersistedSkillsAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            await skillCatalogStore.DeleteAsync(options.WorkingDirectory, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            WorkerDiagnostics.Write("skill catalog cache invalidation failed", ex);
+        }
+    }
+
+    private async Task ResetSkillsBackgroundRefreshAsync()
+    {
+        Task? pending;
+        CancellationTokenSource previousCancellation;
+        lock (skillsBackgroundRefreshLock)
+        {
+            pending = skillsBackgroundRefreshTask;
+            skillsBackgroundRefreshTask = null;
+            previousCancellation = skillsBackgroundRefreshCancellation;
+            skillsBackgroundRefreshCancellation = new CancellationTokenSource();
+        }
+
+        previousCancellation.Cancel();
+        if (pending is not null)
+        {
+            try
+            {
+                await pending.ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (previousCancellation.IsCancellationRequested)
+            {
+            }
+        }
+
+        previousCancellation.Dispose();
+    }
+
+    private static ListSkillsResult CloneSkillsResult(
+        ListSkillsResult source,
+        bool? isStale = null,
+        long? generation = null)
+        => new()
+        {
+            IsSupported = source.IsSupported,
+            UnavailableReason = source.UnavailableReason,
+            IsTruncated = source.IsTruncated,
+            IsStale = isStale ?? source.IsStale,
+            Generation = generation ?? source.Generation,
+            Skills = source.Skills.Select(skill => new SkillInfo
+            {
+                Name = skill.Name,
+                Description = skill.Description,
+                ShortDescription = skill.ShortDescription,
+                DisplayName = skill.DisplayName,
+                Scope = skill.Scope,
+                Path = skill.Path,
+                Enabled = skill.Enabled,
+                Cwd = skill.Cwd,
+                BrandColor = skill.BrandColor,
+                DefaultPrompt = skill.DefaultPrompt,
+                HasIconSmall = skill.HasIconSmall,
+                ToolDependencies = skill.ToolDependencies.Select(dependency => new SkillToolDependencyInfo
+                {
+                    Type = dependency.Type,
+                    Value = dependency.Value,
+                    Description = dependency.Description,
+                }).ToArray(),
+            }).ToArray(),
+            Errors = source.Errors.Select(error => new SkillLoadError
+            {
+                Cwd = error.Cwd,
+                Path = error.Path,
+                Message = error.Message,
+            }).ToArray(),
+        };
 
     private static T Unsupported<T>(string reason)
         where T : AppServerOperationResult, new()
@@ -2122,6 +2490,250 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         CreatedAt = GetInt64(goal, "createdAt") ?? 0,
         UpdatedAt = GetInt64(goal, "updatedAt") ?? 0,
     };
+
+    // SkillsListResponse.data is SkillsListEntry[] (one entry per requested cwd). skills/list is
+    // always called with cwds: [] in v1, so the app-server returns exactly one entry, but this
+    // still walks the array defensively: the Fake app-server's unmatched-method fallback (`_ =>
+    // new { }`) has no "data" property at all, and a naive result.GetProperty("data") would throw
+    // KeyNotFoundException outside the -32601 capability probe in TrySendOperationAsync.
+    private ListSkillsResult ReadSkills(JsonElement result)
+    {
+        var skills = new List<SkillInfo>();
+        var errors = new List<SkillLoadError>();
+        bool truncated = false;
+
+        if (result.TryGetProperty("data", out JsonElement data) && data.ValueKind == JsonValueKind.Array)
+        {
+            foreach (JsonElement entry in data.EnumerateArray())
+            {
+                if (skills.Count >= MaxSkills && errors.Count >= MaxSkillErrors)
+                {
+                    // Both caps were already reached by an earlier entry. skills/list is
+                    // untrusted and unbounded, so stop enumerating remaining server-supplied
+                    // entries entirely rather than paying per-entry sanitization and
+                    // property-lookup cost on data that would be dropped anyway.
+                    truncated = true;
+                    break;
+                }
+
+                if (entry.ValueKind != JsonValueKind.Object)
+                {
+                    continue;
+                }
+
+                // cwd is a filesystem path, not prose; cap it like path fields (MaxSkillPathLength)
+                // rather than the shorter MaxSkillTextLength used for descriptions and messages,
+                // or a long-but-valid working directory would be truncated to null.
+                string? cwd = SanitizeSkillText(GetString(entry, "cwd"), MaxSkillPathLength);
+
+                if (entry.TryGetProperty("errors", out JsonElement errorArray)
+                    && errorArray.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (JsonElement error in errorArray.EnumerateArray())
+                    {
+                        if (error.ValueKind != JsonValueKind.Object)
+                        {
+                            continue;
+                        }
+
+                        if (errors.Count >= MaxSkillErrors)
+                        {
+                            truncated = true;
+                            break;
+                        }
+
+                        string? message = SanitizeSkillText(GetString(error, "message"));
+                        if (message is null)
+                        {
+                            continue;
+                        }
+
+                        errors.Add(new SkillLoadError
+                        {
+                            Cwd = cwd,
+                            // Same rooted-path validation as SkillInfo.Path (NormalizeSkillPath),
+                            // not just length/control-character sanitization, so a malformed or
+                            // relative error path is dropped rather than forwarded over the
+                            // contract as if it were a real absolute path.
+                            Path = NormalizeSkillPath(GetString(error, "path")),
+                            Message = message,
+                        });
+                    }
+                }
+
+                if (entry.TryGetProperty("skills", out JsonElement skillArray)
+                    && skillArray.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (JsonElement skill in skillArray.EnumerateArray())
+                    {
+                        if (skill.ValueKind != JsonValueKind.Object)
+                        {
+                            continue;
+                        }
+
+                        if (skills.Count >= MaxSkills)
+                        {
+                            truncated = true;
+                            break;
+                        }
+
+                        SkillInfo? info = ReadSkill(skill, cwd);
+                        if (info is not null)
+                        {
+                            skills.Add(info);
+                        }
+                    }
+                }
+            }
+        }
+
+        return new ListSkillsResult
+        {
+            Skills = skills,
+            Errors = errors,
+            IsTruncated = truncated,
+        };
+    }
+
+    private SkillInfo? ReadSkill(JsonElement skill, string? cwd)
+    {
+        // name/path/scope/enabled/description are all required by SkillMetadata
+        // (schemas/v2/SkillsListResponse.json). A response missing any of them is treated as
+        // malformed for that entry and the skill is dropped rather than surfaced half-populated.
+        string? name = NormalizeSkillName(GetString(skill, "name"));
+        string? path = NormalizeSkillPath(GetString(skill, "path"));
+        string? scope = NormalizeWireIdentifier(GetString(skill, "scope"));
+        bool? enabled = GetBool(skill, "enabled");
+        string? rawDescription = GetString(skill, "description");
+        if (name is null || path is null || scope is null || enabled is null || rawDescription is null)
+        {
+            return null;
+        }
+
+        string? shortDescription = SanitizeSkillText(GetString(skill, "shortDescription"));
+        string? displayName = null;
+        if (skill.TryGetProperty("interface", out JsonElement skillInterface)
+            && skillInterface.ValueKind == JsonValueKind.Object)
+        {
+            displayName = SanitizeSkillText(GetString(skillInterface, "displayName"));
+            shortDescription ??= SanitizeSkillText(GetString(skillInterface, "shortDescription"));
+        }
+
+        string? brandColor = null;
+        string? defaultPrompt = null;
+        bool hasIconSmall = false;
+        var dependencies = new List<SkillToolDependencyInfo>();
+        if (skill.TryGetProperty("interface", out skillInterface)
+            && skillInterface.ValueKind == JsonValueKind.Object)
+        {
+            string? candidateColor = GetString(skillInterface, "brandColor");
+            if (candidateColor is not null
+                && candidateColor.Length == 7
+                && candidateColor[0] == '#'
+                && candidateColor.Skip(1).All(c => Uri.IsHexDigit(c)))
+            {
+                brandColor = candidateColor.ToUpperInvariant();
+            }
+
+            defaultPrompt = SanitizeSkillText(
+                GetString(skillInterface, "defaultPrompt"),
+                MaxSkillDefaultPromptLength);
+            hasIconSmall = skillInterface.TryGetProperty("iconSmall", out JsonElement icon)
+                && icon.ValueKind == JsonValueKind.String
+                && !string.IsNullOrWhiteSpace(icon.GetString());
+        }
+
+        if (skill.TryGetProperty("dependencies", out JsonElement dependenciesElement)
+            && dependenciesElement.ValueKind == JsonValueKind.Object
+            && dependenciesElement.TryGetProperty("tools", out JsonElement tools)
+            && tools.ValueKind == JsonValueKind.Array)
+        {
+            foreach (JsonElement tool in tools.EnumerateArray().Take(MaxSkillDependencyCount))
+            {
+                if (tool.ValueKind != JsonValueKind.Object)
+                {
+                    continue;
+                }
+
+                string? type = SanitizeSkillText(GetString(tool, "type"), MaxSkillDependencyTypeLength);
+                string? value = SanitizeSkillText(GetString(tool, "value"), MaxSkillDependencyValueLength);
+                if (type is null || value is null)
+                {
+                    continue;
+                }
+
+                dependencies.Add(new SkillToolDependencyInfo
+                {
+                    Type = type,
+                    Value = value,
+                    Description = SanitizeSkillText(GetString(tool, "description"), MaxSkillDependencyDescriptionLength),
+                });
+            }
+        }
+
+        return new SkillInfo
+        {
+            Name = name,
+            Description = SanitizeSkillText(rawDescription) ?? string.Empty,
+            ShortDescription = shortDescription,
+            DisplayName = displayName,
+            Scope = scope,
+            Path = path,
+            Enabled = enabled.Value,
+            Cwd = cwd,
+            BrandColor = brandColor,
+            DefaultPrompt = defaultPrompt,
+            HasIconSmall = hasIconSmall,
+            ToolDependencies = dependencies,
+        };
+    }
+
+    private string? SanitizeSkillText(string? value, int maxLength = MaxSkillTextLength)
+    {
+        if (string.IsNullOrEmpty(value))
+        {
+            return null;
+        }
+
+        string redacted = redactor.Redact(value);
+        string sanitized = new(redacted.Where(character => !char.IsControl(character)).Take(maxLength).ToArray());
+        return string.IsNullOrWhiteSpace(sanitized) ? null : sanitized.Trim();
+    }
+
+    private static string? NormalizeSkillName(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        // Unlike NormalizeWireIdentifier, this does not restrict to [A-Za-z0-9_-]: real skill
+        // names may legitimately contain other characters (spaces, dots, etc.), and applying that
+        // narrower charset here would silently drop otherwise-valid skills.
+        string trimmed = value.Trim();
+        return trimmed.Length <= MaxSkillNameLength && trimmed.All(character => !char.IsControl(character))
+            ? trimmed
+            : null;
+    }
+
+    private static string? NormalizeSkillPath(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        string trimmed = value.Trim();
+        if (trimmed.Length > MaxSkillPathLength || trimmed.Any(char.IsControl))
+        {
+            return null;
+        }
+
+        // No File.Exists / workspace-containment check: this path is the app-server's own
+        // skills/list output, not user input, and scope: "user"/"system"/"admin" skills routinely
+        // live outside the workspace (or are directories). Only structural validity is enforced.
+        return Path.IsPathRooted(trimmed) ? trimmed : null;
+    }
 
     private IReadOnlyList<McpServerStatusInfo> ReadMcpServers(JsonElement result)
     {

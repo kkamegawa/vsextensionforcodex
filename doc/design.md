@@ -35,9 +35,9 @@ CEE0028（コンパイル時評価エラー）で失敗する。最低限の設�
 public override ExtensionConfiguration ExtensionConfiguration => new()
 {
     Metadata = new(
-        id: "Kkamegawa.CodexForVisualStudio",
+        id: "<publisher>.<name>.<guid>",      // 実際の値は CodexExtension.cs の ExtensionIdentity.Id を参照
         version: ExtensionAssemblyVersion,   // 基底クラスのプロパティ
-        publisherName: "kazushikamegawa",
+        publisherName: "<publisher>",         // 実際の値は ExtensionIdentity.PublisherName を参照
         displayName: "Codex for Visual Studio",
         description: "AI coding assistant powered by OpenAI Codex."),
 };
@@ -258,8 +258,14 @@ crosses Remote UI. Missing usage percentages and ambiguous multi-limit maps are 
 zero usage.
 
 Usage freshness is scoped to a connection generation and a monotonic push version. The first
-signed-in Ready state fetches once, Busy-to-Ready transitions do not fetch, and opening the flyout
-refreshes only after a 60-second TTL. Disconnect, sign-out, and disposal invalidate the snapshot.
+signed-in Ready state fetches once, and a Busy-to-Ready transition by itself does not fetch. Each
+`TurnCompleted` event and each completed `context/compacted` event are explicit usage-consumption
+boundaries: both force a rate-limit read even inside the 60-second TTL so the header and flyout
+reflect the completed turn or compaction. Opening the flyout still refreshes only after the TTL.
+Disconnect, sign-out, and disposal invalidate the snapshot; failed forced reads keep the last
+successful snapshot eligible for a later retry. A turn that ends via a transport-level failure
+reports `Degraded` rather than `TurnCompleted`, so no forced read is attempted there — the last
+successful snapshot stays visible until reconnection restores `IsUsageAvailable`.
 The Usage and History flyouts are mutually exclusive; the Usage popup cycles Tab focus after focus
 enters its content, closes with Escape from either the host or popup, uses Visual Studio dynamic
 theme resources, and exposes automation names and help text. Raw Remote UI cannot run VS-side
@@ -277,3 +283,41 @@ The operation remains non-destructive: an existing solution is never overwritten
 file-based app choice continues to create only a root-level `Program.cs` without a solution or
 project. The generated empty document must remain parseable as XML and accepted by the pinned
 `.NET` SDK's `dotnet sln` command.
+## Unified slash menu and skill boundary (Issue #140)
+
+The Extension uses one non-popup, virtualized ListBox for the eight built-in candidates and every
+distinct skill identity safely accepted by the Worker. ADR-008's 200-skill input bound remains the
+security limit, but there is no separate UI cap: empty and filtered queries can render all accepted
+enabled and disabled rows. `IsTruncated` produces a passive Worker-truncation row and never a claim
+that the catalog is complete. Skill selection is not `SlashCommands.ActiveCommand`: it creates one
+`PendingSkill` chip while the normal composer remains visible. Accepting a live row resolves an
+opaque selection key against the current `(Name, Scope, Path)` snapshot and clears only the slash
+query.
+
+Worker contract v15 force-reloads and validates the complete identity immediately before
+`turn/start`; only `{ type: "skill", name, path }` is serialized to app-server. Scope and raw
+path never enter Remote UI-bound data. Busy and approval-waiting states permit chip changes, but
+pending skills disable send/steer until removal or successful start. The live app-server
+`skills/list` response is the catalog system of record. The Worker owns both a 60-second in-memory
+hot snapshot and a versioned, per-workspace persistent stale-while-revalidate snapshot. A cached
+snapshot may populate non-selectable rows marked `Cached - refreshing` while one live refresh is in
+flight. Successful refresh publishes and atomically persists the new generation; `skills/changed`
+marks the snapshot stale, and sticky `-32601` remains distinct from an empty catalog.
+
+Persistent snapshots live below
+`%LOCALAPPDATA%\Kkamegawa.CodexForVisualStudio\skill-catalog\v1`, keyed by a SHA-256 workspace
+fingerprint. They are untrusted, limited to 200 skills and 4 MiB per workspace, a 24-hour hard
+expiry, and 64 MiB total, with LRU cleanup, atomic replacement, and a bounded cross-process lock. The Worker
+reapplies live-response bounds when loading them. Default prompts, dependency values, icon source
+paths, raw app-server JSON, and Remote UI selection IDs are not persisted. Cache failures fall back
+to live discovery; a stale snapshot can never authorize a turn because `turn/start` force-reloads
+and validates an enabled exact identity.
+
+Metadata is untrusted display data: brand colors accept only normalized `#RRGGBB` and are applied
+as a narrow accent that must fall back to Visual Studio theme resources under High Contrast,
+default prompts are redacted/bounded and require an explicit empty-composer button, and
+dependencies are plain-text badges with no execution or installation behavior. Metadata that has
+no Remote UI surface is not carried across the contract, so `dependencies.tools` and the
+`iconSmall` presence flag belong in the contract only once their surface exists. The icon spike is
+gated; until a Remote UI image/cache containment proof exists, the presentation uses a fixed glyph
+and exposes no raw icon path.
