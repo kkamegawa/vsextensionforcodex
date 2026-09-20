@@ -243,6 +243,12 @@ public sealed class JsonLineRpcConnection : IJsonRpcConnection
                 : await RequestReceived(message, cancellationToken).ConfigureAwait(false);
             await EnqueueAsync(new { id = ToWireId(message.Id!.Value), result }, cancellationToken).ConfigureAwait(false);
         }
+        catch (JsonRpcRemoteException ex)
+        {
+            await EnqueueAsync(
+                new { id = ToWireId(message.Id!.Value), error = new { code = ex.Code, message = ex.Message } },
+                cancellationToken).ConfigureAwait(false);
+        }
         catch (Exception ex)
         {
             await EnqueueAsync(

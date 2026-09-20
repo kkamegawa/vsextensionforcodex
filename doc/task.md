@@ -2,6 +2,17 @@
 
 `plan.md` のフェーズ分割に対応する詳細タスク。各タスクは独立してレビュー可能な小さなスライスを意図する。
 
+## 2026-09-13: Codex App Server update and remote connection (approved plan)
+
+- [ ] Phase 1: update the CLI 0.154.0 contract baseline, schema cache metadata, exact request routing, capability probes, and connection-generation state.
+- [ ] Phase 2: add explicitly enabled secure WebSocket transport for already running remote servers, authentication, health distinction, and bounded reconnect.
+- [ ] Phase 3: add component-wise local/server root mapping and connection/account/workspace state partitioning.
+- [ ] Phase 4: retain in-memory drafts, reconnect and page history, merge notifications, and prevent uncertain mutation replay.
+- [ ] Phase 5: raise the Worker contract for questions, permissions, and MCP forms/authentication with safe secret handling.
+- [ ] Phase 6: add plan/status/artifact rendering, model catalog capabilities, explicit `thread/shellCommand`, and local sandbox setup status.
+- [ ] Phase 7: run contract, race, transport, path, interaction, UI accessibility, build, VSIX, and Experimental Instance validation.
+- [ ] Tracking: parent Issue and seven linked child Issues; English/Japanese Wiki plan and Home indexes.
+
 ## 2026-08-11: Complete skill catalog and persistent cache (Issue #140, ADR-010)
 
 - [x] Add ADR-010 and synchronize the repository design, plan, task, and English/Japanese slash-command specifications. ADR-010 supersedes only ADR-009's twenty-skill presentation cap and volatile-cache-only assumption.

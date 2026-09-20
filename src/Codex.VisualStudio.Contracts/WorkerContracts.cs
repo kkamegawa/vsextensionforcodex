@@ -5,7 +5,7 @@ namespace Codex.VisualStudio.Contracts;
 
 public static class ContractVersions
 {
-    public const int Current = 15;
+    public const int Current = 16;
 }
 
 public enum WorkerConnectionState
@@ -117,6 +117,16 @@ public sealed class WorkerOptions
     public string ExtensionVersion { get; set; } = "0.1.0";
 
     public bool ExperimentalApi { get; set; }
+
+    // Remote profiles contain endpoint and token-file metadata only. The token value is read by
+    // the Worker and is never sent across the Visual Studio Remote UI boundary.
+    public string? RemoteEndpoint { get; set; }
+
+    public string? RemoteTokenFilePath { get; set; }
+
+    public string? LocalRoot { get; set; }
+
+    public string? ServerRoot { get; set; }
 }
 
 // DataContract/DataMember are required by Remote UI: the VS-side data context proxy only

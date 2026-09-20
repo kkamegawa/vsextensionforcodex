@@ -129,6 +129,9 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
     private readonly ApprovalGrantStore approvalGrants = new();
     private readonly object unsupportedMethodsLock = new();
     private readonly HashSet<string> unsupportedMethods = new(StringComparer.Ordinal);
+    private readonly object turnStateLock = new();
+    private readonly HashSet<string> completedTurnIds = new(StringComparer.Ordinal);
+    private long connectionGeneration;
     private readonly SemaphoreSlim skillsCacheGate = new(1, 1);
     private readonly TimeProvider timeProvider;
     private readonly ISkillCatalogStore skillCatalogStore;
@@ -228,6 +231,13 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
 
         this.connection = connection;
         this.options = options;
+        Interlocked.Increment(ref connectionGeneration);
+        lock (turnStateLock)
+        {
+            completedTurnIds.Clear();
+            ActiveThreadId = null;
+            ActiveTurnId = null;
+        }
         connection.NotificationReceived += OnNotificationAsync;
         connection.RequestReceived += OnServerRequestAsync;
         string overflowDirectory = Path.Combine(
@@ -726,8 +736,21 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
             "turn/start",
             parameters,
             cancellationToken).ConfigureAwait(false);
-        ActiveThreadId = request.ThreadId;
-        ActiveTurnId = result.GetProperty("turn").GetProperty("id").GetString();
+        string? startedTurnId = result.GetProperty("turn").GetProperty("id").GetString();
+        lock (turnStateLock)
+        {
+            ActiveThreadId = request.ThreadId;
+            // A completion notification may legally race the response to turn/start.
+            // Never resurrect a turn that the server has already completed.
+            if (startedTurnId is not null && !completedTurnIds.Contains(startedTurnId))
+            {
+                ActiveTurnId = startedTurnId;
+            }
+            else
+            {
+                ActiveTurnId = null;
+            }
+        }
         if (request.HasEffort)
         {
             EffectiveReasoningEffort = request.Effort;
@@ -738,7 +761,7 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
             EffectiveServiceTier = request.ServiceTier;
         }
 
-        return ActiveTurnId ?? string.Empty;
+        return startedTurnId ?? string.Empty;
     }
 
     private static void AddOptional(Dictionary<string, object?> values, string name, object? value)
@@ -1593,12 +1616,12 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
             return await HandleUserInputRequestAsync(requestId, parameters, cancellationToken).ConfigureAwait(false);
         }
 
-        // Skill-specific approval is intentionally not part of the extension contract. Never
-        // route an unknown skill approval through an existing grant, which would broaden its
-        // scope accidentally; fail closed instead.
-        if (method.Contains("skill", StringComparison.OrdinalIgnoreCase))
+        // Only known approval requests may enter the approval policy and grant store.  App
+        // server requests are untrusted input; routing an unknown request to this path could
+        // accidentally grant permissions for a future method with different semantics.
+        if (!IsApprovalRequestMethod(method))
         {
-            return ApprovalResponse("decline");
+            throw new JsonRpcRemoteException(-32601, $"Unsupported server request method '{method}'.");
         }
 
         ApprovalRequest request = CreateApprovalRequest(requestId, method, parameters);
@@ -1666,13 +1689,34 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         string? itemId = GetString(parameters, "itemId");
         if (method == "turn/started" && parameters.TryGetProperty("turn", out JsonElement startedTurn))
         {
-            ActiveTurnId = GetString(startedTurn, "id");
-            turnId = ActiveTurnId;
+            string? startedTurnId = GetString(startedTurn, "id");
+            lock (turnStateLock)
+            {
+                // A late turn/started notification must not revive a completed turn.
+                if (startedTurnId is not null && !completedTurnIds.Contains(startedTurnId))
+                {
+                    ActiveTurnId = startedTurnId;
+                    turnId = startedTurnId;
+                }
+            }
         }
         else if (method == "turn/completed")
         {
-            approvalGrants.EndTurn(threadId, ActiveTurnId ?? turnId);
-            ActiveTurnId = null;
+            string? completedId = turnId;
+            lock (turnStateLock)
+            {
+                if (completedId is not null)
+                {
+                    completedTurnIds.Add(completedId);
+                }
+
+                if (completedId is null || string.Equals(ActiveTurnId, completedId, StringComparison.Ordinal))
+                {
+                    ActiveTurnId = null;
+                }
+            }
+
+            approvalGrants.EndTurn(threadId, completedId);
         }
         else if (method == "thread/closed")
         {
@@ -2950,6 +2994,16 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         || (parameters.ValueKind == JsonValueKind.Object
             && parameters.TryGetProperty("questions", out JsonElement questions)
             && questions.ValueKind == JsonValueKind.Array);
+
+    private static bool IsApprovalRequestMethod(string method)
+        => method is "item/commandExecution/requestApproval"
+            or "item/fileChange/requestApproval"
+            or "item/networkAccess/requestApproval"
+            or "item/mcpToolCall/requestApproval"
+            or "item/permissions/requestApproval"
+            or "commandExecution/requestApproval"
+            or "fileChange/requestApproval"
+            or "networkAccess/requestApproval";
 
     // Shapes the result per ToolRequestUserInputResponse: { answers: { <id>: { answers: [...] } } }.
     private static JsonElement UserInputResponse(IReadOnlyDictionary<string, string[]> answers)

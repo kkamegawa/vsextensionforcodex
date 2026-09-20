@@ -137,6 +137,11 @@ public sealed class WorkerBridge : IWorkerBridge, ICodexWorkerObserver
         ExtensionDiagnostics.Write("Worker connect invocation starting");
         await EnsureWorkerStartedAsync(cancellationToken).ConfigureAwait(false);
 
+        ExtensionSettings settings = ExtensionSettings.Load();
+        RemoteConnectionProfile? remote = settings.RemoteProfiles
+            .FirstOrDefault(profile => profile.Enabled
+                && string.Equals(profile.Name, settings.SelectedRemoteProfileName, StringComparison.Ordinal));
+
         WorkerStatus result = await RequireRpc().InvokeWithCancellationAsync<WorkerStatus>(
             "worker/connect",
             new object[]
@@ -147,6 +152,10 @@ public sealed class WorkerBridge : IWorkerBridge, ICodexWorkerObserver
                     WorkingDirectory = workingDirectory,
                     ExtensionVersion = "0.1.0",
                     ExperimentalApi = experimentalApi,
+                    RemoteEndpoint = remote?.Endpoint,
+                    RemoteTokenFilePath = remote?.TokenFilePath,
+                    LocalRoot = remote?.LocalRoot,
+                    ServerRoot = remote?.ServerRoot,
                 },
             },
             cancellationToken).ConfigureAwait(false);

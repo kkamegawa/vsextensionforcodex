@@ -8,7 +8,7 @@ public sealed class TransportPoliciesTests
     [TestMethod]
     public void RetryPolicy_RetriesOnlyIdempotentOverloadResponses()
     {
-        var policy = new JsonRpcRetryPolicy();
+        var policy = new JsonRpcRetryPolicy(jitterSource: static () => 0.5);
 
         RetryDecision retry = policy.Evaluate(new JsonRpcRemoteException(-32001, "overloaded"), 0, isIdempotent: true);
         RetryDecision mutation = policy.Evaluate(new JsonRpcRemoteException(-32001, "overloaded"), 0, isIdempotent: false);
@@ -26,9 +26,11 @@ public sealed class TransportPoliciesTests
         var policy = new WebSocketTransportSecurityPolicy();
 
         Assert.IsFalse(policy.Validate(false, new Uri("ws://127.0.0.1:8080"), new string('a', 32)).IsAllowed);
-        Assert.IsFalse(policy.Validate(true, new Uri("wss://example.com"), new string('a', 32)).IsAllowed);
+        Assert.IsTrue(policy.Validate(true, new Uri("wss://example.com"), new string('a', 32)).IsAllowed);
         Assert.IsFalse(policy.Validate(true, new Uri("ws://localhost:8080"), "short").IsAllowed);
         Assert.IsTrue(policy.Validate(true, new Uri("ws://127.0.0.1:8080"), new string('a', 32)).IsAllowed);
+        Assert.IsTrue(policy.Validate(true, new Uri("wss://app-server.example"), new string('a', 32)).IsAllowed);
+        Assert.IsFalse(policy.Validate(true, new Uri("ws://app-server.example"), new string('a', 32)).IsAllowed);
     }
 
     [TestMethod]

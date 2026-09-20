@@ -1,5 +1,7 @@
 ﻿# Architecture Decision Records
 
+The Codex App Server update decisions are split into phase-scoped ADR files because this historical index exceeds 200 lines: `doc/adr/ADR-011-app-server-contract.md` through `ADR-016-app-server-daily-features.md`.
+
 ## ADR-001: File attachment interaction and trust boundaries
 
 - Date: 2026-07-19

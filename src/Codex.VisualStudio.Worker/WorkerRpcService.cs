@@ -52,17 +52,40 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
 
         this.options = options;
         Interlocked.Exchange(ref networkFailureReported, 0);
-        await SetStatusAsync(WorkerConnectionState.Connecting, "Starting codex app-server...", cancellationToken).ConfigureAwait(false);
+        bool remote = !string.IsNullOrWhiteSpace(options.RemoteEndpoint);
+        await SetStatusAsync(
+            WorkerConnectionState.Connecting,
+            remote ? "Connecting to remote codex app-server..." : "Starting codex app-server...",
+            cancellationToken).ConfigureAwait(false);
         try
         {
-            WorkerDiagnostics.Write("worker starting codex app-server");
-            await processHost.StartAsync(options.CodexPath, options.WorkingDirectory, cancellationToken).ConfigureAwait(false);
+            if (remote)
+            {
+                if (string.IsNullOrWhiteSpace(options.RemoteTokenFilePath))
+                {
+                    throw new InvalidOperationException("A token file is required for a remote app-server connection.");
+                }
+
+                WorkerDiagnostics.Write("worker connecting to remote codex app-server");
+                await processHost.StartRemoteAsync(
+                    options.RemoteEndpoint!,
+                    options.RemoteTokenFilePath,
+                    cancellationToken).ConfigureAwait(false);
+            }
+            else
+            {
+                WorkerDiagnostics.Write("worker starting codex app-server");
+                await processHost.StartAsync(options.CodexPath, options.WorkingDirectory, cancellationToken).ConfigureAwait(false);
+            }
             WorkerDiagnostics.Write("worker initializing codex app-server");
             await session.InitializeAsync(processHost.Connection!, options, cancellationToken).ConfigureAwait(false);
             WorkerDiagnostics.Write("worker reading account status");
             accountStatus = await session.GetAccountStatusAsync(cancellationToken).ConfigureAwait(false);
             WorkerDiagnostics.Write("worker connect completed");
-            return await SetStatusAsync(WorkerConnectionState.Ready, "Connected to codex app-server.", cancellationToken).ConfigureAwait(false);
+            return await SetStatusAsync(
+                WorkerConnectionState.Ready,
+                remote ? "Connected to remote codex app-server." : "Connected to codex app-server.",
+                cancellationToken).ConfigureAwait(false);
         }
         catch (Exception ex)
         {

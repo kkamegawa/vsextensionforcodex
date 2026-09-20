@@ -267,6 +267,10 @@ dependencies:
 - **WebSocket transport の露出**: WebSocket は将来検討に留め、使用時は loopback 限定と認証必須にする。
 - **apm/plugin/MCP の supply chain**: lockfile、allowlist、audit、既定無効化で未検証資産の実行を防ぐ。
 
+## 12. Codex App Server update and remote connection plan (2026-09-13)
+
+The approved follow-up plan is maintained in [app-server-update-plan.md](app-server-update-plan.md) and its Japanese translation [app-server-update-plan_ja.md](app-server-update-plan_ja.md). It covers contract validation, secure remote transport, path/state isolation, reconnect and history recovery, question/approval/MCP interaction, daily-use app-server features, and integrated verification. Phase ADRs are indexed in `doc/adr/ADR-011` through `ADR-016`.
+
 ## 11. 参考
 
 - Codex App Server: https://developers.openai.com/codex/app-server

@@ -39,6 +39,22 @@ public sealed class JsonLineRpcConnectionTests
     }
 
     [TestMethod]
+    public async Task ServerRequest_PropagatesJsonRpcMethodError()
+    {
+        await using var harness = new RpcHarness();
+        harness.Connection.RequestReceived += (_, _) =>
+            throw new JsonRpcRemoteException(-32601, "unsupported");
+        await harness.Connection.StartAsync(CancellationToken.None);
+
+        await harness.WriteServerLineAsync("""{"id":"future-1","method":"future/request","params":{}}""");
+
+        string response = await harness.ReadClientLineAsync();
+        using JsonDocument document = JsonDocument.Parse(response);
+        Assert.AreEqual("future-1", document.RootElement.GetProperty("id").GetString());
+        Assert.AreEqual(-32601, document.RootElement.GetProperty("error").GetProperty("code").GetInt32());
+    }
+
+    [TestMethod]
     public async Task CanceledRequest_DoesNotCompleteFromLateResponse()
     {
         await using var harness = new RpcHarness();
