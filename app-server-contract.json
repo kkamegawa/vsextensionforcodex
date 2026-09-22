@@ -1,0 +1,117 @@
+﻿{
+  "schemaVersion": 1,
+  "repository": "openai/codex",
+  "targetVersion": "0.155.1",
+  "regressionVersion": "0.154.0",
+  "platform": "x86_64-pc-windows-msvc",
+  "releases": {
+    "0.154.0": {
+      "tag": "rust-v0.154.0",
+      "asset": "codex-x86_64-pc-windows-msvc.exe",
+      "sha256": "be96b992178b1e467c225800da0d65f2c86d5eba1ef0b14632f65db381cbdfde"
+    },
+    "0.155.1": {
+      "tag": "rust-v0.155.1",
+      "asset": "codex-x86_64-pc-windows-msvc.exe",
+      "sha256": "eba0f32c976667cb9298efafd98513e823eeda7b576a03ec658bb8be8d336316"
+    }
+  },
+  "surfaces": {
+    "stable": { "generatorArguments": [] },
+    "experimental": { "generatorArguments": ["--experimental"] }
+  },
+  "usedMethods": {
+    "clientRequests": [
+      "initialize",
+      "thread/start",
+      "thread/resume",
+      "thread/list",
+      "model/list",
+      "permissionProfile/list",
+      "turn/start",
+      "turn/steer",
+      "turn/interrupt",
+      "account/read",
+      "account/login/start",
+      "account/logout",
+      "thread/compact/start",
+      "thread/fork",
+      "thread/goal/get",
+      "thread/goal/set",
+      "thread/goal/clear",
+      "review/start",
+      "mcpServerStatus/list",
+      "skills/list",
+      "feedback/upload",
+      "account/rateLimits/read"
+    ],
+    "serverRequests": [
+      "item/commandExecution/requestApproval",
+      "item/fileChange/requestApproval",
+      "item/permissions/requestApproval",
+      "item/tool/requestUserInput"
+    ],
+    "serverNotifications": [
+      "account/login/completed",
+      "account/updated",
+      "account/rateLimits/updated",
+      "skills/changed",
+      "turn/started",
+      "turn/completed",
+      "thread/closed",
+      "serverRequest/resolved",
+      "thread/settings/updated",
+      "thread/goal/updated",
+      "thread/goal/cleared",
+      "thread/compacted",
+      "item/started",
+      "item/completed",
+      "item/agentMessage/delta",
+      "item/reasoning/summaryTextDelta",
+      "item/commandExecution/outputDelta",
+      "turn/diff/updated",
+      "turn/plan/updated",
+      "error"
+    ]
+  },
+  "knownDifferences": {
+    "stable": {
+      "added": [
+        "v2/ThreadAttachmentAddParams.json",
+        "v2/ThreadAttachmentAddResponse.json",
+        "v2/ThreadAttachmentListParams.json",
+        "v2/ThreadAttachmentListResponse.json",
+        "v2/ThreadAttachmentRemoveParams.json",
+        "v2/ThreadAttachmentRemoveResponse.json",
+        "v2/ThreadAttachmentUpdatedNotification.json"
+      ],
+      "removed": [],
+      "changed": [
+        "ClientRequest.json",
+        "ServerNotification.json",
+        "v2/FeedbackUploadResponse.json"
+      ]
+    },
+    "experimental": {
+      "added": [
+        "v2/MemoryStatusParams.json",
+        "v2/MemoryStatusResponse.json",
+        "v2/ThreadAttachmentAddParams.json",
+        "v2/ThreadAttachmentAddResponse.json",
+        "v2/ThreadAttachmentListParams.json",
+        "v2/ThreadAttachmentListResponse.json",
+        "v2/ThreadAttachmentRemoveParams.json",
+        "v2/ThreadAttachmentRemoveResponse.json",
+        "v2/ThreadAttachmentUpdatedNotification.json",
+        "v2/UserVerificationCancelParams.json",
+        "v2/UserVerificationCancelResponse.json"
+      ],
+      "removed": [],
+      "changed": [
+        "ClientRequest.json",
+        "ServerNotification.json",
+        "v2/FeedbackUploadResponse.json"
+      ]
+    }
+  }
+}

@@ -1864,11 +1864,11 @@ public sealed class CodexSessionServiceTests
         await connection.EmitRequestAsync(
             "approval-1",
             "item/commandExecution/requestApproval",
-            new { command = "dotnet build", cwd, threadId = "thread-1", turnId = "turn-1" });
+            new { command = "dotnet build", cwd, itemId = "item-1", threadId = "thread-1", turnId = "turn-1", startedAtMs = 1L });
         await connection.EmitRequestAsync(
             "approval-2",
             "item/commandExecution/requestApproval",
-            new { command = "dotnet build", cwd, threadId = "thread-1", turnId = "turn-2" });
+            new { command = "dotnet build", cwd, itemId = "item-2", threadId = "thread-1", turnId = "turn-2", startedAtMs = 2L });
 
         Assert.AreEqual(2, audit.Count);
         Assert.AreEqual(ApprovalAuditAction.GrantCreated, audit[0].Action);
@@ -1903,12 +1903,13 @@ public sealed class CodexSessionServiceTests
 
         JsonElement result = await connection.EmitRequestAsync(
             "ui-1",
-            "tool/requestUserInput",
+            "item/tool/requestUserInput",
             new
             {
                 itemId = "item-1",
                 threadId = "thread-1",
                 turnId = "turn-1",
+                isBlocking = true,
                 questions = new[]
                 {
                     new
@@ -1961,19 +1962,351 @@ public sealed class CodexSessionServiceTests
             connection.Requests.Single(item => item.Method == method).Parameters,
             WireJsonOptions);
 
+    [TestMethod]
+    public async Task UnknownServerRequestWithQuestionsIsRejectedWithoutUserInputRouting()
+    {
+        var connection = new RecordingConnection();
+        await using var service = CreateService();
+        int requests = 0;
+        service.UserInputRequested += (_, _) =>
+        {
+            requests++;
+            return Task.CompletedTask;
+        };
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        JsonRpcRemoteException exception = await Assert.ThrowsExactlyAsync<JsonRpcRemoteException>(() =>
+            connection.EmitRequestAsync("unknown-1", "future/requestUserInput", new { questions = Array.Empty<object>() }));
+
+        Assert.AreEqual(-32601, exception.Code);
+        Assert.AreEqual(0, requests);
+    }
+
+    [TestMethod]
+    public async Task InitializePreservesMetadataAndClearsItBeforeReinitialize()
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "initialize"
+                ? JsonSerializer.SerializeToElement(new
+                {
+                    codexHome = "C:/private/codex",
+                    platformFamily = "windows",
+                    platformOs = "windows-11",
+                    userAgent = "codex-cli/0.155.1",
+                })
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+        Assert.AreEqual("C:/private/codex", service.InitializationMetadata?.CodexHome);
+        Assert.AreEqual("windows", service.InitializationMetadata?.PlatformFamily);
+
+        connection.Handler = (method, _) => method == "initialize"
+            ? JsonSerializer.SerializeToElement(new { })
+            : JsonSerializer.SerializeToElement(new { });
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+        Assert.IsNotNull(service.InitializationMetadata);
+        Assert.IsNull(service.InitializationMetadata?.CodexHome);
+    }
+
+    [TestMethod]
+    public async Task KnownServerRequestsWithInvalidRequiredFieldsReturnInvalidParams()
+    {
+        var connection = new RecordingConnection();
+        await using var service = CreateService();
+        int approvalRequests = 0;
+        int inputRequests = 0;
+        service.ApprovalRequested += (_, _) =>
+        {
+            approvalRequests++;
+            return Task.CompletedTask;
+        };
+        service.UserInputRequested += (_, _) =>
+        {
+            inputRequests++;
+            return Task.CompletedTask;
+        };
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        (string Method, object Parameters)[] invalidRequests =
+        [
+            ("item/commandExecution/requestApproval", new { threadId = "thread-1", turnId = "turn-1", itemId = "item-1" }),
+            ("item/fileChange/requestApproval", new { threadId = "thread-1", turnId = "turn-1", itemId = "item-1", startedAtMs = "now" }),
+            ("item/permissions/requestApproval", new { threadId = "thread-1", turnId = "turn-1", itemId = "item-1", cwd = "C:/work", permissions = new { } }),
+            ("item/tool/requestUserInput", new { threadId = "thread-1", turnId = "turn-1", itemId = "item-1", questions = Array.Empty<object>() }),
+        ];
+
+        foreach ((string method, object parameters) in invalidRequests)
+        {
+            JsonRpcRemoteException exception = await Assert.ThrowsExactlyAsync<JsonRpcRemoteException>(() =>
+                connection.EmitRequestAsync("invalid-1", method, parameters));
+            Assert.AreEqual(-32602, exception.Code, method);
+        }
+
+        Assert.AreEqual(0, approvalRequests);
+        Assert.AreEqual(0, inputRequests);
+    }
+
+    [TestMethod]
+    public async Task CompletedBeforeTurnStartResponseIsNotRevivedByLateStartedNotification()
+    {
+        var requestStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var response = new TaskCompletionSource<JsonElement>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var connection = new RecordingConnection
+        {
+            AsyncHandler = (method, _, _) =>
+            {
+                if (method == "turn/start")
+                {
+                    requestStarted.TrySetResult();
+                    return response.Task;
+                }
+
+                return Task.FromResult(JsonSerializer.SerializeToElement(new { }));
+            },
+        };
+        await using var service = CreateService();
+        var events = new List<ConversationEvent>();
+        service.ConversationEventReceived += (value, _) =>
+        {
+            events.Add(value);
+            return Task.CompletedTask;
+        };
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        Task<string> start = service.StartTurnAsync(
+            new StartTurnRequest { ThreadId = "thread-1", Text = "hello" },
+            CancellationToken.None);
+        await requestStarted.Task;
+        await connection.EmitNotificationAsync(
+            "turn/completed",
+            new { threadId = "thread-1", turnId = "turn-1" });
+        response.TrySetResult(JsonSerializer.SerializeToElement(new { turn = new { id = "turn-1" } }));
+
+        Assert.AreEqual("turn-1", await start);
+        Assert.IsNull(service.ActiveTurnId);
+        int startedEvents = events.Count(item => item.Kind == ConversationEventKind.TurnStarted);
+        await connection.EmitNotificationAsync(
+            "turn/started",
+            new { threadId = "thread-1", turn = new { id = "turn-1" } });
+        Assert.IsNull(service.ActiveTurnId);
+        Assert.AreEqual(startedEvents, events.Count(item => item.Kind == ConversationEventKind.TurnStarted));
+    }
+
+    [TestMethod]
+    public async Task OtherThreadOrTurnCompletionDoesNotChangeCurrentTurn()
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "turn/start"
+                ? JsonSerializer.SerializeToElement(new { turn = new { id = "turn-1" } })
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+        await service.StartTurnAsync(
+            new StartTurnRequest { ThreadId = "thread-1", Text = "hello" },
+            CancellationToken.None);
+
+        await connection.EmitNotificationAsync(
+            "turn/completed",
+            new { threadId = "thread-2", turnId = "turn-1" });
+        Assert.AreEqual("turn-1", service.ActiveTurnId);
+        await connection.EmitNotificationAsync(
+            "turn/completed",
+            new { threadId = "thread-1", turnId = "turn-2" });
+        Assert.AreEqual("turn-1", service.ActiveTurnId);
+        await connection.EmitNotificationAsync(
+            "turn/completed",
+            new { threadId = "thread-1", turnId = "turn-1" });
+        await connection.EmitNotificationAsync(
+            "turn/completed",
+            new { threadId = "thread-1", turnId = "turn-1" });
+        Assert.IsNull(service.ActiveTurnId);
+    }
+
+    [TestMethod]
+    public async Task OldGenerationResponseAndNotificationCannotChangeCurrentState()
+    {
+        var requestStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var response = new TaskCompletionSource<JsonElement>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var oldConnection = new RecordingConnection
+        {
+            AsyncHandler = (method, _, _) =>
+            {
+                if (method == "turn/start")
+                {
+                    requestStarted.TrySetResult();
+                    return response.Task;
+                }
+
+                return Task.FromResult(JsonSerializer.SerializeToElement(new { }));
+            },
+        };
+        var currentConnection = new RecordingConnection();
+        await using var service = CreateService();
+        await service.InitializeAsync(oldConnection, Options(), CancellationToken.None);
+        Task<string> oldStart = service.StartTurnAsync(
+            new StartTurnRequest { ThreadId = "old-thread", Text = "hello" },
+            CancellationToken.None);
+        await requestStarted.Task;
+
+        await service.InitializeAsync(currentConnection, Options(), CancellationToken.None);
+        await oldConnection.EmitNotificationAsync(
+            "turn/started",
+            new { threadId = "old-thread", turn = new { id = "old-turn" } });
+        response.TrySetResult(JsonSerializer.SerializeToElement(new { turn = new { id = "old-turn" } }));
+
+        await Assert.ThrowsExactlyAsync<JsonRpcConnectionClosedException>(() => oldStart);
+        Assert.IsNull(service.ActiveThreadId);
+        Assert.IsNull(service.ActiveTurnId);
+    }
+
+    [TestMethod]
+    public async Task ConnectionCloseReleasesApprovalAndEmitsResolvedOnce()
+    {
+        var connection = new RecordingConnection();
+        var requested = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var service = CreateService();
+        int resolved = 0;
+        service.ApprovalRequested += (_, _) =>
+        {
+            requested.TrySetResult();
+            return Task.CompletedTask;
+        };
+        service.ApprovalResolved += (_, _) =>
+        {
+            resolved++;
+            return Task.CompletedTask;
+        };
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        Task<JsonElement> pending = connection.EmitRequestAsync(
+            "approval-1",
+            "item/commandExecution/requestApproval",
+            new { command = "dotnet build", threadId = "thread-1", turnId = "turn-1", itemId = "item-1", startedAtMs = 1L });
+        await requested.Task;
+        connection.EmitClosed();
+
+        JsonElement result = await pending;
+        Assert.AreEqual("cancel", result.GetProperty("decision").GetString());
+        Assert.AreEqual(1, resolved);
+    }
+
+    [TestMethod]
+    public async Task ConnectionCloseReleasesUserInputAndEmitsResolvedOnce()
+    {
+        var connection = new RecordingConnection();
+        var requested = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var service = CreateService();
+        int resolved = 0;
+        service.UserInputRequested += (_, _) =>
+        {
+            requested.TrySetResult();
+            return Task.CompletedTask;
+        };
+        service.UserInputResolved += (_, _) =>
+        {
+            resolved++;
+            return Task.CompletedTask;
+        };
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        Task<JsonElement> pending = connection.EmitRequestAsync(
+            "input-1",
+            "item/tool/requestUserInput",
+            new
+            {
+                threadId = "thread-1",
+                turnId = "turn-1",
+                itemId = "item-1",
+                isBlocking = true,
+                questions = new[]
+                {
+                    new { id = "choice", header = "Choice", question = "Pick one", options = (object?)null },
+                },
+            });
+        await requested.Task;
+        connection.EmitClosed();
+
+        JsonElement result = await pending;
+        Assert.AreEqual(0, result.GetProperty("answers").EnumerateObject().Count());
+        Assert.AreEqual(1, resolved);
+    }
+
+    [TestMethod]
+    public async Task OldResolvedEventCannotResolveSameRequestIdInNewGeneration()
+    {
+        var oldConnection = new RecordingConnection();
+        var currentConnection = new RecordingConnection();
+        var requestSignals = new Queue<TaskCompletionSource>();
+        var firstRequested = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var secondRequested = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        requestSignals.Enqueue(firstRequested);
+        requestSignals.Enqueue(secondRequested);
+        await using var service = CreateService();
+        int resolved = 0;
+        service.ApprovalResolved += (_, _) =>
+        {
+            resolved++;
+            return Task.CompletedTask;
+        };
+        service.ApprovalRequested += (_, _) =>
+        {
+            requestSignals.Dequeue().TrySetResult();
+            return Task.CompletedTask;
+        };
+        await service.InitializeAsync(oldConnection, Options(), CancellationToken.None);
+
+        object parameters = new { command = "dotnet build", threadId = "thread-1", turnId = "turn-1", itemId = "item-1", startedAtMs = 1L };
+        Task<JsonElement> oldRequest = oldConnection.EmitRequestAsync("same-id", "item/commandExecution/requestApproval", parameters);
+        await firstRequested.Task;
+        await service.InitializeAsync(currentConnection, Options(), CancellationToken.None);
+        Assert.AreEqual("cancel", (await oldRequest).GetProperty("decision").GetString());
+        Assert.AreEqual(0, resolved);
+
+        Task<JsonElement> currentRequest = currentConnection.EmitRequestAsync("same-id", "item/commandExecution/requestApproval", parameters);
+        await secondRequested.Task;
+        await oldConnection.EmitNotificationAsync("serverRequest/resolved", new { requestId = "same-id" });
+        Assert.IsFalse(currentRequest.IsCompleted);
+        await service.ResolveApprovalAsync(
+            new ResolveApprovalRequest { RequestId = "same-id", Decision = ApprovalDecision.Accept },
+            CancellationToken.None);
+        Assert.AreEqual("accept", (await currentRequest).GetProperty("decision").GetString());
+        Assert.AreEqual(1, resolved);
+    }
+
+    [TestMethod]
+    public async Task UnknownNotificationIsNotProjectedToConversationObservers()
+    {
+        var connection = new RecordingConnection();
+        await using var service = CreateService();
+        var events = new List<ConversationEvent>();
+        service.ConversationEventReceived += (value, _) =>
+        {
+            events.Add(value);
+            return Task.CompletedTask;
+        };
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+        events.Clear();
+
+        await connection.EmitNotificationAsync("future/notification", new { secret = "do-not-project" });
+
+        Assert.AreEqual(0, events.Count);
+    }
+
     private sealed class RecordingConnection : IJsonRpcConnection
     {
         public event Func<JsonRpcMessage, CancellationToken, Task>? NotificationReceived;
 
         public event Func<JsonRpcMessage, CancellationToken, Task<JsonElement>>? RequestReceived;
 
-        public event EventHandler<Exception?>? Closed
-        {
-            add { }
-            remove { }
-        }
+        public event EventHandler<Exception?>? Closed;
 
         public Func<string, object?, JsonElement> Handler { get; set; } = (_, _) => JsonSerializer.SerializeToElement(new { });
+
+        public Func<string, object?, CancellationToken, Task<JsonElement>>? AsyncHandler { get; set; }
 
         public List<RecordedRequest> Requests { get; } = new();
 
@@ -1983,7 +2316,8 @@ public sealed class CodexSessionServiceTests
         {
             cancellationToken.ThrowIfCancellationRequested();
             Requests.Add(new RecordedRequest(method, parameters, timeout));
-            return Task.FromResult(Handler(method, parameters));
+            return AsyncHandler?.Invoke(method, parameters, cancellationToken)
+                ?? Task.FromResult(Handler(method, parameters));
         }
 
         public Task SendNotificationAsync(string method, object? parameters, CancellationToken cancellationToken)
@@ -2008,6 +2342,8 @@ public sealed class CodexSessionServiceTests
                 },
                 CancellationToken.None)
                 ?? Task.FromResult(JsonSerializer.SerializeToElement(new { }));
+
+        public void EmitClosed(Exception? exception = null) => Closed?.Invoke(this, exception);
 
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }

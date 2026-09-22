@@ -1,4 +1,4 @@
-using System.IO.Pipelines;
+﻿using System.IO.Pipelines;
 using System.Text.Json;
 using Codex.AppServer.Protocol;
 
@@ -52,6 +52,111 @@ public sealed class JsonLineRpcConnectionTests
         using JsonDocument document = JsonDocument.Parse(response);
         Assert.AreEqual("future-1", document.RootElement.GetProperty("id").GetString());
         Assert.AreEqual(-32601, document.RootElement.GetProperty("error").GetProperty("code").GetInt32());
+    }
+
+    [TestMethod]
+    public async Task ServerRequest_PropagatesInvalidParamsErrorWithRequestId()
+    {
+        await using var harness = new RpcHarness();
+        harness.Connection.RequestReceived += (_, _) =>
+            throw new JsonRpcRemoteException(-32602, "invalid params");
+        await harness.Connection.StartAsync(CancellationToken.None);
+
+        await harness.WriteServerLineAsync("""{"id":"invalid-1","method":"item/fileChange/requestApproval","params":{}}""");
+
+        string response = await harness.ReadClientLineAsync();
+        using JsonDocument document = JsonDocument.Parse(response);
+        Assert.AreEqual("invalid-1", document.RootElement.GetProperty("id").GetString());
+        Assert.AreEqual(-32602, document.RootElement.GetProperty("error").GetProperty("code").GetInt32());
+    }
+
+    [TestMethod]
+    public async Task DuplicateServerRequestId_InvokesHandlerOnce()
+    {
+        await using var harness = new RpcHarness();
+        var started = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        int handlerCalls = 0;
+        harness.Connection.RequestReceived += async (_, cancellationToken) =>
+        {
+            Interlocked.Increment(ref handlerCalls);
+            started.TrySetResult(true);
+            await release.Task.WaitAsync(cancellationToken);
+            return JsonSerializer.SerializeToElement(new { decision = "accept" });
+        };
+        await harness.Connection.StartAsync(CancellationToken.None);
+
+        const string request = """{"id":"duplicate-1","method":"item/fileChange/requestApproval","params":{}}""";
+        await harness.WriteServerLineAsync(request);
+        await started.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await harness.WriteServerLineAsync(request);
+        await Task.Delay(100);
+        Assert.AreEqual(1, Volatile.Read(ref handlerCalls));
+
+        release.TrySetResult(true);
+        string response = await harness.ReadClientLineAsync();
+        using JsonDocument document = JsonDocument.Parse(response);
+        Assert.AreEqual("duplicate-1", document.RootElement.GetProperty("id").GetString());
+        await Task.Delay(100);
+        Assert.AreEqual(1, Volatile.Read(ref handlerCalls));
+    }
+
+    [TestMethod]
+    public async Task ImmediateServerRequests_CompleteWithoutLosingResponses()
+    {
+        await using var harness = new RpcHarness();
+        int handlerCalls = 0;
+        harness.Connection.RequestReceived += (_, _) =>
+        {
+            Interlocked.Increment(ref handlerCalls);
+            return Task.FromResult(JsonSerializer.SerializeToElement(new { ok = true }));
+        };
+        await harness.Connection.StartAsync(CancellationToken.None);
+
+        const int requestCount = 64;
+        for (int i = 0; i < requestCount; i++)
+        {
+            await harness.WriteServerLineAsync($"{{\"id\":\"immediate-{i}\",\"method\":\"test/request\",\"params\":{{}}}}");
+        }
+
+        var responseIds = new HashSet<string>(StringComparer.Ordinal);
+        for (int i = 0; i < requestCount; i++)
+        {
+            using JsonDocument document = JsonDocument.Parse(await harness.ReadClientLineAsync());
+            responseIds.Add(document.RootElement.GetProperty("id").GetString()!);
+        }
+
+        Assert.AreEqual(requestCount, responseIds.Count);
+        Assert.AreEqual(requestCount, Volatile.Read(ref handlerCalls));
+    }
+
+    [TestMethod]
+    public async Task Close_CancelsOutstandingServerRequestWithoutResponse()
+    {
+        await using var harness = new RpcHarness();
+        var started = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var canceled = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        harness.Connection.RequestReceived += async (_, cancellationToken) =>
+        {
+            started.TrySetResult(true);
+            try
+            {
+                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                canceled.TrySetResult(true);
+                throw;
+            }
+
+            return JsonSerializer.SerializeToElement(new { decision = "accept" });
+        };
+        await harness.Connection.StartAsync(CancellationToken.None);
+        await harness.WriteServerLineAsync("""{"id":"close-1","method":"item/fileChange/requestApproval","params":{}}""");
+        await started.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+        await harness.Connection.DisposeAsync();
+        await canceled.Task.WaitAsync(TimeSpan.FromSeconds(2));
     }
 
     [TestMethod]

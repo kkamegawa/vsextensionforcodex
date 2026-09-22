@@ -143,7 +143,7 @@ public sealed class WorkerRpcServiceTests
     public async Task CompactionCompletionRestoresReadyWhenNoTurnIsActive()
     {
         // thread/compact/start marks the worker Busy, but the app-server may report completion
-        // only through the context/compacted notification instead of turn/completed. The worker
+        // only through the thread/compacted notification instead of turn/completed. The worker
         // must return to Ready so queued slash commands are not blocked forever.
         var connection = new StubConnection
         {
@@ -164,7 +164,7 @@ public sealed class WorkerRpcServiceTests
         WorkerStatus during = await worker.GetStatusAsync(CancellationToken.None);
 
         await connection.EmitNotificationAsync(
-            "context/compacted",
+            "thread/compacted",
             new { threadId = "thread-1", turnId = "turn-9" });
         WorkerStatus after = await worker.GetStatusAsync(CancellationToken.None);
 
@@ -238,7 +238,15 @@ public sealed class WorkerRpcServiceTests
         Task<JsonElement> approvalTask = connection.EmitRequestAsync(
             "approval-1",
             "item/commandExecution/requestApproval",
-            new { command = "dotnet build", cwd = Options().WorkingDirectory, threadId = "thread-1", turnId = "turn-1" });
+            new
+            {
+                command = "dotnet build",
+                cwd = Options().WorkingDirectory,
+                threadId = "thread-1",
+                turnId = "turn-1",
+                itemId = "item-1",
+                startedAtMs = 1L,
+            });
         ApprovalRequest approval = await approvalSeen.Task.WaitAsync(TimeSpan.FromSeconds(5));
         WorkerStatus waiting = await worker.GetStatusAsync(CancellationToken.None);
 
@@ -247,7 +255,7 @@ public sealed class WorkerRpcServiceTests
             CancellationToken.None);
         await approvalTask;
         await connection.EmitNotificationAsync(
-            "context/compacted",
+            "thread/compacted",
             new { threadId = "thread-1", turnId = "turn-1" });
         WorkerStatus finalReady = await worker.GetStatusAsync(CancellationToken.None);
 

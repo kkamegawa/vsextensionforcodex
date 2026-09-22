@@ -1,4 +1,4 @@
-name: CI
+﻿name: CI
 
 on:
   push:
@@ -7,8 +7,77 @@ on:
   pull_request:
 
 jobs:
+  generate-schemas:
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ["0.154.0", "0.155.1"]
+        surface: [stable, experimental]
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Download pinned Codex CLI
+        shell: pwsh
+        env:
+          CODEX_VERSION: ${{ matrix.version }}
+        run: |
+          $contract = Get-Content -Raw app-server-contract.json | ConvertFrom-Json
+          $release = $contract.releases.($env:CODEX_VERSION)
+          $uri = "https://github.com/openai/codex/releases/download/$($release.tag)/$($release.asset)"
+          $path = Join-Path $env:RUNNER_TEMP $release.asset
+          Invoke-WebRequest -Uri $uri -OutFile $path
+          $actual = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne $release.sha256) { throw "SHA-256 mismatch for $uri: $actual" }
+          "CODEX_PATH=$path" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Generate schema surface
+        shell: pwsh
+        run: |
+          pwsh -NoProfile -File scripts/generate-schemas.ps1 -OutputDirectory schemas `
+            -Version '${{ matrix.version }}' -Surface '${{ matrix.surface }}' -CodexPath "$env:CODEX_PATH"
+      - name: Verify schema cache contract
+        if: matrix.version == '0.155.1' && matrix.surface == 'stable'
+        shell: pwsh
+        run: pwsh -NoProfile -File scripts/test-schema-cache.ps1 -CodexPath "$env:CODEX_PATH"
+      - name: Upload schema cache
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: schemas-${{ matrix.version }}-${{ matrix.surface }}
+          path: schemas
+          include-hidden-files: true
+
+  verify-schemas:
+    runs-on: windows-latest
+    needs: generate-schemas
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Download schema caches
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v7.0.0
+        with:
+          pattern: schemas-*
+          path: schemas
+          merge-multiple: true
+      - name: Compare stable schema baseline and target
+        shell: pwsh
+        run: pwsh -NoProfile -File scripts/compare-schemas.ps1 -BaselineDirectory schemas/0.154.0/stable -TargetDirectory schemas/0.155.1/stable -Surface stable
+      - name: Compare experimental schema baseline and target
+        shell: pwsh
+        run: pwsh -NoProfile -File scripts/compare-schemas.ps1 -BaselineDirectory schemas/0.154.0/experimental -TargetDirectory schemas/0.155.1/experimental -Surface experimental
+      - name: Verify target stable method surface
+        shell: pwsh
+        run: pwsh -NoProfile -File scripts/verify-contract-surface.ps1 -SchemaDirectory schemas/0.155.1/stable
+      - name: Verify target experimental method surface
+        shell: pwsh
+        run: pwsh -NoProfile -File scripts/verify-contract-surface.ps1 -SchemaDirectory schemas/0.155.1/experimental
+
   build:
     runs-on: windows-latest
+    needs: [generate-schemas, verify-schemas]
     # Skip pull requests from forks: a fork PR cannot supply CODEX_PATH-worthy
     # secrets and should not consume Windows runner minutes on this repository.
     # Tag pushes and same-repository pull requests still run.
@@ -28,41 +97,17 @@ jobs:
             8.0.x
             10.0.x
 
-      - name: Install Codex CLI
-        id: install_codex
-        shell: pwsh
-        run: |
-          # Codex.AppServer.Protocol generates schemas/ during the build by calling the Codex CLI,
-          # so the runner needs one. winget is the supported install method for this extension.
-          winget install --id OpenAI.Codex --source winget --silent `
-            --accept-source-agreements --accept-package-agreements --disable-interactivity
-          if ($LASTEXITCODE -ne 0) {
-            throw "winget failed to install the Codex CLI (exit code $LASTEXITCODE)."
-          }
-
-          # winget updates the persisted PATH, which the current process does not see yet.
-          $env:PATH = [Environment]::GetEnvironmentVariable('PATH', 'Machine') + ';' +
-            [Environment]::GetEnvironmentVariable('PATH', 'User')
-          $codex = Get-Command codex -CommandType Application -All -ErrorAction SilentlyContinue |
-            Where-Object { $_.Source -notmatch '[\\/]WindowsApps[\\/]' } |
-            Select-Object -First 1
-          if (-not $codex) {
-            throw "The Codex CLI was installed but no usable executable was found on PATH."
-          }
-
-          & $codex.Source --version
-
-          # Scoped to this step's output rather than $GITHUB_ENV: exporting CODEX_PATH job-wide
-          # would leak into the test steps below and break CodexExecutableResolver unit tests
-          # that assert behavior with CODEX_PATH unset (it always wins resolution when set).
-          "codex_path=$($codex.Source)" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+      - name: Download generated schema caches
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v7.0.0
+        with:
+          pattern: schemas-*
+          path: schemas
+          merge-multiple: true
 
       - name: Restore
         run: dotnet restore CodexForVisualStudio.slnx
 
       - name: Build solution
-        env:
-          CODEX_PATH: ${{ steps.install_codex.outputs.codex_path }}
         run: dotnet build CodexForVisualStudio.slnx -c Release --no-restore -v minimal
 
       - name: Test core

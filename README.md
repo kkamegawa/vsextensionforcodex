@@ -12,7 +12,7 @@ The extension is an out-of-process `Microsoft.VisualStudio.Extensibility` extens
 
 - Windows (x64 or Arm64)
 - Visual Studio 2022 17.14 or later, or Visual Studio 2026 (Community, Professional, or Enterprise)
-- Codex CLI 0.145.0 or later, installed with winget (see [Limitations](#limitations))
+- Codex CLI 0.155.1, installed with winget (see [Limitations](#limitations))
 - A ChatGPT account that can sign in with `codex login`
 
 ## Setup
@@ -23,13 +23,13 @@ The extension is an out-of-process `Microsoft.VisualStudio.Extensibility` extens
    winget install --id OpenAI.Codex --source winget
    ```
 
-2. Confirm the version. The extension is verified against 0.145.0; older builds are not supported:
+2. Confirm the version. The app-server contract is verified against 0.155.1:
 
    ```powershell
    codex --version
    ```
 
-   If the reported version is older than 0.145.0, update it:
+   If the reported version is not 0.155.1, update it:
 
    ```powershell
    winget upgrade --id OpenAI.Codex --source winget
@@ -49,7 +49,7 @@ The extension is an out-of-process `Microsoft.VisualStudio.Extensibility` extens
 
 ## Limitations
 
-- **Old Codex CLI versions are not supported.** The verified version is 0.145.0. Earlier builds
+- **Other Codex CLI versions are not the target contract.** The verified version is 0.155.1. Version 0.154.0 is retained only as the schema regression baseline. Other builds
   expose different app-server protocol shapes, so `initialize` or `turn/start` can fail or silently drop events. Issues reproduced only on older versions are out of scope.
 - **Multiple Codex installations can select the wrong version.** Version managers (mise), winget, npm, and the Codex desktop app each place a `codex` executable in a different location, and the one that wins on `PATH` is not necessarily the newest. The worker resolves the executable in this order:
   1. the `CODEX_PATH` environment variable
@@ -74,7 +74,7 @@ The extension is an out-of-process `Microsoft.VisualStudio.Extensibility` extens
 Check that Visual Studio is 17.14 or later, that the extension is listed and enabled in **Extensions > Manage Extensions**, and restart Visual Studio once after installing the VSIX.
 
 **Chat never responds, or the worker exits right away.**
-This is almost always the Codex CLI, not the extension. Run `codex --version` (0.145.0 or later) and `codex login` in a terminal. If both succeed there but not in Visual Studio, a different `codex` is being launched; pin it with `CODEX_PATH` as described in [Limitations](#limitations).
+This is almost always the Codex CLI, not the extension. Run `codex --version` (0.155.1) and `codex login` in a terminal. If both succeed there but not in Visual Studio, a different `codex` is being launched; pin it with `CODEX_PATH` as described in [Limitations](#limitations).
 
 **How do I pin one specific Codex CLI?**
 Set the environment variable and restart Visual Studio so it inherits the change:
@@ -113,7 +113,7 @@ Prerequisites for development:
 
 - Visual Studio 2022 17.14 or later with the Visual Studio extension development workload
 - .NET 8 SDK
-- A local Codex CLI (used to generate protocol schemas during the build)
+- The official Codex CLI 0.155.1 executable (used to generate the target protocol schema during the build)
 
 Restore and build:
 
@@ -122,13 +122,13 @@ dotnet restore CodexForVisualStudio.slnx
 dotnet build CodexForVisualStudio.slnx -c Release --no-restore
 ```
 
-`schemas/` contains generated output from the Apache-2.0-licensed Codex CLI and is intentionally excluded from this MIT-licensed repository. When `schemas/codex_app_server_protocol.schemas.json` is missing, building `Codex.AppServer.Protocol` on Windows automatically runs:
+`schemas/` contains generated output from the Apache-2.0-licensed Codex CLI and is intentionally excluded from this MIT-licensed repository. Caches are separated as `schemas/<version>/<stable|experimental>/` and are reused only when the CLI version, surface, generator arguments, metadata, and schema sentinel all match. When `schemas/0.155.1/stable/codex_app_server_protocol.schemas.json` is missing or stale, building `Codex.AppServer.Protocol` on Windows automatically runs the equivalent of:
 
 ```powershell
-codex app-server generate-json-schema --out schemas
+pwsh -NoProfile -File scripts/generate-schemas.ps1 -OutputDirectory schemas -Version 0.155.1 -Surface stable -CodexPath $env:CODEX_PATH
 ```
 
-The build prefers `CODEX_PATH` when it is set, then an executable `codex` from `PATH`, and then the Codex desktop app's local executable cache. Set `CODEX_PATH` when automatic discovery cannot find an executable Codex CLI:
+The generator prefers `CODEX_PATH` when it is set and otherwise resolves `codex` from `PATH`. It rejects a version other than the selected stable manifest entry. CI downloads the pinned 0.154.0 and 0.155.1 Windows x64 release assets, verifies their SHA-256 hashes from `app-server-contract.json`, generates both stable and experimental surfaces, and checks the normalized structural differences. Set `CODEX_PATH` to the official 0.155.1 executable for local builds:
 
 ```powershell
 $env:CODEX_PATH = "C:\path\to\codex.exe"
