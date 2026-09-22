@@ -1,4 +1,4 @@
-using System.Runtime.InteropServices;
+﻿using System.Runtime.InteropServices;
 
 namespace Codex.VisualStudio.Contracts;
 
@@ -94,6 +94,14 @@ public sealed class RemotePathMapper
     private static string NormalizeLocal(string path)
     {
         string fullPath = Path.GetFullPath(path).Replace('\\', '/');
+        string? root = Path.GetPathRoot(path);
+        string normalizedRoot = root?.Replace('\\', '/') ?? string.Empty;
+        if (normalizedRoot.Length > 0
+            && string.Equals(fullPath, normalizedRoot, StringComparison.OrdinalIgnoreCase))
+        {
+            return normalizedRoot;
+        }
+
         return fullPath.Length > 1 ? fullPath.TrimEnd('/') : fullPath;
     }
 

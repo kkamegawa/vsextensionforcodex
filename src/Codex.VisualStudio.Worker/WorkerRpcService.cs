@@ -220,11 +220,16 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
             throw;
         }
 
-        // Re-publish Busy now that the turn id is known. The first SetStatusAsync above ran before
-        // session.StartTurnAsync set ActiveTurnId, so the client received Busy with TurnId = null and
-        // IsTurnActive stayed false (the interrupt button never appeared). This second publish carries
-        // the turn id so the extension can show the interrupt button while the turn runs.
-        await SetStatusAsync(WorkerConnectionState.Busy, "Turn in progress.", cancellationToken).ConfigureAwait(false);
+        // The server may complete the turn before the turn/start response arrives. Publish the
+        // post-response session state so a late response cannot leave the Worker Busy forever.
+        if (session.ActiveTurnId is null)
+        {
+            await SetStatusAsync(WorkerConnectionState.Ready, "Turn completed.", cancellationToken).ConfigureAwait(false);
+        }
+        else
+        {
+            await SetStatusAsync(WorkerConnectionState.Busy, "Turn in progress.", cancellationToken).ConfigureAwait(false);
+        }
         return turnId;
     }
 

@@ -51,5 +51,10 @@ internal sealed class CodexExtension : VSX.Extension
     protected override void InitializeServices(IServiceCollection serviceCollection)
     {
         base.InitializeServices(serviceCollection);
+        serviceCollection.AddSingleton<RemoteProfilesPresentationViewModel>(services =>
+        {
+            var store = new FileExtensionSettingsStore();
+            return new RemoteProfilesPresentationViewModel(store.Load(), store);
+        });
     }
 }

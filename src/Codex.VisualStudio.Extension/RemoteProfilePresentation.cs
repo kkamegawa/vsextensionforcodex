@@ -205,6 +205,13 @@ public sealed class RemoteProfilesPresentationViewModel : ObservableObject
             return Task.CompletedTask;
         }
 
+        if (Profiles.GroupBy(profile => profile.Name.Trim(), StringComparer.OrdinalIgnoreCase)
+            .Any(group => group.Count() > 1))
+        {
+            StatusText = "Profile names must be unique.";
+            return Task.CompletedTask;
+        }
+
         settings.RemoteProfiles = Profiles.Select(static profile => profile.ToSettings()).ToList();
         settings.SelectedRemoteProfileName = SelectedProfile.Name.Trim();
         SaveSettings();
@@ -240,6 +247,12 @@ public sealed class RemoteProfilesPresentationViewModel : ObservableObject
         if (string.IsNullOrWhiteSpace(profile.LocalRoot) || string.IsNullOrWhiteSpace(profile.ServerRoot))
         {
             error = "Local and server roots are required for path mapping.";
+            return false;
+        }
+
+        if (profile.IsEnabled && string.IsNullOrWhiteSpace(profile.TokenFilePath))
+        {
+            error = "An enabled remote profile requires a token file path.";
             return false;
         }
 

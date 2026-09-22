@@ -1,4 +1,4 @@
-using Codex.VisualStudio.Contracts;
+﻿using Codex.VisualStudio.Contracts;
 
 namespace Codex.VisualStudio.Core.Tests;
 
@@ -26,5 +26,17 @@ public sealed class RemotePathMapperTests
         Assert.IsFalse(mapper.TryMapServerToLocal("/srv/workspace/../secrets.txt", out _));
         Assert.IsTrue(mapper.TryMapServerToLocal("/srv/workspace/src/main.cs", out string localPath));
         Assert.AreEqual(Path.GetFullPath(Path.Combine(Path.GetTempPath(), "src", "main.cs")), localPath);
+    }
+
+    [TestMethod]
+    public void PreservesWindowsDriveRootWhenMappingBackToLocal()
+    {
+        string localRoot = Path.GetPathRoot(Environment.SystemDirectory)!;
+        var mapper = new RemotePathMapper(localRoot, "/srv/root");
+
+        Assert.IsTrue(mapper.TryMapServerToLocal("/srv/root", out string mappedRoot));
+        Assert.AreEqual(Path.GetFullPath(localRoot), mappedRoot);
+        Assert.IsTrue(mapper.TryMapServerToLocal("/srv/root/src/main.cs", out string mappedFile));
+        Assert.AreEqual(Path.GetFullPath(Path.Combine(localRoot, "src", "main.cs")), mappedFile);
     }
 }

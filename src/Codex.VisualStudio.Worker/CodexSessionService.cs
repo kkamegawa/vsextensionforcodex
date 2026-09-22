@@ -796,6 +796,11 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         string? startedTurnId = result.GetProperty("turn").GetProperty("id").GetString();
         lock (turnStateLock)
         {
+            if (!IsCurrent(context))
+            {
+                throw new JsonRpcConnectionClosedException("The app-server connection generation changed while starting the turn.");
+            }
+
             ActiveThreadId = request.ThreadId;
             // A completion notification may legally race the response to turn/start.
             // Never resurrect a turn that the server has already completed.
@@ -1787,9 +1792,13 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         {
             return;
         }
+
+        using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(
+            cancellationToken,
+            context.Lifetime.Token);
         try
         {
-            await DispatchNotificationAsync(context, message, cancellationToken).ConfigureAwait(false);
+            await DispatchNotificationAsync(context, message, linked.Token).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -1805,10 +1814,12 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
     {
         string method = message.Method ?? string.Empty;
         JsonElement parameters = message.Params ?? JsonSerializer.SerializeToElement(new { });
+        EnsureCurrent(context);
         if (method == "skills/changed")
         {
             long generation = InvalidateSkillsCache();
             await DeletePersistedSkillsAsync(cancellationToken).ConfigureAwait(false);
+            EnsureCurrent(context);
             if (SkillsChanged is not null)
             {
                 await SkillsChanged(new SkillsChangedEvent { Generation = generation }, cancellationToken).ConfigureAwait(false);
@@ -1846,9 +1857,13 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         }
         else if (method == "turn/completed")
         {
-            string? completedId = turnId;
+            string? completedId;
             lock (turnStateLock)
             {
+                completedId = turnId
+                    ?? (threadId is null || string.Equals(ActiveThreadId, threadId, StringComparison.Ordinal)
+                        ? ActiveTurnId
+                        : null);
                 if (completedId is not null)
                 {
                     completedTurnIds.Add(new TurnKey(context.Generation, threadId, completedId));
@@ -1901,7 +1916,9 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
 
         if (method is "account/login/completed" or "account/updated")
         {
+            EnsureCurrent(context);
             await GetAccountStatusAsync(cancellationToken).ConfigureAwait(false);
+            EnsureCurrent(context);
             return;
         }
 
@@ -1914,6 +1931,7 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
                 && threadSettings.ValueKind == JsonValueKind.Object;
             if (isActiveThread && hasSettings)
             {
+                EnsureCurrent(context);
                 EffectiveApprovalState = ReadEffectiveApprovalState(threadSettings);
                 ReadEffectiveTurnSettings(threadSettings, out string? reasoningEffort, out string? serviceTier);
                 EffectiveReasoningEffort = reasoningEffort;
@@ -1921,6 +1939,7 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
                 if (EffectiveApprovalStateChanged is not null)
                 {
                     await EffectiveApprovalStateChanged(EffectiveApprovalState, cancellationToken).ConfigureAwait(false);
+                    EnsureCurrent(context);
                 }
 
             }
@@ -1931,14 +1950,17 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         if (method == "account/rateLimits/updated"
             && parameters.TryGetProperty("rateLimits", out JsonElement updatedRateLimits))
         {
+            EnsureCurrent(context);
             await EmitRateLimitsChangedAsync(
                 new RateLimitsResult { RateLimits = ReadRateLimit(updatedRateLimits) },
                 cancellationToken).ConfigureAwait(false);
+            EnsureCurrent(context);
             return;
         }
 
         if (method == "thread/goal/updated")
         {
+            EnsureCurrent(context);
             await EmitThreadGoalChangedAsync(
                 new ThreadGoalEvent
                 {
@@ -1949,11 +1971,13 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
                         : null,
                 },
                 cancellationToken).ConfigureAwait(false);
+            EnsureCurrent(context);
             return;
         }
 
         if (method == "thread/goal/cleared")
         {
+            EnsureCurrent(context);
             await EmitThreadGoalChangedAsync(
                 new ThreadGoalEvent
                 {
@@ -1962,11 +1986,13 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
                     IsCleared = true,
                 },
                 cancellationToken).ConfigureAwait(false);
+            EnsureCurrent(context);
             return;
         }
 
         if (method == "thread/compacted")
         {
+            EnsureCurrent(context);
             await EmitContextCompactedAsync(
                 new ContextCompactionEvent
                 {
@@ -1975,6 +2001,7 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
                     IsCompleted = true,
                 },
                 cancellationToken).ConfigureAwait(false);
+            EnsureCurrent(context);
             return;
         }
 
@@ -1987,6 +2014,7 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
                 method == "item/completed",
                 cancellationToken).ConfigureAwait(false))
         {
+            EnsureCurrent(context);
             return;
         }
 
@@ -2023,6 +2051,7 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
             return;
         }
 
+        EnsureCurrent(context);
         await EmitAsync(output, cancellationToken).ConfigureAwait(false);
     }
 
@@ -3381,12 +3410,14 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         public object UnsupportedMethodsLock { get; } = new();
         public HashSet<string> UnsupportedMethods { get; } = new(StringComparer.Ordinal);
         public bool NotifyPendingResolution { get; set; }
+        public CancellationTokenSource Lifetime { get; } = new();
         public Func<JsonRpcMessage, CancellationToken, Task> NotificationHandler { get; }
         public Func<JsonRpcMessage, CancellationToken, Task<JsonElement>> RequestHandler { get; }
         public EventHandler<Exception?> ClosedHandler { get; }
 
         public void Detach()
         {
+            Lifetime.Cancel();
             Connection.NotificationReceived -= NotificationHandler;
             Connection.RequestReceived -= RequestHandler;
             Connection.Closed -= ClosedHandler;
