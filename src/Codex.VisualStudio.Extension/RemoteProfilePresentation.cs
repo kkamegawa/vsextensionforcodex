@@ -1,4 +1,4 @@
-using System.Collections.ObjectModel;
+﻿using System.Collections.ObjectModel;
 using System.Runtime.Serialization;
 
 namespace Codex.VisualStudio.Extension;
@@ -29,10 +29,30 @@ public sealed class RemoteProfileViewModel : ObservableObject
     }
 
     [DataMember]
-    public string Name { get => name; set => SetProperty(ref name, value); }
+    public string Name
+    {
+        get => name;
+        set
+        {
+            if (SetProperty(ref name, value))
+            {
+                OnPropertyChanged(nameof(DisplayText));
+            }
+        }
+    }
 
     [DataMember]
-    public string Endpoint { get => endpoint; set => SetProperty(ref endpoint, value); }
+    public string Endpoint
+    {
+        get => endpoint;
+        set
+        {
+            if (SetProperty(ref endpoint, value))
+            {
+                OnPropertyChanged(nameof(DisplayText));
+            }
+        }
+    }
 
     [DataMember]
     public string TokenFilePath { get => tokenFilePath; set => SetProperty(ref tokenFilePath, value); }

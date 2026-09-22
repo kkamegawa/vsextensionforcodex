@@ -1,4 +1,4 @@
-using System.Collections.Concurrent;
+﻿using System.Collections.Concurrent;
 using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
@@ -22,6 +22,7 @@ public sealed class WebSocketJsonRpcConnection : IJsonRpcConnection
     private readonly ClientWebSocket socket = new();
     private readonly SemaphoreSlim sendGate = new(1, 1);
     private readonly ConcurrentDictionary<string, TaskCompletionSource<JsonElement>> pending = new();
+    private readonly ConcurrentDictionary<string, ServerRequestOperation> serverRequests = new();
     private readonly CancellationTokenSource lifetime = new();
     private Task? receivePump;
     private long nextId;
@@ -199,7 +200,7 @@ public sealed class WebSocketJsonRpcConnection : IJsonRpcConnection
                 }
                 else if (rpcMessage.IsRequest)
                 {
-                    _ = Task.Run(() => ResolveServerRequestAsync(rpcMessage, cancellationToken), CancellationToken.None);
+                    StartServerRequest(rpcMessage, cancellationToken);
                 }
                 else if (rpcMessage.IsNotification && NotificationReceived is not null)
                 {
@@ -220,6 +221,68 @@ public sealed class WebSocketJsonRpcConnection : IJsonRpcConnection
         }
     }
 
+    private void StartServerRequest(JsonRpcMessage message, CancellationToken cancellationToken)
+    {
+        string? id = message.GetIdKey();
+        if (id is null)
+        {
+            return;
+        }
+
+        var operation = new ServerRequestOperation(id);
+        if (!serverRequests.TryAdd(id, operation))
+        {
+            // A reused outstanding id must not produce a second response or approval prompt.
+            return;
+        }
+
+        Task task = Task.Run(
+            () => RunServerRequestAsync(message, operation, cancellationToken),
+            CancellationToken.None);
+        _ = task.ContinueWith(
+            static completed => ObserveCompletedTask(completed),
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
+    }
+
+    private async Task RunServerRequestAsync(
+        JsonRpcMessage message,
+        ServerRequestOperation operation,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await ResolveServerRequestAsync(message, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            _ = ex;
+        }
+        finally
+        {
+            serverRequests.TryRemove(new KeyValuePair<string, ServerRequestOperation>(operation.Id, operation));
+        }
+    }
+
+    private sealed class ServerRequestOperation
+    {
+        public ServerRequestOperation(string id)
+        {
+            Id = id;
+        }
+
+        public string Id { get; }
+    }
+
+    private static void ObserveCompletedTask(Task task)
+    {
+        if (task.IsFaulted)
+        {
+            _ = task.Exception;
+        }
+    }
+
     private async Task ResolveServerRequestAsync(JsonRpcMessage message, CancellationToken cancellationToken)
     {
         if (message.Id is null)
@@ -232,19 +295,31 @@ public sealed class WebSocketJsonRpcConnection : IJsonRpcConnection
             JsonElement result = RequestReceived is null
                 ? JsonSerializer.SerializeToElement(new { })
                 : await RequestReceived(message, cancellationToken).ConfigureAwait(false);
-            await SendMessageAsync(new { id = ToWireId(message.Id.Value), result }, cancellationToken).ConfigureAwait(false);
+            if (!cancellationToken.IsCancellationRequested)
+            {
+                await SendMessageAsync(new { id = ToWireId(message.Id.Value), result }, cancellationToken).ConfigureAwait(false);
+            }
         }
         catch (JsonRpcRemoteException ex)
         {
-            await SendMessageAsync(
-                new { id = ToWireId(message.Id.Value), error = new { code = ex.Code, message = ex.Message } },
-                cancellationToken).ConfigureAwait(false);
+            if (!cancellationToken.IsCancellationRequested)
+            {
+                await SendMessageAsync(
+                    new { id = ToWireId(message.Id.Value), error = new { code = ex.Code, message = ex.Message } },
+                    cancellationToken).ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
         }
         catch (Exception ex)
         {
-            await SendMessageAsync(
-                new { id = ToWireId(message.Id.Value), error = new { code = -32603, message = ex.Message } },
-                cancellationToken).ConfigureAwait(false);
+            if (!cancellationToken.IsCancellationRequested)
+            {
+                await SendMessageAsync(
+                    new { id = ToWireId(message.Id.Value), error = new { code = -32603, message = ex.Message } },
+                    cancellationToken).ConfigureAwait(false);
+            }
         }
     }
 

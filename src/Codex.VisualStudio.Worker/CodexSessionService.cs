@@ -105,6 +105,7 @@ public sealed record AppServerInitializationMetadata(
 public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
 {
     private static readonly string[] ThreadSourceKinds = ["cli", "vscode", "appServer"];
+    private static readonly JsonRpcRetryPolicy ReadOnlyRetryPolicy = new();
     private const int PermissionProfilePageSize = 100;
     private const int MaxPermissionProfilePages = 10;
     private const int MaxPermissionProfiles = 500;
@@ -148,6 +149,7 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
     private long skillsGeneration;
     private ConnectionContext? connectionContext;
     private WorkerOptions options = new();
+    private RemotePathMapper? remotePathMapper;
     private StreamingBuffer? streamingBuffer;
 
     public CodexSessionService(
@@ -234,6 +236,10 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         CancelPending(null);
         approvalGrants.Clear();
         this.options = options;
+        remotePathMapper = !string.IsNullOrWhiteSpace(options.LocalRoot)
+            && !string.IsNullOrWhiteSpace(options.ServerRoot)
+            ? new RemotePathMapper(options.LocalRoot!, options.ServerRoot!)
+            : null;
         long generation = Interlocked.Increment(ref connectionGeneration);
         var context = new ConnectionContext(this, connection, generation);
         connectionContext = context;
@@ -444,7 +450,7 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
 
     public async Task<ThreadSummary> StartThreadAsync(CancellationToken cancellationToken)
     {
-        JsonElement result = await SendAsync("thread/start", new { cwd = options.WorkingDirectory }, cancellationToken).ConfigureAwait(false);
+        JsonElement result = await SendAsync("thread/start", new { cwd = MapLocalPathForServer(options.WorkingDirectory) }, cancellationToken).ConfigureAwait(false);
         EffectiveApprovalState = ReadEffectiveApprovalState(result);
         ReadEffectiveTurnSettings(result, out string? reasoningEffort, out string? serviceTier);
         EffectiveReasoningEffort = reasoningEffort;
@@ -465,10 +471,11 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         try
         {
             ConnectionContext context = RequireContext();
-            JsonElement result = await context.Connection.SendRequestAsync(
+            JsonElement result = await context.Connection.SendIdempotentRequestAsync(
                 "account/read",
                 new { refreshToken = false },
                 TimeSpan.FromSeconds(15),
+                ReadOnlyRetryPolicy,
                 cancellationToken).ConfigureAwait(false);
             EnsureCurrent(context);
             AccountStatus status = ReadAccountStatus(result);
@@ -597,7 +604,7 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
 
     public async Task<ThreadPage> ListThreadsAsync(string? cursor, CancellationToken cancellationToken)
     {
-        JsonElement result = await SendAsync(
+        JsonElement result = await SendReadOnlyAsync(
             "thread/list",
             new { cursor, limit = 25, sourceKinds = ThreadSourceKinds },
             cancellationToken).ConfigureAwait(false);
@@ -623,12 +630,13 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         try
         {
             ConnectionContext context = RequireContext();
-            JsonElement result = await context.Connection.SendRequestAsync(
+            JsonElement result = await context.Connection.SendIdempotentRequestAsync(
                 "model/list",
                 // Include hidden models so the catalog default (which may be a hidden preset and
                 // is otherwise filtered out server-side) can still be surfaced in the picker.
                 new { includeHidden = true },
                 TimeSpan.FromSeconds(15),
+                ReadOnlyRetryPolicy,
                 cancellationToken).ConfigureAwait(false);
             EnsureCurrent(context);
             ListModelsResult models = ReadModelsResult(result);
@@ -670,9 +678,10 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         {
             OperationCallResult call = await TrySendOperationAsync(
                 method,
-                new { cwd = options.WorkingDirectory, cursor, limit = PermissionProfilePageSize },
+                new { cwd = MapLocalPathForServer(options.WorkingDirectory), cursor, limit = PermissionProfilePageSize },
                 TimeSpan.FromSeconds(15),
-                cancellationToken).ConfigureAwait(false);
+                cancellationToken,
+                readOnly: true).ConfigureAwait(false);
             if (!call.IsSupported)
             {
                 return Unsupported<ListPermissionProfilesResult>(
@@ -937,7 +946,8 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
             "thread/goal/get",
             new { threadId },
             TimeSpan.FromSeconds(15),
-            cancellationToken).ConfigureAwait(false);
+            cancellationToken,
+            readOnly: true).ConfigureAwait(false);
         if (!call.IsSupported)
         {
             return Unsupported<ThreadGoalResult>("Thread goals are not supported by this app-server.");
@@ -996,7 +1006,8 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
             "mcpServerStatus/list",
             new { cursor = (string?)null, limit = 100, detail = "toolsAndAuthOnly", threadId },
             TimeSpan.FromSeconds(30),
-            cancellationToken).ConfigureAwait(false);
+            cancellationToken,
+            readOnly: true).ConfigureAwait(false);
         if (!call.IsSupported)
         {
             return Unsupported<McpServerListResult>("MCP server status is not supported by this app-server.");
@@ -1166,7 +1177,8 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
             "skills/list",
             new { cwds = Array.Empty<string>(), forceReload },
             TimeSpan.FromSeconds(30),
-            cancellationToken).ConfigureAwait(false);
+            cancellationToken,
+            readOnly: true).ConfigureAwait(false);
         if (!call.IsSupported)
         {
             return Unsupported<ListSkillsResult>("Skills are not supported by this app-server.");
@@ -1207,7 +1219,8 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
             "account/rateLimits/read",
             new { },
             TimeSpan.FromSeconds(15),
-            cancellationToken).ConfigureAwait(false);
+            cancellationToken,
+            readOnly: true).ConfigureAwait(false);
         if (!call.IsSupported)
         {
             return Unsupported<RateLimitsResult>("Rate-limit status is not supported by this app-server.");
@@ -1390,6 +1403,7 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
             bool isMention = string.Equals(attachment.Kind, "mention", StringComparison.OrdinalIgnoreCase);
             if ((!isImage && !isMention)
                 || !TryNormalizeReadableFile(attachment.Path, allowOutsideWorkspace: true, out string normalizedPath)
+                || !TryMapLocalPathForServer(normalizedPath, out string serverPath)
                 || !includedPaths.Add(normalizedPath))
             {
                 continue;
@@ -1402,7 +1416,7 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
                 input.Add(new
                 {
                     type = "localImage",
-                    path = normalizedPath,
+                    path = serverPath,
                 });
             }
             else
@@ -1411,7 +1425,7 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
                 {
                     type = "mention",
                     name = Path.GetFileName(normalizedPath),
-                    path = normalizedPath,
+                    path = serverPath,
                 });
             }
         }
@@ -1423,19 +1437,21 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
 
         string? activeDocumentPath = request.IdeContext.ActiveDocumentPath;
         if (TryNormalizeReadableFile(activeDocumentPath, allowOutsideWorkspace: false, out string normalizedActivePath)
+            && TryMapLocalPathForServer(normalizedActivePath, out string activeServerPath)
             && includedPaths.Add(normalizedActivePath))
         {
             input.Add(new
             {
                 type = "mention",
                 name = Path.GetFileName(normalizedActivePath),
-                path = normalizedActivePath,
+                path = activeServerPath,
             });
         }
 
         foreach (string path in request.IdeContext.ReferencedFilePaths.Take(10))
         {
             if (!TryNormalizeReadableFile(path, allowOutsideWorkspace: false, out string normalizedPath)
+                || !TryMapLocalPathForServer(normalizedPath, out string serverPath)
                 || !includedPaths.Add(normalizedPath))
             {
                 continue;
@@ -1445,7 +1461,7 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
             {
                 type = "mention",
                 name = Path.GetFileName(normalizedPath),
-                path = normalizedPath,
+                path = serverPath,
             });
         }
 
@@ -1453,8 +1469,12 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         if (!string.IsNullOrEmpty(selection))
         {
             string? selectionPath = request.IdeContext.SelectionFilePath;
+            string? serverSelectionPath = selectionPath is not null
+                && TryMapLocalPathForServer(selectionPath, out string mappedSelectionPath)
+                ? mappedSelectionPath
+                : null;
             string header = IsWorkspacePath(selectionPath)
-                ? $"IDE selection from {selectionPath}:"
+                ? $"IDE selection from {serverSelectionPath ?? "the active document"}:"
                 : "IDE selection:";
             input.Add(new
             {
@@ -1510,6 +1530,44 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         {
             return false;
         }
+    }
+
+    private string MapLocalPathForServer(string localPath)
+    {
+        if (remotePathMapper is null)
+        {
+            return localPath;
+        }
+
+        if (remotePathMapper.TryMapLocalToServer(localPath, out string serverPath))
+        {
+            return serverPath;
+        }
+
+        throw new InvalidOperationException("The local path is outside the configured remote root.");
+    }
+
+    private bool TryMapLocalPathForServer(string localPath, out string serverPath)
+    {
+        if (remotePathMapper is null)
+        {
+            serverPath = localPath;
+            return true;
+        }
+
+        return remotePathMapper.TryMapLocalToServer(localPath, out serverPath);
+    }
+
+    private string? MapServerPathToLocal(string? serverPath)
+    {
+        if (string.IsNullOrWhiteSpace(serverPath) || remotePathMapper is null)
+        {
+            return serverPath;
+        }
+
+        return remotePathMapper.TryMapServerToLocal(serverPath, out string localPath)
+            ? localPath
+            : null;
     }
 
     private bool TryNormalizeReadableFile(string? path, bool allowOutsideWorkspace, out string normalizedPath)
@@ -1971,8 +2029,8 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
     private ApprovalRequest CreateApprovalRequest(string requestId, string method, JsonElement parameters)
     {
         string? command = GetString(parameters, "command");
-        string? cwd = GetString(parameters, "cwd");
-        string? grantRoot = GetString(parameters, "grantRoot");
+        string? cwd = MapServerPathToLocal(GetString(parameters, "cwd"));
+        string? grantRoot = MapServerPathToLocal(GetString(parameters, "grantRoot"));
         string? networkHost = null;
         int? networkPort = null;
         if (parameters.TryGetProperty("networkApprovalContext", out JsonElement network))
@@ -2026,6 +2084,19 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         return result;
     }
 
+    private async Task<JsonElement> SendReadOnlyAsync(string method, object parameters, CancellationToken cancellationToken)
+    {
+        ConnectionContext context = RequireContext();
+        JsonElement result = await context.Connection.SendIdempotentRequestAsync(
+            method,
+            parameters,
+            TimeSpan.FromSeconds(60),
+            ReadOnlyRetryPolicy,
+            cancellationToken).ConfigureAwait(false);
+        EnsureCurrent(context);
+        return result;
+    }
+
     private void EnsureCurrent(ConnectionContext context)
     {
         if (!IsCurrent(context))
@@ -2074,7 +2145,8 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         string method,
         object parameters,
         TimeSpan timeout,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool readOnly = false)
     {
         ConnectionContext context = RequireContext();
         lock (context.UnsupportedMethodsLock)
@@ -2087,11 +2159,18 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
 
         try
         {
-            JsonElement result = await context.Connection.SendRequestAsync(
-                method,
-                parameters,
-                timeout,
-                cancellationToken).ConfigureAwait(false);
+            JsonElement result = readOnly
+                ? await context.Connection.SendIdempotentRequestAsync(
+                    method,
+                    parameters,
+                    timeout,
+                    ReadOnlyRetryPolicy,
+                    cancellationToken).ConfigureAwait(false)
+                : await context.Connection.SendRequestAsync(
+                    method,
+                    parameters,
+                    timeout,
+                    cancellationToken).ConfigureAwait(false);
             EnsureCurrent(context);
             return new OperationCallResult(true, result);
         }

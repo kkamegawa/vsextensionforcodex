@@ -6,14 +6,20 @@
     <CodexSchemaDirectory>$([System.IO.Path]::GetFullPath('$(MSBuildProjectDirectory)/../../schemas/0.155.1/stable'))</CodexSchemaDirectory>
     <CodexSchemaSentinel>$(CodexSchemaDirectory)/codex_app_server_protocol.schemas.json</CodexSchemaSentinel>
     <CodexSchemaGeneratorScript>$([System.IO.Path]::GetFullPath('$(MSBuildProjectDirectory)/../../scripts/generate-schemas.ps1'))</CodexSchemaGeneratorScript>
+    <CodexSchemaCacheValidatorScript>$([System.IO.Path]::GetFullPath('$(MSBuildProjectDirectory)/../../scripts/validate-schema-cache.ps1'))</CodexSchemaCacheValidatorScript>
     <CodexSchemaGeneratorArguments>-OutputDirectory &quot;$([System.IO.Path]::GetFullPath('$(MSBuildProjectDirectory)/../../schemas'))&quot; -Version 0.155.1 -Surface stable</CodexSchemaGeneratorArguments>
     <CodexSchemaGeneratorArguments Condition="'$(CODEX_PATH)' != ''">$(CodexSchemaGeneratorArguments) -CodexPath &quot;$(CODEX_PATH)&quot;</CodexSchemaGeneratorArguments>
   </PropertyGroup>
 
-  <Target Name="GenerateCodexSchemas"
+  <Target Name="ValidateCodexSchemas"
           BeforeTargets="BeforeBuild"
-          Condition="'$(OS)' == 'Windows_NT' and !Exists('$(CodexSchemaSentinel)')">
-    <Exec Command="pwsh -NoProfile -File &quot;$(CodexSchemaGeneratorScript)&quot; $(CodexSchemaGeneratorArguments)" />
+          Condition="'$(OS)' == 'Windows_NT'">
+    <Exec Command="pwsh -NoProfile -File &quot;$(CodexSchemaCacheValidatorScript)&quot; -OutputDirectory &quot;$([System.IO.Path]::GetFullPath('$(MSBuildProjectDirectory)/../../schemas'))&quot; -Version 0.155.1 -Surface stable"
+          IgnoreExitCode="true">
+      <Output TaskParameter="ExitCode" PropertyName="CodexSchemaCacheValidationExitCode" />
+    </Exec>
+    <Exec Command="pwsh -NoProfile -File &quot;$(CodexSchemaGeneratorScript)&quot; $(CodexSchemaGeneratorArguments)"
+          Condition="'$(CodexSchemaCacheValidationExitCode)' != '0'" />
   </Target>
 </Project>
 

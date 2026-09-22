@@ -56,7 +56,9 @@ Validation on September 22, 2026:
 - A live official 0.155.1 process completed initialize/initialized, thread/start, turn/start, and the
   completed-turn interrupt path. Generated schemas and the live comparison output were not added to
   Git.
-- No XAML, Remote UI model, Worker wire contract, NuGet dependency, or screenshot changed.
+- No XAML or screenshot changed. The remote profile model and the Worker wire contract remain at
+  the intentionally selected v16 boundary, and the package manifest changes only pin the existing
+  dependencies; no new NuGet dependency was added.
 
 ## Implemented Behavior
 
