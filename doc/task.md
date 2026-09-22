@@ -529,7 +529,7 @@ turn-completion path. In-progress compaction events remain a no-op.
   run locally: `Codex.VisualStudio.Core.Tests` 113/113, `Codex.VisualStudio.Ui.Tests` 285/285.
   Visual Studio Experimental Instance check still pending (tracked in the sub-issue above).
 
-### 2026-09-22: Use the latest Codex release locally in CI
+### 2026-09-22: Use the latest Codex release locally in CI ([Issue #150](https://github.com/kkamegawa/vsextensionforcodex/issues/150))
 
 Replaced the remaining inline release download logic with `scripts/install-codex.ps1`.
 Schema generation continues to use the manifest-pinned 0.154.0 and 0.155.1 Windows x64
