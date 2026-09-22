@@ -3,10 +3,10 @@
     <TargetFramework>net8.0</TargetFramework>
     <AssemblyName>Codex.AppServer.Protocol</AssemblyName>
     <RootNamespace>Codex.AppServer.Protocol</RootNamespace>
-    <CodexSchemaDirectory>$([System.IO.Path]::GetFullPath('$(MSBuildProjectDirectory)/../../schemas'))</CodexSchemaDirectory>
+    <CodexSchemaDirectory>$([System.IO.Path]::GetFullPath('$(MSBuildProjectDirectory)/../../schemas/0.155.1/stable'))</CodexSchemaDirectory>
     <CodexSchemaSentinel>$(CodexSchemaDirectory)/codex_app_server_protocol.schemas.json</CodexSchemaSentinel>
     <CodexSchemaGeneratorScript>$([System.IO.Path]::GetFullPath('$(MSBuildProjectDirectory)/../../scripts/generate-schemas.ps1'))</CodexSchemaGeneratorScript>
-    <CodexSchemaGeneratorArguments>-OutputDirectory &quot;$(CodexSchemaDirectory)&quot;</CodexSchemaGeneratorArguments>
+    <CodexSchemaGeneratorArguments>-OutputDirectory &quot;$([System.IO.Path]::GetFullPath('$(MSBuildProjectDirectory)/../../schemas'))&quot; -Version 0.155.1 -Surface stable</CodexSchemaGeneratorArguments>
     <CodexSchemaGeneratorArguments Condition="'$(CODEX_PATH)' != ''">$(CodexSchemaGeneratorArguments) -CodexPath &quot;$(CODEX_PATH)&quot;</CodexSchemaGeneratorArguments>
   </PropertyGroup>
 
