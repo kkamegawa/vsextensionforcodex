@@ -137,6 +137,22 @@ public sealed class WorkerBridge : IWorkerBridge, ICodexWorkerObserver
         ExtensionDiagnostics.Write("Worker connect invocation starting");
         await EnsureWorkerStartedAsync(cancellationToken).ConfigureAwait(false);
 
+        ExtensionSettings settings = ExtensionSettings.Load();
+        string[] duplicateNames = settings.RemoteProfiles
+            .Where(static profile => profile.Enabled)
+            .GroupBy(profile => profile.Name.Trim(), StringComparer.OrdinalIgnoreCase)
+            .Where(static group => group.Count() > 1)
+            .Select(static group => group.Key)
+            .ToArray();
+        if (duplicateNames.Length > 0)
+        {
+            throw new InvalidOperationException("Enabled remote profile names must be unique.");
+        }
+
+        RemoteConnectionProfile? remote = settings.RemoteProfiles
+            .FirstOrDefault(profile => profile.Enabled
+                && string.Equals(profile.Name, settings.SelectedRemoteProfileName, StringComparison.Ordinal));
+
         WorkerStatus result = await RequireRpc().InvokeWithCancellationAsync<WorkerStatus>(
             "worker/connect",
             new object[]
@@ -147,6 +163,10 @@ public sealed class WorkerBridge : IWorkerBridge, ICodexWorkerObserver
                     WorkingDirectory = workingDirectory,
                     ExtensionVersion = "0.1.0",
                     ExperimentalApi = experimentalApi,
+                    RemoteEndpoint = remote?.Endpoint,
+                    RemoteTokenFilePath = remote?.TokenFilePath,
+                    LocalRoot = remote?.LocalRoot,
+                    ServerRoot = remote?.ServerRoot,
                 },
             },
             cancellationToken).ConfigureAwait(false);

@@ -42,6 +42,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     private readonly Func<DateTimeOffset> utcNow;
     private readonly SemaphoreSlim usageRefreshGate = new(1, 1);
     private readonly ExtensionSettings settings;
+    private readonly RemoteProfilesPresentationViewModel remoteProfiles;
     private readonly Queue<UserInputViewModel> userInputQueue = new();
     private readonly Queue<ApprovalViewModel> approvalQueue = new();
     private readonly Dictionary<string, StringBuilder> agentRawText = new(StringComparer.Ordinal);
@@ -131,6 +132,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         this.externalLinkOpener = externalLinkOpener ?? new ExternalLinkOpener();
         this.utcNow = utcNow ?? (() => DateTimeOffset.UtcNow);
         settings = this.settingsStore.Load();
+        remoteProfiles = new RemoteProfilesPresentationViewModel(settings, this.settingsStore);
         slashCommandParser = new SlashCommandParser(slashCommandCatalog);
         bridge.StateChanged += OnStateChangedAsync;
         bridge.AccountChanged += OnAccountChangedAsync;
@@ -250,6 +252,9 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             _ = TryAutoConnectAsync();
         }
     }
+
+    [DataMember]
+    public RemoteProfilesPresentationViewModel RemoteProfiles => remoteProfiles;
 
     [DataMember]
     public ObservableCollection<ThreadSummary> Threads { get; } = new();

@@ -16,6 +16,52 @@
 
 The publisher is `kkamegawa` (see CLAUDE.md for the current VSIX identity string).
 
+## Issue #150: App-server protocol contract and transport core
+
+Issue [#150](https://github.com/kkamegawa/vsextensionforcodex/issues/150) fixes the local stdio
+contract at Codex CLI 0.155.1 while retaining 0.154.0 as the regression baseline. The checked-in
+`app-server-contract.json` is the single manifest for release tags, Windows x64 asset names and
+SHA-256 hashes, stable/experimental generator arguments, every method consumed by the Worker, and
+the expected structural differences between the two CLI versions. Generated schema output remains
+ignored and is cached under `schemas/<version>/<stable|experimental>/`; exact metadata plus the real
+schema sentinel are required for a cache hit. Schema CI downloads the pinned official assets, verifies
+both hashes, generates all four surfaces, verifies the used method tables, and compares normalized
+schema structure. Build and release CI also download the latest stable Windows x64 asset into a
+runner-local temporary directory and execute it through `CODEX_PATH`; the pinned asset remains the
+only schema contract source.
+
+The Worker now retains `codexHome`, `platformFamily`, `platformOs`, and `userAgent` as read-only
+in-process initialization metadata without adding them to Remote UI or the v16 Worker wire
+contract. Server requests use an exact method table. Command, file-change, and permission approvals
+plus tool user input validate their 0.155.1 required shapes; malformed known requests return
+`-32602`, and every unknown or near-match request returns `-32601` without entering an approval,
+grant, or input path. Unknown notifications are redacted diagnostics only.
+
+Each connection now owns a generation context containing its handlers, unsupported-method cache,
+outbound responses, pending approvals and input, and turn state. Reinitialization and close detach
+the old handlers and release pending interaction exactly once. Turn completion is keyed by
+`(generation, threadId, turnId)`, so completion-before-response, late start, duplicate completion,
+other-thread events, and old-generation responses or notifications cannot revive or replace current
+state. The JSONL transport registers server-request operations before starting their handlers,
+cancels them with the connection lifetime, observes every task, and suppresses response writes after
+close.
+
+Validation on September 22, 2026:
+
+- Official 0.154.0 and 0.155.1 stable/experimental schemas generated successfully; normalized
+  expected-difference and target method-surface checks passed for both surfaces.
+- Schema cache tests passed for an exact cache hit, CLI-version and generator-option metadata
+  mismatch, missing sentinel replacement, and prerelease version rejection.
+- Focused session/transport tests: 72/72 passed. Full Core tests: 130/130 passed.
+- `Codex.AppServer.Protocol`, `Codex.VisualStudio.Worker`, and the complete solution built in Release
+  with zero warnings and zero errors.
+- A live official 0.155.1 process completed initialize/initialized, thread/start, turn/start, and the
+  completed-turn interrupt path. Generated schemas and the live comparison output were not added to
+  Git.
+- No XAML or screenshot changed. The remote profile model and the Worker wire contract remain at
+  the intentionally selected v16 boundary, and the package manifest changes only pin the existing
+  dependencies; no new NuGet dependency was added.
+
 ## Implemented Behavior
 
 - Bidirectional JSON-RPC request, response, notification, and server-request handling
@@ -137,7 +183,7 @@ the Worker boundary. `UsagePresentation` selects only an unambiguous limit, comp
 percentage, and creates the bounded strings serialized by Remote UI. `ChatViewModel` owns the
 connection generation, push version, 60-second TTL, and refresh gate so a stale read cannot replace
 a newer push or survive lifecycle invalidation. After each `TurnCompleted` conversation event and
-each completed `context/compacted` event, the view model awaits a forced rate-limit read after
+each completed `thread/compacted` event, the view model awaits a forced rate-limit read after
 completing the existing transcript/status projection; this bypasses the TTL while preserving the
 last successful snapshot when the read fails. A turn that ends via `Degraded` (no `TurnCompleted`)
 is not a forced-refresh trigger; the last successful snapshot remains visible until reconnection.

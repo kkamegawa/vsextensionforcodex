@@ -13,27 +13,26 @@
 
 - Windows (x64 または Arm64)
 - Visual Studio 2022 17.14 以降、または Visual Studio 2026 (Community / Professional / Enterprise)
-- Codex CLI 0.145.0 以降 (winget でのインストールを推奨。[制限事項](#制限事項)を参照)
+- [最新の安定版リリース](https://github.com/openai/codex/releases/latest) に含まれる公式 Windows x64 Codex CLI 実行ファイル
 - `codex login` でサインインできる ChatGPT アカウント
 
 ## セットアップ
 
-1. Codex CLI をインストールします。
+1. [最新の安定版 Codex リリース](https://github.com/openai/codex/releases/latest) から Windows x64 MSVC 実行ファイルをローカルディレクトリへダウンロードします。拡張機能はこの standalone 実行ファイルを直接起動するため、winget は不要です。
 
    ```powershell
-   winget install --id OpenAI.Codex --source winget
+   $codexDirectory = Join-Path $env:LOCALAPPDATA 'OpenAI\Codex\bin'
+   New-Item -ItemType Directory -Force -Path $codexDirectory | Out-Null
+   Invoke-WebRequest `
+     -Uri 'https://github.com/openai/codex/releases/latest/download/codex-x86_64-pc-windows-msvc.exe' `
+     -OutFile (Join-Path $codexDirectory 'codex.exe')
+   [Environment]::SetEnvironmentVariable('CODEX_PATH', (Join-Path $codexDirectory 'codex.exe'), 'User')
    ```
 
-2. バージョンを確認します。動作確認済みは 0.145.0 で、それより古いビルドはサポート対象外です。
+2. Visual Studio を再起動し、実行ファイルを確認します。現在の latest release は 0.155.1 で、本拡張が使用する app-server 契約のバージョンです。
 
    ```powershell
    codex --version
-   ```
-
-   0.145.0 より古い場合は更新します。
-
-   ```powershell
-   winget upgrade --id OpenAI.Codex --source winget
    ```
 
 3. ターミナルから一度サインインします。Visual Studio 側が資格情報に触れることはありません。
@@ -52,7 +51,7 @@
 
 ## 制限事項
 
-- **古い Codex CLI はサポートしません。** 動作確認済みバージョンは 0.145.0 です。それより古いビルドは app-server のプロトコル形状が異なるため、`initialize` や `turn/start` が失敗したり、イベントが欠落したりします。古いバージョンでのみ再現する問題は対応対象外です。
+- **他の Codex CLI バージョンは対象契約ではありません。** 動作確認済みバージョンは 0.155.1 です。0.154.0 は schema 回帰比較の基準としてのみ保持します。その他のビルドは app-server のプロトコル形状が異なるため、`initialize` や `turn/start` が失敗したり、イベントが欠落したりします。
 - **codex が複数インストールされていると、意図しないバージョンが起動することがあります。**
   バージョン管理ツール (mise)、winget、npm、Codex デスクトップアプリはそれぞれ別の場所に `codex`実行ファイルを配置し、`PATH` 上で先に見つかるものが最新とは限りません。ワーカーは次の順序で実行ファイルを解決します。
   1. 環境変数 `CODEX_PATH`
@@ -61,12 +60,12 @@
   4. `%LOCALAPPDATA%\OpenAI\Codex\bin`
 
   `where.exe codex` ですべての候補を確認できます。複数表示される場合は使用したい実行ファイルを`CODEX_PATH` に設定し、Visual Studio を再起動してください。
-- **npm 経由のインストールは推奨しません。** `@openai/codex` npm パッケージはこの構成で問題が出ることが分かっています。Node.js の更新後にシムが解決できなくなり、app server が起動直後に終了します。winget パッケージを使用してください。
+- **npm 経由のインストールは推奨しません。** `@openai/codex` npm パッケージはこの構成で問題が出ることが分かっています。Node.js の更新後にシムが解決できなくなり、app server が起動直後に終了します。公式 standalone リリース実行ファイルを使用してください。
 - **スキル機能は Codex CLI に依存します。** スキルは app server の `skills/list` から取得します。CLI が
   未実装の場合、`Skills` グループにはカタログが利用できない旨が表示され、そのセッションの間は組み込み
   コマンドのみでスラッシュメニューが動作します。`interface.iconSmall` で宣言されたスキルアイコンは
   描画されず、すべての行が固定グリフを使用します。スキル固有の承認要求は許可せず拒否します。
-- winget のマニフェストは Codex CLI のリリースから数日遅れることがあります。インストール済みのビルドが最新であると仮定せず、必ず `codex --version` で確認してください。
+- app-server 契約は 0.155.1 を基準に検証しています。CI は最新安定版を runner のローカル一時ディレクトリへ取得して実行 smoke を行いますが、schema 生成は再現性のため manifest の固定バージョンを使用します。ローカル実行ファイルは必ず `codex --version` で確認してください。
 - 本拡張は Windows 上の Visual Studio 専用です。Visual Studio Code 版やクロスプラットフォーム版はありません。
 
 ## FAQ
@@ -76,7 +75,7 @@ Visual Studio が 17.14 以降であること、**拡張機能 > 拡張機能の
 なっていることを確認し、VSIX インストール後に Visual Studio を一度再起動してください。
 
 **チャットが応答しない、またはワーカーがすぐ終了します。**
-ほとんどの場合は拡張ではなく Codex CLI 側の問題です。ターミナルで `codex --version` (0.145.0 以降)
+ほとんどの場合は拡張ではなく Codex CLI 側の問題です。ターミナルで `codex --version` (0.155.1)
 と `codex login` を確認してください。ターミナルでは成功するのに Visual Studio では失敗する場合は、
 別の `codex` が起動しています。[制限事項](#制限事項)のとおり `CODEX_PATH` で固定してください。
 
@@ -115,7 +114,7 @@ Codex CLI が返す `Skills` グループが表示されます。スキルを選
 
 - Visual Studio 2022 17.14 以降 (Visual Studio 拡張機能開発ワークロード)
 - .NET 8 SDK
-- ローカルの Codex CLI (ビルド時のプロトコルスキーマ生成に使用)
+- 公式 Codex CLI 0.155.1 実行ファイル (ビルド時の対象プロトコル schema 生成に使用)
 
 復元とビルド:
 
@@ -125,14 +124,13 @@ dotnet build CodexForVisualStudio.slnx -c Release --no-restore
 ```
 
 `schemas/` は Apache-2.0 ライセンスの Codex CLI が生成する出力であり、MIT ライセンスの本リポジトリ
-からは意図的に除外しています。`schemas/codex_app_server_protocol.schemas.json` が存在しない場合、Windows 上での `Codex.AppServer.Protocol` のビルドが次を自動実行します。
+からは意図的に除外しています。cache は `schemas/<version>/<stable|experimental>/` に分離し、CLI version、surface、generator arguments、metadata、schema sentinel がすべて一致する場合だけ再利用します。`schemas/0.155.1/stable/codex_app_server_protocol.schemas.json` が存在しないか古い場合、Windows 上での `Codex.AppServer.Protocol` のビルドが次と同等の処理を自動実行します。
 
 ```powershell
-codex app-server generate-json-schema --out schemas
+pwsh -NoProfile -File scripts/generate-schemas.ps1 -OutputDirectory schemas -Version 0.155.1 -Surface stable -CodexPath $env:CODEX_PATH
 ```
 
-ビルドは `CODEX_PATH`、`PATH` 上の `codex`、Codex デスクトップアプリのローカルキャッシュの順に
-参照します。自動検出できない場合は `CODEX_PATH` を設定してください。
+generator は `CODEX_PATH` を優先し、未設定時は `PATH` 上の `codex` を参照します。選択した stable manifest entry と異なる version は拒否します。CI は固定した Windows x64 の 0.154.0 / 0.155.1 公式 release asset を取得し、`app-server-contract.json` の SHA-256 を検証して stable / experimental の 4 組を生成し、正規化した構造差分を確認します。build と release job はさらに最新安定版の Windows x64 実行ファイルを runner のローカル一時ディレクトリへ取得し、そのパスを `CODEX_PATH` として渡しますが、固定 schema generator は置き換えません。ローカル schema ビルドでは公式 0.155.1 実行ファイルを `CODEX_PATH` に設定してください。
 
 ```powershell
 $env:CODEX_PATH = "C:\path\to\codex.exe"

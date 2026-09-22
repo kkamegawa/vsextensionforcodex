@@ -9,6 +9,7 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
     private readonly ISecretRedactor redactor;
     private readonly ICodexProcessHost processHost;
     private readonly ICodexSessionService session;
+    private readonly SemaphoreSlim connectionTransitionGate = new(1, 1);
     private WorkerOptions? options;
     private JsonRpc? clientRpc;
     private WorkerStatus status = new() { State = WorkerConnectionState.Disconnected, Message = "Worker is disconnected." };
@@ -44,25 +45,68 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
 
     public async Task<WorkerStatus> ConnectAsync(WorkerOptions options, CancellationToken cancellationToken)
     {
+        await connectionTransitionGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            return await ConnectCoreAsync(options, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            connectionTransitionGate.Release();
+        }
+    }
+
+    private async Task<WorkerStatus> ConnectCoreAsync(WorkerOptions options, CancellationToken cancellationToken)
+    {
         WorkerDiagnostics.Write("worker connect RPC received");
         if (options.ContractVersion != ContractVersions.Current)
         {
             throw new InvalidOperationException($"Unsupported contract version {options.ContractVersion}.");
         }
 
+        bool hasLocalRoot = !string.IsNullOrWhiteSpace(options.LocalRoot);
+        bool hasServerRoot = !string.IsNullOrWhiteSpace(options.ServerRoot);
+        if (hasLocalRoot != hasServerRoot)
+        {
+            throw new InvalidOperationException("Remote path mapping requires both localRoot and serverRoot.");
+        }
+
         this.options = options;
         Interlocked.Exchange(ref networkFailureReported, 0);
-        await SetStatusAsync(WorkerConnectionState.Connecting, "Starting codex app-server...", cancellationToken).ConfigureAwait(false);
+        bool remote = !string.IsNullOrWhiteSpace(options.RemoteEndpoint);
+        await SetStatusAsync(
+            WorkerConnectionState.Connecting,
+            remote ? "Connecting to remote codex app-server..." : "Starting codex app-server...",
+            cancellationToken).ConfigureAwait(false);
         try
         {
-            WorkerDiagnostics.Write("worker starting codex app-server");
-            await processHost.StartAsync(options.CodexPath, options.WorkingDirectory, cancellationToken).ConfigureAwait(false);
+            if (remote)
+            {
+                if (string.IsNullOrWhiteSpace(options.RemoteTokenFilePath))
+                {
+                    throw new InvalidOperationException("A token file is required for a remote app-server connection.");
+                }
+
+                WorkerDiagnostics.Write("worker connecting to remote codex app-server");
+                await processHost.StartRemoteAsync(
+                    options.RemoteEndpoint!,
+                    options.RemoteTokenFilePath,
+                    cancellationToken).ConfigureAwait(false);
+            }
+            else
+            {
+                WorkerDiagnostics.Write("worker starting codex app-server");
+                await processHost.StartAsync(options.CodexPath, options.WorkingDirectory, cancellationToken).ConfigureAwait(false);
+            }
             WorkerDiagnostics.Write("worker initializing codex app-server");
             await session.InitializeAsync(processHost.Connection!, options, cancellationToken).ConfigureAwait(false);
             WorkerDiagnostics.Write("worker reading account status");
             accountStatus = await session.GetAccountStatusAsync(cancellationToken).ConfigureAwait(false);
             WorkerDiagnostics.Write("worker connect completed");
-            return await SetStatusAsync(WorkerConnectionState.Ready, "Connected to codex app-server.", cancellationToken).ConfigureAwait(false);
+            return await SetStatusAsync(
+                WorkerConnectionState.Ready,
+                remote ? "Connected to remote codex app-server." : "Connected to codex app-server.",
+                cancellationToken).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
@@ -76,13 +120,26 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
 
     public async Task<WorkerStatus> RestartAsync(CancellationToken cancellationToken)
     {
+        await connectionTransitionGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            return await RestartCoreAsync(cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            connectionTransitionGate.Release();
+        }
+    }
+
+    private async Task<WorkerStatus> RestartCoreAsync(CancellationToken cancellationToken)
+    {
         if (options is null)
         {
             throw new InvalidOperationException("Connect must be called before restart.");
         }
 
         await processHost.StopAsync(cancellationToken).ConfigureAwait(false);
-        return await ConnectAsync(options, cancellationToken).ConfigureAwait(false);
+        return await ConnectCoreAsync(options, cancellationToken).ConfigureAwait(false);
     }
 
     public Task<WorkerStatus> GetStatusAsync(CancellationToken cancellationToken) => Task.FromResult(CloneStatus());
@@ -197,11 +254,16 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
             throw;
         }
 
-        // Re-publish Busy now that the turn id is known. The first SetStatusAsync above ran before
-        // session.StartTurnAsync set ActiveTurnId, so the client received Busy with TurnId = null and
-        // IsTurnActive stayed false (the interrupt button never appeared). This second publish carries
-        // the turn id so the extension can show the interrupt button while the turn runs.
-        await SetStatusAsync(WorkerConnectionState.Busy, "Turn in progress.", cancellationToken).ConfigureAwait(false);
+        // The server may complete the turn before the turn/start response arrives. Publish the
+        // post-response session state so a late response cannot leave the Worker Busy forever.
+        if (session.ActiveTurnId is null)
+        {
+            await SetStatusAsync(WorkerConnectionState.Ready, "Turn completed.", cancellationToken).ConfigureAwait(false);
+        }
+        else
+        {
+            await SetStatusAsync(WorkerConnectionState.Busy, "Turn in progress.", cancellationToken).ConfigureAwait(false);
+        }
         return turnId;
     }
 
@@ -284,8 +346,17 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        await session.DisposeAsync().ConfigureAwait(false);
-        await processHost.DisposeAsync().ConfigureAwait(false);
+        await connectionTransitionGate.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            await session.DisposeAsync().ConfigureAwait(false);
+            await processHost.DisposeAsync().ConfigureAwait(false);
+        }
+        finally
+        {
+            connectionTransitionGate.Release();
+            connectionTransitionGate.Dispose();
+        }
     }
 
     private async Task<WorkerStatus> SetStatusAsync(WorkerConnectionState state, string message, CancellationToken cancellationToken)

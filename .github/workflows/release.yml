@@ -1,4 +1,4 @@
-name: Release
+﻿name: Release
 
 on:
   push:
@@ -55,34 +55,34 @@ jobs:
             8.0.x
             10.0.x
 
-      - name: Install Codex CLI
-        id: install_codex
+      - name: Download pinned Codex CLI for schema generation
+        id: install_schema_codex
         shell: pwsh
         run: |
-          # Codex.AppServer.Protocol generates schemas/ during the build by calling the Codex CLI,
-          # so the runner needs one. winget is the supported install method for this extension.
-          winget install --id OpenAI.Codex --source winget --silent `
-            --accept-source-agreements --accept-package-agreements --disable-interactivity
-          if ($LASTEXITCODE -ne 0) {
-            throw "winget failed to install the Codex CLI (exit code $LASTEXITCODE)."
-          }
+          pwsh -NoProfile -File scripts/install-codex.ps1 `
+            -Version '0.155.1' `
+            -OutputDirectory (Join-Path $env:RUNNER_TEMP 'codex-cli-0.155.1') `
+            -GitHubOutput
 
-          # winget updates the persisted PATH, which the current process does not see yet.
-          $env:PATH = [Environment]::GetEnvironmentVariable('PATH', 'Machine') + ';' +
-            [Environment]::GetEnvironmentVariable('PATH', 'User')
-          $codex = Get-Command codex -CommandType Application -All -ErrorAction SilentlyContinue |
-            Where-Object { $_.Source -notmatch '[\\/]WindowsApps[\\/]' } |
-            Select-Object -First 1
-          if (-not $codex) {
-            throw "The Codex CLI was installed but no usable executable was found on PATH."
-          }
+      - name: Generate release schema cache
+        shell: pwsh
+        env:
+          CODEX_PATH: ${{ steps.install_schema_codex.outputs.codex_path }}
+        run: |
+          pwsh -NoProfile -File scripts/generate-schemas.ps1 `
+            -OutputDirectory schemas `
+            -Version '0.155.1' `
+            -Surface stable `
+            -CodexPath $env:CODEX_PATH
 
-          & $codex.Source --version
-
-          # Scoped to this step's output rather than $GITHUB_ENV: exporting CODEX_PATH job-wide
-          # would leak into the test steps below and break CodexExecutableResolver unit tests
-          # that assert behavior with CODEX_PATH unset (it always wins resolution when set).
-          "codex_path=$($codex.Source)" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+      - name: Download latest Codex CLI
+        id: install_latest_codex
+        shell: pwsh
+        run: |
+          pwsh -NoProfile -File scripts/install-codex.ps1 `
+            -Version latest `
+            -OutputDirectory (Join-Path $env:RUNNER_TEMP 'codex-cli-latest') `
+            -GitHubOutput
 
       - name: Restore
         run: dotnet restore CodexForVisualStudio.slnx
@@ -91,7 +91,7 @@ jobs:
       # extension.vsixmanifest, so passing the tag version here embeds it in the VSIX.
       - name: Build solution
         env:
-          CODEX_PATH: ${{ steps.install_codex.outputs.codex_path }}
+          CODEX_PATH: ${{ steps.install_latest_codex.outputs.codex_path }}
         run: >-
           dotnet build CodexForVisualStudio.slnx -c Release --no-restore -v minimal
           -p:Version=${{ steps.version.outputs.vsix_version }}

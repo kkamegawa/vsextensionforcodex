@@ -2,6 +2,17 @@
 
 `plan.md` のフェーズ分割に対応する詳細タスク。各タスクは独立してレビュー可能な小さなスライスを意図する。
 
+## 2026-09-13: Codex App Server update and remote connection (approved plan)
+
+- [x] Phase 1 ([Issue #150](https://github.com/kkamegawa/vsextensionforcodex/issues/150)): target the CLI 0.155.1 contract, compare 0.154.0 and 0.155.1 stable/experimental schemas, update schema cache metadata, exact request routing, capability probes, and connection-generation state. Verified with four official schema generations, cache/contract checks, 72 focused tests, 130 full Core tests, a zero-warning Release solution build, and a live 0.155.1 initialize/thread/turn round trip.
+- [ ] Phase 2: add explicitly enabled secure WebSocket transport for already running remote servers, authentication, health distinction, and bounded reconnect.
+- [ ] Phase 3: add component-wise local/server root mapping and connection/account/authentication-principal/workspace state partitioning, including invalidation of the previous owner's session, WebSocket state, model catalog, caches, and late events.
+- [ ] Phase 4: retain in-memory drafts, reconnect and page history plus stored attachments, merge notifications, and prevent uncertain message/approval/attachment mutation replay.
+- [ ] Phase 5: raise the Worker contract for questions, permissions, native user verification, MCP forms/authentication and OAuth revocation recovery with safe secret/proof handling.
+- [ ] Phase 6: add plan/status/artifact and stored attachment rendering, model catalog capabilities, explicit `thread/shellCommand`, and local sandbox setup status.
+- [ ] Phase 7: run 0.154.0-to-0.155.1 contract-diff, race, auth-owner switch, transport, path, stored attachment, verification/MCP reauthentication, UI accessibility, build, VSIX, and Experimental Instance validation.
+- [x] Tracking: parent Issue and seven linked child Issues; English/Japanese Wiki plan and Home indexes. The detailed Issue #150 plan was pushed to the bilingual Wiki on 2026-09-22.
+
 ## 2026-07-21: Merge main into PR #31 (issue #25) and resolve conflicts
 
 - [x] Resolve `ChoicePromptParser.cs` confirmation-regex conflict by adopting main's line-anchored `\A...to\b` pattern (issue #45), compatible with this branch's question-line scoping fix (issue #33).
@@ -517,3 +528,13 @@ turn-completion path. In-progress compaction events remain a no-op.
 - Validation: `dotnet build CodexForVisualStudio.slnx -c Release` — 0 warnings, 0 errors. Full suite
   run locally: `Codex.VisualStudio.Core.Tests` 113/113, `Codex.VisualStudio.Ui.Tests` 285/285.
   Visual Studio Experimental Instance check still pending (tracked in the sub-issue above).
+
+### 2026-09-22: Use the latest Codex release locally in CI ([Issue #150](https://github.com/kkamegawa/vsextensionforcodex/issues/150))
+
+Replaced the remaining inline release download logic with `scripts/install-codex.ps1`.
+Schema generation continues to use the manifest-pinned 0.154.0 and 0.155.1 Windows x64
+assets and their SHA-256 values. The build and release jobs additionally download the
+latest stable Windows x64 asset into the runner-local temporary directory, verify the
+published digest, run `--version`, and pass the resulting path through `CODEX_PATH`.
+This keeps the protocol contract reproducible while ensuring every executable CI path
+uses a locally downloaded standalone Codex binary rather than winget.

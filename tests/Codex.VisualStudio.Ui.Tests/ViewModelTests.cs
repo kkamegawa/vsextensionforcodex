@@ -2408,7 +2408,10 @@ public sealed class ViewModelTests
                 DefaultModel = "gpt-5",
             },
         };
-        using var vm = new ChatViewModel(bridge, autoConnect: false)
+        using var vm = new ChatViewModel(
+            bridge,
+            autoConnect: false,
+            settingsStore: new MemorySettingsStore(new ExtensionSettings()))
         {
             SelectedThread = new ThreadSummary { Id = "thread-1" },
         };
@@ -2708,7 +2711,10 @@ public sealed class ViewModelTests
                 DefaultModel = "gpt-5",
             },
         };
-        using var vm = new ChatViewModel(bridge, autoConnect: false)
+        using var vm = new ChatViewModel(
+            bridge,
+            autoConnect: false,
+            settingsStore: new MemorySettingsStore(new ExtensionSettings()))
         {
             SelectedThread = new ThreadSummary { Id = "thread-1" },
         };
@@ -2745,7 +2751,10 @@ public sealed class ViewModelTests
                 DefaultModel = "reasoning-model",
             },
         };
-        using var vm = new ChatViewModel(bridge, autoConnect: false)
+        using var vm = new ChatViewModel(
+            bridge,
+            autoConnect: false,
+            settingsStore: new MemorySettingsStore(new ExtensionSettings()))
         {
             SelectedThread = new ThreadSummary { Id = "thread-1", EffectiveReasoningEffort = "medium" },
         };
