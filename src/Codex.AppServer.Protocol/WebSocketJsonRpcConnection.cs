@@ -23,11 +23,13 @@ public sealed class WebSocketJsonRpcConnection : IJsonRpcConnection
     private readonly SemaphoreSlim sendGate = new(1, 1);
     private readonly ConcurrentDictionary<string, TaskCompletionSource<JsonElement>> pending = new();
     private readonly ConcurrentDictionary<string, ServerRequestOperation> serverRequests = new();
+    private readonly ConcurrentDictionary<long, Task> dispatchTasks = new();
     private readonly CancellationTokenSource lifetime = new();
     private Task? receivePump;
     private long nextId;
     private int started;
     private int closed;
+    private long nextDispatchId;
 
     public WebSocketJsonRpcConnection(
         Uri endpoint,
@@ -134,6 +136,18 @@ public sealed class WebSocketJsonRpcConnection : IJsonRpcConnection
             }
         }
 
+        Task[] remaining = dispatchTasks.Values.ToArray();
+        if (remaining.Length > 0)
+        {
+            try
+            {
+                await Task.WhenAll(remaining).ConfigureAwait(false);
+            }
+            catch (Exception) when (lifetime.IsCancellationRequested)
+            {
+                // Dispatch handlers are canceled by Close; their failures are observed below.
+            }
+        }
         socket.Dispose();
         sendGate.Dispose();
         lifetime.Dispose();
@@ -204,7 +218,7 @@ public sealed class WebSocketJsonRpcConnection : IJsonRpcConnection
                 }
                 else if (rpcMessage.IsNotification && NotificationReceived is not null)
                 {
-                    await NotificationReceived(rpcMessage, cancellationToken).ConfigureAwait(false);
+                    StartNotification(rpcMessage, cancellationToken);
                 }
             }
         }
@@ -219,6 +233,42 @@ public sealed class WebSocketJsonRpcConnection : IJsonRpcConnection
         {
             Close(failure);
         }
+    }
+
+    private void StartNotification(JsonRpcMessage message, CancellationToken cancellationToken)
+    {
+        Func<JsonRpcMessage, CancellationToken, Task>? handler = NotificationReceived;
+        if (handler is null)
+        {
+            return;
+        }
+
+        long dispatchId = Interlocked.Increment(ref nextDispatchId);
+        var tracked = new TaskCompletionSource<object?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        dispatchTasks.TryAdd(dispatchId, tracked.Task);
+        _ = Task.Run(
+            async () =>
+            {
+                try
+                {
+                    await handler(message, cancellationToken).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                }
+                catch (Exception ex)
+                {
+                    // Receive must continue while one notification is being processed. The task is
+                    // retained until completion so Close/Dispose can observe every failure.
+                    _ = ex;
+                }
+                finally
+                {
+                    dispatchTasks.TryRemove(dispatchId, out _);
+                    tracked.TrySetResult(null);
+                }
+            },
+            CancellationToken.None);
     }
 
     private void StartServerRequest(JsonRpcMessage message, CancellationToken cancellationToken)
@@ -239,8 +289,14 @@ public sealed class WebSocketJsonRpcConnection : IJsonRpcConnection
         Task task = Task.Run(
             () => RunServerRequestAsync(message, operation, cancellationToken),
             CancellationToken.None);
+        long dispatchId = Interlocked.Increment(ref nextDispatchId);
+        dispatchTasks.TryAdd(dispatchId, task);
         _ = task.ContinueWith(
-            static completed => ObserveCompletedTask(completed),
+            completed =>
+            {
+                dispatchTasks.TryRemove(dispatchId, out _);
+                ObserveCompletedTask(completed);
+            },
             CancellationToken.None,
             TaskContinuationOptions.ExecuteSynchronously,
             TaskScheduler.Default);

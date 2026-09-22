@@ -12,27 +12,26 @@ The extension is an out-of-process `Microsoft.VisualStudio.Extensibility` extens
 
 - Windows (x64 or Arm64)
 - Visual Studio 2022 17.14 or later, or Visual Studio 2026 (Community, Professional, or Enterprise)
-- Codex CLI 0.155.1, installed with winget (see [Limitations](#limitations))
+- The official Windows x64 Codex CLI executable from the [latest stable release](https://github.com/openai/codex/releases/latest)
 - A ChatGPT account that can sign in with `codex login`
 
 ## Setup
 
-1. Install the Codex CLI:
+1. Download the Windows x64 MSVC executable from the [latest stable Codex release](https://github.com/openai/codex/releases/latest) into a local directory. The extension starts this standalone executable directly; winget is not required.
 
    ```powershell
-   winget install --id OpenAI.Codex --source winget
+   $codexDirectory = Join-Path $env:LOCALAPPDATA 'OpenAI\Codex\bin'
+   New-Item -ItemType Directory -Force -Path $codexDirectory | Out-Null
+   Invoke-WebRequest `
+     -Uri 'https://github.com/openai/codex/releases/latest/download/codex-x86_64-pc-windows-msvc.exe' `
+     -OutFile (Join-Path $codexDirectory 'codex.exe')
+   [Environment]::SetEnvironmentVariable('CODEX_PATH', (Join-Path $codexDirectory 'codex.exe'), 'User')
    ```
 
-2. Confirm the version. The app-server contract is verified against 0.155.1:
+2. Restart Visual Studio and confirm the executable. The current latest release is 0.155.1, which is the app-server contract used by this extension:
 
    ```powershell
    codex --version
-   ```
-
-   If the reported version is not 0.155.1, update it:
-
-   ```powershell
-   winget upgrade --id OpenAI.Codex --source winget
    ```
 
 3. Sign in once from a terminal. Visual Studio never sees the credentials:
@@ -59,13 +58,13 @@ The extension is an out-of-process `Microsoft.VisualStudio.Extensibility` extens
 
   Run `where.exe codex` to see every match. When more than one is listed, set `CODEX_PATH` to the executable you want and restart Visual Studio.
 - **npm installs are not recommended.** The `@openai/codex` npm package is known to break in this
-  setup: the shim can stop resolving after a Node.js update, and the app server then exits immediately after start. Use the winget package instead.
+  setup: the shim can stop resolving after a Node.js update, and the app server then exits immediately after start. Use the official standalone release executable instead.
 - **Skill support depends on the Codex CLI.** Skills come from the app server's `skills/list`. A CLI
   that does not implement it makes the `Skills` group report that the catalog is unavailable, and the
   slash menu keeps working with built-in commands only for the rest of the session. Skill icons
   declared by `interface.iconSmall` are not rendered; every row uses a fixed glyph. Skill-specific
   approval requests are declined rather than granted.
-- The winget manifest can lag a few days behind a Codex CLI release. Always confirm with `codex --version` rather than assuming the installed build is current.
+- The app-server contract is verified against 0.155.1. A newer latest release is downloaded by CI for local executable smoke coverage, while schema generation remains pinned to the manifest versions so contract comparisons stay reproducible. Confirm the local executable with `codex --version`.
 - The extension is Windows-only and targets Visual Studio; there is no Visual Studio Code or cross-platform host.
 
 ## FAQ
@@ -128,7 +127,7 @@ dotnet build CodexForVisualStudio.slnx -c Release --no-restore
 pwsh -NoProfile -File scripts/generate-schemas.ps1 -OutputDirectory schemas -Version 0.155.1 -Surface stable -CodexPath $env:CODEX_PATH
 ```
 
-The generator prefers `CODEX_PATH` when it is set and otherwise resolves `codex` from `PATH`. It rejects a version other than the selected stable manifest entry. CI downloads the pinned 0.154.0 and 0.155.1 Windows x64 release assets, verifies their SHA-256 hashes from `app-server-contract.json`, generates both stable and experimental surfaces, and checks the normalized structural differences. Set `CODEX_PATH` to the official 0.155.1 executable for local builds:
+The generator prefers `CODEX_PATH` when it is set and otherwise resolves `codex` from `PATH`. It rejects a version other than the selected stable manifest entry. CI downloads the pinned 0.154.0 and 0.155.1 Windows x64 release assets, verifies their SHA-256 hashes from `app-server-contract.json`, generates both stable and experimental surfaces, and checks the normalized structural differences. The build and release jobs also download the latest stable Windows x64 executable into the runner's local temporary directory and pass that path as `CODEX_PATH`; this does not replace the pinned schema generator. Set `CODEX_PATH` to the official 0.155.1 executable for local schema builds:
 
 ```powershell
 $env:CODEX_PATH = "C:\path\to\codex.exe"

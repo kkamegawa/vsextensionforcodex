@@ -24,9 +24,11 @@ contract at Codex CLI 0.155.1 while retaining 0.154.0 as the regression baseline
 SHA-256 hashes, stable/experimental generator arguments, every method consumed by the Worker, and
 the expected structural differences between the two CLI versions. Generated schema output remains
 ignored and is cached under `schemas/<version>/<stable|experimental>/`; exact metadata plus the real
-schema sentinel are required for a cache hit. CI downloads the pinned official assets instead of
-installing the latest winget package, verifies both hashes, generates all four surfaces, verifies
-the used method tables, and compares normalized schema structure.
+schema sentinel are required for a cache hit. Schema CI downloads the pinned official assets, verifies
+both hashes, generates all four surfaces, verifies the used method tables, and compares normalized
+schema structure. Build and release CI also download the latest stable Windows x64 asset into a
+runner-local temporary directory and execute it through `CODEX_PATH`; the pinned asset remains the
+only schema contract source.
 
 The Worker now retains `codexHome`, `platformFamily`, `platformOs`, and `userAgent` as read-only
 in-process initialization metadata without adding them to Remote UI or the v16 Worker wire

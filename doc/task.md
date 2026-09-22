@@ -528,3 +528,13 @@ turn-completion path. In-progress compaction events remain a no-op.
 - Validation: `dotnet build CodexForVisualStudio.slnx -c Release` — 0 warnings, 0 errors. Full suite
   run locally: `Codex.VisualStudio.Core.Tests` 113/113, `Codex.VisualStudio.Ui.Tests` 285/285.
   Visual Studio Experimental Instance check still pending (tracked in the sub-issue above).
+
+### 2026-09-22: Use the latest Codex release locally in CI
+
+Replaced the remaining inline release download logic with `scripts/install-codex.ps1`.
+Schema generation continues to use the manifest-pinned 0.154.0 and 0.155.1 Windows x64
+assets and their SHA-256 values. The build and release jobs additionally download the
+latest stable Windows x64 asset into the runner-local temporary directory, verify the
+published digest, run `--version`, and pass the resulting path through `CODEX_PATH`.
+This keeps the protocol contract reproducible while ensuring every executable CI path
+uses a locally downloaded standalone Codex binary rather than winget.

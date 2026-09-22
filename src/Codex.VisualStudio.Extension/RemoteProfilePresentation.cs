@@ -100,11 +100,14 @@ public sealed class RemoteProfilesPresentationViewModel : ObservableObject
             Profiles.Add(new RemoteProfileViewModel(profile));
         }
 
-        SelectedProfile = Profiles.FirstOrDefault(profile =>
-            string.Equals(profile.Name, settings.SelectedRemoteProfileName, StringComparison.Ordinal));
+        // Initialize commands before restoring the persisted selection. Selecting a profile
+        // persists the selection and refreshes command availability, so the commands must be
+        // available while the constructor rehydrates the view model.
         AddCommand = new AsyncCommand(AddProfileAsync);
         RemoveCommand = new AsyncCommand(RemoveProfileAsync, () => SelectedProfile is not null);
         SaveCommand = new AsyncCommand(SaveProfileAsync, () => SelectedProfile is not null);
+        SelectedProfile = Profiles.FirstOrDefault(profile =>
+            string.Equals(profile.Name, settings.SelectedRemoteProfileName, StringComparison.Ordinal));
     }
 
     [DataMember]

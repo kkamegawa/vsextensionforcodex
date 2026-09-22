@@ -122,6 +122,7 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
     private const int MaxSkillDependencyTypeLength = 64;
     private const int MaxSkillDependencyValueLength = 256;
     private const int MaxSkillDependencyDescriptionLength = 512;
+    private const char InteractionIdSeparator = '|';
 
     // Not the legacy Windows MAX_PATH (260): that limit only applies without the long-paths
     // opt-in and would silently drop valid skills under deep workspaces or long user-profile
@@ -735,6 +736,7 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         if (request.Skill is not null)
         {
             await ValidateSkillInvocationAsync(request.Skill, cancellationToken).ConfigureAwait(false);
+            EnsureCurrent(context);
         }
 
         List<object> input = BuildTurnInput(request);
@@ -785,9 +787,10 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
             };
         }
 
-        JsonElement result = await SendAsync(
+        JsonElement result = await context.Connection.SendRequestAsync(
             "turn/start",
             parameters,
+            TimeSpan.FromSeconds(60),
             cancellationToken).ConfigureAwait(false);
         if (!IsCurrent(context))
         {
@@ -1043,7 +1046,7 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
             else if (!forceReload
                 && await skillCatalogStore.TryReadAsync(
                     options.WorkingDirectory,
-                    CodexVersion,
+                    GetSkillsCacheIdentity(),
                     now,
                     cancellationToken).ConfigureAwait(false) is { } persisted)
             {
@@ -1094,7 +1097,7 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
                 {
                     await skillCatalogStore.WriteAsync(
                         options.WorkingDirectory,
-                        CodexVersion,
+                        GetSkillsCacheIdentity(),
                         loaded,
                         timeProvider.GetUtcNow(),
                         cancellationToken).ConfigureAwait(false);
@@ -1236,9 +1239,10 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
 
     public async Task ResolveApprovalAsync(ResolveApprovalRequest request, CancellationToken cancellationToken)
     {
-        ConnectionContext? context = Volatile.Read(ref connectionContext);
-        if (context is null
-            || !pendingApprovals.TryRemove(new PendingRequestKey(context.Generation, request.RequestId), out PendingApproval? pending))
+        if (!TryParseInteractionId(request.RequestId, out long generation, out string clientRequestId, out _)
+            || Volatile.Read(ref connectionContext) is not { } context
+            || context.Generation != generation
+            || !pendingApprovals.TryRemove(new PendingRequestKey(generation, clientRequestId), out PendingApproval? pending))
         {
             return;
         }
@@ -1257,28 +1261,30 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         }
 
         pending.Completion.TrySetResult(ToWireDecision(request.Decision));
-        await EmitApprovalResolvedAsync(request.RequestId, cancellationToken).ConfigureAwait(false);
+        await EmitApprovalResolvedAsync(clientRequestId, cancellationToken).ConfigureAwait(false);
     }
 
     public async Task ResolveUserInputAsync(ResolveUserInputRequest request, CancellationToken cancellationToken)
     {
-        ConnectionContext? context = Volatile.Read(ref connectionContext);
-        if (context is null
-            || !pendingUserInputs.TryRemove(new PendingRequestKey(context.Generation, request.RequestId), out PendingUserInput? pending))
+        if (!TryParseInteractionId(request.RequestId, out long generation, out string clientRequestId, out _)
+            || Volatile.Read(ref connectionContext) is not { } context
+            || context.Generation != generation
+            || !pendingUserInputs.TryRemove(new PendingRequestKey(generation, clientRequestId), out PendingUserInput? pending))
         {
             return;
         }
 
         Dictionary<string, string[]> validated = ValidateAnswers(pending.Request, request.Answers);
         pending.Completion.TrySetResult(validated);
-        await EmitUserInputResolvedAsync(request.RequestId, cancellationToken).ConfigureAwait(false);
+        await EmitUserInputResolvedAsync(clientRequestId, cancellationToken).ConfigureAwait(false);
     }
 
     private async Task<JsonElement> HandleUserInputRequestAsync(ConnectionContext context, string requestId, JsonElement parameters, CancellationToken cancellationToken)
     {
-        UserInputRequest request = CreateUserInputRequest(requestId, parameters);
+        string clientRequestId = CreateInteractionId(context.Generation, requestId);
+        UserInputRequest request = CreateUserInputRequest(clientRequestId, parameters);
         var completion = new TaskCompletionSource<IReadOnlyDictionary<string, string[]>>(TaskCreationOptions.RunContinuationsAsynchronously);
-        pendingUserInputs.TryAdd(new PendingRequestKey(context.Generation, requestId), new PendingUserInput(context.Generation, request, completion));
+        pendingUserInputs.TryAdd(new PendingRequestKey(context.Generation, clientRequestId), new PendingUserInput(context.Generation, requestId, request, completion));
         if (UserInputRequested is not null)
         {
             await UserInputRequested(request, cancellationToken).ConfigureAwait(false);
@@ -1288,10 +1294,10 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(timeout.Token, cancellationToken);
         using CancellationTokenRegistration registration = linked.Token.Register(() => completion.TrySetResult(EmptyAnswers));
         IReadOnlyDictionary<string, string[]> answers = await completion.Task.ConfigureAwait(false);
-        bool removed = pendingUserInputs.TryRemove(new PendingRequestKey(context.Generation, requestId), out _);
+        bool removed = pendingUserInputs.TryRemove(new PendingRequestKey(context.Generation, clientRequestId), out _);
         if (removed && ShouldNotifyPendingResolution(context))
         {
-            await EmitUserInputResolvedAsync(requestId, CancellationToken.None).ConfigureAwait(false);
+            await EmitUserInputResolvedAsync(clientRequestId, CancellationToken.None).ConfigureAwait(false);
         }
         return UserInputResponse(answers);
     }
@@ -1755,7 +1761,8 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
 
         ValidateApprovalParameters(method, parameters);
 
-        ApprovalRequest request = CreateApprovalRequest(requestId, method, parameters);
+        string clientRequestId = CreateInteractionId(context.Generation, requestId);
+        ApprovalRequest request = CreateApprovalRequest(clientRequestId, method, parameters);
         if (request.IsPolicyBlocked)
         {
             return ApprovalResponse("decline");
@@ -1768,7 +1775,7 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         }
 
         var completion = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
-        pendingApprovals.TryAdd(new PendingRequestKey(context.Generation, requestId), new PendingApproval(context.Generation, request, completion));
+        pendingApprovals.TryAdd(new PendingRequestKey(context.Generation, clientRequestId), new PendingApproval(context.Generation, requestId, request, completion));
         if (ApprovalRequested is not null)
         {
             await ApprovalRequested(request, cancellationToken).ConfigureAwait(false);
@@ -1778,10 +1785,10 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(timeout.Token, cancellationToken);
         using CancellationTokenRegistration registration = linked.Token.Register(() => completion.TrySetResult("cancel"));
         string decision = await completion.Task.ConfigureAwait(false);
-        bool removed = pendingApprovals.TryRemove(new PendingRequestKey(context.Generation, requestId), out _);
+        bool removed = pendingApprovals.TryRemove(new PendingRequestKey(context.Generation, clientRequestId), out _);
         if (removed && ShouldNotifyPendingResolution(context))
         {
-            await EmitApprovalResolvedAsync(requestId, CancellationToken.None).ConfigureAwait(false);
+            await EmitApprovalResolvedAsync(clientRequestId, CancellationToken.None).ConfigureAwait(false);
         }
         return ApprovalResponse(decision);
     }
@@ -1892,22 +1899,24 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         if (method == "serverRequest/resolved")
         {
             string? requestId = GetString(parameters, "requestId");
-            if (requestId is not null && pendingApprovals.TryRemove(
-                    new PendingRequestKey(context.Generation, requestId), out PendingApproval? pending))
+            if (requestId is not null
+                && TryRemovePendingApproval(context.Generation, requestId, out PendingApproval? pending)
+                && pending is not null)
             {
                 pending.Completion.TrySetResult("cancel");
                 if (ShouldNotifyPendingResolution(context))
                 {
-                    await EmitApprovalResolvedAsync(requestId, cancellationToken).ConfigureAwait(false);
+                    await EmitApprovalResolvedAsync(pending.Request.RequestId, cancellationToken).ConfigureAwait(false);
                 }
             }
-            else if (requestId is not null && pendingUserInputs.TryRemove(
-                         new PendingRequestKey(context.Generation, requestId), out PendingUserInput? pendingInput))
+            else if (requestId is not null
+                && TryRemovePendingUserInput(context.Generation, requestId, out PendingUserInput? pendingInput)
+                && pendingInput is not null)
             {
                 pendingInput.Completion.TrySetResult(EmptyAnswers);
                 if (ShouldNotifyPendingResolution(context))
                 {
-                    await EmitUserInputResolvedAsync(requestId, cancellationToken).ConfigureAwait(false);
+                    await EmitUserInputResolvedAsync(pendingInput.Request.RequestId, cancellationToken).ConfigureAwait(false);
                 }
             }
 
@@ -2058,8 +2067,10 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
     private ApprovalRequest CreateApprovalRequest(string requestId, string method, JsonElement parameters)
     {
         string? command = GetString(parameters, "command");
-        string? cwd = MapServerPathToLocal(GetString(parameters, "cwd"));
-        string? grantRoot = MapServerPathToLocal(GetString(parameters, "grantRoot"));
+        string? serverCwd = GetString(parameters, "cwd");
+        string? serverGrantRoot = GetString(parameters, "grantRoot");
+        string? cwd = MapServerPathToLocal(serverCwd);
+        string? grantRoot = MapServerPathToLocal(serverGrantRoot);
         string? networkHost = null;
         int? networkPort = null;
         if (parameters.TryGetProperty("networkApprovalContext", out JsonElement network))
@@ -2071,9 +2082,17 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
             }
         }
 
-        ApprovalPolicyResult policy = method.Contains("fileChange", StringComparison.Ordinal)
-            ? approvalPolicy.EvaluateFile(grantRoot, options.WorkingDirectory)
-            : approvalPolicy.EvaluateCommand(command, cwd, options.WorkingDirectory, networkHost, networkPort);
+        bool unmappablePath = remotePathMapper is not null
+            && ((serverCwd is not null && cwd is null) || (serverGrantRoot is not null && grantRoot is null));
+        ApprovalPolicyResult policy = unmappablePath
+            ? new ApprovalPolicyResult(
+                ApprovalRiskCategory.WorkspaceOutside,
+                "remote-path-unmappable",
+                true,
+                "The remote path is outside the configured local root.")
+            : method.Contains("fileChange", StringComparison.Ordinal)
+                ? approvalPolicy.EvaluateFile(grantRoot, options.WorkingDirectory)
+                : approvalPolicy.EvaluateCommand(command, cwd, options.WorkingDirectory, networkHost, networkPort);
         return new ApprovalRequest
         {
             RequestId = requestId,
@@ -2099,6 +2118,62 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
                     ApprovalDecision.Cancel,
                 ],
         };
+    }
+
+    private static string CreateInteractionId(long generation, string serverRequestId)
+        => $"{generation}{InteractionIdSeparator}{serverRequestId}";
+
+    private static bool TryParseInteractionId(
+        string value,
+        out long generation,
+        out string clientRequestId,
+        out string serverRequestId)
+    {
+        generation = 0;
+        clientRequestId = string.Empty;
+        serverRequestId = string.Empty;
+        int separator = value.IndexOf(InteractionIdSeparator);
+        if (separator <= 0
+            || !long.TryParse(value.AsSpan(0, separator), out generation)
+            || generation <= 0
+            || separator == value.Length - 1)
+        {
+            return false;
+        }
+
+        clientRequestId = value;
+        serverRequestId = value[(separator + 1)..];
+        return true;
+    }
+
+    private bool TryRemovePendingApproval(long generation, string serverRequestId, out PendingApproval? pending)
+    {
+        foreach ((PendingRequestKey key, PendingApproval value) in pendingApprovals)
+        {
+            if (key.Generation == generation && string.Equals(value.ServerRequestId, serverRequestId, StringComparison.Ordinal)
+                && pendingApprovals.TryRemove(key, out pending))
+            {
+                return true;
+            }
+        }
+
+        pending = null;
+        return false;
+    }
+
+    private bool TryRemovePendingUserInput(long generation, string serverRequestId, out PendingUserInput? pending)
+    {
+        foreach ((PendingRequestKey key, PendingUserInput value) in pendingUserInputs)
+        {
+            if (key.Generation == generation && string.Equals(value.ServerRequestId, serverRequestId, StringComparison.Ordinal)
+                && pendingUserInputs.TryRemove(key, out pending))
+            {
+                return true;
+            }
+        }
+
+        pending = null;
+        return false;
     }
 
     private async Task<JsonElement> SendAsync(string method, object parameters, CancellationToken cancellationToken)
@@ -2224,6 +2299,21 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         skillsSnapshot = null;
         skillsSnapshotExpiresAt = default;
         return generation;
+    }
+
+    private string? GetSkillsCacheIdentity()
+    {
+        if (string.IsNullOrWhiteSpace(CodexVersion))
+        {
+            return CodexVersion;
+        }
+
+        // A skill catalog is server-owned data. Include a stable hash of the endpoint and
+        // mapping roots so a remote profile can never consume another server's catalog while
+        // keeping sensitive endpoint/path values out of the persisted cache metadata.
+        string identity = string.Join("\n", options.RemoteEndpoint, options.LocalRoot, options.ServerRoot);
+        byte[] digest = System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(identity));
+        return $"{CodexVersion}:{Convert.ToHexString(digest)}";
     }
 
     private async Task DeletePersistedSkillsAsync(CancellationToken cancellationToken)
@@ -3380,12 +3470,17 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         _ => ConversationEventKind.Unknown,
     };
 
-    private sealed record PendingApproval(long Generation, ApprovalRequest Request, TaskCompletionSource<string> Completion);
+    private sealed record PendingApproval(
+        long Generation,
+        string ServerRequestId,
+        ApprovalRequest Request,
+        TaskCompletionSource<string> Completion);
 
     private readonly record struct PendingRequestKey(long Generation, string RequestId);
 
     private sealed record PendingUserInput(
         long Generation,
+        string ServerRequestId,
         UserInputRequest Request,
         TaskCompletionSource<IReadOnlyDictionary<string, string[]>> Completion);
 

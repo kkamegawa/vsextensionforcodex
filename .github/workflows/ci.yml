@@ -24,14 +24,10 @@ jobs:
         env:
           CODEX_VERSION: ${{ matrix.version }}
         run: |
-          $contract = Get-Content -Raw app-server-contract.json | ConvertFrom-Json
-          $release = $contract.releases.($env:CODEX_VERSION)
-          $uri = "https://github.com/openai/codex/releases/download/$($release.tag)/$($release.asset)"
-          $path = Join-Path $env:RUNNER_TEMP $release.asset
-          Invoke-WebRequest -Uri $uri -OutFile $path
-          $actual = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
-          if ($actual -ne $release.sha256) { throw "SHA-256 mismatch for $uri: $actual" }
-          "CODEX_PATH=$path" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          pwsh -NoProfile -File scripts/install-codex.ps1 `
+            -Version $env:CODEX_VERSION `
+            -OutputDirectory (Join-Path $env:RUNNER_TEMP "codex-cli-$env:CODEX_VERSION") `
+            -GitHubEnvironment
       - name: Generate schema surface
         shell: pwsh
         run: |
@@ -104,10 +100,21 @@ jobs:
           path: schemas
           merge-multiple: true
 
+      - name: Download latest Codex CLI
+        id: install_latest_codex
+        shell: pwsh
+        run: |
+          pwsh -NoProfile -File scripts/install-codex.ps1 `
+            -Version latest `
+            -OutputDirectory (Join-Path $env:RUNNER_TEMP 'codex-cli-latest') `
+            -GitHubOutput
+
       - name: Restore
         run: dotnet restore CodexForVisualStudio.slnx
 
       - name: Build solution
+        env:
+          CODEX_PATH: ${{ steps.install_latest_codex.outputs.codex_path }}
         run: dotnet build CodexForVisualStudio.slnx -c Release --no-restore -v minimal
 
       - name: Test core

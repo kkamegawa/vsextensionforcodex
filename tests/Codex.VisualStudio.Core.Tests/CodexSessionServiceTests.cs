@@ -2247,13 +2247,24 @@ public sealed class CodexSessionServiceTests
         requestSignals.Enqueue(secondRequested);
         await using var service = CreateService();
         int resolved = 0;
+        string? oldClientRequestId = null;
+        string? currentClientRequestId = null;
         service.ApprovalResolved += (_, _) =>
         {
             resolved++;
             return Task.CompletedTask;
         };
-        service.ApprovalRequested += (_, _) =>
+        int requestCount = 0;
+        service.ApprovalRequested += (request, _) =>
         {
+            if (requestCount++ == 0)
+            {
+                oldClientRequestId = request.RequestId;
+            }
+            else if (requestCount == 2)
+            {
+                currentClientRequestId = request.RequestId;
+            }
             requestSignals.Dequeue().TrySetResult();
             return Task.CompletedTask;
         };
@@ -2270,8 +2281,14 @@ public sealed class CodexSessionServiceTests
         await secondRequested.Task;
         await oldConnection.EmitNotificationAsync("serverRequest/resolved", new { requestId = "same-id" });
         Assert.IsFalse(currentRequest.IsCompleted);
+        Assert.IsNotNull(oldClientRequestId);
         await service.ResolveApprovalAsync(
-            new ResolveApprovalRequest { RequestId = "same-id", Decision = ApprovalDecision.Accept },
+            new ResolveApprovalRequest { RequestId = oldClientRequestId!, Decision = ApprovalDecision.Accept },
+            CancellationToken.None);
+        Assert.IsFalse(currentRequest.IsCompleted);
+        Assert.IsNotNull(currentClientRequestId);
+        await service.ResolveApprovalAsync(
+            new ResolveApprovalRequest { RequestId = currentClientRequestId!, Decision = ApprovalDecision.Accept },
             CancellationToken.None);
         Assert.AreEqual("accept", (await currentRequest).GetProperty("decision").GetString());
         Assert.AreEqual(1, resolved);

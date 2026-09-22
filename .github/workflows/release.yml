@@ -55,30 +55,34 @@ jobs:
             8.0.x
             10.0.x
 
-      - name: Install Codex CLI
-        id: install_codex
+      - name: Download pinned Codex CLI for schema generation
+        id: install_schema_codex
         shell: pwsh
         run: |
-          # Keep release schema generation on the same pinned official asset as contract CI.
-          # The manifest is the single source of truth for the tag, asset, and hash.
-          $manifest = Get-Content -Raw -LiteralPath .\app-server-contract.json | ConvertFrom-Json
-          $release = $manifest.releases.'0.155.1'
-          $downloadDirectory = Join-Path $env:RUNNER_TEMP 'codex-cli-0.155.1'
-          New-Item -ItemType Directory -Force -Path $downloadDirectory | Out-Null
-          $codexPath = Join-Path $downloadDirectory $release.asset
-          $uri = "https://github.com/openai/codex/releases/download/$($release.tag)/$($release.asset)"
-          Invoke-WebRequest -Uri $uri -OutFile $codexPath
-          $actualHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $codexPath).Hash.ToLowerInvariant()
-          if ($actualHash -ne $release.sha256) {
-            throw "The downloaded Codex CLI hash '$actualHash' does not match the manifest."
-          }
+          pwsh -NoProfile -File scripts/install-codex.ps1 `
+            -Version '0.155.1' `
+            -OutputDirectory (Join-Path $env:RUNNER_TEMP 'codex-cli-0.155.1') `
+            -GitHubOutput
 
-          & $codexPath --version
+      - name: Generate release schema cache
+        shell: pwsh
+        env:
+          CODEX_PATH: ${{ steps.install_schema_codex.outputs.codex_path }}
+        run: |
+          pwsh -NoProfile -File scripts/generate-schemas.ps1 `
+            -OutputDirectory schemas `
+            -Version '0.155.1' `
+            -Surface stable `
+            -CodexPath $env:CODEX_PATH
 
-          # Scoped to this step's output rather than $GITHUB_ENV: exporting CODEX_PATH job-wide
-          # would leak into the test steps below and break CodexExecutableResolver unit tests
-          # that assert behavior with CODEX_PATH unset (it always wins resolution when set).
-          "codex_path=$codexPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+      - name: Download latest Codex CLI
+        id: install_latest_codex
+        shell: pwsh
+        run: |
+          pwsh -NoProfile -File scripts/install-codex.ps1 `
+            -Version latest `
+            -OutputDirectory (Join-Path $env:RUNNER_TEMP 'codex-cli-latest') `
+            -GitHubOutput
 
       - name: Restore
         run: dotnet restore CodexForVisualStudio.slnx
@@ -87,7 +91,7 @@ jobs:
       # extension.vsixmanifest, so passing the tag version here embeds it in the VSIX.
       - name: Build solution
         env:
-          CODEX_PATH: ${{ steps.install_codex.outputs.codex_path }}
+          CODEX_PATH: ${{ steps.install_latest_codex.outputs.codex_path }}
         run: >-
           dotnet build CodexForVisualStudio.slnx -c Release --no-restore -v minimal
           -p:Version=${{ steps.version.outputs.vsix_version }}
