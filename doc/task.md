@@ -565,3 +565,17 @@ uses a locally downloaded standalone Codex binary rather than winget.
 - [x] Confirm F5 in the Visual Studio Experimental Instance loads the 0.2.1.0 VSIX, launches the
   Worker with `dotnet.exe`, connects to Codex 0.157.1, and reaches Ready and SignedIn. The user
   confirmed the UI result, and the 2026-09-28 07:51 diagnostic log confirms each runtime state.
+
+### 2026-09-28: Close the JSONL connection when a pump faults ([Issue #159](https://github.com/kkamegawa/vsextensionforcodex/issues/159))
+
+- [x] Confirm the notification/response deadlock is already fixed by #158 and covered by
+  `NotificationHandler_CanAwaitRequestResponse`.
+- [x] Run every `JsonLineRpcConnection` pump through a guard that closes the connection on an
+  unexpected exception, and fail pending requests before canceling the lifetime so callers see
+  `JsonRpcConnectionClosedException`.
+- [x] Report notification handler timeouts as error events, and report an `account/read` timeout
+  as Unavailable instead of leaving the account at Checking.
+- [x] Add Core tests for a write pump failure, a timed-out notification handler followed by a
+  later notification, and an account notification whose `account/read` times out.
+- [x] Verify a zero-warning Release build of the solution, UI tests (286 passed, one skipped), and
+  Core tests (133 passed). The two `CodexProcessHostTests` failures also occur on the unmodified base.

@@ -488,8 +488,10 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         {
             throw;
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
         {
+            // A request timeout also surfaces as OperationCanceledException; only the caller's own
+            // cancellation may leave the status at Checking.
             var status = new AccountStatus
             {
                 State = AccountState.Unavailable,
@@ -1807,8 +1809,9 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         {
             await DispatchNotificationAsync(context, message, linked.Token).ConfigureAwait(false);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex) when (ex is not OperationCanceledException || !linked.Token.IsCancellationRequested)
         {
+            // Report request timeouts too; stay silent only when the notification or connection was canceled.
             await EmitAsync(new ConversationEvent
             {
                 Kind = ConversationEventKind.Error,
