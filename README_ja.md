@@ -165,14 +165,14 @@ src/Codex.VisualStudio.Extension/bin/Release/net8.0-windows10.0.22621.0/Codex.Vi
 
 ## Visual Studio でのデバッグ
 
-Debug ビルドは既定では配置を行わないため、開発ビルドがインストール済みの Visual Studio を暗黙に書き換えることはありません。
+F5 では SDK 管理の実験用インスタンスへ開発ビルドが配置されます。開発ビルドの既定バージョンは、同じ拡張 ID の公開済み `0.2.0` より新しい `0.2.1` です。リリースビルドはタグから明示的な `-p:Version` を渡すため、この既定値の影響を受けません。
 
 1. Visual Studio で `CodexForVisualStudio.slnx` を開きます。
 2. `Codex.VisualStudio.Extension` をスタートアッププロジェクトに設定します。
 3. `Debug` 構成を選択し `F5` を押します。ビルド、配置、実験用インスタンスの起動が行われます。
 4. 実験用インスタンスで **表示 > Codex** を開きます。
 
-ワーカーは `Codex.VisualStudio.Worker.exe` という子プロセスです。ワーカーのコードをデバッグする場合は **デバッグ > プロセスにアタッチ** から `Codex.VisualStudio.Worker.exe` を選び、マネージド(.NET Core) のコードの種類を指定してください。
+ワーカーは `Codex.VisualStudio.Worker.dll` を引数に取る `dotnet.exe` の子プロセスとして動作します。ワーカーのコードをデバッグする場合は **デバッグ > プロセスにアタッチ** から、コマンドラインにこの DLL がある `dotnet.exe` を選び、マネージド(.NET Core) のコードの種類を指定してください。対応するランタイムホストがない場合は、同梱の `Codex.VisualStudio.Worker.exe` が使われます。
 
 ## リリース
 

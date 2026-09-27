@@ -119,6 +119,7 @@ The generated VSIX contents have been inspected and include:
 
 - `Codex.VisualStudio.Package.dll`
 - `Codex.VisualStudio.Package.pkgdef`
+- `Worker/Codex.VisualStudio.Worker.dll`
 - `Worker/Codex.VisualStudio.Worker.exe`
 - Worker runtime configuration and dependency assemblies
 
@@ -144,6 +145,10 @@ The Extension OOP process and Visual Studio run on different runtimes:
 
 - F5 in Visual Studio attaches the debugger to the Extension's .NET 8 OOP process automatically
   (the Extensibility SDK handles process launch and IPC).
+- `WorkerBridge` starts the packaged Worker DLL with the `dotnet.exe` beside the Extension's active
+  .NET runtime, falling back to the packaged Worker apphost when that host is absent. The explicit
+  runtime host avoids the Worker apphost's runtime discovery failure observed in the Windows ARM64
+  Experimental Instance ([Issue #158](https://github.com/kkamegawa/vsextensionforcodex/issues/158)).
 - The `codex app-server` child process can be attached separately when debugging protocol issues.
 - If the in-proc `Codex.VisualStudio.Package` is ever activated, a second debugger attachment to
   the VS process (using the .NET Framework code type) is required for that component.

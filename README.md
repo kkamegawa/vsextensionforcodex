@@ -162,7 +162,7 @@ See [doc/implementation.md](doc/implementation.md) for the implemented boundarie
 
 ## Debug in Visual Studio
 
-Debug builds do not deploy the extension by default, so a development build never modifies an installed Visual Studio instance silently.
+F5 uses the SDK-managed Experimental Instance deployment. The development version defaults to `0.2.1`, newer than the published `0.2.0` release with the same extension identity. Release builds pass an explicit `-p:Version` from the tag, so the development default does not affect release packages.
 
 1. Open `CodexForVisualStudio.slnx` in Visual Studio.
 2. Set `Codex.VisualStudio.Extension` as the startup project.
@@ -170,7 +170,7 @@ Debug builds do not deploy the extension by default, so a development build neve
    experimental instance.
 4. In the experimental instance, open **View > Codex**.
 
-The worker is a child process named `Codex.VisualStudio.Worker.exe`. To debug worker code, use **Debug > Attach to Process**, select `Codex.VisualStudio.Worker.exe`, and choose the managed .NET Core code type.
+The worker runs as a `dotnet.exe` child process with `Codex.VisualStudio.Worker.dll` on its command line. To debug worker code, use **Debug > Attach to Process**, select that `dotnet.exe` process, and choose the managed .NET Core code type. If the runtime host is unavailable, the packaged `Codex.VisualStudio.Worker.exe` is used instead.
 
 ## Release
 

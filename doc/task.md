@@ -538,3 +538,30 @@ latest stable Windows x64 asset into the runner-local temporary directory, verif
 published digest, run `--version`, and pass the resulting path through `CODEX_PATH`.
 This keeps the protocol contract reproducible while ensuring every executable CI path
 uses a locally downloaded standalone Codex binary rather than winget.
+
+### 2026-09-28: Fix version selection, Worker startup, and account refresh in the ARM64 Experimental Instance ([Issue #158](https://github.com/kkamegawa/vsextensionforcodex/issues/158))
+
+- [x] Launch the packaged Worker DLL through the `dotnet.exe` beside the Extension's active
+  .NET runtime, with the existing Worker apphost as a fallback when that host is absent.
+- [x] Add a regression test for selecting the runtime host and preserving a Worker DLL path
+  containing spaces as one process argument.
+- [x] Dispatch JSONL notifications and server requests through a bounded ordered pump while
+  resolving responses immediately; add a regression test for a notification awaiting `account/read`.
+- [x] Verify UI tests (289 passed, one skipped), a zero-warning Release extension build,
+  and the Worker DLL, EXE, and runtime configuration in the VSIX.
+- [x] Verify Core tests (148 passed) and UI tests (289 passed, one skipped) after the JSONL fix.
+- [x] Verify the WinGet Codex 0.157.1 executable initializes its app-server and returns an
+  existing signed-in account from `account/read`.
+- [x] Start the Release Worker DLL with the Visual Studio-bundled `dotnet.exe` and WinGet Codex
+  0.157.1, then confirm `worker/connect` returns Ready and `worker/account/status` returns SignedIn.
+- [x] Diagnose the reported F5 failure: the Experimental Instance loaded the globally installed
+  0.2.0.0 VSIX instead of the newly deployed 0.1.0.0 VSIX with the same extension ID. The runtime
+  log showed the old Worker launch path and the same hostfxr load failure.
+- [x] Raise the default development version to 0.2.1 and verify the Debug VSIX manifest and
+  extension assembly are 0.2.1.0. The Debug build has zero warnings and errors; the release
+  workflow's explicit `-p:Version` continues to override the default.
+- [x] Record the version precedence decision in `doc/adr/ADR-017-development-vsix-version.md`
+  and verify the Debug UI suite (289 passed, one skipped).
+- [x] Confirm F5 in the Visual Studio Experimental Instance loads the 0.2.1.0 VSIX, launches the
+  Worker with `dotnet.exe`, connects to Codex 0.157.1, and reaches Ready and SignedIn. The user
+  confirmed the UI result, and the 2026-09-28 07:51 diagnostic log confirms each runtime state.

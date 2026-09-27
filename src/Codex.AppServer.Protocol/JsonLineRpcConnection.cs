@@ -18,6 +18,7 @@ public sealed class JsonLineRpcConnection : IJsonRpcConnection
     private readonly StreamWriter writer;
     private readonly int maxLineBytes;
     private readonly Channel<string> parseQueue;
+    private readonly Channel<JsonRpcMessage> inbound;
     private readonly Channel<string> writeQueue;
     private readonly ConcurrentDictionary<string, TaskCompletionSource<JsonElement>> pending = new();
     private readonly ConcurrentDictionary<string, ServerRequestOperation> serverRequests = new();
@@ -38,6 +39,12 @@ public sealed class JsonLineRpcConnection : IJsonRpcConnection
         };
         this.maxLineBytes = maxLineBytes;
         parseQueue = Channel.CreateBounded<string>(new BoundedChannelOptions(256)
+        {
+            FullMode = BoundedChannelFullMode.Wait,
+            SingleReader = true,
+            SingleWriter = true,
+        });
+        inbound = Channel.CreateBounded<JsonRpcMessage>(new BoundedChannelOptions(256)
         {
             FullMode = BoundedChannelFullMode.Wait,
             SingleReader = true,
@@ -66,6 +73,7 @@ public sealed class JsonLineRpcConnection : IJsonRpcConnection
 
         pumps.Add(Task.Run(() => ReadPumpAsync(lifetime.Token), CancellationToken.None));
         pumps.Add(Task.Run(() => ParsePumpAsync(lifetime.Token), CancellationToken.None));
+        pumps.Add(Task.Run(() => NotificationPumpAsync(lifetime.Token), CancellationToken.None));
         pumps.Add(Task.Run(() => WritePumpAsync(lifetime.Token), CancellationToken.None));
         return Task.CompletedTask;
     }
@@ -218,14 +226,50 @@ public sealed class JsonLineRpcConnection : IJsonRpcConnection
             {
                 ResolveResponse(message);
             }
-            else if (message.IsRequest)
+            else if (message.IsRequest || message.IsNotification)
             {
-                StartServerRequest(message, cancellationToken);
+                await inbound.Writer.WriteAsync(message, cancellationToken).ConfigureAwait(false);
             }
-            else if (message.IsNotification && NotificationReceived is not null)
+        }
+    }
+
+    // Deliver notifications and start server requests in wire order. Responses are resolved by
+    // ParsePumpAsync so a notification handler may await a client request without blocking its reply.
+    private async Task NotificationPumpAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            await foreach (JsonRpcMessage message in inbound.Reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
             {
-                await NotificationReceived(message, cancellationToken).ConfigureAwait(false);
+                if (message.IsRequest)
+                {
+                    StartServerRequest(message, cancellationToken);
+                    continue;
+                }
+
+                Func<JsonRpcMessage, CancellationToken, Task>? handler = NotificationReceived;
+                if (handler is null)
+                {
+                    continue;
+                }
+
+                try
+                {
+                    await handler(message, cancellationToken).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    return;
+                }
+                catch (Exception ex)
+                {
+                    // One failing observer must not stop delivery of later notifications.
+                    _ = ex;
+                }
             }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
         }
     }
 
@@ -376,6 +420,7 @@ public sealed class JsonLineRpcConnection : IJsonRpcConnection
         }
 
         lifetime.Cancel();
+        inbound.Writer.TryComplete(exception);
         writeQueue.Writer.TryComplete(exception);
         var closedException = new JsonRpcConnectionClosedException(exception?.Message ?? "The app-server connection closed.");
         foreach (TaskCompletionSource<JsonElement> completion in pending.Values)

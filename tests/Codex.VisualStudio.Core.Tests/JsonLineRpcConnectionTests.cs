@@ -24,6 +24,34 @@ public sealed class JsonLineRpcConnectionTests
     }
 
     [TestMethod]
+    public async Task NotificationHandler_CanAwaitRequestResponse()
+    {
+        await using var harness = new RpcHarness();
+        var handled = new TaskCompletionSource<JsonElement>(TaskCreationOptions.RunContinuationsAsynchronously);
+        harness.Connection.NotificationReceived += async (_, cancellationToken) =>
+        {
+            JsonElement result = await harness.Connection.SendRequestAsync(
+                "account/read",
+                null,
+                TimeSpan.FromSeconds(2),
+                cancellationToken);
+            handled.TrySetResult(result);
+        };
+        await harness.Connection.StartAsync(CancellationToken.None);
+
+        await harness.WriteServerLineAsync("""{"method":"account/updated","params":{}}""");
+
+        string outgoing = await harness.ReadClientLineAsync();
+        using JsonDocument requestDocument = JsonDocument.Parse(outgoing);
+        Assert.AreEqual("account/read", requestDocument.RootElement.GetProperty("method").GetString());
+        long id = requestDocument.RootElement.GetProperty("id").GetInt64();
+        await harness.WriteServerLineAsync(JsonSerializer.Serialize(new { id, result = new { account = "signed-in" } }));
+
+        JsonElement result = await handled.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.AreEqual("signed-in", result.GetProperty("account").GetString());
+    }
+
+    [TestMethod]
     public async Task ServerRequest_ReturnsHandlerResult()
     {
         await using var harness = new RpcHarness();

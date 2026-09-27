@@ -163,6 +163,14 @@ Extension プロジェクトで参照できないため、BAML コンパイル�
 - バージョン上限は `[17.9,)` に開放する（将来の VS をブロックしない）。
 - Preview 段階は `<Preview>true</Preview>` を追加する。
 
+### 3.4 Development and release version precedence
+
+`Directory.Build.props` sets the default `VersionPrefix` to `0.2.1`, the next development
+version after the published `v0.2.0` release. This keeps F5 deployments in the Experimental
+Instance newer than the installed release with the same extension identity. Release builds
+continue to pass an explicit `-p:Version` derived from the release tag; that command-line
+property takes precedence over the development default and determines the packaged VSIX version.
+
 ---
 
 ## 4. ワーカーの埋め込み
@@ -182,8 +190,16 @@ Extension プロジェクトの MSBuild ターゲットで Worker を VSIX に�
 </Target>
 ```
 
-`WorkerBridge` は Extension 起動時に `Worker/Codex.VisualStudio.Worker.exe` を spawn し、
-名前付きパイプ + StreamJsonRpc で通信する。
+`WorkerBridge` starts the packaged `Worker/Codex.VisualStudio.Worker.dll` through the
+`dotnet.exe` beside the Extension's active .NET runtime. If that host is unavailable,
+it starts the packaged Worker apphost. The Extension and Worker communicate through a
+named pipe and StreamJsonRpc. This avoids apphost runtime discovery in the Visual Studio
+debug environment while retaining support for runtime layouts without a `dotnet.exe` host.
+
+For the local JSONL transport, the receive path resolves client responses immediately. A bounded single-consumer queue delivers notifications in wire order and starts
+server requests after earlier notifications complete. Notification handlers may then await a
+new app-server request, such as `account/read` after `account/updated`, without blocking its
+response on the receive path.
 
 ---
 
