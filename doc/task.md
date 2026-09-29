@@ -46,7 +46,9 @@
 - [x] README setup installs the release package (x64 or Arm64) instead of the standalone executable. A standalone `codex.exe` lacks `codex-code-mode-host.exe` and the `codex-resources` helpers, so every tool call failed with "failed to spawn code-mode host" in the Experimental Instance. Added FAQ entries for that error and for models missing from the picker.
 - [x] Update the CI and release workflows to 0.155.1/0.159.1 (edited by the maintainer; the `.github` directory is outside the agent's write permission).
 - [x] Experimental Instance with 0.159.1: `Ready · Codex 0.159.1`, and a turn completed.
-- [ ] Experimental Instance with the package install: a tool call (file write and command) succeeds, `gpt-6.1-sol` is selectable, and the Preview flyout renders in Light/Dark.
+- [x] Experimental Instance with the package install: `gpt-6.1-sol` is selectable and commands run.
+- [x] Command output header: the label was an inline `Expander.Header` element that inherited the Expander foreground, so it turned white on the light hover background. It is now realized by `HeaderTemplate`; verified in the Experimental Instance.
+- [x] Interrupt button: `RaiseCommandStates` had lost the `InterruptCommand` and `AccountCommand` raises when the connection-target commands were added, so the button stayed disabled during a turn. Restored and covered by a test; verified in the Experimental Instance.
 - Validation: Release build with 0 warnings. Core 155/155, UI 295/295 (one skipped). Schema cache, compare, surface, and smoke checks passed with 0.159.1.
 
 ## 2026-07-21: Merge main into PR #31 (issue #25) and resolve conflicts
