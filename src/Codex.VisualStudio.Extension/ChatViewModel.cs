@@ -4157,6 +4157,8 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         NewThreadCommand.RaiseCanExecuteChanged();
         LoadMoreCommand.RaiseCanExecuteChanged();
         SendCommand.RaiseCanExecuteChanged();
+        InterruptCommand.RaiseCanExecuteChanged();
+        AccountCommand.RaiseCanExecuteChanged();
         ToggleUsageCommand.RaiseCanExecuteChanged();
         ApplyRemoteProfileCommand.RaiseCanExecuteChanged();
         UseLocalAppServerCommand.RaiseCanExecuteChanged();

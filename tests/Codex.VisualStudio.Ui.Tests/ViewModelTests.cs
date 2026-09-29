@@ -3945,6 +3945,37 @@ public sealed class ViewModelTests
     }
 
     [TestMethod]
+    public async Task ChatViewModel_InterruptCommand_FollowsActiveTurnInEveryTurnState()
+    {
+        var bridge = new FakeWorkerBridge();
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        // Remote UI refreshes a button only when its command raises CanExecute; the value alone
+        // is never polled. Every status change must therefore raise the turn and account commands.
+        var raised = 0;
+        var accountRaised = 0;
+        vm.InterruptCommand.PropertyChanged += (_, _) => raised++;
+        vm.AccountCommand.PropertyChanged += (_, _) => accountRaised++;
+
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready, ThreadId = "t" });
+        Assert.IsFalse(vm.IsTurnActive);
+        Assert.IsFalse(vm.InterruptCommand.CanExecute);
+
+        // The Interrupt button is shown whenever a turn is active, so it must also be enabled then,
+        // including while the turn waits for an approval.
+        foreach (WorkerConnectionState state in new[] { WorkerConnectionState.Busy, WorkerConnectionState.WaitingForApproval })
+        {
+            await bridge.PublishStateAsync(new WorkerStatus { State = state, ThreadId = "t", TurnId = "turn" });
+            Assert.IsTrue(vm.IsTurnActive, state.ToString());
+            Assert.IsTrue(vm.InterruptCommand.CanExecute, state.ToString());
+        }
+
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready, ThreadId = "t" });
+        Assert.IsFalse(vm.InterruptCommand.CanExecute);
+        Assert.IsTrue(raised >= 4, $"InterruptCommand raised CanExecute {raised} time(s).");
+        Assert.IsTrue(accountRaised >= 4, $"AccountCommand raised CanExecute {accountRaised} time(s).");
+    }
+
+    [TestMethod]
     public void ChatViewModel_ConnectionTargetFlyout_IsExclusiveWithUsageAndHistory()
     {
         using var vm = new ChatViewModel(new FakeWorkerBridge(), autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
