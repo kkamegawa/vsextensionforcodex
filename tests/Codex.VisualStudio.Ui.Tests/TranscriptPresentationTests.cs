@@ -77,10 +77,18 @@ public sealed class TranscriptPresentationTests
                 .Single(element => element.Attribute("Property")?.Value == "Visibility")
                 .Attribute("Value")?.Value);
 
+        // An inline <Expander.Header> element has the Expander as its logical parent, so it inherits
+        // the Expander foreground and ignores the header ToggleButton's hover/pressed foreground.
+        // The label must be plain header data realized by HeaderTemplate instead.
+        Assert.IsNull(
+            expander.Element(Presentation + "Expander.Header"),
+            "The header label must not be an inline element; it would not inherit the header state foreground.");
+        Assert.AreEqual("{Binding CommandOutputExpansionLabel}", expander.Attribute("Header")?.Value);
         XElement header = expander
-            .Element(Presentation + "Expander.Header")!
+            .Element(Presentation + "Expander.HeaderTemplate")!
+            .Element(Presentation + "DataTemplate")!
             .Element(Presentation + "TextBlock")!;
-        Assert.AreEqual("{Binding CommandOutputExpansionLabel}", header.Attribute("Text")?.Value);
+        Assert.AreEqual("{Binding}", header.Attribute("Text")?.Value);
         Assert.AreEqual(
             "{StaticResource CommandOutputExpanderHeaderTextStyle}",
             header.Attribute("Style")?.Value);

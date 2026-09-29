@@ -31,7 +31,8 @@
       </Style>
 
       <!-- Keep Expander header text inheritable so the themed ToggleButton foreground reaches
-           both the label and glyph in every interaction state. -->
+           both the label and glyph in every interaction state. Apply it only inside a
+           HeaderTemplate: the templated TextBlock inherits from the header ContentPresenter. -->
       <Style x:Key="CommandOutputExpanderHeaderTextStyle" TargetType="TextBlock">
         <Setter Property="TextOptions.TextFormattingMode" Value="Display" />
       </Style>
@@ -1049,13 +1050,20 @@
                             Background="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowCodeBlockBackgroundBrushKey}}"
                             Foreground="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowTextBrushKey}}"
                             IsExpanded="{Binding IsCommandOutputExpanded, Mode=TwoWay}"
+                            Header="{Binding CommandOutputExpansionLabel}"
                             AutomationProperties.Name="{Binding CommandOutputAutomationName}"
                             AutomationProperties.HelpText="{Binding CommandOutputAutomationHelpText}">
-                    <Expander.Header>
-                      <TextBlock Style="{StaticResource CommandOutputExpanderHeaderTextStyle}"
-                                 Text="{Binding CommandOutputExpansionLabel}"
-                                 TextOptions.TextFormattingMode="Display" />
-                    </Expander.Header>
+                    <!-- The header is plain text realized by HeaderTemplate. An inline header
+                         element would have the Expander as its logical parent and inherit the
+                         Expander foreground, so hover/pressed header colors would not reach the
+                         label (light hover background with white text). -->
+                    <Expander.HeaderTemplate>
+                      <DataTemplate>
+                        <TextBlock Style="{StaticResource CommandOutputExpanderHeaderTextStyle}"
+                                   Text="{Binding}"
+                                   TextOptions.TextFormattingMode="Display" />
+                      </DataTemplate>
+                    </Expander.HeaderTemplate>
                     <ScrollViewer MaxHeight="320"
                                   HorizontalScrollBarVisibility="Auto"
                                   VerticalScrollBarVisibility="Auto"
