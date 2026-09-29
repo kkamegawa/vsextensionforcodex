@@ -126,6 +126,11 @@ Validation on September 22, 2026:
 - With 0.159.1, `model/list` returns `gpt-6.1-sol` as the default model, so it appears in the picker
   without an extension change.
 - The remote connection is labeled Preview in the flyout and README (ADR-012 amendment).
+- Interrupt diagnostics (design.md section 13): the Extension logs the Stop click, and
+  `CodexSessionService.InterruptTurnAsync` logs the `turn/interrupt` request, its acknowledgement,
+  and, when that turn completes, its final status with the elapsed time since the request.
+  `InterruptLogsRequestAcknowledgementAndTimeUntilTheTurnEnds` covers the log lines and confirms an
+  unrelated completion is not reported.
 - Validation: Release solution build with zero warnings; Core 155/155 and UI 295/295 (one skipped);
   `scripts/test-schema-cache.ps1`, `compare-schemas.ps1` and `verify-contract-surface.ps1` for both
   surfaces, and `scripts/smoke-app-server.ps1` passed with the pinned 0.159.1 executable.

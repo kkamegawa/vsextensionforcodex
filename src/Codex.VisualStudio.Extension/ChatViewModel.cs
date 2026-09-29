@@ -3387,6 +3387,8 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             return Task.CompletedTask;
         }
 
+        // The click time anchors the Worker's interrupt timings in the shared diagnostics log.
+        ExtensionDiagnostics.Write($"Interrupt requested by user thread={Status.ThreadId} turn={Status.TurnId}");
         return bridge.InterruptTurnAsync(
             new InterruptTurnRequest { ThreadId = Status.ThreadId, TurnId = Status.TurnId },
             lifetime.Token);

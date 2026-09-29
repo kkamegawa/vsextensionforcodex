@@ -48,6 +48,8 @@
 - [x] Experimental Instance with 0.159.1: `Ready · Codex 0.159.1`, and a turn completed.
 - [x] Experimental Instance with the package install: `gpt-6.1-sol` is selectable and commands run.
 - [x] Command output header: the label was an inline `Expander.Header` element that inherited the Expander foreground, so it turned white on the light hover background. It is now realized by `HeaderTemplate`; verified in the Experimental Instance.
+- [x] Interrupt diagnostics: a Stop press whose turn ended with `status: interrupted` looked like a normal completion, and the log had no record of when Stop was pressed. The Extension and Worker now log the click, the `turn/interrupt` acknowledgement, and the final status with elapsed time (design.md section 13, README FAQ).
+- [ ] Experimental Instance: press Stop during a turn and confirm the three interrupt log lines.
 - [x] Interrupt button: `RaiseCommandStates` had lost the `InterruptCommand` and `AccountCommand` raises when the connection-target commands were added, so the button stayed disabled during a turn. Restored and covered by a test; verified in the Experimental Instance.
 - Validation: Release build with 0 warnings. Core 155/155, UI 295/295 (one skipped). Schema cache, compare, surface, and smoke checks passed with 0.159.1.
 

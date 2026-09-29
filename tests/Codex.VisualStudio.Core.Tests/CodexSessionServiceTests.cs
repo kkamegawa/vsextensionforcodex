@@ -1705,6 +1705,43 @@ public sealed class CodexSessionServiceTests
     }
 
     [TestMethod]
+    public async Task InterruptLogsRequestAcknowledgementAndTimeUntilTheTurnEnds()
+    {
+        var connection = new RecordingConnection();
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+        TextWriter originalError = Console.Error;
+        using var log = new StringWriter();
+        Console.SetError(log);
+        try
+        {
+            await service.InterruptTurnAsync(
+                new InterruptTurnRequest { ThreadId = "thread-1", TurnId = "turn-1" },
+                CancellationToken.None);
+            await connection.EmitNotificationAsync(
+                "turn/completed",
+                new { threadId = "thread-1", turn = new { id = "turn-1", status = "interrupted" } });
+
+            // A later completion of a turn nobody asked to stop is not reported as interrupted.
+            await connection.EmitNotificationAsync(
+                "turn/completed",
+                new { threadId = "thread-1", turn = new { id = "turn-2", status = "completed" } });
+        }
+        finally
+        {
+            Console.SetError(originalError);
+        }
+
+        RecordedRequest interrupt = connection.Requests.Single(request => request.Method == "turn/interrupt");
+        Assert.AreEqual("turn-1", JsonSerializer.SerializeToElement(interrupt.Parameters).GetProperty("turnId").GetString());
+        string text = log.ToString();
+        StringAssert.Contains(text, "turn/interrupt requested thread=thread-1 turn=turn-1");
+        StringAssert.Contains(text, "turn/interrupt acknowledged turn=turn-1 elapsedMs=");
+        StringAssert.Contains(text, "turn completed after interrupt request turn=turn-1 status=interrupted elapsedMs=");
+        Assert.IsFalse(text.Contains("turn=turn-2", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
     public async Task AccountReadAcceptsPlanTypeAddedInContract0159()
     {
         var connection = new RecordingConnection

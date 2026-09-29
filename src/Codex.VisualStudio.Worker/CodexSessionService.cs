@@ -150,6 +150,8 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
     // Thread whose turn/start request is in flight. Its turn notifications can arrive before the
     // response updates ActiveThreadId, so they must not be treated as another thread's events.
     private string? pendingTurnThreadId;
+    // Stop requests keyed by turn, used only to log how long a turn took to end after the request.
+    private readonly Dictionary<TurnKey, long> interruptRequestedAt = new();
     private long connectionGeneration;
     private readonly SemaphoreSlim skillsCacheGate = new(1, 1);
     private readonly TimeProvider timeProvider;
@@ -262,6 +264,7 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         lock (turnStateLock)
         {
             completedTurnIds.Clear();
+            interruptRequestedAt.Clear();
             pendingTurnThreadId = null;
             ActiveThreadId = null;
             ActiveTurnId = null;
@@ -895,13 +898,40 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
     public async Task InterruptTurnAsync(InterruptTurnRequest request, CancellationToken cancellationToken)
     {
         ConnectionContext context = RequireContext();
-        await context.Connection.SendRequestAsync(
-            "turn/interrupt",
-            new { threadId = request.ThreadId, turnId = request.TurnId },
-            TimeSpan.FromSeconds(10),
-            cancellationToken).ConfigureAwait(false);
+
+        // Record when the user asked to stop, so the diagnostics log shows how long the server took
+        // to acknowledge the request and to actually end the turn.
+        long requestedAt = timeProvider.GetTimestamp();
+        var key = new TurnKey(context.Generation, request.ThreadId, request.TurnId);
+        lock (turnStateLock)
+        {
+            interruptRequestedAt[key] = requestedAt;
+        }
+
+        WorkerDiagnostics.Write($"turn/interrupt requested thread={request.ThreadId} turn={request.TurnId}");
+        try
+        {
+            await context.Connection.SendRequestAsync(
+                "turn/interrupt",
+                new { threadId = request.ThreadId, turnId = request.TurnId },
+                TimeSpan.FromSeconds(10),
+                cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            WorkerDiagnostics.Write(
+                $"turn/interrupt failed turn={request.TurnId} elapsedMs={ElapsedMilliseconds(requestedAt)}",
+                ex);
+            throw;
+        }
+
+        WorkerDiagnostics.Write(
+            $"turn/interrupt acknowledged turn={request.TurnId} elapsedMs={ElapsedMilliseconds(requestedAt)}");
         EnsureCurrent(context);
     }
+
+    private long ElapsedMilliseconds(long startTimestamp)
+        => (long)timeProvider.GetElapsedTime(startTimestamp).TotalMilliseconds;
 
     public async Task<CompactThreadResult> CompactThreadAsync(
         CompactThreadRequest request,
@@ -1934,6 +1964,7 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
             }
 
             turnId = completedId;
+            LogInterruptedTurnCompletion(context, threadId, completedId, parameters);
             approvalGrants.EndTurn(threadId, completedId);
             if (otherThread)
             {
@@ -2168,6 +2199,35 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
                     ApprovalDecision.Cancel,
                 ],
         };
+    }
+
+    // Logs the completion of a turn the user asked to stop: the final status (normally
+    // "interrupted") and the time from the stop request to the end of the turn.
+    private void LogInterruptedTurnCompletion(
+        ConnectionContext context,
+        string? threadId,
+        string? completedId,
+        JsonElement parameters)
+    {
+        if (completedId is null)
+        {
+            return;
+        }
+
+        long requestedAt;
+        lock (turnStateLock)
+        {
+            if (!interruptRequestedAt.Remove(new TurnKey(context.Generation, threadId, completedId), out requestedAt))
+            {
+                return;
+            }
+        }
+
+        string status = parameters.TryGetProperty("turn", out JsonElement turn)
+            ? NormalizeWireIdentifier(GetString(turn, "status")) ?? "unknown"
+            : "unknown";
+        WorkerDiagnostics.Write(
+            $"turn completed after interrupt request turn={completedId} status={status} elapsedMs={ElapsedMilliseconds(requestedAt)}");
     }
 
     // A turn event belongs to the tracked conversation when it names no thread, when no thread is

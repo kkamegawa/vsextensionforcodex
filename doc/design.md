@@ -380,3 +380,14 @@ local path is sent, and an explicit attachment outside the local root rejects th
 `turn/start`. When the remote transport closes, the Worker publishes `Degraded` with a reconnect
 message unless a newer connect, restart, or dispose has already superseded that connection, which
 enables Connect and Restart in the header.
+
+## 13. Interrupt diagnostics
+
+Stopping a turn sends `turn/interrupt`; the app-server may still finish in-flight output before it
+sends `turn/completed`. The transcript does not distinguish an interrupted completion, so the
+diagnostics log records the stop timeline instead: the Extension writes the click
+(`Interrupt requested by user`), and the Worker writes the request, its acknowledgement with the
+elapsed time, and, for the interrupted turn only, the final `turn.status` with the time from the
+request to the completion. Pending stop timestamps are keyed by connection generation, thread, and
+turn, and are cleared on reinitialization so a lost completion cannot accumulate state. The lines
+contain only server-assigned thread/turn identifiers and timings.

@@ -114,6 +114,15 @@ Visual Studio が 17.14 以降であること、**拡張機能 > 拡張機能の
 **ログはどこにありますか？**
 `%TEMP%\Kkamegawa.CodexForVisualStudio\diagnostics.log` です。拡張とワーカーが同じファイルに書き込み、それぞれ `[EXTENSION]` と `[WORKER]` のタグが付きます。URL や資格情報らしき値は書き込み前にマスクされます。
 
+**停止ボタンを押したのに、ターンが最後まで進んだように見えます。**
+停止要求は Codex に送られますが、実行中のコマンドやモデルの応答は、Codex 側で片付くまで少し出力が続くことがあります。実際にどうなったかは `diagnostics.log` で確認できます。停止ボタンを押すと、次の行が記録されます。
+
+- `Interrupt requested by user`：ボタンを押した時刻（`[EXTENSION]`）
+- `turn/interrupt requested` と `turn/interrupt acknowledged ... elapsedMs=`：停止要求の送信と、Codex がそれを受け付けるまでの時間（`[WORKER]`）
+- `turn completed after interrupt request ... status=... elapsedMs=`：ターンの最終状態と、押してから実際に終わるまでの時間（`[WORKER]`）
+
+`status=interrupted` なら停止は効いています。`completed` の場合は、停止要求が届く前にターンが終わっていました。
+
 **毎回の承認プロンプトを止められますか？**
 チャット入力での `/permissions` (別名 `/approve`)、またはツールウィンドウの承認モードピッカーを使用します。組み込みモードは `ask`、`auto`、`full`、`custom` です。`full` は Codex のサンドボックスと通常の承認プロンプトを無効化するため、明示的な確認を求めます。`/model`、`/reasoning`、`/review`などを含むコマンド一覧は [doc/slash-commands_ja.md](doc/slash-commands_ja.md) を参照してください。
 

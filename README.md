@@ -111,6 +111,15 @@ Set the environment variable and restart Visual Studio so it inherits the change
 `%TEMP%\Kkamegawa.CodexForVisualStudio\diagnostics.log`. Extension and worker entries share the file and are tagged `[EXTENSION]` and `[WORKER]`. URLs and credential-shaped values are redacted before
 they are written.
 
+**I pressed Stop, but the turn seemed to run to the end.**
+The stop request is sent to Codex, but a running command or model response can keep producing output briefly while Codex winds it down. `diagnostics.log` shows what actually happened. Pressing Stop records:
+
+- `Interrupt requested by user`: when you pressed the button (`[EXTENSION]`).
+- `turn/interrupt requested` and `turn/interrupt acknowledged ... elapsedMs=`: the stop request and how long Codex took to accept it (`[WORKER]`).
+- `turn completed after interrupt request ... status=... elapsedMs=`: the turn's final status and the time from the press until it ended (`[WORKER]`).
+
+`status=interrupted` means the stop took effect. `completed` means the turn had already finished before the request arrived.
+
 **Can I stop being asked for approval on every command?**
 Use `/permissions` (alias `/approve`) in the chat input, or the approval-mode picker in the tool window. `ask`, `auto`, `full`, and `custom` are the built-in modes. `full` disables the Codex sandbox and normal approval prompts, so it requires an explicit confirmation. See [doc/slash-commands.md](doc/slash-commands.md) for the full command catalog, including `/model`, `/reasoning`, and `/review`.
 
