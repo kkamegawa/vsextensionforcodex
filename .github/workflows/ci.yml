@@ -12,7 +12,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        version: ["0.154.0", "0.155.1"]
+        version: ["0.155.1", "0.159.1"]
         surface: [stable, experimental]
     permissions:
       contents: read
@@ -34,7 +34,7 @@ jobs:
           pwsh -NoProfile -File scripts/generate-schemas.ps1 -OutputDirectory schemas `
             -Version '${{ matrix.version }}' -Surface '${{ matrix.surface }}' -CodexPath "$env:CODEX_PATH"
       - name: Verify schema cache contract
-        if: matrix.version == '0.155.1' && matrix.surface == 'stable'
+        if: matrix.version == '0.159.1' && matrix.surface == 'stable'
         shell: pwsh
         run: pwsh -NoProfile -File scripts/test-schema-cache.ps1 -CodexPath "$env:CODEX_PATH"
       - name: Upload schema cache
@@ -60,16 +60,16 @@ jobs:
           merge-multiple: true
       - name: Compare stable schema baseline and target
         shell: pwsh
-        run: pwsh -NoProfile -File scripts/compare-schemas.ps1 -BaselineDirectory schemas/0.154.0/stable -TargetDirectory schemas/0.155.1/stable -Surface stable
+        run: pwsh -NoProfile -File scripts/compare-schemas.ps1 -BaselineDirectory schemas/0.155.1/stable -TargetDirectory schemas/0.159.1/stable -Surface stable
       - name: Compare experimental schema baseline and target
         shell: pwsh
-        run: pwsh -NoProfile -File scripts/compare-schemas.ps1 -BaselineDirectory schemas/0.154.0/experimental -TargetDirectory schemas/0.155.1/experimental -Surface experimental
+        run: pwsh -NoProfile -File scripts/compare-schemas.ps1 -BaselineDirectory schemas/0.155.1/experimental -TargetDirectory schemas/0.159.1/experimental -Surface experimental
       - name: Verify target stable method surface
         shell: pwsh
-        run: pwsh -NoProfile -File scripts/verify-contract-surface.ps1 -SchemaDirectory schemas/0.155.1/stable
+        run: pwsh -NoProfile -File scripts/verify-contract-surface.ps1 -SchemaDirectory schemas/0.159.1/stable
       - name: Verify target experimental method surface
         shell: pwsh
-        run: pwsh -NoProfile -File scripts/verify-contract-surface.ps1 -SchemaDirectory schemas/0.155.1/experimental
+        run: pwsh -NoProfile -File scripts/verify-contract-surface.ps1 -SchemaDirectory schemas/0.159.1/experimental
 
   build:
     runs-on: windows-latest
@@ -107,8 +107,8 @@ jobs:
         shell: pwsh
         run: |
           pwsh -NoProfile -File scripts/install-codex.ps1 `
-            -Version '0.155.1' `
-            -OutputDirectory (Join-Path $env:RUNNER_TEMP 'codex-cli-0.155.1') `
+            -Version '0.159.1' `
+            -OutputDirectory (Join-Path $env:RUNNER_TEMP 'codex-cli-0.159.1') `
             -GitHubOutput
 
       - name: Restore
@@ -172,7 +172,7 @@ jobs:
           name: CodexForVisualStudio-vsix
           path: ${{ steps.find_vsix.outputs.vsix_path }}
 
-      # The pinned 0.155.1 executable is the schema and build contract. The latest stable release
+      # The pinned 0.159.1 executable is the schema and build contract. The latest stable release
       # is only smoke-tested (start + initialize) so an upstream break is visible without blocking.
       - name: Download latest Codex CLI
         id: install_latest_codex

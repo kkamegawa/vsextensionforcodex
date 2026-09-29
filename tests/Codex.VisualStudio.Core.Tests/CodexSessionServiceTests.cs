@@ -1705,6 +1705,73 @@ public sealed class CodexSessionServiceTests
     }
 
     [TestMethod]
+    public async Task AccountReadAcceptsPlanTypeAddedInContract0159()
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "account/read"
+                ? JsonSerializer.SerializeToElement(new
+                {
+                    account = new { type = "chatgpt", planType = "promax" },
+                    workspaceRouting = new { accountRoutingOverride = "NO_CONSTRAINT" },
+                })
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        AccountStatus status = await service.GetAccountStatusAsync(CancellationToken.None);
+
+        Assert.AreEqual(AccountState.SignedIn, status.State);
+        Assert.AreEqual("promax", status.PlanType);
+    }
+
+    [TestMethod]
+    public async Task ListModelsToleratesAccessProgramsAddedInContract0159()
+    {
+        // 0.159.1 adds availableAccessPrograms to Model and promotes a new default model. The
+        // catalog must still parse, and the new default must be offered in the picker.
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "model/list"
+                ? JsonSerializer.SerializeToElement(new
+                {
+                    data = new object[]
+                    {
+                        new
+                        {
+                            model = "gpt-6.1-sol",
+                            displayName = "GPT-6.1 Sol",
+                            isDefault = true,
+                            hidden = false,
+                            defaultReasoningEffort = "medium",
+                            supportedReasoningEfforts = new[] { new { reasoningEffort = "medium", description = "Balanced" } },
+                            availableAccessPrograms = new { cyber = new[] { "daybreak" } },
+                        },
+                        new
+                        {
+                            model = "gpt-6-astra",
+                            displayName = "GPT-6 Astra",
+                            isDefault = false,
+                            hidden = false,
+                            availableAccessPrograms = (object?)null,
+                        },
+                    },
+                    nextCursor = (string?)null,
+                })
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        ListModelsResult result = await service.ListModelsAsync(CancellationToken.None);
+
+        CollectionAssert.AreEqual(new[] { "gpt-6.1-sol", "gpt-6-astra" }, result.Models.Select(model => model.Id).ToArray());
+        Assert.AreEqual("gpt-6.1-sol", result.DefaultModel);
+        Assert.AreEqual("medium", result.Models[0].DefaultReasoningEffort);
+    }
+
+    [TestMethod]
     public async Task LoginStartUsesChatgptAndRejectsInsecureUrl()
     {
         var connection = new RecordingConnection
@@ -1993,7 +2060,7 @@ public sealed class CodexSessionServiceTests
                     codexHome = "C:/private/codex",
                     platformFamily = "windows",
                     platformOs = "windows-11",
-                    userAgent = "codex-cli/0.155.1",
+                    userAgent = "codex-cli/0.159.1",
                 })
                 : JsonSerializer.SerializeToElement(new { }),
         };

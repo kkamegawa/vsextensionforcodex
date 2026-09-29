@@ -6,7 +6,7 @@
 
 ## Summary
 
-Update the Visual Studio extension's existing C# integration with `codex app-server` for the CLI 0.155.1 contract and add secure, explicitly enabled connections to an already running remote App Server. Local stdio remains the default. The work includes exact request dispatch, event-order safety, remote transport, root mapping and authentication-principal isolation, reconnect and history recovery, stored thread attachments, asynchronous questions and scoped permissions, native user verification, MCP interaction and authentication recovery, daily-use events, shell execution, typed artifacts, Windows sandbox status, and integrated release validation.
+Update the Visual Studio extension's existing C# integration with `codex app-server` for the CLI 0.159.1 contract and add secure, explicitly enabled connections to an already running remote App Server. Local stdio remains the default. The work includes exact request dispatch, event-order safety, remote transport, root mapping and authentication-principal isolation, reconnect and history recovery, stored thread attachments, asynchronous questions and scoped permissions, native user verification, MCP interaction and authentication recovery, daily-use events, shell execution, typed artifacts, Windows sandbox status, and integrated release validation.
 
 ## Background and decisions
 
@@ -27,7 +27,7 @@ The approved operating model is:
 |---|---|---|
 | Critical | Exact request dispatch; unknown requests must not fall through to generic approval | [#150](https://github.com/kkamegawa/vsextensionforcodex/issues/150) |
 | Critical | Connection-generation and turn-order races | [#150](https://github.com/kkamegawa/vsextensionforcodex/issues/150) |
-| High | CLI 0.155.1 target schema, 0.154.0 regression comparison, initialization metadata, capability declaration and detection | [#150](https://github.com/kkamegawa/vsextensionforcodex/issues/150) |
+| High | CLI 0.159.1 target schema, 0.155.1 regression comparison, initialization metadata, capability declaration and detection | [#150](https://github.com/kkamegawa/vsextensionforcodex/issues/150) |
 | High | Secure remote connection, connection ownership, diagnostics, and read-only retry | [#151](https://github.com/kkamegawa/vsextensionforcodex/issues/151) |
 | High | Local/server path mapping and connection/account/authentication-principal/root state partitioning | [#152](https://github.com/kkamegawa/vsextensionforcodex/issues/152) |
 | High | Reconnect, draft retention, paged history and attachment recovery, and uncertain-mutation handling | [#153](https://github.com/kkamegawa/vsextensionforcodex/issues/153) |
@@ -55,11 +55,11 @@ Tracking: [#150](https://github.com/kkamegawa/vsextensionforcodex/issues/150)
 
 ### Contract and schema baseline
 
-- Pin **CLI 0.155.1 stable** as the target contract. Keep **CLI 0.154.0 stable** as the regression comparison source; do not treat a local alpha schema as either stable contract.
-- Generate standard and experimental schemas separately for both 0.154.0 and 0.155.1 and compare them structurally.
+- Pin **CLI 0.159.1 stable** as the target contract. Keep **CLI 0.155.1 stable** as the regression comparison source; do not treat a local alpha schema as either stable contract.
+- Generate standard and experimental schemas separately for both 0.155.1 and 0.159.1 and compare them structurally.
 - Store CLI version and generation options in schema-cache metadata. Regenerate when either differs instead of accepting any existing file as a valid cache hit.
 - Keep generated schema output out of Git.
-- Add contract tests for every used method, required field, enum, nullable field, unknown item, additional field, and invalid payload, including every observed 0.154.0-to-0.155.1 difference.
+- Add contract tests for every used method, required field, enum, nullable field, unknown item, additional field, and invalid payload, including every observed 0.155.1-to-0.159.1 difference.
 
 ### Initialization and capability detection
 
@@ -237,7 +237,7 @@ Tracking: [#156](https://github.com/kkamegawa/vsextensionforcodex/issues/156)
 
 ### Contract and ordering
 
-- Generate and structurally compare CLI 0.154.0 and 0.155.1 standard/experimental schemas, then compare the 0.155.1 target with representative live request, response, and notification traffic.
+- Generate and structurally compare CLI 0.155.1 and 0.159.1 standard/experimental schemas, then compare the 0.159.1 target with representative live request, response, and notification traffic.
 - Cover unknown methods/items/enums, extra fields, malformed payloads, missing required fields, nullability drift, and schema-cache invalidation.
 - Reproduce completion-before-start-response, notification-during-history-read, duplicate item, resolved-response race, and older-generation events.
 

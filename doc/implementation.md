@@ -19,20 +19,20 @@ The publisher is `kkamegawa` (see CLAUDE.md for the current VSIX identity string
 ## Issue #150: App-server protocol contract and transport core
 
 Issue [#150](https://github.com/kkamegawa/vsextensionforcodex/issues/150) fixes the local stdio
-contract at Codex CLI 0.155.1 while retaining 0.154.0 as the regression baseline. The checked-in
+contract at Codex CLI 0.159.1 while retaining 0.155.1 as the regression baseline. The checked-in
 `app-server-contract.json` is the single manifest for release tags, Windows x64 asset names and
 SHA-256 hashes, stable/experimental generator arguments, every method consumed by the Worker, and
 the expected structural differences between the two CLI versions. Generated schema output remains
 ignored and is cached under `schemas/<version>/<stable|experimental>/`; exact metadata plus the real
 schema sentinel are required for a cache hit. Schema CI downloads the pinned official assets, verifies
 both hashes, generates all four surfaces, verifies the used method tables, and compares normalized
-schema structure. Build and release CI pass the pinned 0.155.1 executable as `CODEX_PATH`; the
+schema structure. Build and release CI pass the pinned 0.159.1 executable as `CODEX_PATH`; the
 latest stable Windows x64 asset is downloaded only for a non-blocking `scripts/smoke-app-server.ps1`
 start-and-initialize check, so the pinned asset remains the only schema and build contract source.
 
 The Worker now retains `codexHome`, `platformFamily`, `platformOs`, and `userAgent` as read-only
 in-process initialization metadata without adding them to Remote UI or the Worker wire contract. Server requests use an exact method table. Command, file-change, and permission approvals
-plus tool user input validate their 0.155.1 required shapes; malformed known requests return
+plus tool user input validate their 0.159.1 required shapes; malformed known requests return
 `-32602`, and every unknown or near-match request returns `-32601` without entering an approval,
 grant, or input path. Unknown notifications are redacted diagnostics only.
 
@@ -110,6 +110,25 @@ Validation on September 22, 2026:
   `Notifications_AreDeliveredOneAtATimeInWireOrder` covers it.
 - Validation: Release solution build with zero warnings; `Codex.VisualStudio.Core.Tests` 153/153
   (three consecutive runs) and `Codex.VisualStudio.Ui.Tests` 295/295 (one skipped).
+
+### Contract update to Codex CLI 0.159.1 (2026-09-30)
+
+- `app-server-contract.json` targets 0.159.1 (SHA-256 pinned) with 0.155.1 as the regression
+  baseline. `generate-schemas.ps1` and `validate-schema-cache.ps1` take the version list and
+  default from the manifest, and the schema-cache guard accepts only manifest-pinned versions.
+- 0.155.1-to-0.159.1 differences (stable: 4 added, 2 removed, 38 changed; experimental: 5 added,
+  2 removed, 53 changed) are recorded as `knownDifferences`. Every used method still exists in both
+  surfaces. For used methods, the changes are additive: `PlanType.promax`,
+  `CodexErrorInfo.flexUnavailable`/`tooManyDenials`, `Model.availableAccessPrograms`,
+  `disabledPluginIds`, MCP status fields, gateway OAuth methods, an image input that may carry a
+  `fileId`, and the removal of the unused `thread/rollback`. No Worker parsing change was needed;
+  contract tests cover the new plan type and the model catalog fields.
+- With 0.159.1, `model/list` returns `gpt-6.1-sol` as the default model, so it appears in the picker
+  without an extension change.
+- The remote connection is labeled Preview in the flyout and README (ADR-012 amendment).
+- Validation: Release solution build with zero warnings; Core 155/155 and UI 295/295 (one skipped);
+  `scripts/test-schema-cache.ps1`, `compare-schemas.ps1` and `verify-contract-surface.ps1` for both
+  surfaces, and `scripts/smoke-app-server.ps1` passed with the pinned 0.159.1 executable.
 
 ## Implemented Behavior
 

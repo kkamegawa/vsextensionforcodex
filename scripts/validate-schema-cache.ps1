@@ -1,12 +1,14 @@
 ﻿param(
     [string]$OutputDirectory = 'schemas',
-    [ValidateSet('0.154.0', '0.155.1')][string]$Version = '0.155.1',
+    # Defaults to the manifest target; an unpinned version fails the release lookup below.
+    [string]$Version,
     [ValidateSet('stable', 'experimental')][string]$Surface = 'stable'
 )
 
 $ErrorActionPreference = 'Stop'
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $manifest = Get-Content -Raw -LiteralPath (Join-Path $root 'app-server-contract.json') | ConvertFrom-Json
+if ([string]::IsNullOrWhiteSpace($Version)) { $Version = $manifest.targetVersion }
 $release = $manifest.releases.$Version
 $surfaceDefinition = $manifest.surfaces.$Surface
 $outputRoot = [IO.Path]::GetFullPath($OutputDirectory).TrimEnd([IO.Path]::DirectorySeparatorChar)

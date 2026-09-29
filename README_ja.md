@@ -13,23 +13,28 @@
 
 - Windows (x64 または Arm64)
 - Visual Studio 2022 17.14 以降、または Visual Studio 2026 (Community / Professional / Enterprise)
-- [rust-v0.155.1 リリース](https://github.com/openai/codex/releases/tag/rust-v0.155.1) に含まれる公式 Windows x64 Codex CLI 0.155.1 実行ファイル
+- [rust-v0.159.1 リリース](https://github.com/openai/codex/releases/tag/rust-v0.159.1) に含まれる公式 Windows 版 Codex CLI 0.159.1 実行ファイル (x64 または Arm64)
 - `codex login` でサインインできる ChatGPT アカウント
 
 ## セットアップ
 
-1. [Codex 0.155.1 リリース](https://github.com/openai/codex/releases/tag/rust-v0.155.1) から Windows x64 MSVC 実行ファイルをローカルディレクトリへダウンロードします。拡張機能はこの standalone 実行ファイルを直接起動するため、winget は不要です。0.155.1 は本拡張が検証している app-server 契約なので、`latest` ではなくこのリリースを固定して使用してください。
+1. [Codex 0.159.1 リリース](https://github.com/openai/codex/releases/tag/rust-v0.159.1) から、使用しているマシンに合った Windows パッケージをダウンロードしてローカルディレクトリへ展開します。x64 では `codex-package-x86_64-pc-windows-msvc.tar.gz`、Arm64 では `codex-package-aarch64-pc-windows-msvc.tar.gz` です。下のスクリプトは自動で適切なほうを選びます。単体の `codex-*.exe` ではなく、必ずパッケージを使ってください。Codex はツールを補助プログラム（`bin\codex-code-mode-host.exe`、`codex-resources\codex-command-runner.exe`、Windows サンドボックスのセットアップ）経由で実行します。これらは `codex.exe` と同じ場所に置く必要があり、単体の exe ではすべてのツール呼び出しが "failed to spawn code-mode host" で失敗します。winget は不要です。winget のパッケージは固定リリースより遅れることがあります。0.159.1 は本拡張が検証している app-server 契約なので、`latest` ではなくこのリリースを固定して使用してください。
 
    ```powershell
-   $codexDirectory = Join-Path $env:LOCALAPPDATA 'OpenAI\Codex\bin'
-   New-Item -ItemType Directory -Force -Path $codexDirectory | Out-Null
-   Invoke-WebRequest `
-     -Uri 'https://github.com/openai/codex/releases/download/rust-v0.155.1/codex-x86_64-pc-windows-msvc.exe' `
-     -OutFile (Join-Path $codexDirectory 'codex.exe')
-   [Environment]::SetEnvironmentVariable('CODEX_PATH', (Join-Path $codexDirectory 'codex.exe'), 'User')
+   $arch = if ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture -eq 'Arm64') { 'aarch64' } else { 'x86_64' }
+   $package = "codex-package-$arch-pc-windows-msvc.tar.gz"
+   $codexRoot = Join-Path $env:LOCALAPPDATA 'OpenAI\Codex'
+   New-Item -ItemType Directory -Force -Path $codexRoot | Out-Null
+   $archive = Join-Path $env:TEMP $package
+   Invoke-WebRequest -Uri "https://github.com/openai/codex/releases/download/rust-v0.159.1/$package" -OutFile $archive
+   Get-FileHash $archive -Algorithm SHA256
+   tar -xzf $archive -C $codexRoot
+   [Environment]::SetEnvironmentVariable('CODEX_PATH', (Join-Path $codexRoot 'bin\codex.exe'), 'User')
    ```
 
-2. Visual Studio を再起動し、実行ファイルが 0.155.1 を報告することを確認します。
+   先に進む前に、表示された SHA-256 をリリースページのそのアセットの値と照合してください。CI とスキーマ生成は `app-server-contract.json` で固定した単体の x64 実行ファイルを使います。スキーマ生成と `initialize` の完了にはそれで足ります。どちらのアーキテクチャのパッケージも同じ app-server 契約を公開しています。
+
+2. Visual Studio を再起動し、実行ファイルが 0.159.1 を報告することを確認します。
 
    ```powershell
    codex --version
@@ -49,9 +54,11 @@
 6. ソリューションまたはフォルダーを開き、プロンプトを送信します。最初のターンでワーカーと
    `codex app-server` の子プロセスが起動します。反応がない場合は [FAQ](#faq) を参照してください。
 
-### リモート app-server への接続（任意）
+### リモート app-server への接続（Preview・任意）
 
 既定では Codex はローカルの `codex app-server` 子プロセスで動作します。別のマシンで起動済みの app-server でターンを実行するには、次の手順を行います。
+
+> **Preview 機能です。** 上流の WebSocket 転送は実験的機能です。また今回のリリースには、接続のヘルスチェック、自動リトライ、アカウントや接続先を切り替えたときのキャッシュ状態の分離はまだ含まれていません。切り替え後は手動で再接続してください。これらはリモート接続とパスマッピングの Issue で対応予定です。
 
 1. リモートマシンで WebSocket リスナーを有効にして app-server を起動し、bearer トークンをこのコンピューター上のファイルに保存します。拡張機能はリモート側の起動・更新・ファイル同期を行いません。
 2. 両方のマシンが同じ作業ツリーを参照できるようにします。例: ローカルは `C:\src\repo`、サーバーは `/home/<user>/src/repo`。
@@ -63,7 +70,7 @@
 
 ## 制限事項
 
-- **他の Codex CLI バージョンは対象契約ではありません。** 動作確認済みバージョンは 0.155.1 です。0.154.0 は schema 回帰比較の基準としてのみ保持します。その他のビルドは app-server のプロトコル形状が異なるため、`initialize` や `turn/start` が失敗したり、イベントが欠落したりします。
+- **他の Codex CLI バージョンは対象契約ではありません。** 動作確認済みバージョンは 0.159.1 です。0.155.1 は schema 回帰比較の基準としてのみ保持します。その他のビルドは app-server のプロトコル形状が異なるため、`initialize` や `turn/start` が失敗したり、イベントが欠落したりします。
 - **codex が複数インストールされていると、意図しないバージョンが起動することがあります。**
   バージョン管理ツール (mise)、winget、npm、Codex デスクトップアプリはそれぞれ別の場所に `codex`実行ファイルを配置し、`PATH` 上で先に見つかるものが最新とは限りません。ワーカーは次の順序で実行ファイルを解決します。
   1. 環境変数 `CODEX_PATH`
@@ -77,7 +84,7 @@
   未実装の場合、`Skills` グループにはカタログが利用できない旨が表示され、そのセッションの間は組み込み
   コマンドのみでスラッシュメニューが動作します。`interface.iconSmall` で宣言されたスキルアイコンは
   描画されず、すべての行が固定グリフを使用します。スキル固有の承認要求は許可せず拒否します。
-- app-server 契約は 0.155.1 を基準に検証しています。CI は最新安定版も取得し、`codex app-server` の起動と `initialize` 完了だけを確認する非ブロッキングの smoke テストを実行します。したがって新しいリリースについて分かるのは起動できることだけで、契約に一致することではありません。schema 生成とビルドは manifest の固定バージョンを使用します。ローカル実行ファイルは必ず `codex --version` で確認してください。
+- app-server 契約は 0.159.1 を基準に検証しています。CI は最新安定版も取得し、`codex app-server` の起動と `initialize` 完了だけを確認する非ブロッキングの smoke テストを実行します。したがって新しいリリースについて分かるのは起動できることだけで、契約に一致することではありません。schema 生成とビルドは manifest の固定バージョンを使用します。ローカル実行ファイルは必ず `codex --version` で確認してください。
 - 本拡張は Windows 上の Visual Studio 専用です。Visual Studio Code 版やクロスプラットフォーム版はありません。
 
 ## FAQ
@@ -87,9 +94,15 @@ Visual Studio が 17.14 以降であること、**拡張機能 > 拡張機能の
 なっていることを確認し、VSIX インストール後に Visual Studio を一度再起動してください。
 
 **チャットが応答しない、またはワーカーがすぐ終了します。**
-ほとんどの場合は拡張ではなく Codex CLI 側の問題です。ターミナルで `codex --version` (0.155.1)
+ほとんどの場合は拡張ではなく Codex CLI 側の問題です。ターミナルで `codex --version` (0.159.1)
 と `codex login` を確認してください。ターミナルでは成功するのに Visual Studio では失敗する場合は、
 別の `codex` が起動しています。[制限事項](#制限事項)のとおり `CODEX_PATH` で固定してください。
+
+**ChatGPT で使える gpt-6.1 などのモデルがモデル選択に出てきません。**
+モデル選択には Codex CLI の `model/list` が返したモデルがそのまま表示されます。Codex のモデル一覧は CLI のバージョンごとに配信されるため、`gpt-6.1-sol` は Codex CLI 0.159.1 以降でのみ表示されます。`codex --version` で確認し、0.159.1 に更新してから Visual Studio を再起動してください。
+
+**Codex は応答するのに、ファイル編集やコマンドが "failed to spawn code-mode host" ですべて失敗します。**
+`CODEX_PATH` が補助プログラムのない単体の `codex.exe` を指しています。[セットアップ](#セットアップ) の手順でリリースパッケージを展開し、`bin\codex-code-mode-host.exe` と `codex-resources\` が `codex.exe` と同じ構成で並ぶようにしてから、Visual Studio を再起動してください。
 
 **特定の Codex CLI を固定するには？**
 環境変数を設定し、変更を引き継ぐために Visual Studio を再起動します。
@@ -126,7 +139,7 @@ Codex CLI が返す `Skills` グループが表示されます。スキルを選
 
 - Visual Studio 2022 17.14 以降 (Visual Studio 拡張機能開発ワークロード)
 - .NET 8 SDK
-- 公式 Codex CLI 0.155.1 実行ファイル (ビルド時の対象プロトコル schema 生成に使用)
+- 公式 Codex CLI 0.159.1 実行ファイル (ビルド時の対象プロトコル schema 生成に使用)
 
 復元とビルド:
 
@@ -136,13 +149,13 @@ dotnet build CodexForVisualStudio.slnx -c Release --no-restore
 ```
 
 `schemas/` は Apache-2.0 ライセンスの Codex CLI が生成する出力であり、MIT ライセンスの本リポジトリ
-からは意図的に除外しています。cache は `schemas/<version>/<stable|experimental>/` に分離し、CLI version、surface、generator arguments、metadata、schema sentinel がすべて一致する場合だけ再利用します。`schemas/0.155.1/stable/codex_app_server_protocol.schemas.json` が存在しないか古い場合、Windows 上での `Codex.AppServer.Protocol` のビルドが次と同等の処理を自動実行します。
+からは意図的に除外しています。cache は `schemas/<version>/<stable|experimental>/` に分離し、CLI version、surface、generator arguments、metadata、schema sentinel がすべて一致する場合だけ再利用します。`schemas/0.159.1/stable/codex_app_server_protocol.schemas.json` が存在しないか古い場合、Windows 上での `Codex.AppServer.Protocol` のビルドが次と同等の処理を自動実行します。
 
 ```powershell
-pwsh -NoProfile -File scripts/generate-schemas.ps1 -OutputDirectory schemas -Version 0.155.1 -Surface stable -CodexPath $env:CODEX_PATH
+pwsh -NoProfile -File scripts/generate-schemas.ps1 -OutputDirectory schemas -Version 0.159.1 -Surface stable -CodexPath $env:CODEX_PATH
 ```
 
-generator は `CODEX_PATH` を優先し、未設定時は `PATH` 上の `codex` を参照します。選択した stable manifest entry と異なる version は拒否します。CI は固定した Windows x64 の 0.154.0 / 0.155.1 公式 release asset を取得し、`app-server-contract.json` の SHA-256 を検証して stable / experimental の 4 組を生成し、正規化した構造差分を確認します。build と release job は固定した 0.155.1 実行ファイルを `CODEX_PATH` として渡します。CI の build job はさらに最新安定版の Windows x64 実行ファイルを runner のローカル一時ディレクトリへ取得し、`scripts/smoke-app-server.ps1` を非ブロッキングの確認として実行します。ローカル schema ビルドでは公式 0.155.1 実行ファイルを `CODEX_PATH` に設定してください。
+generator は `CODEX_PATH` を優先し、未設定時は `PATH` 上の `codex` を参照します。選択した stable manifest entry と異なる version は拒否します。CI は固定した Windows x64 の 0.155.1 / 0.159.1 公式 release asset を取得し、`app-server-contract.json` の SHA-256 を検証して stable / experimental の 4 組を生成し、正規化した構造差分を確認します。build と release job は固定した 0.159.1 実行ファイルを `CODEX_PATH` として渡します。CI の build job はさらに最新安定版の Windows x64 実行ファイルを runner のローカル一時ディレクトリへ取得し、`scripts/smoke-app-server.ps1` を非ブロッキングの確認として実行します。ローカル schema ビルドでは公式 0.159.1 実行ファイルを `CODEX_PATH` に設定してください。
 
 ```powershell
 $env:CODEX_PATH = "C:\path\to\codex.exe"

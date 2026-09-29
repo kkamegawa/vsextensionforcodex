@@ -276,6 +276,6 @@ dependencies:
 - Microsoft apm: https://github.com/microsoft/apm / https://microsoft.github.io/apm/
 - awesome-copilot: https://github.com/github/awesome-copilot
 
-## 12. Codex App Server update and remote connection plan (2026-09-13, amended 2026-09-20)
+## 12. Codex App Server update and remote connection plan (2026-09-13, amended 2026-09-30)
 
-The approved follow-up plan is maintained in [app-server-update-plan.md](app-server-update-plan.md) and its Japanese translation [app-server-update-plan_ja.md](app-server-update-plan_ja.md). The target contract is CLI 0.155.1, with 0.154.0 retained as the standard/experimental schema regression source. The plan covers secure remote transport; path, authentication-principal, and cache isolation; reconnect, history, and stored attachment recovery; questions, approvals, native user verification, MCP authentication recovery; daily-use app-server features; and integrated verification. Phase ADRs are indexed in `doc/adr/ADR-011` through `ADR-016`.
+The approved follow-up plan is maintained in [app-server-update-plan.md](app-server-update-plan.md) and its Japanese translation [app-server-update-plan_ja.md](app-server-update-plan_ja.md). The target contract is CLI 0.159.1, with 0.155.1 retained as the standard/experimental schema regression source. The plan covers secure remote transport; path, authentication-principal, and cache isolation; reconnect, history, and stored attachment recovery; questions, approvals, native user verification, MCP authentication recovery; daily-use app-server features; and integrated verification. Phase ADRs are indexed in `doc/adr/ADR-011` through `ADR-016`.

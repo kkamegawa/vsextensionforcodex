@@ -11,12 +11,12 @@ if ([string]::IsNullOrWhiteSpace($TemporaryRoot)) {
 $generator = Join-Path $PSScriptRoot 'generate-schemas.ps1'
 $root = [IO.Path]::GetFullPath($TemporaryRoot).TrimEnd([IO.Path]::DirectorySeparatorChar)
 $testRoot = Join-Path $root ('codex-schema-cache-test-' + [guid]::NewGuid().ToString('N'))
-$cache = Join-Path $testRoot '0.155.1\stable'
+$cache = Join-Path $testRoot '0.159.1\stable'
 $metadataPath = Join-Path $cache '.schema-metadata.json'
 $sentinelPath = Join-Path $cache 'codex_app_server_protocol.schemas.json'
 
 function Invoke-Generator {
-    & $generator -OutputDirectory $testRoot -Version '0.155.1' -Surface stable -CodexPath $CodexPath
+    & $generator -OutputDirectory $testRoot -Version '0.159.1' -Surface stable -CodexPath $CodexPath
     if ($LASTEXITCODE -ne 0) {
         throw "Schema generator failed with exit code $LASTEXITCODE."
     }
@@ -32,7 +32,7 @@ try {
     }
 
     $metadata = Get-Content -Raw -LiteralPath $metadataPath | ConvertFrom-Json
-    $metadata.cliVersion = '0.154.0'
+    $metadata.cliVersion = '0.155.1'
     $metadata | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $metadataPath -Encoding utf8
     $marker = Join-Path $cache 'stale-marker.txt'
     Set-Content -LiteralPath $marker -Value 'stale' -Encoding utf8
@@ -64,7 +64,7 @@ try {
         Set-Content -LiteralPath $stub -Value "@echo codex-cli $ReportedVersion" -Encoding ascii
         $failure = $null
         try {
-            & $generator -OutputDirectory (Join-Path $testRoot 'stub-cache') -Version '0.155.1' -Surface stable -CodexPath $stub -Force *> $null
+            & $generator -OutputDirectory (Join-Path $testRoot 'stub-cache') -Version '0.159.1' -Surface stable -CodexPath $stub -Force *> $null
         }
         catch {
             $failure = $_.Exception.Message
@@ -79,8 +79,8 @@ try {
         }
     }
 
-    Assert-VersionRejected '0.155.1-alpha.1' 'Prerelease Codex CLI is not a stable contract'
-    Assert-VersionRejected '0.154.0' 'Pinned Codex 0.155.1 is required'
+    Assert-VersionRejected '0.159.1-alpha.1' 'Prerelease Codex CLI is not a stable contract'
+    Assert-VersionRejected '0.155.1' 'Pinned Codex 0.159.1 is required'
 
     Write-Host 'Schema cache contract tests passed.'
 }

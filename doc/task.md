@@ -36,6 +36,19 @@
 - [x] Tests: root validation, close during connect, command state after loss, profile apply flow, flyout exclusivity, XAML binding reachability.
 - Validation: Release build with 0 warnings. Core 153/153 (three runs), UI 295/295 (one skipped).
 
+## 2026-09-30: Contract update to Codex CLI 0.159.1 and Preview release scope ([Issue #150](https://github.com/kkamegawa/vsextensionforcodex/issues/150), [Issue #156](https://github.com/kkamegawa/vsextensionforcodex/issues/156), [PR #157](https://github.com/kkamegawa/vsextensionforcodex/pull/157))
+
+- [x] Pin 0.159.1 as the target and 0.155.1 as the regression baseline in `app-server-contract.json`; read pinned versions from the manifest in the schema scripts.
+- [x] Generate 0.155.1/0.159.1 stable and experimental schemas and record the measured differences; confirm every used method exists.
+- [x] Add contract tests for the 0.159.1 plan type and model catalog fields; update the test user agent.
+- [x] Update README (setup, limitations, FAQ for missing models), ADR-011, and the plan documents to 0.159.1.
+- [x] Label the remote connection as Preview in the flyout, README, design.md, and ADR-012.
+- [x] README setup installs the release package (x64 or Arm64) instead of the standalone executable. A standalone `codex.exe` lacks `codex-code-mode-host.exe` and the `codex-resources` helpers, so every tool call failed with "failed to spawn code-mode host" in the Experimental Instance. Added FAQ entries for that error and for models missing from the picker.
+- [x] Update the CI and release workflows to 0.155.1/0.159.1 (edited by the maintainer; the `.github` directory is outside the agent's write permission).
+- [x] Experimental Instance with 0.159.1: `Ready · Codex 0.159.1`, and a turn completed.
+- [ ] Experimental Instance with the package install: a tool call (file write and command) succeeds, `gpt-6.1-sol` is selectable, and the Preview flyout renders in Light/Dark.
+- Validation: Release build with 0 warnings. Core 155/155, UI 295/295 (one skipped). Schema cache, compare, surface, and smoke checks passed with 0.159.1.
+
 ## 2026-07-21: Merge main into PR #31 (issue #25) and resolve conflicts
 
 - [x] Resolve `ChoicePromptParser.cs` confirmation-regex conflict by adopting main's line-anchored `\A...to\b` pattern (issue #45), compatible with this branch's question-line scoping fix (issue #33).

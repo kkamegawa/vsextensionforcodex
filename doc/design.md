@@ -350,8 +350,10 @@ automation name.
 
 The flyout is ordered by the user's task, top to bottom:
 
-1. Profile list (`RemoteProfiles.Profiles` / `SelectedProfile`) with Add and Remove. Each row shows
-   the display name and endpoint; an unsaved row is marked `Not saved`.
+1. Profile list (`RemoteProfiles.Profiles` / `SelectedProfile`) with Add and Remove, headed
+   `Remote profiles (Preview)` with a one-line note that health checks and per-account state
+   isolation are not available yet. Each row shows the display name and endpoint; an unsaved row is
+   marked `Not saved`.
 2. Editor for the selected profile, shown only while a profile is selected: Name, Endpoint, Token
    file path, Local root, Server root, and Enabled, then Save. Only the token file path crosses the
    presentation boundary; token contents are read by the Worker at connection time.

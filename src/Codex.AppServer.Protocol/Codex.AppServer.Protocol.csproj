@@ -3,11 +3,11 @@
     <TargetFramework>net8.0</TargetFramework>
     <AssemblyName>Codex.AppServer.Protocol</AssemblyName>
     <RootNamespace>Codex.AppServer.Protocol</RootNamespace>
-    <CodexSchemaDirectory>$([System.IO.Path]::GetFullPath('$(MSBuildProjectDirectory)/../../schemas/0.155.1/stable'))</CodexSchemaDirectory>
+    <CodexSchemaDirectory>$([System.IO.Path]::GetFullPath('$(MSBuildProjectDirectory)/../../schemas/0.159.1/stable'))</CodexSchemaDirectory>
     <CodexSchemaSentinel>$(CodexSchemaDirectory)/codex_app_server_protocol.schemas.json</CodexSchemaSentinel>
     <CodexSchemaGeneratorScript>$([System.IO.Path]::GetFullPath('$(MSBuildProjectDirectory)/../../scripts/generate-schemas.ps1'))</CodexSchemaGeneratorScript>
     <CodexSchemaCacheValidatorScript>$([System.IO.Path]::GetFullPath('$(MSBuildProjectDirectory)/../../scripts/validate-schema-cache.ps1'))</CodexSchemaCacheValidatorScript>
-    <CodexSchemaGeneratorArguments>-OutputDirectory &quot;$([System.IO.Path]::GetFullPath('$(MSBuildProjectDirectory)/../../schemas'))&quot; -Version 0.155.1 -Surface stable</CodexSchemaGeneratorArguments>
+    <CodexSchemaGeneratorArguments>-OutputDirectory &quot;$([System.IO.Path]::GetFullPath('$(MSBuildProjectDirectory)/../../schemas'))&quot; -Version 0.159.1 -Surface stable</CodexSchemaGeneratorArguments>
     <CodexSchemaGeneratorArguments Condition="'$(CODEX_PATH)' != ''">$(CodexSchemaGeneratorArguments) -CodexPath &quot;$(CODEX_PATH)&quot;</CodexSchemaGeneratorArguments>
   </PropertyGroup>
 
@@ -28,7 +28,7 @@
           Condition="'$(OS)' == 'Windows_NT'"
           Inputs="$(CodexContractManifest);$(CodexSchemaGeneratorScript);$(CodexSchemaCacheValidatorScript);$(CodexSchemaDirectory)/.schema-metadata.json;$(CodexSchemaSentinel)"
           Outputs="$(IntermediateOutputPath)codex-schema-cache.stamp">
-    <Exec Command="pwsh -NoProfile -File &quot;$(CodexSchemaCacheValidatorScript)&quot; -OutputDirectory &quot;$(CodexSchemaRoot)&quot; -Version 0.155.1 -Surface stable"
+    <Exec Command="pwsh -NoProfile -File &quot;$(CodexSchemaCacheValidatorScript)&quot; -OutputDirectory &quot;$(CodexSchemaRoot)&quot; -Version 0.159.1 -Surface stable"
           IgnoreExitCode="true">
       <Output TaskParameter="ExitCode" PropertyName="CodexSchemaCacheValidationExitCode" />
     </Exec>

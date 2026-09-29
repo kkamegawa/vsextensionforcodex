@@ -60,8 +60,8 @@ jobs:
         shell: pwsh
         run: |
           pwsh -NoProfile -File scripts/install-codex.ps1 `
-            -Version '0.155.1' `
-            -OutputDirectory (Join-Path $env:RUNNER_TEMP 'codex-cli-0.155.1') `
+            -Version '0.159.1' `
+            -OutputDirectory (Join-Path $env:RUNNER_TEMP 'codex-cli-0.159.1') `
             -GitHubOutput
 
       - name: Generate release schema cache
@@ -71,7 +71,7 @@ jobs:
         run: |
           pwsh -NoProfile -File scripts/generate-schemas.ps1 `
             -OutputDirectory schemas `
-            -Version '0.155.1' `
+            -Version '0.159.1' `
             -Surface stable `
             -CodexPath $env:CODEX_PATH
 

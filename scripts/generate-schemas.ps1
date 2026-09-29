@@ -1,6 +1,7 @@
 ﻿param(
     [string]$OutputDirectory = 'schemas',
-    [ValidateSet('0.154.0', '0.155.1')][string]$Version = '0.155.1',
+    # Defaults to the manifest target; only versions pinned in app-server-contract.json are accepted.
+    [string]$Version,
     [ValidateSet('stable', 'experimental')][string]$Surface = 'stable',
     [string]$CodexPath,
     [switch]$Force
@@ -9,6 +10,9 @@
 $ErrorActionPreference = 'Stop'
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $manifest = Get-Content -Raw -LiteralPath (Join-Path $root 'app-server-contract.json') | ConvertFrom-Json
+if ([string]::IsNullOrWhiteSpace($Version)) { $Version = $manifest.targetVersion }
+$pinnedVersions = @($manifest.releases.psobject.Properties.Name)
+if ($Version -notin $pinnedVersions) { throw "Unsupported schema contract version: $Version" }
 $release = $manifest.releases.$Version
 $surfaceDefinition = $manifest.surfaces.$Surface
 if ($null -eq $release -or $null -eq $surfaceDefinition) { throw "Unsupported schema contract: $Version/$Surface" }
@@ -78,7 +82,8 @@ try {
     if (-not (Test-Path -LiteralPath $sentinel -PathType Leaf)) { throw "Codex did not emit the required schema sentinel: $sentinel" }
     $resolvedDestination = $destination.TrimEnd([IO.Path]::DirectorySeparatorChar)
     if (-not $resolvedDestination.StartsWith($outputRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase) -or
-        $resolvedDestination -notmatch '\\(0\.154\.0|0\.155\.1)\\(stable|experimental)$') { throw "Refusing to replace schema path outside the versioned schema cache: $destination" }
+        (Split-Path -Leaf (Split-Path -Parent $resolvedDestination)) -notin $pinnedVersions -or
+        (Split-Path -Leaf $resolvedDestination) -notin @('stable', 'experimental')) { throw "Refusing to replace schema path outside the versioned schema cache: $destination" }
     $backup = "$destination.backup-$([guid]::NewGuid().ToString('N'))"
     $hadDestination = Test-Path -LiteralPath $destination
     if ($hadDestination) { Move-Item -LiteralPath $destination -Destination $backup }
