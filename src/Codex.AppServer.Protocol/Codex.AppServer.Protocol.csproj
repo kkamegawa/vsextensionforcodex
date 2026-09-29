@@ -34,6 +34,8 @@
     </Exec>
     <Exec Command="pwsh -NoProfile -File &quot;$(CodexSchemaGeneratorScript)&quot; $(CodexSchemaGeneratorArguments)"
           Condition="'$(CodexSchemaCacheValidationExitCode)' != '0'" />
+    <!-- BeforeBuild runs before the SDK creates the intermediate directory on a clean checkout. -->
+    <MakeDir Directories="$(IntermediateOutputPath)" />
     <Touch Files="$(IntermediateOutputPath)codex-schema-cache.stamp" AlwaysCreate="true" />
   </Target>
 </Project>
