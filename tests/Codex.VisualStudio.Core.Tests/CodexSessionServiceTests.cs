@@ -1824,6 +1824,29 @@ public sealed class CodexSessionServiceTests
     }
 
     [TestMethod]
+    public async Task AccountNotificationReadTimeoutReportsUnavailable()
+    {
+        var connection = new RecordingConnection
+        {
+            AsyncHandler = (method, _, _) => method == "account/read"
+                ? Task.FromCanceled<JsonElement>(new CancellationToken(canceled: true))
+                : Task.FromResult(JsonSerializer.SerializeToElement(new { })),
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+        var statuses = new List<AccountStatus>();
+        service.AccountStatusChanged += (value, _) =>
+        {
+            statuses.Add(value);
+            return Task.CompletedTask;
+        };
+
+        await connection.EmitNotificationAsync("account/updated", new { authMode = "chatgpt" });
+
+        Assert.AreEqual(AccountState.Unavailable, statuses[^1].State);
+    }
+
+    [TestMethod]
     public async Task AccountReadFailureReturnsUnavailable()
     {
         var connection = new RecordingConnection

@@ -71,10 +71,10 @@ public sealed class JsonLineRpcConnection : IJsonRpcConnection
             return Task.CompletedTask;
         }
 
-        pumps.Add(Task.Run(() => ReadPumpAsync(lifetime.Token), CancellationToken.None));
-        pumps.Add(Task.Run(() => ParsePumpAsync(lifetime.Token), CancellationToken.None));
-        pumps.Add(Task.Run(() => NotificationPumpAsync(lifetime.Token), CancellationToken.None));
-        pumps.Add(Task.Run(() => WritePumpAsync(lifetime.Token), CancellationToken.None));
+        pumps.Add(Task.Run(() => RunPumpAsync(ReadPumpAsync, lifetime.Token), CancellationToken.None));
+        pumps.Add(Task.Run(() => RunPumpAsync(ParsePumpAsync, lifetime.Token), CancellationToken.None));
+        pumps.Add(Task.Run(() => RunPumpAsync(NotificationPumpAsync, lifetime.Token), CancellationToken.None));
+        pumps.Add(Task.Run(() => RunPumpAsync(WritePumpAsync, lifetime.Token), CancellationToken.None));
         return Task.CompletedTask;
     }
 
@@ -154,6 +154,24 @@ public sealed class JsonLineRpcConnection : IJsonRpcConnection
     {
         string json = JsonSerializer.Serialize(value, SerializerOptions);
         await writeQueue.Writer.WriteAsync(json, cancellationToken).ConfigureAwait(false);
+    }
+
+    // A pump that stops unexpectedly would leave the others blocked on full queues and callers
+    // waiting for their timeouts. Close instead so pending requests fail and Closed is raised.
+    private async Task RunPumpAsync(Func<CancellationToken, Task> pump, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await pump(cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+        }
+        catch (Exception ex)
+        {
+            // Close is idempotent, so a pump failing because another path already closed is harmless.
+            Close(ex);
+        }
     }
 
     private async Task ReadPumpAsync(CancellationToken cancellationToken)
@@ -419,9 +437,8 @@ public sealed class JsonLineRpcConnection : IJsonRpcConnection
             return;
         }
 
-        lifetime.Cancel();
-        inbound.Writer.TryComplete(exception);
-        writeQueue.Writer.TryComplete(exception);
+        // Fail outstanding requests before canceling the lifetime so callers observe a connection
+        // loss rather than a cancellation they did not request.
         var closedException = new JsonRpcConnectionClosedException(exception?.Message ?? "The app-server connection closed.");
         foreach (TaskCompletionSource<JsonElement> completion in pending.Values)
         {
@@ -429,6 +446,9 @@ public sealed class JsonLineRpcConnection : IJsonRpcConnection
         }
 
         pending.Clear();
+        lifetime.Cancel();
+        inbound.Writer.TryComplete(exception);
+        writeQueue.Writer.TryComplete(exception);
         Closed?.Invoke(this, exception);
     }
 
