@@ -31,7 +31,8 @@
       </Style>
 
       <!-- Keep Expander header text inheritable so the themed ToggleButton foreground reaches
-           both the label and glyph in every interaction state. -->
+           both the label and glyph in every interaction state. Apply it only inside a
+           HeaderTemplate: the templated TextBlock inherits from the header ContentPresenter. -->
       <Style x:Key="CommandOutputExpanderHeaderTextStyle" TargetType="TextBlock">
         <Setter Property="TextOptions.TextFormattingMode" Value="Display" />
       </Style>
@@ -461,7 +462,7 @@
       <RowDefinition Height="Auto" />
     </Grid.RowDefinitions>
 
-    <!-- Slim icon toolbar: status (left) · account + history flyout + new + restart (right) -->
+    <!-- Slim icon toolbar: status (left) · account + connection target + usage + history flyout + new + restart (right) -->
     <Border Grid.Row="0"
             Padding="10,6"
             Background="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBackgroundBrushKey}}"
@@ -472,6 +473,165 @@
           <Button Content="{Binding AccountActionText}" Command="{Binding AccountCommand}"
                   Style="{StaticResource SmallRoundButtonStyle}" Margin="0,0,8,0"
                   Visibility="{Binding ShowAccountAction, Converter={StaticResource BoolToVis}}" />
+
+          <!-- Connection-target flyout (design.md section 12). The button shows where turns
+               run; the flyout edits saved remote profiles and applies one on request. -->
+          <Grid Margin="0,0,6,0">
+            <Grid.InputBindings>
+              <KeyBinding Key="Escape" Command="{Binding CloseConnectionTargetCommand}" />
+            </Grid.InputBindings>
+            <Button Content="{Binding ConnectionTargetText}"
+                    Command="{Binding ToggleConnectionTargetCommand}"
+                    ToolTip="Connection target and remote profiles"
+                    AutomationProperties.Name="{Binding ConnectionTargetAutomationName}"
+                    AutomationProperties.HelpText="Opens remote app-server profiles and connection target actions."
+                    Style="{StaticResource SmallRoundButtonStyle}" />
+            <Popup IsOpen="{Binding IsConnectionTargetOpen, Mode=TwoWay}"
+                   StaysOpen="False"
+                   Placement="Bottom"
+                   VerticalOffset="2"
+                   AllowsTransparency="True"
+                   PopupAnimation="Fade"
+                   Focusable="True">
+              <Border Width="340" MaxHeight="560" Padding="12" CornerRadius="6" BorderThickness="1"
+                      Focusable="True"
+                      FocusManager.IsFocusScope="True"
+                      FocusManager.FocusedElement="{Binding ElementName=ConnectionTargetCloseButton}"
+                      KeyboardNavigation.TabNavigation="Cycle"
+                      Background="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBackgroundBrushKey}}"
+                      BorderBrush="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBorderBrushKey}}"
+                      AutomationProperties.Name="Connection target"
+                      AutomationProperties.HelpText="Edit remote app-server profiles and choose where Codex turns run.">
+                <Border.InputBindings>
+                  <KeyBinding Key="Escape" Command="{Binding CloseConnectionTargetCommand}" />
+                </Border.InputBindings>
+                <Border.Resources>
+                  <Style x:Key="ProfileFieldLabelStyle" TargetType="TextBlock">
+                    <Setter Property="Margin" Value="0,6,0,2" />
+                    <Setter Property="FontSize" Value="11" />
+                    <Setter Property="Opacity" Value="0.8" />
+                  </Style>
+                  <Style TargetType="TextBox">
+                    <Setter Property="Padding" Value="4,2" />
+                    <Setter Property="Background" Value="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBackgroundBrushKey}}" />
+                    <Setter Property="Foreground" Value="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowTextBrushKey}}" />
+                    <Setter Property="BorderBrush" Value="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBorderBrushKey}}" />
+                    <Setter Property="CaretBrush" Value="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowTextBrushKey}}" />
+                  </Style>
+                </Border.Resources>
+                <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                  <StackPanel>
+                    <TextBlock Text="Connection target" FontWeight="SemiBold" FontSize="14" />
+                    <TextBlock Margin="0,4,0,0" TextWrapping="Wrap" Opacity="0.8">
+                      <Run Text="Connected to:" />
+                      <Run Text="{Binding ConnectionTargetText, Mode=OneWay}" FontWeight="SemiBold" />
+                    </TextBlock>
+
+                    <!-- 1. Saved profiles -->
+                    <DockPanel Margin="0,10,0,4">
+                      <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                        <Button Content="Add"
+                                Command="{Binding RemoteProfiles.AddCommand}"
+                                AutomationProperties.Name="Add remote profile"
+                                Style="{StaticResource SmallRoundButtonStyle}" />
+                        <Button Content="Remove" Margin="4,0,0,0"
+                                Command="{Binding RemoteProfiles.RemoveCommand}"
+                                AutomationProperties.Name="Remove selected remote profile"
+                                Style="{StaticResource SmallRoundButtonStyle}" />
+                      </StackPanel>
+                      <TextBlock Text="Remote profiles (Preview)" FontWeight="SemiBold" VerticalAlignment="Center" />
+                    </DockPanel>
+                    <TextBlock Margin="0,0,0,4" FontSize="11" Opacity="0.75" TextWrapping="Wrap"
+                               Text="Preview: connects to an app-server you run yourself. Health checks and per-account state isolation are not available yet." />
+                    <ListBox MaxHeight="140"
+                             Background="Transparent"
+                             BorderThickness="0"
+                             Foreground="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowTextBrushKey}}"
+                             ItemsSource="{Binding RemoteProfiles.Profiles}"
+                             SelectedItem="{Binding RemoteProfiles.SelectedProfile, Mode=TwoWay}"
+                             ItemContainerStyle="{StaticResource SelectableRowStyle}"
+                             AutomationProperties.Name="Remote profiles">
+                      <ListBox.ItemTemplate>
+                        <DataTemplate>
+                          <DockPanel AutomationProperties.Name="{Binding DisplayText}">
+                            <TextBlock DockPanel.Dock="Right" Margin="6,0,0,0" FontSize="10" Opacity="0.75"
+                                       Style="{StaticResource SelectableContentTextStyle}"
+                                       Text="{Binding RowStatusText}" VerticalAlignment="Center" />
+                            <StackPanel>
+                              <TextBlock FontWeight="SemiBold"
+                                         Style="{StaticResource SelectableContentTextStyle}"
+                                         Text="{Binding DisplayText}"
+                                         TextTrimming="CharacterEllipsis" />
+                              <TextBlock FontSize="10" Opacity="0.65"
+                                         Style="{StaticResource SelectableContentTextStyle}"
+                                         Text="{Binding Endpoint}"
+                                         TextTrimming="CharacterEllipsis" />
+                            </StackPanel>
+                          </DockPanel>
+                        </DataTemplate>
+                      </ListBox.ItemTemplate>
+                    </ListBox>
+                    <TextBlock Margin="0,2,0,0" FontSize="11" Opacity="0.7" TextWrapping="Wrap"
+                               Text="No remote profiles. Codex runs on the local app-server."
+                               Visibility="{Binding RemoteProfiles.HasNoProfiles, Converter={StaticResource BoolToVis}}" />
+
+                    <!-- 2. Editor for the selected profile -->
+                    <StackPanel Margin="0,8,0,0"
+                                Visibility="{Binding RemoteProfiles.HasSelection, Converter={StaticResource BoolToVis}}">
+                      <TextBlock Text="Name" Style="{StaticResource ProfileFieldLabelStyle}" />
+                      <TextBox Text="{Binding RemoteProfiles.SelectedProfile.Name, UpdateSourceTrigger=PropertyChanged}"
+                               AutomationProperties.Name="Profile name" />
+                      <TextBlock Text="Endpoint (wss://, or ws:// for loopback)" Style="{StaticResource ProfileFieldLabelStyle}" />
+                      <TextBox Text="{Binding RemoteProfiles.SelectedProfile.Endpoint, UpdateSourceTrigger=PropertyChanged}"
+                               AutomationProperties.Name="Endpoint"
+                               AutomationProperties.HelpText="Use wss. Plain ws is allowed only for a loopback host." />
+                      <TextBlock Text="Token file path" Style="{StaticResource ProfileFieldLabelStyle}" />
+                      <TextBox Text="{Binding RemoteProfiles.SelectedProfile.TokenFilePath, UpdateSourceTrigger=PropertyChanged}"
+                               AutomationProperties.Name="Token file path"
+                               AutomationProperties.HelpText="Path to a file that contains the bearer token. The token itself is never shown." />
+                      <TextBlock Text="Local root (this PC)" Style="{StaticResource ProfileFieldLabelStyle}" />
+                      <TextBox Text="{Binding RemoteProfiles.SelectedProfile.LocalRoot, UpdateSourceTrigger=PropertyChanged}"
+                               AutomationProperties.Name="Local root"
+                               AutomationProperties.HelpText="Workspace folder on this computer that the server root mirrors." />
+                      <TextBlock Text="Server root (remote app-server)" Style="{StaticResource ProfileFieldLabelStyle}" />
+                      <TextBox Text="{Binding RemoteProfiles.SelectedProfile.ServerRoot, UpdateSourceTrigger=PropertyChanged}"
+                               AutomationProperties.Name="Server root"
+                               AutomationProperties.HelpText="The same workspace folder as seen by the remote app-server." />
+                      <CheckBox Margin="0,8,0,0" Content="Enabled"
+                                Foreground="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowTextBrushKey}}"
+                                IsChecked="{Binding RemoteProfiles.SelectedProfile.IsEnabled, Mode=TwoWay}"
+                                AutomationProperties.Name="Profile enabled" />
+                      <Button Margin="0,8,0,0" HorizontalAlignment="Left" Content="Save profile"
+                              Command="{Binding RemoteProfiles.SaveCommand}"
+                              AutomationProperties.Name="Save remote profile"
+                              Style="{StaticResource SmallRoundButtonStyle}" />
+                    </StackPanel>
+
+                    <!-- 3. Result and apply actions -->
+                    <TextBlock Margin="0,10,0,0" TextWrapping="Wrap"
+                               Text="{Binding RemoteProfiles.StatusText}"
+                               AutomationProperties.LiveSetting="Polite" />
+                    <WrapPanel Margin="0,10,0,0">
+                      <Button Content="Connect with this profile"
+                              Command="{Binding ApplyRemoteProfileCommand}"
+                              AutomationProperties.Name="Connect with the selected remote profile"
+                              AutomationProperties.HelpText="Reconnects Codex to the saved, enabled profile that is selected."
+                              Style="{StaticResource SmallRoundButtonStyle}" />
+                      <Button Content="Use local app-server" Margin="6,0,0,0"
+                              Command="{Binding UseLocalAppServerCommand}"
+                              AutomationProperties.Name="Use the local codex app-server"
+                              Style="{StaticResource SmallRoundButtonStyle}" />
+                    </WrapPanel>
+                    <Button x:Name="ConnectionTargetCloseButton" Content="Close" Margin="0,10,0,0"
+                            HorizontalAlignment="Right"
+                            Command="{Binding CloseConnectionTargetCommand}"
+                            AutomationProperties.Name="Close connection target"
+                            Style="{StaticResource SmallRoundButtonStyle}" />
+                  </StackPanel>
+                </ScrollViewer>
+              </Border>
+            </Popup>
+          </Grid>
 
           <Grid Margin="0,0,6,0"
                 Visibility="{Binding IsUsageAvailable, Converter={StaticResource BoolToVis}}">
@@ -890,13 +1050,20 @@
                             Background="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowCodeBlockBackgroundBrushKey}}"
                             Foreground="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowTextBrushKey}}"
                             IsExpanded="{Binding IsCommandOutputExpanded, Mode=TwoWay}"
+                            Header="{Binding CommandOutputExpansionLabel}"
                             AutomationProperties.Name="{Binding CommandOutputAutomationName}"
                             AutomationProperties.HelpText="{Binding CommandOutputAutomationHelpText}">
-                    <Expander.Header>
-                      <TextBlock Style="{StaticResource CommandOutputExpanderHeaderTextStyle}"
-                                 Text="{Binding CommandOutputExpansionLabel}"
-                                 TextOptions.TextFormattingMode="Display" />
-                    </Expander.Header>
+                    <!-- The header is plain text realized by HeaderTemplate. An inline header
+                         element would have the Expander as its logical parent and inherit the
+                         Expander foreground, so hover/pressed header colors would not reach the
+                         label (light hover background with white text). -->
+                    <Expander.HeaderTemplate>
+                      <DataTemplate>
+                        <TextBlock Style="{StaticResource CommandOutputExpanderHeaderTextStyle}"
+                                   Text="{Binding}"
+                                   TextOptions.TextFormattingMode="Display" />
+                      </DataTemplate>
+                    </Expander.HeaderTemplate>
                     <ScrollViewer MaxHeight="320"
                                   HorizontalScrollBarVisibility="Auto"
                                   VerticalScrollBarVisibility="Auto"

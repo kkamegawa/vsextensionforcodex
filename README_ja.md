@@ -13,27 +13,31 @@
 
 - Windows (x64 または Arm64)
 - Visual Studio 2022 17.14 以降、または Visual Studio 2026 (Community / Professional / Enterprise)
-- Codex CLI 0.145.0 以降 (winget でのインストールを推奨。[制限事項](#制限事項)を参照)
+- [rust-v0.159.1 リリース](https://github.com/openai/codex/releases/tag/rust-v0.159.1) に含まれる公式 Windows 版 Codex CLI 0.159.1 実行ファイル (x64 または Arm64)
 - `codex login` でサインインできる ChatGPT アカウント
 
 ## セットアップ
 
-1. Codex CLI をインストールします。
+1. [Codex 0.159.1 リリース](https://github.com/openai/codex/releases/tag/rust-v0.159.1) から、使用しているマシンに合った Windows パッケージをダウンロードしてローカルディレクトリへ展開します。x64 では `codex-package-x86_64-pc-windows-msvc.tar.gz`、Arm64 では `codex-package-aarch64-pc-windows-msvc.tar.gz` です。下のスクリプトは自動で適切なほうを選びます。単体の `codex-*.exe` ではなく、必ずパッケージを使ってください。Codex はツールを補助プログラム（`bin\codex-code-mode-host.exe`、`codex-resources\codex-command-runner.exe`、Windows サンドボックスのセットアップ）経由で実行します。これらは `codex.exe` と同じ場所に置く必要があり、単体の exe ではすべてのツール呼び出しが "failed to spawn code-mode host" で失敗します。winget は不要です。winget のパッケージは固定リリースより遅れることがあります。0.159.1 は本拡張が検証している app-server 契約なので、`latest` ではなくこのリリースを固定して使用してください。
 
    ```powershell
-   winget install --id OpenAI.Codex --source winget
+   $arch = if ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture -eq 'Arm64') { 'aarch64' } else { 'x86_64' }
+   $package = "codex-package-$arch-pc-windows-msvc.tar.gz"
+   $codexRoot = Join-Path $env:LOCALAPPDATA 'OpenAI\Codex'
+   New-Item -ItemType Directory -Force -Path $codexRoot | Out-Null
+   $archive = Join-Path $env:TEMP $package
+   Invoke-WebRequest -Uri "https://github.com/openai/codex/releases/download/rust-v0.159.1/$package" -OutFile $archive
+   Get-FileHash $archive -Algorithm SHA256
+   tar -xzf $archive -C $codexRoot
+   [Environment]::SetEnvironmentVariable('CODEX_PATH', (Join-Path $codexRoot 'bin\codex.exe'), 'User')
    ```
 
-2. バージョンを確認します。動作確認済みは 0.145.0 で、それより古いビルドはサポート対象外です。
+   先に進む前に、表示された SHA-256 をリリースページのそのアセットの値と照合してください。CI とスキーマ生成は `app-server-contract.json` で固定した単体の x64 実行ファイルを使います。スキーマ生成と `initialize` の完了にはそれで足ります。どちらのアーキテクチャのパッケージも同じ app-server 契約を公開しています。
+
+2. Visual Studio を再起動し、実行ファイルが 0.159.1 を報告することを確認します。
 
    ```powershell
    codex --version
-   ```
-
-   0.145.0 より古い場合は更新します。
-
-   ```powershell
-   winget upgrade --id OpenAI.Codex --source winget
    ```
 
 3. ターミナルから一度サインインします。Visual Studio 側が資格情報に触れることはありません。
@@ -50,9 +54,23 @@
 6. ソリューションまたはフォルダーを開き、プロンプトを送信します。最初のターンでワーカーと
    `codex app-server` の子プロセスが起動します。反応がない場合は [FAQ](#faq) を参照してください。
 
+### リモート app-server への接続（Preview・任意）
+
+既定では Codex はローカルの `codex app-server` 子プロセスで動作します。別のマシンで起動済みの app-server でターンを実行するには、次の手順を行います。
+
+> **Preview 機能です。** 上流の WebSocket 転送は実験的機能です。また今回のリリースには、接続のヘルスチェック、自動リトライ、アカウントや接続先を切り替えたときのキャッシュ状態の分離はまだ含まれていません。切り替え後は手動で再接続してください。これらはリモート接続とパスマッピングの Issue で対応予定です。
+
+1. リモートマシンで WebSocket リスナーを有効にして app-server を起動し、bearer トークンをこのコンピューター上のファイルに保存します。拡張機能はリモート側の起動・更新・ファイル同期を行いません。
+2. 両方のマシンが同じ作業ツリーを参照できるようにします。例: ローカルは `C:\src\repo`、サーバーは `/home/<user>/src/repo`。
+3. Codex ツールウィンドウのツールバーにある接続先ボタン（`Local` と表示）を選択し、**Add** を選択します。
+4. 名前、エンドポイント（`wss://<remote-host>:<port>`。平文の `ws://` はループバックホストのみ許可）、トークンファイルのパス、ローカルルート、サーバールートを入力し、**Enabled** をオンにして **Save profile** を選択します。
+5. **Connect with this profile** を選択します。ツールバーのボタンにプロフィール名が表示されます。
+
+ルートは両方必須です。作業ディレクトリや添付ファイルのローカルパスはローカルルートからサーバールートへ変換され、ローカルルート外の添付ファイルはターン開始前に拒否されます。リモート接続が切断されると状態が degraded になるので、**Connect** または **Restart** で再接続してください。ローカルプロセスに戻すには **Use local app-server** を選択します。
+
 ## 制限事項
 
-- **古い Codex CLI はサポートしません。** 動作確認済みバージョンは 0.145.0 です。それより古いビルドは app-server のプロトコル形状が異なるため、`initialize` や `turn/start` が失敗したり、イベントが欠落したりします。古いバージョンでのみ再現する問題は対応対象外です。
+- **他の Codex CLI バージョンは対象契約ではありません。** 動作確認済みバージョンは 0.159.1 です。0.155.1 は schema 回帰比較の基準としてのみ保持します。その他のビルドは app-server のプロトコル形状が異なるため、`initialize` や `turn/start` が失敗したり、イベントが欠落したりします。
 - **codex が複数インストールされていると、意図しないバージョンが起動することがあります。**
   バージョン管理ツール (mise)、winget、npm、Codex デスクトップアプリはそれぞれ別の場所に `codex`実行ファイルを配置し、`PATH` 上で先に見つかるものが最新とは限りません。ワーカーは次の順序で実行ファイルを解決します。
   1. 環境変数 `CODEX_PATH`
@@ -61,12 +79,12 @@
   4. `%LOCALAPPDATA%\OpenAI\Codex\bin`
 
   `where.exe codex` ですべての候補を確認できます。複数表示される場合は使用したい実行ファイルを`CODEX_PATH` に設定し、Visual Studio を再起動してください。
-- **npm 経由のインストールは推奨しません。** `@openai/codex` npm パッケージはこの構成で問題が出ることが分かっています。Node.js の更新後にシムが解決できなくなり、app server が起動直後に終了します。winget パッケージを使用してください。
+- **npm 経由のインストールは推奨しません。** `@openai/codex` npm パッケージはこの構成で問題が出ることが分かっています。Node.js の更新後にシムが解決できなくなり、app server が起動直後に終了します。公式 standalone リリース実行ファイルを使用してください。
 - **スキル機能は Codex CLI に依存します。** スキルは app server の `skills/list` から取得します。CLI が
   未実装の場合、`Skills` グループにはカタログが利用できない旨が表示され、そのセッションの間は組み込み
   コマンドのみでスラッシュメニューが動作します。`interface.iconSmall` で宣言されたスキルアイコンは
   描画されず、すべての行が固定グリフを使用します。スキル固有の承認要求は許可せず拒否します。
-- winget のマニフェストは Codex CLI のリリースから数日遅れることがあります。インストール済みのビルドが最新であると仮定せず、必ず `codex --version` で確認してください。
+- app-server 契約は 0.159.1 を基準に検証しています。CI は最新安定版も取得し、`codex app-server` の起動と `initialize` 完了だけを確認する非ブロッキングの smoke テストを実行します。したがって新しいリリースについて分かるのは起動できることだけで、契約に一致することではありません。schema 生成とビルドは manifest の固定バージョンを使用します。ローカル実行ファイルは必ず `codex --version` で確認してください。
 - 本拡張は Windows 上の Visual Studio 専用です。Visual Studio Code 版やクロスプラットフォーム版はありません。
 
 ## FAQ
@@ -76,9 +94,15 @@ Visual Studio が 17.14 以降であること、**拡張機能 > 拡張機能の
 なっていることを確認し、VSIX インストール後に Visual Studio を一度再起動してください。
 
 **チャットが応答しない、またはワーカーがすぐ終了します。**
-ほとんどの場合は拡張ではなく Codex CLI 側の問題です。ターミナルで `codex --version` (0.145.0 以降)
+ほとんどの場合は拡張ではなく Codex CLI 側の問題です。ターミナルで `codex --version` (0.159.1)
 と `codex login` を確認してください。ターミナルでは成功するのに Visual Studio では失敗する場合は、
 別の `codex` が起動しています。[制限事項](#制限事項)のとおり `CODEX_PATH` で固定してください。
+
+**ChatGPT で使える gpt-6.1 などのモデルがモデル選択に出てきません。**
+モデル選択には Codex CLI の `model/list` が返したモデルがそのまま表示されます。Codex のモデル一覧は CLI のバージョンごとに配信されるため、`gpt-6.1-sol` は Codex CLI 0.159.1 以降でのみ表示されます。`codex --version` で確認し、0.159.1 に更新してから Visual Studio を再起動してください。
+
+**Codex は応答するのに、ファイル編集やコマンドが "failed to spawn code-mode host" ですべて失敗します。**
+`CODEX_PATH` が補助プログラムのない単体の `codex.exe` を指しています。[セットアップ](#セットアップ) の手順でリリースパッケージを展開し、`bin\codex-code-mode-host.exe` と `codex-resources\` が `codex.exe` と同じ構成で並ぶようにしてから、Visual Studio を再起動してください。
 
 **特定の Codex CLI を固定するには？**
 環境変数を設定し、変更を引き継ぐために Visual Studio を再起動します。
@@ -89,6 +113,15 @@ Visual Studio が 17.14 以降であること、**拡張機能 > 拡張機能の
 
 **ログはどこにありますか？**
 `%TEMP%\Kkamegawa.CodexForVisualStudio\diagnostics.log` です。拡張とワーカーが同じファイルに書き込み、それぞれ `[EXTENSION]` と `[WORKER]` のタグが付きます。URL や資格情報らしき値は書き込み前にマスクされます。
+
+**停止ボタンを押したのに、ターンが最後まで進んだように見えます。**
+停止要求は Codex に送られますが、実行中のコマンドやモデルの応答は、Codex 側で片付くまで少し出力が続くことがあります。実際にどうなったかは `diagnostics.log` で確認できます。停止ボタンを押すと、次の行が記録されます。
+
+- `Interrupt requested by user`：ボタンを押した時刻（`[EXTENSION]`）
+- `turn/interrupt requested` と `turn/interrupt acknowledged ... elapsedMs=`：停止要求の送信と、Codex がそれを受け付けるまでの時間（`[WORKER]`）
+- `turn completed after interrupt request ... status=... elapsedMs=`：ターンの最終状態と、押してから実際に終わるまでの時間（`[WORKER]`）
+
+`status=interrupted` なら停止は効いています。`completed` の場合は、停止要求が届く前にターンが終わっていました。
 
 **毎回の承認プロンプトを止められますか？**
 チャット入力での `/permissions` (別名 `/approve`)、またはツールウィンドウの承認モードピッカーを使用します。組み込みモードは `ask`、`auto`、`full`、`custom` です。`full` は Codex のサンドボックスと通常の承認プロンプトを無効化するため、明示的な確認を求めます。`/model`、`/reasoning`、`/review`などを含むコマンド一覧は [doc/slash-commands_ja.md](doc/slash-commands_ja.md) を参照してください。
@@ -115,7 +148,7 @@ Codex CLI が返す `Skills` グループが表示されます。スキルを選
 
 - Visual Studio 2022 17.14 以降 (Visual Studio 拡張機能開発ワークロード)
 - .NET 8 SDK
-- ローカルの Codex CLI (ビルド時のプロトコルスキーマ生成に使用)
+- 公式 Codex CLI 0.159.1 実行ファイル (ビルド時の対象プロトコル schema 生成に使用)
 
 復元とビルド:
 
@@ -125,14 +158,13 @@ dotnet build CodexForVisualStudio.slnx -c Release --no-restore
 ```
 
 `schemas/` は Apache-2.0 ライセンスの Codex CLI が生成する出力であり、MIT ライセンスの本リポジトリ
-からは意図的に除外しています。`schemas/codex_app_server_protocol.schemas.json` が存在しない場合、Windows 上での `Codex.AppServer.Protocol` のビルドが次を自動実行します。
+からは意図的に除外しています。cache は `schemas/<version>/<stable|experimental>/` に分離し、CLI version、surface、generator arguments、metadata、schema sentinel がすべて一致する場合だけ再利用します。`schemas/0.159.1/stable/codex_app_server_protocol.schemas.json` が存在しないか古い場合、Windows 上での `Codex.AppServer.Protocol` のビルドが次と同等の処理を自動実行します。
 
 ```powershell
-codex app-server generate-json-schema --out schemas
+pwsh -NoProfile -File scripts/generate-schemas.ps1 -OutputDirectory schemas -Version 0.159.1 -Surface stable -CodexPath $env:CODEX_PATH
 ```
 
-ビルドは `CODEX_PATH`、`PATH` 上の `codex`、Codex デスクトップアプリのローカルキャッシュの順に
-参照します。自動検出できない場合は `CODEX_PATH` を設定してください。
+generator は `CODEX_PATH` を優先し、未設定時は `PATH` 上の `codex` を参照します。選択した stable manifest entry と異なる version は拒否します。CI は固定した Windows x64 の 0.155.1 / 0.159.1 公式 release asset を取得し、`app-server-contract.json` の SHA-256 を検証して stable / experimental の 4 組を生成し、正規化した構造差分を確認します。build と release job は固定した 0.159.1 実行ファイルを `CODEX_PATH` として渡します。CI の build job はさらに最新安定版の Windows x64 実行ファイルを runner のローカル一時ディレクトリへ取得し、`scripts/smoke-app-server.ps1` を非ブロッキングの確認として実行します。ローカル schema ビルドでは公式 0.159.1 実行ファイルを `CODEX_PATH` に設定してください。
 
 ```powershell
 $env:CODEX_PATH = "C:\path\to\codex.exe"
@@ -167,14 +199,14 @@ src/Codex.VisualStudio.Extension/bin/Release/net8.0-windows10.0.22621.0/Codex.Vi
 
 ## Visual Studio でのデバッグ
 
-Debug ビルドは既定では配置を行わないため、開発ビルドがインストール済みの Visual Studio を暗黙に書き換えることはありません。
+F5 では SDK 管理の実験用インスタンスへ開発ビルドが配置されます。開発ビルドの既定バージョンは、同じ拡張 ID の公開済み `0.2.0` より新しい `0.2.1` です。リリースビルドはタグから明示的な `-p:Version` を渡すため、この既定値の影響を受けません。
 
 1. Visual Studio で `CodexForVisualStudio.slnx` を開きます。
 2. `Codex.VisualStudio.Extension` をスタートアッププロジェクトに設定します。
 3. `Debug` 構成を選択し `F5` を押します。ビルド、配置、実験用インスタンスの起動が行われます。
 4. 実験用インスタンスで **表示 > Codex** を開きます。
 
-ワーカーは `Codex.VisualStudio.Worker.exe` という子プロセスです。ワーカーのコードをデバッグする場合は **デバッグ > プロセスにアタッチ** から `Codex.VisualStudio.Worker.exe` を選び、マネージド(.NET Core) のコードの種類を指定してください。
+ワーカーは `Codex.VisualStudio.Worker.dll` を引数に取る `dotnet.exe` の子プロセスとして動作します。ワーカーのコードをデバッグする場合は **デバッグ > プロセスにアタッチ** から、コマンドラインにこの DLL がある `dotnet.exe` を選び、マネージド(.NET Core) のコードの種類を指定してください。対応するランタイムホストがない場合は、同梱の `Codex.VisualStudio.Worker.exe` が使われます。
 
 ## リリース
 

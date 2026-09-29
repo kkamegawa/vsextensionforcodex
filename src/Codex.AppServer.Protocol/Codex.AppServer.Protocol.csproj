@@ -3,17 +3,40 @@
     <TargetFramework>net8.0</TargetFramework>
     <AssemblyName>Codex.AppServer.Protocol</AssemblyName>
     <RootNamespace>Codex.AppServer.Protocol</RootNamespace>
-    <CodexSchemaDirectory>$([System.IO.Path]::GetFullPath('$(MSBuildProjectDirectory)/../../schemas'))</CodexSchemaDirectory>
+    <CodexSchemaDirectory>$([System.IO.Path]::GetFullPath('$(MSBuildProjectDirectory)/../../schemas/0.159.1/stable'))</CodexSchemaDirectory>
     <CodexSchemaSentinel>$(CodexSchemaDirectory)/codex_app_server_protocol.schemas.json</CodexSchemaSentinel>
     <CodexSchemaGeneratorScript>$([System.IO.Path]::GetFullPath('$(MSBuildProjectDirectory)/../../scripts/generate-schemas.ps1'))</CodexSchemaGeneratorScript>
-    <CodexSchemaGeneratorArguments>-OutputDirectory &quot;$(CodexSchemaDirectory)&quot;</CodexSchemaGeneratorArguments>
+    <CodexSchemaCacheValidatorScript>$([System.IO.Path]::GetFullPath('$(MSBuildProjectDirectory)/../../scripts/validate-schema-cache.ps1'))</CodexSchemaCacheValidatorScript>
+    <CodexSchemaGeneratorArguments>-OutputDirectory &quot;$([System.IO.Path]::GetFullPath('$(MSBuildProjectDirectory)/../../schemas'))&quot; -Version 0.159.1 -Surface stable</CodexSchemaGeneratorArguments>
     <CodexSchemaGeneratorArguments Condition="'$(CODEX_PATH)' != ''">$(CodexSchemaGeneratorArguments) -CodexPath &quot;$(CODEX_PATH)&quot;</CodexSchemaGeneratorArguments>
   </PropertyGroup>
 
-  <Target Name="GenerateCodexSchemas"
+  <ItemGroup>
+    <InternalsVisibleTo Include="Codex.VisualStudio.Core.Tests" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <CodexSchemaRoot>$([System.IO.Path]::GetFullPath('$(MSBuildProjectDirectory)/../../schemas'))</CodexSchemaRoot>
+    <CodexContractManifest>$([System.IO.Path]::GetFullPath('$(MSBuildProjectDirectory)/../../app-server-contract.json'))</CodexContractManifest>
+  </PropertyGroup>
+
+  <!-- The cache validator starts pwsh, so it runs only when the manifest, the generator/validator
+       scripts, or the cache metadata/sentinel changed since the last successful validation. A
+       missing sentinel or metadata file is an input that does not exist, which forces the target. -->
+  <Target Name="ValidateCodexSchemas"
           BeforeTargets="BeforeBuild"
-          Condition="'$(OS)' == 'Windows_NT' and !Exists('$(CodexSchemaSentinel)')">
-    <Exec Command="pwsh -NoProfile -File &quot;$(CodexSchemaGeneratorScript)&quot; $(CodexSchemaGeneratorArguments)" />
+          Condition="'$(OS)' == 'Windows_NT'"
+          Inputs="$(CodexContractManifest);$(CodexSchemaGeneratorScript);$(CodexSchemaCacheValidatorScript);$(CodexSchemaDirectory)/.schema-metadata.json;$(CodexSchemaSentinel)"
+          Outputs="$(IntermediateOutputPath)codex-schema-cache.stamp">
+    <Exec Command="pwsh -NoProfile -File &quot;$(CodexSchemaCacheValidatorScript)&quot; -OutputDirectory &quot;$(CodexSchemaRoot)&quot; -Version 0.159.1 -Surface stable"
+          IgnoreExitCode="true">
+      <Output TaskParameter="ExitCode" PropertyName="CodexSchemaCacheValidationExitCode" />
+    </Exec>
+    <Exec Command="pwsh -NoProfile -File &quot;$(CodexSchemaGeneratorScript)&quot; $(CodexSchemaGeneratorArguments)"
+          Condition="'$(CodexSchemaCacheValidationExitCode)' != '0'" />
+    <!-- BeforeBuild runs before the SDK creates the intermediate directory on a clean checkout. -->
+    <MakeDir Directories="$(IntermediateOutputPath)" />
+    <Touch Files="$(IntermediateOutputPath)codex-schema-cache.stamp" AlwaysCreate="true" />
   </Target>
 </Project>
 

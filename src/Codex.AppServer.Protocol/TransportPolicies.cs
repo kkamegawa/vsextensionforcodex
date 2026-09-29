@@ -8,11 +8,16 @@ public sealed class JsonRpcRetryPolicy
 
     private readonly int maxAttempts;
     private readonly TimeSpan initialDelay;
+    private readonly Func<double> jitterSource;
 
-    public JsonRpcRetryPolicy(int maxAttempts = 3, TimeSpan? initialDelay = null)
+    public JsonRpcRetryPolicy(
+        int maxAttempts = 3,
+        TimeSpan? initialDelay = null,
+        Func<double>? jitterSource = null)
     {
         this.maxAttempts = maxAttempts;
         this.initialDelay = initialDelay ?? TimeSpan.FromMilliseconds(250);
+        this.jitterSource = jitterSource ?? Random.Shared.NextDouble;
     }
 
     public RetryDecision Evaluate(Exception exception, int attempt, bool isIdempotent)
@@ -32,10 +37,15 @@ public sealed class JsonRpcRetryPolicy
             return new RetryDecision(false, TimeSpan.Zero, "The overload retry limit was reached.");
         }
 
+        double exponentialDelay = initialDelay.TotalMilliseconds * Math.Pow(2, attempt);
+        // Jitter keeps multiple clients from retrying an overloaded app-server in lockstep.
+        // The source is injectable so contract tests can make the delay deterministic.
+        double jitter = Math.Clamp(jitterSource(), 0, 1);
+        double jitteredDelay = exponentialDelay * (0.8 + (jitter * 0.4));
         return new RetryDecision(
             true,
-            TimeSpan.FromMilliseconds(initialDelay.TotalMilliseconds * Math.Pow(2, attempt)),
-            "Retry an idempotent request after exponential backoff.");
+            TimeSpan.FromMilliseconds(jitteredDelay),
+            "Retry an idempotent request after exponential backoff with jitter.");
     }
 }
 
@@ -89,9 +99,9 @@ public sealed class WebSocketTransportSecurityPolicy
 
         if (endpoint is null
             || (endpoint.Scheme != Uri.UriSchemeWs && endpoint.Scheme != Uri.UriSchemeWss)
-            || !endpoint.IsLoopback)
+            || (endpoint.Scheme == Uri.UriSchemeWs && !endpoint.IsLoopback))
         {
-            return new WebSocketTransportValidation(false, "WebSocket transport must use a loopback ws/wss endpoint.");
+            return new WebSocketTransportValidation(false, "Use wss for remote endpoints; plain ws is limited to loopback.");
         }
 
         if (string.IsNullOrWhiteSpace(capabilityToken) || capabilityToken.Length < minimumTokenLength)

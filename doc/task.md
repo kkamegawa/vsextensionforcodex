@@ -2,6 +2,57 @@
 
 `plan.md` のフェーズ分割に対応する詳細タスク。各タスクは独立してレビュー可能な小さなスライスを意図する。
 
+## 2026-09-13: Codex App Server update and remote connection (approved plan)
+
+- [x] Phase 1 ([Issue #150](https://github.com/kkamegawa/vsextensionforcodex/issues/150)): target the CLI 0.155.1 contract, compare 0.154.0 and 0.155.1 stable/experimental schemas, update schema cache metadata, exact request routing, capability probes, and connection-generation state. Verified with four official schema generations, cache/contract checks, 72 focused tests, 130 full Core tests, a zero-warning Release solution build, and a live 0.155.1 initialize/thread/turn round trip.
+- [ ] Phase 2: add explicitly enabled secure WebSocket transport for already running remote servers, authentication, health distinction, and bounded reconnect.
+- [ ] Phase 3: add component-wise local/server root mapping and connection/account/authentication-principal/workspace state partitioning, including invalidation of the previous owner's session, WebSocket state, model catalog, caches, and late events.
+- [ ] Phase 4: retain in-memory drafts, reconnect and page history plus stored attachments, merge notifications, and prevent uncertain message/approval/attachment mutation replay.
+- [ ] Phase 5: raise the Worker contract for questions, permissions, native user verification, MCP forms/authentication and OAuth revocation recovery with safe secret/proof handling.
+- [ ] Phase 6: add plan/status/artifact and stored attachment rendering, model catalog capabilities, explicit `thread/shellCommand`, and local sandbox setup status.
+- [ ] Phase 7: run 0.154.0-to-0.155.1 contract-diff, race, auth-owner switch, transport, path, stored attachment, verification/MCP reauthentication, UI accessibility, build, VSIX, and Experimental Instance validation.
+- [x] Tracking: parent Issue and seven linked child Issues; English/Japanese Wiki plan and Home indexes. The detailed Issue #150 plan was pushed to the bilingual Wiki on 2026-09-22.
+
+## 2026-09-23: PR #157 review fixes ([PR #157](https://github.com/kkamegawa/vsextensionforcodex/pull/157), [Issue #150](https://github.com/kkamegawa/vsextensionforcodex/issues/150), [Issue #151](https://github.com/kkamegawa/vsextensionforcodex/issues/151), [Issue #152](https://github.com/kkamegawa/vsextensionforcodex/issues/152))
+
+- [x] Read the `turn/completed` turn id from `params.turn.id` and track the thread whose `turn/start` is in flight, so completion-before-response and new-thread `turn/started` are handled on the real wire shape.
+- [x] Accept integer and string request ids in `serverRequest/resolved`.
+- [x] Share `JsonRpcServerRequestDispatcher` between the stdio and WebSocket transports, deliver WebSocket notifications in order, tolerate isolated malformed frames, and fail pending requests as connection-closed. Added WebSocket transport tests over an in-memory socket.
+- [x] Report remote connection loss as `Degraded` in the Worker without treating an intentional restart as a loss.
+- [x] Reject an explicit attachment outside the remote local root before the turn starts, and show the reason in the transcript while keeping the attachment.
+- [x] Persist remote profiles only through validated Save, stop rewriting settings on load, and remove the unused DI registration.
+- [x] Build and release CI use the pinned 0.155.1 executable. The latest release runs a non-blocking app-server smoke test, and the latest-release API lookup is authenticated. README setup pins 0.155.1.
+- [x] Schema-cache version rejection is tested with stub executables. The schema validation target is incremental.
+- [x] Recorded the Worker contract v16 decision (ADR-011 amendment) and the transport corrections (ADR-012 amendment). Updated the Phase 5 contract statement in the plan and restored the `plan.md` section order.
+- [ ] Health diagnostics and other remaining Phase 2/3 items stay in Issues #151 and #152.
+- Validation: Release solution build with 0 warnings. Core 147/147 (three runs), UI 288/288 (one skipped), `scripts/test-schema-cache.ps1`, and `scripts/smoke-app-server.ps1` passed locally with Codex 0.155.1.
+
+## 2026-09-30: PR #157 second review fixes ([PR #157](https://github.com/kkamegawa/vsextensionforcodex/pull/157), [Issue #151](https://github.com/kkamegawa/vsextensionforcodex/issues/151))
+
+- [x] Confirm WebSocket notifications are delivered in wire order by one consumer (existing test).
+- [x] Require both `localRoot` and `serverRoot` for a remote connection in the Worker.
+- [x] Publish a remote connection loss only for the still-current connection, under the transition gate.
+- [x] Add the connection-target flyout: remote profile list, editor, Save, Connect with this profile, and Use local app-server (design.md section 12, ADR-012 amendment).
+- [x] Tests: root validation, close during connect, command state after loss, profile apply flow, flyout exclusivity, XAML binding reachability.
+- Validation: Release build with 0 warnings. Core 153/153 (three runs), UI 295/295 (one skipped).
+
+## 2026-09-30: Contract update to Codex CLI 0.159.1 and Preview release scope ([Issue #150](https://github.com/kkamegawa/vsextensionforcodex/issues/150), [Issue #156](https://github.com/kkamegawa/vsextensionforcodex/issues/156), [PR #157](https://github.com/kkamegawa/vsextensionforcodex/pull/157))
+
+- [x] Pin 0.159.1 as the target and 0.155.1 as the regression baseline in `app-server-contract.json`; read pinned versions from the manifest in the schema scripts.
+- [x] Generate 0.155.1/0.159.1 stable and experimental schemas and record the measured differences; confirm every used method exists.
+- [x] Add contract tests for the 0.159.1 plan type and model catalog fields; update the test user agent.
+- [x] Update README (setup, limitations, FAQ for missing models), ADR-011, and the plan documents to 0.159.1.
+- [x] Label the remote connection as Preview in the flyout, README, design.md, and ADR-012.
+- [x] README setup installs the release package (x64 or Arm64) instead of the standalone executable. A standalone `codex.exe` lacks `codex-code-mode-host.exe` and the `codex-resources` helpers, so every tool call failed with "failed to spawn code-mode host" in the Experimental Instance. Added FAQ entries for that error and for models missing from the picker.
+- [x] Update the CI and release workflows to 0.155.1/0.159.1 (edited by the maintainer; the `.github` directory is outside the agent's write permission).
+- [x] Experimental Instance with 0.159.1: `Ready · Codex 0.159.1`, and a turn completed.
+- [x] Experimental Instance with the package install: `gpt-6.1-sol` is selectable and commands run.
+- [x] Command output header: the label was an inline `Expander.Header` element that inherited the Expander foreground, so it turned white on the light hover background. It is now realized by `HeaderTemplate`; verified in the Experimental Instance.
+- [x] Interrupt diagnostics: a Stop press whose turn ended with `status: interrupted` looked like a normal completion, and the log had no record of when Stop was pressed. The Extension and Worker now log the click, the `turn/interrupt` acknowledgement, and the final status with elapsed time (design.md section 13, README FAQ).
+- [x] Experimental Instance: pressing Stop during a turn writes the three interrupt log lines.
+- [x] Interrupt button: `RaiseCommandStates` had lost the `InterruptCommand` and `AccountCommand` raises when the connection-target commands were added, so the button stayed disabled during a turn. Restored and covered by a test; verified in the Experimental Instance.
+- Validation: Release build with 0 warnings. Core 155/155, UI 295/295 (one skipped). Schema cache, compare, surface, and smoke checks passed with 0.159.1.
+
 ## 2026-07-21: Merge main into PR #31 (issue #25) and resolve conflicts
 
 - [x] Resolve `ChoicePromptParser.cs` confirmation-regex conflict by adopting main's line-anchored `\A...to\b` pattern (issue #45), compatible with this branch's question-line scoping fix (issue #33).
@@ -517,3 +568,54 @@ turn-completion path. In-progress compaction events remain a no-op.
 - Validation: `dotnet build CodexForVisualStudio.slnx -c Release` — 0 warnings, 0 errors. Full suite
   run locally: `Codex.VisualStudio.Core.Tests` 113/113, `Codex.VisualStudio.Ui.Tests` 285/285.
   Visual Studio Experimental Instance check still pending (tracked in the sub-issue above).
+
+### 2026-09-22: Use the latest Codex release locally in CI ([Issue #150](https://github.com/kkamegawa/vsextensionforcodex/issues/150))
+
+Replaced the remaining inline release download logic with `scripts/install-codex.ps1`.
+Schema generation continues to use the manifest-pinned 0.154.0 and 0.155.1 Windows x64
+assets and their SHA-256 values. The build and release jobs additionally download the
+latest stable Windows x64 asset into the runner-local temporary directory, verify the
+published digest, run `--version`, and pass the resulting path through `CODEX_PATH`.
+This keeps the protocol contract reproducible while ensuring every executable CI path
+uses a locally downloaded standalone Codex binary rather than winget.
+
+### 2026-09-28: Fix version selection, Worker startup, and account refresh in the ARM64 Experimental Instance ([Issue #158](https://github.com/kkamegawa/vsextensionforcodex/issues/158))
+
+- [x] Launch the packaged Worker DLL through the `dotnet.exe` beside the Extension's active
+  .NET runtime, with the existing Worker apphost as a fallback when that host is absent.
+- [x] Add a regression test for selecting the runtime host and preserving a Worker DLL path
+  containing spaces as one process argument.
+- [x] Dispatch JSONL notifications and server requests through a bounded ordered pump while
+  resolving responses immediately; add a regression test for a notification awaiting `account/read`.
+- [x] Verify UI tests (289 passed, one skipped), a zero-warning Release extension build,
+  and the Worker DLL, EXE, and runtime configuration in the VSIX.
+- [x] Verify Core tests (148 passed) and UI tests (289 passed, one skipped) after the JSONL fix.
+- [x] Verify the WinGet Codex 0.157.1 executable initializes its app-server and returns an
+  existing signed-in account from `account/read`.
+- [x] Start the Release Worker DLL with the Visual Studio-bundled `dotnet.exe` and WinGet Codex
+  0.157.1, then confirm `worker/connect` returns Ready and `worker/account/status` returns SignedIn.
+- [x] Diagnose the reported F5 failure: the Experimental Instance loaded the globally installed
+  0.2.0.0 VSIX instead of the newly deployed 0.1.0.0 VSIX with the same extension ID. The runtime
+  log showed the old Worker launch path and the same hostfxr load failure.
+- [x] Raise the default development version to 0.2.1 and verify the Debug VSIX manifest and
+  extension assembly are 0.2.1.0. The Debug build has zero warnings and errors; the release
+  workflow's explicit `-p:Version` continues to override the default.
+- [x] Record the version precedence decision in `doc/adr/ADR-017-development-vsix-version.md`
+  and verify the Debug UI suite (289 passed, one skipped).
+- [x] Confirm F5 in the Visual Studio Experimental Instance loads the 0.2.1.0 VSIX, launches the
+  Worker with `dotnet.exe`, connects to Codex 0.157.1, and reaches Ready and SignedIn. The user
+  confirmed the UI result, and the 2026-09-28 07:51 diagnostic log confirms each runtime state.
+
+### 2026-09-28: Close the JSONL connection when a pump faults ([Issue #159](https://github.com/kkamegawa/vsextensionforcodex/issues/159))
+
+- [x] Confirm the notification/response deadlock is already fixed by #158 and covered by
+  `NotificationHandler_CanAwaitRequestResponse`.
+- [x] Run every `JsonLineRpcConnection` pump through a guard that closes the connection on an
+  unexpected exception, and fail pending requests before canceling the lifetime so callers see
+  `JsonRpcConnectionClosedException`.
+- [x] Report notification handler timeouts as error events, and report an `account/read` timeout
+  as Unavailable instead of leaving the account at Checking.
+- [x] Add Core tests for a write pump failure, a timed-out notification handler followed by a
+  later notification, and an account notification whose `account/read` times out.
+- [x] Verify a zero-warning Release build of the solution, UI tests (286 passed, one skipped), and
+  Core tests (133 passed). The two `CodexProcessHostTests` failures also occur on the unmodified base.

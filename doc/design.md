@@ -163,6 +163,14 @@ Extension プロジェクトで参照できないため、BAML コンパイル�
 - バージョン上限は `[17.9,)` に開放する（将来の VS をブロックしない）。
 - Preview 段階は `<Preview>true</Preview>` を追加する。
 
+### 3.4 Development and release version precedence
+
+`Directory.Build.props` sets the default `VersionPrefix` to `0.2.1`, the next development
+version after the published `v0.2.0` release. This keeps F5 deployments in the Experimental
+Instance newer than the installed release with the same extension identity. Release builds
+continue to pass an explicit `-p:Version` derived from the release tag; that command-line
+property takes precedence over the development default and determines the packaged VSIX version.
+
 ---
 
 ## 4. ワーカーの埋め込み
@@ -182,8 +190,23 @@ Extension プロジェクトの MSBuild ターゲットで Worker を VSIX に�
 </Target>
 ```
 
-`WorkerBridge` は Extension 起動時に `Worker/Codex.VisualStudio.Worker.exe` を spawn し、
-名前付きパイプ + StreamJsonRpc で通信する。
+`WorkerBridge` starts the packaged `Worker/Codex.VisualStudio.Worker.dll` through the
+`dotnet.exe` beside the Extension's active .NET runtime. If that host is unavailable,
+it starts the packaged Worker apphost. The Extension and Worker communicate through a
+named pipe and StreamJsonRpc. This avoids apphost runtime discovery in the Visual Studio
+debug environment while retaining support for runtime layouts without a `dotnet.exe` host.
+
+For local JSONL and remote WebSocket transports, the receive path resolves client responses
+immediately. A bounded single-consumer queue delivers notifications in wire order and starts
+server requests after earlier notifications complete. Notification handlers may then await a
+new app-server request, such as `account/read` after `account/updated`, without blocking its
+response on the receive path.
+If any read, parse, notification, or write pump stops with an unexpected exception, the
+connection closes with that exception: outstanding requests fail with a connection-closed error
+and `Closed` triggers the normal reconnect path. A notification handler failure, including a
+request timeout, is caught by the notification pump and reported as an error event, so later
+notifications are still delivered. An `account/read` timeout reports the account as Unavailable
+instead of leaving it at Checking.
 
 ---
 
@@ -321,3 +344,50 @@ no Remote UI surface is not carried across the contract, so `dependencies.tools`
 `iconSmall` presence flag belong in the contract only once their surface exists. The icon spike is
 gated; until a Remote UI image/cache containment proof exists, the presentation uses a fixed glyph
 and exposes no raw icon path.
+
+## 12. Connection target and remote profiles
+
+The toolbar shows one connection-target button next to Usage. Its text is the target the Worker is
+actually connected to (`Local` or the applied profile name), not the profile being edited, so the
+header always answers "where do my turns run". It opens a flyout that follows the Usage/History
+popup rules: the three flyouts are mutually exclusive, Escape closes it from the host or the popup,
+Tab cycles inside it, it uses Visual Studio dynamic theme resources, and every control has an
+automation name.
+
+The flyout is ordered by the user's task, top to bottom:
+
+1. Profile list (`RemoteProfiles.Profiles` / `SelectedProfile`) with Add and Remove, headed
+   `Remote profiles (Preview)` with a one-line note that health checks and per-account state
+   isolation are not available yet. Each row shows the display name and endpoint; an unsaved row is
+   marked `Not saved`.
+2. Editor for the selected profile, shown only while a profile is selected: Name, Endpoint, Token
+   file path, Local root, Server root, and Enabled, then Save. Only the token file path crosses the
+   presentation boundary; token contents are read by the Worker at connection time.
+3. `StatusText` (polite live region) for validation and apply results, then the apply actions:
+   `Connect with this profile` and `Use local app-server`.
+
+Edits stay in the view model until Save validates them (`wss`, or `ws` to a loopback host; both
+roots; a token file for an enabled profile; unique names). `Connect with this profile` reconnects
+the Worker with the saved selection even while Ready; it is disabled while connecting or while a
+turn or approval is in progress, and refuses with a status message when the selected profile has
+unsaved edits or is disabled. `Use local app-server` clears the persisted selection and reconnects
+to local stdio. A remote profile is applied only through these actions or the next connect;
+selecting a row alone never switches transports.
+
+The Worker enforces the same mapping invariant independently of the UI: a remote connection
+without both `localRoot` and `serverRoot` is refused as `Degraded` with a fix-it message before any
+local path is sent, and an explicit attachment outside the local root rejects the turn before
+`turn/start`. When the remote transport closes, the Worker publishes `Degraded` with a reconnect
+message unless a newer connect, restart, or dispose has already superseded that connection, which
+enables Connect and Restart in the header.
+
+## 13. Interrupt diagnostics
+
+Stopping a turn sends `turn/interrupt`; the app-server may still finish in-flight output before it
+sends `turn/completed`. The transcript does not distinguish an interrupted completion, so the
+diagnostics log records the stop timeline instead: the Extension writes the click
+(`Interrupt requested by user`), and the Worker writes the request, its acknowledgement with the
+elapsed time, and, for the interrupted turn only, the final `turn.status` with the time from the
+request to the completion. Pending stop timestamps are keyed by connection generation, thread, and
+turn, and are cleared on reinitialization so a lost completion cannot accumulate state. The lines
+contain only server-assigned thread/turn identifiers and timings.

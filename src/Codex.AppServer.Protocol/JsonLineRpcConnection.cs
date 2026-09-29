@@ -18,8 +18,10 @@ public sealed class JsonLineRpcConnection : IJsonRpcConnection
     private readonly StreamWriter writer;
     private readonly int maxLineBytes;
     private readonly Channel<string> parseQueue;
+    private readonly Channel<JsonRpcMessage> inbound;
     private readonly Channel<string> writeQueue;
     private readonly ConcurrentDictionary<string, TaskCompletionSource<JsonElement>> pending = new();
+    private readonly JsonRpcServerRequestDispatcher dispatcher;
     private readonly CancellationTokenSource lifetime = new();
     private readonly List<Task> pumps = new();
     private long nextId;
@@ -36,7 +38,14 @@ public sealed class JsonLineRpcConnection : IJsonRpcConnection
             NewLine = "\n",
         };
         this.maxLineBytes = maxLineBytes;
+        dispatcher = new JsonRpcServerRequestDispatcher(EnqueueAsync);
         parseQueue = Channel.CreateBounded<string>(new BoundedChannelOptions(256)
+        {
+            FullMode = BoundedChannelFullMode.Wait,
+            SingleReader = true,
+            SingleWriter = true,
+        });
+        inbound = Channel.CreateBounded<JsonRpcMessage>(new BoundedChannelOptions(256)
         {
             FullMode = BoundedChannelFullMode.Wait,
             SingleReader = true,
@@ -63,9 +72,10 @@ public sealed class JsonLineRpcConnection : IJsonRpcConnection
             return Task.CompletedTask;
         }
 
-        pumps.Add(Task.Run(() => ReadPumpAsync(lifetime.Token), CancellationToken.None));
-        pumps.Add(Task.Run(() => ParsePumpAsync(lifetime.Token), CancellationToken.None));
-        pumps.Add(Task.Run(() => WritePumpAsync(lifetime.Token), CancellationToken.None));
+        pumps.Add(Task.Run(() => RunPumpAsync(ReadPumpAsync, lifetime.Token), CancellationToken.None));
+        pumps.Add(Task.Run(() => RunPumpAsync(ParsePumpAsync, lifetime.Token), CancellationToken.None));
+        pumps.Add(Task.Run(() => RunPumpAsync(NotificationPumpAsync, lifetime.Token), CancellationToken.None));
+        pumps.Add(Task.Run(() => RunPumpAsync(WritePumpAsync, lifetime.Token), CancellationToken.None));
         return Task.CompletedTask;
     }
 
@@ -147,6 +157,24 @@ public sealed class JsonLineRpcConnection : IJsonRpcConnection
         await writeQueue.Writer.WriteAsync(json, cancellationToken).ConfigureAwait(false);
     }
 
+    // A pump that stops unexpectedly would leave the others blocked on full queues and callers
+    // waiting for their timeouts. Close instead so pending requests fail and Closed is raised.
+    private async Task RunPumpAsync(Func<CancellationToken, Task> pump, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await pump(cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+        }
+        catch (Exception ex)
+        {
+            // Close is idempotent, so a pump failing because another path already closed is harmless.
+            Close(ex);
+        }
+    }
+
     private async Task ReadPumpAsync(CancellationToken cancellationToken)
     {
         Exception? failure = null;
@@ -215,57 +243,53 @@ public sealed class JsonLineRpcConnection : IJsonRpcConnection
 
             if (message.IsResponse)
             {
-                ResolveResponse(message);
+                JsonRpcServerRequestDispatcher.ResolveResponse(pending, message);
             }
-            else if (message.IsRequest)
+            else if (message.IsRequest || message.IsNotification)
             {
-                _ = Task.Run(() => ResolveServerRequestAsync(message, cancellationToken), CancellationToken.None);
-            }
-            else if (message.IsNotification && NotificationReceived is not null)
-            {
-                await NotificationReceived(message, cancellationToken).ConfigureAwait(false);
+                await inbound.Writer.WriteAsync(message, cancellationToken).ConfigureAwait(false);
             }
         }
     }
 
-    private async Task ResolveServerRequestAsync(JsonRpcMessage message, CancellationToken cancellationToken)
+    // Deliver notifications and start server requests in wire order. Responses are resolved by
+    // ParsePumpAsync so a notification handler may await a client request without blocking its reply.
+    private async Task NotificationPumpAsync(CancellationToken cancellationToken)
     {
-        string? id = message.GetIdKey();
-        if (id is null)
-        {
-            return;
-        }
-
         try
         {
-            JsonElement result = RequestReceived is null
-                ? JsonSerializer.SerializeToElement(new { })
-                : await RequestReceived(message, cancellationToken).ConfigureAwait(false);
-            await EnqueueAsync(new { id = ToWireId(message.Id!.Value), result }, cancellationToken).ConfigureAwait(false);
-        }
-        catch (Exception ex)
-        {
-            await EnqueueAsync(
-                new { id = ToWireId(message.Id!.Value), error = new { code = -32603, message = ex.Message } },
-                cancellationToken).ConfigureAwait(false);
-        }
-    }
+            await foreach (JsonRpcMessage message in inbound.Reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
+            {
+                if (message.IsRequest)
+                {
+                    dispatcher.Start(message, RequestReceived, cancellationToken);
+                    continue;
+                }
 
-    private void ResolveResponse(JsonRpcMessage message)
-    {
-        string? id = message.GetIdKey();
-        if (id is null || !pending.TryRemove(id, out TaskCompletionSource<JsonElement>? completion))
-        {
-            return;
-        }
+                Func<JsonRpcMessage, CancellationToken, Task>? handler = NotificationReceived;
+                if (handler is null)
+                {
+                    continue;
+                }
 
-        if (message.Error is not null)
-        {
-            completion.TrySetException(new JsonRpcRemoteException(message.Error.Code, message.Error.Message));
-            return;
+                try
+                {
+                    await handler(message, cancellationToken).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    return;
+                }
+                catch (Exception ex)
+                {
+                    // One failing observer must not stop delivery of later notifications.
+                    _ = ex;
+                }
+            }
         }
-
-        completion.TrySetResult(message.Result ?? JsonSerializer.SerializeToElement(new { }));
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+        }
     }
 
     private async Task WritePumpAsync(CancellationToken cancellationToken)
@@ -283,8 +307,8 @@ public sealed class JsonLineRpcConnection : IJsonRpcConnection
             return;
         }
 
-        lifetime.Cancel();
-        writeQueue.Writer.TryComplete(exception);
+        // Fail outstanding requests before canceling the lifetime so callers observe a connection
+        // loss rather than a cancellation they did not request.
         var closedException = new JsonRpcConnectionClosedException(exception?.Message ?? "The app-server connection closed.");
         foreach (TaskCompletionSource<JsonElement> completion in pending.Values)
         {
@@ -292,6 +316,9 @@ public sealed class JsonLineRpcConnection : IJsonRpcConnection
         }
 
         pending.Clear();
+        lifetime.Cancel();
+        inbound.Writer.TryComplete(exception);
+        writeQueue.Writer.TryComplete(exception);
         Closed?.Invoke(this, exception);
     }
 
@@ -301,11 +328,6 @@ public sealed class JsonLineRpcConnection : IJsonRpcConnection
         {
             throw new JsonRpcConnectionClosedException("The app-server connection is closed.");
         }
-    }
-
-    private static object? ToWireId(JsonElement id)
-    {
-        return id.ValueKind == JsonValueKind.Number ? id.GetInt64() : id.GetString();
     }
 }
 

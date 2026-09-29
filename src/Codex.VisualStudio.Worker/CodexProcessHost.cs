@@ -15,6 +15,9 @@ public interface ICodexProcessHost : IAsyncDisposable
 
     Task StartAsync(string codexPath, string workingDirectory, CancellationToken cancellationToken);
 
+    Task StartRemoteAsync(string endpoint, string tokenFilePath, CancellationToken cancellationToken)
+        => throw new NotSupportedException("This process host does not support remote connections.");
+
     Task StopAsync(CancellationToken cancellationToken);
 }
 
@@ -113,6 +116,27 @@ public sealed class CodexProcessHost : ICodexProcessHost
         WorkerDiagnostics.Write($"codex app-server process started pid={processId}");
         _ = Task.Run(() => ReadStandardErrorAsync(startedProcess, cancellationToken), CancellationToken.None);
         Connection = new JsonLineRpcConnection(startedProcess.StandardOutput.BaseStream, startedProcess.StandardInput.BaseStream);
+        await Connection.StartAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task StartRemoteAsync(string endpoint, string tokenFilePath, CancellationToken cancellationToken)
+    {
+        await StopAsync(cancellationToken).ConfigureAwait(false);
+        if (!Uri.TryCreate(endpoint, UriKind.Absolute, out Uri? uri))
+        {
+            throw new ArgumentException("The remote app-server endpoint is not a valid URI.", nameof(endpoint));
+        }
+
+        string token = await File.ReadAllTextAsync(tokenFilePath, cancellationToken).ConfigureAwait(false);
+        token = token.Trim();
+        var policy = new WebSocketTransportSecurityPolicy();
+        WebSocketTransportValidation validation = policy.Validate(enabled: true, uri, token);
+        if (!validation.IsAllowed)
+        {
+            throw new InvalidOperationException(validation.Reason);
+        }
+
+        Connection = new WebSocketJsonRpcConnection(uri, token);
         await Connection.StartAsync(cancellationToken).ConfigureAwait(false);
     }
 

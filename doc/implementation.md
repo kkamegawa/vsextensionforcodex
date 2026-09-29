@@ -16,6 +16,125 @@
 
 The publisher is `kkamegawa` (see CLAUDE.md for the current VSIX identity string).
 
+## Issue #150: App-server protocol contract and transport core
+
+Issue [#150](https://github.com/kkamegawa/vsextensionforcodex/issues/150) fixes the local stdio
+contract at Codex CLI 0.159.1 while retaining 0.155.1 as the regression baseline. The checked-in
+`app-server-contract.json` is the single manifest for release tags, Windows x64 asset names and
+SHA-256 hashes, stable/experimental generator arguments, every method consumed by the Worker, and
+the expected structural differences between the two CLI versions. Generated schema output remains
+ignored and is cached under `schemas/<version>/<stable|experimental>/`; exact metadata plus the real
+schema sentinel are required for a cache hit. Schema CI downloads the pinned official assets, verifies
+both hashes, generates all four surfaces, verifies the used method tables, and compares normalized
+schema structure. Build and release CI pass the pinned 0.159.1 executable as `CODEX_PATH`; the
+latest stable Windows x64 asset is downloaded only for a non-blocking `scripts/smoke-app-server.ps1`
+start-and-initialize check, so the pinned asset remains the only schema and build contract source.
+
+The Worker now retains `codexHome`, `platformFamily`, `platformOs`, and `userAgent` as read-only
+in-process initialization metadata without adding them to Remote UI or the Worker wire contract. Server requests use an exact method table. Command, file-change, and permission approvals
+plus tool user input validate their 0.159.1 required shapes; malformed known requests return
+`-32602`, and every unknown or near-match request returns `-32601` without entering an approval,
+grant, or input path. Unknown notifications are redacted diagnostics only.
+
+Each connection now owns a generation context containing its handlers, unsupported-method cache,
+outbound responses, pending approvals and input, and turn state. Reinitialization and close detach
+the old handlers and release pending interaction exactly once. Turn completion is keyed by
+`(generation, threadId, turnId)`, with the turn id read from the wire shape
+`turn/completed { threadId, turn: { id } }`, so completion-before-response, late start, duplicate
+completion, other-thread events, and old-generation responses or notifications cannot revive or
+replace current state. A thread whose `turn/start` is still in flight is tracked alongside the active
+thread, so its early `turn/started` or `turn/completed` is not mistaken for another thread's event.
+`serverRequest/resolved` accepts both string and integer request ids.
+
+Both transports share `JsonRpcServerRequestDispatcher`, which registers server-request operations
+before starting their handlers, ignores a reused outstanding id, cancels handlers with the connection
+lifetime, observes every task, and suppresses response writes after close. Closing a transport fails
+outstanding client requests with `JsonRpcConnectionClosedException` before canceling its lifetime.
+Both transports resolve responses on their receive path and deliver notifications one at a time in
+wire order through a bounded queue; a server request starts only after every earlier notification
+was handled. A notification handler that awaits a request cannot block that request's response.
+An attachment rejection crosses the Worker boundary as JSON-RPC error
+`WorkerErrorCodes.AttachmentRejected`, so the Extension reports only that failure as "not sent". It tolerates isolated malformed frames and closes after three
+consecutive ones, matching the stdio transport.
+
+Validation on September 22, 2026:
+
+- Official 0.154.0 and 0.155.1 stable/experimental schemas generated successfully; normalized
+  expected-difference and target method-surface checks passed for both surfaces.
+- Schema cache tests passed for an exact cache hit, CLI-version and generator-option metadata
+  mismatch, and missing sentinel replacement. Version rejection is verified with stub executables
+  that report a prerelease (`0.155.1-alpha.1`) and a different stable version (`0.154.0`).
+- Focused session/transport tests: 72/72 passed. Full Core tests: 130/130 passed.
+- `Codex.AppServer.Protocol`, `Codex.VisualStudio.Worker`, and the complete solution built in Release
+  with zero warnings and zero errors.
+- A live official 0.155.1 process completed initialize/initialized, thread/start, turn/start, and the
+  completed-turn interrupt path. Generated schemas and the live comparison output were not added to
+  Git.
+- Worker contract v16 carries the remote endpoint, token-file path, and local/server roots
+  (ADR-011 amendment). `ChatViewModel.RemoteProfiles` is bound by the connection-target flyout
+  (design.md section 12). The package manifest changes only pin the existing dependencies; no new
+  NuGet dependency was added.
+
+### PR #157 review fixes (2026-09-23)
+
+- Remote connection loss: `WorkerRpcService` observes the WebSocket transport's `Closed` event and
+  publishes `Degraded` with a reconnect message. Intentional restart and disposal detach first, so
+  they are not reported as a loss.
+- Remote attachments: an explicit attachment outside the remote profile's local root is rejected
+  before `turn/start` with the file name and a fix; `ChatViewModel` shows the reason in the
+  transcript and keeps the attachment chip. IDE context outside the root is still omitted silently.
+- Remote profiles: edits persist only through Save, which validates the endpoint (`wss`, or `ws` to
+  a loopback host including `::1`), roots, token file, and unique names. Selection changes and
+  removal write only saved profiles; restoring the selection on load does not rewrite settings.
+  The unused DI registration that created a second settings instance was removed.
+- Build: `ValidateCodexSchemas` uses MSBuild inputs/outputs, so pwsh runs only when the manifest,
+  generator/validator scripts, or cache metadata/sentinel change.
+- Validation: Release solution build with zero warnings; `Codex.VisualStudio.Core.Tests` 147/147
+  (three consecutive runs) and `Codex.VisualStudio.Ui.Tests` 288/288 (one skipped);
+  `scripts/test-schema-cache.ps1` and `scripts/smoke-app-server.ps1` passed against the local 0.155.1
+  executable.
+
+### PR #157 second review fixes (2026-09-30)
+
+- Remote roots: `WorkerRpcService` refuses a remote connection without both `localRoot` and
+  `serverRoot` as `Degraded` with a fix-it message, before any transport starts.
+- Remote connection loss: the loss is published under the connection-transition gate and only when
+  the closed connection is still the observed one, so a delayed close cannot overwrite a newer
+  connect, restart, or dispose.
+- Remote profile UI: the toolbar connection-target button opens a flyout bound to
+  `ChatViewModel.RemoteProfiles` (list, Add/Remove, editor, Save) plus `ApplyRemoteProfileCommand`
+  and `UseLocalAppServerCommand`. Applying reconnects the Worker even while Ready, refuses unsaved or
+  disabled profiles, and is disabled during a connect or turn. `ConnectionTargetText` shows the
+  target the connection actually uses.
+- WebSocket notification ordering was already delivered by the single-consumer inbound queue;
+  `Notifications_AreDeliveredOneAtATimeInWireOrder` covers it.
+- Validation: Release solution build with zero warnings; `Codex.VisualStudio.Core.Tests` 153/153
+  (three consecutive runs) and `Codex.VisualStudio.Ui.Tests` 295/295 (one skipped).
+
+### Contract update to Codex CLI 0.159.1 (2026-09-30)
+
+- `app-server-contract.json` targets 0.159.1 (SHA-256 pinned) with 0.155.1 as the regression
+  baseline. `generate-schemas.ps1` and `validate-schema-cache.ps1` take the version list and
+  default from the manifest, and the schema-cache guard accepts only manifest-pinned versions.
+- 0.155.1-to-0.159.1 differences (stable: 4 added, 2 removed, 38 changed; experimental: 5 added,
+  2 removed, 53 changed) are recorded as `knownDifferences`. Every used method still exists in both
+  surfaces. For used methods, the changes are additive: `PlanType.promax`,
+  `CodexErrorInfo.flexUnavailable`/`tooManyDenials`, `Model.availableAccessPrograms`,
+  `disabledPluginIds`, MCP status fields, gateway OAuth methods, an image input that may carry a
+  `fileId`, and the removal of the unused `thread/rollback`. No Worker parsing change was needed;
+  contract tests cover the new plan type and the model catalog fields.
+- With 0.159.1, `model/list` returns `gpt-6.1-sol` as the default model, so it appears in the picker
+  without an extension change.
+- The remote connection is labeled Preview in the flyout and README (ADR-012 amendment).
+- Interrupt diagnostics (design.md section 13): the Extension logs the Stop click, and
+  `CodexSessionService.InterruptTurnAsync` logs the `turn/interrupt` request, its acknowledgement,
+  and, when that turn completes, its final status with the elapsed time since the request.
+  `InterruptLogsRequestAcknowledgementAndTimeUntilTheTurnEnds` covers the log lines and confirms an
+  unrelated completion is not reported.
+- Validation: Release solution build with zero warnings; Core 155/155 and UI 295/295 (one skipped);
+  `scripts/test-schema-cache.ps1`, `compare-schemas.ps1` and `verify-contract-surface.ps1` for both
+  surfaces, and `scripts/smoke-app-server.ps1` passed with the pinned 0.159.1 executable.
+
 ## Implemented Behavior
 
 - Bidirectional JSON-RPC request, response, notification, and server-request handling
@@ -73,6 +192,7 @@ The generated VSIX contents have been inspected and include:
 
 - `Codex.VisualStudio.Package.dll`
 - `Codex.VisualStudio.Package.pkgdef`
+- `Worker/Codex.VisualStudio.Worker.dll`
 - `Worker/Codex.VisualStudio.Worker.exe`
 - Worker runtime configuration and dependency assemblies
 
@@ -98,6 +218,10 @@ The Extension OOP process and Visual Studio run on different runtimes:
 
 - F5 in Visual Studio attaches the debugger to the Extension's .NET 8 OOP process automatically
   (the Extensibility SDK handles process launch and IPC).
+- `WorkerBridge` starts the packaged Worker DLL with the `dotnet.exe` beside the Extension's active
+  .NET runtime, falling back to the packaged Worker apphost when that host is absent. The explicit
+  runtime host avoids the Worker apphost's runtime discovery failure observed in the Windows ARM64
+  Experimental Instance ([Issue #158](https://github.com/kkamegawa/vsextensionforcodex/issues/158)).
 - The `codex app-server` child process can be attached separately when debugging protocol issues.
 - If the in-proc `Codex.VisualStudio.Package` is ever activated, a second debugger attachment to
   the VS process (using the .NET Framework code type) is required for that component.
@@ -137,7 +261,7 @@ the Worker boundary. `UsagePresentation` selects only an unambiguous limit, comp
 percentage, and creates the bounded strings serialized by Remote UI. `ChatViewModel` owns the
 connection generation, push version, 60-second TTL, and refresh gate so a stale read cannot replace
 a newer push or survive lifecycle invalidation. After each `TurnCompleted` conversation event and
-each completed `context/compacted` event, the view model awaits a forced rate-limit read after
+each completed `thread/compacted` event, the view model awaits a forced rate-limit read after
 completing the existing transcript/status projection; this bypasses the TTL while preserving the
 last successful snapshot when the read fails. A turn that ends via `Degraded` (no `TurnCompleted`)
 is not a forced-refresh trigger; the last successful snapshot remains visible until reconnection.

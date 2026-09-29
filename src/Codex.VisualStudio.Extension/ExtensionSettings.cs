@@ -24,6 +24,12 @@ public sealed class ExtensionSettings
     // Stable app-server service-tier ID. An empty value means inherit config.toml.
     public string ServiceTierId { get; set; } = ServiceTierCatalog.DefaultId;
 
+    // Remote app-server profiles contain connection metadata only. The bearer token itself is
+    // read by the Worker from TokenFilePath and is never persisted in extension settings.
+    public List<RemoteConnectionProfile> RemoteProfiles { get; set; } = [];
+
+    public string? SelectedRemoteProfileName { get; set; }
+
     private static string SettingsPath => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
         "Kkamegawa.CodexForVisualStudio",
@@ -85,6 +91,31 @@ public sealed class ExtensionSettings
             }
         }
     }
+}
+
+public sealed class RemoteConnectionProfile
+{
+    public string Name { get; set; } = string.Empty;
+
+    public string Endpoint { get; set; } = string.Empty;
+
+    public string? TokenFilePath { get; set; }
+
+    public string LocalRoot { get; set; } = string.Empty;
+
+    public string ServerRoot { get; set; } = string.Empty;
+
+    public bool Enabled { get; set; }
+
+    public RemoteConnectionProfile Clone() => new()
+    {
+        Name = Name,
+        Endpoint = Endpoint,
+        TokenFilePath = TokenFilePath,
+        LocalRoot = LocalRoot,
+        ServerRoot = ServerRoot,
+        Enabled = Enabled,
+    };
 }
 
 internal interface IExtensionSettingsStore

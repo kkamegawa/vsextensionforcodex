@@ -143,7 +143,7 @@ public sealed class WorkerRpcServiceTests
     public async Task CompactionCompletionRestoresReadyWhenNoTurnIsActive()
     {
         // thread/compact/start marks the worker Busy, but the app-server may report completion
-        // only through the context/compacted notification instead of turn/completed. The worker
+        // only through the thread/compacted notification instead of turn/completed. The worker
         // must return to Ready so queued slash commands are not blocked forever.
         var connection = new StubConnection
         {
@@ -164,7 +164,7 @@ public sealed class WorkerRpcServiceTests
         WorkerStatus during = await worker.GetStatusAsync(CancellationToken.None);
 
         await connection.EmitNotificationAsync(
-            "context/compacted",
+            "thread/compacted",
             new { threadId = "thread-1", turnId = "turn-9" });
         WorkerStatus after = await worker.GetStatusAsync(CancellationToken.None);
 
@@ -238,7 +238,15 @@ public sealed class WorkerRpcServiceTests
         Task<JsonElement> approvalTask = connection.EmitRequestAsync(
             "approval-1",
             "item/commandExecution/requestApproval",
-            new { command = "dotnet build", cwd = Options().WorkingDirectory, threadId = "thread-1", turnId = "turn-1" });
+            new
+            {
+                command = "dotnet build",
+                cwd = Options().WorkingDirectory,
+                threadId = "thread-1",
+                turnId = "turn-1",
+                itemId = "item-1",
+                startedAtMs = 1L,
+            });
         ApprovalRequest approval = await approvalSeen.Task.WaitAsync(TimeSpan.FromSeconds(5));
         WorkerStatus waiting = await worker.GetStatusAsync(CancellationToken.None);
 
@@ -247,7 +255,7 @@ public sealed class WorkerRpcServiceTests
             CancellationToken.None);
         await approvalTask;
         await connection.EmitNotificationAsync(
-            "context/compacted",
+            "thread/compacted",
             new { threadId = "thread-1", turnId = "turn-1" });
         WorkerStatus finalReady = await worker.GetStatusAsync(CancellationToken.None);
 
@@ -341,6 +349,146 @@ public sealed class WorkerRpcServiceTests
         Assert.AreEqual(value, result.ServiceTier);
         Assert.AreEqual(1, echo.CallCount);
     }
+
+    [TestMethod]
+    public async Task RemoteConnectionLossPublishesDegradedStatus()
+    {
+        var connection = new StubConnection();
+        var host = new FakeProcessHost(connection);
+        var session = new CodexSessionService(new ApprovalPolicyEngine(new PathAccessPolicy()), new SecretRedactor());
+        await using var worker = new WorkerRpcService(new SecretRedactor(), host, session);
+
+        WorkerStatus connected = await worker.ConnectAsync(RemoteOptions(), CancellationToken.None);
+        Assert.AreEqual(WorkerConnectionState.Ready, connected.State);
+        Assert.AreEqual(1, host.RemoteStarts);
+
+        connection.EmitClosed(new IOException("socket reset"));
+
+        WorkerStatus lost = await WaitForStatusAsync(worker, WorkerConnectionState.Degraded);
+        StringAssert.Contains(lost.Message, "Reconnect");
+    }
+
+    [TestMethod]
+    public async Task RemoteRestartDoesNotReportIntentionalCloseAsConnectionLoss()
+    {
+        var connection = new StubConnection();
+        var host = new FakeProcessHost(connection) { OnStop = () => connection.EmitClosed() };
+        var session = new CodexSessionService(new ApprovalPolicyEngine(new PathAccessPolicy()), new SecretRedactor());
+        await using var worker = new WorkerRpcService(new SecretRedactor(), host, session);
+        await worker.ConnectAsync(RemoteOptions(), CancellationToken.None);
+
+        WorkerStatus restarted = await worker.RestartAsync(CancellationToken.None);
+        await Task.Delay(50);
+
+        Assert.AreEqual(WorkerConnectionState.Ready, restarted.State);
+        Assert.AreEqual(WorkerConnectionState.Ready, (await worker.GetStatusAsync(CancellationToken.None)).State);
+        Assert.AreEqual(2, host.RemoteStarts);
+    }
+
+    [TestMethod]
+    public async Task RemoteCloseDuringConnectIsPublishedAfterTheConnectCompletes()
+    {
+        var connection = new StubConnection();
+        bool closed = false;
+        connection.Handler = method =>
+        {
+            // Close while ConnectAsync holds the transition gate and already observes the socket.
+            if (method == "account/read" && !closed)
+            {
+                closed = true;
+                connection.EmitClosed(new IOException("socket reset"));
+            }
+
+            return JsonSerializer.SerializeToElement(new { });
+        };
+        var host = new FakeProcessHost(connection);
+        var session = new CodexSessionService(new ApprovalPolicyEngine(new PathAccessPolicy()), new SecretRedactor());
+        await using var worker = new WorkerRpcService(new SecretRedactor(), host, session);
+
+        await worker.ConnectAsync(RemoteOptions(), CancellationToken.None);
+
+        WorkerStatus lost = await WaitForStatusAsync(worker, WorkerConnectionState.Degraded, "Reconnect");
+        StringAssert.Contains(lost.Message, "socket reset");
+    }
+
+    [TestMethod]
+    [DataRow(null, "/srv/repo", DisplayName = "missing localRoot")]
+    [DataRow("C:\\repo", null, DisplayName = "missing serverRoot")]
+    public async Task RemoteConnectWithOneRootIsRejected(string? localRoot, string? serverRoot)
+    {
+        var host = new FakeProcessHost(new StubConnection());
+        var session = new CodexSessionService(new ApprovalPolicyEngine(new PathAccessPolicy()), new SecretRedactor());
+        await using var worker = new WorkerRpcService(new SecretRedactor(), host, session);
+        WorkerOptions options = RemoteOptions();
+        options.LocalRoot = localRoot;
+        options.ServerRoot = serverRoot;
+
+        // A single root is a malformed mapping for any transport and is rejected before connecting.
+        InvalidOperationException ex = await Assert.ThrowsExactlyAsync<InvalidOperationException>(
+            () => worker.ConnectAsync(options, CancellationToken.None));
+
+        StringAssert.Contains(ex.Message, "localRoot and serverRoot");
+        Assert.AreEqual(0, host.RemoteStarts);
+    }
+
+    [TestMethod]
+    public async Task RemoteConnectWithoutRootsIsRejectedWithoutSendingLocalPaths()
+    {
+        var host = new FakeProcessHost(new StubConnection());
+        var session = new CodexSessionService(new ApprovalPolicyEngine(new PathAccessPolicy()), new SecretRedactor());
+        await using var worker = new WorkerRpcService(new SecretRedactor(), host, session);
+        WorkerOptions options = RemoteOptions();
+        options.LocalRoot = null;
+        options.ServerRoot = null;
+
+        WorkerStatus status = await worker.ConnectAsync(options, CancellationToken.None);
+
+        Assert.AreEqual(WorkerConnectionState.Degraded, status.State);
+        StringAssert.Contains(status.Message, "localRoot and serverRoot");
+        Assert.AreEqual(0, host.RemoteStarts);
+    }
+
+    [TestMethod]
+    public async Task RemoteConnectWithBothRootsIsAccepted()
+    {
+        var host = new FakeProcessHost(new StubConnection());
+        var session = new CodexSessionService(new ApprovalPolicyEngine(new PathAccessPolicy()), new SecretRedactor());
+        await using var worker = new WorkerRpcService(new SecretRedactor(), host, session);
+
+        WorkerStatus status = await worker.ConnectAsync(RemoteOptions(), CancellationToken.None);
+
+        Assert.AreEqual(WorkerConnectionState.Ready, status.State);
+        Assert.AreEqual(1, host.RemoteStarts);
+    }
+
+    private static async Task<WorkerStatus> WaitForStatusAsync(
+        WorkerRpcService worker,
+        WorkerConnectionState state,
+        string? messageFragment = null)
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        while (true)
+        {
+            WorkerStatus current = await worker.GetStatusAsync(CancellationToken.None);
+            if (current.State == state
+                && (messageFragment is null || current.Message.Contains(messageFragment, StringComparison.Ordinal)))
+            {
+                return current;
+            }
+
+            await Task.Delay(10, timeout.Token);
+        }
+    }
+
+    private static WorkerOptions RemoteOptions() => new()
+    {
+        WorkingDirectory = Path.GetTempPath(),
+        ExtensionVersion = "test",
+        RemoteEndpoint = "wss://app-server.example.invalid",
+        RemoteTokenFilePath = Path.Combine(Path.GetTempPath(), "unused.token"),
+        LocalRoot = Path.GetTempPath(),
+        ServerRoot = "/srv/repo",
+    };
 
     private static WorkerOptions Options() => new()
     {
@@ -445,10 +593,24 @@ public sealed class WorkerRpcServiceTests
 
         public IJsonRpcConnection? Connection => connection;
 
+        public int RemoteStarts { get; private set; }
+
+        public Action? OnStop { get; init; }
+
         public Task StartAsync(string codexPath, string workingDirectory, CancellationToken cancellationToken)
             => Task.CompletedTask;
 
-        public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+        public Task StartRemoteAsync(string endpoint, string tokenFilePath, CancellationToken cancellationToken)
+        {
+            RemoteStarts++;
+            return Task.CompletedTask;
+        }
+
+        public Task StopAsync(CancellationToken cancellationToken)
+        {
+            OnStop?.Invoke();
+            return Task.CompletedTask;
+        }
 
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
@@ -459,9 +621,11 @@ public sealed class WorkerRpcServiceTests
 
         public event Func<JsonRpcMessage, CancellationToken, Task<JsonElement>>? RequestReceived;
 
-        public event EventHandler<Exception?>? Closed { add { } remove { } }
+        public event EventHandler<Exception?>? Closed;
 
         public Func<string, JsonElement> Handler { get; set; } = _ => JsonSerializer.SerializeToElement(new { });
+
+        public void EmitClosed(Exception? exception = null) => Closed?.Invoke(this, exception);
 
         public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
 
