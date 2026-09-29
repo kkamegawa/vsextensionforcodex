@@ -201,6 +201,12 @@ immediately. A bounded single-consumer queue delivers notifications in wire orde
 server requests after earlier notifications complete. Notification handlers may then await a
 new app-server request, such as `account/read` after `account/updated`, without blocking its
 response on the receive path.
+If any read, parse, notification, or write pump stops with an unexpected exception, the
+connection closes with that exception: outstanding requests fail with a connection-closed error
+and `Closed` triggers the normal reconnect path. A notification handler failure, including a
+request timeout, is caught by the notification pump and reported as an error event, so later
+notifications are still delivered. An `account/read` timeout reports the account as Unavailable
+instead of leaving it at Checking.
 
 ---
 
