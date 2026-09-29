@@ -11,15 +11,30 @@
     <CodexSchemaGeneratorArguments Condition="'$(CODEX_PATH)' != ''">$(CodexSchemaGeneratorArguments) -CodexPath &quot;$(CODEX_PATH)&quot;</CodexSchemaGeneratorArguments>
   </PropertyGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="Codex.VisualStudio.Core.Tests" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <CodexSchemaRoot>$([System.IO.Path]::GetFullPath('$(MSBuildProjectDirectory)/../../schemas'))</CodexSchemaRoot>
+    <CodexContractManifest>$([System.IO.Path]::GetFullPath('$(MSBuildProjectDirectory)/../../app-server-contract.json'))</CodexContractManifest>
+  </PropertyGroup>
+
+  <!-- The cache validator starts pwsh, so it runs only when the manifest, the generator/validator
+       scripts, or the cache metadata/sentinel changed since the last successful validation. A
+       missing sentinel or metadata file is an input that does not exist, which forces the target. -->
   <Target Name="ValidateCodexSchemas"
           BeforeTargets="BeforeBuild"
-          Condition="'$(OS)' == 'Windows_NT'">
-    <Exec Command="pwsh -NoProfile -File &quot;$(CodexSchemaCacheValidatorScript)&quot; -OutputDirectory &quot;$([System.IO.Path]::GetFullPath('$(MSBuildProjectDirectory)/../../schemas'))&quot; -Version 0.155.1 -Surface stable"
+          Condition="'$(OS)' == 'Windows_NT'"
+          Inputs="$(CodexContractManifest);$(CodexSchemaGeneratorScript);$(CodexSchemaCacheValidatorScript);$(CodexSchemaDirectory)/.schema-metadata.json;$(CodexSchemaSentinel)"
+          Outputs="$(IntermediateOutputPath)codex-schema-cache.stamp">
+    <Exec Command="pwsh -NoProfile -File &quot;$(CodexSchemaCacheValidatorScript)&quot; -OutputDirectory &quot;$(CodexSchemaRoot)&quot; -Version 0.155.1 -Surface stable"
           IgnoreExitCode="true">
       <Output TaskParameter="ExitCode" PropertyName="CodexSchemaCacheValidationExitCode" />
     </Exec>
     <Exec Command="pwsh -NoProfile -File &quot;$(CodexSchemaGeneratorScript)&quot; $(CodexSchemaGeneratorArguments)"
           Condition="'$(CodexSchemaCacheValidationExitCode)' != '0'" />
+    <Touch Files="$(IntermediateOutputPath)codex-schema-cache.stamp" AlwaysCreate="true" />
   </Target>
 </Project>
 

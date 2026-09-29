@@ -60,6 +60,9 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     private bool initialized;
     private bool isHistoryOpen;
     private bool isUsageOpen;
+    private bool isConnectionTargetOpen;
+    // Profile name the current or last connection attempt used; null means local stdio.
+    private string? connectedProfileName;
     private bool usageConnectionActive;
     private long usageConnectionGeneration;
     private long usageFetchedGeneration = -1;
@@ -133,6 +136,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         this.utcNow = utcNow ?? (() => DateTimeOffset.UtcNow);
         settings = this.settingsStore.Load();
         remoteProfiles = new RemoteProfilesPresentationViewModel(settings, this.settingsStore);
+        connectedProfileName = remoteProfiles.AppliedProfileName;
         slashCommandParser = new SlashCommandParser(slashCommandCatalog);
         bridge.StateChanged += OnStateChangedAsync;
         bridge.AccountChanged += OnAccountChangedAsync;
@@ -177,6 +181,25 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             IsUsageOpen = false;
             return Task.CompletedTask;
         });
+        ToggleConnectionTargetCommand = new AsyncCommand(() =>
+        {
+            IsConnectionTargetOpen = !IsConnectionTargetOpen;
+            return Task.CompletedTask;
+        });
+        CloseConnectionTargetCommand = new AsyncCommand(() =>
+        {
+            IsConnectionTargetOpen = false;
+            return Task.CompletedTask;
+        });
+        ApplyRemoteProfileCommand = new AsyncCommand(ApplyRemoteProfileAsync, () => CanReconnectForProfile() && remoteProfiles.HasSelection);
+        UseLocalAppServerCommand = new AsyncCommand(UseLocalAppServerAsync, CanReconnectForProfile);
+        remoteProfiles.PropertyChanged += (_, e) =>
+        {
+            if (e.PropertyName is nameof(RemoteProfilesPresentationViewModel.SelectedProfile))
+            {
+                ApplyRemoteProfileCommand.RaiseCanExecuteChanged();
+            }
+        };
         OpenUsageDashboardCommand = new AsyncCommand(() => OpenExternalLinkAsync(ExternalLinkTarget.UsageDashboard));
         OpenUsageHelpCommand = new AsyncCommand(() => OpenExternalLinkAsync(ExternalLinkTarget.UsageHelp));
         AttachCommand = new AsyncCommand(AttachAsync);
@@ -493,17 +516,17 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     [DataMember]
     public bool IsComposerEmpty => string.IsNullOrEmpty(composerText);
 
-    // Two-way bound to the thread-history Popup.IsOpen.
+    // Two-way bound to the thread-history Popup.IsOpen. The History, Usage, and connection-target
+    // flyouts are mutually exclusive.
     [DataMember]
     public bool IsHistoryOpen
     {
         get => isHistoryOpen;
         set
         {
-            if (SetProperty(ref isHistoryOpen, value) && value && isUsageOpen)
+            if (SetProperty(ref isHistoryOpen, value) && value)
             {
-                isUsageOpen = false;
-                OnPropertyChanged(nameof(IsUsageOpen));
+                CloseOtherFlyouts(nameof(IsHistoryOpen));
             }
         }
     }
@@ -514,11 +537,66 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         get => isUsageOpen;
         set
         {
-            if (SetProperty(ref isUsageOpen, value) && value && isHistoryOpen)
+            if (SetProperty(ref isUsageOpen, value) && value)
             {
-                isHistoryOpen = false;
-                OnPropertyChanged(nameof(IsHistoryOpen));
+                CloseOtherFlyouts(nameof(IsUsageOpen));
             }
+        }
+    }
+
+    [DataMember]
+    public bool IsConnectionTargetOpen
+    {
+        get => isConnectionTargetOpen;
+        set
+        {
+            if (SetProperty(ref isConnectionTargetOpen, value) && value)
+            {
+                CloseOtherFlyouts(nameof(IsConnectionTargetOpen));
+            }
+        }
+    }
+
+    // Where turns run: the connected remote profile, or the local app-server. This reflects the
+    // connection, not the row being edited in the flyout.
+    [DataMember]
+    public string ConnectionTargetText => connectedProfileName is null ? "Local" : markdown.ToSafeText(connectedProfileName).Trim();
+
+    [DataMember]
+    public string ConnectionTargetAutomationName => connectedProfileName is null
+        ? "Connection target: local codex app-server"
+        : $"Connection target: remote profile {markdown.ToSafeText(connectedProfileName).Trim()}";
+
+    [DataMember]
+    public AsyncCommand ToggleConnectionTargetCommand { get; }
+
+    [DataMember]
+    public AsyncCommand CloseConnectionTargetCommand { get; }
+
+    [DataMember]
+    public AsyncCommand ApplyRemoteProfileCommand { get; }
+
+    [DataMember]
+    public AsyncCommand UseLocalAppServerCommand { get; }
+
+    private void CloseOtherFlyouts(string keep)
+    {
+        if (keep != nameof(IsHistoryOpen) && isHistoryOpen)
+        {
+            isHistoryOpen = false;
+            OnPropertyChanged(nameof(IsHistoryOpen));
+        }
+
+        if (keep != nameof(IsUsageOpen) && isUsageOpen)
+        {
+            isUsageOpen = false;
+            OnPropertyChanged(nameof(IsUsageOpen));
+        }
+
+        if (keep != nameof(IsConnectionTargetOpen) && isConnectionTargetOpen)
+        {
+            isConnectionTargetOpen = false;
+            OnPropertyChanged(nameof(IsConnectionTargetOpen));
         }
     }
 
@@ -917,7 +995,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     /// then loads account status and threads once ready. Returns <see langword="true"/> if the
     /// connection reached <see cref="WorkerConnectionState.Ready"/>.
     /// </summary>
-    private async Task<bool> ConnectWithDirectoryAsync(string workingDirectory)
+    private async Task<bool> ConnectWithDirectoryAsync(string workingDirectory, bool reloadThreads = false)
     {
         // The auto-connect watcher and a user-initiated Send/Connect can both reach here; the
         // guard ensures only one connect attempt runs at a time so we never spawn two workers.
@@ -941,6 +1019,8 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 ExtensionDiagnostics.Write("Project scaffolding failed; continuing with Worker connection", ex);
             }
 
+            string? targetProfileName = remoteProfiles.AppliedProfileName;
+            await OnUiAsync(() => SetConnectedProfileName(targetProfileName)).ConfigureAwait(false);
             WorkerStatus result;
             try
             {
@@ -966,7 +1046,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 this.workingDirectory = workingDirectory;
                 unavailableSlashCommands.Clear();
                 initialized = true;
-                await RefreshReadyStateAsync(reloadThreads: false).ConfigureAwait(false);
+                await RefreshReadyStateAsync(reloadThreads).ConfigureAwait(false);
             }
 
             return result.State == WorkerConnectionState.Ready;
@@ -975,6 +1055,76 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         {
             Interlocked.Exchange(ref connecting, 0);
         }
+    }
+
+    private void SetConnectedProfileName(string? profileName)
+    {
+        if (string.Equals(connectedProfileName, profileName, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        connectedProfileName = profileName;
+        OnPropertyChanged(nameof(ConnectionTargetText));
+        OnPropertyChanged(nameof(ConnectionTargetAutomationName));
+    }
+
+    // Switching the connection target replaces the Worker's app-server connection, so it waits
+    // until no connect, turn, or approval is in flight.
+    private bool CanReconnectForProfile()
+        => Volatile.Read(ref connecting) == 0
+            && Status.State is WorkerConnectionState.Ready or WorkerConnectionState.Disconnected or WorkerConnectionState.Degraded
+            && Status.TurnId is null;
+
+    private async Task ApplyRemoteProfileAsync()
+    {
+        if (!remoteProfiles.TryGetApplicableProfile(out string profileName, out string error))
+        {
+            remoteProfiles.ReportStatus(error);
+            return;
+        }
+
+        await ReconnectForProfileAsync($"Connected with remote profile '{profileName}'.").ConfigureAwait(false);
+    }
+
+    private async Task UseLocalAppServerAsync()
+    {
+        remoteProfiles.ClearSelection();
+        await ReconnectForProfileAsync("Connected to the local codex app-server.").ConfigureAwait(false);
+    }
+
+    private async Task ReconnectForProfileAsync(string successText)
+    {
+        string? directory = workingDirectory;
+        if (directory is null)
+        {
+            try
+            {
+                directory = await workspaceDirectoryResolver.ResolveAsync(lifetime.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+            {
+                return;
+            }
+        }
+
+        if (directory is null)
+        {
+            remoteProfiles.ReportStatus("Open a solution or folder, then connect again.");
+            return;
+        }
+
+        IReadOnlyList<SlashCommandInvocation> canceled = slashCommandCoordinator.CancelAll();
+        if (canceled.Count > 0)
+        {
+            await ShowSlashStatusAsync(
+                $"Canceled {canceled.Count} queued slash commands because the connection target changed.").ConfigureAwait(false);
+        }
+
+        bool connected = await ConnectWithDirectoryAsync(directory, reloadThreads: true).ConfigureAwait(false);
+        remoteProfiles.ReportStatus(connected
+            ? successText
+            : $"Could not connect: {markdown.ToSafeText(Status.Message).Trim()}");
     }
 
     private async Task RestartAsync()
@@ -1285,6 +1435,14 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             try
             {
                 await bridge.StartTurnAsync(request, lifetime.Token).ConfigureAwait(false);
+            }
+            catch (StreamJsonRpc.RemoteInvocationException ex) when (ex.ErrorCode == WorkerErrorCodes.AttachmentRejected)
+            {
+                // The Worker rejects an attachment a remote app-server cannot read (outside the
+                // mapped local root) before the turn starts, so nothing was sent. Show the reason
+                // and keep the chips so the user can remove or move the file.
+                await ShowSlashFailureAsync($"The message was not sent: {ex.Message}").ConfigureAwait(false);
+                return;
             }
             catch (Exception ex) when (request.Skill is not null && ex is not OperationCanceledException)
             {
@@ -3999,9 +4157,9 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         NewThreadCommand.RaiseCanExecuteChanged();
         LoadMoreCommand.RaiseCanExecuteChanged();
         SendCommand.RaiseCanExecuteChanged();
-        InterruptCommand.RaiseCanExecuteChanged();
-        AccountCommand.RaiseCanExecuteChanged();
         ToggleUsageCommand.RaiseCanExecuteChanged();
+        ApplyRemoteProfileCommand.RaiseCanExecuteChanged();
+        UseLocalAppServerCommand.RaiseCanExecuteChanged();
     }
 
     // In the OOP extension process, Application.Current is null so the null-conditional

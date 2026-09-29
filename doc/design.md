@@ -196,7 +196,8 @@ it starts the packaged Worker apphost. The Extension and Worker communicate thro
 named pipe and StreamJsonRpc. This avoids apphost runtime discovery in the Visual Studio
 debug environment while retaining support for runtime layouts without a `dotnet.exe` host.
 
-For the local JSONL transport, the receive path resolves client responses immediately. A bounded single-consumer queue delivers notifications in wire order and starts
+For local JSONL and remote WebSocket transports, the receive path resolves client responses
+immediately. A bounded single-consumer queue delivers notifications in wire order and starts
 server requests after earlier notifications complete. Notification handlers may then await a
 new app-server request, such as `account/read` after `account/updated`, without blocking its
 response on the receive path.
@@ -337,3 +338,37 @@ no Remote UI surface is not carried across the contract, so `dependencies.tools`
 `iconSmall` presence flag belong in the contract only once their surface exists. The icon spike is
 gated; until a Remote UI image/cache containment proof exists, the presentation uses a fixed glyph
 and exposes no raw icon path.
+
+## 12. Connection target and remote profiles
+
+The toolbar shows one connection-target button next to Usage. Its text is the target the Worker is
+actually connected to (`Local` or the applied profile name), not the profile being edited, so the
+header always answers "where do my turns run". It opens a flyout that follows the Usage/History
+popup rules: the three flyouts are mutually exclusive, Escape closes it from the host or the popup,
+Tab cycles inside it, it uses Visual Studio dynamic theme resources, and every control has an
+automation name.
+
+The flyout is ordered by the user's task, top to bottom:
+
+1. Profile list (`RemoteProfiles.Profiles` / `SelectedProfile`) with Add and Remove. Each row shows
+   the display name and endpoint; an unsaved row is marked `Not saved`.
+2. Editor for the selected profile, shown only while a profile is selected: Name, Endpoint, Token
+   file path, Local root, Server root, and Enabled, then Save. Only the token file path crosses the
+   presentation boundary; token contents are read by the Worker at connection time.
+3. `StatusText` (polite live region) for validation and apply results, then the apply actions:
+   `Connect with this profile` and `Use local app-server`.
+
+Edits stay in the view model until Save validates them (`wss`, or `ws` to a loopback host; both
+roots; a token file for an enabled profile; unique names). `Connect with this profile` reconnects
+the Worker with the saved selection even while Ready; it is disabled while connecting or while a
+turn or approval is in progress, and refuses with a status message when the selected profile has
+unsaved edits or is disabled. `Use local app-server` clears the persisted selection and reconnects
+to local stdio. A remote profile is applied only through these actions or the next connect;
+selecting a row alone never switches transports.
+
+The Worker enforces the same mapping invariant independently of the UI: a remote connection
+without both `localRoot` and `serverRoot` is refused as `Degraded` with a fix-it message before any
+local path is sent, and an explicit attachment outside the local root rejects the turn before
+`turn/start`. When the remote transport closes, the Worker publishes `Degraded` with a reconnect
+message unless a newer connect, restart, or dispose has already superseded that connection, which
+enables Connect and Restart in the header.

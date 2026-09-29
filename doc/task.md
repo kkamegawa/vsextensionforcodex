@@ -13,6 +13,29 @@
 - [ ] Phase 7: run 0.154.0-to-0.155.1 contract-diff, race, auth-owner switch, transport, path, stored attachment, verification/MCP reauthentication, UI accessibility, build, VSIX, and Experimental Instance validation.
 - [x] Tracking: parent Issue and seven linked child Issues; English/Japanese Wiki plan and Home indexes. The detailed Issue #150 plan was pushed to the bilingual Wiki on 2026-09-22.
 
+## 2026-09-23: PR #157 review fixes ([PR #157](https://github.com/kkamegawa/vsextensionforcodex/pull/157), [Issue #150](https://github.com/kkamegawa/vsextensionforcodex/issues/150), [Issue #151](https://github.com/kkamegawa/vsextensionforcodex/issues/151), [Issue #152](https://github.com/kkamegawa/vsextensionforcodex/issues/152))
+
+- [x] Read the `turn/completed` turn id from `params.turn.id` and track the thread whose `turn/start` is in flight, so completion-before-response and new-thread `turn/started` are handled on the real wire shape.
+- [x] Accept integer and string request ids in `serverRequest/resolved`.
+- [x] Share `JsonRpcServerRequestDispatcher` between the stdio and WebSocket transports, deliver WebSocket notifications in order, tolerate isolated malformed frames, and fail pending requests as connection-closed. Added WebSocket transport tests over an in-memory socket.
+- [x] Report remote connection loss as `Degraded` in the Worker without treating an intentional restart as a loss.
+- [x] Reject an explicit attachment outside the remote local root before the turn starts, and show the reason in the transcript while keeping the attachment.
+- [x] Persist remote profiles only through validated Save, stop rewriting settings on load, and remove the unused DI registration.
+- [x] Build and release CI use the pinned 0.155.1 executable. The latest release runs a non-blocking app-server smoke test, and the latest-release API lookup is authenticated. README setup pins 0.155.1.
+- [x] Schema-cache version rejection is tested with stub executables. The schema validation target is incremental.
+- [x] Recorded the Worker contract v16 decision (ADR-011 amendment) and the transport corrections (ADR-012 amendment). Updated the Phase 5 contract statement in the plan and restored the `plan.md` section order.
+- [ ] Health diagnostics and other remaining Phase 2/3 items stay in Issues #151 and #152.
+- Validation: Release solution build with 0 warnings. Core 147/147 (three runs), UI 288/288 (one skipped), `scripts/test-schema-cache.ps1`, and `scripts/smoke-app-server.ps1` passed locally with Codex 0.155.1.
+
+## 2026-09-30: PR #157 second review fixes ([PR #157](https://github.com/kkamegawa/vsextensionforcodex/pull/157), [Issue #151](https://github.com/kkamegawa/vsextensionforcodex/issues/151))
+
+- [x] Confirm WebSocket notifications are delivered in wire order by one consumer (existing test).
+- [x] Require both `localRoot` and `serverRoot` for a remote connection in the Worker.
+- [x] Publish a remote connection loss only for the still-current connection, under the transition gate.
+- [x] Add the connection-target flyout: remote profile list, editor, Save, Connect with this profile, and Use local app-server (design.md section 12, ADR-012 amendment).
+- [x] Tests: root validation, close during connect, command state after loss, profile apply flow, flyout exclusivity, XAML binding reachability.
+- Validation: Release build with 0 warnings. Core 153/153 (three runs), UI 295/295 (one skipped).
+
 ## 2026-07-21: Merge main into PR #31 (issue #25) and resolve conflicts
 
 - [x] Resolve `ChoicePromptParser.cs` confirmation-regex conflict by adopting main's line-anchored `\A...to\b` pattern (issue #45), compatible with this branch's question-line scoping fix (issue #33).

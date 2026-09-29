@@ -12,23 +12,23 @@ The extension is an out-of-process `Microsoft.VisualStudio.Extensibility` extens
 
 - Windows (x64 or Arm64)
 - Visual Studio 2022 17.14 or later, or Visual Studio 2026 (Community, Professional, or Enterprise)
-- The official Windows x64 Codex CLI executable from the [latest stable release](https://github.com/openai/codex/releases/latest)
+- The official Windows x64 Codex CLI 0.155.1 executable from the [rust-v0.155.1 release](https://github.com/openai/codex/releases/tag/rust-v0.155.1)
 - A ChatGPT account that can sign in with `codex login`
 
 ## Setup
 
-1. Download the Windows x64 MSVC executable from the [latest stable Codex release](https://github.com/openai/codex/releases/latest) into a local directory. The extension starts this standalone executable directly; winget is not required.
+1. Download the Windows x64 MSVC executable from the [Codex 0.155.1 release](https://github.com/openai/codex/releases/tag/rust-v0.155.1) into a local directory. The extension starts this standalone executable directly; winget is not required. 0.155.1 is the app-server contract this extension is verified against, so pin that release rather than `latest`.
 
    ```powershell
    $codexDirectory = Join-Path $env:LOCALAPPDATA 'OpenAI\Codex\bin'
    New-Item -ItemType Directory -Force -Path $codexDirectory | Out-Null
    Invoke-WebRequest `
-     -Uri 'https://github.com/openai/codex/releases/latest/download/codex-x86_64-pc-windows-msvc.exe' `
+     -Uri 'https://github.com/openai/codex/releases/download/rust-v0.155.1/codex-x86_64-pc-windows-msvc.exe' `
      -OutFile (Join-Path $codexDirectory 'codex.exe')
    [Environment]::SetEnvironmentVariable('CODEX_PATH', (Join-Path $codexDirectory 'codex.exe'), 'User')
    ```
 
-2. Restart Visual Studio and confirm the executable. The current latest release is 0.155.1, which is the app-server contract used by this extension:
+2. Restart Visual Studio and confirm that the executable reports 0.155.1:
 
    ```powershell
    codex --version
@@ -45,6 +45,18 @@ The extension is an out-of-process `Microsoft.VisualStudio.Extensibility` extens
 5. Restart Visual Studio and open **View > Codex**.
 
 6. Open a solution or folder, type a prompt, and send it. The first turn starts the worker and the `codex app-server` subprocess. If nothing happens, see the [FAQ](#faq).
+
+### Connect to a remote app-server (optional)
+
+By default Codex runs on a local `codex app-server` child process. To run turns on an app-server that is already running on another machine instead:
+
+1. Start the app-server with its WebSocket listener on the remote machine and save its bearer token to a file on this computer. The extension never starts, updates, or synchronizes the remote side.
+2. Make sure both machines see the same working tree, for example `C:\src\repo` locally and `/home/<user>/src/repo` on the server.
+3. In the Codex tool window, select the connection-target button in the toolbar (it shows `Local`), then select **Add**.
+4. Enter the name, the endpoint (`wss://<remote-host>:<port>`; plain `ws://` is accepted only for a loopback host), the token file path, the local root, and the server root. Select **Enabled**, then **Save profile**.
+5. Select **Connect with this profile**. The toolbar button then shows the profile name.
+
+Both roots are required: local paths for the working directory and attachments are mapped from the local root to the server root, and an attachment outside the local root is rejected before the turn starts. If the remote connection drops, the status becomes degraded; use **Connect** or **Restart** to reconnect. Select **Use local app-server** to go back to the local process.
 
 ## Limitations
 
@@ -64,7 +76,7 @@ The extension is an out-of-process `Microsoft.VisualStudio.Extensibility` extens
   slash menu keeps working with built-in commands only for the rest of the session. Skill icons
   declared by `interface.iconSmall` are not rendered; every row uses a fixed glyph. Skill-specific
   approval requests are declined rather than granted.
-- The app-server contract is verified against 0.155.1. A newer latest release is downloaded by CI for local executable smoke coverage, while schema generation remains pinned to the manifest versions so contract comparisons stay reproducible. Confirm the local executable with `codex --version`.
+- The app-server contract is verified against 0.155.1. CI also downloads the latest stable release and runs a non-blocking smoke test (start `codex app-server` and complete `initialize`), so a newer release is only known to start, not to match the contract. Schema generation and the build stay pinned to the manifest versions. Confirm the local executable with `codex --version`.
 - The extension is Windows-only and targets Visual Studio; there is no Visual Studio Code or cross-platform host.
 
 ## FAQ
@@ -127,7 +139,7 @@ dotnet build CodexForVisualStudio.slnx -c Release --no-restore
 pwsh -NoProfile -File scripts/generate-schemas.ps1 -OutputDirectory schemas -Version 0.155.1 -Surface stable -CodexPath $env:CODEX_PATH
 ```
 
-The generator prefers `CODEX_PATH` when it is set and otherwise resolves `codex` from `PATH`. It rejects a version other than the selected stable manifest entry. CI downloads the pinned 0.154.0 and 0.155.1 Windows x64 release assets, verifies their SHA-256 hashes from `app-server-contract.json`, generates both stable and experimental surfaces, and checks the normalized structural differences. The build and release jobs also download the latest stable Windows x64 executable into the runner's local temporary directory and pass that path as `CODEX_PATH`; this does not replace the pinned schema generator. Set `CODEX_PATH` to the official 0.155.1 executable for local schema builds:
+The generator prefers `CODEX_PATH` when it is set and otherwise resolves `codex` from `PATH`. It rejects a version other than the selected stable manifest entry. CI downloads the pinned 0.154.0 and 0.155.1 Windows x64 release assets, verifies their SHA-256 hashes from `app-server-contract.json`, generates both stable and experimental surfaces, and checks the normalized structural differences. The build and release jobs pass the pinned 0.155.1 executable as `CODEX_PATH`. The CI build job also downloads the latest stable Windows x64 executable into the runner's local temporary directory and runs `scripts/smoke-app-server.ps1` against it as a non-blocking check. Set `CODEX_PATH` to the official 0.155.1 executable for local schema builds:
 
 ```powershell
 $env:CODEX_PATH = "C:\path\to\codex.exe"

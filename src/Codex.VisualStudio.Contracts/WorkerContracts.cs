@@ -8,6 +8,14 @@ public static class ContractVersions
     public const int Current = 16;
 }
 
+// JSON-RPC error codes the Worker uses for failures the Extension presents specifically. They
+// cross the StreamJsonRpc boundary as RemoteInvocationException.ErrorCode.
+public static class WorkerErrorCodes
+{
+    // An explicit attachment cannot be read by the remote app-server (outside the mapped root).
+    public const int AttachmentRejected = -32050;
+}
+
 public enum WorkerConnectionState
 {
     Disconnected,

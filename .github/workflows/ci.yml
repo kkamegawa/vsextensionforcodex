@@ -100,13 +100,15 @@ jobs:
           path: schemas
           merge-multiple: true
 
-      - name: Download latest Codex CLI
-        id: install_latest_codex
+      # Scoped to this step's output rather than $GITHUB_ENV: a job-wide CODEX_PATH would leak
+      # into the test steps and break CodexExecutableResolver tests that expect it to be unset.
+      - name: Download pinned Codex CLI
+        id: install_pinned_codex
         shell: pwsh
         run: |
           pwsh -NoProfile -File scripts/install-codex.ps1 `
-            -Version latest `
-            -OutputDirectory (Join-Path $env:RUNNER_TEMP 'codex-cli-latest') `
+            -Version '0.155.1' `
+            -OutputDirectory (Join-Path $env:RUNNER_TEMP 'codex-cli-0.155.1') `
             -GitHubOutput
 
       - name: Restore
@@ -114,7 +116,7 @@ jobs:
 
       - name: Build solution
         env:
-          CODEX_PATH: ${{ steps.install_latest_codex.outputs.codex_path }}
+          CODEX_PATH: ${{ steps.install_pinned_codex.outputs.codex_path }}
         run: dotnet build CodexForVisualStudio.slnx -c Release --no-restore -v minimal
 
       - name: Test core
@@ -170,3 +172,30 @@ jobs:
           name: CodexForVisualStudio-vsix
           path: ${{ steps.find_vsix.outputs.vsix_path }}
 
+      # The pinned 0.155.1 executable is the schema and build contract. The latest stable release
+      # is only smoke-tested (start + initialize) so an upstream break is visible without blocking.
+      - name: Download latest Codex CLI
+        id: install_latest_codex
+        continue-on-error: true
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          pwsh -NoProfile -File scripts/install-codex.ps1 `
+            -Version latest `
+            -OutputDirectory (Join-Path $env:RUNNER_TEMP 'codex-cli-latest') `
+            -GitHubOutput
+
+      - name: Smoke-test latest Codex app-server
+        if: steps.install_latest_codex.outcome == 'success'
+        continue-on-error: true
+        shell: pwsh
+        env:
+          LATEST_CODEX_PATH: ${{ steps.install_latest_codex.outputs.codex_path }}
+          LATEST_CODEX_VERSION: ${{ steps.install_latest_codex.outputs.codex_version }}
+        run: |
+          pwsh -NoProfile -File scripts/smoke-app-server.ps1 -CodexPath $env:LATEST_CODEX_PATH
+          if ($LASTEXITCODE -ne 0) {
+            Write-Output "::warning::Latest Codex $env:LATEST_CODEX_VERSION failed the app-server smoke test."
+            exit $LASTEXITCODE
+          }

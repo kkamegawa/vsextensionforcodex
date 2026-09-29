@@ -2,6 +2,7 @@
 using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
+using System.Threading.Channels;
 
 namespace Codex.AppServer.Protocol;
 
@@ -11,34 +12,42 @@ namespace Codex.AppServer.Protocol;
 /// </summary>
 public sealed class WebSocketJsonRpcConnection : IJsonRpcConnection
 {
+    private const int ReceiveBufferBytes = 8192;
+    private const int NotificationQueueCapacity = 256;
+    private const int MaxConsecutiveMalformedMessages = 3;
+
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web)
     {
         DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
     };
 
-    private readonly Uri endpoint;
-    private readonly string bearerToken;
+    private readonly Uri? endpoint;
+    private readonly string? bearerToken;
     private readonly int maxMessageBytes;
-    private readonly ClientWebSocket socket = new();
+    private readonly WebSocket socket;
+    private readonly ClientWebSocket? clientSocket;
     private readonly SemaphoreSlim sendGate = new(1, 1);
     private readonly ConcurrentDictionary<string, TaskCompletionSource<JsonElement>> pending = new();
-    private readonly ConcurrentDictionary<string, ServerRequestOperation> serverRequests = new();
-    private readonly ConcurrentDictionary<long, Task> dispatchTasks = new();
+    // Notifications and server requests in wire order. Responses bypass it (see ReceivePumpAsync).
+    private readonly Channel<JsonRpcMessage> inbound;
+    private readonly JsonRpcServerRequestDispatcher dispatcher;
     private readonly CancellationTokenSource lifetime = new();
     private Task? receivePump;
+    private Task? notificationPump;
     private long nextId;
     private int started;
     private int closed;
-    private long nextDispatchId;
 
     public WebSocketJsonRpcConnection(
         Uri endpoint,
         string bearerToken,
         int maxMessageBytes = JsonLineRpcConnection.DefaultMaxLineBytes)
+        : this(new ClientWebSocket(), maxMessageBytes)
     {
         if (!string.Equals(endpoint.Scheme, Uri.UriSchemeWs, StringComparison.OrdinalIgnoreCase)
             && !string.Equals(endpoint.Scheme, Uri.UriSchemeWss, StringComparison.OrdinalIgnoreCase))
         {
+            socket.Dispose();
             throw new ArgumentException("The endpoint must use ws or wss.", nameof(endpoint));
         }
 
@@ -46,12 +55,28 @@ public sealed class WebSocketJsonRpcConnection : IJsonRpcConnection
             .Validate(enabled: true, endpoint, bearerToken);
         if (!validation.IsAllowed)
         {
+            socket.Dispose();
             throw new ArgumentException(validation.Reason, nameof(endpoint));
         }
 
         this.endpoint = endpoint;
         this.bearerToken = bearerToken;
+        clientSocket = (ClientWebSocket)socket;
+    }
+
+    // Wraps an already connected socket. Contract tests use this with an in-memory server
+    // socket so framing, ordering, and close behavior are exercised without a network listener.
+    internal WebSocketJsonRpcConnection(WebSocket connectedSocket, int maxMessageBytes = JsonLineRpcConnection.DefaultMaxLineBytes)
+    {
+        socket = connectedSocket;
         this.maxMessageBytes = maxMessageBytes;
+        inbound = Channel.CreateBounded<JsonRpcMessage>(new BoundedChannelOptions(NotificationQueueCapacity)
+        {
+            FullMode = BoundedChannelFullMode.Wait,
+            SingleReader = true,
+            SingleWriter = true,
+        });
+        dispatcher = new JsonRpcServerRequestDispatcher(SendMessageAsync);
     }
 
     public event Func<JsonRpcMessage, CancellationToken, Task>? NotificationReceived;
@@ -67,10 +92,15 @@ public sealed class WebSocketJsonRpcConnection : IJsonRpcConnection
             return;
         }
 
-        socket.Options.SetRequestHeader("Authorization", $"Bearer {bearerToken}");
         try
         {
-            await socket.ConnectAsync(endpoint, cancellationToken).ConfigureAwait(false);
+            if (clientSocket is not null)
+            {
+                clientSocket.Options.SetRequestHeader("Authorization", $"Bearer {bearerToken}");
+                await clientSocket.ConnectAsync(endpoint!, cancellationToken).ConfigureAwait(false);
+            }
+
+            notificationPump = Task.Run(() => NotificationPumpAsync(lifetime.Token), CancellationToken.None);
             receivePump = Task.Run(() => ReceivePumpAsync(lifetime.Token), CancellationToken.None);
         }
         catch (Exception ex)
@@ -125,29 +155,24 @@ public sealed class WebSocketJsonRpcConnection : IJsonRpcConnection
     public async ValueTask DisposeAsync()
     {
         Close(null);
-        if (receivePump is not null)
+        foreach (Task? pump in new[] { receivePump, notificationPump })
         {
-            try
+            if (pump is null)
             {
-                await receivePump.ConfigureAwait(false);
+                continue;
             }
-            catch (OperationCanceledException)
-            {
-            }
-        }
 
-        Task[] remaining = dispatchTasks.Values.ToArray();
-        if (remaining.Length > 0)
-        {
             try
             {
-                await Task.WhenAll(remaining).ConfigureAwait(false);
+                await pump.ConfigureAwait(false);
             }
             catch (Exception) when (lifetime.IsCancellationRequested)
             {
-                // Dispatch handlers are canceled by Close; their failures are observed below.
+                // The pumps are canceled by Close; their terminal failure was already reported.
             }
         }
+
+        await dispatcher.WhenOutstandingCompletedAsync().ConfigureAwait(false);
         socket.Dispose();
         sendGate.Dispose();
         lifetime.Dispose();
@@ -177,15 +202,17 @@ public sealed class WebSocketJsonRpcConnection : IJsonRpcConnection
     private async Task ReceivePumpAsync(CancellationToken cancellationToken)
     {
         Exception? failure = null;
+        byte[] buffer = new byte[ReceiveBufferBytes];
+        int malformedCount = 0;
         try
         {
+            using var message = new MemoryStream();
             while (!cancellationToken.IsCancellationRequested && socket.State == WebSocketState.Open)
             {
-                using var message = new MemoryStream();
+                message.SetLength(0);
                 WebSocketReceiveResult result;
                 do
                 {
-                    byte[] buffer = new byte[8192];
                     result = await socket.ReceiveAsync(buffer, cancellationToken).ConfigureAwait(false);
                     if (result.MessageType == WebSocketMessageType.Close)
                     {
@@ -200,9 +227,26 @@ public sealed class WebSocketJsonRpcConnection : IJsonRpcConnection
                 }
                 while (!result.EndOfMessage);
 
-                JsonRpcMessage? rpcMessage = JsonSerializer.Deserialize<JsonRpcMessage>(
-                    message.GetBuffer().AsSpan(0, checked((int)message.Length)),
-                    SerializerOptions);
+                JsonRpcMessage? rpcMessage;
+                try
+                {
+                    rpcMessage = JsonSerializer.Deserialize<JsonRpcMessage>(
+                        message.GetBuffer().AsSpan(0, checked((int)message.Length)),
+                        SerializerOptions);
+                    malformedCount = 0;
+                }
+                catch (JsonException)
+                {
+                    // Mirror the stdio transport: tolerate isolated malformed frames, but treat a
+                    // sustained stream of them as a broken peer.
+                    if (++malformedCount >= MaxConsecutiveMalformedMessages)
+                    {
+                        throw new InvalidDataException("The app-server emitted three malformed WebSocket messages.");
+                    }
+
+                    continue;
+                }
+
                 if (rpcMessage is null)
                 {
                     continue;
@@ -210,19 +254,20 @@ public sealed class WebSocketJsonRpcConnection : IJsonRpcConnection
 
                 if (rpcMessage.IsResponse)
                 {
-                    ResolveResponse(rpcMessage);
+                    // Responses are resolved on the receive loop, never behind a notification
+                    // handler, so a handler that awaits a request cannot block its own response.
+                    JsonRpcServerRequestDispatcher.ResolveResponse(pending, rpcMessage);
                 }
-                else if (rpcMessage.IsRequest)
+                else if (rpcMessage.IsRequest || rpcMessage.IsNotification)
                 {
-                    StartServerRequest(rpcMessage, cancellationToken);
-                }
-                else if (rpcMessage.IsNotification && NotificationReceived is not null)
-                {
-                    StartNotification(rpcMessage, cancellationToken);
+                    await inbound.Writer.WriteAsync(rpcMessage, cancellationToken).ConfigureAwait(false);
                 }
             }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+        }
+        catch (ChannelClosedException) when (cancellationToken.IsCancellationRequested)
         {
         }
         catch (Exception ex)
@@ -235,165 +280,46 @@ public sealed class WebSocketJsonRpcConnection : IJsonRpcConnection
         }
     }
 
-    private void StartNotification(JsonRpcMessage message, CancellationToken cancellationToken)
+    // Notifications are delivered one at a time in wire order, and a server request starts only
+    // after every earlier notification was handled, matching the stdio transport. Streaming deltas,
+    // turn lifecycle, and approvals for a just-started item depend on that ordering. Request
+    // handlers run concurrently once started, so a pending approval never blocks later messages.
+    private async Task NotificationPumpAsync(CancellationToken cancellationToken)
     {
-        Func<JsonRpcMessage, CancellationToken, Task>? handler = NotificationReceived;
-        if (handler is null)
+        try
         {
-            return;
-        }
-
-        long dispatchId = Interlocked.Increment(ref nextDispatchId);
-        var tracked = new TaskCompletionSource<object?>(TaskCreationOptions.RunContinuationsAsynchronously);
-        dispatchTasks.TryAdd(dispatchId, tracked.Task);
-        _ = Task.Run(
-            async () =>
+            await foreach (JsonRpcMessage message in inbound.Reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
             {
+                if (message.IsRequest)
+                {
+                    dispatcher.Start(message, RequestReceived, cancellationToken);
+                    continue;
+                }
+
+                Func<JsonRpcMessage, CancellationToken, Task>? handler = NotificationReceived;
+                if (handler is null)
+                {
+                    continue;
+                }
+
                 try
                 {
                     await handler(message, cancellationToken).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                 {
+                    return;
                 }
                 catch (Exception ex)
                 {
-                    // Receive must continue while one notification is being processed. The task is
-                    // retained until completion so Close/Dispose can observe every failure.
+                    // One failing observer must not stop delivery of later notifications.
                     _ = ex;
                 }
-                finally
-                {
-                    dispatchTasks.TryRemove(dispatchId, out _);
-                    tracked.TrySetResult(null);
-                }
-            },
-            CancellationToken.None);
-    }
-
-    private void StartServerRequest(JsonRpcMessage message, CancellationToken cancellationToken)
-    {
-        string? id = message.GetIdKey();
-        if (id is null)
-        {
-            return;
-        }
-
-        var operation = new ServerRequestOperation(id);
-        if (!serverRequests.TryAdd(id, operation))
-        {
-            // A reused outstanding id must not produce a second response or approval prompt.
-            return;
-        }
-
-        Task task = Task.Run(
-            () => RunServerRequestAsync(message, operation, cancellationToken),
-            CancellationToken.None);
-        long dispatchId = Interlocked.Increment(ref nextDispatchId);
-        dispatchTasks.TryAdd(dispatchId, task);
-        _ = task.ContinueWith(
-            completed =>
-            {
-                dispatchTasks.TryRemove(dispatchId, out _);
-                ObserveCompletedTask(completed);
-            },
-            CancellationToken.None,
-            TaskContinuationOptions.ExecuteSynchronously,
-            TaskScheduler.Default);
-    }
-
-    private async Task RunServerRequestAsync(
-        JsonRpcMessage message,
-        ServerRequestOperation operation,
-        CancellationToken cancellationToken)
-    {
-        try
-        {
-            await ResolveServerRequestAsync(message, cancellationToken).ConfigureAwait(false);
-        }
-        catch (Exception ex)
-        {
-            _ = ex;
-        }
-        finally
-        {
-            serverRequests.TryRemove(new KeyValuePair<string, ServerRequestOperation>(operation.Id, operation));
-        }
-    }
-
-    private sealed class ServerRequestOperation
-    {
-        public ServerRequestOperation(string id)
-        {
-            Id = id;
-        }
-
-        public string Id { get; }
-    }
-
-    private static void ObserveCompletedTask(Task task)
-    {
-        if (task.IsFaulted)
-        {
-            _ = task.Exception;
-        }
-    }
-
-    private async Task ResolveServerRequestAsync(JsonRpcMessage message, CancellationToken cancellationToken)
-    {
-        if (message.Id is null)
-        {
-            return;
-        }
-
-        try
-        {
-            JsonElement result = RequestReceived is null
-                ? JsonSerializer.SerializeToElement(new { })
-                : await RequestReceived(message, cancellationToken).ConfigureAwait(false);
-            if (!cancellationToken.IsCancellationRequested)
-            {
-                await SendMessageAsync(new { id = ToWireId(message.Id.Value), result }, cancellationToken).ConfigureAwait(false);
-            }
-        }
-        catch (JsonRpcRemoteException ex)
-        {
-            if (!cancellationToken.IsCancellationRequested)
-            {
-                await SendMessageAsync(
-                    new { id = ToWireId(message.Id.Value), error = new { code = ex.Code, message = ex.Message } },
-                    cancellationToken).ConfigureAwait(false);
             }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
         }
-        catch (Exception ex)
-        {
-            if (!cancellationToken.IsCancellationRequested)
-            {
-                await SendMessageAsync(
-                    new { id = ToWireId(message.Id.Value), error = new { code = -32603, message = ex.Message } },
-                    cancellationToken).ConfigureAwait(false);
-            }
-        }
-    }
-
-    private void ResolveResponse(JsonRpcMessage message)
-    {
-        string? id = message.GetIdKey();
-        if (id is null || !pending.TryRemove(id, out TaskCompletionSource<JsonElement>? completion))
-        {
-            return;
-        }
-
-        if (message.Error is not null)
-        {
-            completion.TrySetException(new JsonRpcRemoteException(message.Error.Code, message.Error.Message));
-            return;
-        }
-
-        completion.TrySetResult(message.Result ?? JsonSerializer.SerializeToElement(new { }));
     }
 
     private void Close(Exception? exception)
@@ -403,7 +329,18 @@ public sealed class WebSocketJsonRpcConnection : IJsonRpcConnection
             return;
         }
 
+        // Fail outstanding requests before canceling the lifetime so callers observe a connection
+        // loss rather than a cancellation they did not request.
+        var closedException = new JsonRpcConnectionClosedException(
+            exception?.Message ?? "The app-server WebSocket connection closed.");
+        foreach (TaskCompletionSource<JsonElement> completion in pending.Values)
+        {
+            completion.TrySetException(closedException);
+        }
+
+        pending.Clear();
         lifetime.Cancel();
+        inbound.Writer.TryComplete();
         try
         {
             if (socket.State is WebSocketState.Open or WebSocketState.CloseReceived)
@@ -415,14 +352,6 @@ public sealed class WebSocketJsonRpcConnection : IJsonRpcConnection
         {
         }
 
-        var closedException = new JsonRpcConnectionClosedException(
-            exception?.Message ?? "The app-server WebSocket connection closed.");
-        foreach (TaskCompletionSource<JsonElement> completion in pending.Values)
-        {
-            completion.TrySetException(closedException);
-        }
-
-        pending.Clear();
         Closed?.Invoke(this, exception);
     }
 
@@ -433,7 +362,4 @@ public sealed class WebSocketJsonRpcConnection : IJsonRpcConnection
             throw new JsonRpcConnectionClosedException("The app-server WebSocket connection is closed.");
         }
     }
-
-    private static object? ToWireId(JsonElement id)
-        => id.ValueKind == JsonValueKind.Number ? id.GetInt64() : id.GetString();
 }

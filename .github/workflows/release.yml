@@ -75,15 +75,6 @@ jobs:
             -Surface stable `
             -CodexPath $env:CODEX_PATH
 
-      - name: Download latest Codex CLI
-        id: install_latest_codex
-        shell: pwsh
-        run: |
-          pwsh -NoProfile -File scripts/install-codex.ps1 `
-            -Version latest `
-            -OutputDirectory (Join-Path $env:RUNNER_TEMP 'codex-cli-latest') `
-            -GitHubOutput
-
       - name: Restore
         run: dotnet restore CodexForVisualStudio.slnx
 
@@ -91,7 +82,7 @@ jobs:
       # extension.vsixmanifest, so passing the tag version here embeds it in the VSIX.
       - name: Build solution
         env:
-          CODEX_PATH: ${{ steps.install_latest_codex.outputs.codex_path }}
+          CODEX_PATH: ${{ steps.install_schema_codex.outputs.codex_path }}
         run: >-
           dotnet build CodexForVisualStudio.slnx -c Release --no-restore -v minimal
           -p:Version=${{ steps.version.outputs.vsix_version }}

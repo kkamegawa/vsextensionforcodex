@@ -1,4 +1,5 @@
-﻿using Codex.VisualStudio.Contracts;
+﻿using Codex.AppServer.Protocol;
+using Codex.VisualStudio.Contracts;
 using StreamJsonRpc;
 using System.Diagnostics;
 
@@ -15,6 +16,11 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
     private WorkerStatus status = new() { State = WorkerConnectionState.Disconnected, Message = "Worker is disconnected." };
     private AccountStatus accountStatus = new();
     private int networkFailureReported;
+    // A remote app-server has no child process, so its loss is observed through the transport's
+    // Closed event instead of ICodexProcessHost.Exited.
+    private IJsonRpcConnection? observedRemoteConnection;
+    // The observed connection whose close is waiting for the transition gate to be published.
+    private IJsonRpcConnection? lostRemoteConnection;
 
     public WorkerRpcService(ISecretRedactor redactor, ICodexProcessHost processHost, ICodexSessionService session)
     {
@@ -64,6 +70,7 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
             throw new InvalidOperationException($"Unsupported contract version {options.ContractVersion}.");
         }
 
+        bool remote = !string.IsNullOrWhiteSpace(options.RemoteEndpoint);
         bool hasLocalRoot = !string.IsNullOrWhiteSpace(options.LocalRoot);
         bool hasServerRoot = !string.IsNullOrWhiteSpace(options.ServerRoot);
         if (hasLocalRoot != hasServerRoot)
@@ -73,7 +80,7 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
 
         this.options = options;
         Interlocked.Exchange(ref networkFailureReported, 0);
-        bool remote = !string.IsNullOrWhiteSpace(options.RemoteEndpoint);
+        ObserveRemoteConnection(null);
         await SetStatusAsync(
             WorkerConnectionState.Connecting,
             remote ? "Connecting to remote codex app-server..." : "Starting codex app-server...",
@@ -82,6 +89,14 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
         {
             if (remote)
             {
+                // Without both roots, local working-directory and attachment paths would reach the
+                // remote server unmapped: they do not exist there and disclose the local layout.
+                if (!hasLocalRoot || !hasServerRoot)
+                {
+                    throw new InvalidOperationException(
+                        "Remote connections require both localRoot and serverRoot. Set both roots in the remote profile, then reconnect.");
+                }
+
                 if (string.IsNullOrWhiteSpace(options.RemoteTokenFilePath))
                 {
                     throw new InvalidOperationException("A token file is required for a remote app-server connection.");
@@ -92,6 +107,7 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
                     options.RemoteEndpoint!,
                     options.RemoteTokenFilePath,
                     cancellationToken).ConfigureAwait(false);
+                ObserveRemoteConnection(processHost.Connection);
             }
             else
             {
@@ -138,6 +154,8 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
             throw new InvalidOperationException("Connect must be called before restart.");
         }
 
+        // An intentional stop is not a connection loss; detach before the transport closes.
+        ObserveRemoteConnection(null);
         await processHost.StopAsync(cancellationToken).ConfigureAwait(false);
         return await ConnectCoreAsync(options, cancellationToken).ConfigureAwait(false);
     }
@@ -248,6 +266,11 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
         {
             turnId = await session.StartTurnAsync(request, cancellationToken).ConfigureAwait(false);
         }
+        catch (AttachmentRejectedException ex)
+        {
+            await SetStatusAsync(WorkerConnectionState.Ready, "Ready.", CancellationToken.None).ConfigureAwait(false);
+            throw new LocalRpcException(ex.Message) { ErrorCode = WorkerErrorCodes.AttachmentRejected };
+        }
         catch
         {
             await SetStatusAsync(WorkerConnectionState.Ready, "Ready.", CancellationToken.None).ConfigureAwait(false);
@@ -349,6 +372,7 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
         await connectionTransitionGate.WaitAsync().ConfigureAwait(false);
         try
         {
+            ObserveRemoteConnection(null);
             await session.DisposeAsync().ConfigureAwait(false);
             await processHost.DisposeAsync().ConfigureAwait(false);
         }
@@ -552,6 +576,96 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
         {
             await clientRpc.NotifyWithParameterObjectAsync("observer/approvalAudit", new { record }).ConfigureAwait(false);
         }
+    }
+
+    // Always called under connectionTransitionGate (connect, restart, dispose).
+    private void ObserveRemoteConnection(IJsonRpcConnection? connection)
+    {
+        IJsonRpcConnection? previous = Interlocked.Exchange(ref observedRemoteConnection, connection);
+
+        // A newer transition supersedes any loss that has not been published yet.
+        Volatile.Write(ref lostRemoteConnection, null);
+        if (previous is not null)
+        {
+            previous.Closed -= OnRemoteConnectionClosed;
+        }
+
+        if (connection is not null)
+        {
+            connection.Closed += OnRemoteConnectionClosed;
+        }
+    }
+
+    private void OnRemoteConnectionClosed(object? sender, Exception? exception)
+    {
+        if (sender is not IJsonRpcConnection connection)
+        {
+            return;
+        }
+
+        // Mark the loss before claiming the connection. If a transition swaps the observed
+        // connection in between, the claim fails; if it runs after the claim, it clears the mark.
+        Volatile.Write(ref lostRemoteConnection, connection);
+        if (!ReferenceEquals(Interlocked.CompareExchange(ref observedRemoteConnection, null, connection), connection))
+        {
+            Interlocked.CompareExchange(ref lostRemoteConnection, null, connection);
+            return;
+        }
+
+        connection.Closed -= OnRemoteConnectionClosed;
+        _ = OnRemoteConnectionLostAsync(connection, exception);
+    }
+
+    private async Task OnRemoteConnectionLostAsync(IJsonRpcConnection connection, Exception? exception)
+    {
+        WorkerDiagnostics.Write("remote codex app-server connection closed", exception);
+
+        // Publish under the transition gate so the loss cannot overwrite the status of a connect,
+        // restart, or dispose that started after the close; each of those clears the mark first.
+        try
+        {
+            await connectionTransitionGate.WaitAsync().ConfigureAwait(false);
+        }
+        catch (ObjectDisposedException)
+        {
+            return;
+        }
+
+        try
+        {
+            if (!ReferenceEquals(Interlocked.CompareExchange(ref lostRemoteConnection, null, connection), connection))
+            {
+                return;
+            }
+
+            await PublishRemoteConnectionLossAsync(exception).ConfigureAwait(false);
+        }
+        finally
+        {
+            ReleaseTransitionGate();
+        }
+    }
+
+    private void ReleaseTransitionGate()
+    {
+        try
+        {
+            connectionTransitionGate.Release();
+        }
+        catch (ObjectDisposedException)
+        {
+        }
+    }
+
+    private async Task PublishRemoteConnectionLossAsync(Exception? exception)
+    {
+        string message = exception is null
+            ? "The remote codex app-server connection closed. Reconnect to continue."
+            : $"The remote codex app-server connection was lost: {redactor.Redact(exception.Message)} Reconnect to continue.";
+        await PublishAccountStatusAsync(
+            new AccountStatus { State = AccountState.Unavailable },
+            CancellationToken.None).ConfigureAwait(false);
+        await SetStatusAsync(WorkerConnectionState.Degraded, message, CancellationToken.None).ConfigureAwait(false);
     }
 
     private async Task OnProcessExitedAsync(int exitCode)

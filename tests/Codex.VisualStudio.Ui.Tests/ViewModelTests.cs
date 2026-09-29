@@ -1515,7 +1515,50 @@ public sealed class ViewModelTests
             typeof(FileSuggestionViewModel), typeof(ReasoningEffortOption), typeof(ServiceTierOption),
             typeof(PendingSkillViewModel), typeof(UsagePresentation),
             typeof(WorkerStatus), typeof(ThreadSummary),
+            typeof(RemoteProfilesPresentationViewModel), typeof(RemoteProfileViewModel),
         ];
+
+    [TestMethod]
+    public void ChatToolWindowXaml_RemoteProfileBindings_ResolveThroughDataMembers()
+    {
+        const string resourceName = "Codex.VisualStudio.Extension.ToolWindows.ChatToolWindowContent.xaml";
+        using Stream? stream = typeof(ChatViewModel).Assembly.GetManifestResourceStream(resourceName);
+        Assert.IsNotNull(stream, $"Embedded resource '{resourceName}' not found.");
+        using var reader = new StreamReader(stream);
+        string xaml = reader.ReadToEnd();
+
+        // The profile editor must be reachable from the normal tool window: every path below
+        // RemoteProfiles resolves segment by segment through [DataMember] properties.
+        string[] required =
+        [
+            "RemoteProfiles.Profiles", "RemoteProfiles.SelectedProfile", "RemoteProfiles.AddCommand",
+            "RemoteProfiles.RemoveCommand", "RemoteProfiles.SaveCommand", "RemoteProfiles.StatusText",
+            "RemoteProfiles.SelectedProfile.Endpoint", "RemoteProfiles.SelectedProfile.LocalRoot",
+            "RemoteProfiles.SelectedProfile.ServerRoot", "RemoteProfiles.SelectedProfile.TokenFilePath",
+            "ApplyRemoteProfileCommand", "UseLocalAppServerCommand", "IsConnectionTargetOpen",
+        ];
+        var bound = Regex.Matches(xaml, @"\{Binding\s+([A-Za-z_][\w.]*)")
+            .Select(static match => match.Groups[1].Value)
+            .ToHashSet(StringComparer.Ordinal);
+        foreach (string path in required)
+        {
+            Assert.IsTrue(bound.Contains(path), $"ChatToolWindowContent.xaml does not bind '{path}'.");
+        }
+
+        foreach (string path in bound.Where(static path => path.StartsWith("RemoteProfiles", StringComparison.Ordinal)))
+        {
+            Type current = typeof(ChatViewModel);
+            foreach (string segment in path.Split('.'))
+            {
+                PropertyInfo? property = current.GetProperty(segment, BindingFlags.Instance | BindingFlags.Public);
+                Assert.IsNotNull(property, $"'{path}': {current.Name}.{segment} does not exist.");
+                Assert.IsNotNull(
+                    property!.GetCustomAttribute<DataMemberAttribute>(),
+                    $"'{path}': {current.Name}.{segment} is not a [DataMember].");
+                current = property.PropertyType;
+            }
+        }
+    }
 
     [TestMethod]
     public void RemoteUiContextTypes_AreDataContracts()
@@ -3426,12 +3469,21 @@ public sealed class ViewModelTests
     }
 
     [TestMethod]
-    public async Task ChatViewModel_StartTurnFailure_PreservesAttachments()
+    public async Task ChatViewModel_StartTurnFailure_ShowsReasonAndPreservesAttachments()
     {
         string filePath = Path.GetTempFileName();
         try
         {
-            var bridge = new FakeWorkerBridge { StartTurnException = new InvalidOperationException("failed") };
+            // The Worker rejects an attachment a remote app-server cannot read before the turn
+            // starts. The reason must reach the transcript instead of only diagnostics, and the
+            // attachment chip must stay so the user can fix it.
+            var bridge = new FakeWorkerBridge
+            {
+                StartTurnException = new StreamJsonRpc.RemoteInvocationException(
+                    "The attachment 'spec.md' is outside the remote profile's local root.",
+                    WorkerErrorCodes.AttachmentRejected,
+                    errorData: null),
+            };
             using var vm = new ChatViewModel(
                 bridge,
                 autoConnect: false,
@@ -3442,9 +3494,18 @@ public sealed class ViewModelTests
             vm.AttachCommand.Execute(null);
             await WaitForAsync(() => vm.HasPendingAttachments);
 
+            await SendMessageAsync(vm, "inspect this", clearComposer: true);
+
+            Assert.IsTrue(vm.HasPendingAttachments);
+            Assert.IsTrue(vm.Items.Any(item =>
+                item.Kind == ConversationEventKind.Error
+                && item.Text.Contains("outside the remote profile's local root", StringComparison.Ordinal)));
+
+            // Any other failure (connection loss, timeout) is not reported as "not sent": the turn
+            // may have started server-side, so it keeps the previous propagation behavior.
+            bridge.StartTurnException = new InvalidOperationException("failed");
             await Assert.ThrowsExactlyAsync<InvalidOperationException>(
                 () => SendMessageAsync(vm, "inspect this", clearComposer: true));
-
             Assert.IsTrue(vm.HasPendingAttachments);
         }
         finally
@@ -3786,6 +3847,123 @@ public sealed class ViewModelTests
         return (ExtensionSettings)field.GetValue(viewModel)!;
     }
 
+    [TestMethod]
+    public async Task ChatViewModel_RemoteConnectionLoss_EnablesConnectAndRestart()
+    {
+        var bridge = new FakeWorkerBridge();
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready });
+        Assert.IsFalse(vm.ConnectCommand.CanExecute);
+        Assert.IsFalse(vm.RestartCommand.CanExecute);
+        var raised = new List<string>();
+        vm.ConnectCommand.PropertyChanged += (_, _) => raised.Add("connect");
+        vm.RestartCommand.PropertyChanged += (_, _) => raised.Add("restart");
+
+        await bridge.PublishStateAsync(new WorkerStatus
+        {
+            State = WorkerConnectionState.Degraded,
+            Message = "The remote codex app-server connection closed. Reconnect to continue.",
+        });
+
+        Assert.IsTrue(vm.IsDegraded);
+        Assert.IsTrue(vm.ConnectCommand.CanExecute);
+        Assert.IsTrue(vm.RestartCommand.CanExecute);
+        CollectionAssert.Contains(raised, "connect");
+        CollectionAssert.Contains(raised, "restart");
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_ApplySavedRemoteProfile_ReconnectsAndShowsTarget()
+    {
+        var bridge = new FakeWorkerBridge();
+        var store = new MemorySettingsStore(new ExtensionSettings());
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: store);
+        SetWorkingDirectory(vm, Path.GetTempPath());
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready });
+        Assert.AreEqual("Local", vm.ConnectionTargetText);
+
+        vm.RemoteProfiles.AddCommand.Execute(null);
+        RemoteProfileViewModel profile = vm.RemoteProfiles.SelectedProfile!;
+        profile.Name = "Build box";
+        profile.Endpoint = "wss://build.example.invalid";
+        profile.TokenFilePath = @"C:\tokens\codex.token";
+        profile.LocalRoot = @"C:\repo";
+        profile.ServerRoot = "/srv/repo";
+        profile.IsEnabled = true;
+
+        // Unsaved edits are never applied.
+        await RunCommandAsync(vm.ApplyRemoteProfileCommand);
+        Assert.AreEqual(0, bridge.ConnectCallCount);
+        Assert.AreEqual("Save the profile before connecting with it.", vm.RemoteProfiles.StatusText);
+
+        vm.RemoteProfiles.SaveCommand.Execute(null);
+        await RunCommandAsync(vm.ApplyRemoteProfileCommand);
+
+        Assert.AreEqual(1, bridge.ConnectCallCount);
+        Assert.AreEqual("Build box", store.Settings.SelectedRemoteProfileName);
+        Assert.AreEqual("Build box", vm.ConnectionTargetText);
+        Assert.AreEqual("Connected with remote profile 'Build box'.", vm.RemoteProfiles.StatusText);
+
+        await RunCommandAsync(vm.UseLocalAppServerCommand);
+
+        Assert.AreEqual(2, bridge.ConnectCallCount);
+        Assert.IsNull(store.Settings.SelectedRemoteProfileName);
+        Assert.AreEqual("Local", vm.ConnectionTargetText);
+        Assert.AreEqual(1, store.Settings.RemoteProfiles.Count);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_ApplyRemoteProfile_IsDisabledDuringTurn()
+    {
+        var bridge = new FakeWorkerBridge();
+        var settings = new ExtensionSettings
+        {
+            SelectedRemoteProfileName = "Build box",
+            RemoteProfiles =
+            [
+                new RemoteConnectionProfile
+                {
+                    Name = "Build box",
+                    Endpoint = "wss://build.example.invalid",
+                    TokenFilePath = @"C:\tokens\codex.token",
+                    LocalRoot = @"C:\repo",
+                    ServerRoot = "/srv/repo",
+                    Enabled = true,
+                },
+            ],
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(settings));
+        Assert.AreEqual("Build box", vm.ConnectionTargetText);
+
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Busy, ThreadId = "t", TurnId = "turn" });
+        Assert.IsFalse(vm.ApplyRemoteProfileCommand.CanExecute);
+        Assert.IsFalse(vm.UseLocalAppServerCommand.CanExecute);
+
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready, ThreadId = "t" });
+        Assert.IsTrue(vm.ApplyRemoteProfileCommand.CanExecute);
+        Assert.IsTrue(vm.UseLocalAppServerCommand.CanExecute);
+    }
+
+    [TestMethod]
+    public void ChatViewModel_ConnectionTargetFlyout_IsExclusiveWithUsageAndHistory()
+    {
+        using var vm = new ChatViewModel(new FakeWorkerBridge(), autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+
+        vm.IsHistoryOpen = true;
+        vm.IsConnectionTargetOpen = true;
+        Assert.IsFalse(vm.IsHistoryOpen);
+
+        vm.IsUsageOpen = true;
+        Assert.IsFalse(vm.IsConnectionTargetOpen);
+
+        vm.CloseConnectionTargetCommand.Execute(null);
+        Assert.IsFalse(vm.IsConnectionTargetOpen);
+    }
+
+    // Awaits the command body through the Remote UI entry point instead of fire-and-forget Execute.
+    private static Task RunCommandAsync(AsyncCommand command)
+        => ((IAsyncCommand)command).ExecuteAsync(null, null!, CancellationToken.None);
+
     private static void SetWorkingDirectory(ChatViewModel viewModel, string path)
     {
         FieldInfo field = typeof(ChatViewModel).GetField(
@@ -3916,8 +4094,13 @@ public sealed class ViewModelTests
         public Task PublishSkillsChangedAsync(SkillsChangedEvent? value = null)
             => SkillsChanged?.Invoke(value ?? new SkillsChangedEvent()) ?? Task.CompletedTask;
 
+        public int ConnectCallCount { get; private set; }
+
         public Task<WorkerStatus> ConnectAsync(string workingDirectory, bool experimentalApi, CancellationToken cancellationToken)
-            => Task.FromResult(new WorkerStatus { State = WorkerConnectionState.Ready });
+        {
+            ConnectCallCount++;
+            return Task.FromResult(new WorkerStatus { State = WorkerConnectionState.Ready });
+        }
 
         public Task<WorkerStatus> RestartAsync(CancellationToken cancellationToken)
             => Task.FromResult(new WorkerStatus { State = WorkerConnectionState.Ready });

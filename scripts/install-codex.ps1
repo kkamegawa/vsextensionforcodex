@@ -15,10 +15,18 @@ $root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $manifestPath = Join-Path $root 'app-server-contract.json'
 
 function Get-GitHubHeaders {
-    return @{
+    $headers = @{
         Accept = 'application/vnd.github+json'
         'User-Agent' = 'codex-for-visual-studio-ci'
     }
+
+    # Unauthenticated API calls share a small per-IP limit on hosted runners. Use the workflow
+    # token when the caller provides one so the latest-release lookup does not fail intermittently.
+    if (-not [string]::IsNullOrWhiteSpace($env:GITHUB_TOKEN)) {
+        $headers.Authorization = "Bearer $env:GITHUB_TOKEN"
+    }
+
+    return $headers
 }
 
 function Get-LatestRelease {

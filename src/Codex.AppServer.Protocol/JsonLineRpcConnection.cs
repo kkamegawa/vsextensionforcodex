@@ -21,7 +21,7 @@ public sealed class JsonLineRpcConnection : IJsonRpcConnection
     private readonly Channel<JsonRpcMessage> inbound;
     private readonly Channel<string> writeQueue;
     private readonly ConcurrentDictionary<string, TaskCompletionSource<JsonElement>> pending = new();
-    private readonly ConcurrentDictionary<string, ServerRequestOperation> serverRequests = new();
+    private readonly JsonRpcServerRequestDispatcher dispatcher;
     private readonly CancellationTokenSource lifetime = new();
     private readonly List<Task> pumps = new();
     private long nextId;
@@ -38,6 +38,7 @@ public sealed class JsonLineRpcConnection : IJsonRpcConnection
             NewLine = "\n",
         };
         this.maxLineBytes = maxLineBytes;
+        dispatcher = new JsonRpcServerRequestDispatcher(EnqueueAsync);
         parseQueue = Channel.CreateBounded<string>(new BoundedChannelOptions(256)
         {
             FullMode = BoundedChannelFullMode.Wait,
@@ -224,7 +225,7 @@ public sealed class JsonLineRpcConnection : IJsonRpcConnection
 
             if (message.IsResponse)
             {
-                ResolveResponse(message);
+                JsonRpcServerRequestDispatcher.ResolveResponse(pending, message);
             }
             else if (message.IsRequest || message.IsNotification)
             {
@@ -243,7 +244,7 @@ public sealed class JsonLineRpcConnection : IJsonRpcConnection
             {
                 if (message.IsRequest)
                 {
-                    StartServerRequest(message, cancellationToken);
+                    dispatcher.Start(message, RequestReceived, cancellationToken);
                     continue;
                 }
 
@@ -273,137 +274,6 @@ public sealed class JsonLineRpcConnection : IJsonRpcConnection
         }
     }
 
-    private async Task ResolveServerRequestAsync(JsonRpcMessage message, CancellationToken cancellationToken)
-    {
-        string? id = message.GetIdKey();
-        if (id is null)
-        {
-            return;
-        }
-
-        try
-        {
-            JsonElement result = RequestReceived is null
-                ? JsonSerializer.SerializeToElement(new { })
-                : await RequestReceived(message, cancellationToken).ConfigureAwait(false);
-            if (!cancellationToken.IsCancellationRequested)
-            {
-                await EnqueueAsync(new { id = ToWireId(message.Id!.Value), result }, cancellationToken).ConfigureAwait(false);
-            }
-        }
-        catch (JsonRpcRemoteException ex)
-        {
-            if (!cancellationToken.IsCancellationRequested)
-            {
-                await EnqueueAsync(
-                    new { id = ToWireId(message.Id!.Value), error = new { code = ex.Code, message = ex.Message } },
-                    cancellationToken).ConfigureAwait(false);
-            }
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            // Closing the connection cancels the handler and intentionally suppresses its response.
-        }
-        catch (Exception ex)
-        {
-            if (!cancellationToken.IsCancellationRequested)
-            {
-                try
-                {
-                    await EnqueueAsync(
-                        new { id = ToWireId(message.Id!.Value), error = new { code = -32603, message = ex.Message } },
-                        cancellationToken).ConfigureAwait(false);
-                }
-                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-                {
-                    // The connection closed while the error response was being written.
-                }
-            }
-        }
-    }
-
-    private void StartServerRequest(JsonRpcMessage message, CancellationToken cancellationToken)
-    {
-        string? id = message.GetIdKey();
-        if (id is null)
-        {
-            return;
-        }
-
-        var operation = new ServerRequestOperation(id);
-        if (!serverRequests.TryAdd(id, operation))
-        {
-            // A server must not reuse an outstanding request id. Leave the first request as the sole
-            // owner of the response id.
-            return;
-        }
-
-        Task task = Task.Run(
-            () => RunServerRequestAsync(message, operation, cancellationToken),
-            CancellationToken.None);
-        _ = task.ContinueWith(
-            static completed => ObserveCompletedTask(completed),
-            CancellationToken.None,
-            TaskContinuationOptions.ExecuteSynchronously,
-            TaskScheduler.Default);
-    }
-
-    private async Task RunServerRequestAsync(
-        JsonRpcMessage message,
-        ServerRequestOperation operation,
-        CancellationToken cancellationToken)
-    {
-        try
-        {
-            await ResolveServerRequestAsync(message, cancellationToken).ConfigureAwait(false);
-        }
-        catch (Exception ex)
-        {
-            // A request task must never become unobserved during connection shutdown. The response
-            // path already handles protocol errors; this guard covers a close/write race.
-            _ = ex;
-        }
-        finally
-        {
-            serverRequests.TryRemove(new KeyValuePair<string, ServerRequestOperation>(operation.Id, operation));
-        }
-    }
-
-    private sealed class ServerRequestOperation
-    {
-        public ServerRequestOperation(string id)
-        {
-            Id = id;
-        }
-
-        public string Id { get; }
-    }
-
-    private static void ObserveCompletedTask(Task task)
-    {
-        if (task.IsFaulted)
-        {
-            _ = task.Exception;
-        }
-    }
-
-    private void ResolveResponse(JsonRpcMessage message)
-    {
-        string? id = message.GetIdKey();
-        if (id is null || !pending.TryRemove(id, out TaskCompletionSource<JsonElement>? completion))
-        {
-            return;
-        }
-
-        if (message.Error is not null)
-        {
-            completion.TrySetException(new JsonRpcRemoteException(message.Error.Code, message.Error.Message));
-            return;
-        }
-
-        completion.TrySetResult(message.Result ?? JsonSerializer.SerializeToElement(new { }));
-    }
-
     private async Task WritePumpAsync(CancellationToken cancellationToken)
     {
         await foreach (string json in writeQueue.Reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
@@ -419,9 +289,8 @@ public sealed class JsonLineRpcConnection : IJsonRpcConnection
             return;
         }
 
-        lifetime.Cancel();
-        inbound.Writer.TryComplete(exception);
-        writeQueue.Writer.TryComplete(exception);
+        // Fail outstanding requests before canceling the lifetime so callers observe a connection
+        // loss rather than a cancellation they did not request.
         var closedException = new JsonRpcConnectionClosedException(exception?.Message ?? "The app-server connection closed.");
         foreach (TaskCompletionSource<JsonElement> completion in pending.Values)
         {
@@ -429,6 +298,9 @@ public sealed class JsonLineRpcConnection : IJsonRpcConnection
         }
 
         pending.Clear();
+        lifetime.Cancel();
+        inbound.Writer.TryComplete(exception);
+        writeQueue.Writer.TryComplete(exception);
         Closed?.Invoke(this, exception);
     }
 
@@ -438,11 +310,6 @@ public sealed class JsonLineRpcConnection : IJsonRpcConnection
         {
             throw new JsonRpcConnectionClosedException("The app-server connection is closed.");
         }
-    }
-
-    private static object? ToWireId(JsonElement id)
-    {
-        return id.ValueKind == JsonValueKind.Number ? id.GetInt64() : id.GetString();
     }
 }
 

@@ -96,6 +96,15 @@ public interface ICodexSessionService : IAsyncDisposable
     Task ResolveUserInputAsync(ResolveUserInputRequest request, CancellationToken cancellationToken);
 }
 
+/// <summary>An explicit turn attachment that the connected app-server cannot read.</summary>
+public sealed class AttachmentRejectedException : InvalidOperationException
+{
+    public AttachmentRejectedException(string message)
+        : base(message)
+    {
+    }
+}
+
 public sealed record AppServerInitializationMetadata(
     string? CodexHome,
     string? PlatformFamily,
@@ -138,6 +147,9 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
     private readonly ApprovalGrantStore approvalGrants = new();
     private readonly object turnStateLock = new();
     private readonly HashSet<TurnKey> completedTurnIds = new();
+    // Thread whose turn/start request is in flight. Its turn notifications can arrive before the
+    // response updates ActiveThreadId, so they must not be treated as another thread's events.
+    private string? pendingTurnThreadId;
     private long connectionGeneration;
     private readonly SemaphoreSlim skillsCacheGate = new(1, 1);
     private readonly TimeProvider timeProvider;
@@ -250,6 +262,7 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         lock (turnStateLock)
         {
             completedTurnIds.Clear();
+            pendingTurnThreadId = null;
             ActiveThreadId = null;
             ActiveTurnId = null;
         }
@@ -787,35 +800,56 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
             };
         }
 
-        JsonElement result = await context.Connection.SendRequestAsync(
-            "turn/start",
-            parameters,
-            TimeSpan.FromSeconds(60),
-            cancellationToken).ConfigureAwait(false);
-        if (!IsCurrent(context))
-        {
-            throw new JsonRpcConnectionClosedException("The app-server connection generation changed while starting the turn.");
-        }
-        string? startedTurnId = result.GetProperty("turn").GetProperty("id").GetString();
         lock (turnStateLock)
         {
+            pendingTurnThreadId = request.ThreadId;
+        }
+
+        string? startedTurnId;
+        try
+        {
+            JsonElement result = await context.Connection.SendRequestAsync(
+                "turn/start",
+                parameters,
+                TimeSpan.FromSeconds(60),
+                cancellationToken).ConfigureAwait(false);
             if (!IsCurrent(context))
             {
                 throw new JsonRpcConnectionClosedException("The app-server connection generation changed while starting the turn.");
             }
 
-            ActiveThreadId = request.ThreadId;
-            // A completion notification may legally race the response to turn/start.
-            // Never resurrect a turn that the server has already completed.
-            if (startedTurnId is not null && !completedTurnIds.Contains(new TurnKey(context.Generation, request.ThreadId, startedTurnId)))
+            startedTurnId = result.GetProperty("turn").GetProperty("id").GetString();
+            lock (turnStateLock)
             {
-                ActiveTurnId = startedTurnId;
-            }
-            else
-            {
-                ActiveTurnId = null;
+                if (!IsCurrent(context))
+                {
+                    throw new JsonRpcConnectionClosedException("The app-server connection generation changed while starting the turn.");
+                }
+
+                ActiveThreadId = request.ThreadId;
+                // A completion notification may legally race the response to turn/start.
+                // Never resurrect a turn that the server has already completed.
+                if (startedTurnId is not null && !completedTurnIds.Contains(new TurnKey(context.Generation, request.ThreadId, startedTurnId)))
+                {
+                    ActiveTurnId = startedTurnId;
+                }
+                else
+                {
+                    ActiveTurnId = null;
+                }
             }
         }
+        finally
+        {
+            lock (turnStateLock)
+            {
+                if (string.Equals(pendingTurnThreadId, request.ThreadId, StringComparison.Ordinal))
+                {
+                    pendingTurnThreadId = null;
+                }
+            }
+        }
+
         if (request.HasEffort)
         {
             EffectiveReasoningEffort = request.Effort;
@@ -1413,9 +1447,21 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
             bool isImage = string.Equals(attachment.Kind, "image", StringComparison.OrdinalIgnoreCase);
             bool isMention = string.Equals(attachment.Kind, "mention", StringComparison.OrdinalIgnoreCase);
             if ((!isImage && !isMention)
-                || !TryNormalizeReadableFile(attachment.Path, allowOutsideWorkspace: true, out string normalizedPath)
-                || !TryMapLocalPathForServer(normalizedPath, out string serverPath)
-                || !includedPaths.Add(normalizedPath))
+                || !TryNormalizeReadableFile(attachment.Path, allowOutsideWorkspace: true, out string normalizedPath))
+            {
+                continue;
+            }
+
+            // An explicit attachment the remote server cannot see must never be dropped silently:
+            // the user would believe the model received it. Reject the turn with a fixable reason.
+            if (!TryMapLocalPathForServer(normalizedPath, out string serverPath))
+            {
+                throw new AttachmentRejectedException(
+                    $"The attachment '{Path.GetFileName(normalizedPath)}' is outside the remote profile's local root, "
+                    + "so the remote app-server cannot read it. Remove it or move it under the mapped local root.");
+            }
+
+            if (!includedPaths.Add(normalizedPath))
             {
                 continue;
             }
@@ -1846,11 +1892,8 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
             lock (turnStateLock)
             {
                 // A late turn/started notification must not revive a completed turn.
-                bool wrongThread = ActiveThreadId is not null
-                    && threadId is not null
-                    && !string.Equals(ActiveThreadId, threadId, StringComparison.Ordinal);
                 if (startedTurnId is not null
-                    && !wrongThread
+                    && IsTrackedTurnThreadLocked(threadId)
                     && !completedTurnIds.Contains(new TurnKey(context.Generation, threadId, startedTurnId)))
                 {
                     ActiveTurnId = startedTurnId;
@@ -1864,29 +1907,32 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         }
         else if (method == "turn/completed")
         {
-            string? completedId;
+            // The wire shape is { threadId, turn: { id } }; a top-level turnId is accepted only as
+            // a fallback so the (generation, thread, turn) key is never lost for a real completion.
+            string? completedId = turnId
+                ?? (parameters.TryGetProperty("turn", out JsonElement completedTurn)
+                    ? GetString(completedTurn, "id")
+                    : null);
+            bool otherThread;
             lock (turnStateLock)
             {
-                completedId = turnId
-                    ?? (threadId is null || string.Equals(ActiveThreadId, threadId, StringComparison.Ordinal)
-                        ? ActiveTurnId
-                        : null);
+                otherThread = !IsTrackedTurnThreadLocked(threadId);
+                completedId ??= otherThread ? null : ActiveTurnId;
                 if (completedId is not null)
                 {
                     completedTurnIds.Add(new TurnKey(context.Generation, threadId, completedId));
                 }
 
-                if ((completedId is null || string.Equals(ActiveTurnId, completedId, StringComparison.Ordinal))
-                    && (threadId is null || string.Equals(ActiveThreadId, threadId, StringComparison.Ordinal)))
+                if (!otherThread
+                    && (completedId is null || string.Equals(ActiveTurnId, completedId, StringComparison.Ordinal)))
                 {
                     ActiveTurnId = null;
                 }
             }
 
+            turnId = completedId;
             approvalGrants.EndTurn(threadId, completedId);
-            if (threadId is not null
-                && ActiveThreadId is not null
-                && !string.Equals(ActiveThreadId, threadId, StringComparison.Ordinal))
+            if (otherThread)
             {
                 return;
             }
@@ -1898,7 +1944,8 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
 
         if (method == "serverRequest/resolved")
         {
-            string? requestId = GetString(parameters, "requestId");
+            // RequestId is string | int64 on the wire; use the same key format as JsonRpcMessage.GetIdKey.
+            string? requestId = GetRequestIdKey(parameters, "requestId");
             if (requestId is not null
                 && TryRemovePendingApproval(context.Generation, requestId, out PendingApproval? pending)
                 && pending is not null)
@@ -2119,6 +2166,24 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
                 ],
         };
     }
+
+    // A turn event belongs to the tracked conversation when it names no thread, when no thread is
+    // tracked yet, or when it names the active thread or the thread whose turn/start is in flight.
+    private bool IsTrackedTurnThreadLocked(string? threadId)
+        => threadId is null
+            || (ActiveThreadId is null && pendingTurnThreadId is null)
+            || string.Equals(ActiveThreadId, threadId, StringComparison.Ordinal)
+            || string.Equals(pendingTurnThreadId, threadId, StringComparison.Ordinal);
+
+    private static string? GetRequestIdKey(JsonElement element, string name)
+        => element.ValueKind == JsonValueKind.Object && element.TryGetProperty(name, out JsonElement property)
+            ? property.ValueKind switch
+            {
+                JsonValueKind.String => property.GetString(),
+                JsonValueKind.Number => property.GetRawText(),
+                _ => null,
+            }
+            : null;
 
     private static string CreateInteractionId(long generation, string serverRequestId)
         => $"{generation}{InteractionIdSeparator}{serverRequestId}";

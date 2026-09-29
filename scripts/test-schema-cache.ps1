@@ -57,16 +57,30 @@ try {
         throw 'Missing schema sentinel did not replace the stale cache.'
     }
 
-    $alphaRejected = $false
-    try {
-        & $generator -OutputDirectory $testRoot -Version '0.155.1-alpha.1' -Surface stable -CodexPath $CodexPath *> $null
+    # A stub executable reports the version so the generator's own version check runs; passing an
+    # invalid -Version would only exercise PowerShell parameter validation.
+    function Assert-VersionRejected([string]$ReportedVersion, [string]$ExpectedMessage) {
+        $stub = Join-Path $testRoot ('codex-stub-' + [guid]::NewGuid().ToString('N') + '.cmd')
+        Set-Content -LiteralPath $stub -Value "@echo codex-cli $ReportedVersion" -Encoding ascii
+        $failure = $null
+        try {
+            & $generator -OutputDirectory (Join-Path $testRoot 'stub-cache') -Version '0.155.1' -Surface stable -CodexPath $stub -Force *> $null
+        }
+        catch {
+            $failure = $_.Exception.Message
+        }
+
+        if ($null -eq $failure) {
+            throw "Codex CLI '$ReportedVersion' was accepted as the pinned stable contract."
+        }
+
+        if ($failure -notlike "*$ExpectedMessage*") {
+            throw "Codex CLI '$ReportedVersion' was rejected for an unexpected reason: $failure"
+        }
     }
-    catch {
-        $alphaRejected = $true
-    }
-    if (-not $alphaRejected) {
-        throw 'A prerelease CLI version was accepted as a stable contract.'
-    }
+
+    Assert-VersionRejected '0.155.1-alpha.1' 'Prerelease Codex CLI is not a stable contract'
+    Assert-VersionRejected '0.154.0' 'Pinned Codex 0.155.1 is required'
 
     Write-Host 'Schema cache contract tests passed.'
 }

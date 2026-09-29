@@ -158,7 +158,7 @@ Tracking: [#154](https://github.com/kkamegawa/vsextensionforcodex/issues/154)
 
 ### Worker contract and one-response lifecycle
 
-- Raise the Worker contract from v15 and use distinct types for questions, permission requests, MCP input, user verification, and stored attachment state.
+- Raise the Worker contract from v16 (which carries the remote connection options) and use distinct types for questions, permission requests, MCP input, user verification, and stored attachment state.
 - Use a common pending-request registry keyed by connection generation and request ID.
 - Guarantee at most one response across answer, cancel, timeout, disconnect, and `serverRequest/resolved` races.
 

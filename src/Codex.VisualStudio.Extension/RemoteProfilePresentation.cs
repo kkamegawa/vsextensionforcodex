@@ -18,7 +18,7 @@ public sealed class RemoteProfileViewModel : ObservableObject
     private bool isEnabled;
     private bool isSelected;
 
-    internal RemoteProfileViewModel(RemoteConnectionProfile profile)
+    internal RemoteProfileViewModel(RemoteConnectionProfile profile, bool isPersisted)
     {
         name = profile.Name;
         endpoint = profile.Endpoint;
@@ -26,7 +26,47 @@ public sealed class RemoteProfileViewModel : ObservableObject
         localRoot = profile.LocalRoot;
         serverRoot = profile.ServerRoot;
         isEnabled = profile.Enabled;
+        PersistedProfile = isPersisted ? profile.Clone() : null;
     }
+
+    private RemoteConnectionProfile? persistedProfile;
+
+    // The last validated values written to settings. Edits stay in the view model until Save
+    // validates them, so selection changes or removals never persist unvalidated input.
+    internal RemoteConnectionProfile? PersistedProfile
+    {
+        get => persistedProfile;
+        set
+        {
+            persistedProfile = value;
+            OnPropertyChanged(nameof(RowStatusText));
+        }
+    }
+
+    // True when the editor holds values that Save has not validated and persisted yet.
+    internal bool HasUnsavedChanges
+    {
+        get
+        {
+            RemoteConnectionProfile current = ToSettings();
+            return persistedProfile is null
+                || !string.Equals(current.Name, persistedProfile.Name, StringComparison.Ordinal)
+                || !string.Equals(current.Endpoint, persistedProfile.Endpoint, StringComparison.Ordinal)
+                || !string.Equals(current.TokenFilePath, persistedProfile.TokenFilePath, StringComparison.Ordinal)
+                || !string.Equals(current.LocalRoot, persistedProfile.LocalRoot, StringComparison.Ordinal)
+                || !string.Equals(current.ServerRoot, persistedProfile.ServerRoot, StringComparison.Ordinal)
+                || current.Enabled != persistedProfile.Enabled;
+        }
+    }
+
+    // Short row marker in the profile list: unsaved edits win over the disabled state because
+    // they must be saved before anything else applies.
+    [DataMember]
+    public string RowStatusText
+        => persistedProfile is null ? "Not saved"
+            : HasUnsavedChanges ? "Unsaved changes"
+            : !persistedProfile.Enabled ? "Disabled"
+            : string.Empty;
 
     [DataMember]
     public string Name
@@ -37,6 +77,7 @@ public sealed class RemoteProfileViewModel : ObservableObject
             if (SetProperty(ref name, value))
             {
                 OnPropertyChanged(nameof(DisplayText));
+                OnPropertyChanged(nameof(RowStatusText));
             }
         }
     }
@@ -50,21 +91,62 @@ public sealed class RemoteProfileViewModel : ObservableObject
             if (SetProperty(ref endpoint, value))
             {
                 OnPropertyChanged(nameof(DisplayText));
+                OnPropertyChanged(nameof(RowStatusText));
             }
         }
     }
 
     [DataMember]
-    public string TokenFilePath { get => tokenFilePath; set => SetProperty(ref tokenFilePath, value); }
+    public string TokenFilePath
+    {
+        get => tokenFilePath;
+        set
+        {
+            if (SetProperty(ref tokenFilePath, value))
+            {
+                OnPropertyChanged(nameof(RowStatusText));
+            }
+        }
+    }
 
     [DataMember]
-    public string LocalRoot { get => localRoot; set => SetProperty(ref localRoot, value); }
+    public string LocalRoot
+    {
+        get => localRoot;
+        set
+        {
+            if (SetProperty(ref localRoot, value))
+            {
+                OnPropertyChanged(nameof(RowStatusText));
+            }
+        }
+    }
 
     [DataMember]
-    public string ServerRoot { get => serverRoot; set => SetProperty(ref serverRoot, value); }
+    public string ServerRoot
+    {
+        get => serverRoot;
+        set
+        {
+            if (SetProperty(ref serverRoot, value))
+            {
+                OnPropertyChanged(nameof(RowStatusText));
+            }
+        }
+    }
 
     [DataMember]
-    public bool IsEnabled { get => isEnabled; set => SetProperty(ref isEnabled, value); }
+    public bool IsEnabled
+    {
+        get => isEnabled;
+        set
+        {
+            if (SetProperty(ref isEnabled, value))
+            {
+                OnPropertyChanged(nameof(RowStatusText));
+            }
+        }
+    }
 
     [DataMember]
     public bool IsSelected { get => isSelected; internal set => SetProperty(ref isSelected, value); }
@@ -97,17 +179,21 @@ public sealed class RemoteProfilesPresentationViewModel : ObservableObject
         this.store = store;
         foreach (RemoteConnectionProfile profile in settings.RemoteProfiles.Where(static p => p is not null))
         {
-            Profiles.Add(new RemoteProfileViewModel(profile));
+            Profiles.Add(new RemoteProfileViewModel(profile, isPersisted: true));
         }
 
-        // Initialize commands before restoring the persisted selection. Selecting a profile
-        // persists the selection and refreshes command availability, so the commands must be
-        // available while the constructor rehydrates the view model.
+        Profiles.CollectionChanged += (_, _) => OnPropertyChanged(nameof(HasNoProfiles));
         AddCommand = new AsyncCommand(AddProfileAsync);
         RemoveCommand = new AsyncCommand(RemoveProfileAsync, () => SelectedProfile is not null);
         SaveCommand = new AsyncCommand(SaveProfileAsync, () => SelectedProfile is not null);
-        SelectedProfile = Profiles.FirstOrDefault(profile =>
-            string.Equals(profile.Name, settings.SelectedRemoteProfileName, StringComparison.Ordinal));
+
+        // Restoring the persisted selection is not a user change, so it must not rewrite settings.
+        selectedProfile = Profiles.FirstOrDefault(profile =>
+            string.Equals(profile.PersistedProfile?.Name, settings.SelectedRemoteProfileName, StringComparison.Ordinal));
+        if (selectedProfile is not null)
+        {
+            selectedProfile.IsSelected = true;
+        }
     }
 
     [DataMember]
@@ -134,14 +220,11 @@ public sealed class RemoteProfilesPresentationViewModel : ObservableObject
                 if (value is not null)
                 {
                     value.IsSelected = true;
-                    settings.SelectedRemoteProfileName = value.Name;
-                }
-                else
-                {
-                    settings.SelectedRemoteProfileName = null;
                 }
 
-                SaveSettings();
+                // Only a saved profile can be applied; an unsaved selection falls back to local stdio.
+                settings.SelectedRemoteProfileName = value?.PersistedProfile?.Name;
+                PersistSettings();
                 OnPropertyChanged(nameof(HasSelection));
             }
         }
@@ -149,6 +232,9 @@ public sealed class RemoteProfilesPresentationViewModel : ObservableObject
 
     [DataMember]
     public bool HasSelection => SelectedProfile is not null;
+
+    [DataMember]
+    public bool HasNoProfiles => Profiles.Count == 0;
 
     [DataMember]
     public string StatusText
@@ -166,17 +252,60 @@ public sealed class RemoteProfilesPresentationViewModel : ObservableObject
     [DataMember]
     public AsyncCommand SaveCommand { get; }
 
+    // Resolves the saved, enabled selection that a reconnect would apply. The Worker bridge reads
+    // the same persisted selection, so an unsaved or disabled profile must be refused here rather
+    // than silently falling back to local stdio.
+    internal bool TryGetApplicableProfile(out string profileName, out string error)
+    {
+        profileName = string.Empty;
+        error = string.Empty;
+        RemoteProfileViewModel? profile = SelectedProfile;
+        if (profile is null)
+        {
+            error = "Select a remote profile first.";
+            return false;
+        }
+
+        if (profile.HasUnsavedChanges || profile.PersistedProfile is null)
+        {
+            error = "Save the profile before connecting with it.";
+            return false;
+        }
+
+        if (!profile.PersistedProfile.Enabled)
+        {
+            error = "Enable the profile and save it before connecting with it.";
+            return false;
+        }
+
+        profileName = profile.PersistedProfile.Name;
+        return true;
+    }
+
+    // The saved profile a new connection will use, or null for local stdio. Mirrors the
+    // WorkerBridge rule: only an enabled profile named by the persisted selection applies.
+    internal string? AppliedProfileName
+        => settings.RemoteProfiles.FirstOrDefault(profile => profile.Enabled
+            && string.Equals(profile.Name, settings.SelectedRemoteProfileName, StringComparison.Ordinal))?.Name;
+
+    internal void ClearSelection() => SelectedProfile = null;
+
+    internal void ReportStatus(string text) => StatusText = text;
+
     private Task AddProfileAsync()
     {
-        var profile = new RemoteProfileViewModel(new RemoteConnectionProfile
-        {
-            Name = "Remote app-server",
-            Endpoint = "wss://",
-            Enabled = false,
-        });
+        var profile = new RemoteProfileViewModel(
+            new RemoteConnectionProfile
+            {
+                Name = "Remote app-server",
+                Endpoint = "wss://",
+                Enabled = false,
+            },
+            isPersisted: false);
         Profiles.Add(profile);
         SelectedProfile = profile;
-        return SaveProfileAsync();
+        StatusText = "Enter the endpoint, both roots, and the token file, then save the profile.";
+        return Task.CompletedTask;
     }
 
     private Task RemoveProfileAsync()
@@ -188,43 +317,50 @@ public sealed class RemoteProfilesPresentationViewModel : ObservableObject
 
         int index = Profiles.IndexOf(SelectedProfile);
         Profiles.Remove(SelectedProfile);
+
+        // The removed profile is no longer the selection, so the setter always persists the
+        // remaining saved profiles and the new selection.
         SelectedProfile = index >= 0 && index < Profiles.Count ? Profiles[index] : Profiles.LastOrDefault();
-        SaveSettings();
-        RemoveCommand.RaiseCanExecuteChanged();
-        SaveCommand.RaiseCanExecuteChanged();
         return Task.CompletedTask;
     }
 
     private Task SaveProfileAsync()
     {
-        if (SelectedProfile is null)
+        RemoteProfileViewModel? profile = SelectedProfile;
+        if (profile is null)
         {
             return Task.CompletedTask;
         }
 
-        if (!TryValidate(SelectedProfile, out string error))
+        if (!TryValidate(profile, out string error))
         {
             StatusText = error;
             return Task.CompletedTask;
         }
 
-        if (Profiles.GroupBy(profile => profile.Name.Trim(), StringComparer.OrdinalIgnoreCase)
-            .Any(group => group.Count() > 1))
+        string name = profile.Name.Trim();
+        bool duplicate = Profiles.Any(other => !ReferenceEquals(other, profile)
+            && (string.Equals(other.Name.Trim(), name, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(other.PersistedProfile?.Name, name, StringComparison.OrdinalIgnoreCase)));
+        if (duplicate)
         {
             StatusText = "Profile names must be unique.";
             return Task.CompletedTask;
         }
 
-        settings.RemoteProfiles = Profiles.Select(static profile => profile.ToSettings()).ToList();
-        settings.SelectedRemoteProfileName = SelectedProfile.Name.Trim();
-        SaveSettings();
+        profile.PersistedProfile = profile.ToSettings();
+        settings.SelectedRemoteProfileName = profile.PersistedProfile.Name;
+        PersistSettings();
         StatusText = "Remote profile saved. Reconnect to apply it.";
         return Task.CompletedTask;
     }
 
-    private void SaveSettings()
+    private void PersistSettings()
     {
-        settings.RemoteProfiles = Profiles.Select(static profile => profile.ToSettings()).ToList();
+        settings.RemoteProfiles = Profiles
+            .Where(static profile => profile.PersistedProfile is not null)
+            .Select(static profile => profile.PersistedProfile!.Clone())
+            .ToList();
         store.Save(settings);
         RemoveCommand.RaiseCanExecuteChanged();
         SaveCommand.RaiseCanExecuteChanged();
@@ -239,9 +375,11 @@ public sealed class RemoteProfilesPresentationViewModel : ObservableObject
             return false;
         }
 
-        if (!Uri.TryCreate(profile.Endpoint, UriKind.Absolute, out Uri? endpoint)
-            || !string.Equals(endpoint.Scheme, "wss", StringComparison.OrdinalIgnoreCase)
-            && !IsLoopbackWebSocket(endpoint))
+        // Same rule as the Worker's WebSocketTransportSecurityPolicy: wss anywhere, ws only for
+        // a loopback host (localhost, 127.0.0.0/8, or ::1).
+        if (!Uri.TryCreate(profile.Endpoint.Trim(), UriKind.Absolute, out Uri? endpoint)
+            || !(string.Equals(endpoint.Scheme, "wss", StringComparison.OrdinalIgnoreCase)
+                || (string.Equals(endpoint.Scheme, "ws", StringComparison.OrdinalIgnoreCase) && endpoint.IsLoopback)))
         {
             error = "Use a wss endpoint. Plain ws is allowed only for loopback.";
             return false;
@@ -261,9 +399,4 @@ public sealed class RemoteProfilesPresentationViewModel : ObservableObject
 
         return true;
     }
-
-    private static bool IsLoopbackWebSocket(Uri endpoint)
-        => string.Equals(endpoint.Scheme, "ws", StringComparison.OrdinalIgnoreCase)
-            && (string.Equals(endpoint.Host, "localhost", StringComparison.OrdinalIgnoreCase)
-                || Uri.CheckHostName(endpoint.Host) == UriHostNameType.IPv4 && System.Net.IPAddress.TryParse(endpoint.Host, out System.Net.IPAddress? address) && System.Net.IPAddress.IsLoopback(address));
 }
