@@ -84,25 +84,35 @@ Visual Studio 拡張機能の既存 C#／`codex app-server` 連携を CLI 0.159.
 
 ### 転送・プロファイルモデル
 
-- ローカル Worker 構成を維持し、Worker 内で stdio または WebSocket を選択する。
-- JSON-RPC 振り分け、メッセージ上限、キャンセル、未完了要求の終了、シャットダウン処理を転送方式間で共通化する。
-- プロファイルに表示名、接続先、トークンファイルのパス、ローカルルート、サーバールート、有効状態、選択中プロファイルを保存する。
-- トークン本文は接続時に Worker 内だけで読み取る。
+- Extension → ローカル Worker を維持し、Worker 内で所有する local stdio または明示的に有効な remote WebSocket を選択する。
+- 共通 RPC 振り分け、メッセージ上限、通知順序、キャンセル、世代退役を維持する。profile はメタデータだけを保存し、トークン値を含めない。
+- 詳細な最終契約は [secure-remote-connection-design_ja.md](secure-remote-connection-design_ja.md) と [英語版](secure-remote-connection-design.md)。UI 契約は `doc/design.md` section 12、判断記録は `doc/adr/ADR-012-app-server-remote-transport.md`。
+- 既存 retry helper と endpoint・token 検証は部分実装。helper にメソッド・引数の適格性と単一 timeout 予算を追加し、無制限の token 読み取りと UI の重複 endpoint 検証を置換する。実装済み profile editor・transport 所有権は維持する。
 
-### 接続先・所有権ポリシー
+### 接続先・認証・所有権
 
-- リモート接続先は `wss` を受け入れ、平文 `ws` は loopback だけ受け入れる。
-- WebSocket ハンドシェイク時に Bearer 認証を付与し、認証情報をログへ出力しない。
-- 証明書検証を無効化する設定は提供しない。
-- ローカルプロファイルは子プロセスの再起動を所有する。リモートプロファイルは接続だけを閉じ、操作名を「再接続」とする。
-- connect、reconnect、close を直列化し、1つの接続世代だけを有効にする。
+- endpoint 専用 `RemoteEndpointPolicy` を Contracts（`netstandard2.0`）に置き、Extension・Worker・Protocol が使う。remote `wss` と厳密に定義した loopback `ws` を許可し、URI 認証情報・query・fragment・未指定 bind address を拒否する。
+- Save はメタデータと token-file path の要件を検証する。Worker だけが handshake 直前に、ファイルの存在・読み取り可否・encoding・上限付き内容・bearer 形式を検査する。
+- 明示的な接続・再接続でローカルトークンファイルを再読込する。実値の lease 型秘匿、既定 TLS 検証、redirect なし、WebSocket と HTTP 診断で共通の proxy 解決方針を使う。
+- local restart は子プロセスを所有し、remote reconnect は socket だけを所有する。remote への `worker/restart` は停止前に型付き接続操作拒否を返す。
+- 再接続は適用済みの名前で最新保存 profile を読み、有効・同一メタデータ・期待世代を要求する。変更・無効化・削除された profile は明示的な適用・接続先選択を必要とする。同じ token file の内容更新だけではメタデータは変わらない。
+- 同一 instance の設定変更と再接続 snapshot 検証・送信を直列化し、Worker 遷移ゲートでも再検証する。認証主体・cache の永続分離と instance 間設定 transaction は Issue #152 が追跡する。
 
-### 診断・再試行
+### 診断・死活検知・再試行
 
-- health endpoint は診断だけに利用する。health 成功を JSON-RPC や個別機能の利用可否とは扱わない。
-- ローカルプロセス状態とリモート接続状態を区別する。
-- 過負荷（`-32001`）後の指数バックオフと jitter は、明示的に冪等／読み取り専用の RPC にだけ上限付きで適用する。
-- 変更操作は自動再試行しない。
+- `/healthz`・`/readyz` GET は合計 5 秒、認証・Origin なし、redirect・本文表示なし、独立した型付き結果とする。authority root の診断範囲を表示し、path routing 先 App Server は root probe では未確認とする。health で RPC readiness・機能可否を判断しない。
+- .NET 8 を維持する。30 秒の keepalive interval を相手の応答証拠とせず、世代別 idle RPC watchdog の 10 秒 probe 2 回が無通信で timeout したら half-open 接続を退役させる。自動再接続・変更要求再送は行わない。probe 中に妥当な inbound request・response・notification があれば、30 秒の無通信監視に戻る。
+- remote 起動全体は 45 秒。token 読込最大 5 秒、handshake・initialize・起動時 account read は各最大 15 秒とし、すべて残り時間で制限する。
+- retry 棚卸しは現在の 8 メソッド。`account/read` は明示的 `refreshToken=false`、`skills/list` は明示的 `forceReload=false` を必要とする。強制 skill refresh は cache 消去・再走査の追加処理を抑えるため 1 回とし、将来の history read は別途レビューして許可リストへ追加する。
+- 完了した `-32001` だけを最大再試行 3 回・送信 4 回まで扱い、基準待機 250/500/1000 ms と ±20% jitter を使う。単一 monotonic timeout に送信・待機を含め、世代退役で保留再試行をキャンセルする。
+
+### 実装順序と検証ゲート
+
+1. 改訂した Issue #151 設計と ADR-012 amendment 案を確認する。本 Phase 2、`doc/design.md` section 12、英日詳細設計、Wiki 計画・索引を同期する。設計確認後に実装へ進む。
+2. 共通 policy・retry を拡張し、無制限 token I/O を置換する。secret lease と出力生成時の秘匿、起動失敗時の決定的な後始末を追加する。既存 runtime・SDK・package version を維持する。
+3. 型付き診断、再接続の拒否理由、接続先・世代 snapshot、.NET 8 watchdog を追加する。実際の merge base から次の Worker 契約 version を割り当て、全 producer・consumer と package を同時更新する。
+4. profile 鮮度検証、独立 health/RPC 表示、local Restart・remote Reconnect を接続する。policy・token・TLS・proxy・read-only retry・寿命・serialization・command 状態と、拒否する引数 variant をテストする。
+5. 固定 CLI 0.159.1 による警告ゼロ Release build、Core/UI tests、schema・contract 検証、VSIX manifest・assembly・XAML 確認、Experimental Instance screenshot を実施する。実証した内容を Issue #151 とともに `doc/implementation.md`・`doc/task.md` に記録し、全受け入れ条件の証跡が揃うまで完了扱いにしない。
 
 ## Phase 3 — パス対応付けと状態分離
 

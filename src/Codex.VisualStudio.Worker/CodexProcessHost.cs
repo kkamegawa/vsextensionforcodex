@@ -1,5 +1,8 @@
 ﻿using System.Diagnostics;
+using System.Net.WebSockets;
+using System.Security.Authentication;
 using Codex.AppServer.Protocol;
+using Codex.VisualStudio.Contracts;
 
 namespace Codex.VisualStudio.Worker;
 
@@ -15,10 +18,35 @@ public interface ICodexProcessHost : IAsyncDisposable
 
     Task StartAsync(string codexPath, string workingDirectory, CancellationToken cancellationToken);
 
-    Task StartRemoteAsync(string endpoint, string tokenFilePath, CancellationToken cancellationToken)
+    Task StartRemoteAsync(RemoteConnectionRequest request, CancellationToken cancellationToken)
         => throw new NotSupportedException("This process host does not support remote connections.");
 
     Task StopAsync(CancellationToken cancellationToken);
+}
+
+/// <summary>
+/// Explicit remote connection request. Holds metadata only; the token is read by the host
+/// immediately before the handshake.
+/// </summary>
+public sealed record RemoteConnectionRequest(string Endpoint, string TokenFilePath);
+
+/// <summary>
+/// Stage caps for one explicit remote connection startup. Each stage also receives no more than
+/// the remaining overall budget, which the caller enforces through its cancellation token.
+/// </summary>
+public sealed record RemoteStartupLimits(
+    TimeSpan Overall,
+    TimeSpan TokenRead,
+    TimeSpan Handshake,
+    TimeSpan Initialize,
+    TimeSpan AccountRead)
+{
+    public static RemoteStartupLimits Default { get; } = new(
+        TimeSpan.FromSeconds(45),
+        TimeSpan.FromSeconds(5),
+        TimeSpan.FromSeconds(15),
+        TimeSpan.FromSeconds(15),
+        TimeSpan.FromSeconds(15));
 }
 
 public sealed class CodexProcessHost : ICodexProcessHost
@@ -69,12 +97,28 @@ public sealed class CodexProcessHost : ICodexProcessHost
     ];
 
     private readonly ISecretRedactor redactor;
+    private readonly WorkerNetworking? networking;
+    private readonly BearerTokenFileReader tokenReader;
+    private readonly RemoteStartupLimits limits;
     private Process? process;
     private int? processId;
 
-    public CodexProcessHost(ISecretRedactor redactor)
+    // Owned per remote connection: the redaction lease for the token that authenticated it and,
+    // for exact localhost, the pinned invoker. Both are released only after the connection (its
+    // pumps, pending requests, and server-request handlers) has been disposed.
+    private IDisposable? remoteSecretLease;
+    private HttpMessageInvoker? ownedRemoteInvoker;
+
+    public CodexProcessHost(
+        ISecretRedactor redactor,
+        WorkerNetworking? networking = null,
+        BearerTokenFileReader? tokenReader = null,
+        RemoteStartupLimits? limits = null)
     {
         this.redactor = redactor;
+        this.networking = networking;
+        this.tokenReader = tokenReader ?? new BearerTokenFileReader();
+        this.limits = limits ?? RemoteStartupLimits.Default;
     }
 
     public event EventHandler<string>? StandardErrorReceived;
@@ -119,25 +163,113 @@ public sealed class CodexProcessHost : ICodexProcessHost
         await Connection.StartAsync(cancellationToken).ConfigureAwait(false);
     }
 
-    public async Task StartRemoteAsync(string endpoint, string tokenFilePath, CancellationToken cancellationToken)
+    public async Task StartRemoteAsync(RemoteConnectionRequest request, CancellationToken cancellationToken)
     {
         await StopAsync(cancellationToken).ConfigureAwait(false);
-        if (!Uri.TryCreate(endpoint, UriKind.Absolute, out Uri? uri))
+        WorkerNetworking network = networking
+            ?? throw new InvalidOperationException("Remote connections require the Worker networking factory.");
+
+        // Endpoint policy and exact-localhost DNS verification run before any token access.
+        VerifiedRemoteEndpoint endpoint = await network.VerifyAsync(request.Endpoint, cancellationToken).ConfigureAwait(false);
+
+        string token = await RunStageAsync(
+            stage => tokenReader.ReadAsync(request.TokenFilePath, stage),
+            limits.TokenRead,
+            cancellationToken).ConfigureAwait(false);
+        IDisposable lease = redactor.RegisterSecret(token);
+        (HttpMessageInvoker invoker, bool ownsInvoker) = network.SelectInvoker(endpoint);
+        WebSocketJsonRpcConnection? connection = null;
+        try
         {
-            throw new ArgumentException("The remote app-server endpoint is not a valid URI.", nameof(endpoint));
+            connection = new WebSocketJsonRpcConnection(endpoint.Endpoint, token, invoker);
+            WebSocketJsonRpcConnection candidate = connection;
+            await RunStageAsync(
+                async stage =>
+                {
+                    await candidate.StartAsync(stage).ConfigureAwait(false);
+                    return true;
+                },
+                limits.Handshake,
+                cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            RemoteConnectionFailure failure = ex switch
+            {
+                RemoteConnectionException remote => remote.Failure,
+                OperationCanceledException => RemoteConnectionFailure.None,
+                _ => ClassifyHandshakeFailure(ex, connection?.HandshakeHttpStatus),
+            };
+            WorkerDiagnostics.Write($"remote handshake failed category={failure}", ex);
+
+            // Retire the candidate before releasing its lease so no callback outlives the secret.
+            if (connection is not null)
+            {
+                await connection.DisposeAsync().ConfigureAwait(false);
+            }
+
+            if (ownsInvoker)
+            {
+                invoker.Dispose();
+            }
+
+            lease.Dispose();
+            if (ex is OperationCanceledException)
+            {
+                throw;
+            }
+
+            throw ex as RemoteConnectionException ?? new RemoteConnectionException(failure);
         }
 
-        string token = await File.ReadAllTextAsync(tokenFilePath, cancellationToken).ConfigureAwait(false);
-        token = token.Trim();
-        var policy = new WebSocketTransportSecurityPolicy();
-        WebSocketTransportValidation validation = policy.Validate(enabled: true, uri, token);
-        if (!validation.IsAllowed)
+        Connection = connection;
+        remoteSecretLease = lease;
+        ownedRemoteInvoker = ownsInvoker ? invoker : null;
+    }
+
+    // Converts a stage timeout into a categorized Timeout while preserving the caller's own
+    // cancellation (including the overall startup deadline) as cancellation.
+    internal static async Task<T> RunStageAsync<T>(
+        Func<CancellationToken, Task<T>> action,
+        TimeSpan cap,
+        CancellationToken cancellationToken)
+    {
+        using var stage = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        stage.CancelAfter(cap);
+        try
         {
-            throw new InvalidOperationException(validation.Reason);
+            return await action(stage.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            throw new RemoteConnectionException(RemoteConnectionFailure.Timeout);
+        }
+        catch (WebSocketException) when (stage.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+        {
+            throw new RemoteConnectionException(RemoteConnectionFailure.Timeout);
+        }
+    }
+
+    internal static RemoteConnectionFailure ClassifyHandshakeFailure(Exception exception, int? handshakeStatus)
+    {
+        if (HttpStatusText.IsAuthenticationFailure(handshakeStatus))
+        {
+            return RemoteConnectionFailure.AuthenticationRejected;
         }
 
-        Connection = new WebSocketJsonRpcConnection(uri, token);
-        await Connection.StartAsync(cancellationToken).ConfigureAwait(false);
+        for (Exception? current = exception; current is not null; current = current.InnerException)
+        {
+            if (current is AuthenticationException)
+            {
+                return RemoteConnectionFailure.CertificateRejected;
+            }
+        }
+
+        // The server was reached and answered the upgrade with another status (wrong routing
+        // path, redirect, server error); that is not a DNS, proxy, or network failure.
+        return handshakeStatus is not null
+            ? RemoteConnectionFailure.UpgradeRejected
+            : RemoteConnectionFailure.NetworkFailure;
     }
 
     public async Task StopAsync(CancellationToken cancellationToken)
@@ -147,6 +279,10 @@ public sealed class CodexProcessHost : ICodexProcessHost
             await Connection.DisposeAsync().ConfigureAwait(false);
             Connection = null;
         }
+
+        // A remote stop closes only the Worker-owned socket; the external server keeps running.
+        Interlocked.Exchange(ref ownedRemoteInvoker, null)?.Dispose();
+        Interlocked.Exchange(ref remoteSecretLease, null)?.Dispose();
 
         Process? current = process;
         process = null;

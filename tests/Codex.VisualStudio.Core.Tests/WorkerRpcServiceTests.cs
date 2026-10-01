@@ -369,20 +369,22 @@ public sealed class WorkerRpcServiceTests
     }
 
     [TestMethod]
-    public async Task RemoteRestartDoesNotReportIntentionalCloseAsConnectionLoss()
+    public async Task RemoteReconnectDoesNotReportIntentionalCloseAsConnectionLoss()
     {
         var connection = new StubConnection();
         var host = new FakeProcessHost(connection) { OnStop = () => connection.EmitClosed() };
         var session = new CodexSessionService(new ApprovalPolicyEngine(new PathAccessPolicy()), new SecretRedactor());
         await using var worker = new WorkerRpcService(new SecretRedactor(), host, session);
-        await worker.ConnectAsync(RemoteOptions(), CancellationToken.None);
+        WorkerOptions options = RemoteOptions();
+        WorkerStatus connected = await worker.ConnectAsync(options, CancellationToken.None);
 
-        WorkerStatus restarted = await worker.RestartAsync(CancellationToken.None);
+        WorkerStatus reconnected = await worker.ReconnectAsync(ReconnectRequest(connected, options), CancellationToken.None);
         await Task.Delay(50);
 
-        Assert.AreEqual(WorkerConnectionState.Ready, restarted.State);
+        Assert.AreEqual(WorkerConnectionState.Ready, reconnected.State);
         Assert.AreEqual(WorkerConnectionState.Ready, (await worker.GetStatusAsync(CancellationToken.None)).State);
         Assert.AreEqual(2, host.RemoteStarts);
+        Assert.AreEqual(connected.Target!.Generation + 1, reconnected.Target!.Generation);
     }
 
     [TestMethod]
@@ -405,10 +407,17 @@ public sealed class WorkerRpcServiceTests
         var session = new CodexSessionService(new ApprovalPolicyEngine(new PathAccessPolicy()), new SecretRedactor());
         await using var worker = new WorkerRpcService(new SecretRedactor(), host, session);
 
-        await worker.ConnectAsync(RemoteOptions(), CancellationToken.None);
+        WorkerStatus result = await worker.ConnectAsync(RemoteOptions(), CancellationToken.None);
 
-        WorkerStatus lost = await WaitForStatusAsync(worker, WorkerConnectionState.Degraded, "Reconnect");
-        StringAssert.Contains(lost.Message, "socket reset");
+        // The close fails the startup account read, so the candidate is retired and the attempt
+        // ends Degraded; no later loss publication can overwrite or duplicate it.
+        Assert.AreEqual(WorkerConnectionState.Degraded, result.State);
+        await Task.Delay(100);
+        WorkerStatus lost = await worker.GetStatusAsync(CancellationToken.None);
+        Assert.AreEqual(WorkerConnectionState.Degraded, lost.State);
+        Assert.AreEqual(RemoteConnectionException.Describe(RemoteConnectionFailure.AccountReadFailed), lost.Message);
+        Assert.IsFalse(lost.Message.Contains("socket reset", StringComparison.Ordinal));
+        Assert.IsTrue(host.Stops >= 1);
     }
 
     [TestMethod]
@@ -461,6 +470,382 @@ public sealed class WorkerRpcServiceTests
         Assert.AreEqual(1, host.RemoteStarts);
     }
 
+    [TestMethod]
+    public async Task RemoteRestartIsRejectedBeforeAnythingIsStoppedOrSent()
+    {
+        var connection = new StubConnection();
+        var host = new FakeProcessHost(connection);
+        var session = new CodexSessionService(new ApprovalPolicyEngine(new PathAccessPolicy()), new SecretRedactor());
+        await using var worker = new WorkerRpcService(new SecretRedactor(), host, session);
+        await worker.ConnectAsync(RemoteOptions(), CancellationToken.None);
+        int sent = connection.Methods.Count;
+
+        LocalRpcException ex = await Assert.ThrowsExactlyAsync<LocalRpcException>(
+            () => worker.RestartAsync(CancellationToken.None));
+
+        Assert.AreEqual(WorkerErrorCodes.ConnectionOperationRejected, ex.ErrorCode);
+        Assert.AreEqual(nameof(ConnectionOperationRejectionReason.LocalProcessRequired), ex.ErrorData);
+        Assert.AreEqual(0, host.Stops);
+        Assert.AreEqual(1, host.RemoteStarts);
+        Assert.AreEqual(sent, connection.Methods.Count);
+        Assert.AreEqual(WorkerConnectionState.Ready, (await worker.GetStatusAsync(CancellationToken.None)).State);
+    }
+
+    [TestMethod]
+    public async Task ReconnectOfALocalConnectionIsRejected()
+    {
+        var host = new FakeProcessHost(new StubConnection());
+        var session = new CodexSessionService(new ApprovalPolicyEngine(new PathAccessPolicy()), new SecretRedactor());
+        await using var worker = new WorkerRpcService(new SecretRedactor(), host, session);
+        WorkerStatus connected = await worker.ConnectAsync(Options(), CancellationToken.None);
+
+        LocalRpcException ex = await Assert.ThrowsExactlyAsync<LocalRpcException>(() => worker.ReconnectAsync(
+            new RemoteReconnectRequest { ProfileName = "x", Fingerprint = "y", ExpectedGeneration = connected.Target!.Generation },
+            CancellationToken.None));
+
+        Assert.AreEqual(nameof(ConnectionOperationRejectionReason.RemoteConnectionRequired), ex.ErrorData);
+        Assert.AreEqual(0, host.Stops);
+    }
+
+    [TestMethod]
+    public async Task ReconnectRejectsChangedProfileAndStaleGenerationBeforeStopping()
+    {
+        var host = new FakeProcessHost(new StubConnection());
+        var session = new CodexSessionService(new ApprovalPolicyEngine(new PathAccessPolicy()), new SecretRedactor());
+        await using var worker = new WorkerRpcService(new SecretRedactor(), host, session);
+        WorkerOptions options = RemoteOptions();
+        WorkerStatus connected = await worker.ConnectAsync(options, CancellationToken.None);
+        RemoteReconnectRequest valid = ReconnectRequest(connected, options);
+
+        foreach ((RemoteReconnectRequest request, ConnectionOperationRejectionReason expected) in new[]
+        {
+            (new RemoteReconnectRequest { ProfileName = valid.ProfileName, Fingerprint = "changed", ExpectedGeneration = valid.ExpectedGeneration }, ConnectionOperationRejectionReason.ProfileChanged),
+            (new RemoteReconnectRequest { ProfileName = "Other", Fingerprint = valid.Fingerprint, ExpectedGeneration = valid.ExpectedGeneration }, ConnectionOperationRejectionReason.ProfileChanged),
+            (new RemoteReconnectRequest { ProfileName = valid.ProfileName, Fingerprint = valid.Fingerprint, ExpectedGeneration = valid.ExpectedGeneration - 1 }, ConnectionOperationRejectionReason.StaleGeneration),
+        })
+        {
+            LocalRpcException ex = await Assert.ThrowsExactlyAsync<LocalRpcException>(
+                () => worker.ReconnectAsync(request, CancellationToken.None));
+            Assert.AreEqual(WorkerErrorCodes.ConnectionOperationRejected, ex.ErrorCode);
+            Assert.AreEqual(expected.ToString(), ex.ErrorData);
+        }
+
+        Assert.AreEqual(0, host.Stops);
+        Assert.AreEqual(1, host.RemoteStarts);
+    }
+
+    [TestMethod]
+    public async Task ReconnectWithoutAppliedProfileIdentityIsRejectedAsUnavailable()
+    {
+        var host = new FakeProcessHost(new StubConnection());
+        var session = new CodexSessionService(new ApprovalPolicyEngine(new PathAccessPolicy()), new SecretRedactor());
+        await using var worker = new WorkerRpcService(new SecretRedactor(), host, session);
+        WorkerOptions options = RemoteOptions();
+        options.RemoteProfileName = null;
+        options.RemoteProfileFingerprint = null;
+        WorkerStatus connected = await worker.ConnectAsync(options, CancellationToken.None);
+
+        LocalRpcException ex = await Assert.ThrowsExactlyAsync<LocalRpcException>(() => worker.ReconnectAsync(
+            new RemoteReconnectRequest { ProfileName = "Build box", Fingerprint = "f", ExpectedGeneration = connected.Target!.Generation },
+            CancellationToken.None));
+
+        Assert.AreEqual(nameof(ConnectionOperationRejectionReason.ProfileUnavailable), ex.ErrorData);
+        Assert.AreEqual(0, host.Stops);
+    }
+
+    [TestMethod]
+    public async Task StatusCarriesTargetSnapshotAndReportsAPidOnlyForAnOwnedLocalProcess()
+    {
+        var host = new FakeProcessHost(new StubConnection());
+        var session = new CodexSessionService(new ApprovalPolicyEngine(new PathAccessPolicy()), new SecretRedactor());
+        await using var worker = new WorkerRpcService(new SecretRedactor(), host, session);
+
+        WorkerStatus local = await worker.ConnectAsync(Options(), CancellationToken.None);
+        WorkerOptions options = RemoteOptions();
+        WorkerStatus remote = await worker.ConnectAsync(options, CancellationToken.None);
+
+        Assert.AreEqual(ConnectionTargetKind.Local, local.Target!.Kind);
+        Assert.AreEqual(4242, local.ProcessId);
+        Assert.AreEqual(ConnectionTargetKind.Remote, remote.Target!.Kind);
+        Assert.AreEqual("Build box", remote.Target.DisplayName);
+        Assert.AreEqual(options.RemoteProfileFingerprint, remote.Target.Fingerprint);
+        Assert.AreEqual(local.Target.Generation + 1, remote.Target.Generation);
+        Assert.IsNull(remote.ProcessId);
+    }
+
+    [TestMethod]
+    public async Task ConnectingStatusReportsTheIntendedRemoteTarget()
+    {
+        var host = new FakeProcessHost(new StubConnection());
+        var session = new CodexSessionService(new ApprovalPolicyEngine(new PathAccessPolicy()), new SecretRedactor());
+        await using var worker = new WorkerRpcService(new SecretRedactor(), host, session);
+        WorkerStatus? during = null;
+        host.OnStartRemote = async (_, _) => during = await worker.GetStatusAsync(CancellationToken.None);
+
+        await worker.ConnectAsync(RemoteOptions(), CancellationToken.None);
+
+        Assert.AreEqual(WorkerConnectionState.Connecting, during!.State);
+        Assert.AreEqual(ConnectionTargetKind.Remote, during.Target!.Kind);
+        Assert.AreEqual("Build box", during.Target.DisplayName);
+    }
+
+    [TestMethod]
+    public async Task RemoteStartupOverallDeadlineRetiresTheCandidateAsTimeout()
+    {
+        var host = new FakeProcessHost(new StubConnection())
+        {
+            OnStartRemote = (_, cancellationToken) => Task.Delay(Timeout.Infinite, cancellationToken),
+        };
+        var session = new CodexSessionService(new ApprovalPolicyEngine(new PathAccessPolicy()), new SecretRedactor());
+        var limits = RemoteStartupLimits.Default with { Overall = TimeSpan.FromMilliseconds(200) };
+        await using var worker = new WorkerRpcService(new SecretRedactor(), host, session, limits: limits);
+
+        WorkerStatus status = await worker.ConnectAsync(RemoteOptions(), CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.AreEqual(WorkerConnectionState.Degraded, status.State);
+        Assert.AreEqual(RemoteConnectionException.Describe(RemoteConnectionFailure.Timeout), status.Message);
+        Assert.IsTrue(host.Stops >= 1);
+    }
+
+    [TestMethod]
+    public async Task RemoteStartupCallerCancellationIsPreservedAsCancellation()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var host = new FakeProcessHost(new StubConnection())
+        {
+            OnStartRemote = async (_, cancellationToken) =>
+            {
+                cancellation.Cancel();
+                await Task.Delay(Timeout.Infinite, cancellationToken);
+            },
+        };
+        var session = new CodexSessionService(new ApprovalPolicyEngine(new PathAccessPolicy()), new SecretRedactor());
+        await using var worker = new WorkerRpcService(new SecretRedactor(), host, session);
+
+        await Assert.ThrowsAsync<OperationCanceledException>(() => worker.ConnectAsync(RemoteOptions(), cancellation.Token));
+
+        WorkerStatus status = await worker.GetStatusAsync(CancellationToken.None);
+        Assert.AreEqual(WorkerConnectionState.Degraded, status.State);
+        Assert.IsTrue(host.Stops >= 1);
+    }
+
+    [TestMethod]
+    public async Task RemoteStartupStageCapIsReportedAsTimeout()
+    {
+        var host = new FakeProcessHost(new StubConnection
+        {
+            AsyncHandler = async (method, timeout, cancellationToken) =>
+            {
+                await Task.Delay(method == "initialize" ? Timeout.Infinite : 0, cancellationToken);
+                return JsonSerializer.SerializeToElement(new { });
+            },
+        });
+        var session = new CodexSessionService(new ApprovalPolicyEngine(new PathAccessPolicy()), new SecretRedactor());
+        var limits = RemoteStartupLimits.Default with { Initialize = TimeSpan.FromMilliseconds(150) };
+        await using var worker = new WorkerRpcService(new SecretRedactor(), host, session, limits: limits);
+
+        WorkerStatus status = await worker.ConnectAsync(RemoteOptions(), CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.AreEqual(WorkerConnectionState.Degraded, status.State);
+        Assert.AreEqual(RemoteConnectionException.Describe(RemoteConnectionFailure.Timeout), status.Message);
+    }
+
+    [TestMethod]
+    public async Task InitializeFailureIsDistinctFromAccountReadFailure()
+    {
+        async Task<WorkerStatus> ConnectFailingOnAsync(string failingMethod)
+        {
+            var connection = new StubConnection
+            {
+                Handler = method => method == failingMethod
+                    ? throw new JsonRpcConnectionClosedException("closed with Bearer secret-value-that-must-not-leak")
+                    : JsonSerializer.SerializeToElement(new { }),
+            };
+            var host = new FakeProcessHost(connection);
+            var session = new CodexSessionService(new ApprovalPolicyEngine(new PathAccessPolicy()), new SecretRedactor());
+            await using var worker = new WorkerRpcService(new SecretRedactor(), host, session);
+            WorkerStatus status = await worker.ConnectAsync(RemoteOptions(), CancellationToken.None);
+            Assert.IsTrue(host.Stops >= 1, "The failed candidate must be retired.");
+            return status;
+        }
+
+        WorkerStatus initialize = await ConnectFailingOnAsync("initialize");
+        WorkerStatus account = await ConnectFailingOnAsync("account/read");
+
+        Assert.AreEqual(RemoteConnectionException.Describe(RemoteConnectionFailure.InitializeFailed), initialize.Message);
+        Assert.AreEqual(RemoteConnectionException.Describe(RemoteConnectionFailure.AccountReadFailed), account.Message);
+        Assert.IsFalse(initialize.Message.Contains("secret-value", StringComparison.Ordinal));
+        Assert.IsFalse(account.Message.Contains("secret-value", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    public async Task UnavailableAccountReadKeepsAnInitializedRemoteConnectionReady()
+    {
+        var connection = new StubConnection
+        {
+            Handler = method => method == "account/read"
+                ? throw new JsonRpcRemoteException(-32603, "internal")
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        var session = new CodexSessionService(new ApprovalPolicyEngine(new PathAccessPolicy()), new SecretRedactor());
+        await using var worker = new WorkerRpcService(new SecretRedactor(), new FakeProcessHost(connection), session);
+
+        WorkerStatus status = await worker.ConnectAsync(RemoteOptions(), CancellationToken.None);
+
+        Assert.AreEqual(WorkerConnectionState.Ready, status.State);
+        Assert.AreEqual(AccountState.Unavailable, (await worker.GetAccountStatusAsync(CancellationToken.None)).State);
+    }
+
+    [TestMethod]
+    public async Task WatchdogRetiresOnlyTheCapturedSocketAfterTwoSilentProbes()
+    {
+        bool silent = false;
+        var connection = new StubConnection
+        {
+            AsyncHandler = async (method, timeout, cancellationToken) =>
+            {
+                if (silent && method == "account/read")
+                {
+                    await Task.Delay(timeout, cancellationToken);
+                    throw new OperationCanceledException("request timeout");
+                }
+
+                return JsonSerializer.SerializeToElement(new { });
+            },
+        };
+        var host = new FakeProcessHost(connection);
+        var session = new CodexSessionService(new ApprovalPolicyEngine(new PathAccessPolicy()), new SecretRedactor());
+        var timing = new RemoteWatchdogTiming(TimeSpan.FromMilliseconds(60), TimeSpan.FromMilliseconds(80));
+        await using var worker = new WorkerRpcService(new SecretRedactor(), host, session, watchdogTiming: timing);
+        await worker.ConnectAsync(RemoteOptions(), CancellationToken.None);
+        int sentAtReady = connection.Methods.Count;
+        silent = true;
+
+        WorkerStatus degraded = await WaitForStatusAsync(worker, WorkerConnectionState.Degraded);
+
+        Assert.AreEqual(RemoteConnectionException.Describe(RemoteConnectionFailure.PeerUnresponsive), degraded.Message);
+        Assert.AreEqual(1, host.Stops);
+        Assert.AreEqual(1, host.RemoteStarts, "The watchdog must never reconnect.");
+        string[] probes = connection.Methods.Skip(sentAtReady).ToArray();
+        Assert.AreEqual(2, probes.Length);
+        Assert.IsTrue(probes.All(static method => method == "account/read"));
+    }
+
+    [TestMethod]
+    public async Task WatchdogKeepsAConnectionWhosePeerAnswersOrStaysActive()
+    {
+        int probes = 0;
+        var connection = new StubConnection();
+        connection.AsyncHandler = async (method, timeout, cancellationToken) =>
+        {
+            if (method == "account/read" && Interlocked.Increment(ref probes) > 1)
+            {
+                // Odd probes: inbound traffic arrives while the probe is outstanding, then it times
+                // out. Even probes: a successful SignedOut-shaped answer.
+                if (probes % 2 == 1)
+                {
+                    connection.RecordInboundActivity();
+                    await Task.Delay(timeout, cancellationToken);
+                    throw new OperationCanceledException("request timeout");
+                }
+
+                return JsonSerializer.SerializeToElement(new { account = (object?)null, requiresOpenaiAuth = true });
+            }
+
+            return JsonSerializer.SerializeToElement(new { });
+        };
+        var host = new FakeProcessHost(connection);
+        var session = new CodexSessionService(new ApprovalPolicyEngine(new PathAccessPolicy()), new SecretRedactor());
+        var timing = new RemoteWatchdogTiming(TimeSpan.FromMilliseconds(40), TimeSpan.FromMilliseconds(60));
+        await using var worker = new WorkerRpcService(new SecretRedactor(), host, session, watchdogTiming: timing);
+        await worker.ConnectAsync(RemoteOptions(), CancellationToken.None);
+
+        await Task.Delay(700);
+
+        Assert.IsTrue(Volatile.Read(ref probes) >= 4, "The watchdog should keep probing an idle connection.");
+        Assert.AreEqual(WorkerConnectionState.Ready, (await worker.GetStatusAsync(CancellationToken.None)).State);
+        Assert.AreEqual(0, host.Stops);
+        Assert.IsTrue(connection.Methods.All(static method => method is "initialize" or "account/read"));
+    }
+
+    [TestMethod]
+    public async Task WatchdogOfASupersededGenerationCannotDegradeTheNewConnection()
+    {
+        bool silent = true;
+        var connection = new StubConnection();
+        bool connected = false;
+        connection.AsyncHandler = async (method, timeout, cancellationToken) =>
+        {
+            if (connected && silent && method == "account/read")
+            {
+                await Task.Delay(timeout, cancellationToken);
+                throw new OperationCanceledException("request timeout");
+            }
+
+            return JsonSerializer.SerializeToElement(new { });
+        };
+        var host = new FakeProcessHost(connection);
+        var session = new CodexSessionService(new ApprovalPolicyEngine(new PathAccessPolicy()), new SecretRedactor());
+        var timing = new RemoteWatchdogTiming(TimeSpan.FromMilliseconds(80), TimeSpan.FromMilliseconds(200));
+        await using var worker = new WorkerRpcService(new SecretRedactor(), host, session, watchdogTiming: timing);
+        WorkerOptions options = RemoteOptions();
+        WorkerStatus first = await worker.ConnectAsync(options, CancellationToken.None);
+        connected = true;
+
+        // Let the first generation's watchdog start its first silent probe, then reconnect.
+        await Task.Delay(120);
+        silent = false;
+        connected = false;
+        WorkerStatus second = await worker.ReconnectAsync(ReconnectRequest(first, options), CancellationToken.None);
+        connected = true;
+        await Task.Delay(600);
+
+        WorkerStatus current = await worker.GetStatusAsync(CancellationToken.None);
+        Assert.AreEqual(WorkerConnectionState.Ready, current.State);
+        Assert.AreEqual(second.Target!.Generation, current.Target!.Generation);
+    }
+
+    [TestMethod]
+    public async Task DiagnoseNeverChangesConnectionStateOrSendsRpc()
+    {
+        var connection = new StubConnection();
+        var host = new FakeProcessHost(connection);
+        var session = new CodexSessionService(new ApprovalPolicyEngine(new PathAccessPolicy()), new SecretRedactor());
+        var diagnostics = new FakeDiagnostics();
+        await using var worker = new WorkerRpcService(new SecretRedactor(), host, session, diagnostics);
+        WorkerStatus before = await worker.ConnectAsync(RemoteOptions(), CancellationToken.None);
+        int sent = connection.Methods.Count;
+
+        ConnectionDiagnosticsResult result = await worker.DiagnoseConnectionAsync(
+            new ConnectionDiagnosticsRequest { ProfileName = "Other", Endpoint = "wss://other.example.invalid" },
+            CancellationToken.None);
+
+        WorkerStatus after = await worker.GetStatusAsync(CancellationToken.None);
+        Assert.AreEqual("Other", result.ProfileName);
+        Assert.AreEqual(1, diagnostics.Calls);
+        Assert.AreEqual(before.State, after.State);
+        Assert.AreEqual(before.Target!.Generation, after.Target!.Generation);
+        Assert.AreEqual(sent, connection.Methods.Count);
+        Assert.AreEqual(0, host.Stops);
+        Assert.AreEqual(1, host.RemoteStarts);
+    }
+
+    private sealed class FakeDiagnostics : IRemoteConnectionDiagnostics
+    {
+        public int Calls { get; private set; }
+
+        public Task<ConnectionDiagnosticsResult> DiagnoseAsync(ConnectionDiagnosticsRequest request, CancellationToken cancellationToken)
+        {
+            Calls++;
+            return Task.FromResult(new ConnectionDiagnosticsResult
+            {
+                ProfileName = request.ProfileName,
+                Health = new HealthProbeResult { State = HealthProbeState.Healthy, HttpStatus = 200 },
+                Ready = new HealthProbeResult { State = HealthProbeState.Unhealthy, HttpStatus = 503 },
+            });
+        }
+    }
+
     private static async Task<WorkerStatus> WaitForStatusAsync(
         WorkerRpcService worker,
         WorkerConnectionState state,
@@ -480,14 +865,35 @@ public sealed class WorkerRpcServiceTests
         }
     }
 
-    private static WorkerOptions RemoteOptions() => new()
+    private static WorkerOptions RemoteOptions()
     {
-        WorkingDirectory = Path.GetTempPath(),
-        ExtensionVersion = "test",
-        RemoteEndpoint = "wss://app-server.example.invalid",
-        RemoteTokenFilePath = Path.Combine(Path.GetTempPath(), "unused.token"),
-        LocalRoot = Path.GetTempPath(),
-        ServerRoot = "/srv/repo",
+        var options = new WorkerOptions
+        {
+            WorkingDirectory = Path.GetTempPath(),
+            ExtensionVersion = "test",
+            RemoteEndpoint = "wss://app-server.example.invalid",
+            RemoteTokenFilePath = Path.Combine(Path.GetTempPath(), "unused.token"),
+            LocalRoot = Path.GetTempPath(),
+            ServerRoot = "/srv/repo",
+            RemoteProfileName = "Build box",
+        };
+        options.RemoteProfileFingerprint = Fingerprint(options);
+        return options;
+    }
+
+    private static string Fingerprint(WorkerOptions options) => RemoteProfileFingerprint.Compute(
+        options.RemoteProfileName,
+        options.RemoteEndpoint,
+        options.RemoteTokenFilePath,
+        options.LocalRoot,
+        options.ServerRoot,
+        enabled: true);
+
+    private static RemoteReconnectRequest ReconnectRequest(WorkerStatus status, WorkerOptions options) => new()
+    {
+        ProfileName = options.RemoteProfileName!,
+        Fingerprint = options.RemoteProfileFingerprint!,
+        ExpectedGeneration = status.Target!.Generation,
     };
 
     private static WorkerOptions Options() => new()
@@ -595,19 +1001,27 @@ public sealed class WorkerRpcServiceTests
 
         public int RemoteStarts { get; private set; }
 
+        public int Stops { get; private set; }
+
         public Action? OnStop { get; init; }
+
+        public Func<RemoteConnectionRequest, CancellationToken, Task>? OnStartRemote { get; set; }
+
+        public RemoteConnectionRequest? LastRemoteRequest { get; private set; }
 
         public Task StartAsync(string codexPath, string workingDirectory, CancellationToken cancellationToken)
             => Task.CompletedTask;
 
-        public Task StartRemoteAsync(string endpoint, string tokenFilePath, CancellationToken cancellationToken)
+        public Task StartRemoteAsync(RemoteConnectionRequest request, CancellationToken cancellationToken)
         {
             RemoteStarts++;
-            return Task.CompletedTask;
+            LastRemoteRequest = request;
+            return OnStartRemote?.Invoke(request, cancellationToken) ?? Task.CompletedTask;
         }
 
         public Task StopAsync(CancellationToken cancellationToken)
         {
+            Stops++;
             OnStop?.Invoke();
             return Task.CompletedTask;
         }
@@ -615,8 +1029,10 @@ public sealed class WorkerRpcServiceTests
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 
-    private sealed class StubConnection : IJsonRpcConnection
+    private sealed class StubConnection : IJsonRpcConnection, IInboundActivitySource
     {
+        private long activity;
+
         public event Func<JsonRpcMessage, CancellationToken, Task>? NotificationReceived;
 
         public event Func<JsonRpcMessage, CancellationToken, Task<JsonElement>>? RequestReceived;
@@ -625,12 +1041,34 @@ public sealed class WorkerRpcServiceTests
 
         public Func<string, JsonElement> Handler { get; set; } = _ => JsonSerializer.SerializeToElement(new { });
 
+        // When set, replaces Handler and may hang until the per-request timeout elapses.
+        public Func<string, TimeSpan, CancellationToken, Task<JsonElement>>? AsyncHandler { get; set; }
+
+        public long InboundActivitySequence => Interlocked.Read(ref activity);
+
+        public List<string> Methods { get; } = [];
+
+        public void RecordInboundActivity() => Interlocked.Increment(ref activity);
+
         public void EmitClosed(Exception? exception = null) => Closed?.Invoke(this, exception);
 
         public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
 
-        public Task<JsonElement> SendRequestAsync(string method, object? parameters, TimeSpan timeout, CancellationToken cancellationToken)
-            => Task.FromResult(Handler(method));
+        public async Task<JsonElement> SendRequestAsync(string method, object? parameters, TimeSpan timeout, CancellationToken cancellationToken)
+        {
+            lock (Methods)
+            {
+                Methods.Add(method);
+            }
+
+            JsonElement result = AsyncHandler is null
+                ? Handler(method)
+                : await AsyncHandler(method, timeout, cancellationToken);
+
+            // A delivered response is inbound activity, as in the real transports.
+            RecordInboundActivity();
+            return result;
+        }
 
         public Task SendNotificationAsync(string method, object? parameters, CancellationToken cancellationToken)
             => Task.CompletedTask;

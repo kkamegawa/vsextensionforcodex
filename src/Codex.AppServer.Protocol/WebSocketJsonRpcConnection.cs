@@ -10,8 +10,12 @@ namespace Codex.AppServer.Protocol;
 /// JSON-RPC connection for an already running app-server WebSocket endpoint.
 /// The transport is opt-in and never starts or restarts the remote process.
 /// </summary>
-public sealed class WebSocketJsonRpcConnection : IJsonRpcConnection
+public sealed class WebSocketJsonRpcConnection : IJsonRpcConnection, IInboundActivitySource
 {
+    // .NET 8 sends unsolicited PONG frames at this interval. They keep intermediaries from idling
+    // the socket out but are not proof that the peer is alive; the Worker's idle watchdog is.
+    public static readonly TimeSpan KeepAliveInterval = TimeSpan.FromSeconds(30);
+
     private const int ReceiveBufferBytes = 8192;
     private const int NotificationQueueCapacity = 256;
     private const int MaxConsecutiveMalformedMessages = 3;
@@ -23,6 +27,7 @@ public sealed class WebSocketJsonRpcConnection : IJsonRpcConnection
 
     private readonly Uri? endpoint;
     private readonly string? bearerToken;
+    private readonly HttpMessageInvoker? invoker;
     private readonly int maxMessageBytes;
     private readonly WebSocket socket;
     private readonly ClientWebSocket? clientSocket;
@@ -35,12 +40,27 @@ public sealed class WebSocketJsonRpcConnection : IJsonRpcConnection
     private Task? receivePump;
     private Task? notificationPump;
     private long nextId;
+    private long inboundActivity;
     private int started;
     private int closed;
 
     public WebSocketJsonRpcConnection(
         Uri endpoint,
         string bearerToken,
+        int maxMessageBytes = JsonLineRpcConnection.DefaultMaxLineBytes)
+        : this(endpoint, bearerToken, invoker: null, maxMessageBytes)
+    {
+    }
+
+    /// <summary>
+    /// Creates a connection whose handshake runs through <paramref name="invoker"/>. The caller
+    /// owns the invoker: it carries proxy, redirect, cookie, and TLS policy, and is not disposed
+    /// with this connection. WebSocket options then contain only transport-specific settings.
+    /// </summary>
+    public WebSocketJsonRpcConnection(
+        Uri endpoint,
+        string bearerToken,
+        HttpMessageInvoker? invoker,
         int maxMessageBytes = JsonLineRpcConnection.DefaultMaxLineBytes)
         : this(new ClientWebSocket(), maxMessageBytes)
     {
@@ -51,7 +71,7 @@ public sealed class WebSocketJsonRpcConnection : IJsonRpcConnection
             throw new ArgumentException("The endpoint must use ws or wss.", nameof(endpoint));
         }
 
-        WebSocketTransportValidation validation = new WebSocketTransportSecurityPolicy()
+        WebSocketTransportValidation validation = WebSocketTransportSecurityPolicy
             .Validate(enabled: true, endpoint, bearerToken);
         if (!validation.IsAllowed)
         {
@@ -61,6 +81,7 @@ public sealed class WebSocketJsonRpcConnection : IJsonRpcConnection
 
         this.endpoint = endpoint;
         this.bearerToken = bearerToken;
+        this.invoker = invoker;
         clientSocket = (ClientWebSocket)socket;
     }
 
@@ -85,6 +106,12 @@ public sealed class WebSocketJsonRpcConnection : IJsonRpcConnection
 
     public event EventHandler<Exception?>? Closed;
 
+    // Monotonic count of valid parsed inbound responses, notifications, and server requests.
+    public long InboundActivitySequence => Interlocked.Read(ref inboundActivity);
+
+    // HTTP status of a failed upgrade (for example 401), when the server returned one.
+    public int? HandshakeHttpStatus { get; private set; }
+
     public async Task StartAsync(CancellationToken cancellationToken)
     {
         if (Interlocked.Exchange(ref started, 1) != 0)
@@ -96,8 +123,28 @@ public sealed class WebSocketJsonRpcConnection : IJsonRpcConnection
         {
             if (clientSocket is not null)
             {
+                clientSocket.Options.KeepAliveInterval = KeepAliveInterval;
+                clientSocket.Options.CollectHttpResponseDetails = true;
+
+                // The bearer token is sent only on this handshake request.
                 clientSocket.Options.SetRequestHeader("Authorization", $"Bearer {bearerToken}");
-                await clientSocket.ConnectAsync(endpoint!, cancellationToken).ConfigureAwait(false);
+                try
+                {
+                    if (invoker is null)
+                    {
+                        await clientSocket.ConnectAsync(endpoint!, cancellationToken).ConfigureAwait(false);
+                    }
+                    else
+                    {
+                        await clientSocket.ConnectAsync(endpoint!, invoker, cancellationToken).ConfigureAwait(false);
+                    }
+                }
+                catch (WebSocketException)
+                {
+                    int status = (int)clientSocket.HttpStatusCode;
+                    HandshakeHttpStatus = status == 0 ? null : status;
+                    throw;
+                }
             }
 
             notificationPump = Task.Run(() => NotificationPumpAsync(lifetime.Token), CancellationToken.None);
@@ -250,6 +297,11 @@ public sealed class WebSocketJsonRpcConnection : IJsonRpcConnection
                 if (rpcMessage is null)
                 {
                     continue;
+                }
+
+                if (rpcMessage.IsResponse || rpcMessage.IsRequest || rpcMessage.IsNotification)
+                {
+                    Interlocked.Increment(ref inboundActivity);
                 }
 
                 if (rpcMessage.IsResponse)

@@ -1516,6 +1516,7 @@ public sealed class ViewModelTests
             typeof(PendingSkillViewModel), typeof(UsagePresentation),
             typeof(WorkerStatus), typeof(ThreadSummary),
             typeof(RemoteProfilesPresentationViewModel), typeof(RemoteProfileViewModel),
+            typeof(ConnectionHealthPresentationViewModel), typeof(ConnectionTargetSnapshot),
         ];
 
     [TestMethod]
@@ -1536,6 +1537,9 @@ public sealed class ViewModelTests
             "RemoteProfiles.SelectedProfile.Endpoint", "RemoteProfiles.SelectedProfile.LocalRoot",
             "RemoteProfiles.SelectedProfile.ServerRoot", "RemoteProfiles.SelectedProfile.TokenFilePath",
             "ApplyRemoteProfileCommand", "UseLocalAppServerCommand", "IsConnectionTargetOpen",
+            "CheckProfileHealthCommand", "ConnectionHealth.StatusText", "ConnectionHealth.HasResult",
+            "ConnectionHealth.CheckedProfileText", "ConnectionHealth.HealthText", "ConnectionHealth.ReadyText",
+            "ConnectionHealth.RpcText", "ConnectionHealth.ScopeText", "RestartActionText", "RestartActionHelpText",
         ];
         var bound = Regex.Matches(xaml, @"\{Binding\s+([A-Za-z_][\w.]*)")
             .Select(static match => match.Groups[1].Value)
@@ -1545,7 +1549,8 @@ public sealed class ViewModelTests
             Assert.IsTrue(bound.Contains(path), $"ChatToolWindowContent.xaml does not bind '{path}'.");
         }
 
-        foreach (string path in bound.Where(static path => path.StartsWith("RemoteProfiles", StringComparison.Ordinal)))
+        foreach (string path in bound.Where(static path => path.StartsWith("RemoteProfiles", StringComparison.Ordinal)
+            || path.StartsWith("ConnectionHealth", StringComparison.Ordinal)))
         {
             Type current = typeof(ChatViewModel);
             foreach (string segment in path.Split('.'))
@@ -3992,6 +3997,288 @@ public sealed class ViewModelTests
     }
 
     // Awaits the command body through the Remote UI entry point instead of fire-and-forget Execute.
+    private static RemoteConnectionProfile SavedRemoteProfile() => new()
+    {
+        Name = "Build box",
+        Endpoint = "wss://build.example.invalid",
+        TokenFilePath = @"C:\tokens\codex.token",
+        LocalRoot = @"C:\repo",
+        ServerRoot = "/srv/repo",
+        Enabled = true,
+    };
+
+    private static WorkerStatus RemoteStatus(RemoteConnectionProfile profile, WorkerConnectionState state, long generation = 7) => new()
+    {
+        State = state,
+        Message = "The remote codex app-server stopped responding. Reconnect to continue.",
+        Target = new ConnectionTargetSnapshot
+        {
+            Kind = ConnectionTargetKind.Remote,
+            DisplayName = profile.Name,
+            Fingerprint = profile.ComputeFingerprint(),
+            Generation = generation,
+        },
+    };
+
+    private static ExtensionSettings SettingsWith(RemoteConnectionProfile profile) => new()
+    {
+        RemoteProfiles = [profile],
+        SelectedRemoteProfileName = profile.Name,
+    };
+
+    [TestMethod]
+    public async Task ChatViewModel_RestartAction_DistinguishesLocalRestartFromRemoteReconnect()
+    {
+        var bridge = new FakeWorkerBridge();
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        var raised = new List<string?>();
+        vm.PropertyChanged += (_, e) => raised.Add(e.PropertyName);
+
+        await bridge.PublishStateAsync(new WorkerStatus
+        {
+            State = WorkerConnectionState.Degraded,
+            Target = new ConnectionTargetSnapshot { Kind = ConnectionTargetKind.Local, Generation = 1 },
+        });
+        Assert.AreEqual("Restart local app-server", vm.RestartActionText);
+        StringAssert.Contains(vm.RestartActionHelpText, "local codex app-server process");
+
+        await bridge.PublishStateAsync(RemoteStatus(SavedRemoteProfile(), WorkerConnectionState.Degraded));
+        Assert.AreEqual("Reconnect remote app-server", vm.RestartActionText);
+        StringAssert.Contains(vm.RestartActionHelpText, "remote server itself is not restarted");
+        CollectionAssert.Contains(raised, nameof(ChatViewModel.RestartActionText));
+        CollectionAssert.Contains(raised, nameof(ChatViewModel.RestartActionHelpText));
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_LocalRestart_UsesTheRestartOperation()
+    {
+        var bridge = new FakeWorkerBridge();
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        await bridge.PublishStateAsync(new WorkerStatus
+        {
+            State = WorkerConnectionState.Degraded,
+            Target = new ConnectionTargetSnapshot { Kind = ConnectionTargetKind.Local, Generation = 1 },
+        });
+
+        await RunCommandAsync(vm.RestartCommand);
+
+        Assert.AreEqual(1, bridge.RestartCallCount);
+        Assert.AreEqual(0, bridge.ReconnectRequests.Count);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_RemoteReconnect_SendsTheAppliedSnapshotAfterReloadingSettings()
+    {
+        var bridge = new FakeWorkerBridge();
+        RemoteConnectionProfile profile = SavedRemoteProfile();
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(SettingsWith(profile)));
+        await bridge.PublishStateAsync(RemoteStatus(profile, WorkerConnectionState.Degraded, generation: 9));
+
+        await RunCommandAsync(vm.RestartCommand);
+
+        Assert.AreEqual(0, bridge.RestartCallCount, "A remote target is never restarted.");
+        RemoteReconnectRequest request = bridge.ReconnectRequests.Single();
+        Assert.AreEqual("Build box", request.ProfileName);
+        Assert.AreEqual(profile.ComputeFingerprint(), request.Fingerprint);
+        Assert.AreEqual(9, request.ExpectedGeneration);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_RemoteReconnect_RejectsChangedRemovedDisabledOrUnsavedProfiles()
+    {
+        RemoteConnectionProfile applied = SavedRemoteProfile();
+
+        async Task AssertRejectedAsync(ExtensionSettings settings, ConnectionOperationRejectionReason reason, Action<ChatViewModel>? edit = null)
+        {
+            var bridge = new FakeWorkerBridge();
+            using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(settings));
+            edit?.Invoke(vm);
+            await bridge.PublishStateAsync(RemoteStatus(applied, WorkerConnectionState.Degraded));
+
+            await RunCommandAsync(vm.RestartCommand);
+
+            Assert.AreEqual(0, bridge.ReconnectRequests.Count, reason.ToString());
+            Assert.AreEqual(0, bridge.RestartCallCount);
+            Assert.AreEqual(ChatViewModel.DescribeRejection(reason), vm.RemoteProfiles.StatusText);
+        }
+
+        RemoteConnectionProfile changed = SavedRemoteProfile();
+        changed.Endpoint = "wss://other.example.invalid";
+        await AssertRejectedAsync(SettingsWith(changed), ConnectionOperationRejectionReason.ProfileChanged);
+
+        RemoteConnectionProfile disabled = SavedRemoteProfile();
+        disabled.Enabled = false;
+        await AssertRejectedAsync(SettingsWith(disabled), ConnectionOperationRejectionReason.ProfileUnavailable);
+
+        await AssertRejectedAsync(new ExtensionSettings(), ConnectionOperationRejectionReason.ProfileUnavailable);
+
+        await AssertRejectedAsync(
+            SettingsWith(SavedRemoteProfile()),
+            ConnectionOperationRejectionReason.ProfileChanged,
+            vm => vm.RemoteProfiles.SelectedProfile!.ServerRoot = "/srv/edited");
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_RemoteReconnect_ShowsTypedWorkerRejection()
+    {
+        var bridge = new FakeWorkerBridge
+        {
+            ReconnectException = new StreamJsonRpc.RemoteInvocationException(
+                nameof(ConnectionOperationRejectionReason.StaleGeneration),
+                WorkerErrorCodes.ConnectionOperationRejected,
+                nameof(ConnectionOperationRejectionReason.StaleGeneration)),
+        };
+        RemoteConnectionProfile profile = SavedRemoteProfile();
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(SettingsWith(profile)));
+        await bridge.PublishStateAsync(RemoteStatus(profile, WorkerConnectionState.Degraded));
+
+        await RunCommandAsync(vm.RestartCommand);
+
+        Assert.AreEqual(1, bridge.ReconnectRequests.Count);
+        Assert.AreEqual(ChatViewModel.DescribeRejection(ConnectionOperationRejectionReason.StaleGeneration), vm.RemoteProfiles.StatusText);
+        Assert.AreEqual(WorkerConnectionState.Degraded, vm.Status.State);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_HealthCheck_RequiresASavedEnabledProfileWithoutPendingEdits()
+    {
+        var bridge = new FakeWorkerBridge();
+        RemoteConnectionProfile profile = SavedRemoteProfile();
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(SettingsWith(profile)));
+        Assert.IsTrue(vm.CheckProfileHealthCommand.CanExecute);
+
+        vm.RemoteProfiles.SelectedProfile!.Endpoint = "wss://edited.example.invalid";
+        Assert.IsFalse(vm.CheckProfileHealthCommand.CanExecute, "Pending edits block diagnosis.");
+
+        vm.RemoteProfiles.SelectedProfile.Endpoint = profile.Endpoint;
+        vm.RemoteProfiles.SelectedProfile.IsEnabled = false;
+        Assert.IsFalse(vm.CheckProfileHealthCommand.CanExecute);
+
+        vm.RemoteProfiles.SelectedProfile.IsEnabled = true;
+        Assert.IsTrue(vm.CheckProfileHealthCommand.CanExecute);
+
+        vm.RemoteProfiles.AddCommand.Execute(null);
+        Assert.IsFalse(vm.CheckProfileHealthCommand.CanExecute, "An unsaved profile cannot be diagnosed.");
+        await Task.CompletedTask;
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_HealthCheck_ShowsHealthSeparatelyFromRpcState()
+    {
+        var bridge = new FakeWorkerBridge();
+        RemoteConnectionProfile profile = SavedRemoteProfile();
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(SettingsWith(profile)));
+        await bridge.PublishStateAsync(new WorkerStatus
+        {
+            State = WorkerConnectionState.Ready,
+            Target = new ConnectionTargetSnapshot { Kind = ConnectionTargetKind.Local, Generation = 1 },
+        });
+        bool connectEnabled = vm.ConnectCommand.CanExecute;
+
+        await RunCommandAsync(vm.CheckProfileHealthCommand);
+
+        ConnectionDiagnosticsRequest request = bridge.DiagnoseRequests.Single();
+        Assert.AreEqual("Build box", request.ProfileName);
+        Assert.AreEqual(profile.Endpoint, request.Endpoint);
+        Assert.IsTrue(vm.ConnectionHealth.HasResult);
+        Assert.AreEqual("Checked profile: 'Build box'", vm.ConnectionHealth.CheckedProfileText);
+        StringAssert.StartsWith(vm.ConnectionHealth.HealthText, "Health (/healthz): Healthy (HTTP 200");
+        StringAssert.StartsWith(vm.ConnectionHealth.ReadyText, "Ready (/readyz): Unhealthy (HTTP 503");
+        Assert.AreEqual("RPC connection: Not connected", vm.ConnectionHealth.RpcText, "An inactive profile is never inferred from health.");
+        StringAssert.Contains(vm.ConnectionHealth.ScopeText, "does not prove");
+        Assert.AreEqual(connectEnabled, vm.ConnectCommand.CanExecute, "Health never changes what Connect can do.");
+        Assert.AreEqual(WorkerConnectionState.Ready, vm.Status.State);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_HealthCheck_RpcRowFollowsTheActiveTargetAndPathScope()
+    {
+        var bridge = new FakeWorkerBridge
+        {
+            DiagnoseHandler = request => Task.FromResult(new ConnectionDiagnosticsResult
+            {
+                ProfileName = request.ProfileName,
+                RouteCoverage = RouteCoverage.Unverified,
+                Health = new HealthProbeResult { State = HealthProbeState.Healthy, HttpStatus = 200 },
+                Ready = new HealthProbeResult { State = HealthProbeState.Healthy, HttpStatus = 200 },
+            }),
+        };
+        RemoteConnectionProfile profile = SavedRemoteProfile();
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(SettingsWith(profile)));
+        await bridge.PublishStateAsync(RemoteStatus(profile, WorkerConnectionState.Degraded));
+
+        await RunCommandAsync(vm.CheckProfileHealthCommand);
+
+        StringAssert.StartsWith(vm.ConnectionHealth.RpcText, "RPC connection: ");
+        Assert.AreNotEqual("RPC connection: Not connected", vm.ConnectionHealth.RpcText);
+        StringAssert.Contains(vm.ConnectionHealth.ScopeText, "routed path in the endpoint is not verified");
+        Assert.AreEqual(WorkerConnectionState.Degraded, vm.Status.State, "A healthy root never upgrades RPC state.");
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_HealthCheck_DiscardsStaleCompletionAndClearsOnChanges()
+    {
+        var pending = new TaskCompletionSource<ConnectionDiagnosticsResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+#pragma warning disable VSTHRD003 // The test owns this completion source and releases it below.
+        var bridge = new FakeWorkerBridge { DiagnoseHandler = _ => pending.Task };
+#pragma warning restore VSTHRD003
+        RemoteConnectionProfile profile = SavedRemoteProfile();
+        var settings = SettingsWith(profile);
+        settings.RemoteProfiles.Add(new RemoteConnectionProfile
+        {
+            Name = "Second",
+            Endpoint = "wss://second.example.invalid",
+            TokenFilePath = @"C:\tokens\second.token",
+            LocalRoot = @"C:\second",
+            ServerRoot = "/second",
+            Enabled = true,
+        });
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(settings));
+
+        Task check = RunCommandAsync(vm.CheckProfileHealthCommand);
+        Assert.IsTrue(vm.ConnectionHealth.IsChecking);
+        Assert.IsFalse(vm.CheckProfileHealthCommand.CanExecute, "Duplicate checks are disabled while one runs.");
+
+        // A selection change invalidates the outstanding check; its late completion is dropped.
+        vm.RemoteProfiles.SelectedProfile = vm.RemoteProfiles.Profiles[1];
+        pending.SetResult(new ConnectionDiagnosticsResult
+        {
+            ProfileName = profile.Name,
+            Health = new HealthProbeResult { State = HealthProbeState.Healthy },
+            Ready = new HealthProbeResult { State = HealthProbeState.Healthy },
+        });
+        await check;
+
+        Assert.IsFalse(vm.ConnectionHealth.HasResult);
+        Assert.AreEqual(string.Empty, vm.ConnectionHealth.HealthText);
+
+        // A completed result is cleared by a later Save and by a connection generation change.
+        bridge.DiagnoseHandler = null;
+        await RunCommandAsync(vm.CheckProfileHealthCommand);
+        Assert.IsTrue(vm.ConnectionHealth.HasResult);
+        await RunCommandAsync(vm.RemoteProfiles.SaveCommand);
+        Assert.IsFalse(vm.ConnectionHealth.HasResult);
+
+        await RunCommandAsync(vm.CheckProfileHealthCommand);
+        Assert.IsTrue(vm.ConnectionHealth.HasResult);
+        await bridge.PublishStateAsync(new WorkerStatus
+        {
+            State = WorkerConnectionState.Ready,
+            Target = new ConnectionTargetSnapshot { Kind = ConnectionTargetKind.Local, Generation = 42 },
+        });
+        Assert.IsFalse(vm.ConnectionHealth.HasResult);
+    }
+
+    [TestMethod]
+    public void ChatViewModel_ParseRejection_ReadsTypedErrorData()
+    {
+        var withData = new StreamJsonRpc.RemoteInvocationException("x", WorkerErrorCodes.ConnectionOperationRejected, "ProfileChanged");
+        var messageOnly = new StreamJsonRpc.RemoteInvocationException("LocalProcessRequired", WorkerErrorCodes.ConnectionOperationRejected, errorData: null!);
+
+        Assert.AreEqual(ConnectionOperationRejectionReason.ProfileChanged, ChatViewModel.ParseRejection(withData));
+        Assert.AreEqual(ConnectionOperationRejectionReason.LocalProcessRequired, ChatViewModel.ParseRejection(messageOnly));
+    }
+
     private static Task RunCommandAsync(AsyncCommand command)
         => ((IAsyncCommand)command).ExecuteAsync(null, null!, CancellationToken.None);
 
@@ -4133,8 +4420,40 @@ public sealed class ViewModelTests
             return Task.FromResult(new WorkerStatus { State = WorkerConnectionState.Ready });
         }
 
+        public int RestartCallCount { get; private set; }
+
         public Task<WorkerStatus> RestartAsync(CancellationToken cancellationToken)
-            => Task.FromResult(new WorkerStatus { State = WorkerConnectionState.Ready });
+        {
+            RestartCallCount++;
+            return Task.FromResult(new WorkerStatus { State = WorkerConnectionState.Ready });
+        }
+
+        public List<RemoteReconnectRequest> ReconnectRequests { get; } = [];
+
+        public Exception? ReconnectException { get; set; }
+
+        public Task<WorkerStatus> ReconnectAsync(RemoteReconnectRequest request, CancellationToken cancellationToken)
+        {
+            ReconnectRequests.Add(request);
+            return ReconnectException is null
+                ? Task.FromResult(new WorkerStatus { State = WorkerConnectionState.Ready })
+                : Task.FromException<WorkerStatus>(ReconnectException);
+        }
+
+        public List<ConnectionDiagnosticsRequest> DiagnoseRequests { get; } = [];
+
+        public Func<ConnectionDiagnosticsRequest, Task<ConnectionDiagnosticsResult>>? DiagnoseHandler { get; set; }
+
+        public Task<ConnectionDiagnosticsResult> DiagnoseConnectionAsync(ConnectionDiagnosticsRequest request, CancellationToken cancellationToken)
+        {
+            DiagnoseRequests.Add(request);
+            return DiagnoseHandler?.Invoke(request) ?? Task.FromResult(new ConnectionDiagnosticsResult
+            {
+                ProfileName = request.ProfileName,
+                Health = new HealthProbeResult { State = HealthProbeState.Healthy, HttpStatus = 200, DurationMilliseconds = 12, Reason = "The route responded successfully." },
+                Ready = new HealthProbeResult { State = HealthProbeState.Unhealthy, HttpStatus = 503, DurationMilliseconds = 14, Reason = "The route responded with an error status." },
+            });
+        }
 
         public Task<AccountStatus> GetAccountStatusAsync(CancellationToken cancellationToken)
             => Task.FromResult(AccountStatusResult);

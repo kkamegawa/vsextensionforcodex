@@ -17,3 +17,11 @@ public interface IJsonRpcConnection : IAsyncDisposable
     Task SendNotificationAsync(string method, object? parameters, CancellationToken cancellationToken);
 }
 
+/// <summary>
+/// A transport that counts valid parsed inbound JSON-RPC messages. An idle watchdog compares
+/// the sequence before and after a probe to tell a silent peer from a merely quiet one.
+/// </summary>
+public interface IInboundActivitySource
+{
+    long InboundActivitySequence { get; }
+}

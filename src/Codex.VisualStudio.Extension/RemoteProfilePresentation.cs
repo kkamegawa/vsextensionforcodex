@@ -1,5 +1,6 @@
 ﻿using System.Collections.ObjectModel;
 using System.Runtime.Serialization;
+using Codex.VisualStudio.Contracts;
 
 namespace Codex.VisualStudio.Extension;
 
@@ -173,10 +174,18 @@ public sealed class RemoteProfilesPresentationViewModel : ObservableObject
     private RemoteProfileViewModel? selectedProfile;
     private string statusText = string.Empty;
 
-    internal RemoteProfilesPresentationViewModel(ExtensionSettings settings, IExtensionSettingsStore store)
+    // True while the caller already holds OperationGate, so a selection change persists inline
+    // instead of queueing behind the operation that is changing it.
+    private bool persistInline;
+
+    internal RemoteProfilesPresentationViewModel(
+        ExtensionSettings settings,
+        IExtensionSettingsStore store,
+        SemaphoreSlim? operationGate = null)
     {
         this.settings = settings;
         this.store = store;
+        OperationGate = operationGate ?? new SemaphoreSlim(1, 1);
         foreach (RemoteConnectionProfile profile in settings.RemoteProfiles.Where(static p => p is not null))
         {
             Profiles.Add(new RemoteProfileViewModel(profile, isPersisted: true));
@@ -223,8 +232,16 @@ public sealed class RemoteProfilesPresentationViewModel : ObservableObject
                 }
 
                 // Only a saved profile can be applied; an unsaved selection falls back to local stdio.
-                settings.SelectedRemoteProfileName = value?.PersistedProfile?.Name;
-                PersistSettings();
+                string? selectedName = value?.PersistedProfile?.Name;
+                if (persistInline)
+                {
+                    PersistSelection(selectedName);
+                }
+                else
+                {
+                    _ = RunGatedAsync(() => PersistSelection(selectedName));
+                }
+
                 OnPropertyChanged(nameof(HasSelection));
             }
         }
@@ -251,6 +268,15 @@ public sealed class RemoteProfilesPresentationViewModel : ObservableObject
 
     [DataMember]
     public AsyncCommand SaveCommand { get; }
+
+    // Serializes every same-instance settings mutation (selection persistence, Save, rename,
+    // enable/disable, delete, explicit switch to local) with reconnect snapshot validation and
+    // the Worker RPC dispatch that follows it.
+    internal SemaphoreSlim OperationGate { get; }
+
+    // Raised after saved profile metadata changes (Save or removal), so dependent presentation
+    // such as a health result can be cleared.
+    internal event EventHandler? SavedProfilesChanged;
 
     // Resolves the saved, enabled selection that a reconnect would apply. The Worker bridge reads
     // the same persisted selection, so an unsaved or disabled profile must be refused here rather
@@ -290,6 +316,24 @@ public sealed class RemoteProfilesPresentationViewModel : ObservableObject
 
     internal void ClearSelection() => SelectedProfile = null;
 
+    // Call only while holding OperationGate.
+    internal void ClearSelectionUnderGate()
+    {
+        persistInline = true;
+        try
+        {
+            SelectedProfile = null;
+        }
+        finally
+        {
+            persistInline = false;
+        }
+    }
+
+    // The editor row for a saved profile name, if the editor still shows it.
+    internal RemoteProfileViewModel? FindByPersistedName(string name)
+        => Profiles.FirstOrDefault(profile => string.Equals(profile.PersistedProfile?.Name, name, StringComparison.Ordinal));
+
     internal void ReportStatus(string text) => StatusText = text;
 
     private Task AddProfileAsync()
@@ -308,34 +352,68 @@ public sealed class RemoteProfilesPresentationViewModel : ObservableObject
         return Task.CompletedTask;
     }
 
-    private Task RemoveProfileAsync()
+    private async Task RemoveProfileAsync()
     {
-        if (SelectedProfile is null)
+        await OperationGate.WaitAsync().ConfigureAwait(false);
+        try
         {
-            return Task.CompletedTask;
+            if (SelectedProfile is null)
+            {
+                return;
+            }
+
+            int index = Profiles.IndexOf(SelectedProfile);
+            Profiles.Remove(SelectedProfile);
+
+            // The removed profile is no longer the selection, so the setter always persists the
+            // remaining saved profiles and the new selection.
+            persistInline = true;
+            try
+            {
+                SelectedProfile = index >= 0 && index < Profiles.Count ? Profiles[index] : Profiles.LastOrDefault();
+            }
+            finally
+            {
+                persistInline = false;
+            }
+        }
+        finally
+        {
+            OperationGate.Release();
         }
 
-        int index = Profiles.IndexOf(SelectedProfile);
-        Profiles.Remove(SelectedProfile);
-
-        // The removed profile is no longer the selection, so the setter always persists the
-        // remaining saved profiles and the new selection.
-        SelectedProfile = index >= 0 && index < Profiles.Count ? Profiles[index] : Profiles.LastOrDefault();
-        return Task.CompletedTask;
+        SavedProfilesChanged?.Invoke(this, EventArgs.Empty);
     }
 
-    private Task SaveProfileAsync()
+    private async Task SaveProfileAsync()
+    {
+        await OperationGate.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            SaveProfileCore();
+        }
+        finally
+        {
+            OperationGate.Release();
+        }
+
+        SavedProfilesChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    // Save validates metadata only. It never opens or reads the token file; existence,
+    // readability, and contents are checked by the Worker on an explicit connection.
+    private void SaveProfileCore()
     {
         RemoteProfileViewModel? profile = SelectedProfile;
         if (profile is null)
         {
-            return Task.CompletedTask;
+            return;
         }
 
         if (!TryValidate(profile, out string error))
         {
             StatusText = error;
-            return Task.CompletedTask;
+            return;
         }
 
         string name = profile.Name.Trim();
@@ -345,14 +423,39 @@ public sealed class RemoteProfilesPresentationViewModel : ObservableObject
         if (duplicate)
         {
             StatusText = "Profile names must be unique.";
-            return Task.CompletedTask;
+            return;
         }
 
         profile.PersistedProfile = profile.ToSettings();
         settings.SelectedRemoteProfileName = profile.PersistedProfile.Name;
         PersistSettings();
         StatusText = "Remote profile saved. Reconnect to apply it.";
-        return Task.CompletedTask;
+    }
+
+    private void PersistSelection(string? selectedName)
+    {
+        settings.SelectedRemoteProfileName = selectedName;
+        PersistSettings();
+    }
+
+    private async Task RunGatedAsync(Action action)
+    {
+        try
+        {
+            await OperationGate.WaitAsync().ConfigureAwait(false);
+            try
+            {
+                action();
+            }
+            finally
+            {
+                OperationGate.Release();
+            }
+        }
+        catch (Exception ex)
+        {
+            ExtensionDiagnostics.Write("Remote profile selection persistence failed", ex);
+        }
     }
 
     private void PersistSettings()
@@ -375,13 +478,12 @@ public sealed class RemoteProfilesPresentationViewModel : ObservableObject
             return false;
         }
 
-        // Same rule as the Worker's WebSocketTransportSecurityPolicy: wss anywhere, ws only for
-        // a loopback host (localhost, 127.0.0.0/8, or ::1).
-        if (!Uri.TryCreate(profile.Endpoint.Trim(), UriKind.Absolute, out Uri? endpoint)
-            || !(string.Equals(endpoint.Scheme, "wss", StringComparison.OrdinalIgnoreCase)
-                || (string.Equals(endpoint.Scheme, "ws", StringComparison.OrdinalIgnoreCase) && endpoint.IsLoopback)))
+        // The shared pure policy also used by the Worker and the transport. It performs no DNS
+        // lookup; the Worker verifies the exact "localhost" name before connecting.
+        RemoteEndpointValidation endpoint = RemoteEndpointPolicy.Validate(profile.Endpoint);
+        if (!endpoint.IsValid)
         {
-            error = "Use a wss endpoint. Plain ws is allowed only for loopback.";
+            error = endpoint.Message;
             return false;
         }
 
@@ -394,6 +496,12 @@ public sealed class RemoteProfilesPresentationViewModel : ObservableObject
         if (profile.IsEnabled && string.IsNullOrWhiteSpace(profile.TokenFilePath))
         {
             error = "An enabled remote profile requires a token file path.";
+            return false;
+        }
+
+        if (profile.IsEnabled && !TokenFilePathPolicy.IsSyntacticallyValid(profile.TokenFilePath))
+        {
+            error = "The token file path must be an absolute path on a local drive (for example C:\\tokens\\app-server.token).";
             return false;
         }
 

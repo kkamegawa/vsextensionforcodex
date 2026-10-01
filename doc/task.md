@@ -619,3 +619,29 @@ uses a locally downloaded standalone Codex binary rather than winget.
   later notification, and an account notification whose `account/read` times out.
 - [x] Verify a zero-warning Release build of the solution, UI tests (286 passed, one skipped), and
   Core tests (133 passed). The two `CodexProcessHostTests` failures also occur on the unmodified base.
+
+### 2026-10-01: Revise the secure remote connection design (Issue #151)
+
+- [x] Reconcile the design review with existing transport, profile, retry, and diagnostic implementations.
+- [x] Define shared endpoint validation, bounded token I/O and secret leases, profile freshness, independent root health diagnostics, startup deadlines, idle peer detection, and the exact retry allowlist in paired English/Japanese design documents.
+- [x] Synchronize design.md section 12 and the paired Phase 2 plan; retain ADR-012 history and add a proposed amendment and Japanese translation.
+- [x] Prepare paired Wiki plan pages and matching Home index changes for user review.
+- [x] Publish the paired Wiki plans and Home index after user authorization; update Issue #151 with the design clarifications and remaining acceptance evidence.
+- [ ] Confirm the revised design and ADR amendment before any later implementation.
+- [ ] Implement, build, test, inspect the VSIX, and verify the Experimental Instance display against the design acceptance criteria.
+
+Design: [Secure Remote App Server Connection](secure-remote-connection-design.md) / [日本語](secure-remote-connection-design_ja.md).
+The user restricted this follow-up to Issue/Wiki publication. Wiki commits `2705f9b` (publication) and `5b29eb8` (canonical page/language links) are pushed; the latter matches remote master. Issue #151 body is updated and verified; its title and open state are preserved. Both published plan pages and both Home pages render in the browser, with canonical index and language links verified. Implementation and build/UI verification remain pending.
+
+### 2026-10-02: Implement the secure remote connection (Issue #151)
+
+- [x] Contracts: shared endpoint, bearer-token, and token-path policies; profile fingerprint; target snapshot; typed `-32051` rejection; contract v17 with `worker/reconnect` and `worker/connection/diagnose`.
+- [x] Protocol: shared-policy WebSocket admission, allowlist-owned `SendReadOnlyRequestAsync`, caller-owned invoker, 30-second keep-alive, and inbound activity sequence.
+- [x] Worker: networking factory with proxy mapping and loopback pinning, bounded token reader, secret leases and redacted diagnostics, staged 45-second startup, Restart/Reconnect separation, health diagnosis, and idle watchdog.
+- [x] Extension: shared validation at Save, operation gate, reconnect freshness checks, Restart local / Reconnect remote labels, and the health check rows in the connection-target flyout.
+- [x] Tests: policy, token, lease, proxy/DNS, TLS/authentication/redirect, health, retry, startup, watchdog, reconnect, and view-model coverage. Release build with zero warnings; Core 274 passed (2 pre-existing failures reproduced on the base commit, 1 skipped); UI 306 passed (1 skipped); contract-surface and schema-cache checks; VSIX inspection.
+- [x] Review fix: exact `localhost` tries every verified loopback address in order, so a listener on only `::1` (or only `127.0.0.1`) is reachable for the WebSocket handshake and health diagnosis.
+- [ ] Pinned 0.159.1 `test-schema-cache.ps1` and smoke test, positive trusted-TLS check, and Experimental Instance screenshots (local/remote actions, failures, health states, themes, narrow width, keyboard focus).
+- [ ] Confirm the ADR-012 amendment status (still recorded as Proposed).
+
+Implementation record: [implementation.md](implementation.md#secure-remote-app-server-connection-issue-151-2026-10-02). Tracking: [Issue #151](https://github.com/kkamegawa/vsextensionforcodex/issues/151).

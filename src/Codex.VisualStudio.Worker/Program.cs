@@ -28,11 +28,13 @@ using var pipe = new NamedPipeServerStream(
 await pipe.WaitForConnectionAsync().ConfigureAwait(false);
 
 var redactor = new SecretRedactor();
+WorkerDiagnostics.Configure(redactor);
+using var networking = new WorkerNetworking();
 var pathPolicy = new PathAccessPolicy();
 var approvalPolicy = new ApprovalPolicyEngine(pathPolicy);
-await using var host = new CodexProcessHost(redactor);
+await using var host = new CodexProcessHost(redactor, networking);
 await using var session = new CodexSessionService(approvalPolicy, redactor);
-await using var service = new WorkerRpcService(redactor, host, session);
+await using var service = new WorkerRpcService(redactor, host, session, new RemoteConnectionDiagnostics(networking));
 
 using var rpc = new JsonRpc(pipe);
 rpc.AddLocalRpcTarget<ICodexWorkerClient>(service, null);

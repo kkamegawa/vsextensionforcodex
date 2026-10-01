@@ -15,6 +15,11 @@
     <InternalsVisibleTo Include="Codex.VisualStudio.Core.Tests" />
   </ItemGroup>
 
+  <!-- Shared pure policies (endpoint, bearer-token format). Contracts never references Protocol. -->
+  <ItemGroup>
+    <ProjectReference Include="../Codex.VisualStudio.Contracts/Codex.VisualStudio.Contracts.csproj" />
+  </ItemGroup>
+
   <PropertyGroup>
     <CodexSchemaRoot>$([System.IO.Path]::GetFullPath('$(MSBuildProjectDirectory)/../../schemas'))</CodexSchemaRoot>
     <CodexContractManifest>$([System.IO.Path]::GetFullPath('$(MSBuildProjectDirectory)/../../app-server-contract.json'))</CodexContractManifest>

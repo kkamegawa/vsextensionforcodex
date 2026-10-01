@@ -135,6 +135,87 @@ Validation on September 22, 2026:
   `scripts/test-schema-cache.ps1`, `compare-schemas.ps1` and `verify-contract-surface.ps1` for both
   surfaces, and `scripts/smoke-app-server.ps1` passed with the pinned 0.159.1 executable.
 
+### Secure remote App Server connection (Issue #151, 2026-10-02)
+
+Implements `doc/secure-remote-connection-design.md`. The bundled Extension/Worker contract is v17.
+
+- Contracts: `RemoteEndpointPolicy` (pure; canonical loopback literals, exact `localhost`, no user
+  information/query/fragment, unspecified destinations rejected for every scheme),
+  `BearerTokenPolicy` (RFC 6750 b64token, at least 32 characters), `TokenFilePathPolicy`
+  (drive-qualified absolute path only), `RemoteProfileFingerprint` (SHA-256 over length-prefixed
+  trimmed metadata), `ConnectionTargetSnapshot` on `WorkerStatus.Target`,
+  `WorkerErrorCodes.ConnectionOperationRejected` (-32051) with `ConnectionOperationRejectionReason`,
+  and the `worker/reconnect` and `worker/connection/diagnose` operations.
+- Protocol: `WebSocketTransportSecurityPolicy` delegates to the shared policies.
+  `SendReadOnlyRequestAsync` replaces `SendIdempotentRequestAsync`/`JsonRpcRetryPolicy`; the
+  allowlist is owned by `ReadOnlyRequestAllowlist`. The `skills/list` false-only condition was
+  checked against the pinned `schemas/0.159.1/stable/v2/SkillsListParams.json` ("When true, bypass
+  the skills cache and re-scan skills from disk"). `WebSocketJsonRpcConnection` accepts a
+  caller-owned `HttpMessageInvoker`, sets `KeepAliveInterval` to 30 seconds, records the upgrade
+  status for authentication classification, and exposes `InboundActivitySequence`.
+- Worker: `WorkerNetworking` (captured `HttpClient.DefaultProxy` behind a ws→http/wss→https
+  mapping proxy; cookies, redirects, and default credentials disabled; a shared proxied invoker for
+  remote endpoints, a direct invoker whose `ConnectCallback` refuses anything but loopback
+  literals, and a per-attempt invoker pinned to the verified loopback address set for exact `localhost`; it tries
+  each verified address in resolver order, so IPv6-only and IPv4-only listeners both connect),
+  `BearerTokenFileReader`, `RemoteConnectionException` (fixed categorical text, no inner
+  exception), `RemoteConnectionDiagnostics`, and `RemoteIdleWatchdog`. `ISecretRedactor.RegisterSecret`
+  returns reference-counted leases; `WorkerDiagnostics` redacts each line before stderr and the
+  shared `diagnostics.log`. The process host owns the lease and any pinned invoker per connection
+  and releases them only after the connection is disposed.
+- `WorkerRpcService`: every connect attempt gets a new generation and target snapshot; a PID is
+  reported only for a local target. Remote startup runs under one 45-second deadline with stage
+  caps; a failure after the socket exists retires the candidate. A stage timeout of the startup
+  account read alone keeps the RPC connection Ready with an Unavailable account. `RestartAsync`
+  refuses a remote target and `ReconnectAsync` validates the request against the bound options and
+  current generation before stopping anything. The connection-loss handler produces its categorical
+  text before queueing; queued close and watchdog callbacks are tracked and drained after the
+  transition gate is released during disposal.
+- Extension: profile Save uses the shared policies and never touches the token file. One operation
+  gate serializes selection persistence, Save, delete, Apply, the local switch, reconnect snapshot
+  validation, and the reconnect dispatch. The degraded action is labeled **Restart local
+  app-server** or **Reconnect remote app-server** (tooltip, automation name, and help text bound
+  to the same properties). The flyout adds **Check health** with separate Health, Ready, and RPC rows
+  and the authority-root scope note; results are cleared on selection change, Save/delete, or a new
+  connection generation, and stale completions are discarded. Diagnosis starts the Worker if
+  needed but never the app-server.
+
+Implementation notes:
+
+- The idle watchdog measures silence as a full 30-second window in which the inbound sequence did
+  not change, so a silent peer is detected between 30 and 60 seconds after its last message, plus
+  two 10-second probes.
+- The handshake stage cap also covers a server that accepts TCP but never answers the upgrade.
+- A redirect on the WebSocket upgrade or health routes is never followed. An upgrade that the server
+  answers with any status other than 101 (wrong routing path, redirect, server error) is reported as
+  `UpgradeRejected`; 401/403 is `AuthenticationRejected`.
+- Besides checking the token path itself, the reader requires the final path of the opened handle
+  (`GetFinalPathNameByHandle`) to be on a local drive, so a directory junction or symlink anywhere
+  in the path cannot redirect the read to a network share.
+- An independent review of the change (no high-severity findings) led to these fixes: handle-based
+  final-path check, IPv4-mapped loopback literals connecting over IPv4, every Extension connect
+  dispatch taking the profile operation gate, callback drain before the token lease is released on
+  Worker disposal, Check health command-state refresh on a generation change, WHATWG-style detection
+  of numeric hosts, preservation of the overload error at the retry deadline with close observed for
+  the whole call, and the `UpgradeRejected` category.
+
+Validation on 2026-10-02:
+
+- Release solution build: 0 warnings, 0 errors.
+- Core tests: 274 passed, 1 skipped (symbolic-link test requires Developer Mode or elevation),
+  2 failed. The 2 failures (`FailedStartDoesNotLeaveUnsafeProcessReference`,
+  `ResolverUsesExplicitExistingExecutable`) also fail on an unmodified worktree of the base commit.
+- UI tests: 306 passed, 1 skipped.
+- `verify-contract-surface.ps1` (stable and experimental) and `validate-schema-cache.ps1` passed.
+- Release VSIX: manifest identity and `<Preview>true</Preview>` unchanged; packaged Contracts,
+  Protocol, and Worker assemblies contain the new types; the embedded XAML contains the new
+  bindings; the packaged Worker DLL hash matches the build output.
+- Not yet done: `test-schema-cache.ps1` and `smoke-app-server.ps1` with the pinned 0.159.1
+  executable (not installed on the validating machine), a positive trusted-TLS handshake test
+  (requires a trusted certificate; the tests do not change machine trust), and Experimental
+  Instance screenshots of local/remote actions, authentication/RPC failures, health states, themes,
+  narrow width, and keyboard focus.
+
 ## Implemented Behavior
 
 - Bidirectional JSON-RPC request, response, notification, and server-request handling

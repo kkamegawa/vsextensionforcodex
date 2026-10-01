@@ -38,6 +38,10 @@ internal interface IWorkerBridge : IAsyncDisposable
 
     Task<WorkerStatus> RestartAsync(CancellationToken cancellationToken);
 
+    Task<WorkerStatus> ReconnectAsync(RemoteReconnectRequest request, CancellationToken cancellationToken);
+
+    Task<ConnectionDiagnosticsResult> DiagnoseConnectionAsync(ConnectionDiagnosticsRequest request, CancellationToken cancellationToken);
+
     Task<AccountStatus> GetAccountStatusAsync(CancellationToken cancellationToken);
 
     Task<StartAccountLoginResult> StartAccountLoginAsync(CancellationToken cancellationToken);
@@ -168,6 +172,8 @@ public sealed class WorkerBridge : IWorkerBridge, ICodexWorkerObserver
                     RemoteTokenFilePath = remote?.TokenFilePath,
                     LocalRoot = remote?.LocalRoot,
                     ServerRoot = remote?.ServerRoot,
+                    RemoteProfileName = remote?.Name,
+                    RemoteProfileFingerprint = remote?.ComputeFingerprint(),
                 },
             },
             cancellationToken).ConfigureAwait(false);
@@ -176,7 +182,23 @@ public sealed class WorkerBridge : IWorkerBridge, ICodexWorkerObserver
     }
 
     public Task<WorkerStatus> RestartAsync(CancellationToken cancellationToken)
-        => rpc!.InvokeWithCancellationAsync<WorkerStatus>("worker/restart", Array.Empty<object>(), cancellationToken);
+        => RequireRpc().InvokeWithCancellationAsync<WorkerStatus>("worker/restart", Array.Empty<object>(), cancellationToken);
+
+    public Task<WorkerStatus> ReconnectAsync(RemoteReconnectRequest request, CancellationToken cancellationToken)
+        => RequireRpc().InvokeWithCancellationAsync<WorkerStatus>("worker/reconnect", new object[] { request }, cancellationToken);
+
+    // Health diagnosis is available before the first connection, so it starts the Worker if
+    // needed. It never connects the app-server or reads a token.
+    public async Task<ConnectionDiagnosticsResult> DiagnoseConnectionAsync(
+        ConnectionDiagnosticsRequest request,
+        CancellationToken cancellationToken)
+    {
+        await EnsureWorkerStartedAsync(cancellationToken).ConfigureAwait(false);
+        return await RequireRpc().InvokeWithCancellationAsync<ConnectionDiagnosticsResult>(
+            "worker/connection/diagnose",
+            new object[] { request },
+            cancellationToken).ConfigureAwait(false);
+    }
 
     public Task<AccountStatus> GetAccountStatusAsync(CancellationToken cancellationToken)
         => rpc!.InvokeWithCancellationAsync<AccountStatus>("worker/account/status", Array.Empty<object>(), cancellationToken);
