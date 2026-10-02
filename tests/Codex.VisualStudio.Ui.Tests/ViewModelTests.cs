@@ -1540,6 +1540,7 @@ public sealed class ViewModelTests
             "CheckProfileHealthCommand", "ConnectionHealth.StatusText", "ConnectionHealth.HasResult",
             "ConnectionHealth.CheckedProfileText", "ConnectionHealth.HealthText", "ConnectionHealth.ReadyText",
             "ConnectionHealth.RpcText", "ConnectionHealth.ScopeText", "RestartActionText", "RestartActionHelpText",
+            "ConnectionTargetLabel",
         ];
         var bound = Regex.Matches(xaml, @"\{Binding\s+([A-Za-z_][\w.]*)")
             .Select(static match => match.Groups[1].Value)
@@ -3915,6 +3916,31 @@ public sealed class ViewModelTests
         Assert.IsNull(store.Settings.SelectedRemoteProfileName);
         Assert.AreEqual("Local", vm.ConnectionTargetText);
         Assert.AreEqual(1, store.Settings.RemoteProfiles.Count);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_ConnectionTargetLabel_SaysConnectedOnlyForLiveStates()
+    {
+        var bridge = new FakeWorkerBridge();
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        var raised = new List<string?>();
+        vm.PropertyChanged += (_, e) => raised.Add(e.PropertyName);
+
+        foreach ((WorkerConnectionState state, string expected) in new[]
+        {
+            (WorkerConnectionState.Ready, "Connected to:"),
+            (WorkerConnectionState.Degraded, "Target:"),
+            (WorkerConnectionState.Busy, "Connected to:"),
+            (WorkerConnectionState.Disconnected, "Target:"),
+            (WorkerConnectionState.WaitingForApproval, "Connected to:"),
+            (WorkerConnectionState.Connecting, "Target:"),
+        })
+        {
+            raised.Clear();
+            await bridge.PublishStateAsync(new WorkerStatus { State = state });
+            Assert.AreEqual(expected, vm.ConnectionTargetLabel, state.ToString());
+            CollectionAssert.Contains(raised, nameof(ChatViewModel.ConnectionTargetLabel), state.ToString());
+        }
     }
 
     [TestMethod]

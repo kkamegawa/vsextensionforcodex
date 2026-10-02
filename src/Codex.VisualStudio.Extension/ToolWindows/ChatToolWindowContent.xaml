@@ -523,7 +523,7 @@
                   <StackPanel>
                     <TextBlock Text="Connection target" FontWeight="SemiBold" FontSize="14" />
                     <TextBlock Margin="0,4,0,0" TextWrapping="Wrap" Opacity="0.8">
-                      <Run Text="Connected to:" />
+                      <Run Text="{Binding ConnectionTargetLabel, Mode=OneWay}" />
                       <Run Text="{Binding ConnectionTargetText, Mode=OneWay}" FontWeight="SemiBold" />
                     </TextBlock>
 

@@ -476,6 +476,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 OnPropertyChanged(nameof(IsTurnActive));
                 OnPropertyChanged(nameof(SendButtonText));
                 OnPropertyChanged(nameof(StatusDetailText));
+                OnPropertyChanged(nameof(ConnectionTargetLabel));
                 OnPropertyChanged(nameof(StatusStateText));
                 OnPropertyChanged(nameof(StatusVersionText));
                 OnPropertyChanged(nameof(StatusAutomationName));
@@ -610,6 +611,14 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     // connection, not the row being edited in the flyout.
     [DataMember]
     public string ConnectionTargetText => connectedProfileName is null ? "Local" : markdown.ToSafeText(connectedProfileName).Trim();
+
+    // Only a live RPC connection is labeled as connected; otherwise the flyout names the intended
+    // target (Disconnected, Connecting, Degraded).
+    [DataMember]
+    public string ConnectionTargetLabel
+        => Status.State is WorkerConnectionState.Ready or WorkerConnectionState.Busy or WorkerConnectionState.WaitingForApproval
+            ? "Connected to:"
+            : "Target:";
 
     [DataMember]
     public string ConnectionTargetAutomationName => connectedProfileName is null
