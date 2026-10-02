@@ -988,7 +988,7 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
             activity,
             watchdogTiming,
             timeProvider,
-            cancellationToken => OnRemotePeerUnresponsiveAsync(connection, generation, cancellationToken));
+            (isStillSilent, cancellationToken) => OnRemotePeerUnresponsiveAsync(connection, generation, isStillSilent, cancellationToken));
         watchdog = started;
         started.Start();
         TrackCallback(started.Completion);
@@ -1001,12 +1001,14 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
         Interlocked.Exchange(ref watchdog, null)?.Cancel();
     }
 
-    private async Task OnRemotePeerUnresponsiveAsync(
+    // Returns true when the watchdog should keep watching because inbound activity arrived after
+    // the probes; false once the socket is retired or the generation was superseded.
+    private async Task<bool> OnRemotePeerUnresponsiveAsync(
         IJsonRpcConnection connection,
         long generation,
+        Func<bool> isStillSilent,
         CancellationToken cancellationToken)
     {
-        WorkerDiagnostics.Write("remote codex app-server did not answer two liveness probes");
         await connectionTransitionGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
@@ -1016,13 +1018,22 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
                 || !ReferenceEquals(Volatile.Read(ref observedRemoteConnection), connection)
                 || !ReferenceEquals(processHost.Connection, connection))
             {
-                return;
+                return false;
             }
 
+            // Revalidated under the gate: a message that arrived between or after the probes
+            // proves the peer is alive, so the idle window restarts instead.
+            if (!isStillSilent())
+            {
+                return true;
+            }
+
+            WorkerDiagnostics.Write("remote codex app-server did not answer two liveness probes");
             watchdog = null;
             ObserveRemoteConnection(null);
             await processHost.StopAsync(CancellationToken.None).ConfigureAwait(false);
             await PublishRemoteFailureAsync(RemoteConnectionException.Describe(RemoteConnectionFailure.PeerUnresponsive)).ConfigureAwait(false);
+            return false;
         }
         finally
         {

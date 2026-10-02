@@ -13,8 +13,10 @@ public sealed record RemoteWatchdogTiming(TimeSpan IdleWindow, TimeSpan ProbeTim
 /// inbound JSON-RPC traffic. Once a full idle window has passed since the last inbound message
 /// (or since start, when nothing has arrived yet) it sends at most
 /// two <c>account/read(refreshToken: false)</c> probes, each sent once without overload retry.
-/// Only two consecutive silent probes report the peer as unresponsive. It never reconnects and
-/// never sends a mutation.
+/// Only two consecutive silent probes report the peer as unresponsive. One activity baseline
+/// covers the whole probe episode, and the owner revalidates it before retiring the socket, so a
+/// message that arrives between or after the probes restarts the idle window instead. It never
+/// reconnects and never sends a mutation.
 /// </summary>
 internal sealed class RemoteIdleWatchdog : IDisposable
 {
@@ -22,7 +24,7 @@ internal sealed class RemoteIdleWatchdog : IDisposable
     private readonly IInboundActivitySource activity;
     private readonly RemoteWatchdogTiming timing;
     private readonly TimeProvider timeProvider;
-    private readonly Func<CancellationToken, Task> onUnresponsive;
+    private readonly UnresponsiveHandler onUnresponsive;
     private readonly CancellationTokenSource lifetime = new();
     private long lastActivityTimestamp;
     private Task? loop;
@@ -32,7 +34,7 @@ internal sealed class RemoteIdleWatchdog : IDisposable
         IInboundActivitySource activity,
         RemoteWatchdogTiming timing,
         TimeProvider timeProvider,
-        Func<CancellationToken, Task> onUnresponsive)
+        UnresponsiveHandler onUnresponsive)
     {
         this.connection = connection;
         this.activity = activity;
@@ -42,6 +44,14 @@ internal sealed class RemoteIdleWatchdog : IDisposable
         lastActivityTimestamp = timeProvider.GetTimestamp();
         activity.InboundActivity += OnInboundActivity;
     }
+
+    /// <summary>
+    /// Called after two silent probes. <paramref name="isStillSilent"/> reports whether no inbound
+    /// activity arrived since the probe episode began; the owner checks it under its transition
+    /// gate immediately before retiring the socket. Returns <see langword="true"/> to keep watching
+    /// (activity arrived, so the socket was kept) and <see langword="false"/> to stop.
+    /// </summary>
+    internal delegate Task<bool> UnresponsiveHandler(Func<bool> isStillSilent, CancellationToken cancellationToken);
 
     public Task Completion => loop ?? Task.CompletedTask;
 
@@ -77,14 +87,22 @@ internal sealed class RemoteIdleWatchdog : IDisposable
                     continue;
                 }
 
-                if (await ProbeShowsLifeAsync(cancellationToken).ConfigureAwait(false)
-                    || await ProbeShowsLifeAsync(cancellationToken).ConfigureAwait(false))
+                // One baseline for the whole episode: activity between the probes, or while the
+                // owner waits for its gate, still counts as life.
+                long episode = activity.InboundActivitySequence;
+                if (await ProbeShowsLifeAsync(episode, cancellationToken).ConfigureAwait(false)
+                    || await ProbeShowsLifeAsync(episode, cancellationToken).ConfigureAwait(false))
                 {
                     MarkActivity();
                     continue;
                 }
 
-                await onUnresponsive(cancellationToken).ConfigureAwait(false);
+                bool IsStillSilent() => activity.InboundActivitySequence == episode;
+                if (await onUnresponsive(IsStillSilent, cancellationToken).ConfigureAwait(false))
+                {
+                    continue;
+                }
+
                 return;
             }
         }
@@ -111,10 +129,9 @@ internal sealed class RemoteIdleWatchdog : IDisposable
     private void MarkActivity() => Interlocked.Exchange(ref lastActivityTimestamp, timeProvider.GetTimestamp());
 
     // True when the peer answered (any response, including a JSON-RPC error or SignedOut), or
-    // when other inbound traffic arrived while the probe was outstanding.
-    private async Task<bool> ProbeShowsLifeAsync(CancellationToken cancellationToken)
+    // when other inbound traffic arrived since the probe episode began.
+    private async Task<bool> ProbeShowsLifeAsync(long episode, CancellationToken cancellationToken)
     {
-        long before = activity.InboundActivitySequence;
         try
         {
             await connection.SendRequestAsync(
@@ -130,7 +147,7 @@ internal sealed class RemoteIdleWatchdog : IDisposable
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
-            return activity.InboundActivitySequence != before;
+            return activity.InboundActivitySequence != episode;
         }
     }
 }

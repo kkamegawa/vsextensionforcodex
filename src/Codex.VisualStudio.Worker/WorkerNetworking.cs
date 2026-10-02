@@ -1,5 +1,6 @@
 ﻿using System.Net;
 using System.Net.Sockets;
+using System.Security.Cryptography.X509Certificates;
 using Codex.VisualStudio.Contracts;
 
 namespace Codex.VisualStudio.Worker;
@@ -36,6 +37,7 @@ public sealed class VerifiedRemoteEndpoint
 public sealed class WorkerNetworking : IDisposable
 {
     private readonly Func<string, CancellationToken, Task<IPAddress[]>> resolveHost;
+    private readonly X509ChainPolicy? certificateChainPolicy;
     private readonly SocketsHttpHandler proxiedHandler;
     private readonly SocketsHttpHandler directLoopbackHandler;
     private int disposed;
@@ -43,17 +45,28 @@ public sealed class WorkerNetworking : IDisposable
     public WorkerNetworking(
         IWebProxy? proxy = null,
         Func<string, CancellationToken, Task<IPAddress[]>>? resolveHost = null)
+        : this(proxy, resolveHost, certificateChainPolicy: null)
     {
+    }
+
+    // Tests pass a custom-root chain policy so a positive TLS handshake can be verified without
+    // changing machine trust. Production always uses the platform chain and hostname validation.
+    internal WorkerNetworking(
+        IWebProxy? proxy,
+        Func<string, CancellationToken, Task<IPAddress[]>>? resolveHost,
+        X509ChainPolicy? certificateChainPolicy)
+    {
+        this.certificateChainPolicy = certificateChainPolicy;
         // Captured once: a new Worker inherits the Visual Studio process environment, and
         // restarting the Worker refreshes the Windows user proxy settings.
         Proxy = new SchemeMappingProxy(proxy ?? HttpClient.DefaultProxy);
         this.resolveHost = resolveHost ?? Dns.GetHostAddressesAsync;
-        proxiedHandler = CreateHandler();
+        proxiedHandler = CreateConfiguredHandler();
         proxiedHandler.UseProxy = true;
         proxiedHandler.Proxy = Proxy;
         ProxiedInvoker = new HttpMessageInvoker(proxiedHandler, disposeHandler: false);
 
-        directLoopbackHandler = CreateHandler();
+        directLoopbackHandler = CreateConfiguredHandler();
         directLoopbackHandler.UseProxy = false;
         directLoopbackHandler.ConnectCallback = ConnectLoopbackLiteralAsync;
         DirectLoopbackInvoker = new HttpMessageInvoker(directLoopbackHandler, disposeHandler: false);
@@ -114,7 +127,7 @@ public sealed class WorkerNetworking : IDisposable
         if (endpoint.PinnedAddresses.Count > 0)
         {
             IReadOnlyList<IPAddress> pinned = endpoint.PinnedAddresses;
-            SocketsHttpHandler handler = CreateHandler();
+            SocketsHttpHandler handler = CreateConfiguredHandler();
             handler.UseProxy = false;
             handler.ConnectCallback = (context, cancellationToken) =>
                 ConnectFirstReachableAsync(pinned, context.DnsEndPoint.Port, cancellationToken);
@@ -137,6 +150,17 @@ public sealed class WorkerNetworking : IDisposable
         DirectLoopbackInvoker.Dispose();
         proxiedHandler.Dispose();
         directLoopbackHandler.Dispose();
+    }
+
+    private SocketsHttpHandler CreateConfiguredHandler()
+    {
+        SocketsHttpHandler handler = CreateHandler();
+        if (certificateChainPolicy is not null)
+        {
+            handler.SslOptions.CertificateChainPolicy = certificateChainPolicy.Clone();
+        }
+
+        return handler;
     }
 
     internal static SocketsHttpHandler CreateHandler() => new()

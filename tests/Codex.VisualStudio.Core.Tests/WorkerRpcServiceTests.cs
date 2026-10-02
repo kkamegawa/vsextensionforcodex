@@ -826,7 +826,7 @@ public sealed class WorkerRpcServiceTests
             connection,
             new RemoteWatchdogTiming(idleWindow, TimeSpan.FromMilliseconds(200)),
             TimeProvider.System,
-            static _ => Task.CompletedTask);
+            static (_, _) => Task.FromResult(false));
         watchdog.Start();
 
         await Task.Delay(50);
@@ -836,6 +836,48 @@ public sealed class WorkerRpcServiceTests
 
         Assert.IsTrue(probeAt - activityAt >= idleWindow - TimeSpan.FromMilliseconds(30), $"Probed after {probeAt - activityAt} of silence.");
         Assert.IsTrue(probeAt < idleWindow * 1.75, $"Probed {probeAt} after start; silence was not measured from the last message.");
+    }
+
+    [TestMethod]
+    public async Task WatchdogKeepsWatchingWhenActivityArrivesBeforeRetirement()
+    {
+        // A message that arrives after both probes timed out (for example while the owner waits
+        // for its transition gate) must keep the socket and restart the idle window.
+        var connection = new StubConnection
+        {
+            AsyncHandler = async (method, timeout, cancellationToken) =>
+            {
+                await Task.Delay(timeout, cancellationToken);
+                throw new OperationCanceledException("request timeout");
+            },
+        };
+        var silentChecks = new List<bool>();
+        var stopped = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var watchdog = new RemoteIdleWatchdog(
+            connection,
+            connection,
+            new RemoteWatchdogTiming(TimeSpan.FromMilliseconds(50), TimeSpan.FromMilliseconds(30)),
+            TimeProvider.System,
+            (isStillSilent, _) =>
+            {
+                if (silentChecks.Count == 0)
+                {
+                    connection.RecordInboundActivity();
+                    silentChecks.Add(isStillSilent());
+                    return Task.FromResult(true);
+                }
+
+                silentChecks.Add(isStillSilent());
+                stopped.TrySetResult();
+                return Task.FromResult(false);
+            });
+        watchdog.Start();
+
+        await stopped.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await watchdog.Completion.WaitAsync(TimeSpan.FromSeconds(5));
+
+        CollectionAssert.AreEqual(new[] { false, true }, silentChecks, "Activity before retirement must be seen; a later silent episode must not.");
+        Assert.AreEqual(4, connection.Methods.Count, "Each episode sends exactly two probes.");
     }
 
     [TestMethod]

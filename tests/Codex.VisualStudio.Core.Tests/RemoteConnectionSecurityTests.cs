@@ -1,5 +1,6 @@
 ﻿using System.Net;
 using System.Net.WebSockets;
+using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using Codex.AppServer.Protocol;
 using Codex.VisualStudio.Contracts;
@@ -585,6 +586,77 @@ public sealed class RemoteHandshakeTests
         Assert.AreEqual(RemoteConnectionFailure.CertificateRejected, ex.Failure);
         Assert.AreEqual(0, server.Requests.Count, "No HTTP request (and no token) may cross an untrusted TLS session.");
         Assert.AreEqual(0, redactor.ActiveSecretCount);
+    }
+
+    [TestMethod]
+    [DataRow("127.0.0.1")]
+    [DataRow("localhost")]
+    public async Task TrustedCertificateCompletesTheWssHandshake(string host)
+    {
+        // The client trusts the test certificate as a custom root, so platform chain building and
+        // hostname matching still run; the pinned localhost path must preserve the authority.
+        using X509Certificate2 certificate = LoopbackTestServer.CreateCertificate("CN=codex-test-trusted", ["localhost"], [IPAddress.Loopback]);
+        await using var server = new LoopbackTestServer(
+            async (request, stream) =>
+            {
+                using WebSocket socket = await LoopbackTestServer.AcceptWebSocketAsync(request, stream);
+                byte[] buffer = new byte[4096];
+                await socket.ReceiveAsync(buffer.AsMemory(), CancellationToken.None);
+                await socket.SendAsync(Encoding.UTF8.GetBytes("{\"id\":1,\"result\":{\"ok\":true}}"), WebSocketMessageType.Text, true, CancellationToken.None);
+                await socket.ReceiveAsync(buffer.AsMemory(), CancellationToken.None);
+            },
+            serverCertificate: certificate);
+        using var directory = new TempDirectory();
+        string tokenPath = directory.Write("trusted.token", Encoding.ASCII.GetBytes(Token));
+        var redactor = new SecretRedactor();
+        using var networking = new WorkerNetworking(
+            new WorkerNetworkingTests.RecordingProxy(),
+            (_, _) => Task.FromResult(new[] { IPAddress.Loopback }),
+            TrustOnly(certificate));
+        await using var codexHost = new CodexProcessHost(redactor, networking, BearerTokenFileReaderTests.LocalReader());
+
+        await codexHost.StartRemoteAsync(new RemoteConnectionRequest($"wss://{host}:{server.Port}/codex", tokenPath), CancellationToken.None);
+        System.Text.Json.JsonElement response = await codexHost.Connection!.SendRequestAsync("model/list", new { }, TimeSpan.FromSeconds(5), CancellationToken.None);
+
+        Assert.IsTrue(response.GetProperty("ok").GetBoolean());
+        RecordedRequest upgrade = server.Requests.Single();
+        Assert.AreEqual("/codex", upgrade.Target);
+        StringAssert.StartsWith(upgrade.Headers["Host"], host + ":");
+        Assert.AreEqual($"Bearer {Token}", upgrade.Headers["Authorization"]);
+        await codexHost.StopAsync(CancellationToken.None);
+        Assert.AreEqual(0, redactor.ActiveSecretCount);
+    }
+
+    [TestMethod]
+    public async Task TrustedCertificateForAnotherHostIsRejected()
+    {
+        using X509Certificate2 certificate = LoopbackTestServer.CreateCertificate("CN=codex-test-other", ["codex-other.test"], []);
+        await using var server = new LoopbackTestServer((_, stream) => LoopbackTestServer.RespondAsync(stream, 200, "OK"), serverCertificate: certificate);
+        using var directory = new TempDirectory();
+        string tokenPath = directory.Write("mismatch.token", Encoding.ASCII.GetBytes(Token));
+        var redactor = new SecretRedactor();
+        using var networking = new WorkerNetworking(new WorkerNetworkingTests.RecordingProxy(), resolveHost: null, TrustOnly(certificate));
+        await using var codexHost = new CodexProcessHost(redactor, networking, BearerTokenFileReaderTests.LocalReader());
+
+        RemoteConnectionException ex = await Assert.ThrowsExactlyAsync<RemoteConnectionException>(() => codexHost.StartRemoteAsync(
+            new RemoteConnectionRequest($"wss://127.0.0.1:{server.Port}", tokenPath),
+            CancellationToken.None));
+
+        Assert.AreEqual(RemoteConnectionFailure.CertificateRejected, ex.Failure);
+        Assert.AreEqual(0, server.Requests.Count, "A trusted chain for another host must not carry the token.");
+        Assert.AreEqual(0, redactor.ActiveSecretCount);
+    }
+
+    // Trusts exactly one test certificate for this client; no store or machine trust changes.
+    private static X509ChainPolicy TrustOnly(X509Certificate2 root)
+    {
+        var policy = new X509ChainPolicy
+        {
+            TrustMode = X509ChainTrustMode.CustomRootTrust,
+            RevocationMode = X509RevocationMode.NoCheck,
+        };
+        policy.CustomTrustStore.Add(root);
+        return policy;
     }
 
     [TestMethod]

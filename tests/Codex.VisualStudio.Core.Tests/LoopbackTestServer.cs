@@ -11,8 +11,8 @@ namespace Codex.VisualStudio.Core.Tests;
 
 /// <summary>
 /// Test-owned loopback listener. It speaks just enough HTTP/1.1 to answer probes and to upgrade
-/// a WebSocket handshake, optionally over TLS with an ephemeral self-signed certificate that is
-/// never added to any certificate store.
+/// a WebSocket handshake, optionally over TLS with an ephemeral self-signed certificate (or a
+/// caller-supplied one) that is never added to any certificate store.
 /// </summary>
 internal sealed class LoopbackTestServer : IAsyncDisposable
 {
@@ -20,13 +20,19 @@ internal sealed class LoopbackTestServer : IAsyncDisposable
     private readonly CancellationTokenSource lifetime = new();
     private readonly Func<RecordedRequest, Stream, Task> handler;
     private readonly X509Certificate2? certificate;
+    private readonly bool ownsCertificate;
     private readonly Task acceptLoop;
     private readonly ConcurrentBag<Task> connections = [];
 
-    public LoopbackTestServer(Func<RecordedRequest, Stream, Task> handler, bool useTls = false, IPAddress? address = null)
+    public LoopbackTestServer(
+        Func<RecordedRequest, Stream, Task> handler,
+        bool useTls = false,
+        IPAddress? address = null,
+        X509Certificate2? serverCertificate = null)
     {
         this.handler = handler;
-        certificate = useTls ? CreateEphemeralCertificate() : null;
+        ownsCertificate = serverCertificate is null;
+        certificate = serverCertificate ?? (useTls ? CreateEphemeralCertificate() : null);
         listener = new TcpListener(address ?? IPAddress.Loopback, 0);
         listener.Start();
         acceptLoop = Task.Run(AcceptAsync);
@@ -80,7 +86,11 @@ internal sealed class LoopbackTestServer : IAsyncDisposable
             }
         }
 
-        certificate?.Dispose();
+        if (ownsCertificate)
+        {
+            certificate?.Dispose();
+        }
+
         lifetime.Dispose();
     }
 
@@ -172,13 +182,27 @@ internal sealed class LoopbackTestServer : IAsyncDisposable
     }
 
     private static X509Certificate2 CreateEphemeralCertificate()
+        => CreateCertificate("CN=codex-test-untrusted", ["localhost"], [IPAddress.Loopback]);
+
+    // A self-signed server certificate with the given subject alternative names. Tests that need a
+    // trusted chain pass it as a custom root to the client; it is never added to any store.
+    public static X509Certificate2 CreateCertificate(string subject, IEnumerable<string> dnsNames, IEnumerable<IPAddress> addresses)
     {
         using var key = RSA.Create(2048);
-        var request = new CertificateRequest("CN=codex-test-untrusted", key, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+        var request = new CertificateRequest(subject, key, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
         var san = new SubjectAlternativeNameBuilder();
-        san.AddDnsName("localhost");
-        san.AddIpAddress(IPAddress.Loopback);
+        foreach (string dnsName in dnsNames)
+        {
+            san.AddDnsName(dnsName);
+        }
+
+        foreach (IPAddress address in addresses)
+        {
+            san.AddIpAddress(address);
+        }
+
         request.CertificateExtensions.Add(san.Build());
+        request.CertificateExtensions.Add(new X509EnhancedKeyUsageExtension([new Oid("1.3.6.1.5.5.7.3.1")], critical: false));
         using X509Certificate2 created = request.CreateSelfSigned(DateTimeOffset.UtcNow.AddMinutes(-5), DateTimeOffset.UtcNow.AddHours(1));
 
         // Round-trip through PFX so SChannel can use the private key. Without PersistKeySet the

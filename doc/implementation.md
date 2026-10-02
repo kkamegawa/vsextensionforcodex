@@ -184,7 +184,14 @@ Implementation notes:
 
 - The idle watchdog timestamps each inbound activity signal with its own `TimeProvider` and waits
   only until 30 seconds after the last inbound message, so a silent peer is probed exactly 30
-  seconds after its last message and detected after two further 10-second probes.
+  seconds after its last message and detected after two further 10-second probes. One activity
+  baseline covers the whole probe episode and is revalidated under the transition gate right
+  before the socket is retired; activity that arrived meanwhile keeps the socket and restarts
+  the idle window.
+- The positive trusted-TLS handshake (both `wss://127.0.0.1` and the pinned `wss://localhost`
+  path) and hostname-mismatch rejection are tested by passing a custom-root `X509ChainPolicy`
+  through an internal `WorkerNetworking` constructor; production keeps the platform chain and
+  hostname validation, and no store or machine trust changes.
 - The handshake stage cap also covers a server that accepts TCP but never answers the upgrade.
 - A redirect on the WebSocket upgrade or health routes is never followed. An upgrade that the server
   answers with any status other than 101 (wrong routing path, redirect, server error) is reported as
@@ -211,8 +218,7 @@ Validation on 2026-10-02:
   Protocol, and Worker assemblies contain the new types; the embedded XAML contains the new
   bindings; the packaged Worker DLL hash matches the build output.
 - Not yet done: `test-schema-cache.ps1` and `smoke-app-server.ps1` with the pinned 0.159.1
-  executable (not installed on the validating machine), a positive trusted-TLS handshake test
-  (requires a trusted certificate; the tests do not change machine trust), and Experimental
+  executable (not installed on the validating machine), and Experimental
   Instance screenshots of local/remote actions, authentication/RPC failures, health states, themes,
   narrow width, and keyboard focus.
 
