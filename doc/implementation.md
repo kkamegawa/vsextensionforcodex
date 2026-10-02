@@ -217,8 +217,10 @@ Validation on 2026-10-02:
 - Release VSIX: manifest identity and `<Preview>true</Preview>` unchanged; packaged Contracts,
   Protocol, and Worker assemblies contain the new types; the embedded XAML contains the new
   bindings; the packaged Worker DLL hash matches the build output.
-- Not yet done: `test-schema-cache.ps1` and `smoke-app-server.ps1` with the pinned 0.159.1
-  executable (not installed on the validating machine), and Experimental
+- `test-schema-cache.ps1` and `smoke-app-server.ps1` with the pinned 0.159.1 executable (the
+  hash-verified release asset from `install-codex.ps1`): schema cache contract tests passed and
+  `initialize` succeeded.
+- Not yet done: Experimental
   Instance screenshots of local/remote actions, authentication/RPC failures, health states, themes,
   narrow width, and keyboard focus.
 
