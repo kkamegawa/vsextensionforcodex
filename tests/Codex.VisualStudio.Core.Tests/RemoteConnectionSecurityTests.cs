@@ -62,12 +62,26 @@ public sealed class BearerTokenFileReaderTests
     }
 
     [TestMethod]
+    public async Task ExistingButUnreadableFileIsNotReportedAsMissing()
+    {
+        using var directory = new TempDirectory();
+        string path = directory.Write("locked.token", Encoding.ASCII.GetBytes(Token));
+
+        // An exclusive handle makes the open fail with a sharing violation; no ACL changes.
+        using (new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+        {
+            await AssertFailureAsync(LocalReader(), path, RemoteConnectionFailure.TokenFileUnreadable);
+        }
+    }
+
+    [TestMethod]
     public async Task RejectsMissingFilesDirectoriesAndNonLocalPaths()
     {
         using var directory = new TempDirectory();
         var reader = LocalReader();
 
         await AssertFailureAsync(reader, Path.Combine(directory.Path, "missing.token"), RemoteConnectionFailure.TokenFileMissing);
+        await AssertFailureAsync(reader, Path.Combine(directory.Path, "missing", "app-server.token"), RemoteConnectionFailure.TokenFileMissing);
         await AssertFailureAsync(reader, directory.Path, RemoteConnectionFailure.TokenFileUnreadable);
         await AssertFailureAsync(reader, @"\\server\share\app-server.token", RemoteConnectionFailure.TokenFileUnreadable);
         await AssertFailureAsync(reader, @"\\?\C:\tokens\app-server.token", RemoteConnectionFailure.TokenFileUnreadable);

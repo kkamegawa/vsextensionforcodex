@@ -1,4 +1,4 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using Codex.VisualStudio.Contracts;
 
 namespace Codex.AppServer.Protocol;
@@ -139,7 +139,19 @@ public static class JsonRpcConnectionRetryExtensions
         // Observe a close for the whole call, so a connection closed or retired (disposed) before
         // or during a backoff stops the retry promptly.
         using var closed = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        void OnClosed(object? sender, Exception? exception) => closed.Cancel();
+        void OnClosed(object? sender, Exception? exception)
+        {
+            // Closed may have captured this handler before the finally below unsubscribes it and
+            // invoke it after the source is disposed; that must not fault the transport's close.
+            try
+            {
+                closed.Cancel();
+            }
+            catch (ObjectDisposedException)
+            {
+            }
+        }
+
         connection.Closed += OnClosed;
         try
         {

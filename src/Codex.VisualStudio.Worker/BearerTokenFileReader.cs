@@ -39,20 +39,13 @@ public sealed partial class BearerTokenFileReader
                 throw Failure(RemoteConnectionFailure.TokenFileUnreadable);
             }
 
-            if (!file.Exists)
-            {
-                throw Failure(RemoteConnectionFailure.TokenFileMissing);
-            }
-
+            // Existence is not pre-checked: FileInfo.Exists also reports false for access and I/O
+            // errors. Opening the handle below tells a missing file from an unreadable one.
             // A symlink or junction may point anywhere; require the final target to be local too.
             if (file.LinkTarget is not null)
             {
-                FileSystemInfo? target = file.ResolveLinkTarget(returnFinalTarget: true);
-                if (target is null || !target.Exists)
-                {
-                    throw Failure(RemoteConnectionFailure.TokenFileMissing);
-                }
-
+                FileSystemInfo target = file.ResolveLinkTarget(returnFinalTarget: true)
+                    ?? throw Failure(RemoteConnectionFailure.TokenFileUnreadable);
                 fullPath = RequireLocalPath(target.FullName);
             }
         }

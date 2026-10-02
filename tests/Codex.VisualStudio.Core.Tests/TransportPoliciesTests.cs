@@ -1,4 +1,4 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using Codex.AppServer.Protocol;
 
 namespace Codex.VisualStudio.Core.Tests;
@@ -266,6 +266,25 @@ public sealed class TransportPoliciesTests
         Assert.IsFalse(WebSocketTransportSecurityPolicy.Validate(true, new Uri("wss://example.com"), "has space " + token).IsAllowed);
     }
 
+    [TestMethod]
+    public async Task CloseHandlerCapturedDuringTheRequestToleratesLaterInvocation()
+    {
+        // A close that captured the retry's handler before it was unsubscribed may invoke it after
+        // the call returned and disposed its cancellation source; that must not fault the close.
+        EventHandler<Exception?>? captured = null;
+        ScriptedConnection connection = null!;
+        connection = new ScriptedConnection(_ =>
+        {
+            captured = connection.CaptureClosedHandlers();
+            return JsonSerializer.SerializeToElement(new { });
+        });
+
+        await connection.SendReadOnlyRequestAsync("model/list", new { }, TimeSpan.FromSeconds(5), CancellationToken.None);
+
+        Assert.IsNotNull(captured);
+        captured(connection, null);
+    }
+
     private sealed class ScriptedConnection : IJsonRpcConnection
     {
         private readonly Func<int, JsonElement> handler;
@@ -289,6 +308,9 @@ public sealed class TransportPoliciesTests
         public Task FirstSend => firstSend.Task;
 
         public void RaiseClosed() => Closed?.Invoke(this, null);
+
+        // The handlers a concurrent close would have captured at this moment.
+        public EventHandler<Exception?>? CaptureClosedHandlers() => Closed;
 
         public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
 
