@@ -26,12 +26,11 @@ public sealed class WorkerRpcServiceTests
 
         // The worker owns disposal of the session, so it is not disposed separately here.
         var session = new CodexSessionService(new ApprovalPolicyEngine(new PathAccessPolicy()), new SecretRedactor());
-        await session.InitializeAsync(connection, Options(), CancellationToken.None);
-
-        await using var worker = new WorkerRpcService(new SecretRedactor(), new FakeProcessHost(), session);
+        await using var worker = new WorkerRpcService(new SecretRedactor(), new FakeProcessHost(connection), session);
+        await worker.ConnectAsync(Options(), CancellationToken.None);
         await using var client = new ClientChannel(worker);
 
-        await worker.StartTurnAsync(new StartTurnRequest { ThreadId = "thread-1", Text = "hello" }, CancellationToken.None);
+        await worker.StartTurnAsync(Scoped(worker, new StartTurnRequest { ThreadId = "thread-1", Text = "hello" }), CancellationToken.None);
 
         WorkerStatus published = await client.TurnIdSeen.WaitAsync(TimeSpan.FromSeconds(5));
         Assert.AreEqual(WorkerConnectionState.Busy, published.State);
@@ -130,7 +129,7 @@ public sealed class WorkerRpcServiceTests
 
         WorkerStatus connected = await worker.ConnectAsync(Options(), CancellationToken.None);
         CompactThreadResult result = await worker.CompactThreadAsync(
-            new CompactThreadRequest { ThreadId = "thread-1" },
+            Scoped(worker, new CompactThreadRequest { ThreadId = "thread-1" }),
             CancellationToken.None);
         WorkerStatus afterOperation = await worker.GetStatusAsync(CancellationToken.None);
 
@@ -159,7 +158,7 @@ public sealed class WorkerRpcServiceTests
 
         await worker.ConnectAsync(Options(), CancellationToken.None);
         CompactThreadResult result = await worker.CompactThreadAsync(
-            new CompactThreadRequest { ThreadId = "thread-1" },
+            Scoped(worker, new CompactThreadRequest { ThreadId = "thread-1" }),
             CancellationToken.None);
         WorkerStatus during = await worker.GetStatusAsync(CancellationToken.None);
 
@@ -231,7 +230,7 @@ public sealed class WorkerRpcServiceTests
 
         WorkerStatus initialReady = await worker.ConnectAsync(Options(), CancellationToken.None);
         await worker.CompactThreadAsync(
-            new CompactThreadRequest { ThreadId = "thread-1" },
+            Scoped(worker, new CompactThreadRequest { ThreadId = "thread-1" }),
             CancellationToken.None);
         WorkerStatus busy = await worker.GetStatusAsync(CancellationToken.None);
 
@@ -285,9 +284,9 @@ public sealed class WorkerRpcServiceTests
                 : JsonSerializer.SerializeToElement(new { }),
         };
         var session = new CodexSessionService(new ApprovalPolicyEngine(new PathAccessPolicy()), new SecretRedactor());
-        await session.InitializeAsync(connection, Options(), CancellationToken.None);
-        await using var worker = new WorkerRpcService(new SecretRedactor(), new FakeProcessHost(), session);
-        await worker.StartThreadAsync(CancellationToken.None);
+        await using var worker = new WorkerRpcService(new SecretRedactor(), new FakeProcessHost(connection), session);
+        await worker.ConnectAsync(Options(), CancellationToken.None);
+        await worker.StartThreadAsync(Scoped(worker, new StartThreadRequest()), CancellationToken.None);
         await using var client = new ClientChannel(worker);
 
         await connection.EmitNotificationAsync(
@@ -450,10 +449,8 @@ public sealed class WorkerRpcServiceTests
         options.LocalRoot = null;
         options.ServerRoot = null;
 
-        WorkerStatus status = await worker.ConnectAsync(options, CancellationToken.None);
-
-        Assert.AreEqual(WorkerConnectionState.Degraded, status.State);
-        StringAssert.Contains(status.Message, "localRoot and serverRoot");
+        await Assert.ThrowsExactlyAsync<InvalidOperationException>(
+            () => worker.ConnectAsync(options, CancellationToken.None));
         Assert.AreEqual(0, host.RemoteStarts);
     }
 
@@ -977,6 +974,16 @@ public sealed class WorkerRpcServiceTests
         ExtensionVersion = "test",
     };
 
+    private static TRequest Scoped<TRequest>(WorkerRpcService worker, TRequest request)
+        where TRequest : OwnerScopedRequest
+    {
+        WorkerStatus status = worker.GetStatusAsync(CancellationToken.None).GetAwaiter().GetResult();
+        request.StatePartitionFingerprint = status.Target!.StatePartitionFingerprint!;
+        request.OwnerGeneration = status.Target.OwnerGeneration;
+        request.ConnectionGeneration = status.Target.Generation;
+        return request;
+    }
+
     // Captures observer/stateChanged notifications published by the worker over a real StreamJsonRpc
     // duplex so the test asserts the actual client-facing contract, not just internal state.
     private sealed class ClientChannel : IAsyncDisposable
@@ -1026,22 +1033,22 @@ public sealed class WorkerRpcServiceTests
             [JsonRpcMethod("observer/stateChanged", UseSingleObjectParameterDeserialization = true)]
             public void OnStateChanged(StateChangedArgs args)
             {
-                if (args.Status?.TurnId is not null)
+                if (args.Notification?.Value?.TurnId is not null)
                 {
-                    turnIdSeen.TrySetResult(args.Status);
+                    turnIdSeen.TrySetResult(args.Notification.Value);
                 }
 
-                if (args.Status?.EffectiveApprovalState is not null)
+                if (args.Notification?.Value?.EffectiveApprovalState is not null)
                 {
-                    effectiveStateSeen.TrySetResult(args.Status);
+                    effectiveStateSeen.TrySetResult(args.Notification.Value);
                 }
             }
         }
 
         private sealed class StateChangedArgs
         {
-            [JsonPropertyName("status")]
-            public WorkerStatus? Status { get; set; }
+            [JsonPropertyName("notification")]
+            public WorkerNotification<WorkerStatus>? Notification { get; set; }
         }
     }
 

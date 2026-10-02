@@ -228,6 +228,10 @@ dependencies:
 
 ## 8. Issue #140 統合スラッシュメニュー実装
 
+Issue #152 / ADR-013 supersedes this section's workspace-only persistent cache policy.
+The current owner, contract v18, and disk-cache admission rules are defined in
+[the path/state design](path-state-isolation-design.md).
+
 - Worker契約v15の構造化skill入力を維持し、live `skills/list`を正本とする60秒memory cacheへ、versioned・workspace単位の永続stale-while-revalidate cacheを追加する。永続snapshotは最大200件・workspaceあたり4 MiB・HardExpiry 24時間・全体64 MiBとし、atomic replace、LRU、bounded cross-process lock、generation検証を適用する。
 - `/`の単一非Popup仮想化ListBoxへ組み込み8件、Skills header、Workerが安全に受理した重複のない全スキル（最大200件）、Loading/CachedRefreshing/Empty/Unsupported/Failed/Truncated行を平坦化する。UI独自の20件上限は設けない。
 - スキル選択は不透明IDを現行snapshotの完全identityへ解決し、最大1件の独立チップへ置換する。`SetComposerText("")`で検索文字列だけを消し、通常Composerは表示し続ける。

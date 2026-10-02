@@ -5,7 +5,7 @@ namespace Codex.VisualStudio.Contracts;
 
 public static class ContractVersions
 {
-    public const int Current = 17;
+    public const int Current = 18;
 }
 
 // JSON-RPC error codes the Worker uses for failures the Extension presents specifically. They
@@ -190,6 +190,45 @@ public sealed class WorkerStatus
     public ConnectionTargetSnapshot? Target { get; set; }
 }
 
+/// <summary>Generation-stamped Worker callback payload; consumers recheck ownership before applying it.</summary>
+[DataContract]
+public sealed class WorkerNotification<T>
+{
+    [DataMember]
+    public T Value { get; set; } = default!;
+
+    [DataMember]
+    public string? StatePartitionFingerprint { get; set; }
+
+    [DataMember]
+    public long OwnerGeneration { get; set; }
+
+    [DataMember]
+    public long ConnectionGeneration { get; set; }
+}
+
+public sealed class StartThreadRequest : OwnerScopedRequest
+{
+}
+
+public sealed class ResumeThreadRequest : OwnerScopedRequest
+{
+    public string ThreadId { get; set; } = string.Empty;
+}
+
+public sealed class ThreadGoalRequest : OwnerScopedRequest
+{
+    public string ThreadId { get; set; } = string.Empty;
+}
+
+public sealed class StartAccountLoginRequest : OwnerScopedRequest
+{
+}
+
+public sealed class LogoutAccountRequest : OwnerScopedRequest
+{
+}
+
 public sealed class AccountStatus
 {
     public AccountState State { get; set; } = AccountState.Checking;
@@ -318,6 +357,7 @@ public sealed class EffectiveApprovalState
 }
 
 public sealed class StartTurnRequest
+    : OwnerScopedRequest
 {
     public string ThreadId { get; set; } = string.Empty;
 
@@ -403,7 +443,7 @@ public sealed class IdeContextInfo
     public string? SelectionText { get; set; }
 }
 
-public sealed class SteerTurnRequest
+public sealed class SteerTurnRequest : OwnerScopedRequest
 {
     public string ThreadId { get; set; } = string.Empty;
 
@@ -412,7 +452,7 @@ public sealed class SteerTurnRequest
     public string Text { get; set; } = string.Empty;
 }
 
-public sealed class InterruptTurnRequest
+public sealed class InterruptTurnRequest : OwnerScopedRequest
 {
     public string ThreadId { get; set; } = string.Empty;
 
@@ -426,7 +466,17 @@ public abstract class AppServerOperationResult
     public string? UnavailableReason { get; set; }
 }
 
-public sealed class CompactThreadRequest
+/// <summary>Scope captured by the Extension when an owner-bound operation is dispatched.</summary>
+public abstract class OwnerScopedRequest
+{
+    public string? StatePartitionFingerprint { get; set; }
+
+    public long OwnerGeneration { get; set; }
+
+    public long ConnectionGeneration { get; set; }
+}
+
+public sealed class CompactThreadRequest : OwnerScopedRequest
 {
     public string ThreadId { get; set; } = string.Empty;
 }
@@ -444,7 +494,7 @@ public sealed class ReviewTarget
     public string? Title { get; set; }
 }
 
-public sealed class StartReviewRequest
+public sealed class StartReviewRequest : OwnerScopedRequest
 {
     public string ThreadId { get; set; } = string.Empty;
 
@@ -460,7 +510,7 @@ public sealed class StartReviewResult : AppServerOperationResult
     public string? TurnId { get; set; }
 }
 
-public sealed class ForkThreadRequest
+public sealed class ForkThreadRequest : OwnerScopedRequest
 {
     public string ThreadId { get; set; } = string.Empty;
 }
@@ -489,7 +539,7 @@ public sealed class ThreadGoalInfo
     public long UpdatedAt { get; set; }
 }
 
-public sealed class SetThreadGoalRequest
+public sealed class SetThreadGoalRequest : OwnerScopedRequest
 {
     public string ThreadId { get; set; } = string.Empty;
 
@@ -615,7 +665,7 @@ public sealed class ListSkillsResult : AppServerOperationResult
     public long Generation { get; set; }
 }
 
-public sealed class UploadFeedbackRequest
+public sealed class UploadFeedbackRequest : OwnerScopedRequest
 {
     public string Classification { get; set; } = string.Empty;
 
@@ -757,7 +807,7 @@ public sealed class ApprovalRequest
     public IReadOnlyList<ApprovalDecision> AvailableDecisions { get; set; } = Array.Empty<ApprovalDecision>();
 }
 
-public sealed class ResolveApprovalRequest
+public sealed class ResolveApprovalRequest : OwnerScopedRequest
 {
     public string RequestId { get; set; } = string.Empty;
 
@@ -815,7 +865,7 @@ public sealed class UserInputOption
     public string Description { get; set; } = string.Empty;
 }
 
-public sealed class ResolveUserInputRequest
+public sealed class ResolveUserInputRequest : OwnerScopedRequest
 {
     public string RequestId { get; set; } = string.Empty;
 
@@ -826,43 +876,43 @@ public sealed class ResolveUserInputRequest
 public interface ICodexWorkerObserver
 {
     [JsonRpcMethod("observer/stateChanged")]
-    Task OnStateChangedAsync(WorkerStatus status, CancellationToken cancellationToken);
+    Task OnStateChangedAsync(WorkerNotification<WorkerStatus> notification, CancellationToken cancellationToken);
 
     [JsonRpcMethod("observer/accountChanged")]
-    Task OnAccountChangedAsync(AccountStatus status, CancellationToken cancellationToken);
+    Task OnAccountChangedAsync(WorkerNotification<AccountStatus> notification, CancellationToken cancellationToken);
 
     [JsonRpcMethod("observer/conversationEvent")]
-    Task OnConversationEventAsync(ConversationEvent conversationEvent, CancellationToken cancellationToken);
+    Task OnConversationEventAsync(WorkerNotification<ConversationEvent> notification, CancellationToken cancellationToken);
 
     [JsonRpcMethod("observer/approvalRequested")]
-    Task OnApprovalRequestedAsync(ApprovalRequest approval, CancellationToken cancellationToken);
+    Task OnApprovalRequestedAsync(WorkerNotification<ApprovalRequest> notification, CancellationToken cancellationToken);
 
     [JsonRpcMethod("observer/approvalResolved")]
-    Task OnApprovalResolvedAsync(string requestId, CancellationToken cancellationToken);
+    Task OnApprovalResolvedAsync(WorkerNotification<string> notification, CancellationToken cancellationToken);
 
     [JsonRpcMethod("observer/approvalAudit")]
-    Task OnApprovalAuditAsync(ApprovalAuditRecord record, CancellationToken cancellationToken);
+    Task OnApprovalAuditAsync(WorkerNotification<ApprovalAuditRecord> notification, CancellationToken cancellationToken);
 
     [JsonRpcMethod("observer/userInputRequested")]
-    Task OnUserInputRequestedAsync(UserInputRequest request, CancellationToken cancellationToken);
+    Task OnUserInputRequestedAsync(WorkerNotification<UserInputRequest> notification, CancellationToken cancellationToken);
 
     [JsonRpcMethod("observer/userInputResolved")]
-    Task OnUserInputResolvedAsync(string requestId, CancellationToken cancellationToken);
+    Task OnUserInputResolvedAsync(WorkerNotification<string> notification, CancellationToken cancellationToken);
 
     [JsonRpcMethod("observer/contextCompacted")]
-    Task OnContextCompactedAsync(ContextCompactionEvent value, CancellationToken cancellationToken);
+    Task OnContextCompactedAsync(WorkerNotification<ContextCompactionEvent> notification, CancellationToken cancellationToken);
 
     [JsonRpcMethod("observer/reviewModeChanged")]
-    Task OnReviewModeChangedAsync(ReviewModeEvent value, CancellationToken cancellationToken);
+    Task OnReviewModeChangedAsync(WorkerNotification<ReviewModeEvent> notification, CancellationToken cancellationToken);
 
     [JsonRpcMethod("observer/threadGoalChanged")]
-    Task OnThreadGoalChangedAsync(ThreadGoalEvent value, CancellationToken cancellationToken);
+    Task OnThreadGoalChangedAsync(WorkerNotification<ThreadGoalEvent> notification, CancellationToken cancellationToken);
 
     [JsonRpcMethod("observer/rateLimitsChanged")]
-    Task OnRateLimitsChangedAsync(RateLimitsResult value, CancellationToken cancellationToken);
+    Task OnRateLimitsChangedAsync(WorkerNotification<RateLimitsResult> notification, CancellationToken cancellationToken);
 
     [JsonRpcMethod("observer/skillsChanged")]
-    Task OnSkillsChangedAsync(SkillsChangedEvent value, CancellationToken cancellationToken);
+    Task OnSkillsChangedAsync(WorkerNotification<SkillsChangedEvent> notification, CancellationToken cancellationToken);
 }
 
 public interface ICodexWorkerClient
@@ -889,16 +939,16 @@ public interface ICodexWorkerClient
     Task<AccountStatus> GetAccountStatusAsync(CancellationToken cancellationToken);
 
     [JsonRpcMethod("worker/account/login/start")]
-    Task<StartAccountLoginResult> StartAccountLoginAsync(CancellationToken cancellationToken);
+    Task<StartAccountLoginResult> StartAccountLoginAsync(StartAccountLoginRequest request, CancellationToken cancellationToken);
 
     [JsonRpcMethod("worker/account/logout")]
-    Task<AccountStatus> LogoutAccountAsync(CancellationToken cancellationToken);
+    Task<AccountStatus> LogoutAccountAsync(LogoutAccountRequest request, CancellationToken cancellationToken);
 
     [JsonRpcMethod("worker/thread/start")]
-    Task<ThreadSummary> StartThreadAsync(CancellationToken cancellationToken);
+    Task<ThreadSummary> StartThreadAsync(StartThreadRequest request, CancellationToken cancellationToken);
 
     [JsonRpcMethod("worker/thread/resume")]
-    Task<ThreadSummary> ResumeThreadAsync(string threadId, CancellationToken cancellationToken);
+    Task<ThreadSummary> ResumeThreadAsync(ResumeThreadRequest request, CancellationToken cancellationToken);
 
     [JsonRpcMethod("worker/thread/list")]
     Task<ThreadPage> ListThreadsAsync(string? cursor, CancellationToken cancellationToken);
@@ -928,13 +978,13 @@ public interface ICodexWorkerClient
     Task<ForkThreadResult> ForkThreadAsync(ForkThreadRequest request, CancellationToken cancellationToken);
 
     [JsonRpcMethod("worker/thread/goal/get")]
-    Task<ThreadGoalResult> GetThreadGoalAsync(string threadId, CancellationToken cancellationToken);
+    Task<ThreadGoalResult> GetThreadGoalAsync(ThreadGoalRequest request, CancellationToken cancellationToken);
 
     [JsonRpcMethod("worker/thread/goal/set")]
     Task<ThreadGoalResult> SetThreadGoalAsync(SetThreadGoalRequest request, CancellationToken cancellationToken);
 
     [JsonRpcMethod("worker/thread/goal/clear")]
-    Task<ThreadGoalResult> ClearThreadGoalAsync(string threadId, CancellationToken cancellationToken);
+    Task<ThreadGoalResult> ClearThreadGoalAsync(ThreadGoalRequest request, CancellationToken cancellationToken);
 
     [JsonRpcMethod("worker/mcp/list")]
     Task<McpServerListResult> ListMcpServersAsync(string? threadId, CancellationToken cancellationToken);

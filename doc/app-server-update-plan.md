@@ -116,6 +116,8 @@ Tracking: [#151](https://github.com/kkamegawa/vsextensionforcodex/issues/151)
 
 ## Phase 3 — Path mapping and state isolation
 
+Detailed design: [Path mapping and connection state isolation](path-state-isolation-design.md) / [日本語](path-state-isolation-design_ja.md). The implementation uses the accepted ADR-013 ownership boundary, including volatile isolation when the pinned account contract cannot prove a stable owner.
+
 Tracking: [#152](https://github.com/kkamegawa/vsextensionforcodex/issues/152)
 
 ### Path domains and mapping

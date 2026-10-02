@@ -91,12 +91,23 @@ public sealed class ConnectionTargetSnapshot
     [DataMember]
     public long Generation { get; set; }
 
+    // Opaque Worker-generated discriminator for the current state owner. It is salted per
+    // Worker/attempt because the pinned account contract has no authoritative account ID.
+    [DataMember]
+    public string? StatePartitionFingerprint { get; set; }
+
+    // Changes before the Worker begins using a different or unverifiable owner partition.
+    [DataMember]
+    public long OwnerGeneration { get; set; }
+
     public ConnectionTargetSnapshot Clone() => new()
     {
         Kind = Kind,
         DisplayName = DisplayName,
         Fingerprint = Fingerprint,
         Generation = Generation,
+        StatePartitionFingerprint = StatePartitionFingerprint,
+        OwnerGeneration = OwnerGeneration,
     };
 }
 

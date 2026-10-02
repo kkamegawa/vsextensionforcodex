@@ -1,6 +1,6 @@
 ﻿# Architecture Decision Records
 
-The Codex App Server update decisions are split into phase-scoped ADR files because this historical index exceeds 200 lines: `doc/adr/ADR-011-app-server-contract.md` through `ADR-016-app-server-daily-features.md`.
+The Codex App Server update decisions are split into phase-scoped ADR files because this historical index exceeds 200 lines: `doc/adr/ADR-011-app-server-contract.md` through `ADR-016-app-server-daily-features.md`. ADR-013 defines the Issue #152 owner partition and supersedes ADR-010's workspace-only skill snapshot key; its 2026-10-03 contract records why the pinned account schema requires volatile owner isolation.
 
 ## ADR-001: File attachment interaction and trust boundaries
 

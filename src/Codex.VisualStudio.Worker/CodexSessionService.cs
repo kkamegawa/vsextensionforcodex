@@ -6,9 +6,33 @@ using Codex.VisualStudio.Contracts;
 
 namespace Codex.VisualStudio.Worker;
 
+internal sealed class CallbackScope(Action callback) : IDisposable
+{
+    private Action? release = callback;
+
+    public void Dispose() => Interlocked.Exchange(ref release, null)?.Invoke();
+}
+
 public interface ICodexSessionService : IAsyncDisposable
 {
     AppServerInitializationMetadata? InitializationMetadata { get; }
+    string? StatePartitionFingerprint => null;
+    long OwnerGeneration => 0;
+    string? EmittingStatePartitionFingerprint => StatePartitionFingerprint;
+    long EmittingOwnerGeneration => OwnerGeneration;
+    AccountState? InvalidatedAccountState => null;
+    IDisposable SuppressEmissionOwnerContext() => new CallbackScope(static () => { });
+    bool CanPersistOwnerState => false;
+    bool IsConnectionActive => true;
+    void BeginOwnerPartition(WorkerOptions options, string workerInstanceId, long ownerGeneration, string? credentialFingerprint)
+    {
+    }
+
+    event Func<IJsonRpcConnection, CancellationToken, Task>? OwnerInvalidated
+    {
+        add { }
+        remove { }
+    }
     event Func<ConversationEvent, CancellationToken, Task>? ConversationEventReceived;
 
     event Func<ApprovalRequest, CancellationToken, Task>? ApprovalRequested;
@@ -140,10 +164,11 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
     private readonly IApprovalPolicyEngine approvalPolicy;
     private readonly ISecretRedactor redactor;
     private readonly IPathAccessPolicy pathAccessPolicy;
+    private readonly ILocalPathBoundary localPathBoundary;
     private readonly IProtectedDirectoryPolicy protectedDirectoryPolicy;
     private readonly ConcurrentDictionary<PendingRequestKey, PendingApproval> pendingApprovals = new();
     private readonly ConcurrentDictionary<PendingRequestKey, PendingUserInput> pendingUserInputs = new();
-    private readonly ApprovalGrantStore approvalGrants = new();
+    private readonly AsyncLocal<ConnectionContext?> emittingContext = new();
     private readonly object turnStateLock = new();
     private readonly HashSet<TurnKey> completedTurnIds = new();
     // Thread whose turn/start request is in flight. Its turn notifications can arrive before the
@@ -165,6 +190,12 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
     private WorkerOptions options = new();
     private RemotePathMapper? remotePathMapper;
     private StreamingBuffer? streamingBuffer;
+    private string workerInstanceId = Guid.NewGuid().ToString("N");
+    private string? credentialFingerprint;
+    private string? statePartitionFingerprint;
+    private long ownerGeneration;
+    private bool ownerPartitionPrepared;
+    private AccountState? invalidatedAccountState;
 
     public CodexSessionService(
         IApprovalPolicyEngine approvalPolicy,
@@ -187,6 +218,7 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         this.approvalPolicy = approvalPolicy;
         this.redactor = redactor;
         this.pathAccessPolicy = pathAccessPolicy ?? new PathAccessPolicy();
+        this.localPathBoundary = new LocalPathBoundary(this.pathAccessPolicy);
         this.protectedDirectoryPolicy = protectedDirectoryPolicy ?? new ProtectedDirectoryPolicy();
         this.timeProvider = timeProvider ?? TimeProvider.System;
         this.skillCatalogStore = skillCatalogStore ?? new FileSkillCatalogStore(redactor);
@@ -232,13 +264,67 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
 
     public AppServerInitializationMetadata? InitializationMetadata { get; private set; }
 
+    public string? StatePartitionFingerprint => Volatile.Read(ref statePartitionFingerprint);
+
+    public long OwnerGeneration => Interlocked.Read(ref ownerGeneration);
+
+    public string? EmittingStatePartitionFingerprint
+        => emittingContext.Value?.StatePartitionFingerprint ?? StatePartitionFingerprint;
+
+    public long EmittingOwnerGeneration => emittingContext.Value?.OwnerGeneration ?? OwnerGeneration;
+    public AccountState? InvalidatedAccountState => invalidatedAccountState;
+
+    public IDisposable SuppressEmissionOwnerContext()
+    {
+        ConnectionContext? previous = emittingContext.Value;
+        emittingContext.Value = null;
+        return new CallbackScope(() => emittingContext.Value = previous);
+    }
+
+    // The pinned account/read contract does not identify an account authoritatively. No state
+    // partition is eligible for cross-instance disk-cache reuse.
+    public bool CanPersistOwnerState => false;
+
+    public bool IsConnectionActive => Volatile.Read(ref connectionContext) is not null;
+
+    public event Func<IJsonRpcConnection, CancellationToken, Task>? OwnerInvalidated;
+
+    public void BeginOwnerPartition(
+        WorkerOptions options,
+        string workerInstanceId,
+        long ownerGeneration,
+        string? credentialFingerprint)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        this.workerInstanceId = workerInstanceId;
+        this.credentialFingerprint = credentialFingerprint;
+        this.ownerGeneration = ownerGeneration;
+        invalidatedAccountState = null;
+        statePartitionFingerprint = ConnectionStatePartition.Create(
+            options,
+            workerInstanceId,
+            ownerGeneration,
+            credentialFingerprint);
+        ownerPartitionPrepared = true;
+    }
+
     public async Task InitializeAsync(IJsonRpcConnection connection, WorkerOptions options, CancellationToken cancellationToken)
     {
+        ArgumentNullException.ThrowIfNull(connection);
+        ArgumentNullException.ThrowIfNull(options);
+        if (!ownerPartitionPrepared)
+        {
+            BeginOwnerPartition(options, workerInstanceId, Interlocked.Increment(ref ownerGeneration), credentialFingerprint);
+        }
+
+        ownerPartitionPrepared = false;
+
         ConnectionContext? previous = Interlocked.Exchange(ref connectionContext, null);
         if (previous is not null)
         {
             previous.Detach();
             CancelPending(previous.Generation);
+            await RetireStreamingBufferAsync().ConfigureAwait(false);
         }
         await ResetSkillsBackgroundRefreshAsync().ConfigureAwait(false);
         InvalidateSkillsCache();
@@ -248,14 +334,24 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         EffectiveServiceTier = null;
         InitializationMetadata = null;
         CancelPending(null);
-        approvalGrants.Clear();
         this.options = options;
-        remotePathMapper = !string.IsNullOrWhiteSpace(options.LocalRoot)
-            && !string.IsNullOrWhiteSpace(options.ServerRoot)
-            ? new RemotePathMapper(options.LocalRoot!, options.ServerRoot!)
+        LocalPath? parsedLocalRoot = LocalPath.TryCreate(options.LocalRoot, out LocalPath localPath)
+            ? localPath
             : null;
+        ServerPath? parsedServerRoot = ServerPath.TryCreate(options.ServerRoot, out ServerPath serverPath)
+            ? serverPath
+            : null;
+        if (!string.IsNullOrWhiteSpace(options.RemoteEndpoint)
+            && (parsedLocalRoot is null || parsedServerRoot is null))
+        {
+            throw new InvalidOperationException("Remote connection roots must be valid absolute local and server paths.");
+        }
+
+        remotePathMapper = parsedLocalRoot is not null && parsedServerRoot is not null
+                ? new RemotePathMapper(parsedLocalRoot, parsedServerRoot)
+                : null;
         long generation = Interlocked.Increment(ref connectionGeneration);
-        var context = new ConnectionContext(this, connection, generation);
+        var context = new ConnectionContext(this, connection, generation, StatePartitionFingerprint, OwnerGeneration);
         connectionContext = context;
         connection.NotificationReceived += context.NotificationHandler;
         connection.RequestReceived += context.RequestHandler;
@@ -272,7 +368,9 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
             Path.GetTempPath(),
             "Kkamegawa.CodexForVisualStudio",
             Guid.NewGuid().ToString("N"));
-        streamingBuffer = new StreamingBuffer(EmitAsync, overflowDirectory);
+        streamingBuffer = new StreamingBuffer(
+            (value, token) => EmitForContextAsync(context, value, token),
+            overflowDirectory);
 
         JsonElement initResponse = await connection.SendRequestAsync(
             "initialize",
@@ -583,8 +681,12 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
                 TimeSpan.FromSeconds(15),
                 cancellationToken).ConfigureAwait(false);
             EnsureCurrent(context);
+            invalidatedAccountState = AccountState.SignedOut;
+            await InvalidateOwnerPartitionAsync(context, cancellationToken).ConfigureAwait(false);
             WorkerDiagnostics.Write("app-server logout request completed");
-            return await GetAccountStatusAsync(cancellationToken).ConfigureAwait(false);
+            var signedOut = new AccountStatus { State = AccountState.SignedOut };
+            await EmitAccountStatusAsync(signedOut, CancellationToken.None).ConfigureAwait(false);
+            return signedOut;
         }
         catch (JsonRpcConnectionClosedException)
         {
@@ -1103,9 +1205,12 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
             {
                 result = CloneSkillsResult(skillsSnapshot);
             }
-            else if (!forceReload
+            else if (CanPersistOwnerState
+                && !string.IsNullOrWhiteSpace(StatePartitionFingerprint)
+                && !forceReload
                 && await skillCatalogStore.TryReadAsync(
                     options.WorkingDirectory,
+                    StatePartitionFingerprint,
                     GetSkillsCacheIdentity(),
                     now,
                     cancellationToken).ConfigureAwait(false) is { } persisted)
@@ -1151,12 +1256,13 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
                 continue;
             }
 
-            if (loaded.IsSupported)
+            if (loaded.IsSupported && CanPersistOwnerState && !string.IsNullOrWhiteSpace(StatePartitionFingerprint))
             {
                 try
                 {
                     await skillCatalogStore.WriteAsync(
                         options.WorkingDirectory,
+                        StatePartitionFingerprint,
                         GetSkillsCacheIdentity(),
                         loaded,
                         timeProvider.GetUtcNow(),
@@ -1297,6 +1403,21 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
 
     public async Task ResolveApprovalAsync(ResolveApprovalRequest request, CancellationToken cancellationToken)
     {
+        ConnectionContext? context = Volatile.Read(ref connectionContext);
+        ConnectionContext? previous = emittingContext.Value;
+        emittingContext.Value = context;
+        try
+        {
+            await ResolveApprovalCoreAsync(request, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            emittingContext.Value = previous;
+        }
+    }
+
+    private async Task ResolveApprovalCoreAsync(ResolveApprovalRequest request, CancellationToken cancellationToken)
+    {
         if (!TryParseInteractionId(request.RequestId, out long generation, out string clientRequestId, out _)
             || Volatile.Read(ref connectionContext) is not { } context
             || context.Generation != generation
@@ -1312,7 +1433,7 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
             ApprovalDecision.AcceptForSession => ApprovalScope.Session,
             _ => ApprovalScope.Once,
         };
-        approvalGrants.Add(pending.Request, scope);
+        context.ApprovalGrants.Add(pending.Request, scope);
         if (scope != ApprovalScope.Once)
         {
             await EmitApprovalAuditAsync(pending.Request, ApprovalAuditAction.GrantCreated, scope, cancellationToken).ConfigureAwait(false);
@@ -1323,6 +1444,21 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
     }
 
     public async Task ResolveUserInputAsync(ResolveUserInputRequest request, CancellationToken cancellationToken)
+    {
+        ConnectionContext? context = Volatile.Read(ref connectionContext);
+        ConnectionContext? previous = emittingContext.Value;
+        emittingContext.Value = context;
+        try
+        {
+            await ResolveUserInputCoreAsync(request, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            emittingContext.Value = previous;
+        }
+    }
+
+    private async Task ResolveUserInputCoreAsync(ResolveUserInputRequest request, CancellationToken cancellationToken)
     {
         if (!TryParseInteractionId(request.RequestId, out long generation, out string clientRequestId, out _)
             || Volatile.Read(ref connectionContext) is not { } context
@@ -1620,12 +1756,17 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
             return localPath;
         }
 
-        if (remotePathMapper.TryMapLocalToServer(localPath, out string serverPath))
+        if (LocalPath.TryCreate(localPath, out LocalPath parsed)
+            && remotePathMapper.TryMapLocalToServer(
+                parsed,
+                localPathBoundary,
+                out ServerPath serverPath,
+                out _))
         {
-            return serverPath;
+            return serverPath.Value;
         }
 
-        throw new InvalidOperationException("The local path is outside the configured remote root.");
+        throw new InvalidOperationException("The local path cannot be safely mapped to the remote working root.");
     }
 
     private bool TryMapLocalPathForServer(string localPath, out string serverPath)
@@ -1636,7 +1777,19 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
             return true;
         }
 
-        return remotePathMapper.TryMapLocalToServer(localPath, out serverPath);
+        serverPath = string.Empty;
+        if (!LocalPath.TryCreate(localPath, out LocalPath parsed)
+            || !remotePathMapper.TryMapLocalToServer(
+                parsed,
+                localPathBoundary,
+                out ServerPath mapped,
+                out _))
+        {
+            return false;
+        }
+
+        serverPath = mapped.Value;
+        return true;
     }
 
     private string? MapServerPathToLocal(string? serverPath)
@@ -1646,8 +1799,13 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
             return serverPath;
         }
 
-        return remotePathMapper.TryMapServerToLocal(serverPath, out string localPath)
-            ? localPath
+        return ServerPath.TryCreate(serverPath, out ServerPath parsed)
+            && remotePathMapper.TryMapServerToLocal(
+                parsed,
+                localPathBoundary,
+                out LocalPath localPath,
+                out _)
+                ? localPath.Value
             : null;
     }
 
@@ -1784,10 +1942,7 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         await ResetSkillsBackgroundRefreshAsync().ConfigureAwait(false);
         skillsBackgroundRefreshCancellation.Cancel();
         skillsBackgroundRefreshCancellation.Dispose();
-        if (streamingBuffer is not null)
-        {
-            await streamingBuffer.DisposeAsync().ConfigureAwait(false);
-        }
+        await RetireStreamingBufferAsync().ConfigureAwait(false);
 
         foreach (PendingApproval approval in pendingApprovals.Values)
         {
@@ -1806,6 +1961,20 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
     }
 
     private async Task<JsonElement> OnServerRequestAsync(ConnectionContext context, JsonRpcMessage message, CancellationToken cancellationToken)
+    {
+        ConnectionContext? previousContext = emittingContext.Value;
+        emittingContext.Value = context;
+        try
+        {
+            return await OnServerRequestCoreAsync(context, message, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            emittingContext.Value = previousContext;
+        }
+    }
+
+    private async Task<JsonElement> OnServerRequestCoreAsync(ConnectionContext context, JsonRpcMessage message, CancellationToken cancellationToken)
     {
         if (!IsCurrent(context))
         {
@@ -1838,7 +2007,7 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
             return ApprovalResponse("decline");
         }
 
-        if (approvalGrants.FindApproval(request) is { } grant)
+        if (context.ApprovalGrants.FindApproval(request) is { } grant)
         {
             await EmitApprovalAuditAsync(request, ApprovalAuditAction.AutoApproved, grant.Scope, cancellationToken).ConfigureAwait(false);
             return ApprovalResponse("accept");
@@ -1864,6 +2033,20 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
     }
 
     private async Task OnNotificationAsync(ConnectionContext context, JsonRpcMessage message, CancellationToken cancellationToken)
+    {
+        ConnectionContext? previousContext = emittingContext.Value;
+        emittingContext.Value = context;
+        try
+        {
+            await OnNotificationCoreAsync(context, message, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            emittingContext.Value = previousContext;
+        }
+    }
+
+    private async Task OnNotificationCoreAsync(ConnectionContext context, JsonRpcMessage message, CancellationToken cancellationToken)
     {
         if (!IsCurrent(context))
         {
@@ -1957,7 +2140,7 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
 
             turnId = completedId;
             LogInterruptedTurnCompletion(context, threadId, completedId, parameters);
-            approvalGrants.EndTurn(threadId, completedId);
+            context.ApprovalGrants.EndTurn(threadId, completedId);
             if (otherThread)
             {
                 return;
@@ -1965,7 +2148,7 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         }
         else if (method == "thread/closed")
         {
-            approvalGrants.EndThread(threadId);
+            context.ApprovalGrants.EndThread(threadId);
         }
 
         if (method == "serverRequest/resolved")
@@ -1998,9 +2181,18 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
 
         if (method is "account/login/completed" or "account/updated")
         {
-            EnsureCurrent(context);
-            await GetAccountStatusAsync(cancellationToken).ConfigureAwait(false);
-            EnsureCurrent(context);
+            // The pinned notification carries only auth mode and plan, so it cannot prove that
+            // the authenticated owner is unchanged. Retire the old generation before accepting
+            // any later account-scoped result, even when email and plan appear unchanged.
+            invalidatedAccountState = AccountState.Unavailable;
+            await InvalidateOwnerPartitionAsync(context, cancellationToken).ConfigureAwait(false);
+            await EmitAccountStatusAsync(
+                new AccountStatus
+                {
+                    State = AccountState.Unavailable,
+                    Message = "The account changed. Reconnect to confirm the active account.",
+                },
+                CancellationToken.None).ConfigureAwait(false);
             return;
         }
 
@@ -2414,26 +2606,127 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         return generation;
     }
 
+    private async Task InvalidateOwnerPartitionAsync(ConnectionContext context, CancellationToken cancellationToken)
+    {
+        if (!IsCurrent(context)
+            || !ReferenceEquals(Interlocked.CompareExchange(ref connectionContext, null, context), context))
+        {
+            return;
+        }
+
+        context.OwnerInvalidated = true;
+        context.NotifyPendingResolution = false;
+        context.Detach();
+        context.ApprovalGrants.Clear();
+        await RetireStreamingBufferAsync().ConfigureAwait(false);
+        CancelPending(context.Generation);
+        await ResetSkillsBackgroundRefreshAsync().ConfigureAwait(false);
+        await skillsCacheGate.WaitAsync(CancellationToken.None).ConfigureAwait(false);
+        try
+        {
+            InvalidateSkillsCache();
+        }
+        finally
+        {
+            skillsCacheGate.Release();
+        }
+        CodexVersion = null;
+        InitializationMetadata = null;
+        EffectiveApprovalState = null;
+        EffectiveReasoningEffort = null;
+        EffectiveServiceTier = null;
+        lock (turnStateLock)
+        {
+            completedTurnIds.Clear();
+            interruptRequestedAt.Clear();
+            pendingTurnThreadId = null;
+            ActiveThreadId = null;
+            ActiveTurnId = null;
+        }
+
+        long nextOwnerGeneration = Interlocked.Increment(ref ownerGeneration);
+        statePartitionFingerprint = ConnectionStatePartition.Create(
+            options,
+            workerInstanceId,
+            nextOwnerGeneration,
+            credentialFingerprint);
+
+        if (OwnerInvalidated is { } handlers)
+        {
+            foreach (Func<IJsonRpcConnection, CancellationToken, Task> handler in handlers.GetInvocationList())
+            {
+                try
+                {
+                    await handler(context.Connection, cancellationToken).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    WorkerDiagnostics.Write("owner invalidation observer failed", ex);
+                }
+            }
+        }
+    }
+
+    private async Task EmitForContextAsync(
+        ConnectionContext context,
+        ConversationEvent value,
+        CancellationToken cancellationToken)
+    {
+        if (!IsCurrent(context))
+        {
+            return;
+        }
+
+        ConnectionContext? previousContext = emittingContext.Value;
+        emittingContext.Value = context;
+        try
+        {
+            if (IsCurrent(context))
+            {
+                await EmitAsync(value, cancellationToken).ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            emittingContext.Value = previousContext;
+        }
+    }
+
+    private async Task RetireStreamingBufferAsync()
+    {
+        StreamingBuffer? retired = streamingBuffer;
+        streamingBuffer = null;
+        if (retired is not null)
+        {
+            await retired.DisposeAsync().ConfigureAwait(false);
+        }
+    }
+
     private string? GetSkillsCacheIdentity()
     {
-        if (string.IsNullOrWhiteSpace(CodexVersion))
+        if (!CanPersistOwnerState || string.IsNullOrWhiteSpace(CodexVersion))
         {
-            return CodexVersion;
+            return null;
         }
 
         // A skill catalog is server-owned data. Include a stable hash of the endpoint and
         // mapping roots so a remote profile can never consume another server's catalog while
         // keeping sensitive endpoint/path values out of the persisted cache metadata.
-        string identity = string.Join("\n", options.RemoteEndpoint, options.LocalRoot, options.ServerRoot);
+        string identity = string.Join("\n", StatePartitionFingerprint, options.RemoteEndpoint, options.LocalRoot, options.ServerRoot);
         byte[] digest = System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(identity));
         return $"{CodexVersion}:{Convert.ToHexString(digest)}";
     }
 
     private async Task DeletePersistedSkillsAsync(CancellationToken cancellationToken)
     {
+        if (!CanPersistOwnerState || string.IsNullOrWhiteSpace(StatePartitionFingerprint))
+        {
+            return;
+        }
+
         try
         {
-            await skillCatalogStore.DeleteAsync(options.WorkingDirectory, cancellationToken).ConfigureAwait(false);
+            await skillCatalogStore.DeleteAsync(options.WorkingDirectory, StatePartitionFingerprint, cancellationToken).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -3241,13 +3534,10 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
 
     private static string? NormalizeSkillPath(string? value)
     {
-        if (string.IsNullOrWhiteSpace(value))
-        {
-            return null;
-        }
-
-        string trimmed = value.Trim();
-        if (trimmed.Length > MaxSkillPathLength || trimmed.Any(char.IsControl))
+        if (string.IsNullOrEmpty(value)
+            || value.Length > MaxSkillPathLength
+            || value.Any(char.IsControl)
+            || !ServerPath.TryCreate(value, out _))
         {
             return null;
         }
@@ -3255,7 +3545,7 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         // No File.Exists / workspace-containment check: this path is the app-server's own
         // skills/list output, not user input, and scope: "user"/"system"/"admin" skills routinely
         // live outside the workspace (or are directories). Only structural validity is enforced.
-        return Path.IsPathRooted(trimmed) ? trimmed : null;
+        return value;
     }
 
     private IReadOnlyList<McpServerStatusInfo> ReadMcpServers(JsonElement result)
@@ -3603,11 +3893,18 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
     {
         private readonly CodexSessionService owner;
 
-        public ConnectionContext(CodexSessionService owner, IJsonRpcConnection connection, long generation)
+        public ConnectionContext(
+            CodexSessionService owner,
+            IJsonRpcConnection connection,
+            long generation,
+            string? statePartitionFingerprint,
+            long ownerGeneration)
         {
             this.owner = owner;
             Connection = connection;
             Generation = generation;
+            StatePartitionFingerprint = statePartitionFingerprint;
+            OwnerGeneration = ownerGeneration;
             NotificationHandler = (message, token) => owner.OnNotificationAsync(this, message, token);
             RequestHandler = (message, token) => owner.OnServerRequestAsync(this, message, token);
             ClosedHandler = (_, _) => owner.OnConnectionClosed(this);
@@ -3615,9 +3912,13 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
 
         public IJsonRpcConnection Connection { get; }
         public long Generation { get; }
+        public string? StatePartitionFingerprint { get; }
+        public long OwnerGeneration { get; }
+        public ApprovalGrantStore ApprovalGrants { get; } = new();
         public object UnsupportedMethodsLock { get; } = new();
         public HashSet<string> UnsupportedMethods { get; } = new(StringComparer.Ordinal);
         public bool NotifyPendingResolution { get; set; }
+        public bool OwnerInvalidated { get; set; }
         public CancellationTokenSource Lifetime { get; } = new();
         public Func<JsonRpcMessage, CancellationToken, Task> NotificationHandler { get; }
         public Func<JsonRpcMessage, CancellationToken, Task<JsonElement>> RequestHandler { get; }

@@ -1,0 +1,65 @@
+﻿# Path mapping and connection state isolation
+
+[日本語](path-state-isolation-design_ja.md)
+
+## Scope and authority
+
+This design implements the accepted Phase 3 of the Codex App Server update plan and ADR-013, tracked by Issue #152. It preserves the secure connection lifecycle from Issue #151. The detailed remote profile and transport design remains authoritative for endpoint admission, token reads, TLS, diagnostics, retries, and socket ownership.
+
+The local Worker owns all App Server interaction. Local stdio remains the default. Remote profiles map an existing local working tree to an existing server working tree; synchronization is external. A remote server enforces its own sandbox. Local filesystem checks protect only the Visual Studio host.
+
+## Path domains
+
+`LocalPath` and `ServerPath` are separate values. Only the shared `RemotePathMapper` converts between them. Worker JSON serialization unwraps a server value at the protocol boundary; a local file action unwraps a local value only after successful mapping and local containment validation.
+
+| Property | Rule |
+|---|---|
+| Absolute roots | Accept rooted Windows drive, UNC share, and POSIX paths with an explicit path family. Reject relative paths, drive-relative paths, device namespaces that cannot be represented safely, control characters, and invalid roots. |
+| Components | Compare complete normalized components, never substrings. A root named `C:\repo` does not contain `C:\repo2`. |
+| Windows | Compare ordinally without case sensitivity. Normalize separators and supported extended drive/share prefixes without erasing the UNC share identity. Reject alternate data streams and unsafe local filename aliases. |
+| POSIX | Compare ordinally with case sensitivity. Preserve case and Unicode code points. Do not normalize Unicode forms into an identity that the server did not supply. |
+| Dot components | Normalize `.` and `..` with an explicit root boundary. Reject an attempted escape instead of mapping it into another root. |
+| Root equality | The root itself maps to the other root. A separator suffix does not change a root's identity. |
+| Returned server path | Use the configured server path family, independently of the Visual Studio host operating system. |
+| Local filesystem | Resolve symlinks and junctions at the local trust boundary. A path must remain inside the resolved local root; unreadable, cyclic, or escaping links fail closed. |
+
+The same mapper governs working directory, active document, selection source, referenced files, file attachments, `localImage`, changed-file paths, file artifacts, and local open/reveal actions. Existing file actions consume a mapped local path. Future typed artifact presentation consumes the same boundary rather than opening an App Server string directly.
+
+Before `turn/start`, validate every explicit attachment and its physical containment. An unmappable attachment rejects the whole start request with a bounded actionable reason. It never sends a partial attachment list or exposes a sensitive full path in the error. Optional IDE context is included only when safely mappable. Validate physical containment again when opening or revealing a mapped local file.
+
+Skill paths remain bounded server-provided identifiers. They are compared as part of the exact `(Name, Scope, Path)` identity and sent unchanged. Remote skills never depend on filesystem existence on the Visual Studio host.
+
+## Owner identity and lifecycle
+
+The Worker assigns an opaque state partition to the captured connection owner. Its inputs distinguish connection kind, profile and endpoint metadata, local/server working roots, authentication credential owner, and account identity. Partition fields are unambiguous, bounded, and hashed; token contents and account details never cross Remote UI or appear in diagnostics.
+
+A bearer-token digest distinguishes explicit handshakes, including token rotation. It remains a Worker-only discriminator, not a claim to know the upstream principal. The CLI 0.159.1 account contract does not provide a universally authoritative account ID: API-key accounts contain only a type, and ChatGPT accounts contain nullable email and plan metadata. Email and plan alone cannot authorize sharing between accounts. When stable owner identity is unavailable, use a volatile per-Worker/attempt partition and disable both disk reads and disk writes of skill snapshots. The pinned contract therefore does not enable persistent cross-Worker reuse for local or remote owners.
+
+Account change and logout retire the old owner's pending work and state. An account notification that cannot prove owner continuity is treated conservatively as a boundary, including the same visible plan or email. Remote owner changes invalidate the previous socket before accepting new-owner activity. Reconnecting is explicit; retiring a socket never stops the external server and never replays a mutation.
+
+Every operation captures the current owner and generation. Check both before committing results, emitting callbacks, or applying presentation state. An old response, notification, close callback, approval answer, model read, or catalog refresh cannot update a replacement owner. Retirement cancels pending requests and responses, clears approvals and audit presentation, and prevents stale refreshes from persisting under a new partition.
+
+## State boundaries
+
+| State | Owner and reset behavior |
+|---|---|
+| Socket, pending RPC, server requests | Worker connection generation and captured owner; retire before replacement. |
+| Skills | Worker memory snapshot and persistent store use the owner partition plus working roots. Force-reload identity validation remains mandatory before a turn. |
+| Model catalog and unsupported methods | Worker/UI results are owner-bound; replacement invalidates old catalogs and capability state. |
+| Usage | Clear the owner snapshot and reject late reads and pushes after replacement. |
+| Approval grants and audit | Grants cannot cross owner or connection lifetime. Audit presentation is bounded and owner-bound. |
+| Selected conversation and transcript/history | Clear deterministically on endpoint, profile, root, account, or principal replacement. |
+| Composer, skill selection, attachments, next-turn state | Belong to the selected owner. Clear on owner replacement; ordinary same-owner failure does not authorize silently sending them elsewhere. |
+| Local file actions | Require mapped local values and physical containment for the current configured roots. |
+
+No new disk persistence is added for drafts, history, or attachments. Phase 4 draft recovery is conditional on proving owner continuity: a retained draft cannot become the active composer of an unverified replacement owner. With the pinned identity contract, an explicit reconnect starts a new volatile owner and clears selected state. Account notifications conservatively establish a new boundary even when visible account metadata is unchanged. The existing skill cache retains its bounds, hard expiry, atomic replacement, and cross-process locking, with a revised partition format. Old workspace-only snapshots cannot establish ownership and are not reused. Contract v18 carries only the bounded, non-secret owner discriminator needed to invalidate Extension state; bundled producers and consumers change together.
+
+## Implementation and verification
+
+1. Implement typed normalization and mapping plus local physical-boundary checks. Cover Windows-to-POSIX, Windows-to-Windows, and POSIX-server-to-Windows-local mappings, extended drive/UNC roots, device aliases, alternate data streams, trailing dot/space aliases, reserved names, root-only paths, mixed separators, Unicode, case, drive/share mismatch, sibling prefixes, traversal, and symlink/junction escapes.
+2. Integrate all existing outbound and inbound path consumers. Verify rejected attachments produce no `turn/start`, remote skill identities require no host filesystem lookup, and unmappable server paths never become local actions.
+3. Partition Worker caches and grants and bind operations to owner/generation. Cover two endpoints, profiles, accounts, credential owners, roots, and concurrent Worker instances, including token rotation and delayed events from a retired owner.
+4. Reset Extension selected state on owner replacement and guard asynchronous models, history, usage, skills, approvals, sends, and file actions. Preserve explicit connect/reconnect behavior and display bounded mapping errors.
+5. Run focused regressions and the full Core/UI suites, zero-warning Debug/Release builds, pinned CLI 0.159.1 contract/schema checks, VSIX payload and embedded-XAML inspection, and `git diff --check`. Inspect actual Experimental Instance rendering and record observed evidence separately from source and unit-test evidence.
+
+Acceptance requires the mapped paths and every listed state boundary to fail closed across owner changes. UI evidence records the rendered connection switch, empty selected state, attachment rejection, and usable remote skill selection. Any unavailable verification remains explicitly incomplete in the implementation/task record.

@@ -34,6 +34,166 @@ public sealed class ViewModelTests
     private static readonly string[] ExpectedReorderedModels = ["gpt-5", "gpt-5-codex", "gpt-5-mini"];
     private static readonly string[] ExpectedStatusHeaderColumnWidths = ["Auto", "*"];
     private static readonly string[] CreativeOnly = ["Creative"];
+
+    [TestMethod]
+    public async Task ChatViewModel_OwnerChangeClearsOwnerScopedPresentationState()
+    {
+        string directory = Path.Combine(Path.GetTempPath(), $"codex owner {Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        string attachmentPath = Path.Combine(directory, "draft.txt");
+        await File.WriteAllTextAsync(attachmentPath, "private draft");
+
+        try
+        {
+            var bridge = new FakeWorkerBridge();
+            using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+            await bridge.PublishStateAsync(OwnerStatus("owner-a", 1, 4));
+
+            var thread = new ThreadSummary { Id = "thread-a", Preview = "Previous owner" };
+            vm.Threads.Add(thread);
+            vm.SelectedThread = thread;
+            await Task.Delay(20);
+            vm.Items.Add(new ChatItemViewModel("Codex", "Previous owner's history", ConversationEventKind.AgentMessageDelta));
+            vm.ComposerText = "unsent owner draft";
+            vm.Models.Add("owner-a-model");
+            vm.SelectedModel = "owner-a-model";
+            vm.PendingAttachments.Add(new AttachmentChipViewModel(
+                attachmentPath,
+                new SafeMarkdownService(),
+                _ => Task.CompletedTask));
+            vm.PendingSkills.Add(new PendingSkillViewModel(
+                "owner-a-skill",
+                "Repository",
+                "Owner-specific skill",
+                new SkillInvocationInfo { Name = "owner-a-skill", Scope = "repo", Path = "/srv/a/skill" },
+                () => Task.CompletedTask,
+                null,
+                _ => Task.CompletedTask,
+                new SafeMarkdownService()));
+            vm.Usage.Update(new RateLimitsResult(), DateTimeOffset.UtcNow, new SafeMarkdownService());
+            vm.IsHistoryOpen = true;
+
+            MethodInfo approvalRequested = typeof(ChatViewModel).GetMethod(
+                "OnApprovalRequestedAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
+            await (Task)approvalRequested.Invoke(vm, [Notification(MakeApprovalRequest("owner-a-approval"), OwnerStatus("owner-a", 1, 4))])!;
+            Assert.IsTrue(vm.HasActiveApproval);
+
+            await bridge.PublishStateAsync(OwnerStatus("owner-b", 2, 5));
+
+            Assert.IsNull(vm.SelectedThread);
+            Assert.AreEqual(0, vm.Threads.Count);
+            Assert.AreEqual(0, vm.Items.Count);
+            Assert.AreEqual(string.Empty, vm.ComposerText);
+            Assert.AreEqual(0, vm.PendingAttachments.Count);
+            Assert.AreEqual(0, vm.PendingSkills.Count);
+            Assert.IsFalse(vm.HasActiveApproval);
+            Assert.AreEqual(string.Empty, vm.ApprovalQueueText);
+            Assert.IsFalse(vm.IsHistoryOpen);
+            Assert.IsFalse(vm.Usage.HasData);
+            CollectionAssert.AreEqual(ExpectedWorkerModels, vm.Models.ToArray());
+            Assert.AreEqual("gpt-5-codex", vm.SelectedModel);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_DiscardsThreadPageCompletedForPreviousOwner()
+    {
+        var bridge = new FakeWorkerBridge();
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        await bridge.PublishStateAsync(OwnerStatus("owner-a", 1, 4));
+
+        var response = new TaskCompletionSource<ThreadPage>(TaskCreationOptions.RunContinuationsAsynchronously);
+#pragma warning disable VSTHRD003 // The Worker fake intentionally holds this request until the owner changes.
+        bridge.ListThreadsHandler = (_, _) => response.Task;
+#pragma warning restore VSTHRD003
+        MethodInfo loadMore = typeof(ChatViewModel).GetMethod("LoadMoreAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
+        Task loading = (Task)loadMore.Invoke(vm, null)!;
+
+        await bridge.PublishStateAsync(OwnerStatus("owner-b", 2, 5));
+        response.SetResult(new ThreadPage { Threads = [new ThreadSummary { Id = "old-owner-thread" }] });
+        await loading;
+
+        Assert.AreEqual(0, vm.Threads.Count);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_DiscardsLogoutCompletedForPreviousOwner()
+    {
+        var bridge = new FakeWorkerBridge();
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        await bridge.PublishStateAsync(OwnerStatus("owner-a", 1, 4));
+
+        var response = new TaskCompletionSource<AccountStatus>(TaskCreationOptions.RunContinuationsAsynchronously);
+#pragma warning disable VSTHRD003 // The Worker fake intentionally holds this request until the owner changes.
+        bridge.LogoutHandler = (_, _) => response.Task;
+#pragma warning restore VSTHRD003
+        MethodInfo signOut = typeof(ChatViewModel).GetMethod("SignOutAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
+        Task logout = (Task)signOut.Invoke(vm, null)!;
+        for (int attempt = 0; attempt < 100 && bridge.LastLogoutRequest is null; attempt++)
+        {
+            await Task.Delay(10);
+        }
+
+        Assert.IsNotNull(bridge.LastLogoutRequest);
+        Assert.AreEqual("owner-a", bridge.LastLogoutRequest!.StatePartitionFingerprint);
+        Assert.AreEqual(1, bridge.LastLogoutRequest.OwnerGeneration);
+        await bridge.PublishStateAsync(OwnerStatus("owner-b", 2, 5));
+        response.SetResult(new AccountStatus { State = AccountState.SignedOut });
+#pragma warning disable VSTHRD003 // The test is waiting for the reflected ViewModel operation started above.
+        await logout;
+#pragma warning restore VSTHRD003
+
+        Assert.AreEqual(AccountState.Checking, vm.Account.State);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_DiscardsSyntheticChoiceFromPreviousOwner()
+    {
+        var bridge = new FakeWorkerBridge();
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        await bridge.PublishStateAsync(OwnerStatus("owner-a", 1, 4));
+        object oldOwner = CaptureOwnerSnapshot(vm);
+        await bridge.PublishStateAsync(OwnerStatus("owner-b", 2, 5));
+
+        MethodInfo resolve = typeof(ChatViewModel).GetMethod("ResolveSyntheticUserInputAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
+        var answers = new Dictionary<string, string[]> { ["choice"] = ["old owner answer"] };
+        await (Task)resolve.Invoke(vm, ["synthetic-old", answers, oldOwner])!;
+
+        Assert.IsNull(bridge.LastStartTurnRequest);
+        Assert.IsFalse(vm.HasActiveUserInput);
+        Assert.AreEqual(string.Empty, vm.ComposerText);
+    }
+
+    private static WorkerStatus OwnerStatus(string fingerprint, long ownerGeneration, long connectionGeneration)
+        => new()
+        {
+            State = WorkerConnectionState.Ready,
+            Target = new ConnectionTargetSnapshot
+            {
+                Kind = ConnectionTargetKind.Local,
+                Generation = connectionGeneration,
+                StatePartitionFingerprint = fingerprint,
+                OwnerGeneration = ownerGeneration,
+            },
+        };
+
+    private static WorkerNotification<T> Notification<T>(T value, WorkerStatus? status = null)
+        => new()
+        {
+            Value = value,
+            StatePartitionFingerprint = status?.Target?.StatePartitionFingerprint,
+            OwnerGeneration = status?.Target?.OwnerGeneration ?? 0,
+            ConnectionGeneration = status?.Target?.Generation ?? 0,
+        };
+
+    private static object CaptureOwnerSnapshot(ChatViewModel viewModel)
+        => typeof(ChatViewModel).GetMethod("CaptureOwnerSnapshot", BindingFlags.NonPublic | BindingFlags.Instance)!
+            .Invoke(viewModel, null)!;
+
     [TestMethod]
     public async Task ApprovalViewModel_ResolvesOnlyOnce()
     {
@@ -119,25 +279,25 @@ public sealed class ViewModelTests
         MethodInfo resolved = typeof(ChatViewModel).GetMethod(
             "OnUserInputResolvedAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
 
-        await (Task)requested.Invoke(vm, [MakeUserInputRequest("ui-1")])!;
+        await (Task)requested.Invoke(vm, [Notification(MakeUserInputRequest("ui-1"))])!;
         Assert.IsTrue(vm.HasActiveUserInput);
         Assert.AreEqual("ui-1", vm.ActiveUserInput!.RequestId);
         Assert.AreEqual(string.Empty, vm.UserInputQueueText);
 
         // Second request is queued, not shown — the active card stays put.
-        await (Task)requested.Invoke(vm, [MakeUserInputRequest("ui-2")])!;
+        await (Task)requested.Invoke(vm, [Notification(MakeUserInputRequest("ui-2"))])!;
         Assert.AreEqual("ui-1", vm.ActiveUserInput!.RequestId);
         Assert.AreEqual("1 choice waiting", vm.UserInputQueueText);
 
         // Resolving the active one promotes the queued one.
-        await (Task)resolved.Invoke(vm, ["ui-1"])!;
+        await (Task)resolved.Invoke(vm, [Notification("ui-1")])!;
         Assert.AreEqual("ui-2", vm.ActiveUserInput!.RequestId);
         Assert.AreEqual(string.Empty, vm.UserInputQueueText);
 
         // Resolving the last clears the card; a duplicate resolve is a no-op.
-        await (Task)resolved.Invoke(vm, ["ui-2"])!;
+        await (Task)resolved.Invoke(vm, [Notification("ui-2")])!;
         Assert.IsFalse(vm.HasActiveUserInput);
-        await (Task)resolved.Invoke(vm, ["ui-2"])!;
+        await (Task)resolved.Invoke(vm, [Notification("ui-2")])!;
         Assert.IsFalse(vm.HasActiveUserInput);
     }
 
@@ -150,33 +310,33 @@ public sealed class ViewModelTests
         MethodInfo resolved = typeof(ChatViewModel).GetMethod(
             "OnApprovalResolvedAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
 
-        await (Task)requested.Invoke(vm, [MakeApprovalRequest("req-1")])!;
+        await (Task)requested.Invoke(vm, [Notification(MakeApprovalRequest("req-1"))])!;
         Assert.IsTrue(vm.HasActiveApproval);
         Assert.AreEqual("req-1", vm.ActiveApproval!.RequestId);
         Assert.AreEqual(string.Empty, vm.ApprovalQueueText);
 
         // Concurrent prompts are queued, not stacked: the active card stays put and the rest are counted.
-        await (Task)requested.Invoke(vm, [MakeApprovalRequest("req-2")])!;
+        await (Task)requested.Invoke(vm, [Notification(MakeApprovalRequest("req-2"))])!;
         Assert.AreEqual("req-1", vm.ActiveApproval!.RequestId);
         Assert.AreEqual("1 approval waiting", vm.ApprovalQueueText);
 
-        await (Task)requested.Invoke(vm, [MakeApprovalRequest("req-3")])!;
+        await (Task)requested.Invoke(vm, [Notification(MakeApprovalRequest("req-3"))])!;
         Assert.AreEqual("2 approvals waiting", vm.ApprovalQueueText);
 
         // Resolving the active one promotes the next queued prompt.
-        await (Task)resolved.Invoke(vm, ["req-1"])!;
+        await (Task)resolved.Invoke(vm, [Notification("req-1")])!;
         Assert.AreEqual("req-2", vm.ActiveApproval!.RequestId);
         Assert.AreEqual("1 approval waiting", vm.ApprovalQueueText);
 
         // A prompt resolved while still queued is dropped without becoming active.
-        await (Task)resolved.Invoke(vm, ["req-3"])!;
+        await (Task)resolved.Invoke(vm, [Notification("req-3")])!;
         Assert.AreEqual("req-2", vm.ActiveApproval!.RequestId);
         Assert.AreEqual(string.Empty, vm.ApprovalQueueText);
 
         // Resolving the last clears the card; a duplicate resolve is a no-op.
-        await (Task)resolved.Invoke(vm, ["req-2"])!;
+        await (Task)resolved.Invoke(vm, [Notification("req-2")])!;
         Assert.IsFalse(vm.HasActiveApproval);
-        await (Task)resolved.Invoke(vm, ["req-2"])!;
+        await (Task)resolved.Invoke(vm, [Notification("req-2")])!;
         Assert.IsFalse(vm.HasActiveApproval);
     }
 
@@ -612,13 +772,13 @@ public sealed class ViewModelTests
         using var vm = new ChatViewModel();
         MethodInfo requested = typeof(ChatViewModel).GetMethod(
             "OnApprovalRequestedAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
-        await (Task)requested.Invoke(vm, [new ApprovalRequest
+        await (Task)requested.Invoke(vm, [Notification(new ApprovalRequest
         {
             RequestId = "req-decision",
             Risk = ApprovalRiskCategory.Destructive,
             DisplayText = "git reset --hard",
             AvailableDecisions = AcceptDeclineCancel,
-        }])!;
+        })])!;
 
         vm.AppendDecisionResultItem(vm.BuildDecisionSummary("req-decision", ApprovalDecision.Accept));
 
@@ -687,13 +847,13 @@ public sealed class ViewModelTests
         using var vm = new ChatViewModel(bridge, autoConnect: false);
         MethodInfo requested = typeof(ChatViewModel).GetMethod(
             "OnApprovalRequestedAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
-        await (Task)requested.Invoke(vm, [new ApprovalRequest
+        await (Task)requested.Invoke(vm, [Notification(new ApprovalRequest
         {
             RequestId = "req-fail",
             Risk = ApprovalRiskCategory.Destructive,
             DisplayText = "git reset --hard",
             AvailableDecisions = AcceptDeclineCancel,
-        }])!;
+        })])!;
 
         MethodInfo resolve = typeof(ChatViewModel).GetMethod(
             "ResolveApprovalAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
@@ -701,7 +861,7 @@ public sealed class ViewModelTests
         InvalidOperationException? caught = null;
         try
         {
-            await (Task)resolve.Invoke(vm, ["req-fail", ApprovalDecision.Accept])!;
+            await (Task)resolve.Invoke(vm, ["req-fail", ApprovalDecision.Accept, CaptureOwnerSnapshot(vm)])!;
         }
         catch (InvalidOperationException ex)
         {
@@ -719,17 +879,17 @@ public sealed class ViewModelTests
         using var vm = new ChatViewModel(bridge, autoConnect: false);
         MethodInfo requested = typeof(ChatViewModel).GetMethod(
             "OnApprovalRequestedAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
-        await (Task)requested.Invoke(vm, [new ApprovalRequest
+        await (Task)requested.Invoke(vm, [Notification(new ApprovalRequest
         {
             RequestId = "req-ok",
             Risk = ApprovalRiskCategory.Destructive,
             DisplayText = "git push --force",
             AvailableDecisions = AcceptDeclineCancel,
-        }])!;
+        })])!;
 
         MethodInfo resolve = typeof(ChatViewModel).GetMethod(
             "ResolveApprovalAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
-        await (Task)resolve.Invoke(vm, ["req-ok", ApprovalDecision.Accept])!;
+        await (Task)resolve.Invoke(vm, ["req-ok", ApprovalDecision.Accept, CaptureOwnerSnapshot(vm)])!;
 
         ChatItemViewModel result = vm.Items.Single(item => item.Role == "Decision");
         Assert.IsTrue(result.Text.Contains("Accepted", StringComparison.Ordinal));
@@ -749,7 +909,7 @@ public sealed class ViewModelTests
         InvalidOperationException? caught = null;
         try
         {
-            await (Task)resolve.Invoke(vm, ["req-1", answers])!;
+            await (Task)resolve.Invoke(vm, ["req-1", answers, CaptureOwnerSnapshot(vm)])!;
         }
         catch (InvalidOperationException ex)
         {
@@ -769,7 +929,7 @@ public sealed class ViewModelTests
 
         MethodInfo resolve = typeof(ChatViewModel).GetMethod(
             "ResolveUserInputAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
-        await (Task)resolve.Invoke(vm, ["req-1", answers])!;
+        await (Task)resolve.Invoke(vm, ["req-1", answers, CaptureOwnerSnapshot(vm)])!;
 
         ChatItemViewModel result = vm.Items.Single(item => item.Role == "Decision");
         Assert.IsTrue(result.Text.Contains("Selected — Yes", StringComparison.Ordinal));
@@ -3587,6 +3747,34 @@ public sealed class ViewModelTests
     }
 
     [TestMethod]
+    public async Task ChatViewModel_DiscardsFileSuggestionsCompletedForPreviousOwner()
+    {
+        var response = new TaskCompletionSource<IReadOnlyList<WorkspaceFileSearchResult>>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var search = new FakeWorkspaceFileSearchService([]);
+#pragma warning disable VSTHRD003 // The fake intentionally delays search completion across an owner switch.
+        search.SearchHandler = (_, _, _) => response.Task;
+#pragma warning restore VSTHRD003
+        var bridge = new FakeWorkerBridge();
+        using var vm = new ChatViewModel(
+            bridge,
+            autoConnect: false,
+            workspaceFileSearchService: search,
+            protectedDirectoryPolicy: new ProtectedDirectoryPolicy([]));
+        SetWorkingDirectory(vm, Path.GetTempPath());
+        var oldFile = new WorkspaceFileSearchResult(Path.Combine(Path.GetTempPath(), "old-owner.cs"), "old-owner.cs");
+        await bridge.PublishStateAsync(OwnerStatus("owner-a", 1, 4));
+
+        vm.ComposerText = "#old";
+        await WaitForAsync(() => search.CallCount == 1);
+        await bridge.PublishStateAsync(OwnerStatus("owner-b", 2, 5));
+        response.SetResult([oldFile]);
+        await Task.Delay(200);
+
+        Assert.IsFalse(vm.FileSuggestions.IsSuggestionOpen);
+        Assert.AreEqual(0, vm.FileSuggestions.Suggestions.Count);
+    }
+
+    [TestMethod]
     public async Task ChatViewModel_DoubleHash_SendsLiteralHashWithoutOpeningFileSuggestions()
     {
         var bridge = new FakeWorkerBridge();
@@ -3725,7 +3913,7 @@ public sealed class ViewModelTests
             BindingFlags.NonPublic | BindingFlags.Instance)
             ?? throw new InvalidOperationException("Could not find SendMessageAsync.");
 
-        return (Task)method.Invoke(viewModel, [text, clearComposer])!;
+        return (Task)method.Invoke(viewModel, [text, clearComposer, null])!;
     }
 
     private static Task InvokeComposerSendAsync(ChatViewModel viewModel)
@@ -3830,7 +4018,7 @@ public sealed class ViewModelTests
             BindingFlags.NonPublic | BindingFlags.Instance)
             ?? throw new InvalidOperationException("Could not find OnConversationEventAsync.");
 
-        return (Task)method.Invoke(viewModel, [value])!;
+        return (Task)method.Invoke(viewModel, [Notification(value)])!;
     }
 
     private static Task RaiseContextCompactedAsync(ChatViewModel viewModel, ContextCompactionEvent value)
@@ -3840,7 +4028,7 @@ public sealed class ViewModelTests
             BindingFlags.NonPublic | BindingFlags.Instance)
             ?? throw new InvalidOperationException("Could not find OnContextCompactedAsync.");
 
-        return (Task)method.Invoke(viewModel, [value])!;
+        return (Task)method.Invoke(viewModel, [Notification(value)])!;
     }
 
     private static ExtensionSettings GetSettings(ChatViewModel viewModel)
@@ -4469,12 +4657,19 @@ public sealed class ViewModelTests
     {
         public int CallCount { get; private set; }
 
+        public Func<string, string, CancellationToken, Task<IReadOnlyList<WorkspaceFileSearchResult>>>? SearchHandler { get; set; }
+
         public Task<IReadOnlyList<WorkspaceFileSearchResult>> SearchAsync(
             string workspaceRoot,
             string query,
             CancellationToken cancellationToken)
         {
             CallCount++;
+            if (SearchHandler is not null)
+            {
+                return SearchHandler(workspaceRoot, query, cancellationToken);
+            }
+
             return Task.FromResult(results);
         }
     }
@@ -4505,29 +4700,33 @@ public sealed class ViewModelTests
 
     private sealed class FakeWorkerBridge : IWorkerBridge
     {
-        public event Func<WorkerStatus, Task>? StateChanged;
+        public event Func<WorkerNotification<WorkerStatus>, Task>? StateChanged;
 
-        public event Func<AccountStatus, Task>? AccountChanged;
+        public event Func<WorkerNotification<AccountStatus>, Task>? AccountChanged;
 
-        public event Func<ConversationEvent, Task>? ConversationEventReceived { add { } remove { } }
+        public event Func<WorkerNotification<ConversationEvent>, Task>? ConversationEventReceived { add { } remove { } }
 
-        public event Func<ApprovalRequest, Task>? ApprovalRequested { add { } remove { } }
+        public event Func<WorkerNotification<ApprovalRequest>, Task>? ApprovalRequested { add { } remove { } }
 
-        public event Func<string, Task>? ApprovalResolved { add { } remove { } }
+        public event Func<WorkerNotification<string>, Task>? ApprovalResolved { add { } remove { } }
 
-        public event Func<UserInputRequest, Task>? UserInputRequested { add { } remove { } }
+        public event Func<WorkerNotification<UserInputRequest>, Task>? UserInputRequested { add { } remove { } }
 
-        public event Func<string, Task>? UserInputResolved { add { } remove { } }
+        public event Func<WorkerNotification<string>, Task>? UserInputResolved { add { } remove { } }
 
-        public event Func<ContextCompactionEvent, Task>? ContextCompacted { add { } remove { } }
+        public event Func<WorkerNotification<ContextCompactionEvent>, Task>? ContextCompacted { add { } remove { } }
 
-        public event Func<ReviewModeEvent, Task>? ReviewModeChanged { add { } remove { } }
+        public event Func<WorkerNotification<ReviewModeEvent>, Task>? ReviewModeChanged { add { } remove { } }
 
-        public event Func<ThreadGoalEvent, Task>? ThreadGoalChanged { add { } remove { } }
+        public event Func<WorkerNotification<ThreadGoalEvent>, Task>? ThreadGoalChanged { add { } remove { } }
 
-        public event Func<RateLimitsResult, Task>? RateLimitsChanged;
+        public event Func<WorkerNotification<RateLimitsResult>, Task>? RateLimitsChanged;
 
-        public event Func<SkillsChangedEvent, Task>? SkillsChanged;
+        public event Func<WorkerNotification<SkillsChangedEvent>, Task>? SkillsChanged;
+
+        public event Func<WorkerNotification<ApprovalAuditRecord>, Task>? ApprovalAuditReceived { add { } remove { } }
+
+        private WorkerStatus currentStatus = new();
 
         public ListModelsResult ModelListResult { get; set; } = new();
 
@@ -4555,6 +4754,8 @@ public sealed class ViewModelTests
 
         public Func<int, Task<RateLimitsResult>>? RateLimitHandler { get; set; }
 
+        public Func<string?, CancellationToken, Task<ThreadPage>>? ListThreadsHandler { get; set; }
+
         public Exception? ResolveApprovalException { get; set; }
 
         public Exception? ResolveUserInputException { get; set; }
@@ -4562,16 +4763,19 @@ public sealed class ViewModelTests
         public Exception? StartTurnException { get; set; }
 
         public Task PublishStateAsync(WorkerStatus status)
-            => StateChanged?.Invoke(status) ?? Task.CompletedTask;
+        {
+            currentStatus = status;
+            return StateChanged?.Invoke(Notification(status, status)) ?? Task.CompletedTask;
+        }
 
         public Task PublishAccountAsync(AccountStatus status)
-            => AccountChanged?.Invoke(status) ?? Task.CompletedTask;
+            => AccountChanged?.Invoke(Notification(status, currentStatus)) ?? Task.CompletedTask;
 
         public Task PublishRateLimitsAsync(RateLimitsResult result)
-            => RateLimitsChanged?.Invoke(result) ?? Task.CompletedTask;
+            => RateLimitsChanged?.Invoke(Notification(result, currentStatus)) ?? Task.CompletedTask;
 
         public Task PublishSkillsChangedAsync(SkillsChangedEvent? value = null)
-            => SkillsChanged?.Invoke(value ?? new SkillsChangedEvent()) ?? Task.CompletedTask;
+            => SkillsChanged?.Invoke(Notification(value ?? new SkillsChangedEvent(), currentStatus)) ?? Task.CompletedTask;
 
         public int ConnectCallCount { get; private set; }
 
@@ -4629,14 +4833,22 @@ public sealed class ViewModelTests
         public Task<AccountStatus> GetAccountStatusAsync(CancellationToken cancellationToken)
             => Task.FromResult(AccountStatusResult);
 
-        public Task<StartAccountLoginResult> StartAccountLoginAsync(CancellationToken cancellationToken)
+        public Task<StartAccountLoginResult> StartAccountLoginAsync(StartAccountLoginRequest request, CancellationToken cancellationToken)
             => Task.FromResult(new StartAccountLoginResult());
 
-        public Task<AccountStatus> LogoutAccountAsync(CancellationToken cancellationToken)
-            => Task.FromResult(new AccountStatus { State = AccountState.SignedOut });
+        public Task<AccountStatus> LogoutAccountAsync(LogoutAccountRequest request, CancellationToken cancellationToken)
+        {
+            LastLogoutRequest = request;
+            return LogoutHandler?.Invoke(request, cancellationToken)
+                ?? Task.FromResult(new AccountStatus { State = AccountState.SignedOut });
+        }
+
+        public LogoutAccountRequest? LastLogoutRequest { get; private set; }
+
+        public Func<LogoutAccountRequest, CancellationToken, Task<AccountStatus>>? LogoutHandler { get; set; }
 
         public Task<ThreadPage> ListThreadsAsync(string? cursor, CancellationToken cancellationToken)
-            => Task.FromResult(new ThreadPage());
+            => ListThreadsHandler?.Invoke(cursor, cancellationToken) ?? Task.FromResult(new ThreadPage());
 
         public Task<ListModelsResult> ListModelsAsync(CancellationToken cancellationToken)
         {
@@ -4647,15 +4859,15 @@ public sealed class ViewModelTests
         public Task<ListPermissionProfilesResult> ListPermissionProfilesAsync(CancellationToken cancellationToken)
             => Task.FromResult(PermissionProfilesResult);
 
-        public Task<ThreadSummary> StartThreadAsync(CancellationToken cancellationToken)
+        public Task<ThreadSummary> StartThreadAsync(StartThreadRequest request, CancellationToken cancellationToken)
             => Task.FromResult(new ThreadSummary { Id = "thread-1" });
 
         public string? LastResumedThreadId { get; private set; }
 
-        public Task<ThreadSummary> ResumeThreadAsync(string threadId, CancellationToken cancellationToken)
+        public Task<ThreadSummary> ResumeThreadAsync(ResumeThreadRequest request, CancellationToken cancellationToken)
         {
-            LastResumedThreadId = threadId;
-            return Task.FromResult(new ThreadSummary { Id = threadId });
+            LastResumedThreadId = request.ThreadId;
+            return Task.FromResult(new ThreadSummary { Id = request.ThreadId });
         }
 
         public Task<string> StartTurnAsync(StartTurnRequest request, CancellationToken cancellationToken)
@@ -4687,7 +4899,7 @@ public sealed class ViewModelTests
         public Task<ForkThreadResult> ForkThreadAsync(ForkThreadRequest request, CancellationToken cancellationToken)
             => Task.FromResult(new ForkThreadResult { Thread = new ThreadSummary { Id = "thread-fork" } });
 
-        public Task<ThreadGoalResult> GetThreadGoalAsync(string threadId, CancellationToken cancellationToken)
+        public Task<ThreadGoalResult> GetThreadGoalAsync(ThreadGoalRequest request, CancellationToken cancellationToken)
             => Task.FromResult(new ThreadGoalResult());
 
         public Task<ThreadGoalResult> SetThreadGoalAsync(SetThreadGoalRequest request, CancellationToken cancellationToken)
@@ -4701,7 +4913,7 @@ public sealed class ViewModelTests
                 },
             });
 
-        public Task<ThreadGoalResult> ClearThreadGoalAsync(string threadId, CancellationToken cancellationToken)
+        public Task<ThreadGoalResult> ClearThreadGoalAsync(ThreadGoalRequest request, CancellationToken cancellationToken)
             => Task.FromResult(new ThreadGoalResult { Cleared = true });
 
         public Task<McpServerListResult> ListMcpServersAsync(string? threadId, CancellationToken cancellationToken)

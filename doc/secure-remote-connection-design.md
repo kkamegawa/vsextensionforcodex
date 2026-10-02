@@ -4,7 +4,7 @@
 
 ## Purpose and scope
 
-Complete the secure remote-connection behavior tracked by Issue #151. The Extension continues to communicate with its local Worker. The Worker selects local stdio or an explicitly applied WebSocket profile. This design completes endpoint policy, connection and token ownership, health diagnostics, bounded read-only overload retry, profile freshness, and local restart versus remote reconnect behavior. The remote server remains externally managed. Remote mode remains Preview until the separate account and principal state isolation in Issue #152 is complete.
+Complete the secure remote-connection behavior tracked by Issue #151. The Extension continues to communicate with its local Worker. The Worker selects local stdio or an explicitly applied WebSocket profile. This design completes endpoint policy, connection and token ownership, health diagnostics, bounded read-only overload retry, profile freshness, and local restart versus remote reconnect behavior. The remote server remains externally managed. Remote mode remains Preview because upstream WebSocket support is experimental. The companion [path and state design](path-state-isolation-design.md) defines Issue #152's ownership boundaries.
 
 Issue #150 supplies the pinned Codex CLI 0.159.1 contract (0.155.1 regression baseline), shared JSON-RPC dispatch, and connection-generation behavior. Issue #152 owns complete path mapping and account/authentication-principal/root state partitioning. Issue #153 owns automatic reconnect and history recovery, retained drafts, and uncertain mutation handling. This design does not claim those later guarantees.
 
@@ -102,7 +102,7 @@ Use a typed `-32051` `WorkerErrorCodes.ConnectionOperationRejected` response wit
 
 The connection-target flyout shows the health and ready results separately from the actual RPC state, distinguishes the checked profile from the active target, and explains authority-root coverage for pathful endpoints. It retains mutual exclusion with Usage and History, keyboard access, Escape/Tab behavior, Visual Studio theme resources, accessible names, and live status. A health result does not affect whether Connect or a feature is available.
 
-Update Preview guidance to say that health diagnostics and bounded retry of allowlisted read-only RPCs are available. Keep the outstanding account/principal state-isolation limitation and the distinction between external remote-server ownership and the local Worker-owned socket.
+Update Preview guidance to say that health diagnostics and bounded retry of allowlisted read-only RPCs are available. Describe account/principal state isolation according to the companion Issue #152 design and preserve the distinction between external remote-server ownership and the local Worker-owned socket.
 
 ## Verification and acceptance
 

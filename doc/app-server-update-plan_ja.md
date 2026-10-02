@@ -116,6 +116,8 @@ Visual Studio 拡張機能の既存 C#／`codex app-server` 連携を CLI 0.159.
 
 ## Phase 3 — パス対応付けと状態分離
 
+詳細設計: [パスマッピングと接続状態の分離](path-state-isolation-design_ja.md) / [English](path-state-isolation-design.md)。承認済み ADR-013 の所有者境界を適用し、固定 account 契約で安定した所有者を確認できない場合も揮発状態で分離します。
+
 トラッキング: [#152](https://github.com/kkamegawa/vsextensionforcodex/issues/152)
 
 ### パス領域と対応付け

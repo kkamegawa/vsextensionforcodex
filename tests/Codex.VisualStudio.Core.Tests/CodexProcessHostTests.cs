@@ -1,11 +1,25 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using Codex.VisualStudio.Worker;
 
 namespace Codex.VisualStudio.Core.Tests;
 
 [TestClass]
+[DoNotParallelize]
 public sealed class CodexProcessHostTests
 {
+    private string? originalCodexPath;
+
+    [TestInitialize]
+    public void IsolateExecutableOverride()
+    {
+        originalCodexPath = Environment.GetEnvironmentVariable("CODEX_PATH");
+        Environment.SetEnvironmentVariable("CODEX_PATH", null);
+    }
+
+    [TestCleanup]
+    public void RestoreExecutableOverride()
+        => Environment.SetEnvironmentVariable("CODEX_PATH", originalCodexPath);
+
     [TestMethod]
     public async Task FailedStartDoesNotLeaveUnsafeProcessReference()
     {
