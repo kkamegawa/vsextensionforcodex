@@ -758,7 +758,10 @@ public sealed class CodexSessionServiceTests
         JsonElement second = JsonSerializer.SerializeToElement(requests[1].Parameters, WireJsonOptions);
         Assert.AreEqual(cwd, first.GetProperty("cwd").GetString());
         Assert.AreEqual(100, first.GetProperty("limit").GetInt32());
-        Assert.AreEqual(TimeSpan.FromSeconds(15), requests[0].Timeout);
+        // permissionProfile/list is an allowlisted read: its 15-second budget is one deadline shared
+        // by every overload retry, so each send receives only the remaining time.
+        Assert.IsTrue(requests[0].Timeout <= TimeSpan.FromSeconds(15));
+        Assert.IsTrue(requests[0].Timeout > TimeSpan.FromSeconds(14));
         Assert.IsFalse(first.TryGetProperty("cursor", out _));
         Assert.AreEqual("page-2", second.GetProperty("cursor").GetString());
     }

@@ -84,25 +84,35 @@ Tracking: [#151](https://github.com/kkamegawa/vsextensionforcodex/issues/151)
 
 ### Transport and profile model
 
-- Keep the local Worker architecture and select stdio or WebSocket inside the Worker.
-- Share JSON-RPC dispatch, message limits, cancellation, pending-request completion, and shutdown behavior across transports.
-- Store profile display name, endpoint, token-file path, local root, server root, enabled state, and selected profile.
-- Read token contents only inside the Worker at connection time.
+- Keep Extension → local Worker; select owned local stdio or an explicitly enabled remote WebSocket connection inside the Worker.
+- Preserve shared RPC dispatch, message bounds, notification order, cancellation, and generation retirement. Store only profile metadata, never token contents.
+- The detailed final contract is [secure-remote-connection-design.md](secure-remote-connection-design.md), with a [Japanese translation](secure-remote-connection-design_ja.md). The UI contract is `doc/design.md` section 12; the decision record is `doc/adr/ADR-012-app-server-remote-transport.md`.
+- Existing retry helpers and endpoint/token checks are partial implementations. Extend the helpers with method/parameter eligibility and one timeout budget; replace unbounded token reads and duplicate UI endpoint validation. Preserve the already implemented profile editor and transport ownership.
 
-### Endpoint and ownership policy
+### Endpoint, authentication, and ownership
 
-- Accept `wss` for remote endpoints; accept plain `ws` only for loopback.
-- Attach bearer authentication at the WebSocket handshake without logging authentication data.
-- Do not expose a certificate-validation bypass.
-- Local profiles own child-process restart. Remote profiles close only the connection and present the operation as reconnect.
-- Serialize connect, reconnect, and close so only one connection generation becomes active.
+- Put endpoint-only `RemoteEndpointPolicy` in Contracts (`netstandard2.0`) for Extension, Worker, and Protocol. Accept remote `wss` and strictly defined loopback `ws`; reject URI credentials, query strings, fragments, and unspecified bind addresses.
+- Save validates metadata and the token-file path requirement; only the Worker reads and validates file existence, readability, encoding, bounded content, and bearer format immediately before handshake.
+- Read a local token file afresh on explicit connect/reconnect. Use lease-based exact-token redaction, platform TLS verification, no redirects, and the same captured proxy-resolution policy for WebSocket and HTTP diagnosis.
+- Local restart owns a child process. Remote reconnect owns only its socket. Reject remote `worker/restart` with the typed connection-operation rejection before any stop.
+- Reconnect reloads the latest saved profile by the applied name and requires enabled, unchanged metadata and the expected generation. Changed/disabled/deleted profiles require an explicit apply/target choice; token-file content rotation alone does not change profile metadata.
+- Serialize same-instance configuration mutations and reconnect snapshot validation/dispatch, then revalidate under the Worker transition gate. Persistent principal/cache partitioning and cross-instance configuration transactions remain Issue #152.
 
-### Diagnostics and retry
+### Diagnosis, liveness, and retry
 
-- Use health endpoints for diagnosis only; a successful health response does not prove JSON-RPC or a feature is available.
-- Distinguish local process status from remote connection status.
-- Apply bounded exponential backoff with jitter only to explicitly idempotent/read-only RPC after overload (`-32001`).
-- Never retry a mutation automatically.
+- Health GETs to `/healthz` and `/readyz` use a five-second shared budget, no authentication/Origin, no redirects/body display, and independent typed results. Labels identify authority-root scope; a path-routed App Server remains unverified by a root probe. Health never determines RPC readiness or feature support.
+- Keep .NET 8. A 30-second keepalive interval does not prove peer responsiveness; a generation-bound idle RPC watchdog uses two silent ten-second probes to retire a half-open connection, with no automatic reconnect or mutation replay. Any valid inbound request, response, or notification during a probe returns the watchdog to the thirty-second silence period.
+- Remote startup has a 45-second overall deadline: token read at most five seconds and handshake, initialize, and startup account read each at most fifteen seconds, all capped by remaining time.
+- The exact retry inventory contains eight current methods. `account/read` requires explicit `refreshToken=false`; `skills/list` requires explicit `forceReload=false`. Forced skill refresh remains a single request because cache eviction and rescanning add work. Future history-read methods require separate reviewed allowlist additions.
+- Retry only completed `-32001` responses, at most three retries/four sends, with 250/500/1000 ms base delays and plus/minus 20 percent jitter. One monotonic timeout budget includes sends and waits; connection retirement cancels pending retry work.
+
+### Implementation sequence and gates
+
+1. Confirm the revised Issue #151 design and proposed ADR-012 amendment. Keep this Phase 2 section, `doc/design.md` section 12, the English/Japanese detailed design, and Wiki plan/index pairs synchronized. Implementation begins after design confirmation.
+2. Extend shared policy/retry components, replace unbounded token I/O, add secret leases and redacted diagnostic production, and make failed-start cleanup deterministic. Keep the existing runtime/SDK/package versions.
+3. Add typed diagnostics, reconnect refusal reasons, target/generation snapshots, and the .NET 8 liveness watchdog. Allocate the next Worker contract version from the actual merge base; update and package all producers/consumers atomically.
+4. Wire profile freshness validation, independent health/RPC rows, and local Restart/remote Reconnect labels. Add policy/token/TLS/proxy/read-only retry/lifecycle/serialization/command-state tests, including all excluded argument variants.
+5. Use the pinned CLI 0.159.1 for a zero-warning Release build, Core/UI tests, schema/contract gates, VSIX manifest/assembly/XAML inspection, and Experimental Instance screenshots. Record observed evidence in `doc/implementation.md` and `doc/task.md` with Issue #151 tracking; leave completion unchecked until every acceptance criterion has evidence.
 
 ## Phase 3 — Path mapping and state isolation
 

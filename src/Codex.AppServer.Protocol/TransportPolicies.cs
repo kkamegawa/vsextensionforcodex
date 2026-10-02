@@ -1,110 +1,230 @@
+﻿using System.Text.Json;
+using Codex.VisualStudio.Contracts;
+
 namespace Codex.AppServer.Protocol;
 
-public sealed record RetryDecision(bool ShouldRetry, TimeSpan Delay, string Reason);
-
-public sealed class JsonRpcRetryPolicy
+/// <summary>
+/// Bounded overload retry for read-only requests. Retry eligibility is owned by
+/// <see cref="ReadOnlyRequestAllowlist"/>, never by the caller.
+/// </summary>
+public sealed class ReadOnlyRetryPolicy
 {
     public const int ServerOverloadedCode = -32001;
+    public const int MaxRetries = 3;
+    public const double JitterFraction = 0.2;
 
-    private readonly int maxAttempts;
-    private readonly TimeSpan initialDelay;
+    private static readonly TimeSpan[] BaseDelays =
+    [
+        TimeSpan.FromMilliseconds(250),
+        TimeSpan.FromMilliseconds(500),
+        TimeSpan.FromMilliseconds(1000),
+    ];
+
     private readonly Func<double> jitterSource;
 
-    public JsonRpcRetryPolicy(
-        int maxAttempts = 3,
-        TimeSpan? initialDelay = null,
-        Func<double>? jitterSource = null)
+    public ReadOnlyRetryPolicy(Func<double>? jitterSource = null, TimeProvider? timeProvider = null)
     {
-        this.maxAttempts = maxAttempts;
-        this.initialDelay = initialDelay ?? TimeSpan.FromMilliseconds(250);
         this.jitterSource = jitterSource ?? Random.Shared.NextDouble;
+        TimeProvider = timeProvider ?? TimeProvider.System;
     }
 
-    public RetryDecision Evaluate(Exception exception, int attempt, bool isIdempotent)
+    public static ReadOnlyRetryPolicy Default { get; } = new();
+
+    public TimeProvider TimeProvider { get; }
+
+    public static TimeSpan GetBaseDelay(int retryIndex) => BaseDelays[retryIndex];
+
+    // Uniform ±20% jitter keeps several clients from retrying an overloaded app-server in
+    // lockstep. A non-finite or out-of-range jitter sample is clamped to the [0, 1] range.
+    public TimeSpan GetDelay(int retryIndex)
     {
-        if (!isIdempotent)
+        if (retryIndex is < 0 or >= MaxRetries)
         {
-            return new RetryDecision(false, TimeSpan.Zero, "Non-idempotent requests are never retried.");
+            throw new ArgumentOutOfRangeException(nameof(retryIndex));
         }
 
-        if (exception is not JsonRpcRemoteException remote || remote.Code != ServerOverloadedCode)
+        double sample = jitterSource();
+        if (double.IsNaN(sample) || double.IsInfinity(sample))
         {
-            return new RetryDecision(false, TimeSpan.Zero, "Only server-overload responses are retryable.");
+            sample = 0.5;
         }
 
-        if (attempt >= maxAttempts)
+        double factor = (1 - JitterFraction) + (Math.Clamp(sample, 0, 1) * 2 * JitterFraction);
+        return TimeSpan.FromMilliseconds(BaseDelays[retryIndex].TotalMilliseconds * factor);
+    }
+}
+
+/// <summary>
+/// Exact allowlist of app-server methods whose overload responses may be retried. Unknown
+/// methods, mutations, forced discovery reloads, and unreviewed history reads are sent once.
+/// </summary>
+public static class ReadOnlyRequestAllowlist
+{
+    private static readonly HashSet<string> UnconditionalMethods = new(StringComparer.Ordinal)
+    {
+        "account/rateLimits/read",
+        "thread/list",
+        "thread/goal/get",
+        "model/list",
+        "permissionProfile/list",
+        "mcpServerStatus/list",
+    };
+
+    public static IReadOnlyCollection<string> Methods { get; } =
+    [
+        "account/read",
+        .. UnconditionalMethods,
+        "skills/list",
+    ];
+
+    public static bool IsRetryable(string method, object? parameters)
+    {
+        if (UnconditionalMethods.Contains(method))
         {
-            return new RetryDecision(false, TimeSpan.Zero, "The overload retry limit was reached.");
+            return true;
         }
 
-        double exponentialDelay = initialDelay.TotalMilliseconds * Math.Pow(2, attempt);
-        // Jitter keeps multiple clients from retrying an overloaded app-server in lockstep.
-        // The source is injectable so contract tests can make the delay deterministic.
-        double jitter = Math.Clamp(jitterSource(), 0, 1);
-        double jitteredDelay = exponentialDelay * (0.8 + (jitter * 0.4));
-        return new RetryDecision(
-            true,
-            TimeSpan.FromMilliseconds(jitteredDelay),
-            "Retry an idempotent request after exponential backoff with jitter.");
+        return method switch
+        {
+            // refreshToken=true asks the server to refresh credentials; only an explicit false
+            // keeps the request a pure read.
+            "account/read" => HasExplicitFalse(parameters, "refreshToken"),
+
+            // forceReload can clear the skills cache and rescan discovery; it is sent once.
+            "skills/list" => HasExplicitFalse(parameters, "forceReload"),
+            _ => false,
+        };
+    }
+
+    private static bool HasExplicitFalse(object? parameters, string property)
+    {
+        if (parameters is null)
+        {
+            return false;
+        }
+
+        JsonElement element = parameters is JsonElement json
+            ? json
+            : JsonSerializer.SerializeToElement(parameters, parameters.GetType());
+        return element.ValueKind == JsonValueKind.Object
+            && element.TryGetProperty(property, out JsonElement value)
+            && value.ValueKind == JsonValueKind.False;
     }
 }
 
 public static class JsonRpcConnectionRetryExtensions
 {
-    public static async Task<System.Text.Json.JsonElement> SendIdempotentRequestAsync(
+    /// <summary>
+    /// Sends a request, retrying only a completed <c>-32001</c> overload response for an
+    /// allowlisted read-only method. At most three retries (four sends) share one monotonic
+    /// deadline derived from <paramref name="timeout"/>. Every other method is sent exactly once.
+    /// </summary>
+    public static async Task<JsonElement> SendReadOnlyRequestAsync(
         this IJsonRpcConnection connection,
         string method,
         object? parameters,
         TimeSpan timeout,
-        JsonRpcRetryPolicy retryPolicy,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        ReadOnlyRetryPolicy? policy = null)
     {
-        for (int attempt = 0; ; attempt++)
+        if (!ReadOnlyRequestAllowlist.IsRetryable(method, parameters))
         {
+            return await connection.SendRequestAsync(method, parameters, timeout, cancellationToken).ConfigureAwait(false);
+        }
+
+        policy ??= ReadOnlyRetryPolicy.Default;
+        TimeProvider time = policy.TimeProvider;
+        long start = time.GetTimestamp();
+
+        // Observe a close for the whole call, so a connection closed or retired (disposed) before
+        // or during a backoff stops the retry promptly.
+        using var closed = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        void OnClosed(object? sender, Exception? exception)
+        {
+            // Closed may have captured this handler before the finally below unsubscribes it and
+            // invoke it after the source is disposed; that must not fault the transport's close.
             try
             {
-                return await connection.SendRequestAsync(method, parameters, timeout, cancellationToken).ConfigureAwait(false);
+                closed.Cancel();
             }
-            catch (Exception ex) when (ex is JsonRpcRemoteException)
+            catch (ObjectDisposedException)
             {
-                RetryDecision decision = retryPolicy.Evaluate(ex, attempt, isIdempotent: true);
-                if (!decision.ShouldRetry)
+            }
+        }
+
+        connection.Closed += OnClosed;
+        try
+        {
+            JsonRpcRemoteException? lastOverload = null;
+            for (int retry = 0; ; retry++)
+            {
+                TimeSpan remaining = timeout - time.GetElapsedTime(start);
+                if (remaining <= TimeSpan.Zero)
                 {
-                    throw;
+                    // Timer granularity can overshoot the deadline during a backoff; the caller
+                    // still receives the original overload error rather than a cancellation.
+                    if (lastOverload is not null)
+                    {
+                        throw lastOverload;
+                    }
+
+                    throw new OperationCanceledException("The read-only request deadline elapsed.");
                 }
 
-                await Task.Delay(decision.Delay, cancellationToken).ConfigureAwait(false);
+                try
+                {
+                    return await connection.SendRequestAsync(method, parameters, remaining, cancellationToken).ConfigureAwait(false);
+                }
+                catch (JsonRpcRemoteException ex) when (ex.Code == ReadOnlyRetryPolicy.ServerOverloadedCode && retry < ReadOnlyRetryPolicy.MaxRetries)
+                {
+                    lastOverload = ex;
+                    TimeSpan delay = policy.GetDelay(retry);
+                    if (delay >= timeout - time.GetElapsedTime(start))
+                    {
+                        // No time is left for another attempt; preserve the original overload error.
+                        throw;
+                    }
+
+                    try
+                    {
+                        await Task.Delay(delay, time, closed.Token).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+                    {
+                        throw new JsonRpcConnectionClosedException("The app-server connection closed during a retry backoff.");
+                    }
+                }
             }
+        }
+        finally
+        {
+            connection.Closed -= OnClosed;
         }
     }
 }
 
 public sealed record WebSocketTransportValidation(bool IsAllowed, string? Reason);
 
-public sealed class WebSocketTransportSecurityPolicy
+/// <summary>
+/// WebSocket transport admission: the shared endpoint policy plus the shared bearer-token
+/// format. Certificate validation stays the platform default and cannot be disabled.
+/// </summary>
+public static class WebSocketTransportSecurityPolicy
 {
-    private readonly int minimumTokenLength;
-
-    public WebSocketTransportSecurityPolicy(int minimumTokenLength = 32)
-    {
-        this.minimumTokenLength = minimumTokenLength;
-    }
-
-    public WebSocketTransportValidation Validate(bool enabled, Uri? endpoint, string? capabilityToken)
+    public static WebSocketTransportValidation Validate(bool enabled, Uri? endpoint, string? capabilityToken)
     {
         if (!enabled)
         {
             return new WebSocketTransportValidation(false, "WebSocket transport is disabled by default.");
         }
 
-        if (endpoint is null
-            || (endpoint.Scheme != Uri.UriSchemeWs && endpoint.Scheme != Uri.UriSchemeWss)
-            || (endpoint.Scheme == Uri.UriSchemeWs && !endpoint.IsLoopback))
+        RemoteEndpointValidation validation = RemoteEndpointPolicy.Validate(endpoint?.OriginalString);
+        if (!validation.IsValid)
         {
-            return new WebSocketTransportValidation(false, "Use wss for remote endpoints; plain ws is limited to loopback.");
+            return new WebSocketTransportValidation(false, validation.Message);
         }
 
-        if (string.IsNullOrWhiteSpace(capabilityToken) || capabilityToken.Length < minimumTokenLength)
+        if (!BearerTokenPolicy.IsValid(capabilityToken))
         {
             return new WebSocketTransportValidation(false, "WebSocket transport requires a capability or signed bearer token.");
         }

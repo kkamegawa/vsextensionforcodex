@@ -43,6 +43,11 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     private readonly SemaphoreSlim usageRefreshGate = new(1, 1);
     private readonly ExtensionSettings settings;
     private readonly RemoteProfilesPresentationViewModel remoteProfiles;
+    // One gate for every same-instance profile/settings mutation, reconnect snapshot validation,
+    // and the Worker RPC dispatch that follows (design: profile freshness).
+    private readonly SemaphoreSlim profileOperationGate = new(1, 1);
+    private readonly ConnectionHealthPresentationViewModel connectionHealth;
+    private RemoteProfileViewModel? observedHealthProfile;
     private readonly Queue<UserInputViewModel> userInputQueue = new();
     private readonly Queue<ApprovalViewModel> approvalQueue = new();
     private readonly Dictionary<string, StringBuilder> agentRawText = new(StringComparer.Ordinal);
@@ -135,7 +140,8 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         this.externalLinkOpener = externalLinkOpener ?? new ExternalLinkOpener();
         this.utcNow = utcNow ?? (() => DateTimeOffset.UtcNow);
         settings = this.settingsStore.Load();
-        remoteProfiles = new RemoteProfilesPresentationViewModel(settings, this.settingsStore);
+        remoteProfiles = new RemoteProfilesPresentationViewModel(settings, this.settingsStore, profileOperationGate);
+        connectionHealth = new ConnectionHealthPresentationViewModel(markdown);
         connectedProfileName = remoteProfiles.AppliedProfileName;
         slashCommandParser = new SlashCommandParser(slashCommandCatalog);
         bridge.StateChanged += OnStateChangedAsync;
@@ -193,13 +199,24 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         });
         ApplyRemoteProfileCommand = new AsyncCommand(ApplyRemoteProfileAsync, () => CanReconnectForProfile() && remoteProfiles.HasSelection);
         UseLocalAppServerCommand = new AsyncCommand(UseLocalAppServerAsync, CanReconnectForProfile);
+        CheckProfileHealthCommand = new AsyncCommand(CheckProfileHealthAsync, CanCheckProfileHealth);
         remoteProfiles.PropertyChanged += (_, e) =>
         {
             if (e.PropertyName is nameof(RemoteProfilesPresentationViewModel.SelectedProfile))
             {
                 ApplyRemoteProfileCommand.RaiseCanExecuteChanged();
+
+                // The diagnostic profile is the selection; a different selection clears it.
+                connectionHealth.Clear();
+                ObserveHealthProfile(remoteProfiles.SelectedProfile);
             }
         };
+        remoteProfiles.SavedProfilesChanged += (_, _) =>
+        {
+            connectionHealth.Clear();
+            CheckProfileHealthCommand.RaiseCanExecuteChanged();
+        };
+        ObserveHealthProfile(remoteProfiles.SelectedProfile);
         OpenUsageDashboardCommand = new AsyncCommand(() => OpenExternalLinkAsync(ExternalLinkTarget.UsageDashboard));
         OpenUsageHelpCommand = new AsyncCommand(() => OpenExternalLinkAsync(ExternalLinkTarget.UsageHelp));
         AttachCommand = new AsyncCommand(AttachAsync);
@@ -278,6 +295,24 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
     [DataMember]
     public RemoteProfilesPresentationViewModel RemoteProfiles => remoteProfiles;
+
+    [DataMember]
+    public ConnectionHealthPresentationViewModel ConnectionHealth => connectionHealth;
+
+    [DataMember]
+    public AsyncCommand CheckProfileHealthCommand { get; }
+
+    private bool IsRemoteTarget => Status.Target?.Kind == ConnectionTargetKind.Remote;
+
+    // Local Restart replaces the Worker-owned process; remote Reconnect closes and reopens only
+    // this window's socket and never stops the externally managed server.
+    [DataMember]
+    public string RestartActionText => IsRemoteTarget ? "Reconnect remote app-server" : "Restart local app-server";
+
+    [DataMember]
+    public string RestartActionHelpText => IsRemoteTarget
+        ? "Closes and reopens this window's connection to the remote app-server you run. The remote server itself is not restarted."
+        : "Stops and restarts the local codex app-server process that this window owns.";
 
     [DataMember]
     public ObservableCollection<ThreadSummary> Threads { get; } = new();
@@ -419,14 +454,29 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         get => status;
         private set
         {
+            long? previousGeneration = status.Target?.Generation;
             if (SetProperty(ref status, value))
             {
                 UpdateUsageConnectionLifecycle(value.State);
+
+                // A new connection generation makes any outstanding health result stale.
+                if (previousGeneration != value.Target?.Generation)
+                {
+                    connectionHealth.Clear();
+                }
+                else
+                {
+                    connectionHealth.UpdateRpc(value, StatusStateText);
+                }
+
+                OnPropertyChanged(nameof(RestartActionText));
+                OnPropertyChanged(nameof(RestartActionHelpText));
                 RaiseCommandStates();
                 OnPropertyChanged(nameof(IsDegraded));
                 OnPropertyChanged(nameof(IsTurnActive));
                 OnPropertyChanged(nameof(SendButtonText));
                 OnPropertyChanged(nameof(StatusDetailText));
+                OnPropertyChanged(nameof(ConnectionTargetLabel));
                 OnPropertyChanged(nameof(StatusStateText));
                 OnPropertyChanged(nameof(StatusVersionText));
                 OnPropertyChanged(nameof(StatusAutomationName));
@@ -561,6 +611,14 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     // connection, not the row being edited in the flyout.
     [DataMember]
     public string ConnectionTargetText => connectedProfileName is null ? "Local" : markdown.ToSafeText(connectedProfileName).Trim();
+
+    // Only a live RPC connection is labeled as connected; otherwise the flyout names the intended
+    // target (Disconnected, Connecting, Degraded).
+    [DataMember]
+    public string ConnectionTargetLabel
+        => Status.State is WorkerConnectionState.Ready or WorkerConnectionState.Busy or WorkerConnectionState.WaitingForApproval
+            ? "Connected to:"
+            : "Target:";
 
     [DataMember]
     public string ConnectionTargetAutomationName => connectedProfileName is null
@@ -875,6 +933,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             return;
         Interlocked.Increment(ref usageConnectionGeneration);
         InvalidateUsage();
+        connectionHealth.Clear();
         lifetime.Cancel();
         CancelFileSuggestionRefresh();
         slashCommandCoordinator.CancelAll();
@@ -995,66 +1054,109 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     /// then loads account status and threads once ready. Returns <see langword="true"/> if the
     /// connection reached <see cref="WorkerConnectionState.Ready"/>.
     /// </summary>
-    private async Task<bool> ConnectWithDirectoryAsync(string workingDirectory, bool reloadThreads = false)
+    private async Task<bool> ConnectWithDirectoryAsync(string workingDirectory, bool reloadThreads = false, bool profileGateHeld = false)
     {
-        // The auto-connect watcher and a user-initiated Send/Connect can both reach here; the
-        // guard ensures only one connect attempt runs at a time so we never spawn two workers.
-        if (Interlocked.CompareExchange(ref connecting, 1, 0) != 0)
+        // The bridge reads the saved profile selection, so every connect runs under the profile
+        // operation gate (gated callers already hold it). An ungated caller takes the gate before
+        // the connect guard and keeps it until the guard is cleared, so a profile action queued
+        // behind this connect never finds the guard still set and silently drops its dispatch.
+        bool enteredGate = false;
+        if (!profileGateHeld)
         {
-            return false;
+            if (!await TryEnterProfileGateAsync().ConfigureAwait(false))
+            {
+                return false;
+            }
+
+            enteredGate = true;
         }
 
         try
         {
-            try
-            {
-                await projectScaffolder.EnsureScaffoldAsync(workingDirectory, lifetime.Token).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+            // The auto-connect watcher and a user-initiated Send/Connect can both reach here; the
+            // guard ensures only one connect attempt runs at a time so we never spawn two workers.
+            if (Interlocked.CompareExchange(ref connecting, 1, 0) != 0)
             {
                 return false;
             }
-            catch (Exception ex)
-            {
-                ExtensionDiagnostics.Write("Project scaffolding failed; continuing with Worker connection", ex);
-            }
 
-            string? targetProfileName = remoteProfiles.AppliedProfileName;
-            await OnUiAsync(() => SetConnectedProfileName(targetProfileName)).ConfigureAwait(false);
-            WorkerStatus result;
             try
             {
-                result = await bridge.ConnectAsync(workingDirectory, settings.ExperimentalApiEnabled, lifetime.Token).ConfigureAwait(false);
+                return await ConnectUnderGateAsync(workingDirectory, reloadThreads).ConfigureAwait(false);
             }
-            catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+            finally
             {
-                return false;
+                Interlocked.Exchange(ref connecting, 0);
             }
-            catch (Exception ex)
-            {
-                ExtensionDiagnostics.Write("Initial Worker connection failed", ex);
-                result = new WorkerStatus
-                {
-                    State = WorkerConnectionState.Degraded,
-                    Message = "Could not connect to the Codex Worker. See diagnostics.log.",
-                };
-            }
-
-            await OnUiAsync(() => Status = result).ConfigureAwait(false);
-            if (result.State == WorkerConnectionState.Ready)
-            {
-                this.workingDirectory = workingDirectory;
-                unavailableSlashCommands.Clear();
-                initialized = true;
-                await RefreshReadyStateAsync(reloadThreads).ConfigureAwait(false);
-            }
-
-            return result.State == WorkerConnectionState.Ready;
         }
         finally
         {
-            Interlocked.Exchange(ref connecting, 0);
+            if (enteredGate)
+            {
+                profileOperationGate.Release();
+            }
         }
+    }
+
+    // Called under profileOperationGate with the connect guard held.
+    private async Task<bool> ConnectUnderGateAsync(string workingDirectory, bool reloadThreads)
+    {
+        try
+        {
+            await projectScaffolder.EnsureScaffoldAsync(workingDirectory, lifetime.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+        {
+            return false;
+        }
+        catch (Exception ex)
+        {
+            ExtensionDiagnostics.Write("Project scaffolding failed; continuing with Worker connection", ex);
+        }
+
+        // Capture the target under the gate so the label names the profile the bridge
+        // dispatches, even when a queued selection/save completed while we waited.
+        string? targetProfileName = remoteProfiles.AppliedProfileName;
+        await OnUiAsync(() => SetConnectedProfileName(targetProfileName)).ConfigureAwait(false);
+        WorkerStatus result;
+        try
+        {
+            result = await bridge.ConnectAsync(workingDirectory, settings.ExperimentalApiEnabled, lifetime.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+        {
+            return false;
+        }
+        catch (ObjectDisposedException) when (lifetime.IsCancellationRequested)
+        {
+            return false;
+        }
+        catch (Exception ex)
+        {
+            ExtensionDiagnostics.Write("Initial Worker connection failed", ex);
+            result = new WorkerStatus
+            {
+                State = WorkerConnectionState.Degraded,
+                Message = "Could not connect to the Codex Worker. See diagnostics.log.",
+
+                // Keep the attempted remote target so recovery offers Reconnect, not a local
+                // restart. Generation 0 marks that no Worker connection was ever confirmed.
+                Target = targetProfileName is null
+                    ? null
+                    : new ConnectionTargetSnapshot { Kind = ConnectionTargetKind.Remote, DisplayName = targetProfileName },
+            };
+        }
+
+        await OnUiAsync(() => Status = result).ConfigureAwait(false);
+        if (result.State == WorkerConnectionState.Ready)
+        {
+            this.workingDirectory = workingDirectory;
+            unavailableSlashCommands.Clear();
+            initialized = true;
+            await RefreshReadyStateAsync(reloadThreads).ConfigureAwait(false);
+        }
+
+        return result.State == WorkerConnectionState.Ready;
     }
 
     private void SetConnectedProfileName(string? profileName)
@@ -1078,19 +1180,84 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
     private async Task ApplyRemoteProfileAsync()
     {
-        if (!remoteProfiles.TryGetApplicableProfile(out string profileName, out string error))
+        // Capture the row Apply was invoked for; the selection may change while this waits.
+        RemoteProfileViewModel? invoked = remoteProfiles.SelectedProfile;
+        if (!await TryEnterProfileGateAsync().ConfigureAwait(false))
         {
-            remoteProfiles.ReportStatus(error);
             return;
         }
 
-        await ReconnectForProfileAsync($"Connected with remote profile '{profileName}'.").ConfigureAwait(false);
+        try
+        {
+            if (!remoteProfiles.TryGetApplicableProfile(invoked, out string profileName, out string error))
+            {
+                remoteProfiles.ReportStatus(error);
+                return;
+            }
+
+            // Persist that same profile under the gate so the bridge connects to it, not to a
+            // selection still queued behind this operation.
+            remoteProfiles.PersistAppliedSelectionUnderGate(invoked!);
+
+            await ReconnectForProfileAsync($"Connected with remote profile '{profileName}'.").ConfigureAwait(false);
+        }
+        finally
+        {
+            profileOperationGate.Release();
+        }
     }
 
     private async Task UseLocalAppServerAsync()
     {
-        remoteProfiles.ClearSelection();
-        await ReconnectForProfileAsync("Connected to the local codex app-server.").ConfigureAwait(false);
+        if (!await TryEnterProfileGateAsync().ConfigureAwait(false))
+        {
+            return;
+        }
+
+        try
+        {
+            // Persist the local selection before the Worker bridge reads settings for connect.
+            remoteProfiles.ClearSelectionUnderGate();
+            await ReconnectForProfileAsync("Connected to the local codex app-server.").ConfigureAwait(false);
+        }
+        finally
+        {
+            profileOperationGate.Release();
+        }
+    }
+
+    private async Task RetrySavedProfileConnectAsync()
+    {
+        if (!await TryEnterProfileGateAsync().ConfigureAwait(false))
+        {
+            return;
+        }
+
+        try
+        {
+            await ReconnectForProfileAsync("Connected with the saved remote profile.").ConfigureAwait(false);
+        }
+        finally
+        {
+            profileOperationGate.Release();
+        }
+    }
+
+    private async Task<bool> TryEnterProfileGateAsync()
+    {
+        try
+        {
+            await profileOperationGate.WaitAsync(lifetime.Token).ConfigureAwait(false);
+            return true;
+        }
+        catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+        {
+            return false;
+        }
+        catch (ObjectDisposedException)
+        {
+            return false;
+        }
     }
 
     private async Task ReconnectForProfileAsync(string successText)
@@ -1121,7 +1288,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 $"Canceled {canceled.Count} queued slash commands because the connection target changed.").ConfigureAwait(false);
         }
 
-        bool connected = await ConnectWithDirectoryAsync(directory, reloadThreads: true).ConfigureAwait(false);
+        bool connected = await ConnectWithDirectoryAsync(directory, reloadThreads: true, profileGateHeld: true).ConfigureAwait(false);
         remoteProfiles.ReportStatus(connected
             ? successText
             : $"Could not connect: {markdown.ToSafeText(Status.Message).Trim()}");
@@ -1129,6 +1296,20 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
     private async Task RestartAsync()
     {
+        if (IsRemoteTarget)
+        {
+            if (Status.Target!.Generation == 0)
+            {
+                // The Worker never confirmed this remote connection, so there is no generation
+                // snapshot to reconnect; rerun the full saved-profile connect instead.
+                await RetrySavedProfileConnectAsync().ConfigureAwait(false);
+                return;
+            }
+
+            await ReconnectRemoteAsync().ConfigureAwait(false);
+            return;
+        }
+
         IReadOnlyList<SlashCommandInvocation> canceled = slashCommandCoordinator.CancelAll();
         if (canceled.Count > 0)
         {
@@ -1142,6 +1323,214 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         {
             unavailableSlashCommands.Clear();
             await RefreshReadyStateAsync(reloadThreads: true).ConfigureAwait(false);
+        }
+    }
+
+    // Explicit remote reconnect: reload saved settings and require that the applied profile is
+    // still saved, enabled, unedited, and unchanged before the Worker reads the token again.
+    private async Task ReconnectRemoteAsync()
+    {
+        if (!await TryEnterProfileGateAsync().ConfigureAwait(false))
+        {
+            return;
+        }
+
+        try
+        {
+            ConnectionTargetSnapshot? applied = Status.Target;
+            if (!TryCreateReconnectRequest(applied, out RemoteReconnectRequest? request, out ConnectionOperationRejectionReason reason))
+            {
+                await ShowConnectionNoticeAsync(DescribeRejection(reason)).ConfigureAwait(false);
+                return;
+            }
+
+            // Share the connect guard so an auto or lazy connect cannot overlap this reconnect.
+            if (Interlocked.CompareExchange(ref connecting, 1, 0) != 0)
+            {
+                return;
+            }
+
+            IReadOnlyList<SlashCommandInvocation> canceled = slashCommandCoordinator.CancelAll();
+            if (canceled.Count > 0)
+            {
+                await ShowSlashStatusAsync(
+                    $"Canceled {canceled.Count} queued slash commands because the remote connection is reconnecting.").ConfigureAwait(false);
+            }
+
+            WorkerStatus result;
+            try
+            {
+                result = await bridge.ReconnectAsync(request!, lifetime.Token).ConfigureAwait(false);
+            }
+            catch (StreamJsonRpc.RemoteInvocationException ex) when (ex.ErrorCode == WorkerErrorCodes.ConnectionOperationRejected)
+            {
+                await ShowConnectionNoticeAsync(DescribeRejection(ParseRejection(ex))).ConfigureAwait(false);
+                return;
+            }
+            catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+            {
+                return;
+            }
+            finally
+            {
+                Interlocked.Exchange(ref connecting, 0);
+            }
+
+            await OnUiAsync(() => Status = result).ConfigureAwait(false);
+            if (result.State == WorkerConnectionState.Ready)
+            {
+                unavailableSlashCommands.Clear();
+                await RefreshReadyStateAsync(reloadThreads: true).ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            profileOperationGate.Release();
+        }
+    }
+
+    // Called under profileOperationGate. Never reads a token file.
+    private bool TryCreateReconnectRequest(
+        ConnectionTargetSnapshot? applied,
+        out RemoteReconnectRequest? request,
+        out ConnectionOperationRejectionReason reason)
+    {
+        request = null;
+        reason = ConnectionOperationRejectionReason.RemoteConnectionRequired;
+        if (applied is not { Kind: ConnectionTargetKind.Remote } || string.IsNullOrEmpty(applied.DisplayName))
+        {
+            return false;
+        }
+
+        RemoteConnectionProfile? saved = settingsStore.Load().RemoteProfiles
+            .FirstOrDefault(profile => profile is not null && string.Equals(profile.Name, applied.DisplayName, StringComparison.Ordinal));
+        if (saved is null || !saved.Enabled)
+        {
+            reason = ConnectionOperationRejectionReason.ProfileUnavailable;
+            return false;
+        }
+
+        if (remoteProfiles.FindByPersistedName(saved.Name)?.HasUnsavedChanges == true
+            || !string.Equals(saved.ComputeFingerprint(), applied.Fingerprint, StringComparison.Ordinal))
+        {
+            reason = ConnectionOperationRejectionReason.ProfileChanged;
+            return false;
+        }
+
+        request = new RemoteReconnectRequest
+        {
+            ProfileName = saved.Name,
+            Fingerprint = applied.Fingerprint!,
+            ExpectedGeneration = applied.Generation,
+        };
+        return true;
+    }
+
+    internal static ConnectionOperationRejectionReason ParseRejection(StreamJsonRpc.RemoteInvocationException exception)
+    {
+        string? data = exception.ErrorData?.ToString() ?? exception.Message;
+        return Enum.TryParse(data?.Trim('"'), out ConnectionOperationRejectionReason reason)
+            ? reason
+            : Enum.TryParse(exception.Message, out reason) ? reason : ConnectionOperationRejectionReason.StaleGeneration;
+    }
+
+    internal static string DescribeRejection(ConnectionOperationRejectionReason reason) => reason switch
+    {
+        ConnectionOperationRejectionReason.LocalProcessRequired
+            => "Restart applies only to the local app-server. Use Reconnect remote app-server for a remote profile.",
+        ConnectionOperationRejectionReason.RemoteConnectionRequired
+            => "Reconnect applies only to a remote profile. Use Restart local app-server instead.",
+        ConnectionOperationRejectionReason.ProfileUnavailable
+            => "The applied remote profile is no longer saved and enabled. Apply a saved profile or use the local app-server.",
+        ConnectionOperationRejectionReason.ProfileChanged
+            => "The applied remote profile has unsaved or saved changes. Save it and connect with it again, or use the local app-server.",
+        _ => "The connection changed before the request ran. Check the connection status and try again.",
+    };
+
+    private Task ShowConnectionNoticeAsync(string message)
+        => OnUiAsync(() =>
+        {
+            string safeMessage = markdown.ToSafeText(message).Trim();
+            remoteProfiles.ReportStatus(safeMessage);
+            Items.Add(new ChatItemViewModel("Status", safeMessage, ConversationEventKind.ItemCompleted));
+        });
+
+    private void ObserveHealthProfile(RemoteProfileViewModel? profile)
+    {
+        if (observedHealthProfile is not null)
+        {
+            observedHealthProfile.PropertyChanged -= OnHealthProfileChanged;
+        }
+
+        observedHealthProfile = profile;
+        if (profile is not null)
+        {
+            profile.PropertyChanged += OnHealthProfileChanged;
+        }
+
+        CheckProfileHealthCommand.RaiseCanExecuteChanged();
+    }
+
+    private void OnHealthProfileChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
+    {
+        // Editing the checked profile's metadata invalidates any shown or in-flight result, so a
+        // late completion for the previously saved endpoint is discarded.
+        if (e.PropertyName is nameof(RemoteProfileViewModel.Name)
+            or nameof(RemoteProfileViewModel.Endpoint)
+            or nameof(RemoteProfileViewModel.TokenFilePath)
+            or nameof(RemoteProfileViewModel.LocalRoot)
+            or nameof(RemoteProfileViewModel.ServerRoot)
+            or nameof(RemoteProfileViewModel.IsEnabled))
+        {
+            connectionHealth.Clear();
+        }
+
+        CheckProfileHealthCommand.RaiseCanExecuteChanged();
+    }
+
+    // Health diagnosis targets only a saved, enabled profile without pending edits whose saved
+    // endpoint passes the shared policy. It is independent of the active connection.
+    private bool CanCheckProfileHealth()
+    {
+        RemoteConnectionProfile? saved = remoteProfiles.SelectedProfile?.PersistedProfile;
+        return saved is not null
+            && saved.Enabled
+            && remoteProfiles.SelectedProfile!.HasUnsavedChanges == false
+            && RemoteEndpointPolicy.Validate(saved.Endpoint).IsValid
+            && !connectionHealth.IsChecking;
+    }
+
+    private async Task CheckProfileHealthAsync()
+    {
+        RemoteProfileViewModel? row = remoteProfiles.SelectedProfile;
+        RemoteConnectionProfile? saved = row?.PersistedProfile;
+        if (row is null || saved is null || !CanCheckProfileHealth())
+        {
+            return;
+        }
+
+        long token = connectionHealth.Begin(saved.Name, saved.ComputeFingerprint());
+        CheckProfileHealthCommand.RaiseCanExecuteChanged();
+        try
+        {
+            ConnectionDiagnosticsResult result = await bridge.DiagnoseConnectionAsync(
+                new ConnectionDiagnosticsRequest { ProfileName = saved.Name, Endpoint = saved.Endpoint },
+                lifetime.Token).ConfigureAwait(false);
+            await OnUiAsync(() => connectionHealth.Complete(token, result, Status, StatusStateText)).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+        {
+            return;
+        }
+        catch (Exception ex)
+        {
+            ExtensionDiagnostics.Write("Connection health check failed", ex);
+            await OnUiAsync(() => connectionHealth.Fail(token, "The health check could not run because the Codex Worker is unavailable."))
+                .ConfigureAwait(false);
+        }
+        finally
+        {
+            await OnUiAsync(CheckProfileHealthCommand.RaiseCanExecuteChanged).ConfigureAwait(false);
         }
     }
 
@@ -4164,6 +4553,9 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         ToggleUsageCommand.RaiseCanExecuteChanged();
         ApplyRemoteProfileCommand.RaiseCanExecuteChanged();
         UseLocalAppServerCommand.RaiseCanExecuteChanged();
+
+        // A connection generation change can clear an in-flight health check.
+        CheckProfileHealthCommand?.RaiseCanExecuteChanged();
     }
 
     // In the OOP extension process, Application.Current is null so the null-conditional

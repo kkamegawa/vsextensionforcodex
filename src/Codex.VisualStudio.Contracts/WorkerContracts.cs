@@ -5,7 +5,7 @@ namespace Codex.VisualStudio.Contracts;
 
 public static class ContractVersions
 {
-    public const int Current = 16;
+    public const int Current = 17;
 }
 
 // JSON-RPC error codes the Worker uses for failures the Extension presents specifically. They
@@ -14,6 +14,10 @@ public static class WorkerErrorCodes
 {
     // An explicit attachment cannot be read by the remote app-server (outside the mapped root).
     public const int AttachmentRejected = -32050;
+
+    // A connection operation was refused before it stopped, read, or sent anything. The error
+    // data carries one ConnectionOperationRejectionReason value.
+    public const int ConnectionOperationRejected = -32051;
 }
 
 public enum WorkerConnectionState
@@ -135,6 +139,12 @@ public sealed class WorkerOptions
     public string? LocalRoot { get; set; }
 
     public string? ServerRoot { get; set; }
+
+    // Display name and RemoteProfileFingerprint of the applied remote profile. The Worker binds
+    // them to the connection generation so a later reconnect can prove the profile is unchanged.
+    public string? RemoteProfileName { get; set; }
+
+    public string? RemoteProfileFingerprint { get; set; }
 }
 
 // DataContract/DataMember are required by Remote UI: the VS-side data context proxy only
@@ -173,6 +183,11 @@ public sealed class WorkerStatus
 
     [DataMember]
     public string? EffectiveServiceTier { get; set; }
+
+    // The local or remote target this status describes. ProcessId is set only for a Worker-owned
+    // local process; a remote target never has one.
+    [DataMember]
+    public ConnectionTargetSnapshot? Target { get; set; }
 }
 
 public sealed class AccountStatus
@@ -855,8 +870,17 @@ public interface ICodexWorkerClient
     [JsonRpcMethod("worker/connect")]
     Task<WorkerStatus> ConnectAsync(WorkerOptions options, CancellationToken cancellationToken);
 
+    // Restarts the Worker-owned local app-server process. Refused for a remote target.
     [JsonRpcMethod("worker/restart")]
     Task<WorkerStatus> RestartAsync(CancellationToken cancellationToken);
+
+    // Closes and reopens only the Worker-owned remote socket. Never stops the external server.
+    [JsonRpcMethod("worker/reconnect")]
+    Task<WorkerStatus> ReconnectAsync(RemoteReconnectRequest request, CancellationToken cancellationToken);
+
+    // Unauthenticated root health/ready probes. Never changes connection state.
+    [JsonRpcMethod("worker/connection/diagnose")]
+    Task<ConnectionDiagnosticsResult> DiagnoseConnectionAsync(ConnectionDiagnosticsRequest request, CancellationToken cancellationToken);
 
     [JsonRpcMethod("worker/status")]
     Task<WorkerStatus> GetStatusAsync(CancellationToken cancellationToken);

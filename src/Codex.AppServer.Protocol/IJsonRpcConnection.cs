@@ -17,3 +17,15 @@ public interface IJsonRpcConnection : IAsyncDisposable
     Task SendNotificationAsync(string method, object? parameters, CancellationToken cancellationToken);
 }
 
+/// <summary>
+/// A transport that counts valid parsed inbound JSON-RPC messages and signals each one. An idle
+/// watchdog timestamps <see cref="InboundActivity"/> to measure silence from the last message and
+/// to tell a silent peer from a merely quiet one during its probes.
+/// </summary>
+public interface IInboundActivitySource
+{
+    long InboundActivitySequence { get; }
+
+    // Raised synchronously on the receive loop after the sequence advances; handlers must be cheap.
+    event EventHandler? InboundActivity;
+}

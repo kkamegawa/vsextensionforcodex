@@ -6,10 +6,51 @@ namespace Codex.VisualStudio.Worker;
 public interface ISecretRedactor
 {
     string Redact(string? value);
+
+    // Registers an exact secret value (for example a bearer token read from a token file) for
+    // literal redaction until the returned lease is disposed. Leases are reference counted, so a
+    // duplicate registration never removes another active lease for the same value.
+    IDisposable RegisterSecret(string secret) => NoopLease.Instance;
+
+    private sealed class NoopLease : IDisposable
+    {
+        public static readonly NoopLease Instance = new();
+
+        public void Dispose()
+        {
+        }
+    }
 }
 
 public sealed partial class SecretRedactor : ISecretRedactor
 {
+    private readonly object secretsGate = new();
+    private readonly Dictionary<string, int> registeredSecrets = new(StringComparer.Ordinal);
+    private string[] secretSnapshot = [];
+
+    public IDisposable RegisterSecret(string secret)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(secret);
+        lock (secretsGate)
+        {
+            registeredSecrets[secret] = registeredSecrets.TryGetValue(secret, out int count) ? count + 1 : 1;
+            RefreshSnapshot();
+        }
+
+        return new SecretLease(this, secret);
+    }
+
+    internal int ActiveSecretCount
+    {
+        get
+        {
+            lock (secretsGate)
+            {
+                return registeredSecrets.Count;
+            }
+        }
+    }
+
     public string Redact(string? value)
     {
         if (string.IsNullOrEmpty(value))
@@ -17,10 +58,60 @@ public sealed partial class SecretRedactor : ISecretRedactor
             return value ?? string.Empty;
         }
 
-        string result = AuthorizationRegex().Replace(value, "$1[REDACTED]");
+        string result = value;
+
+        // Literal secrets first, longest first, so a registered token is removed even when it
+        // appears without any "token=" or "Authorization:" marker.
+        foreach (string secret in Volatile.Read(ref secretSnapshot))
+        {
+            result = result.Replace(secret, "[REDACTED]", StringComparison.Ordinal);
+        }
+
+        result = AuthorizationRegex().Replace(result, "$1[REDACTED]");
         result = KeyValueSecretRegex().Replace(result, "$1[REDACTED]");
         result = PrivateKeyRegex().Replace(result, "-----BEGIN PRIVATE KEY-----[REDACTED]-----END PRIVATE KEY-----"); // gitleaks:allow
         return result;
+    }
+
+    private void Release(string secret)
+    {
+        lock (secretsGate)
+        {
+            if (!registeredSecrets.TryGetValue(secret, out int count))
+            {
+                return;
+            }
+
+            if (count <= 1)
+            {
+                registeredSecrets.Remove(secret);
+            }
+            else
+            {
+                registeredSecrets[secret] = count - 1;
+            }
+
+            RefreshSnapshot();
+        }
+    }
+
+    private void RefreshSnapshot()
+        => Volatile.Write(
+            ref secretSnapshot,
+            registeredSecrets.Keys.OrderByDescending(static key => key.Length).ToArray());
+
+    private sealed class SecretLease : IDisposable
+    {
+        private SecretRedactor? owner;
+        private readonly string secret;
+
+        public SecretLease(SecretRedactor owner, string secret)
+        {
+            this.owner = owner;
+            this.secret = secret;
+        }
+
+        public void Dispose() => Interlocked.Exchange(ref owner, null)?.Release(secret);
     }
 
     [GeneratedRegex(@"(?i)(authorization\s*:\s*(?:bearer|basic)\s+)[^\s]+")]

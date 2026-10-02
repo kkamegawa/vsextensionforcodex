@@ -523,7 +523,7 @@
                   <StackPanel>
                     <TextBlock Text="Connection target" FontWeight="SemiBold" FontSize="14" />
                     <TextBlock Margin="0,4,0,0" TextWrapping="Wrap" Opacity="0.8">
-                      <Run Text="Connected to:" />
+                      <Run Text="{Binding ConnectionTargetLabel, Mode=OneWay}" />
                       <Run Text="{Binding ConnectionTargetText, Mode=OneWay}" FontWeight="SemiBold" />
                     </TextBlock>
 
@@ -542,7 +542,7 @@
                       <TextBlock Text="Remote profiles (Preview)" FontWeight="SemiBold" VerticalAlignment="Center" />
                     </DockPanel>
                     <TextBlock Margin="0,0,0,4" FontSize="11" Opacity="0.75" TextWrapping="Wrap"
-                               Text="Preview: connects to an app-server you run yourself. Health checks and per-account state isolation are not available yet." />
+                               Text="Preview: connects to an app-server you run and manage yourself. Root health checks and bounded retry of read-only requests are available. Per-account and per-endpoint state isolation is not available yet." />
                     <ListBox MaxHeight="140"
                              Background="Transparent"
                              BorderThickness="0"
@@ -605,6 +605,28 @@
                               Command="{Binding RemoteProfiles.SaveCommand}"
                               AutomationProperties.Name="Save remote profile"
                               Style="{StaticResource SmallRoundButtonStyle}" />
+
+                      <!-- Health diagnosis of the selected saved profile. It is independent of the
+                           active RPC connection and never changes what Connect can do. -->
+                      <TextBlock Text="Health check" FontWeight="SemiBold" Margin="0,12,0,2" />
+                      <TextBlock FontSize="11" Opacity="0.8" TextWrapping="Wrap"
+                                 Text="Checks /healthz and /readyz on the saved endpoint's root without sending the token. Save the profile first." />
+                      <Button Margin="0,6,0,0" HorizontalAlignment="Left" Content="Check health"
+                              Command="{Binding CheckProfileHealthCommand}"
+                              AutomationProperties.Name="Check health of the selected remote profile"
+                              AutomationProperties.HelpText="Sends unauthenticated requests to the root health and ready routes. Does not connect or change the active connection."
+                              Style="{StaticResource SmallRoundButtonStyle}" />
+                      <TextBlock Margin="0,6,0,0" TextWrapping="Wrap"
+                                 Text="{Binding ConnectionHealth.StatusText}"
+                                 AutomationProperties.LiveSetting="Polite" />
+                      <StackPanel Margin="0,4,0,0"
+                                  Visibility="{Binding ConnectionHealth.HasResult, Converter={StaticResource BoolToVis}}">
+                        <TextBlock TextWrapping="Wrap" FontWeight="SemiBold" Text="{Binding ConnectionHealth.CheckedProfileText}" />
+                        <TextBlock TextWrapping="Wrap" Text="{Binding ConnectionHealth.HealthText}" />
+                        <TextBlock TextWrapping="Wrap" Text="{Binding ConnectionHealth.ReadyText}" />
+                        <TextBlock TextWrapping="Wrap" Text="{Binding ConnectionHealth.RpcText}" />
+                        <TextBlock TextWrapping="Wrap" FontSize="11" Text="{Binding ConnectionHealth.ScopeText}" />
+                      </StackPanel>
                     </StackPanel>
 
                     <!-- 3. Result and apply actions -->
@@ -655,7 +677,7 @@
                    AllowsTransparency="True"
                    PopupAnimation="Fade"
                    Focusable="True">
-              <Border Width="320" MaxHeight="430" Padding="12" CornerRadius="6" BorderThickness="1"
+              <Border Width="420" MaxHeight="430" Padding="12" CornerRadius="6" BorderThickness="1"
                       Focusable="True"
                       FocusManager.IsFocusScope="True"
                       FocusManager.FocusedElement="{Binding ElementName=UsageCloseButton}"
@@ -669,15 +691,15 @@
                 </Border.InputBindings>
                 <StackPanel>
                   <TextBlock Text="Codex usage" FontWeight="SemiBold" FontSize="14" />
-                  <TextBlock Margin="0,6,0,0" Text="{Binding Usage.StatusText}"
+                  <TextBlock Margin="0,6,0,0" TextWrapping="Wrap" Text="{Binding Usage.StatusText}"
                              AutomationProperties.LiveSetting="Polite" />
-                  <TextBlock Margin="0,8,0,0" Text="{Binding Usage.PrimaryText}"
+                  <TextBlock Margin="0,8,0,0" TextWrapping="Wrap" Text="{Binding Usage.PrimaryText}"
                              Visibility="{Binding Usage.HasPrimary, Converter={StaticResource BoolToVis}}" />
-                  <TextBlock Margin="0,4,0,0" Text="{Binding Usage.SecondaryText}"
+                  <TextBlock Margin="0,4,0,0" TextWrapping="Wrap" Text="{Binding Usage.SecondaryText}"
                              Visibility="{Binding Usage.HasSecondary, Converter={StaticResource BoolToVis}}" />
-                  <TextBlock Margin="0,4,0,0" Text="{Binding Usage.CreditsText}"
+                  <TextBlock Margin="0,4,0,0" TextWrapping="Wrap" Text="{Binding Usage.CreditsText}"
                              Visibility="{Binding Usage.HasCredits, Converter={StaticResource BoolToVis}}" />
-                  <TextBlock Margin="0,8,0,0" FontSize="10" Text="{Binding Usage.UpdatedText}" />
+                  <TextBlock Margin="0,8,0,0" FontSize="10" TextWrapping="Wrap" Text="{Binding Usage.UpdatedText}" />
                   <WrapPanel Margin="0,12,0,0">
                     <Button Content="Open usage dashboard"
                             Command="{Binding OpenUsageDashboardCommand}"
@@ -756,8 +778,12 @@
           <Button Content="&#xE710;" ToolTip="New thread" Margin="2,0,0,0"
                   Command="{Binding NewThreadCommand}"
                   Style="{StaticResource IconButtonStyle}" />
-          <Button Content="&#xE72C;" ToolTip="Restart" Margin="2,0,0,0"
+          <!-- Local Restart replaces the Worker-owned process; remote Reconnect reopens only this
+               window's socket. The text, tooltip, and accessible name follow the active target. -->
+          <Button Content="&#xE72C;" ToolTip="{Binding RestartActionText}" Margin="2,0,0,0"
                   Command="{Binding RestartCommand}"
+                  AutomationProperties.Name="{Binding RestartActionText}"
+                  AutomationProperties.HelpText="{Binding RestartActionHelpText}"
                   Style="{StaticResource IconButtonStyle}" />
         </StackPanel>
 

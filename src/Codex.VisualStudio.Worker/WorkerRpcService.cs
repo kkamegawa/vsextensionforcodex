@@ -10,23 +10,47 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
     private readonly ISecretRedactor redactor;
     private readonly ICodexProcessHost processHost;
     private readonly ICodexSessionService session;
+    private readonly IRemoteConnectionDiagnostics? diagnostics;
+    private readonly RemoteStartupLimits limits;
+    private readonly RemoteWatchdogTiming watchdogTiming;
+    private readonly TimeProvider timeProvider;
     private readonly SemaphoreSlim connectionTransitionGate = new(1, 1);
+    // Queued close and watchdog callbacks. They run outside the transition gate and are drained
+    // after the gate is released during disposal.
+    private readonly List<Task> trackedCallbacks = [];
+    private readonly object trackedCallbacksGate = new();
+    // Cleared under trackedCallbacksGate when DisposeAsync snapshots the callbacks to drain.
+    private bool acceptingCallbacks = true;
     private WorkerOptions? options;
     private JsonRpc? clientRpc;
     private WorkerStatus status = new() { State = WorkerConnectionState.Disconnected, Message = "Worker is disconnected." };
     private AccountStatus accountStatus = new();
+    private ConnectionTargetSnapshot target = new() { Kind = ConnectionTargetKind.Local };
+    private long connectionGeneration;
     private int networkFailureReported;
     // A remote app-server has no child process, so its loss is observed through the transport's
     // Closed event instead of ICodexProcessHost.Exited.
     private IJsonRpcConnection? observedRemoteConnection;
     // The observed connection whose close is waiting for the transition gate to be published.
     private IJsonRpcConnection? lostRemoteConnection;
+    private RemoteIdleWatchdog? watchdog;
 
-    public WorkerRpcService(ISecretRedactor redactor, ICodexProcessHost processHost, ICodexSessionService session)
+    public WorkerRpcService(
+        ISecretRedactor redactor,
+        ICodexProcessHost processHost,
+        ICodexSessionService session,
+        IRemoteConnectionDiagnostics? diagnostics = null,
+        RemoteStartupLimits? limits = null,
+        RemoteWatchdogTiming? watchdogTiming = null,
+        TimeProvider? timeProvider = null)
     {
         this.redactor = redactor;
         this.processHost = processHost;
         this.session = session;
+        this.diagnostics = diagnostics;
+        this.limits = limits ?? RemoteStartupLimits.Default;
+        this.watchdogTiming = watchdogTiming ?? RemoteWatchdogTiming.Default;
+        this.timeProvider = timeProvider ?? TimeProvider.System;
         processHost.StandardErrorReceived += (_, text) => _ = OnStandardErrorReceivedAsync(text);
         processHost.Exited += (_, exitCode) => _ = OnProcessExitedAsync(exitCode);
         session.ConversationEventReceived += PublishEventAsync;
@@ -80,40 +104,36 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
 
         this.options = options;
         Interlocked.Exchange(ref networkFailureReported, 0);
+        StopWatchdog();
         ObserveRemoteConnection(null);
+
+        // Every attempt gets a new generation. Its snapshot reports the intended target while
+        // connecting or degraded, and the confirmed target once Ready.
+        long generation = Interlocked.Increment(ref connectionGeneration);
+        target = remote
+            ? new ConnectionTargetSnapshot
+            {
+                Kind = ConnectionTargetKind.Remote,
+                DisplayName = options.RemoteProfileName,
+                Fingerprint = options.RemoteProfileFingerprint,
+                Generation = generation,
+            }
+            : new ConnectionTargetSnapshot { Kind = ConnectionTargetKind.Local, Generation = generation };
         await SetStatusAsync(
             WorkerConnectionState.Connecting,
             remote ? "Connecting to remote codex app-server..." : "Starting codex app-server...",
             cancellationToken).ConfigureAwait(false);
+        return remote
+            ? await ConnectRemoteCoreAsync(options, generation, cancellationToken).ConfigureAwait(false)
+            : await ConnectLocalCoreAsync(options, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<WorkerStatus> ConnectLocalCoreAsync(WorkerOptions options, CancellationToken cancellationToken)
+    {
         try
         {
-            if (remote)
-            {
-                // Without both roots, local working-directory and attachment paths would reach the
-                // remote server unmapped: they do not exist there and disclose the local layout.
-                if (!hasLocalRoot || !hasServerRoot)
-                {
-                    throw new InvalidOperationException(
-                        "Remote connections require both localRoot and serverRoot. Set both roots in the remote profile, then reconnect.");
-                }
-
-                if (string.IsNullOrWhiteSpace(options.RemoteTokenFilePath))
-                {
-                    throw new InvalidOperationException("A token file is required for a remote app-server connection.");
-                }
-
-                WorkerDiagnostics.Write("worker connecting to remote codex app-server");
-                await processHost.StartRemoteAsync(
-                    options.RemoteEndpoint!,
-                    options.RemoteTokenFilePath,
-                    cancellationToken).ConfigureAwait(false);
-                ObserveRemoteConnection(processHost.Connection);
-            }
-            else
-            {
-                WorkerDiagnostics.Write("worker starting codex app-server");
-                await processHost.StartAsync(options.CodexPath, options.WorkingDirectory, cancellationToken).ConfigureAwait(false);
-            }
+            WorkerDiagnostics.Write("worker starting codex app-server");
+            await processHost.StartAsync(options.CodexPath, options.WorkingDirectory, cancellationToken).ConfigureAwait(false);
             WorkerDiagnostics.Write("worker initializing codex app-server");
             await session.InitializeAsync(processHost.Connection!, options, cancellationToken).ConfigureAwait(false);
             WorkerDiagnostics.Write("worker reading account status");
@@ -121,7 +141,7 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
             WorkerDiagnostics.Write("worker connect completed");
             return await SetStatusAsync(
                 WorkerConnectionState.Ready,
-                remote ? "Connected to remote codex app-server." : "Connected to codex app-server.",
+                "Connected to codex app-server.",
                 cancellationToken).ConfigureAwait(false);
         }
         catch (Exception ex)
@@ -132,6 +152,125 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
                 CancellationToken.None).ConfigureAwait(false);
             return await SetStatusAsync(WorkerConnectionState.Degraded, redactor.Redact(ex.Message), cancellationToken).ConfigureAwait(false);
         }
+    }
+
+    // One monotonic budget covers token read, handshake, initialize, and the startup account
+    // read. Each stage is also capped. A failure after the candidate socket exists retires it.
+    private async Task<WorkerStatus> ConnectRemoteCoreAsync(
+        WorkerOptions options,
+        long generation,
+        CancellationToken cancellationToken)
+    {
+        using var overall = new CancellationTokenSource(limits.Overall, timeProvider);
+        using var startup = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, overall.Token);
+        RemoteConnectionFailure stageFailure = RemoteConnectionFailure.None;
+        try
+        {
+            // Without both roots, local working-directory and attachment paths would reach the
+            // remote server unmapped: they do not exist there and disclose the local layout.
+            if (string.IsNullOrWhiteSpace(options.LocalRoot) || string.IsNullOrWhiteSpace(options.ServerRoot))
+            {
+                throw new InvalidOperationException(
+                    "Remote connections require both localRoot and serverRoot. Set both roots in the remote profile, then reconnect.");
+            }
+
+            if (string.IsNullOrWhiteSpace(options.RemoteTokenFilePath))
+            {
+                throw new InvalidOperationException("A token file is required for a remote app-server connection.");
+            }
+
+            WorkerDiagnostics.Write("worker connecting to remote codex app-server");
+            await processHost.StartRemoteAsync(
+                new RemoteConnectionRequest(options.RemoteEndpoint!, options.RemoteTokenFilePath),
+                startup.Token).ConfigureAwait(false);
+            IJsonRpcConnection connection = processHost.Connection!;
+            ObserveRemoteConnection(connection);
+
+            WorkerDiagnostics.Write("worker initializing remote codex app-server");
+            stageFailure = RemoteConnectionFailure.InitializeFailed;
+            await CodexProcessHost.RunStageAsync(
+                async stage =>
+                {
+                    await session.InitializeAsync(connection, options, stage).ConfigureAwait(false);
+                    return true;
+                },
+                limits.Initialize,
+                startup.Token).ConfigureAwait(false);
+
+            WorkerDiagnostics.Write("worker reading remote account status");
+            stageFailure = RemoteConnectionFailure.AccountReadFailed;
+            try
+            {
+                accountStatus = await CodexProcessHost.RunStageAsync(
+                    stage => session.GetAccountStatusAsync(stage),
+                    limits.AccountRead,
+                    startup.Token).ConfigureAwait(false);
+            }
+            catch (RemoteConnectionException ex) when (ex.Failure == RemoteConnectionFailure.Timeout)
+            {
+                // A slow account read alone does not degrade an initialized RPC connection.
+                await PublishAccountStatusAsync(
+                    new AccountStatus { State = AccountState.Unavailable, Message = "Codex could not read the account status." },
+                    CancellationToken.None).ConfigureAwait(false);
+            }
+
+            WorkerDiagnostics.Write("worker remote connect completed");
+            WorkerStatus ready = await SetStatusAsync(
+                WorkerConnectionState.Ready,
+                "Connected to remote codex app-server.",
+                cancellationToken).ConfigureAwait(false);
+            StartWatchdog(connection, generation);
+            return ready;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // Caller cancellation stays cancellation; the candidate is retired first.
+            await RetireCandidateAsync().ConfigureAwait(false);
+            await PublishRemoteFailureAsync("The remote connection attempt was canceled.").ConfigureAwait(false);
+            throw;
+        }
+        catch (Exception ex)
+        {
+            // Before the handshake stage the only failures are this method's own fixed
+            // validation messages; afterwards the stage decides the category. The overall
+            // startup deadline surfaces as a Timeout.
+            RemoteConnectionFailure category = ex switch
+            {
+                RemoteConnectionException remote => remote.Failure,
+                OperationCanceledException => RemoteConnectionFailure.Timeout,
+                _ => stageFailure,
+            };
+            WorkerDiagnostics.Write($"worker remote connect failed category={category}", ex);
+            string message = category == RemoteConnectionFailure.None
+                ? redactor.Redact(ex.Message)
+                : RemoteConnectionException.Describe(category);
+            await RetireCandidateAsync().ConfigureAwait(false);
+            return await PublishRemoteFailureAsync(message).ConfigureAwait(false);
+        }
+    }
+
+    // Retires the candidate connection: stop observing it, then dispose it (completing pending
+    // client and server requests) before its token lease is released by the host.
+    private async Task RetireCandidateAsync()
+    {
+        StopWatchdog();
+        ObserveRemoteConnection(null);
+        try
+        {
+            await processHost.StopAsync(CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            WorkerDiagnostics.Write("remote candidate cleanup failed", ex);
+        }
+    }
+
+    private async Task<WorkerStatus> PublishRemoteFailureAsync(string message)
+    {
+        await PublishAccountStatusAsync(
+            new AccountStatus { State = AccountState.Unavailable },
+            CancellationToken.None).ConfigureAwait(false);
+        return await SetStatusAsync(WorkerConnectionState.Degraded, message, CancellationToken.None).ConfigureAwait(false);
     }
 
     public async Task<WorkerStatus> RestartAsync(CancellationToken cancellationToken)
@@ -154,10 +293,103 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
             throw new InvalidOperationException("Connect must be called before restart.");
         }
 
+        // Restart owns and replaces a local child process. A remote target has none, so the
+        // request is refused before anything is stopped or sent.
+        if (!string.IsNullOrWhiteSpace(options.RemoteEndpoint))
+        {
+            throw Rejected(ConnectionOperationRejectionReason.LocalProcessRequired);
+        }
+
         // An intentional stop is not a connection loss; detach before the transport closes.
         ObserveRemoteConnection(null);
         await processHost.StopAsync(cancellationToken).ConfigureAwait(false);
         return await ConnectCoreAsync(options, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<WorkerStatus> ReconnectAsync(RemoteReconnectRequest request, CancellationToken cancellationToken)
+    {
+        await connectionTransitionGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            WorkerOptions bound = ValidateReconnect(request);
+
+            // Close only the Worker-owned socket. The external server is never stopped; the token
+            // file is read again so rotated contents take effect on this explicit reconnect.
+            StopWatchdog();
+            ObserveRemoteConnection(null);
+            await processHost.StopAsync(cancellationToken).ConfigureAwait(false);
+            return await ConnectCoreAsync(bound, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            connectionTransitionGate.Release();
+        }
+    }
+
+    // Revalidates the immutable request against the options bound to the current generation
+    // before any token read, socket stop, or send.
+    private WorkerOptions ValidateReconnect(RemoteReconnectRequest request)
+    {
+        WorkerOptions? bound = options;
+        if (bound is null || string.IsNullOrWhiteSpace(bound.RemoteEndpoint))
+        {
+            throw Rejected(ConnectionOperationRejectionReason.RemoteConnectionRequired);
+        }
+
+        if (string.IsNullOrEmpty(bound.RemoteProfileName) || string.IsNullOrEmpty(bound.RemoteProfileFingerprint))
+        {
+            throw Rejected(ConnectionOperationRejectionReason.ProfileUnavailable);
+        }
+
+        string boundFingerprint = RemoteProfileFingerprint.Compute(
+            bound.RemoteProfileName,
+            bound.RemoteEndpoint,
+            bound.RemoteTokenFilePath,
+            bound.LocalRoot,
+            bound.ServerRoot,
+            enabled: true);
+        if (!string.Equals(request.ProfileName, bound.RemoteProfileName, StringComparison.Ordinal)
+            || !string.Equals(request.Fingerprint, bound.RemoteProfileFingerprint, StringComparison.Ordinal)
+            || !string.Equals(boundFingerprint, bound.RemoteProfileFingerprint, StringComparison.Ordinal))
+        {
+            throw Rejected(ConnectionOperationRejectionReason.ProfileChanged);
+        }
+
+        if (request.ExpectedGeneration != Interlocked.Read(ref connectionGeneration))
+        {
+            throw Rejected(ConnectionOperationRejectionReason.StaleGeneration);
+        }
+
+        return bound;
+    }
+
+    internal static LocalRpcException Rejected(ConnectionOperationRejectionReason reason)
+        => new(reason.ToString())
+        {
+            ErrorCode = WorkerErrorCodes.ConnectionOperationRejected,
+            ErrorData = reason.ToString(),
+        };
+
+    public async Task<ConnectionDiagnosticsResult> DiagnoseConnectionAsync(
+        ConnectionDiagnosticsRequest request,
+        CancellationToken cancellationToken)
+    {
+        // Diagnosis is independent of the RPC connection: it takes no transition gate, never
+        // reads a token, and cannot change Worker connection state.
+        if (diagnostics is null)
+        {
+            return new ConnectionDiagnosticsResult
+            {
+                ProfileName = request.ProfileName,
+                ObservedAt = timeProvider.GetUtcNow(),
+                RejectionReason = "Health diagnosis is not available in this Worker.",
+            };
+        }
+
+        WorkerDiagnostics.Write("worker connection diagnosis requested");
+        ConnectionDiagnosticsResult result = await diagnostics.DiagnoseAsync(request, cancellationToken).ConfigureAwait(false);
+        WorkerDiagnostics.Write($"worker connection diagnosis completed health={result.Health.State} ready={result.Ready.State}");
+        return result;
     }
 
     public Task<WorkerStatus> GetStatusAsync(CancellationToken cancellationToken) => Task.FromResult(CloneStatus());
@@ -372,15 +604,46 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
         await connectionTransitionGate.WaitAsync().ConfigureAwait(false);
         try
         {
+            StopWatchdog();
             ObserveRemoteConnection(null);
             await session.DisposeAsync().ConfigureAwait(false);
+        }
+        finally
+        {
+            connectionTransitionGate.Release();
+        }
+
+        // Queued close and watchdog callbacks may wait for the gate; drain them only after it is
+        // released so cleanup cannot deadlock. They find nothing current and return.
+        Task[] callbacks;
+        lock (trackedCallbacksGate)
+        {
+            acceptingCallbacks = false;
+            callbacks = [.. trackedCallbacks];
+            trackedCallbacks.Clear();
+        }
+
+        try
+        {
+            await Task.WhenAll(callbacks).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            WorkerDiagnostics.Write("worker callback drain failed", ex);
+        }
+
+        // Only then dispose the host, which retires the socket and releases its token lease.
+        await connectionTransitionGate.WaitAsync().ConfigureAwait(false);
+        try
+        {
             await processHost.DisposeAsync().ConfigureAwait(false);
         }
         finally
         {
             connectionTransitionGate.Release();
-            connectionTransitionGate.Dispose();
         }
+
+        connectionTransitionGate.Dispose();
     }
 
     private async Task<WorkerStatus> SetStatusAsync(WorkerConnectionState state, string message, CancellationToken cancellationToken)
@@ -391,11 +654,12 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
             Message = message,
             ThreadId = session.ActiveThreadId,
             TurnId = session.ActiveTurnId,
-            ProcessId = processHost.ProcessId,
+            ProcessId = OwnedProcessId(),
             CodexVersion = ShouldIncludeCodexVersion(state) ? session.CodexVersion : null,
             EffectiveApprovalState = session.EffectiveApprovalState,
             EffectiveReasoningEffort = session.EffectiveReasoningEffort,
             EffectiveServiceTier = session.EffectiveServiceTier,
+            Target = target.Clone(),
         };
         if (clientRpc is not null)
         {
@@ -613,12 +877,48 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
         }
 
         connection.Closed -= OnRemoteConnectionClosed;
-        _ = OnRemoteConnectionLostAsync(connection, exception);
+
+        // Admit the handler before logging. DisposeAsync drains every admitted handler before it
+        // disposes the host and releases the token lease; once disposal has taken its snapshot the
+        // handler is suppressed, so the exception is never logged after the lease is gone.
+        var handled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        if (!TryTrackCallback(handled.Task))
+        {
+            return;
+        }
+
+        Task lost = Task.CompletedTask;
+        try
+        {
+            // Produce the diagnostic and the categorical status text now, while the token lease is
+            // still held, so the queued publication carries no raw exception text.
+            WorkerDiagnostics.Write("remote codex app-server connection closed", exception);
+            lost = OnRemoteConnectionLostAsync(connection);
+        }
+        finally
+        {
+            lost.ContinueWith(
+                static (completed, state) =>
+                {
+                    var source = (TaskCompletionSource)state!;
+                    if (completed.Exception is { } failure)
+                    {
+                        source.TrySetException(failure.InnerExceptions);
+                    }
+                    else
+                    {
+                        source.TrySetResult();
+                    }
+                },
+                handled,
+                CancellationToken.None,
+                TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+        }
     }
 
-    private async Task OnRemoteConnectionLostAsync(IJsonRpcConnection connection, Exception? exception)
+    private async Task OnRemoteConnectionLostAsync(IJsonRpcConnection connection)
     {
-        WorkerDiagnostics.Write("remote codex app-server connection closed", exception);
 
         // Publish under the transition gate so the loss cannot overwrite the status of a connect,
         // restart, or dispose that started after the close; each of those clears the mark first.
@@ -638,7 +938,8 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
                 return;
             }
 
-            await PublishRemoteConnectionLossAsync(exception).ConfigureAwait(false);
+            StopWatchdog();
+            await PublishRemoteFailureAsync(RemoteConnectionException.Describe(RemoteConnectionFailure.ConnectionLost)).ConfigureAwait(false);
         }
         finally
         {
@@ -657,17 +958,6 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
         }
     }
 
-    private async Task PublishRemoteConnectionLossAsync(Exception? exception)
-    {
-        string message = exception is null
-            ? "The remote codex app-server connection closed. Reconnect to continue."
-            : $"The remote codex app-server connection was lost: {redactor.Redact(exception.Message)} Reconnect to continue.";
-        await PublishAccountStatusAsync(
-            new AccountStatus { State = AccountState.Unavailable },
-            CancellationToken.None).ConfigureAwait(false);
-        await SetStatusAsync(WorkerConnectionState.Degraded, message, CancellationToken.None).ConfigureAwait(false);
-    }
-
     private async Task OnProcessExitedAsync(int exitCode)
     {
         await PublishAccountStatusAsync(
@@ -683,7 +973,7 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
     {
         status.ThreadId = session.ActiveThreadId;
         status.TurnId = session.ActiveTurnId;
-        status.ProcessId = processHost.ProcessId;
+        status.ProcessId = OwnedProcessId();
         status.CodexVersion = ShouldIncludeCodexVersion(status.State) ? session.CodexVersion : null;
         status.EffectiveApprovalState = session.EffectiveApprovalState;
         status.EffectiveReasoningEffort = session.EffectiveReasoningEffort;
@@ -706,7 +996,96 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
         EffectiveApprovalState = status.EffectiveApprovalState,
         EffectiveReasoningEffort = status.EffectiveReasoningEffort,
         EffectiveServiceTier = status.EffectiveServiceTier,
+        Target = status.Target?.Clone(),
     };
+
+    // A PID is reported only for a Worker-owned local process, never for a remote target.
+    private int? OwnedProcessId() => target.Kind == ConnectionTargetKind.Local ? processHost.ProcessId : null;
+
+    private void TrackCallback(Task callback) => TryTrackCallback(callback);
+
+    // False once DisposeAsync has snapshotted the callbacks; the caller must then do nothing that
+    // depends on the token lease or the host.
+    private bool TryTrackCallback(Task callback)
+    {
+        lock (trackedCallbacksGate)
+        {
+            if (!acceptingCallbacks)
+            {
+                return false;
+            }
+
+            trackedCallbacks.RemoveAll(static task => task.IsCompleted);
+            trackedCallbacks.Add(callback);
+            return true;
+        }
+    }
+
+    // Always called under connectionTransitionGate.
+    private void StartWatchdog(IJsonRpcConnection connection, long generation)
+    {
+        if (connection is not IInboundActivitySource activity)
+        {
+            return;
+        }
+
+        var started = new RemoteIdleWatchdog(
+            connection,
+            activity,
+            watchdogTiming,
+            timeProvider,
+            (isStillSilent, cancellationToken) => OnRemotePeerUnresponsiveAsync(connection, generation, isStillSilent, cancellationToken));
+        watchdog = started;
+        started.Start();
+        TrackCallback(started.Completion);
+    }
+
+    // Always called under connectionTransitionGate. Cancels without awaiting; the watchdog may be
+    // waiting for the gate the caller holds. DisposeAsync drains it after releasing the gate.
+    private void StopWatchdog()
+    {
+        Interlocked.Exchange(ref watchdog, null)?.Cancel();
+    }
+
+    // Returns true when the watchdog should keep watching because inbound activity arrived after
+    // the probes; false once the socket is retired or the generation was superseded.
+    private async Task<bool> OnRemotePeerUnresponsiveAsync(
+        IJsonRpcConnection connection,
+        long generation,
+        Func<bool> isStillSilent,
+        CancellationToken cancellationToken)
+    {
+        await connectionTransitionGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            // Only the captured socket of the still-current generation is retired. A newer
+            // connect, reconnect, or restart supersedes this result.
+            if (Interlocked.Read(ref connectionGeneration) != generation
+                || !ReferenceEquals(Volatile.Read(ref observedRemoteConnection), connection)
+                || !ReferenceEquals(processHost.Connection, connection))
+            {
+                return false;
+            }
+
+            // Revalidated under the gate: a message that arrived between or after the probes
+            // proves the peer is alive, so the idle window restarts instead.
+            if (!isStillSilent())
+            {
+                return true;
+            }
+
+            WorkerDiagnostics.Write("remote codex app-server did not answer two liveness probes");
+            watchdog = null;
+            ObserveRemoteConnection(null);
+            await processHost.StopAsync(CancellationToken.None).ConfigureAwait(false);
+            await PublishRemoteFailureAsync(RemoteConnectionException.Describe(RemoteConnectionFailure.PeerUnresponsive)).ConfigureAwait(false);
+            return false;
+        }
+        finally
+        {
+            ReleaseTransitionGate();
+        }
+    }
 
     private AccountStatus CloneAccountStatus() => new()
     {

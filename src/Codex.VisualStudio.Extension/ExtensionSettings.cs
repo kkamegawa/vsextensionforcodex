@@ -107,6 +107,16 @@ public sealed class RemoteConnectionProfile
 
     public bool Enabled { get; set; }
 
+    // Canonical non-secret metadata fingerprint shared with the Worker. Token-file contents are
+    // not an input, so token rotation leaves it unchanged.
+    public string ComputeFingerprint() => Codex.VisualStudio.Contracts.RemoteProfileFingerprint.Compute(
+        Name,
+        Endpoint,
+        TokenFilePath,
+        LocalRoot,
+        ServerRoot,
+        Enabled);
+
     public RemoteConnectionProfile Clone() => new()
     {
         Name = Name,

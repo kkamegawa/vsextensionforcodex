@@ -1,4 +1,5 @@
 ﻿using Codex.VisualStudio.Extension;
+using Microsoft.VisualStudio.Extensibility.UI;
 
 namespace Codex.VisualStudio.Ui.Tests;
 
@@ -99,20 +100,20 @@ public sealed class RemoteProfilePresentationTests
         var presentation = new RemoteProfilesPresentationViewModel(SavedSettings(), store);
         RemoteProfileViewModel saved = presentation.SelectedProfile!;
         Assert.AreEqual(string.Empty, saved.RowStatusText);
-        Assert.IsTrue(presentation.TryGetApplicableProfile(out string name, out _));
+        Assert.IsTrue(presentation.TryGetApplicableProfile(presentation.SelectedProfile, out string name, out _));
         Assert.AreEqual("Saved profile", name);
         Assert.AreEqual("Saved profile", presentation.AppliedProfileName);
 
         saved.ServerRoot = "/moved";
         Assert.AreEqual("Unsaved changes", saved.RowStatusText);
-        Assert.IsFalse(presentation.TryGetApplicableProfile(out _, out string unsavedError));
+        Assert.IsFalse(presentation.TryGetApplicableProfile(presentation.SelectedProfile, out _, out string unsavedError));
         Assert.AreEqual("Save the profile before connecting with it.", unsavedError);
 
         saved.ServerRoot = "/workspace";
         saved.IsEnabled = false;
         presentation.SaveCommand.Execute(null);
         Assert.AreEqual("Disabled", saved.RowStatusText);
-        Assert.IsFalse(presentation.TryGetApplicableProfile(out _, out string disabledError));
+        Assert.IsFalse(presentation.TryGetApplicableProfile(presentation.SelectedProfile, out _, out string disabledError));
         StringAssert.Contains(disabledError, "Enable the profile");
         Assert.IsNull(presentation.AppliedProfileName);
 
@@ -124,6 +125,75 @@ public sealed class RemoteProfilePresentationTests
         Assert.IsFalse(presentation.HasSelection);
         Assert.IsNull(store.Saved!.SelectedRemoteProfileName);
     }
+
+    [TestMethod]
+    public async Task RemoveAndSave_ActOnTheRowTheyWereInvokedForWhileQueued()
+    {
+        ExtensionSettings settings = SavedSettings();
+        settings.RemoteProfiles.Add(new RemoteConnectionProfile
+        {
+            Name = "Second",
+            Endpoint = "wss://second.example.invalid",
+            LocalRoot = "C:\\second",
+            ServerRoot = "/second",
+            Enabled = true,
+            TokenFilePath = "C:\\tokens\\second.token",
+        });
+        var store = new RecordingSettingsStore();
+        using var gate = new SemaphoreSlim(1, 1);
+        var presentation = new RemoteProfilesPresentationViewModel(settings, store, gate);
+        RemoteProfileViewModel first = presentation.Profiles[0];
+        RemoteProfileViewModel second = presentation.Profiles[1];
+
+        // Save is invoked for the first row while another operation owns the gate, then the
+        // user selects the second row; the queued save must still save the first row only.
+        first.ServerRoot = "/workspace-moved";
+        second.ServerRoot = "/second-moved";
+        await gate.WaitAsync();
+        Task save = RunAsync(presentation.SaveCommand);
+        presentation.SelectedProfile = second;
+        gate.Release();
+        await save;
+
+        Assert.AreEqual("/workspace-moved", store.Saved!.RemoteProfiles.Single(static p => p.Name == "Saved profile").ServerRoot);
+        Assert.AreEqual("/second", store.Saved.RemoteProfiles.Single(static p => p.Name == "Second").ServerRoot);
+        Assert.AreSame(second, presentation.SelectedProfile);
+
+        // Remove is invoked for the second row, then the selection moves back to the first.
+        await gate.WaitAsync();
+        Task remove = RunAsync(presentation.RemoveCommand);
+        presentation.SelectedProfile = first;
+        gate.Release();
+        await remove;
+
+        CollectionAssert.AreEqual(new[] { first }, presentation.Profiles.ToArray());
+        Assert.AreSame(first, presentation.SelectedProfile);
+        Assert.AreEqual("Saved profile", store.Saved.RemoteProfiles.Single().Name);
+    }
+
+    [TestMethod]
+    public async Task SelectionChange_RaisesSaveAndRemoveStatesWhileTheGateIsBusy()
+    {
+        var store = new RecordingSettingsStore();
+        using var gate = new SemaphoreSlim(1, 1);
+        var presentation = new RemoteProfilesPresentationViewModel(SavedSettings(), store, gate);
+        var raised = new List<string>();
+        presentation.SaveCommand.PropertyChanged += (_, e) => raised.Add("save:" + e.PropertyName);
+        presentation.RemoveCommand.PropertyChanged += (_, e) => raised.Add("remove:" + e.PropertyName);
+
+        // A connect holds the gate, so selection persistence is queued behind it.
+        await gate.WaitAsync();
+        presentation.ClearSelection();
+
+        Assert.IsFalse(presentation.SaveCommand.CanExecute);
+        Assert.IsFalse(presentation.RemoveCommand.CanExecute);
+        CollectionAssert.Contains(raised, "save:" + nameof(Codex.VisualStudio.Extension.AsyncCommand.CanExecute));
+        CollectionAssert.Contains(raised, "remove:" + nameof(Codex.VisualStudio.Extension.AsyncCommand.CanExecute));
+        gate.Release();
+    }
+
+    private static Task RunAsync(IAsyncCommand command)
+        => command.ExecuteAsync(null, null!, CancellationToken.None);
 
     private static ExtensionSettings SavedSettings() => new()
     {

@@ -55,15 +55,18 @@ The extension is an out-of-process `Microsoft.VisualStudio.Extensibility` extens
 
 By default Codex runs on a local `codex app-server` child process. To run turns on an app-server that is already running on another machine instead:
 
-> **Preview.** The upstream WebSocket transport is experimental, and this release does not yet include connection health checks, automatic retry, or separation of cached state when you switch accounts or endpoints. Reconnect manually after a switch. These are tracked in the remote-connection and path-mapping issues.
+> **Preview.** The upstream WebSocket transport is experimental. You start and manage the remote app-server yourself; the extension owns only its own connection to it. Root health checks and bounded retry of a fixed set of read-only requests after a server-overload response are available. Cached state is not yet separated when you switch accounts or endpoints, and the connection does not reconnect by itself. Reconnect manually after a switch. These are tracked in the remote-connection and path-mapping issues.
 
 1. Start the app-server with its WebSocket listener on the remote machine and save its bearer token to a file on this computer. The extension never starts, updates, or synchronizes the remote side.
 2. Make sure both machines see the same working tree, for example `C:\src\repo` locally and `/home/<user>/src/repo` on the server.
 3. In the Codex tool window, select the connection-target button in the toolbar (it shows `Local`), then select **Add**.
-4. Enter the name, the endpoint (`wss://<remote-host>:<port>`; plain `ws://` is accepted only for a loopback host), the token file path, the local root, and the server root. Select **Enabled**, then **Save profile**.
-5. Select **Connect with this profile**. The toolbar button then shows the profile name.
+4. Enter the name, the endpoint (`wss://<remote-host>:<port>`; plain `ws://` is accepted only for `localhost` or a loopback IP address), the token file path (an absolute path on a local drive, such as `C:\tokens\app-server.token`), the local root, and the server root. Select **Enabled**, then **Save profile**.
+5. Optional: select **Check health**. It sends unauthenticated requests to `/healthz` and `/readyz` on the endpoint's root and shows the results separately from the connection state. A healthy result does not prove that JSON-RPC, authentication, or a routed endpoint path works.
+6. Select **Connect with this profile**. The toolbar button then shows the profile name.
 
-Both roots are required: local paths for the working directory and attachments are mapped from the local root to the server root, and an attachment outside the local root is rejected before the turn starts. If the remote connection drops, the status becomes degraded; use **Connect** or **Restart** to reconnect. Select **Use local app-server** to go back to the local process.
+The token file must contain one bearer token of at least 32 characters (at most 16 KiB, UTF-8 with or without a BOM). The extension reads it only when it connects, sends it only in the WebSocket handshake, and never stores or shows it. Keeping the file private is your responsibility. If you replace the token, it is used on the next reconnect.
+
+Both roots are required: local paths for the working directory and attachments are mapped from the local root to the server root, and an attachment outside the local root is rejected before the turn starts. If the remote connection drops or the server stops answering, the status becomes degraded. Select **Reconnect remote app-server** (the restart button in the toolbar) to reopen only this window's connection; the remote server is not restarted. A reconnect is refused if the applied profile has changed or has unsaved edits; save it and select **Connect with this profile** again. For the local app-server the same button is **Restart local app-server**. Select **Use local app-server** to go back to the local process.
 
 ## Limitations
 

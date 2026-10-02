@@ -345,41 +345,65 @@ no Remote UI surface is not carried across the contract, so `dependencies.tools`
 gated; until a Remote UI image/cache containment proof exists, the presentation uses a fixed glyph
 and exposes no raw icon path.
 
-## 12. Connection target and remote profiles
+## 12. Connection target, profiles, and diagnosis
 
-The toolbar shows one connection-target button next to Usage. Its text is the target the Worker is
-actually connected to (`Local` or the applied profile name), not the profile being edited, so the
-header always answers "where do my turns run". It opens a flyout that follows the Usage/History
-popup rules: the three flyouts are mutually exclusive, Escape closes it from the host or the popup,
-Tab cycles inside it, it uses Visual Studio dynamic theme resources, and every control has an
-automation name.
+The detailed contract is defined in [Secure Remote App Server Connection](secure-remote-connection-design.md)
+and its [Japanese translation](secure-remote-connection-design_ja.md). The Extension talks to its local
+Worker; local stdio is the default and a saved enabled remote profile explicitly opts into WebSocket.
 
-The flyout is ordered by the user's task, top to bottom:
+The toolbar reports the Worker-confirmed target and generation. `Target` identifies the intended target
+while Disconnected/Connecting/Degraded; only Ready/Busy/WaitingForApproval is labeled `Connected`.
+A local process ID is shown only for an owned child process. Remote state never claims a server PID.
+The connection flyout retains Usage/History mutual exclusion, Escape, trapped Tab navigation, Visual
+Studio dynamic theme resources, automation names, and a polite status live region.
 
-1. Profile list (`RemoteProfiles.Profiles` / `SelectedProfile`) with Add and Remove, headed
-   `Remote profiles (Preview)` with a one-line note that health checks and per-account state
-   isolation are not available yet. Each row shows the display name and endpoint; an unsaved row is
-   marked `Not saved`.
-2. Editor for the selected profile, shown only while a profile is selected: Name, Endpoint, Token
-   file path, Local root, Server root, and Enabled, then Save. Only the token file path crosses the
-   presentation boundary; token contents are read by the Worker at connection time.
-3. `StatusText` (polite live region) for validation and apply results, then the apply actions:
-   `Connect with this profile` and `Use local app-server`.
+The flyout follows the user's tasks:
 
-Edits stay in the view model until Save validates them (`wss`, or `ws` to a loopback host; both
-roots; a token file for an enabled profile; unique names). `Connect with this profile` reconnects
-the Worker with the saved selection even while Ready; it is disabled while connecting or while a
-turn or approval is in progress, and refuses with a status message when the selected profile has
-unsaved edits or is disabled. `Use local app-server` clears the persisted selection and reconnects
-to local stdio. A remote profile is applied only through these actions or the next connect;
-selecting a row alone never switches transports.
+1. Target and independent diagnosis: the selected saved enabled profile has `Check health` and separate
+   `/healthz` and `/readyz` results. Labels identify the checked profile, observation time, and authority-root
+   scope. A profile with a routing path shows `Route not verified`; a root response does not establish that
+   the routed App Server, authentication, RPC, or any feature is available. The active target's actual RPC
+   state is shown independently; an inactive checked target is `Not connected`.
+2. Saved profile list with Add/Remove, Preview guidance, and explicit unsaved/disabled markers.
+3. Selected profile editor: Name, Endpoint, Token file path, Local root, Server root, Enabled, then Save.
+4. Validation/apply status, `Connect with this profile`, and `Use local app-server`.
 
-The Worker enforces the same mapping invariant independently of the UI: a remote connection
-without both `localRoot` and `serverRoot` is refused as `Degraded` with a fix-it message before any
-local path is sent, and an explicit attachment outside the local root rejects the turn before
-`turn/start`. When the remote transport closes, the Worker publishes `Degraded` with a reconnect
-message unless a newer connect, restart, or dispose has already superseded that connection, which
-enables Connect and Restart in the header.
+Save validates only metadata through the endpoint-only `RemoteEndpointPolicy` in Contracts: endpoint
+scheme/host/URI policy, both roots, unique name, and a nonempty syntactically valid local absolute token-file
+path for an enabled profile. Save never reads the token or tests existence/readability. The Worker checks
+existence, readability, strict UTF-8, length/size, and bearer format immediately before every handshake.
+The UI carries only the file path. Unsaved/disabled profiles cannot apply or issue diagnostic requests;
+this enforces explicit opt-in and prevents requests to unvalidated editor input. Health itself requires no
+credential-file read or authentication header.
+The Worker independently refuses a remote connection missing either root, and existing attachment
+checks reject local paths outside the configured local root before `turn/start`.
+
+Save, rename, disable, and delete change eligibility for future connections; they do not change the active
+socket or silently fall back to local. The active target remains visible independently of edited/selected
+configuration. An explicit reconnect reloads saved settings by the applied profile name and requires the
+same canonical endpoint, token-file path, roots, enabled state, and metadata fingerprint as the applied
+snapshot. Missing, disabled, changed, or unsaved matching profiles are refused with guidance to apply a
+saved profile or choose local. Token-file content rotation is reflected by rereading the matching path.
+All same-instance profile/settings mutations (including selection persistence, Save, rename, enable/disable,
+delete, and explicit local switch) and reconnect validation/dispatch are serialized; the Worker additionally
+checks the expected generation and immutable metadata under its own transition gate.
+
+`Connect with this profile` explicitly applies saved metadata even while Ready, but is disabled during a
+transition, active turn, or pending approval. Selecting a row does not apply it. `Use local app-server`
+explicitly selects and connects the local process. Diagnostic progress cannot update Worker readiness,
+start a remote socket, or replay a mutation. Selection, saved metadata changes, and generation retirement
+cancel/clear diagnostic snapshots so late checks cannot overwrite another target.
+
+On a remote close or two silent liveness timeouts, the Worker retires only that current generation and
+publishes Degraded. The degraded remote action is `Reconnect remote app-server` through `worker/reconnect`;
+`worker/restart` is rejected for remote targets with a typed operation-rejection error before any stop.
+The local action is `Restart local app-server`. Connect/reconnect/close are serialized and pending
+requests finish on retirement; stale close notifications cannot overwrite a newer Ready state.
+
+Remote mode remains Preview because upstream WebSocket support is experimental and account/principal
+cache isolation is tracked by Issue #152. Health diagnosis and the bounded, allowlisted overload retry
+contract are available independently of that limitation. Automatic reconnect/history recovery remains
+tracked by Issue #153; a failed liveness check does not resend user input or reconnect automatically.
 
 ## 13. Interrupt diagnostics
 
