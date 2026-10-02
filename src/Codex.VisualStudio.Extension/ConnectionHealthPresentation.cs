@@ -108,7 +108,7 @@ public sealed class ConnectionHealthPresentationViewModel : ObservableObject
         }
 
         IsChecking = false;
-        CheckedProfileText = $"Checked profile: {SafeName(checkedProfileName)}";
+        CheckedProfileText = $"Checked profile: {SafeName(checkedProfileName)}{DescribeObservedAt(result.ObservedAt)}";
         if (!string.IsNullOrEmpty(result.RejectionReason))
         {
             HasResult = false;
@@ -198,6 +198,12 @@ public sealed class ConnectionHealthPresentationViewModel : ObservableObject
         string reason = string.IsNullOrWhiteSpace(probe.Reason) ? string.Empty : $" {Safe(probe.Reason)}";
         return state + detail + reason;
     }
+
+    // The Worker stamps every result; local time tells the user how old the shown result is.
+    internal static string DescribeObservedAt(DateTimeOffset observedAt)
+        => observedAt == default
+            ? string.Empty
+            : $" at {observedAt.ToLocalTime().ToString("T", CultureInfo.CurrentCulture)}";
 
     private string SafeName(string name) => $"'{Safe(name)}'";
 

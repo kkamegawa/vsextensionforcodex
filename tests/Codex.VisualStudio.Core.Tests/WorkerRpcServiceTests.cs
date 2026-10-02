@@ -806,6 +806,39 @@ public sealed class WorkerRpcServiceTests
     }
 
     [TestMethod]
+    public async Task WatchdogMeasuresSilenceFromTheLastInboundMessage()
+    {
+        // Activity early in the first window must not push probing out to a second full window:
+        // the first probe follows one idle window after that message, not two after start.
+        var idleWindow = TimeSpan.FromMilliseconds(400);
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        var firstProbe = new TaskCompletionSource<TimeSpan>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var connection = new StubConnection
+        {
+            AsyncHandler = (method, timeout, cancellationToken) =>
+            {
+                firstProbe.TrySetResult(clock.Elapsed);
+                return Task.FromResult(JsonSerializer.SerializeToElement(new { }));
+            },
+        };
+        using var watchdog = new RemoteIdleWatchdog(
+            connection,
+            connection,
+            new RemoteWatchdogTiming(idleWindow, TimeSpan.FromMilliseconds(200)),
+            TimeProvider.System,
+            static _ => Task.CompletedTask);
+        watchdog.Start();
+
+        await Task.Delay(50);
+        TimeSpan activityAt = clock.Elapsed;
+        connection.RecordInboundActivity();
+        TimeSpan probeAt = await firstProbe.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.IsTrue(probeAt - activityAt >= idleWindow - TimeSpan.FromMilliseconds(30), $"Probed after {probeAt - activityAt} of silence.");
+        Assert.IsTrue(probeAt < idleWindow * 1.75, $"Probed {probeAt} after start; silence was not measured from the last message.");
+    }
+
+    [TestMethod]
     public async Task DiagnoseNeverChangesConnectionStateOrSendsRpc()
     {
         var connection = new StubConnection();
@@ -1044,11 +1077,17 @@ public sealed class WorkerRpcServiceTests
         // When set, replaces Handler and may hang until the per-request timeout elapses.
         public Func<string, TimeSpan, CancellationToken, Task<JsonElement>>? AsyncHandler { get; set; }
 
+        public event EventHandler? InboundActivity;
+
         public long InboundActivitySequence => Interlocked.Read(ref activity);
 
         public List<string> Methods { get; } = [];
 
-        public void RecordInboundActivity() => Interlocked.Increment(ref activity);
+        public void RecordInboundActivity()
+        {
+            Interlocked.Increment(ref activity);
+            InboundActivity?.Invoke(this, EventArgs.Empty);
+        }
 
         public void EmitClosed(Exception? exception = null) => Closed?.Invoke(this, exception);
 

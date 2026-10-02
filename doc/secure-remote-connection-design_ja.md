@@ -67,7 +67,7 @@ WebSocket URI に root 以外の routing path がある場合でも、probe は 
 
 UI は診断対象 profile と実際の接続先を分けます。profile 選択または保存済み endpoint metadata の変更で診断を消去・cancel します。別診断、接続・世代変更、dispose 後に完了した古い結果は破棄します。実行中は重複 check を無効化し、既存の polite live region に状態を出します。動的表示はすべて `SafeMarkdownService` で処理します。
 
-transport は有効に parse された inbound JSON-RPC response、notification、server request のすべてを activity として watchdog に通知し、monotonic inbound-activity sequence を管理します。active remote 接続で 30 秒 activity がない場合、sequence を記録して `refreshToken: false` の `account/read` を overload retry なしで 10 秒 deadline で送ります。有効な parsed inbound message はすべて silence count をリセットします。最初の deadline 時に probe 開始後の sequence が進んでいれば2回目を送らず、count を戻して通常の30秒 idle wait に戻ります。最初の probe 中に activity がなかった場合のみ、直ちにもう1回を送ります。2回目も probe 開始後に activity がないまま timeout した場合だけ、捕捉済み socket を閉じ、その generation が現行なら `Degraded` を通知します。自動再接続や変更操作の再送はしません。新しい generation に置き換わった後の close は state を上書きしません。`SignedOut` account state は接続を維持し、既存の sign-in 操作を可能にします。
+transport は有効に parse された inbound JSON-RPC response、notification、server request のすべてを activity として watchdog に通知し、monotonic inbound-activity sequence と、watchdog が時刻を記録する activity signal を提供します。silence は最後の inbound message から測ります。active remote 接続で最後の inbound message から 30 秒 activity がない場合、sequence を記録して `refreshToken: false` の `account/read` を overload retry なしで 10 秒 deadline で送ります。有効な parsed inbound message はすべて silence count をリセットします。最初の deadline 時に probe 開始後の sequence が進んでいれば2回目を送らず、count を戻して通常の30秒 idle wait に戻ります。最初の probe 中に activity がなかった場合のみ、直ちにもう1回を送ります。2回目も probe 開始後に activity がないまま timeout した場合だけ、捕捉済み socket を閉じ、その generation が現行なら `Degraded` を通知します。自動再接続や変更操作の再送はしません。新しい generation に置き換わった後の close は state を上書きしません。`SignedOut` account state は接続を維持し、既存の sign-in 操作を可能にします。
 
 失敗は endpoint 不正、profile 変更・利用不可、token file 不在・読取不可・内容不正、認証拒否、証明書拒否、DNS/ネットワーク失敗、timeout、RPC initialize 失敗、account-read 失敗、health route の結果に分類します。秘匿が必要な詳細は redaction までの短時間だけ保持し、ユーザー表示は固定分類文言とします。
 
@@ -125,6 +125,6 @@ Preview の説明を更新し、health diagnostics と許可済み read-only RPC
 
 ## 参考
 
-- Repository source: `src/Codex.AppServer.Protocol/TransportPolicies.cs`（`JsonRpcRetryPolicy` と `WebSocketTransportSecurityPolicy` を含む）、`src/Codex.VisualStudio.Worker/WorkerRpcService.cs`、`ISecretRedactor`、既存 diagnostics writer。
+- Repository source: `src/Codex.AppServer.Protocol/TransportPolicies.cs`（`ReadOnlyRetryPolicy`、`ReadOnlyRequestAllowlist`、`SendReadOnlyRequestAsync`、`WebSocketTransportSecurityPolicy` を含む）、`src/Codex.VisualStudio.Worker/WorkerRpcService.cs`、`ISecretRedactor`、既存 diagnostics writer。
 - 固定 upstream source: health/ready route は `codex-rs/app-server-transport/src/transport/websocket.rs`、force-reload の動作は `codex-rs/app-server/src/request_processors/catalog_processor.rs` の `skills_list_response`、schema `codex-rs/app-server-protocol/schema/json/v2/SkillsListParams.json`、test `codex-rs/app-server/tests/suite/v2/skills_list.rs`。
 - Microsoft Learn: .NET `ClientWebSocket.ConnectAsync` の `HttpMessageInvoker` overload、`HttpClient.DefaultProxy`、`SocketsHttpHandler.ConnectCallback`、WebSocket keep-alive と unsolicited PONG の動作。

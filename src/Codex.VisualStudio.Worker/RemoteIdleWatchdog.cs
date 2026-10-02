@@ -10,7 +10,8 @@ public sealed record RemoteWatchdogTiming(TimeSpan IdleWindow, TimeSpan ProbeTim
 /// <summary>
 /// Detects a silent remote peer for one connection generation. WebSocket keep-alive PONG frames
 /// are unsolicited and prove nothing about the peer, so liveness comes only from valid parsed
-/// inbound JSON-RPC traffic. After a full idle window without inbound activity it sends at most
+/// inbound JSON-RPC traffic. Once a full idle window has passed since the last inbound message
+/// (or since start, when nothing has arrived yet) it sends at most
 /// two <c>account/read(refreshToken: false)</c> probes, each sent once without overload retry.
 /// Only two consecutive silent probes report the peer as unresponsive. It never reconnects and
 /// never sends a mutation.
@@ -23,6 +24,7 @@ internal sealed class RemoteIdleWatchdog : IDisposable
     private readonly TimeProvider timeProvider;
     private readonly Func<CancellationToken, Task> onUnresponsive;
     private readonly CancellationTokenSource lifetime = new();
+    private long lastActivityTimestamp;
     private Task? loop;
 
     public RemoteIdleWatchdog(
@@ -37,6 +39,8 @@ internal sealed class RemoteIdleWatchdog : IDisposable
         this.timing = timing;
         this.timeProvider = timeProvider;
         this.onUnresponsive = onUnresponsive;
+        lastActivityTimestamp = timeProvider.GetTimestamp();
+        activity.InboundActivity += OnInboundActivity;
     }
 
     public Task Completion => loop ?? Task.CompletedTask;
@@ -62,21 +66,21 @@ internal sealed class RemoteIdleWatchdog : IDisposable
     {
         try
         {
-            long observed = activity.InboundActivitySequence;
             while (!cancellationToken.IsCancellationRequested)
             {
-                await Task.Delay(timing.IdleWindow, timeProvider, cancellationToken).ConfigureAwait(false);
-                long current = activity.InboundActivitySequence;
-                if (current != observed)
+                // Wait only until a full idle window after the last inbound message, so probing
+                // starts once the peer has been silent for exactly that window.
+                TimeSpan silence = timeProvider.GetElapsedTime(Interlocked.Read(ref lastActivityTimestamp));
+                if (silence < timing.IdleWindow)
                 {
-                    observed = current;
+                    await Task.Delay(timing.IdleWindow - silence, timeProvider, cancellationToken).ConfigureAwait(false);
                     continue;
                 }
 
                 if (await ProbeShowsLifeAsync(cancellationToken).ConfigureAwait(false)
                     || await ProbeShowsLifeAsync(cancellationToken).ConfigureAwait(false))
                 {
-                    observed = activity.InboundActivitySequence;
+                    MarkActivity();
                     continue;
                 }
 
@@ -97,9 +101,14 @@ internal sealed class RemoteIdleWatchdog : IDisposable
         }
         finally
         {
+            activity.InboundActivity -= OnInboundActivity;
             lifetime.Dispose();
         }
     }
+
+    private void OnInboundActivity(object? sender, EventArgs e) => MarkActivity();
+
+    private void MarkActivity() => Interlocked.Exchange(ref lastActivityTimestamp, timeProvider.GetTimestamp());
 
     // True when the peer answered (any response, including a JSON-RPC error or SignedOut), or
     // when other inbound traffic arrived while the probe was outstanding.

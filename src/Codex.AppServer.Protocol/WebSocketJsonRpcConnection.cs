@@ -109,6 +109,8 @@ public sealed class WebSocketJsonRpcConnection : IJsonRpcConnection, IInboundAct
     // Monotonic count of valid parsed inbound responses, notifications, and server requests.
     public long InboundActivitySequence => Interlocked.Read(ref inboundActivity);
 
+    public event EventHandler? InboundActivity;
+
     // HTTP status of a failed upgrade (for example 401), when the server returned one.
     public int? HandshakeHttpStatus { get; private set; }
 
@@ -302,6 +304,7 @@ public sealed class WebSocketJsonRpcConnection : IJsonRpcConnection, IInboundAct
                 if (rpcMessage.IsResponse || rpcMessage.IsRequest || rpcMessage.IsNotification)
                 {
                     Interlocked.Increment(ref inboundActivity);
+                    InboundActivity?.Invoke(this, EventArgs.Empty);
                 }
 
                 if (rpcMessage.IsResponse)

@@ -4147,18 +4147,37 @@ public sealed class ViewModelTests
         using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(SettingsWith(profile)));
         Assert.IsTrue(vm.CheckProfileHealthCommand.CanExecute);
 
+        // Remote UI does not poll CanExecute, so every transition must also raise a notification.
+        int notifications = 0;
+        vm.CheckProfileHealthCommand.PropertyChanged += (_, args) =>
+        {
+            if (string.Equals(args.PropertyName, nameof(AsyncCommand.CanExecute), StringComparison.Ordinal))
+            {
+                notifications++;
+            }
+        };
+
+        void AssertTransition(bool expected, string message)
+        {
+            Assert.AreEqual(expected, vm.CheckProfileHealthCommand.CanExecute, message);
+            Assert.IsTrue(notifications > 0, $"No CanExecute notification: {message}");
+            notifications = 0;
+        }
+
         vm.RemoteProfiles.SelectedProfile!.Endpoint = "wss://edited.example.invalid";
-        Assert.IsFalse(vm.CheckProfileHealthCommand.CanExecute, "Pending edits block diagnosis.");
+        AssertTransition(false, "Pending edits block diagnosis.");
 
         vm.RemoteProfiles.SelectedProfile.Endpoint = profile.Endpoint;
+        AssertTransition(true, "Reverting the edit re-enables diagnosis.");
+
         vm.RemoteProfiles.SelectedProfile.IsEnabled = false;
-        Assert.IsFalse(vm.CheckProfileHealthCommand.CanExecute);
+        AssertTransition(false, "A disabled profile cannot be diagnosed.");
 
         vm.RemoteProfiles.SelectedProfile.IsEnabled = true;
-        Assert.IsTrue(vm.CheckProfileHealthCommand.CanExecute);
+        AssertTransition(true, "Re-enabling the profile re-enables diagnosis.");
 
         vm.RemoteProfiles.AddCommand.Execute(null);
-        Assert.IsFalse(vm.CheckProfileHealthCommand.CanExecute, "An unsaved profile cannot be diagnosed.");
+        AssertTransition(false, "An unsaved profile cannot be diagnosed.");
         await Task.CompletedTask;
     }
 
@@ -4181,7 +4200,8 @@ public sealed class ViewModelTests
         Assert.AreEqual("Build box", request.ProfileName);
         Assert.AreEqual(profile.Endpoint, request.Endpoint);
         Assert.IsTrue(vm.ConnectionHealth.HasResult);
-        Assert.AreEqual("Checked profile: 'Build box'", vm.ConnectionHealth.CheckedProfileText);
+        string observedAt = bridge.DiagnoseObservedAt.ToLocalTime().ToString("T", System.Globalization.CultureInfo.CurrentCulture);
+        Assert.AreEqual($"Checked profile: 'Build box' at {observedAt}", vm.ConnectionHealth.CheckedProfileText, "The label names the observation time.");
         StringAssert.StartsWith(vm.ConnectionHealth.HealthText, "Health (/healthz): Healthy (HTTP 200");
         StringAssert.StartsWith(vm.ConnectionHealth.ReadyText, "Ready (/readyz): Unhealthy (HTTP 503");
         Assert.AreEqual("RPC connection: Not connected", vm.ConnectionHealth.RpcText, "An inactive profile is never inferred from health.");
@@ -4444,12 +4464,15 @@ public sealed class ViewModelTests
 
         public Func<ConnectionDiagnosticsRequest, Task<ConnectionDiagnosticsResult>>? DiagnoseHandler { get; set; }
 
+        public DateTimeOffset DiagnoseObservedAt { get; set; } = new(2026, 10, 2, 9, 15, 30, TimeSpan.Zero);
+
         public Task<ConnectionDiagnosticsResult> DiagnoseConnectionAsync(ConnectionDiagnosticsRequest request, CancellationToken cancellationToken)
         {
             DiagnoseRequests.Add(request);
             return DiagnoseHandler?.Invoke(request) ?? Task.FromResult(new ConnectionDiagnosticsResult
             {
                 ProfileName = request.ProfileName,
+                ObservedAt = DiagnoseObservedAt,
                 Health = new HealthProbeResult { State = HealthProbeState.Healthy, HttpStatus = 200, DurationMilliseconds = 12, Reason = "The route responded successfully." },
                 Ready = new HealthProbeResult { State = HealthProbeState.Unhealthy, HttpStatus = 503, DurationMilliseconds = 14, Reason = "The route responded with an error status." },
             });

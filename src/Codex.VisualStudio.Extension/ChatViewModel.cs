@@ -1069,8 +1069,6 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 ExtensionDiagnostics.Write("Project scaffolding failed; continuing with Worker connection", ex);
             }
 
-            string? targetProfileName = remoteProfiles.AppliedProfileName;
-            await OnUiAsync(() => SetConnectedProfileName(targetProfileName)).ConfigureAwait(false);
             WorkerStatus result;
             bool enteredGate = false;
             try
@@ -1083,6 +1081,10 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                     enteredGate = true;
                 }
 
+                // Capture the target under the gate so the label names the profile the bridge
+                // dispatches, even when a queued selection/save completed while we waited.
+                string? targetProfileName = remoteProfiles.AppliedProfileName;
+                await OnUiAsync(() => SetConnectedProfileName(targetProfileName)).ConfigureAwait(false);
                 result = await bridge.ConnectAsync(workingDirectory, settings.ExperimentalApiEnabled, lifetime.Token).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (lifetime.IsCancellationRequested)

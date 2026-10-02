@@ -182,9 +182,9 @@ Implements `doc/secure-remote-connection-design.md`. The bundled Extension/Worke
 
 Implementation notes:
 
-- The idle watchdog measures silence as a full 30-second window in which the inbound sequence did
-  not change, so a silent peer is detected between 30 and 60 seconds after its last message, plus
-  two 10-second probes.
+- The idle watchdog timestamps each inbound activity signal with its own `TimeProvider` and waits
+  only until 30 seconds after the last inbound message, so a silent peer is probed exactly 30
+  seconds after its last message and detected after two further 10-second probes.
 - The handshake stage cap also covers a server that accepts TCP but never answers the upgrade.
 - A redirect on the WebSocket upgrade or health routes is never followed. An upgrade that the server
   answers with any status other than 101 (wrong routing path, redirect, server error) is reported as
