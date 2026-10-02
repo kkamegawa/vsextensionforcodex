@@ -674,6 +674,41 @@ public sealed class RemoteHandshakeTests
     }
 
     [TestMethod]
+    public async Task StageCancellationIsTimeoutButParentCancellationStaysCancellation()
+    {
+        // ClientWebSocket.ConnectAsync may report either cancellation as WebSocketException.
+        RemoteConnectionException timeout = await Assert.ThrowsExactlyAsync<RemoteConnectionException>(() =>
+            CodexProcessHost.RunStageAsync<bool>(
+                async stage =>
+                {
+                    try
+                    {
+                        await Task.Delay(Timeout.InfiniteTimeSpan, stage);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                    }
+
+                    throw new WebSocketException("connect aborted");
+                },
+                TimeSpan.FromMilliseconds(50),
+                CancellationToken.None));
+        Assert.AreEqual(RemoteConnectionFailure.Timeout, timeout.Failure);
+
+        using var parent = new CancellationTokenSource();
+        OperationCanceledException canceled = await Assert.ThrowsAsync<OperationCanceledException>(() =>
+            CodexProcessHost.RunStageAsync<bool>(
+                stage =>
+                {
+                    parent.Cancel();
+                    throw new WebSocketException("connect aborted");
+                },
+                TimeSpan.FromSeconds(30),
+                parent.Token));
+        Assert.AreEqual(parent.Token, canceled.CancellationToken);
+    }
+
+    [TestMethod]
     public async Task HandshakeStageCapIsReportedAsTimeout()
     {
         var hold = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);

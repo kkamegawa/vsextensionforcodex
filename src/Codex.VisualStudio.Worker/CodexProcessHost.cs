@@ -244,7 +244,13 @@ public sealed class CodexProcessHost : ICodexProcessHost
         {
             throw new RemoteConnectionException(RemoteConnectionFailure.Timeout);
         }
-        catch (WebSocketException) when (stage.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+        catch (WebSocketException ex) when (cancellationToken.IsCancellationRequested)
+        {
+            // ConnectAsync can surface a parent cancellation (caller or overall startup deadline)
+            // as WebSocketException; preserve it as cancellation instead of a network failure.
+            throw new OperationCanceledException("The remote startup was canceled.", ex, cancellationToken);
+        }
+        catch (WebSocketException) when (stage.IsCancellationRequested)
         {
             throw new RemoteConnectionException(RemoteConnectionFailure.Timeout);
         }
