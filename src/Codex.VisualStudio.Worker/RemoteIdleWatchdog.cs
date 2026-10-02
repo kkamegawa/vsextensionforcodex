@@ -27,6 +27,9 @@ internal sealed class RemoteIdleWatchdog : IDisposable
     private readonly UnresponsiveHandler onUnresponsive;
     private readonly CancellationTokenSource lifetime = new();
     private long lastActivityTimestamp;
+    // Incremented after every timestamp update. Sampled before the timestamp is read, it is the
+    // probe-episode baseline, so activity racing with the expiry check is never absorbed into it.
+    private long activityGeneration;
     private Task? loop;
 
     public RemoteIdleWatchdog(
@@ -80,6 +83,7 @@ internal sealed class RemoteIdleWatchdog : IDisposable
             {
                 // Wait only until a full idle window after the last inbound message, so probing
                 // starts once the peer has been silent for exactly that window.
+                long episode = Interlocked.Read(ref activityGeneration);
                 TimeSpan silence = timeProvider.GetElapsedTime(Interlocked.Read(ref lastActivityTimestamp));
                 if (silence < timing.IdleWindow)
                 {
@@ -87,9 +91,9 @@ internal sealed class RemoteIdleWatchdog : IDisposable
                     continue;
                 }
 
-                // One baseline for the whole episode: activity between the probes, or while the
-                // owner waits for its gate, still counts as life.
-                long episode = activity.InboundActivitySequence;
+                // One baseline for the whole episode, taken before the expiry check: activity that
+                // raced with that check, arrived between the probes, or arrived while the owner
+                // waits for its gate still counts as life.
                 if (await ProbeShowsLifeAsync(episode, cancellationToken).ConfigureAwait(false)
                     || await ProbeShowsLifeAsync(episode, cancellationToken).ConfigureAwait(false))
                 {
@@ -97,7 +101,7 @@ internal sealed class RemoteIdleWatchdog : IDisposable
                     continue;
                 }
 
-                bool IsStillSilent() => activity.InboundActivitySequence == episode;
+                bool IsStillSilent() => Interlocked.Read(ref activityGeneration) == episode;
                 if (await onUnresponsive(IsStillSilent, cancellationToken).ConfigureAwait(false))
                 {
                     continue;
@@ -126,7 +130,11 @@ internal sealed class RemoteIdleWatchdog : IDisposable
 
     private void OnInboundActivity(object? sender, EventArgs e) => MarkActivity();
 
-    private void MarkActivity() => Interlocked.Exchange(ref lastActivityTimestamp, timeProvider.GetTimestamp());
+    private void MarkActivity()
+    {
+        Interlocked.Exchange(ref lastActivityTimestamp, timeProvider.GetTimestamp());
+        Interlocked.Increment(ref activityGeneration);
+    }
 
     // True when the peer answered (any response, including a JSON-RPC error or SignedOut), or
     // when other inbound traffic arrived since the probe episode began.
@@ -147,7 +155,7 @@ internal sealed class RemoteIdleWatchdog : IDisposable
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
-            return activity.InboundActivitySequence != episode;
+            return Interlocked.Read(ref activityGeneration) != episode;
         }
     }
 }

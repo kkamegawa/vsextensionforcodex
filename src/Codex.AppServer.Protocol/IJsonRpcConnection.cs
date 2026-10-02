@@ -18,9 +18,9 @@ public interface IJsonRpcConnection : IAsyncDisposable
 }
 
 /// <summary>
-/// A transport that counts valid parsed inbound JSON-RPC messages. An idle watchdog compares
-/// the sequence before and after a probe to tell a silent peer from a merely quiet one, and
-/// timestamps <see cref="InboundActivity"/> so it measures silence from the last message.
+/// A transport that counts valid parsed inbound JSON-RPC messages and signals each one. An idle
+/// watchdog timestamps <see cref="InboundActivity"/> to measure silence from the last message and
+/// to tell a silent peer from a merely quiet one during its probes.
 /// </summary>
 public interface IInboundActivitySource
 {
