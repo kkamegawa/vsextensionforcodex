@@ -220,9 +220,11 @@ Validation on 2026-10-02:
 - `test-schema-cache.ps1` and `smoke-app-server.ps1` with the pinned 0.159.1 executable (the
   hash-verified release asset from `install-codex.ps1`): schema cache contract tests passed and
   `initialize` succeeded.
-- Not yet done: Experimental
-  Instance screenshots of local/remote actions, authentication/RPC failures, health states, themes,
-  narrow width, and keyboard focus.
+- Experimental Instance (2026-10-03, maintainer): screenshots confirmed the connection-target
+  flyout for a local connection (Preview guidance, empty profile list, disabled Connect/Use local
+  actions) and the widened usage popup (reset times with the UTC suffix no longer clipped). The
+  maintainer accepted the remaining display items (remote actions, authentication/RPC failures,
+  health states, themes, narrow width, keyboard focus) without recorded screenshots.
 
 ## Implemented Behavior
 
