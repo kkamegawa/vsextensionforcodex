@@ -65,59 +65,60 @@ public sealed partial class BearerTokenFileReader
             throw Failure(RemoteConnectionFailure.TokenFileUnreadable);
         }
 
+        // Cleared on every exit, including open, final-path, read, cancellation, and parse failures.
         byte[] buffer = new byte[MaxBytes + 1];
-        int total = 0;
         try
         {
-            await using var stream = new FileStream(
-                fullPath,
-                FileMode.Open,
-                FileAccess.Read,
-                FileShare.Read,
-                bufferSize: 4096,
-                FileOptions.Asynchronous | FileOptions.SequentialScan);
+            int total = 0;
+            try
+            {
+                await using var stream = new FileStream(
+                    fullPath,
+                    FileMode.Open,
+                    FileAccess.Read,
+                    FileShare.Read,
+                    bufferSize: 4096,
+                    FileOptions.Asynchronous | FileOptions.SequentialScan);
 
-            // A directory symlink or junction anywhere in the path can redirect the open to a
-            // network share. Require the final path of the opened handle itself to stay local.
-            string? finalPath = finalPathResolver(stream.SafeFileHandle);
-            if (finalPath is null)
+                // A directory symlink or junction anywhere in the path can redirect the open to a
+                // network share. Require the final path of the opened handle itself to stay local.
+                string? finalPath = finalPathResolver(stream.SafeFileHandle);
+                if (finalPath is null)
+                {
+                    throw Failure(RemoteConnectionFailure.TokenFileUnreadable);
+                }
+
+                RequireLocalPath(finalPath);
+
+                // The bound applies to the opened stream, not to a length read before opening.
+                while (total < buffer.Length)
+                {
+                    int read = await stream.ReadAsync(buffer.AsMemory(total), cancellationToken).ConfigureAwait(false);
+                    if (read == 0)
+                    {
+                        break;
+                    }
+
+                    total += read;
+                }
+            }
+            catch (Exception ex) when (ex is OperationCanceledException or RemoteConnectionException)
+            {
+                throw;
+            }
+            catch (FileNotFoundException)
+            {
+                throw Failure(RemoteConnectionFailure.TokenFileMissing);
+            }
+            catch (DirectoryNotFoundException)
+            {
+                throw Failure(RemoteConnectionFailure.TokenFileMissing);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
                 throw Failure(RemoteConnectionFailure.TokenFileUnreadable);
             }
 
-            RequireLocalPath(finalPath);
-
-            // The bound applies to the opened stream, not to a length read before opening.
-            while (total < buffer.Length)
-            {
-                int read = await stream.ReadAsync(buffer.AsMemory(total), cancellationToken).ConfigureAwait(false);
-                if (read == 0)
-                {
-                    break;
-                }
-
-                total += read;
-            }
-        }
-        catch (Exception ex) when (ex is OperationCanceledException or RemoteConnectionException)
-        {
-            throw;
-        }
-        catch (FileNotFoundException)
-        {
-            throw Failure(RemoteConnectionFailure.TokenFileMissing);
-        }
-        catch (DirectoryNotFoundException)
-        {
-            throw Failure(RemoteConnectionFailure.TokenFileMissing);
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            throw Failure(RemoteConnectionFailure.TokenFileUnreadable);
-        }
-
-        try
-        {
             if (total > MaxBytes)
             {
                 throw Failure(RemoteConnectionFailure.TokenFileInvalid);

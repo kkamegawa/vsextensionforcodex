@@ -19,6 +19,8 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
     // after the gate is released during disposal.
     private readonly List<Task> trackedCallbacks = [];
     private readonly object trackedCallbacksGate = new();
+    // Cleared under trackedCallbacksGate when DisposeAsync snapshots the callbacks to drain.
+    private bool acceptingCallbacks = true;
     private WorkerOptions? options;
     private JsonRpc? clientRpc;
     private WorkerStatus status = new() { State = WorkerConnectionState.Disconnected, Message = "Worker is disconnected." };
@@ -616,6 +618,7 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
         Task[] callbacks;
         lock (trackedCallbacksGate)
         {
+            acceptingCallbacks = false;
             callbacks = [.. trackedCallbacks];
             trackedCallbacks.Clear();
         }
@@ -875,10 +878,43 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
 
         connection.Closed -= OnRemoteConnectionClosed;
 
-        // Produce the diagnostic and the categorical status text now, while the token lease is
-        // still held, so the queued publication carries no raw exception text.
-        WorkerDiagnostics.Write("remote codex app-server connection closed", exception);
-        TrackCallback(OnRemoteConnectionLostAsync(connection));
+        // Admit the handler before logging. DisposeAsync drains every admitted handler before it
+        // disposes the host and releases the token lease; once disposal has taken its snapshot the
+        // handler is suppressed, so the exception is never logged after the lease is gone.
+        var handled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        if (!TryTrackCallback(handled.Task))
+        {
+            return;
+        }
+
+        Task lost = Task.CompletedTask;
+        try
+        {
+            // Produce the diagnostic and the categorical status text now, while the token lease is
+            // still held, so the queued publication carries no raw exception text.
+            WorkerDiagnostics.Write("remote codex app-server connection closed", exception);
+            lost = OnRemoteConnectionLostAsync(connection);
+        }
+        finally
+        {
+            lost.ContinueWith(
+                static (completed, state) =>
+                {
+                    var source = (TaskCompletionSource)state!;
+                    if (completed.Exception is { } failure)
+                    {
+                        source.TrySetException(failure.InnerExceptions);
+                    }
+                    else
+                    {
+                        source.TrySetResult();
+                    }
+                },
+                handled,
+                CancellationToken.None,
+                TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+        }
     }
 
     private async Task OnRemoteConnectionLostAsync(IJsonRpcConnection connection)
@@ -966,12 +1002,22 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
     // A PID is reported only for a Worker-owned local process, never for a remote target.
     private int? OwnedProcessId() => target.Kind == ConnectionTargetKind.Local ? processHost.ProcessId : null;
 
-    private void TrackCallback(Task callback)
+    private void TrackCallback(Task callback) => TryTrackCallback(callback);
+
+    // False once DisposeAsync has snapshotted the callbacks; the caller must then do nothing that
+    // depends on the token lease or the host.
+    private bool TryTrackCallback(Task callback)
     {
         lock (trackedCallbacksGate)
         {
+            if (!acceptingCallbacks)
+            {
+                return false;
+            }
+
             trackedCallbacks.RemoveAll(static task => task.IsCompleted);
             trackedCallbacks.Add(callback);
+            return true;
         }
     }
 
