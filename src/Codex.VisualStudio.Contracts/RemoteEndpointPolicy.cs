@@ -456,6 +456,43 @@ public static class TokenFilePathPolicy
             }
         }
 
-        return value.IndexOf(':', 2) < 0;
+        if (value.IndexOf(':', 2) >= 0)
+        {
+            return false;
+        }
+
+        // A drive-qualified path can still name a DOS device ("C:\temp\NUL.txt" opens NUL), and
+        // Windows strips trailing dots and spaces before resolving a component, so reject both.
+        foreach (string component in value.Substring(3).Split('\\', '/'))
+        {
+            if (component.Length > 0
+                && (component[component.Length - 1] is '.' or ' ' || IsDosDeviceName(component)))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static bool IsDosDeviceName(string component)
+    {
+        int dot = component.IndexOf('.');
+        string stem = (dot < 0 ? component : component.Substring(0, dot)).TrimEnd(' ');
+        switch (stem.ToUpperInvariant())
+        {
+            case "CON":
+            case "PRN":
+            case "AUX":
+            case "NUL":
+            case "CONIN$":
+            case "CONOUT$":
+                return true;
+        }
+
+        // COM0-9 and LPT0-9, including the superscript digits Windows also treats as devices.
+        return stem.Length == 4
+            && (stem.StartsWith("COM", StringComparison.OrdinalIgnoreCase) || stem.StartsWith("LPT", StringComparison.OrdinalIgnoreCase))
+            && (stem[3] is >= '0' and <= '9' || stem[3] is '\u00B9' or '\u00B2' or '\u00B3');
     }
 }

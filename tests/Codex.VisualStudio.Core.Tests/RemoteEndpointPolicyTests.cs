@@ -185,6 +185,30 @@ public sealed class RemoteEndpointPolicyTests
     }
 
     [TestMethod]
+    [DataRow(@"C:\CON")]
+    [DataRow(@"C:\temp\NUL.txt")]
+    [DataRow(@"C:\temp\COM1")]
+    [DataRow(@"C:\temp\lpt9.token")]
+    [DataRow(@"C:\temp\aux .token")]
+    [DataRow(@"C:\temp\conout$")]
+    [DataRow("C:\\temp\\COM\u00B9")]
+    [DataRow(@"C:\prn\token")]
+    [DataRow(@"C:\temp\token.")]
+    [DataRow(@"C:\temp \token")]
+    public void TokenFilePathPolicy_RejectsDosDeviceNamesAndAmbiguousComponents(string path)
+    {
+        Assert.IsFalse(TokenFilePathPolicy.IsSyntacticallyValid(path), path);
+    }
+
+    [TestMethod]
+    public void TokenFilePathPolicy_AcceptsNamesThatOnlyResembleDevices()
+    {
+        Assert.IsTrue(TokenFilePathPolicy.IsSyntacticallyValid(@"C:\tokens\console.token"));
+        Assert.IsTrue(TokenFilePathPolicy.IsSyntacticallyValid(@"C:\tokens\COM10"));
+        Assert.IsTrue(TokenFilePathPolicy.IsSyntacticallyValid(@"C:\nullable\aux-token"));
+    }
+
+    [TestMethod]
     public void Fingerprint_CoversMetadataButNotTokenContents()
     {
         string baseline = RemoteProfileFingerprint.Compute("Build", "wss://example.invalid", @"C:\t\token", @"C:\repo", "/repo", true);
