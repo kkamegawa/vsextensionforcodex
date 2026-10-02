@@ -1056,87 +1056,107 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     /// </summary>
     private async Task<bool> ConnectWithDirectoryAsync(string workingDirectory, bool reloadThreads = false, bool profileGateHeld = false)
     {
-        // The auto-connect watcher and a user-initiated Send/Connect can both reach here; the
-        // guard ensures only one connect attempt runs at a time so we never spawn two workers.
-        if (Interlocked.CompareExchange(ref connecting, 1, 0) != 0)
+        // The bridge reads the saved profile selection, so every connect runs under the profile
+        // operation gate (gated callers already hold it). An ungated caller takes the gate before
+        // the connect guard and keeps it until the guard is cleared, so a profile action queued
+        // behind this connect never finds the guard still set and silently drops its dispatch.
+        bool enteredGate = false;
+        if (!profileGateHeld)
         {
-            return false;
+            if (!await TryEnterProfileGateAsync().ConfigureAwait(false))
+            {
+                return false;
+            }
+
+            enteredGate = true;
         }
 
         try
         {
+            // The auto-connect watcher and a user-initiated Send/Connect can both reach here; the
+            // guard ensures only one connect attempt runs at a time so we never spawn two workers.
+            if (Interlocked.CompareExchange(ref connecting, 1, 0) != 0)
+            {
+                return false;
+            }
+
             try
             {
-                await projectScaffolder.EnsureScaffoldAsync(workingDirectory, lifetime.Token).ConfigureAwait(false);
+                return await ConnectUnderGateAsync(workingDirectory, reloadThreads).ConfigureAwait(false);
             }
-            catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
-            {
-                return false;
-            }
-            catch (Exception ex)
-            {
-                ExtensionDiagnostics.Write("Project scaffolding failed; continuing with Worker connection", ex);
-            }
-
-            WorkerStatus result;
-            bool enteredGate = false;
-            try
-            {
-                // The bridge reads the saved profile selection; serialize that read and the RPC
-                // dispatch with profile/settings mutations (gated callers already hold the gate).
-                if (!profileGateHeld)
-                {
-                    await profileOperationGate.WaitAsync(lifetime.Token).ConfigureAwait(false);
-                    enteredGate = true;
-                }
-
-                // Capture the target under the gate so the label names the profile the bridge
-                // dispatches, even when a queued selection/save completed while we waited.
-                string? targetProfileName = remoteProfiles.AppliedProfileName;
-                await OnUiAsync(() => SetConnectedProfileName(targetProfileName)).ConfigureAwait(false);
-                result = await bridge.ConnectAsync(workingDirectory, settings.ExperimentalApiEnabled, lifetime.Token).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
-            {
-                return false;
-            }
-            catch (ObjectDisposedException) when (lifetime.IsCancellationRequested)
-            {
-                return false;
-            }
-            catch (Exception ex)
-            {
-                ExtensionDiagnostics.Write("Initial Worker connection failed", ex);
-                result = new WorkerStatus
-                {
-                    State = WorkerConnectionState.Degraded,
-                    Message = "Could not connect to the Codex Worker. See diagnostics.log.",
-                };
-            }
-
             finally
             {
-                if (enteredGate)
-                {
-                    profileOperationGate.Release();
-                }
+                Interlocked.Exchange(ref connecting, 0);
             }
-
-            await OnUiAsync(() => Status = result).ConfigureAwait(false);
-            if (result.State == WorkerConnectionState.Ready)
-            {
-                this.workingDirectory = workingDirectory;
-                unavailableSlashCommands.Clear();
-                initialized = true;
-                await RefreshReadyStateAsync(reloadThreads).ConfigureAwait(false);
-            }
-
-            return result.State == WorkerConnectionState.Ready;
         }
         finally
         {
-            Interlocked.Exchange(ref connecting, 0);
+            if (enteredGate)
+            {
+                profileOperationGate.Release();
+            }
         }
+    }
+
+    // Called under profileOperationGate with the connect guard held.
+    private async Task<bool> ConnectUnderGateAsync(string workingDirectory, bool reloadThreads)
+    {
+        try
+        {
+            await projectScaffolder.EnsureScaffoldAsync(workingDirectory, lifetime.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+        {
+            return false;
+        }
+        catch (Exception ex)
+        {
+            ExtensionDiagnostics.Write("Project scaffolding failed; continuing with Worker connection", ex);
+        }
+
+        // Capture the target under the gate so the label names the profile the bridge
+        // dispatches, even when a queued selection/save completed while we waited.
+        string? targetProfileName = remoteProfiles.AppliedProfileName;
+        await OnUiAsync(() => SetConnectedProfileName(targetProfileName)).ConfigureAwait(false);
+        WorkerStatus result;
+        try
+        {
+            result = await bridge.ConnectAsync(workingDirectory, settings.ExperimentalApiEnabled, lifetime.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+        {
+            return false;
+        }
+        catch (ObjectDisposedException) when (lifetime.IsCancellationRequested)
+        {
+            return false;
+        }
+        catch (Exception ex)
+        {
+            ExtensionDiagnostics.Write("Initial Worker connection failed", ex);
+            result = new WorkerStatus
+            {
+                State = WorkerConnectionState.Degraded,
+                Message = "Could not connect to the Codex Worker. See diagnostics.log.",
+
+                // Keep the attempted remote target so recovery offers Reconnect, not a local
+                // restart. Generation 0 marks that no Worker connection was ever confirmed.
+                Target = targetProfileName is null
+                    ? null
+                    : new ConnectionTargetSnapshot { Kind = ConnectionTargetKind.Remote, DisplayName = targetProfileName },
+            };
+        }
+
+        await OnUiAsync(() => Status = result).ConfigureAwait(false);
+        if (result.State == WorkerConnectionState.Ready)
+        {
+            this.workingDirectory = workingDirectory;
+            unavailableSlashCommands.Clear();
+            initialized = true;
+            await RefreshReadyStateAsync(reloadThreads).ConfigureAwait(false);
+        }
+
+        return result.State == WorkerConnectionState.Ready;
     }
 
     private void SetConnectedProfileName(string? profileName)
@@ -1206,6 +1226,23 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         }
     }
 
+    private async Task RetrySavedProfileConnectAsync()
+    {
+        if (!await TryEnterProfileGateAsync().ConfigureAwait(false))
+        {
+            return;
+        }
+
+        try
+        {
+            await ReconnectForProfileAsync("Connected with the saved remote profile.").ConfigureAwait(false);
+        }
+        finally
+        {
+            profileOperationGate.Release();
+        }
+    }
+
     private async Task<bool> TryEnterProfileGateAsync()
     {
         try
@@ -1261,6 +1298,14 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     {
         if (IsRemoteTarget)
         {
+            if (Status.Target!.Generation == 0)
+            {
+                // The Worker never confirmed this remote connection, so there is no generation
+                // snapshot to reconnect; rerun the full saved-profile connect instead.
+                await RetrySavedProfileConnectAsync().ConfigureAwait(false);
+                return;
+            }
+
             await ReconnectRemoteAsync().ConfigureAwait(false);
             return;
         }

@@ -3944,6 +3944,66 @@ public sealed class ViewModelTests
     }
 
     [TestMethod]
+    public async Task ChatViewModel_FailedRemoteConnect_OffersReconnectThatRerunsTheSavedProfileConnect()
+    {
+        var bridge = new FakeWorkerBridge
+        {
+            ConnectHandler = () => Task.FromException<WorkerStatus>(new InvalidOperationException("worker unavailable")),
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(SettingsWith(SavedRemoteProfile())));
+        SetWorkingDirectory(vm, Path.GetTempPath());
+
+        Assert.IsFalse(await ConnectDirectlyAsync(vm, Path.GetTempPath()));
+
+        Assert.AreEqual(WorkerConnectionState.Degraded, vm.Status.State);
+        Assert.AreEqual(ConnectionTargetKind.Remote, vm.Status.Target?.Kind);
+        Assert.AreEqual("Build box", vm.Status.Target?.DisplayName);
+        Assert.AreEqual(0, vm.Status.Target?.Generation);
+        Assert.AreEqual("Reconnect remote app-server", vm.RestartActionText);
+
+        bridge.ConnectHandler = null;
+        await RunCommandAsync(vm.RestartCommand);
+
+        Assert.AreEqual(0, bridge.RestartCallCount, "A remote target must never trigger a local restart.");
+        Assert.AreEqual(0, bridge.ReconnectRequests.Count, "No generation snapshot exists to reconnect.");
+        Assert.AreEqual(2, bridge.ConnectCallCount, "Recovery reruns the saved-profile connect.");
+        Assert.AreEqual(WorkerConnectionState.Ready, vm.Status.State);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_ProfileActionQueuedBehindAConnect_StillDispatchesItsConnect()
+    {
+        var release = new TaskCompletionSource<WorkerStatus>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var bridge = new FakeWorkerBridge();
+#pragma warning disable VSTHRD003 // The test owns this completion source and releases it below.
+        bridge.ConnectHandler = () => release.Task;
+#pragma warning restore VSTHRD003
+        var store = new MemorySettingsStore(SettingsWith(SavedRemoteProfile()));
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: store);
+        SetWorkingDirectory(vm, Path.GetTempPath());
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready });
+
+        Task<bool> first = ConnectDirectlyAsync(vm, Path.GetTempPath());
+        Task useLocal = RunCommandAsync(vm.UseLocalAppServerCommand);
+        bridge.ConnectHandler = null;
+        release.SetResult(new WorkerStatus { State = WorkerConnectionState.Ready });
+        await first;
+        await useLocal;
+
+        Assert.AreEqual(2, bridge.ConnectCallCount, "The queued switch to local must dispatch its own connect.");
+        Assert.IsNull(store.Settings.SelectedRemoteProfileName);
+        Assert.AreEqual("Local", vm.ConnectionTargetText);
+        Assert.AreEqual("Connected to the local codex app-server.", vm.RemoteProfiles.StatusText);
+    }
+
+    private static Task<bool> ConnectDirectlyAsync(ChatViewModel viewModel, string directory)
+    {
+        MethodInfo method = typeof(ChatViewModel).GetMethod("ConnectWithDirectoryAsync", BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("Could not find ConnectWithDirectoryAsync.");
+        return (Task<bool>)method.Invoke(viewModel, [directory, false, false])!;
+    }
+
+    [TestMethod]
     public async Task ChatViewModel_ApplyRemoteProfile_ConnectsTheRowItWasInvokedFor()
     {
         RemoteConnectionProfile first = SavedRemoteProfile();
@@ -4518,11 +4578,14 @@ public sealed class ViewModelTests
         // Runs when the bridge would read the persisted selection for a connect.
         public Action? OnConnect { get; set; }
 
+        // When set, supplies the connect result (it may throw or wait).
+        public Func<Task<WorkerStatus>>? ConnectHandler { get; set; }
+
         public Task<WorkerStatus> ConnectAsync(string workingDirectory, bool experimentalApi, CancellationToken cancellationToken)
         {
             ConnectCallCount++;
             OnConnect?.Invoke();
-            return Task.FromResult(new WorkerStatus { State = WorkerConnectionState.Ready });
+            return ConnectHandler?.Invoke() ?? Task.FromResult(new WorkerStatus { State = WorkerConnectionState.Ready });
         }
 
         public int RestartCallCount { get; private set; }
