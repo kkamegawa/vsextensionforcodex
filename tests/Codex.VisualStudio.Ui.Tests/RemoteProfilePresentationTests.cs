@@ -171,6 +171,27 @@ public sealed class RemoteProfilePresentationTests
         Assert.AreEqual("Saved profile", store.Saved.RemoteProfiles.Single().Name);
     }
 
+    [TestMethod]
+    public async Task SelectionChange_RaisesSaveAndRemoveStatesWhileTheGateIsBusy()
+    {
+        var store = new RecordingSettingsStore();
+        using var gate = new SemaphoreSlim(1, 1);
+        var presentation = new RemoteProfilesPresentationViewModel(SavedSettings(), store, gate);
+        var raised = new List<string>();
+        presentation.SaveCommand.PropertyChanged += (_, e) => raised.Add("save:" + e.PropertyName);
+        presentation.RemoveCommand.PropertyChanged += (_, e) => raised.Add("remove:" + e.PropertyName);
+
+        // A connect holds the gate, so selection persistence is queued behind it.
+        await gate.WaitAsync();
+        presentation.ClearSelection();
+
+        Assert.IsFalse(presentation.SaveCommand.CanExecute);
+        Assert.IsFalse(presentation.RemoveCommand.CanExecute);
+        CollectionAssert.Contains(raised, "save:" + nameof(Codex.VisualStudio.Extension.AsyncCommand.CanExecute));
+        CollectionAssert.Contains(raised, "remove:" + nameof(Codex.VisualStudio.Extension.AsyncCommand.CanExecute));
+        gate.Release();
+    }
+
     private static Task RunAsync(IAsyncCommand command)
         => command.ExecuteAsync(null, null!, CancellationToken.None);
 

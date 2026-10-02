@@ -243,6 +243,10 @@ public sealed class RemoteProfilesPresentationViewModel : ObservableObject
                 }
 
                 OnPropertyChanged(nameof(HasSelection));
+
+                // Remote UI does not poll CanExecute, and persistence may wait behind the gate.
+                RemoveCommand.RaiseCanExecuteChanged();
+                SaveCommand.RaiseCanExecuteChanged();
             }
         }
     }
