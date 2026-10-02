@@ -677,7 +677,7 @@
                    AllowsTransparency="True"
                    PopupAnimation="Fade"
                    Focusable="True">
-              <Border Width="320" MaxHeight="430" Padding="12" CornerRadius="6" BorderThickness="1"
+              <Border Width="420" MaxHeight="430" Padding="12" CornerRadius="6" BorderThickness="1"
                       Focusable="True"
                       FocusManager.IsFocusScope="True"
                       FocusManager.FocusedElement="{Binding ElementName=UsageCloseButton}"
@@ -691,15 +691,15 @@
                 </Border.InputBindings>
                 <StackPanel>
                   <TextBlock Text="Codex usage" FontWeight="SemiBold" FontSize="14" />
-                  <TextBlock Margin="0,6,0,0" Text="{Binding Usage.StatusText}"
+                  <TextBlock Margin="0,6,0,0" TextWrapping="Wrap" Text="{Binding Usage.StatusText}"
                              AutomationProperties.LiveSetting="Polite" />
-                  <TextBlock Margin="0,8,0,0" Text="{Binding Usage.PrimaryText}"
+                  <TextBlock Margin="0,8,0,0" TextWrapping="Wrap" Text="{Binding Usage.PrimaryText}"
                              Visibility="{Binding Usage.HasPrimary, Converter={StaticResource BoolToVis}}" />
-                  <TextBlock Margin="0,4,0,0" Text="{Binding Usage.SecondaryText}"
+                  <TextBlock Margin="0,4,0,0" TextWrapping="Wrap" Text="{Binding Usage.SecondaryText}"
                              Visibility="{Binding Usage.HasSecondary, Converter={StaticResource BoolToVis}}" />
-                  <TextBlock Margin="0,4,0,0" Text="{Binding Usage.CreditsText}"
+                  <TextBlock Margin="0,4,0,0" TextWrapping="Wrap" Text="{Binding Usage.CreditsText}"
                              Visibility="{Binding Usage.HasCredits, Converter={StaticResource BoolToVis}}" />
-                  <TextBlock Margin="0,8,0,0" FontSize="10" Text="{Binding Usage.UpdatedText}" />
+                  <TextBlock Margin="0,8,0,0" FontSize="10" TextWrapping="Wrap" Text="{Binding Usage.UpdatedText}" />
                   <WrapPanel Margin="0,12,0,0">
                     <Button Content="Open usage dashboard"
                             Command="{Binding OpenUsageDashboardCommand}"
