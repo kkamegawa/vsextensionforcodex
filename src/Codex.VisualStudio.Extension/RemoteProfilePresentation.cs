@@ -281,14 +281,19 @@ public sealed class RemoteProfilesPresentationViewModel : ObservableObject
     // Resolves the saved, enabled selection that a reconnect would apply. The Worker bridge reads
     // the same persisted selection, so an unsaved or disabled profile must be refused here rather
     // than silently falling back to local stdio.
-    internal bool TryGetApplicableProfile(out string profileName, out string error)
+    internal bool TryGetApplicableProfile(RemoteProfileViewModel? profile, out string profileName, out string error)
     {
         profileName = string.Empty;
         error = string.Empty;
-        RemoteProfileViewModel? profile = SelectedProfile;
         if (profile is null)
         {
             error = "Select a remote profile first.";
+            return false;
+        }
+
+        if (!Profiles.Contains(profile))
+        {
+            error = "The profile was removed before it could be applied.";
             return false;
         }
 
@@ -315,6 +320,12 @@ public sealed class RemoteProfilesPresentationViewModel : ObservableObject
             && string.Equals(profile.Name, settings.SelectedRemoteProfileName, StringComparison.Ordinal))?.Name;
 
     internal void ClearSelection() => SelectedProfile = null;
+
+    // Call only while holding OperationGate, after TryGetApplicableProfile accepted the profile.
+    // Persists that exact profile as the selection the Worker bridge reads, even if the user
+    // selected another row while the operation waited for the gate.
+    internal void PersistAppliedSelectionUnderGate(RemoteProfileViewModel profile)
+        => PersistSelection(profile.PersistedProfile!.Name);
 
     // Call only while holding OperationGate.
     internal void ClearSelectionUnderGate()
@@ -354,27 +365,36 @@ public sealed class RemoteProfilesPresentationViewModel : ObservableObject
 
     private async Task RemoveProfileAsync()
     {
+        // Capture the row Remove was invoked for; the selection may change while this waits.
+        RemoteProfileViewModel? target = SelectedProfile;
         await OperationGate.WaitAsync().ConfigureAwait(false);
         try
         {
-            if (SelectedProfile is null)
+            int index = target is null ? -1 : Profiles.IndexOf(target);
+            if (index < 0)
             {
                 return;
             }
 
-            int index = Profiles.IndexOf(SelectedProfile);
-            Profiles.Remove(SelectedProfile);
-
-            // The removed profile is no longer the selection, so the setter always persists the
-            // remaining saved profiles and the new selection.
-            persistInline = true;
-            try
+            Profiles.Remove(target!);
+            if (ReferenceEquals(SelectedProfile, target))
             {
-                SelectedProfile = index >= 0 && index < Profiles.Count ? Profiles[index] : Profiles.LastOrDefault();
+                // The removed profile is no longer the selection, so the setter always persists
+                // the remaining saved profiles and the new selection.
+                persistInline = true;
+                try
+                {
+                    SelectedProfile = index < Profiles.Count ? Profiles[index] : Profiles.LastOrDefault();
+                }
+                finally
+                {
+                    persistInline = false;
+                }
             }
-            finally
+            else
             {
-                persistInline = false;
+                // Another row is selected now; its own queued persistence records the selection.
+                PersistSettings();
             }
         }
         finally
@@ -387,10 +407,12 @@ public sealed class RemoteProfilesPresentationViewModel : ObservableObject
 
     private async Task SaveProfileAsync()
     {
+        // Capture the row Save was invoked for; the selection may change while this waits.
+        RemoteProfileViewModel? target = SelectedProfile;
         await OperationGate.WaitAsync().ConfigureAwait(false);
         try
         {
-            SaveProfileCore();
+            SaveProfileCore(target);
         }
         finally
         {
@@ -402,10 +424,9 @@ public sealed class RemoteProfilesPresentationViewModel : ObservableObject
 
     // Save validates metadata only. It never opens or reads the token file; existence,
     // readability, and contents are checked by the Worker on an explicit connection.
-    private void SaveProfileCore()
+    private void SaveProfileCore(RemoteProfileViewModel? profile)
     {
-        RemoteProfileViewModel? profile = SelectedProfile;
-        if (profile is null)
+        if (profile is null || !Profiles.Contains(profile))
         {
             return;
         }
@@ -427,7 +448,11 @@ public sealed class RemoteProfilesPresentationViewModel : ObservableObject
         }
 
         profile.PersistedProfile = profile.ToSettings();
-        settings.SelectedRemoteProfileName = profile.PersistedProfile.Name;
+        if (ReferenceEquals(SelectedProfile, profile))
+        {
+            settings.SelectedRemoteProfileName = profile.PersistedProfile.Name;
+        }
+
         PersistSettings();
         StatusText = "Remote profile saved. Reconnect to apply it.";
     }

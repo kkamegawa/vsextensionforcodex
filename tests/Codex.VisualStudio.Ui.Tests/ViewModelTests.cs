@@ -3918,6 +3918,41 @@ public sealed class ViewModelTests
     }
 
     [TestMethod]
+    public async Task ChatViewModel_ApplyRemoteProfile_ConnectsTheRowItWasInvokedFor()
+    {
+        RemoteConnectionProfile first = SavedRemoteProfile();
+        ExtensionSettings settings = SettingsWith(first);
+        settings.RemoteProfiles.Add(new RemoteConnectionProfile
+        {
+            Name = "Second",
+            Endpoint = "wss://second.example.invalid",
+            TokenFilePath = @"C:\tokens\second.token",
+            LocalRoot = @"C:\second",
+            ServerRoot = "/second",
+            Enabled = true,
+        });
+        var store = new MemorySettingsStore(settings);
+        var bridge = new FakeWorkerBridge();
+        string? selectionAtConnect = null;
+        bridge.OnConnect = () => selectionAtConnect = store.Settings.SelectedRemoteProfileName;
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: store);
+        SetWorkingDirectory(vm, Path.GetTempPath());
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready });
+
+        // Apply waits behind another operation; the user then selects a different row.
+        await vm.RemoteProfiles.OperationGate.WaitAsync();
+        Task apply = RunCommandAsync(vm.ApplyRemoteProfileCommand);
+        vm.RemoteProfiles.SelectedProfile = vm.RemoteProfiles.Profiles[1];
+        vm.RemoteProfiles.OperationGate.Release();
+        await apply;
+
+        Assert.AreEqual(1, bridge.ConnectCallCount);
+        Assert.AreEqual("Build box", selectionAtConnect, "The bridge must read the invoked profile, not the newer selection.");
+        Assert.AreEqual("Build box", vm.ConnectionTargetText);
+        Assert.AreEqual("Connected with remote profile 'Build box'.", vm.RemoteProfiles.StatusText);
+    }
+
+    [TestMethod]
     public async Task ChatViewModel_ApplyRemoteProfile_IsDisabledDuringTurn()
     {
         var bridge = new FakeWorkerBridge();
@@ -4272,6 +4307,26 @@ public sealed class ViewModelTests
         Assert.IsFalse(vm.ConnectionHealth.HasResult);
         Assert.AreEqual(string.Empty, vm.ConnectionHealth.HealthText);
 
+        // Editing the checked profile's metadata also invalidates an outstanding check.
+        var editing = new TaskCompletionSource<ConnectionDiagnosticsResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+#pragma warning disable VSTHRD003 // The test owns this completion source and releases it below.
+        bridge.DiagnoseHandler = _ => editing.Task;
+#pragma warning restore VSTHRD003
+        Task edited = RunCommandAsync(vm.CheckProfileHealthCommand);
+        Assert.IsTrue(vm.ConnectionHealth.IsChecking);
+        vm.RemoteProfiles.SelectedProfile!.Endpoint = "wss://edited.example.invalid";
+        editing.SetResult(new ConnectionDiagnosticsResult
+        {
+            ProfileName = "Second",
+            Health = new HealthProbeResult { State = HealthProbeState.Healthy },
+            Ready = new HealthProbeResult { State = HealthProbeState.Healthy },
+        });
+        await edited;
+
+        Assert.IsFalse(vm.ConnectionHealth.HasResult, "A late result for the previously saved endpoint must be discarded.");
+        Assert.IsFalse(vm.ConnectionHealth.IsChecking);
+        vm.RemoteProfiles.SelectedProfile.Endpoint = "wss://second.example.invalid";
+
         // A completed result is cleared by a later Save and by a connection generation change.
         bridge.DiagnoseHandler = null;
         await RunCommandAsync(vm.CheckProfileHealthCommand);
@@ -4434,9 +4489,13 @@ public sealed class ViewModelTests
 
         public int ConnectCallCount { get; private set; }
 
+        // Runs when the bridge would read the persisted selection for a connect.
+        public Action? OnConnect { get; set; }
+
         public Task<WorkerStatus> ConnectAsync(string workingDirectory, bool experimentalApi, CancellationToken cancellationToken)
         {
             ConnectCallCount++;
+            OnConnect?.Invoke();
             return Task.FromResult(new WorkerStatus { State = WorkerConnectionState.Ready });
         }
 

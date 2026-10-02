@@ -1151,6 +1151,8 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
     private async Task ApplyRemoteProfileAsync()
     {
+        // Capture the row Apply was invoked for; the selection may change while this waits.
+        RemoteProfileViewModel? invoked = remoteProfiles.SelectedProfile;
         if (!await TryEnterProfileGateAsync().ConfigureAwait(false))
         {
             return;
@@ -1158,11 +1160,15 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
         try
         {
-            if (!remoteProfiles.TryGetApplicableProfile(out string profileName, out string error))
+            if (!remoteProfiles.TryGetApplicableProfile(invoked, out string profileName, out string error))
             {
                 remoteProfiles.ReportStatus(error);
                 return;
             }
+
+            // Persist that same profile under the gate so the bridge connects to it, not to a
+            // selection still queued behind this operation.
+            remoteProfiles.PersistAppliedSelectionUnderGate(invoked!);
 
             await ReconnectForProfileAsync($"Connected with remote profile '{profileName}'.").ConfigureAwait(false);
         }
@@ -1412,7 +1418,21 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     }
 
     private void OnHealthProfileChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
-        => CheckProfileHealthCommand.RaiseCanExecuteChanged();
+    {
+        // Editing the checked profile's metadata invalidates any shown or in-flight result, so a
+        // late completion for the previously saved endpoint is discarded.
+        if (e.PropertyName is nameof(RemoteProfileViewModel.Name)
+            or nameof(RemoteProfileViewModel.Endpoint)
+            or nameof(RemoteProfileViewModel.TokenFilePath)
+            or nameof(RemoteProfileViewModel.LocalRoot)
+            or nameof(RemoteProfileViewModel.ServerRoot)
+            or nameof(RemoteProfileViewModel.IsEnabled))
+        {
+            connectionHealth.Clear();
+        }
+
+        CheckProfileHealthCommand.RaiseCanExecuteChanged();
+    }
 
     // Health diagnosis targets only a saved, enabled profile without pending edits whose saved
     // endpoint passes the shared policy. It is independent of the active connection.
