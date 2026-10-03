@@ -25,7 +25,17 @@ The local Worker owns all App Server interaction. Local stdio remains the defaul
 
 The same mapper governs working directory, active document, selection source, referenced files, file attachments, `localImage`, changed-file paths, file artifacts, and local open/reveal actions. Existing file actions consume a mapped local path. Future typed artifact presentation consumes the same boundary rather than opening an App Server string directly.
 
-Before `turn/start`, validate every explicit attachment and its physical containment. An unmappable attachment rejects the whole start request with a bounded actionable reason. It never sends a partial attachment list or exposes a sensitive full path in the error. Optional IDE context is included only when safely mappable. Validate physical containment again when opening or revealing a mapped local file.
+Issue #152 delivers the mapper, the physical boundary, and owner stamping, and integrates every consumer that exists today. Consumers that do not exist yet are delivered by later phases and must use the same services:
+
+| Consumer | Delivered by | Required boundary |
+|---|---|---|
+| Working directory, IDE context, attachments, `localImage`, approval paths, thread list working directory | Issue #152 | `RemotePathMapper` + `LocalPathBoundary` |
+| Changed-file links, typed file artifacts, image preview, local open/reveal | Issue #155 | Server-to-local mapping and physical containment before the action is enabled |
+| Stored attachments, recovered history, retained drafts | Issue #153 (rendering and operations: Issue #155) | Owner partition and generation, plus server-to-local mapping before any file action |
+
+The thread list shows a server working directory only as its mapped local path. When the path cannot be mapped, it shows a fixed remote-directory label instead of the server string.
+
+Before `turn/start`, validate every explicit attachment and its physical containment. An unmappable, missing, unreadable, or protected attachment rejects the whole start request with a bounded actionable reason that names only the file. It never sends a partial attachment list or exposes a sensitive full path in the error. Optional IDE context is included only when safely mappable. Validate physical containment again when opening or revealing a mapped local file.
 
 Skill paths remain bounded server-provided identifiers. They are compared as part of the exact `(Name, Scope, Path)` identity and sent unchanged. Remote skills never depend on filesystem existence on the Visual Studio host.
 
@@ -35,7 +45,17 @@ The Worker assigns an opaque state partition to the captured connection owner. I
 
 A bearer-token digest distinguishes explicit handshakes, including token rotation. It remains a Worker-only discriminator, not a claim to know the upstream principal. The CLI 0.159.1 account contract does not provide a universally authoritative account ID: API-key accounts contain only a type, and ChatGPT accounts contain nullable email and plan metadata. Email and plan alone cannot authorize sharing between accounts. When stable owner identity is unavailable, use a volatile per-Worker/attempt partition and disable both disk reads and disk writes of skill snapshots. The pinned contract therefore does not enable persistent cross-Worker reuse for local or remote owners.
 
-Account change and logout retire the old owner's pending work and state. An account notification that cannot prove owner continuity is treated conservatively as a boundary, including the same visible plan or email. Remote owner changes invalidate the previous socket before accepting new-owner activity. Reconnecting is explicit; retiring a socket never stops the external server and never replays a mutation.
+Account change and logout retire the old owner's pending work and state. An account notification that cannot prove owner continuity is treated conservatively as a boundary, including the same visible plan or email. Remote owner changes invalidate the previous socket before accepting new-owner activity. Retiring a socket never stops the external server and never replays a mutation.
+
+### Account change lifecycle
+
+| Trigger | Owner handling | Resulting connection |
+|---|---|---|
+| Logout requested by this owner | Retire the old owner after `account/logout` succeeds. | The Worker immediately connects a new volatile owner with the same bound options (local: new child process; remote: reread token file, new socket). The account shows Signed out and Sign in is available. |
+| `account/login/completed` whose `loginId` matches the sign-in this owner started | Retire the old owner, whether `success` is true or false. | Same automatic new-owner connection. The account is read by the new owner. |
+| `account/updated`, or `account/login/completed` without a matching `loginId` | Retire the old owner. | Degraded. The user reconnects or restarts explicitly. |
+
+The automatic connection runs only `initialize`/`initialized` and the existing connect sequence under the transition gate. It replays no message, approval, or other mutation, and it clears selected state like any owner replacement. A failure publishes the ordinary Degraded state. The connection status reports the account change while the new session starts; the transcript shows no error.
 
 Every operation captures the current owner and generation. Check both before committing results, emitting callbacks, or applying presentation state. An old response, notification, close callback, approval answer, model read, or catalog refresh cannot update a replacement owner. Retirement cancels pending requests and responses, clears approvals and audit presentation, and prevents stale refreshes from persisting under a new partition. Every Worker request that reads or mutates owner state, including model, thread, skill, MCP, permission-profile, and rate-limit reads, carries the captured owner. The Worker validates it under the transition gate and releases the gate before awaiting the app-server, so approval and user-input answers, owner retirement, and the watchdog never queue behind a pending call.
 
@@ -46,13 +66,13 @@ Every operation captures the current owner and generation. Check both before com
 | Socket, pending RPC, server requests | Worker connection generation and captured owner; retire before replacement. |
 | Skills | Worker memory snapshot and persistent store use the owner partition plus working roots. Force-reload identity validation remains mandatory before a turn. |
 | Model catalog and unsupported methods | Worker/UI results are owner-bound; replacement invalidates old catalogs and capability state. |
-| Usage | Clear the owner snapshot and reject late reads and pushes after replacement. |
+| Usage | Clear the owner snapshot and reject late reads and pushes after replacement, in both the Worker emission filter and the Extension. |
 | Approval grants and audit | Grants cannot cross owner or connection lifetime. Audit presentation is bounded and owner-bound. |
 | Selected conversation and transcript/history | Clear deterministically on endpoint, profile, root, account, or principal replacement. |
 | Composer, skill selection, attachments, next-turn state | Belong to the selected owner. Clear on owner replacement; ordinary same-owner failure does not authorize silently sending them elsewhere. |
 | Local file actions | Require mapped local values and physical containment for the current configured roots. |
 
-No new disk persistence is added for drafts, history, or attachments. Phase 4 draft recovery is conditional on proving owner continuity: a retained draft cannot become the active composer of an unverified replacement owner. With the pinned identity contract, an explicit reconnect starts a new volatile owner and clears selected state. Account notifications conservatively establish a new boundary even when visible account metadata is unchanged. The existing skill cache retains its bounds, hard expiry, atomic replacement, and cross-process locking, with a revised partition format. Old workspace-only snapshots cannot establish ownership and are not reused. Contract v18 carries only the bounded, non-secret owner discriminator needed to invalidate Extension state; bundled producers and consumers change together.
+No new disk persistence is added for drafts, history, or attachments. Phase 4 draft recovery is conditional on proving owner continuity: a retained draft cannot become the active composer of an unverified replacement owner. With the pinned identity contract, an explicit or account-change reconnect starts a new volatile owner and clears selected state. Account notifications conservatively establish a new boundary even when visible account metadata is unchanged. The existing skill cache retains its bounds, hard expiry, atomic replacement, and cross-process locking, with a revised partition format. Old workspace-only snapshots cannot establish ownership and are not reused. Contract v18 carries only the bounded, non-secret owner discriminator needed to invalidate Extension state; bundled producers and consumers change together.
 
 ## Implementation and verification
 

@@ -397,8 +397,8 @@ publishes Degraded. The degraded remote action is `Reconnect remote app-server` 
 The local action is `Restart local app-server`. Connect/reconnect/close are serialized and pending
 requests finish on retirement; stale close notifications cannot overwrite a newer Ready state.
 
-Remote mode remains Preview because upstream WebSocket support is experimental. Issue #152 supplies
-account/principal state isolation as specified in section 14. Health diagnosis and the bounded, allowlisted overload retry
+Remote mode remains Preview until Issue #153 is complete and upstream WebSocket support is no longer
+experimental. Issue #152 supplies account/principal state isolation as specified in section 14. Health diagnosis and the bounded, allowlisted overload retry
 contract are available independently of that limitation. Automatic reconnect/history recovery remains
 tracked by Issue #153; a failed liveness check does not resend user input or reconnect automatically.
 
@@ -422,4 +422,5 @@ validation. Every cache, grant, selected conversation, draft, and asynchronous r
 to a captured owner partition and connection generation. The pinned account contract cannot
 prove a stable account for every provider, so those owners use volatile partitions instead
 of sharing workspace-only persisted skill state. Account/principal replacement retires the
-previous remote socket before new-owner state is activated.
+previous remote socket before new-owner state is activated. A logout or sign-in started by the
+owner then connects a new owner automatically; an unsolicited account change ends in Degraded.

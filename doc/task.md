@@ -2,6 +2,17 @@
 
 `plan.md` のフェーズ分割に対応する詳細タスク。各タスクは独立してレビュー可能な小さなスライスを意図する。
 
+## 2026-10-04: Issue #152 reconciliation and follow-up ([Issue #152](https://github.com/kkamegawa/vsextensionforcodex/issues/152))
+
+Plan: [English Wiki](https://github.com/kkamegawa/vsextensionforcodex/wiki/path-state-isolation) / [Japanese Wiki](https://github.com/kkamegawa/vsextensionforcodex/wiki/path-state-isolation_ja). Evidence: [verification record](path-state-isolation-verification.md).
+
+- [x] Compare Issue #152, Wiki Phase 3, the path/state design, ADR-013, and the code. Check the items PR #162 delivered, delegate changed-file links/artifacts/open-reveal to Issue #155 and stored attachments/history/drafts to Issue #153, and amend the Wiki, Issue, and Preview condition.
+- [x] Record the account-change lifecycle in the design and ADR-013: the owner's own logout or matching sign-in completion connects a new owner automatically; an unsolicited account change stays Degraded.
+- [x] Implement the automatic new-owner connection, whole-turn rejection of missing/unreadable/protected attachments, mapped thread working directory, and the Worker rate-limit emission filter.
+- [x] Add remote-mode integration tests (working directory, permission profile, `localImage`, IDE context, unmappable approval path, thread working directory), an automated junction test, and account-change lifecycle tests (Worker and UI).
+- [x] Verify Debug/Release builds (zero warnings), Release Core 327 passed / 5 skipped and UI 318 passed / 1 skipped, CLI 0.159.1 schema-cache and live initialize, and `git diff --check`.
+- [ ] Observe the Experimental Instance scenarios in screenshots (sign-in/sign-out reconnect, profile switch, cleared state, attachment rejection, remote skill selection). No desktop control in this session; requires the maintainer's account.
+
 ## 2026-10-03: Path mapping and owner state isolation ([Issue #152](https://github.com/kkamegawa/vsextensionforcodex/issues/152))
 
 Evidence: [English verification record](path-state-isolation-verification.md) / [Japanese verification record](path-state-isolation-verification_ja.md).

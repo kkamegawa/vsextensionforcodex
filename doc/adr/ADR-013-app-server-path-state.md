@@ -29,3 +29,12 @@ Path conversion is auditable and remote sessions or authentication owners cannot
 - Keep remote skill paths as opaque server identifiers and remote sandbox enforcement server-owned.
 
 Detailed contract: [Path mapping and connection state isolation](../path-state-isolation-design.md).
+
+## Account change reconnect and consumer scope
+
+- Date: 2026-10-04
+- Task: Issue #152 follow-up
+- A logout requested by the owner, or an `account/login/completed` whose `loginId` matches the sign-in the owner started, retires the old owner and then automatically connects a new volatile owner with the same bound options. The connection runs only the existing connect sequence and replays no mutation. An unsolicited `account/updated` or an unmatched login completion still ends in Degraded and requires an explicit reconnect. Reason: the accepted plan activates the new principal after invalidating the old one; leaving every sign-in in Degraded made sign-in unusable after logout.
+- Any unmappable, missing, unreadable, or protected explicit attachment rejects the whole `turn/start`; no partial attachment list is sent.
+- Changed-file links, typed file artifacts, image preview, and open/reveal are delivered by Issue #155; stored attachments, recovered history, and retained drafts by Issue #153. Both must use the mapper, physical boundary, and owner partition delivered here.
+- Remote mode stays Preview until Issue #153 is complete and the upstream WebSocket transport is no longer experimental.

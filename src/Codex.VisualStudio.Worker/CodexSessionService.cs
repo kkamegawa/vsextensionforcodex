@@ -21,6 +21,7 @@ public interface ICodexSessionService : IAsyncDisposable
     string? EmittingStatePartitionFingerprint => StatePartitionFingerprint;
     long EmittingOwnerGeneration => OwnerGeneration;
     AccountState? InvalidatedAccountState => null;
+    bool InvalidatedByOwnerAction => false;
     IDisposable SuppressEmissionOwnerContext() => new CallbackScope(static () => { });
     bool CanPersistOwnerState => false;
     bool IsConnectionActive => true;
@@ -196,6 +197,8 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
     private long ownerGeneration;
     private bool ownerPartitionPrepared;
     private AccountState? invalidatedAccountState;
+    private bool invalidatedByOwnerAction;
+    public const string RemoteWorkingDirectoryLabel = "(remote working directory)";
 
     public CodexSessionService(
         IApprovalPolicyEngine approvalPolicy,
@@ -274,6 +277,10 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
     public long EmittingOwnerGeneration => emittingContext.Value?.OwnerGeneration ?? OwnerGeneration;
     public AccountState? InvalidatedAccountState => invalidatedAccountState;
 
+    // True when the current owner itself requested the change (its own logout or the completion of
+    // the sign-in it started), so the Worker may activate a new owner without a manual reconnect.
+    public bool InvalidatedByOwnerAction => invalidatedByOwnerAction;
+
     public IDisposable SuppressEmissionOwnerContext()
     {
         ConnectionContext? previous = emittingContext.Value;
@@ -300,6 +307,7 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         this.credentialFingerprint = credentialFingerprint;
         this.ownerGeneration = ownerGeneration;
         invalidatedAccountState = null;
+        invalidatedByOwnerAction = false;
         statePartitionFingerprint = ConnectionStatePartition.Create(
             options,
             workerInstanceId,
@@ -644,6 +652,7 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
                 return new StartAccountLoginResult { Status = unavailable };
             }
 
+            context.PendingLoginId = loginId;
             WorkerDiagnostics.Write("app-server login response accepted");
             return new StartAccountLoginResult
             {
@@ -682,6 +691,7 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
                 cancellationToken).ConfigureAwait(false);
             EnsureCurrent(context);
             invalidatedAccountState = AccountState.SignedOut;
+            invalidatedByOwnerAction = true;
             await InvalidateOwnerPartitionAsync(context, cancellationToken).ConfigureAwait(false);
             WorkerDiagnostics.Write("app-server logout request completed");
             var signedOut = new AccountStatus { State = AccountState.SignedOut };
@@ -1606,10 +1616,18 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
 
             bool isImage = string.Equals(attachment.Kind, "image", StringComparison.OrdinalIgnoreCase);
             bool isMention = string.Equals(attachment.Kind, "mention", StringComparison.OrdinalIgnoreCase);
-            if ((!isImage && !isMention)
-                || !TryNormalizeReadableFile(attachment.Path, allowOutsideWorkspace: true, out string normalizedPath))
+            if (!isImage && !isMention)
             {
                 continue;
+            }
+
+            // A partial attachment list must never be sent: a missing, unreadable, or protected
+            // file rejects the whole turn, naming only the file.
+            if (!TryNormalizeReadableFile(attachment.Path, allowOutsideWorkspace: true, out string normalizedPath))
+            {
+                throw new AttachmentRejectedException(
+                    $"The attachment '{SafeAttachmentName(attachment.Path)}' is missing, unreadable, or protected. "
+                    + "Remove it or attach a readable file.");
             }
 
             // An explicit attachment the remote server cannot see must never be dropped silently:
@@ -1807,6 +1825,34 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
                 out _)
                 ? localPath.Value
             : null;
+    }
+
+    // A remote thread's working directory is a server path. It is shown only as its mapped local
+    // path; an unmappable value becomes a fixed label so the raw server layout is not displayed.
+    private string? DisplayThreadWorkingDirectory(string? serverCwd)
+    {
+        if (remotePathMapper is null || string.IsNullOrWhiteSpace(serverCwd))
+        {
+            return serverCwd;
+        }
+
+        return MapServerPathToLocal(serverCwd) ?? RemoteWorkingDirectoryLabel;
+    }
+
+    private static string SafeAttachmentName(string? path)
+    {
+        string name;
+        try
+        {
+            name = Path.GetFileName(path ?? string.Empty);
+        }
+        catch (ArgumentException)
+        {
+            name = string.Empty;
+        }
+
+        name = new string(name.Where(static c => !char.IsControl(c)).Take(128).ToArray());
+        return string.IsNullOrWhiteSpace(name) ? "attachment" : name;
     }
 
     private bool TryNormalizeReadableFile(string? path, bool allowOutsideWorkspace, out string normalizedPath)
@@ -2184,7 +2230,12 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
             // The pinned notification carries only auth mode and plan, so it cannot prove that
             // the authenticated owner is unchanged. Retire the old generation before accepting
             // any later account-scoped result, even when email and plan appear unchanged.
+            // Only a completion for the sign-in this owner started counts as an owner action; an
+            // unsolicited account change still requires an explicit reconnect.
+            string? completedLoginId = method == "account/login/completed" ? GetString(parameters, "loginId") : null;
             invalidatedAccountState = AccountState.Unavailable;
+            invalidatedByOwnerAction = completedLoginId is not null
+                && string.Equals(completedLoginId, context.PendingLoginId, StringComparison.Ordinal);
             await InvalidateOwnerPartitionAsync(context, cancellationToken).ConfigureAwait(false);
             await EmitAccountStatusAsync(
                 new AccountStatus
@@ -2940,7 +2991,7 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
             ? value
             : null;
 
-    private static ThreadSummary ReadThread(
+    private ThreadSummary ReadThread(
         JsonElement thread,
         EffectiveApprovalState? effectiveApprovalState = null,
         string? effectiveReasoningEffort = null,
@@ -2948,7 +2999,7 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         {
             Id = GetString(thread, "id") ?? string.Empty,
             Preview = GetString(thread, "preview"),
-            Cwd = GetString(thread, "cwd"),
+            Cwd = DisplayThreadWorkingDirectory(GetString(thread, "cwd")),
             UpdatedAt = thread.TryGetProperty("updatedAt", out JsonElement updated) && updated.TryGetInt64(out long value) ? value : null,
             EffectiveApprovalState = effectiveApprovalState,
             EffectiveReasoningEffort = effectiveReasoningEffort,
@@ -3919,6 +3970,7 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         public HashSet<string> UnsupportedMethods { get; } = new(StringComparer.Ordinal);
         public bool NotifyPendingResolution { get; set; }
         public bool OwnerInvalidated { get; set; }
+        public string? PendingLoginId { get; set; }
         public CancellationTokenSource Lifetime { get; } = new();
         public Func<JsonRpcMessage, CancellationToken, Task> NotificationHandler { get; }
         public Func<JsonRpcMessage, CancellationToken, Task<JsonElement>> RequestHandler { get; }

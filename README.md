@@ -55,7 +55,7 @@ The extension is an out-of-process `Microsoft.VisualStudio.Extensibility` extens
 
 By default Codex runs on a local `codex app-server` child process. To run turns on an app-server that is already running on another machine instead:
 
-> **Preview.** The upstream WebSocket transport is experimental. You start and manage the remote app-server yourself; the extension owns only its own connection to it. Root health checks and bounded retry of a fixed set of read-only requests after a server-overload response are available. Account, profile, root, and connection changes clear the previous owner's selected state and caches. Reconnect manually after a switch; automatic reconnect and history recovery are tracked separately.
+> **Preview.** The upstream WebSocket transport is experimental. You start and manage the remote app-server yourself; the extension owns only its own connection to it. Root health checks and bounded retry of a fixed set of read-only requests after a server-overload response are available. Account, profile, root, and connection changes clear the previous owner's selected state and caches. After you sign in or sign out, the extension connects a new session automatically. After any other account change or a connection loss, reconnect manually; automatic reconnect and history recovery are tracked separately.
 
 1. Start the app-server with its WebSocket listener on the remote machine and save its bearer token to a file on this computer. The extension never starts, updates, or synchronizes the remote side.
 2. Make sure both machines see the same working tree, for example `C:\src\repo` locally and `/home/<user>/src/repo` on the server.
