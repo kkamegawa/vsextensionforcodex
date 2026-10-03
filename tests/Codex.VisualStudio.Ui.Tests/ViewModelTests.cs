@@ -4847,16 +4847,16 @@ public sealed class ViewModelTests
 
         public Func<LogoutAccountRequest, CancellationToken, Task<AccountStatus>>? LogoutHandler { get; set; }
 
-        public Task<ThreadPage> ListThreadsAsync(string? cursor, CancellationToken cancellationToken)
-            => ListThreadsHandler?.Invoke(cursor, cancellationToken) ?? Task.FromResult(new ThreadPage());
+        public Task<ThreadPage> ListThreadsAsync(ListThreadsRequest request, CancellationToken cancellationToken)
+            => ListThreadsHandler?.Invoke(request.Cursor, cancellationToken) ?? Task.FromResult(new ThreadPage());
 
-        public Task<ListModelsResult> ListModelsAsync(CancellationToken cancellationToken)
+        public Task<ListModelsResult> ListModelsAsync(ListModelsRequest request, CancellationToken cancellationToken)
         {
             ModelListCallCount++;
             return Task.FromResult(ModelListResult);
         }
 
-        public Task<ListPermissionProfilesResult> ListPermissionProfilesAsync(CancellationToken cancellationToken)
+        public Task<ListPermissionProfilesResult> ListPermissionProfilesAsync(ListPermissionProfilesRequest request, CancellationToken cancellationToken)
             => Task.FromResult(PermissionProfilesResult);
 
         public Task<ThreadSummary> StartThreadAsync(StartThreadRequest request, CancellationToken cancellationToken)
@@ -4916,19 +4916,19 @@ public sealed class ViewModelTests
         public Task<ThreadGoalResult> ClearThreadGoalAsync(ThreadGoalRequest request, CancellationToken cancellationToken)
             => Task.FromResult(new ThreadGoalResult { Cleared = true });
 
-        public Task<McpServerListResult> ListMcpServersAsync(string? threadId, CancellationToken cancellationToken)
+        public Task<McpServerListResult> ListMcpServersAsync(ListMcpServersRequest request, CancellationToken cancellationToken)
             => Task.FromResult(new McpServerListResult());
 
-        public Task<ListSkillsResult> ListSkillsAsync(bool forceReload, CancellationToken cancellationToken)
+        public Task<ListSkillsResult> ListSkillsAsync(ListSkillsRequest request, CancellationToken cancellationToken)
         {
             SkillsListCallCount++;
-            return SkillsListHandler?.Invoke(SkillsListCallCount, forceReload) ?? Task.FromResult(SkillsResult);
+            return SkillsListHandler?.Invoke(SkillsListCallCount, request.ForceReload) ?? Task.FromResult(SkillsResult);
         }
 
         public Task<UploadFeedbackResult> UploadFeedbackAsync(UploadFeedbackRequest request, CancellationToken cancellationToken)
             => Task.FromResult(new UploadFeedbackResult { ThreadId = request.ThreadId });
 
-        public Task<RateLimitsResult> GetRateLimitsAsync(CancellationToken cancellationToken)
+        public Task<RateLimitsResult> GetRateLimitsAsync(GetRateLimitsRequest request, CancellationToken cancellationToken)
         {
             RateLimitCallCount++;
             return RateLimitHandler?.Invoke(RateLimitCallCount) ?? Task.FromResult(RateLimitsResult);

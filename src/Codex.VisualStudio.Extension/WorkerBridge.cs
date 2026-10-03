@@ -50,11 +50,11 @@ internal interface IWorkerBridge : IAsyncDisposable
 
     Task<AccountStatus> LogoutAccountAsync(LogoutAccountRequest request, CancellationToken cancellationToken);
 
-    Task<ThreadPage> ListThreadsAsync(string? cursor, CancellationToken cancellationToken);
+    Task<ThreadPage> ListThreadsAsync(ListThreadsRequest request, CancellationToken cancellationToken);
 
-    Task<ListModelsResult> ListModelsAsync(CancellationToken cancellationToken);
+    Task<ListModelsResult> ListModelsAsync(ListModelsRequest request, CancellationToken cancellationToken);
 
-    Task<ListPermissionProfilesResult> ListPermissionProfilesAsync(CancellationToken cancellationToken)
+    Task<ListPermissionProfilesResult> ListPermissionProfilesAsync(ListPermissionProfilesRequest request, CancellationToken cancellationToken)
         => Task.FromResult(new ListPermissionProfilesResult
         {
             IsSupported = false,
@@ -83,13 +83,13 @@ internal interface IWorkerBridge : IAsyncDisposable
 
     Task<ThreadGoalResult> ClearThreadGoalAsync(ThreadGoalRequest request, CancellationToken cancellationToken);
 
-    Task<McpServerListResult> ListMcpServersAsync(string? threadId, CancellationToken cancellationToken);
+    Task<McpServerListResult> ListMcpServersAsync(ListMcpServersRequest request, CancellationToken cancellationToken);
 
-    Task<ListSkillsResult> ListSkillsAsync(bool forceReload, CancellationToken cancellationToken);
+    Task<ListSkillsResult> ListSkillsAsync(ListSkillsRequest request, CancellationToken cancellationToken);
 
     Task<UploadFeedbackResult> UploadFeedbackAsync(UploadFeedbackRequest request, CancellationToken cancellationToken);
 
-    Task<RateLimitsResult> GetRateLimitsAsync(CancellationToken cancellationToken);
+    Task<RateLimitsResult> GetRateLimitsAsync(GetRateLimitsRequest request, CancellationToken cancellationToken);
 
     Task ResolveApprovalAsync(ResolveApprovalRequest request, CancellationToken cancellationToken);
 
@@ -245,10 +245,10 @@ public sealed class WorkerBridge : IWorkerBridge, ICodexWorkerObserver
         }
     }
 
-    public Task<ThreadPage> ListThreadsAsync(string? cursor, CancellationToken cancellationToken)
-        => rpc!.InvokeWithCancellationAsync<ThreadPage>("worker/thread/list", new object?[] { cursor }, cancellationToken);
+    public Task<ThreadPage> ListThreadsAsync(ListThreadsRequest request, CancellationToken cancellationToken)
+        => rpc!.InvokeWithCancellationAsync<ThreadPage>("worker/thread/list", new object[] { request }, cancellationToken);
 
-    public async Task<ListModelsResult> ListModelsAsync(CancellationToken cancellationToken)
+    public async Task<ListModelsResult> ListModelsAsync(ListModelsRequest request, CancellationToken cancellationToken)
     {
         ExtensionDiagnostics.Write("worker/models/list invocation starting");
         using var timeout = new CancellationTokenSource(ModelListTimeout);
@@ -257,7 +257,7 @@ public sealed class WorkerBridge : IWorkerBridge, ICodexWorkerObserver
         {
             ListModelsResult result = await RequireRpc().InvokeWithCancellationAsync<ListModelsResult>(
                 "worker/models/list",
-                Array.Empty<object>(),
+                new object[] { request },
                 linked.Token).ConfigureAwait(false);
             ExtensionDiagnostics.Write($"worker/models/list invocation completed count={result.Models.Count}");
             return result;
@@ -279,10 +279,10 @@ public sealed class WorkerBridge : IWorkerBridge, ICodexWorkerObserver
         }
     }
 
-    public Task<ListPermissionProfilesResult> ListPermissionProfilesAsync(CancellationToken cancellationToken)
+    public Task<ListPermissionProfilesResult> ListPermissionProfilesAsync(ListPermissionProfilesRequest request, CancellationToken cancellationToken)
         => RequireRpc().InvokeWithCancellationAsync<ListPermissionProfilesResult>(
             "worker/permissionProfiles/list",
-            Array.Empty<object>(),
+            new object[] { request },
             cancellationToken);
 
     public Task<ThreadSummary> StartThreadAsync(StartThreadRequest request, CancellationToken cancellationToken)
@@ -312,10 +312,10 @@ public sealed class WorkerBridge : IWorkerBridge, ICodexWorkerObserver
             new object[] { request },
             cancellationToken);
 
-    public Task<ListSkillsResult> ListSkillsAsync(bool forceReload, CancellationToken cancellationToken)
+    public Task<ListSkillsResult> ListSkillsAsync(ListSkillsRequest request, CancellationToken cancellationToken)
         => RequireRpc().InvokeWithCancellationAsync<ListSkillsResult>(
             "worker/skills/list",
-            new object[] { forceReload },
+            new object[] { request },
             cancellationToken);
 
     public Task<ForkThreadResult> ForkThreadAsync(ForkThreadRequest request, CancellationToken cancellationToken)
@@ -342,10 +342,10 @@ public sealed class WorkerBridge : IWorkerBridge, ICodexWorkerObserver
             new object[] { request },
             cancellationToken);
 
-    public Task<McpServerListResult> ListMcpServersAsync(string? threadId, CancellationToken cancellationToken)
+    public Task<McpServerListResult> ListMcpServersAsync(ListMcpServersRequest request, CancellationToken cancellationToken)
         => RequireRpc().InvokeWithCancellationAsync<McpServerListResult>(
             "worker/mcp/list",
-            new object?[] { threadId },
+            new object[] { request },
             cancellationToken);
 
     public Task<UploadFeedbackResult> UploadFeedbackAsync(UploadFeedbackRequest request, CancellationToken cancellationToken)
@@ -354,10 +354,10 @@ public sealed class WorkerBridge : IWorkerBridge, ICodexWorkerObserver
             new object[] { request },
             cancellationToken);
 
-    public Task<RateLimitsResult> GetRateLimitsAsync(CancellationToken cancellationToken)
+    public Task<RateLimitsResult> GetRateLimitsAsync(GetRateLimitsRequest request, CancellationToken cancellationToken)
         => RequireRpc().InvokeWithCancellationAsync<RateLimitsResult>(
             "worker/account/rateLimits",
-            Array.Empty<object>(),
+            new object[] { request },
             cancellationToken);
 
     public Task ResolveApprovalAsync(ResolveApprovalRequest request, CancellationToken cancellationToken)

@@ -225,6 +225,33 @@ public sealed class StartAccountLoginRequest : OwnerScopedRequest
 {
 }
 
+public sealed class ListThreadsRequest : OwnerScopedRequest
+{
+    public string? Cursor { get; set; }
+}
+
+public sealed class ListModelsRequest : OwnerScopedRequest
+{
+}
+
+public sealed class ListPermissionProfilesRequest : OwnerScopedRequest
+{
+}
+
+public sealed class ListMcpServersRequest : OwnerScopedRequest
+{
+    public string? ThreadId { get; set; }
+}
+
+public sealed class ListSkillsRequest : OwnerScopedRequest
+{
+    public bool ForceReload { get; set; }
+}
+
+public sealed class GetRateLimitsRequest : OwnerScopedRequest
+{
+}
+
 public sealed class LogoutAccountRequest : OwnerScopedRequest
 {
 }
@@ -951,13 +978,13 @@ public interface ICodexWorkerClient
     Task<ThreadSummary> ResumeThreadAsync(ResumeThreadRequest request, CancellationToken cancellationToken);
 
     [JsonRpcMethod("worker/thread/list")]
-    Task<ThreadPage> ListThreadsAsync(string? cursor, CancellationToken cancellationToken);
+    Task<ThreadPage> ListThreadsAsync(ListThreadsRequest request, CancellationToken cancellationToken);
 
     [JsonRpcMethod("worker/models/list")]
-    Task<ListModelsResult> ListModelsAsync(CancellationToken cancellationToken);
+    Task<ListModelsResult> ListModelsAsync(ListModelsRequest request, CancellationToken cancellationToken);
 
     [JsonRpcMethod("worker/permissionProfiles/list")]
-    Task<ListPermissionProfilesResult> ListPermissionProfilesAsync(CancellationToken cancellationToken);
+    Task<ListPermissionProfilesResult> ListPermissionProfilesAsync(ListPermissionProfilesRequest request, CancellationToken cancellationToken);
 
     [JsonRpcMethod("worker/turn/start")]
     Task<string> StartTurnAsync(StartTurnRequest request, CancellationToken cancellationToken);
@@ -987,16 +1014,16 @@ public interface ICodexWorkerClient
     Task<ThreadGoalResult> ClearThreadGoalAsync(ThreadGoalRequest request, CancellationToken cancellationToken);
 
     [JsonRpcMethod("worker/mcp/list")]
-    Task<McpServerListResult> ListMcpServersAsync(string? threadId, CancellationToken cancellationToken);
+    Task<McpServerListResult> ListMcpServersAsync(ListMcpServersRequest request, CancellationToken cancellationToken);
 
     [JsonRpcMethod("worker/skills/list")]
-    Task<ListSkillsResult> ListSkillsAsync(bool forceReload, CancellationToken cancellationToken);
+    Task<ListSkillsResult> ListSkillsAsync(ListSkillsRequest request, CancellationToken cancellationToken);
 
     [JsonRpcMethod("worker/feedback/upload")]
     Task<UploadFeedbackResult> UploadFeedbackAsync(UploadFeedbackRequest request, CancellationToken cancellationToken);
 
     [JsonRpcMethod("worker/account/rateLimits")]
-    Task<RateLimitsResult> GetRateLimitsAsync(CancellationToken cancellationToken);
+    Task<RateLimitsResult> GetRateLimitsAsync(GetRateLimitsRequest request, CancellationToken cancellationToken);
 
     [JsonRpcMethod("worker/approval/resolve")]
     Task ResolveApprovalAsync(ResolveApprovalRequest request, CancellationToken cancellationToken);

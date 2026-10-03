@@ -52,15 +52,73 @@ public sealed class WorkerRpcServiceTests
         };
 
         var session = new CodexSessionService(new ApprovalPolicyEngine(new PathAccessPolicy()), new SecretRedactor());
-        await session.InitializeAsync(connection, Options(), CancellationToken.None);
+        await using var worker = new WorkerRpcService(new SecretRedactor(), new FakeProcessHost(connection), session);
+        await worker.ConnectAsync(Options(), CancellationToken.None);
 
-        await using var worker = new WorkerRpcService(new SecretRedactor(), new FakeProcessHost(), session);
-
-        ListModelsResult result = await worker.ListModelsAsync(CancellationToken.None);
+        ListModelsResult result = await worker.ListModelsAsync(Scoped(worker, new ListModelsRequest()), CancellationToken.None);
 
         Assert.AreEqual(1, result.Models.Count);
         Assert.AreEqual("gpt-5-codex", result.Models[0].Id);
         Assert.AreEqual("gpt-5-codex", result.DefaultModel);
+    }
+
+    [TestMethod]
+    public async Task ReadRequests_FromAnotherOwner_AreRejectedBeforeReachingTheAppServer()
+    {
+        var connection = new StubConnection();
+        var session = new CodexSessionService(new ApprovalPolicyEngine(new PathAccessPolicy()), new SecretRedactor());
+        await using var worker = new WorkerRpcService(new SecretRedactor(), new FakeProcessHost(connection), session);
+        await worker.ConnectAsync(Options(), CancellationToken.None);
+        int methodsBefore = connection.Methods.Count;
+
+        ListModelsRequest stale = Scoped(worker, new ListModelsRequest());
+        stale.OwnerGeneration++;
+
+        LocalRpcException rejected = await Assert.ThrowsExactlyAsync<LocalRpcException>(
+            async () => await worker.ListModelsAsync(stale, CancellationToken.None));
+
+        Assert.AreEqual(methodsBefore, connection.Methods.Count);
+        Assert.IsNotNull(rejected);
+    }
+
+    [TestMethod]
+    public async Task PendingTurnStart_DoesNotBlockOtherOwnerScopedRequests()
+    {
+        var releaseTurn = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var turnSeen = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var connection = new StubConnection
+        {
+            AsyncHandler = async (method, timeout, cancellationToken) =>
+            {
+                if (method == "turn/start")
+                {
+                    turnSeen.TrySetResult();
+                    await releaseTurn.Task;
+                    return JsonSerializer.SerializeToElement(new { turn = new { id = "turn-1" } });
+                }
+
+                return JsonSerializer.SerializeToElement(new { });
+            },
+        };
+        var session = new CodexSessionService(new ApprovalPolicyEngine(new PathAccessPolicy()), new SecretRedactor());
+        await using var worker = new WorkerRpcService(new SecretRedactor(), new FakeProcessHost(connection), session);
+        await worker.ConnectAsync(Options(), CancellationToken.None);
+
+        Task<string> turn = worker.StartTurnAsync(
+            Scoped(worker, new StartTurnRequest { ThreadId = "thread-1", Text = "hello" }),
+            CancellationToken.None);
+        await turnSeen.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        // An approval answer is delivered through a separate owner-scoped call while the turn is
+        // still waiting on the app-server; it must not queue behind the turn.
+        Task resolve = worker.ResolveApprovalAsync(
+            Scoped(worker, new ResolveApprovalRequest { RequestId = "unknown", Decision = ApprovalDecision.Decline }),
+            CancellationToken.None);
+        await resolve.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.IsFalse(turn.IsCompleted);
+
+        releaseTurn.SetResult();
+        Assert.AreEqual("turn-1", await turn.WaitAsync(TimeSpan.FromSeconds(5)));
     }
 
     [TestMethod]
@@ -88,11 +146,10 @@ public sealed class WorkerRpcServiceTests
         };
 
         var session = new CodexSessionService(new ApprovalPolicyEngine(new PathAccessPolicy()), new SecretRedactor());
-        await session.InitializeAsync(connection, Options(), CancellationToken.None);
+        await using var worker = new WorkerRpcService(new SecretRedactor(), new FakeProcessHost(connection), session);
+        await worker.ConnectAsync(Options(), CancellationToken.None);
 
-        await using var worker = new WorkerRpcService(new SecretRedactor(), new FakeProcessHost(), session);
-
-        ListSkillsResult result = await worker.ListSkillsAsync(forceReload: false, CancellationToken.None);
+        ListSkillsResult result = await worker.ListSkillsAsync(Scoped(worker, new ListSkillsRequest()), CancellationToken.None);
 
         Assert.IsTrue(result.IsSupported);
         Assert.AreEqual(1, result.Skills.Count);

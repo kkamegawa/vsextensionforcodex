@@ -1850,7 +1850,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     private async Task LoadMoreAsync()
     {
         OwnerSnapshot owner = CaptureOwnerSnapshot();
-        ThreadPage page = await bridge.ListThreadsAsync(nextCursor, lifetime.Token).ConfigureAwait(false);
+        ThreadPage page = await bridge.ListThreadsAsync(StampOwner(new ListThreadsRequest { Cursor = nextCursor }, owner), lifetime.Token).ConfigureAwait(false);
         await OnUiAsync(() =>
         {
             if (!IsCurrentOwner(owner))
@@ -1910,7 +1910,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         ListModelsResult result;
         try
         {
-            result = await bridge.ListModelsAsync(lifetime.Token).ConfigureAwait(false);
+            result = await bridge.ListModelsAsync(StampOwner(new ListModelsRequest(), owner), lifetime.Token).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
         {
@@ -2584,7 +2584,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             && minimumSkillsGeneration > skillsSnapshot.Generation;
         for (int attempt = 0; attempt < 3; attempt++)
         {
-            ListSkillsResult result = await bridge.ListSkillsAsync(forceReload, lifetime.Token).ConfigureAwait(false);
+            ListSkillsResult result = await bridge.ListSkillsAsync(StampOwner(new ListSkillsRequest { ForceReload = forceReload }, owner), lifetime.Token).ConfigureAwait(false);
             if (!IsCurrentOwner(owner))
             {
                 return;
@@ -2733,7 +2733,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         ListPermissionProfilesResult result;
         try
         {
-            result = await bridge.ListPermissionProfilesAsync(lifetime.Token).ConfigureAwait(false);
+            result = await bridge.ListPermissionProfilesAsync(StampOwner(new ListPermissionProfilesRequest(), owner), lifetime.Token).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
         {
@@ -3597,7 +3597,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     private async Task<bool> ExecuteMcpAsync(string? threadId)
     {
         OwnerSnapshot owner = CaptureOwnerSnapshot();
-        McpServerListResult result = await bridge.ListMcpServersAsync(threadId, lifetime.Token).ConfigureAwait(false);
+        McpServerListResult result = await bridge.ListMcpServersAsync(StampOwner(new ListMcpServersRequest { ThreadId = threadId }, owner), lifetime.Token).ConfigureAwait(false);
         if (!IsCurrentOwner(owner))
         {
             return false;
@@ -5150,6 +5150,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             }
 
             long pushVersion = Volatile.Read(ref rateLimitPushVersion);
+            OwnerSnapshot usageOwner = CaptureOwnerSnapshot();
             await OnUiAsync(() =>
             {
                 if (generation == Volatile.Read(ref usageConnectionGeneration) && IsUsageAvailable)
@@ -5160,7 +5161,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             RateLimitsResult result;
             try
             {
-                result = await bridge.GetRateLimitsAsync(lifetime.Token).ConfigureAwait(false);
+                result = await bridge.GetRateLimitsAsync(StampOwner(new GetRateLimitsRequest(), usageOwner), lifetime.Token).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
             {

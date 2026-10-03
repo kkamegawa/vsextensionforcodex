@@ -37,7 +37,7 @@ A bearer-token digest distinguishes explicit handshakes, including token rotatio
 
 Account change and logout retire the old owner's pending work and state. An account notification that cannot prove owner continuity is treated conservatively as a boundary, including the same visible plan or email. Remote owner changes invalidate the previous socket before accepting new-owner activity. Reconnecting is explicit; retiring a socket never stops the external server and never replays a mutation.
 
-Every operation captures the current owner and generation. Check both before committing results, emitting callbacks, or applying presentation state. An old response, notification, close callback, approval answer, model read, or catalog refresh cannot update a replacement owner. Retirement cancels pending requests and responses, clears approvals and audit presentation, and prevents stale refreshes from persisting under a new partition.
+Every operation captures the current owner and generation. Check both before committing results, emitting callbacks, or applying presentation state. An old response, notification, close callback, approval answer, model read, or catalog refresh cannot update a replacement owner. Retirement cancels pending requests and responses, clears approvals and audit presentation, and prevents stale refreshes from persisting under a new partition. Every Worker request that reads or mutates owner state, including model, thread, skill, MCP, permission-profile, and rate-limit reads, carries the captured owner. The Worker validates it under the transition gate and releases the gate before awaiting the app-server, so approval and user-input answers, owner retirement, and the watchdog never queue behind a pending call.
 
 ## State boundaries
 

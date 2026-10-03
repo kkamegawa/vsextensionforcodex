@@ -628,29 +628,42 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
         }
     }
 
-    private async Task<T> ExecuteOwnerScopedAsync<T>(
+    // The gate is held only while the request owner is validated against the current target, so a
+    // transition cannot interleave with the check. It is released before the awaited operation:
+    // StartTurn can wait for an approval or user-input answer that arrives through Resolve* calls,
+    // and owner retirement and the watchdog need the gate while a long app-server call is pending.
+    // Operations revalidate the owner after each await, and the session rejects stale contexts.
+    private async Task<ConnectionTargetSnapshot> ValidateOwnerScopeUnderGateAsync(
         OwnerScopedRequest request,
-        Func<Task<T>> operation,
         CancellationToken cancellationToken)
     {
         await connectionTransitionGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            ConnectionTargetSnapshot validatedTarget = ValidateOwnerScope(request);
-            ConnectionTargetSnapshot? previous = requestEmissionTarget.Value;
-            requestEmissionTarget.Value = validatedTarget;
-            try
-            {
-                return await operation().ConfigureAwait(false);
-            }
-            finally
-            {
-                requestEmissionTarget.Value = previous;
-            }
+            return ValidateOwnerScope(request);
         }
         finally
         {
-            connectionTransitionGate.Release();
+            ReleaseTransitionGate();
+        }
+    }
+
+    private async Task<T> ExecuteOwnerScopedAsync<T>(
+        OwnerScopedRequest request,
+        Func<Task<T>> operation,
+        CancellationToken cancellationToken)
+    {
+        ConnectionTargetSnapshot validatedTarget = await ValidateOwnerScopeUnderGateAsync(request, cancellationToken)
+            .ConfigureAwait(false);
+        ConnectionTargetSnapshot? previous = requestEmissionTarget.Value;
+        requestEmissionTarget.Value = validatedTarget;
+        try
+        {
+            return await operation().ConfigureAwait(false);
+        }
+        finally
+        {
+            requestEmissionTarget.Value = previous;
         }
     }
 
@@ -659,24 +672,17 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
         Func<Task> operation,
         CancellationToken cancellationToken)
     {
-        await connectionTransitionGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        ConnectionTargetSnapshot validatedTarget = await ValidateOwnerScopeUnderGateAsync(request, cancellationToken)
+            .ConfigureAwait(false);
+        ConnectionTargetSnapshot? previous = requestEmissionTarget.Value;
+        requestEmissionTarget.Value = validatedTarget;
         try
         {
-            ConnectionTargetSnapshot validatedTarget = ValidateOwnerScope(request);
-            ConnectionTargetSnapshot? previous = requestEmissionTarget.Value;
-            requestEmissionTarget.Value = validatedTarget;
-            try
-            {
-                await operation().ConfigureAwait(false);
-            }
-            finally
-            {
-                requestEmissionTarget.Value = previous;
-            }
+            await operation().ConfigureAwait(false);
         }
         finally
         {
-            connectionTransitionGate.Release();
+            requestEmissionTarget.Value = previous;
         }
     }
 
@@ -800,10 +806,13 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
             return thread;
         }, cancellationToken);
 
-    public Task<ThreadPage> ListThreadsAsync(string? cursor, CancellationToken cancellationToken)
-        => session.ListThreadsAsync(cursor, cancellationToken);
+    public Task<ThreadPage> ListThreadsAsync(ListThreadsRequest request, CancellationToken cancellationToken)
+        => ExecuteOwnerScopedAsync(request, () => session.ListThreadsAsync(request.Cursor, cancellationToken), cancellationToken);
 
-    public async Task<ListModelsResult> ListModelsAsync(CancellationToken cancellationToken)
+    public Task<ListModelsResult> ListModelsAsync(ListModelsRequest request, CancellationToken cancellationToken)
+        => ExecuteOwnerScopedAsync(request, () => ListModelsCoreAsync(cancellationToken), cancellationToken);
+
+    private async Task<ListModelsResult> ListModelsCoreAsync(CancellationToken cancellationToken)
     {
         WorkerDiagnostics.Write("worker/models/list RPC received");
         try
@@ -824,8 +833,10 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
         }
     }
 
-    public Task<ListPermissionProfilesResult> ListPermissionProfilesAsync(CancellationToken cancellationToken)
-        => session.ListPermissionProfilesAsync(cancellationToken);
+    public Task<ListPermissionProfilesResult> ListPermissionProfilesAsync(
+        ListPermissionProfilesRequest request,
+        CancellationToken cancellationToken)
+        => ExecuteOwnerScopedAsync(request, () => session.ListPermissionProfilesAsync(cancellationToken), cancellationToken);
 
     public Task<string> StartTurnAsync(StartTurnRequest request, CancellationToken cancellationToken)
         => ExecuteOwnerScopedAsync(request, async () =>
@@ -927,11 +938,11 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
     public Task<ThreadGoalResult> ClearThreadGoalAsync(ThreadGoalRequest request, CancellationToken cancellationToken)
         => ExecuteOwnerScopedAsync(request, () => session.ClearThreadGoalAsync(request.ThreadId, cancellationToken), cancellationToken);
 
-    public Task<McpServerListResult> ListMcpServersAsync(string? threadId, CancellationToken cancellationToken)
-        => session.ListMcpServersAsync(threadId, cancellationToken);
+    public Task<McpServerListResult> ListMcpServersAsync(ListMcpServersRequest request, CancellationToken cancellationToken)
+        => ExecuteOwnerScopedAsync(request, () => session.ListMcpServersAsync(request.ThreadId, cancellationToken), cancellationToken);
 
-    public Task<ListSkillsResult> ListSkillsAsync(bool forceReload, CancellationToken cancellationToken)
-        => session.ListSkillsAsync(forceReload, cancellationToken);
+    public Task<ListSkillsResult> ListSkillsAsync(ListSkillsRequest request, CancellationToken cancellationToken)
+        => ExecuteOwnerScopedAsync(request, () => session.ListSkillsAsync(request.ForceReload, cancellationToken), cancellationToken);
 
     private Task PublishSkillsChangedAsync(SkillsChangedEvent value, CancellationToken cancellationToken)
         => clientRpc is null
@@ -943,8 +954,8 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
         CancellationToken cancellationToken)
         => ExecuteOwnerScopedAsync(request, () => session.UploadFeedbackAsync(request, cancellationToken), cancellationToken);
 
-    public Task<RateLimitsResult> GetRateLimitsAsync(CancellationToken cancellationToken)
-        => session.GetRateLimitsAsync(cancellationToken);
+    public Task<RateLimitsResult> GetRateLimitsAsync(GetRateLimitsRequest request, CancellationToken cancellationToken)
+        => ExecuteOwnerScopedAsync(request, () => session.GetRateLimitsAsync(cancellationToken), cancellationToken);
 
     public Task ResolveApprovalAsync(ResolveApprovalRequest request, CancellationToken cancellationToken)
         => ExecuteOwnerScopedAsync(request, () => session.ResolveApprovalAsync(request, cancellationToken), cancellationToken);
