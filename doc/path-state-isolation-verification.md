@@ -33,3 +33,34 @@ attachment rejection, and remote skill selection remain unverified. Visual Studi
 discovery returned no installed instance. The selected `orca` executable was not
 recognized; the computer-use skill requires stopping when that executable cannot run.
 Unit tests and package inspection do not establish actual rendered UI acceptance.
+
+## Follow-up verified on 2026-10-04
+
+Branch: `fix/152-path-state-followups`. Scope: owner-initiated account-change reconnect,
+whole-turn attachment rejection, mapped thread working directory, Worker rate-limit filter,
+and the missing remote-mode and junction tests.
+
+| Check | Result |
+|---|---|
+| Debug / Release solution builds | Zero warnings and errors |
+| Full Release Core tests | 331 passed, 5 skipped, 0 failed |
+| Full Release UI tests | 318 passed, 1 skipped, 0 failed |
+| Automated junction test | In-root existing/future files accepted; escaping junction rejected |
+| Schema-cache contract / live initialize (CLI 0.159.1) | Passed |
+| Text format / diff | UTF-8 BOM, CRLF, `git diff --check` passed |
+
+The first Experimental Instance run degraded right after connecting: CLI 0.159.1 sends
+`account/updated` about 0.7 s after startup without any account change (reproduced against the
+real executable), and every account notification was treated as an owner boundary. Account
+notifications now reread the account and compare a Worker-only fingerprint. A notification
+processed during the owner's own logout counts as that logout (Codex review finding).
+
+The five skips are the symlink cases that need symlink creation capability. The new
+junction test runs without that capability.
+
+## Pending acceptance (follow-up)
+
+Experimental Instance screenshots of sign-in/sign-out reconnect, remote profile switching,
+cleared selected state, attachment rejection, and remote skill selection remain unverified.
+Visual Studio 2026 Insiders is installed, but this session has no desktop control, and the
+sign-in scenarios require the maintainer's own ChatGPT account and remote app-server.

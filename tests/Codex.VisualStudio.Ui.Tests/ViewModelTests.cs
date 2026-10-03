@@ -151,6 +151,30 @@ public sealed class ViewModelTests
     }
 
     [TestMethod]
+    public async Task ChatViewModel_AccountChangeReconnectClearsStateAndKeepsSignInAvailable()
+    {
+        var bridge = new FakeWorkerBridge();
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        await bridge.PublishStateAsync(OwnerStatus("owner-a", 1, 4));
+        await bridge.PublishAccountAsync(new AccountStatus { State = AccountState.SignedIn });
+        vm.Items.Add(new ChatItemViewModel("Codex", "Previous owner's history", ConversationEventKind.AgentMessageDelta));
+        vm.ComposerText = "unsent owner draft";
+
+        // The Worker retires owner A after the owner's own logout and connects owner B itself.
+        WorkerStatus connecting = OwnerStatus("owner-b", 2, 5);
+        connecting.State = WorkerConnectionState.Connecting;
+        connecting.Message = "The account changed. Starting a new isolated session...";
+        await bridge.PublishStateAsync(connecting);
+        await bridge.PublishStateAsync(OwnerStatus("owner-b", 2, 5));
+        await bridge.PublishAccountAsync(new AccountStatus { State = AccountState.SignedOut });
+
+        Assert.AreEqual(0, vm.Items.Count);
+        Assert.AreEqual(string.Empty, vm.ComposerText);
+        Assert.AreEqual(AccountState.SignedOut, vm.Account.State);
+        Assert.IsTrue(vm.AccountCommand.CanExecute);
+    }
+
+    [TestMethod]
     public async Task ChatViewModel_DiscardsSyntheticChoiceFromPreviousOwner()
     {
         var bridge = new FakeWorkerBridge();

@@ -93,7 +93,10 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
         }
     }
 
-    private async Task<WorkerStatus> ConnectCoreAsync(WorkerOptions options, CancellationToken cancellationToken)
+    private async Task<WorkerStatus> ConnectCoreAsync(
+        WorkerOptions options,
+        CancellationToken cancellationToken,
+        string? connectingMessage = null)
     {
         WorkerDiagnostics.Write("worker connect RPC received");
         if (options.ContractVersion != ContractVersions.Current)
@@ -156,7 +159,7 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
         }
         await SetStatusAsync(
             WorkerConnectionState.Connecting,
-            remote ? "Connecting to remote codex app-server..." : "Starting codex app-server...",
+            connectingMessage ?? (remote ? "Connecting to remote codex app-server..." : "Starting codex app-server..."),
             cancellationToken).ConfigureAwait(false);
         return remote
             ? await ConnectRemoteCoreAsync(options, generation, cancellationToken).ConfigureAwait(false)
@@ -456,6 +459,34 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
             catch (Exception ex)
             {
                 WorkerDiagnostics.Write("owner-change connection cleanup failed", ex);
+            }
+
+            // The owner's own logout or sign-in activates a new owner with the same bound options.
+            // Only the connect sequence runs; no request of the retired owner is replayed.
+            WorkerOptions? bound = options;
+            if (session.InvalidatedByOwnerAction && bound is not null)
+            {
+                WorkerDiagnostics.Write("owner-initiated account change; connecting a new owner");
+                try
+                {
+                    await ConnectCoreAsync(
+                        bound,
+                        CancellationToken.None,
+                        "The account changed. Starting a new isolated session...").ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    WorkerDiagnostics.Write("owner-change connect failed", ex);
+                    await PublishAccountStatusAsync(
+                        new AccountStatus { State = AccountState.Unavailable },
+                        CancellationToken.None).ConfigureAwait(false);
+                    await SetStatusAsync(
+                        WorkerConnectionState.Degraded,
+                        redactor.Redact(ex.Message),
+                        CancellationToken.None).ConfigureAwait(false);
+                }
+
+                return;
             }
 
             await SetStatusAsync(
@@ -1312,6 +1343,11 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
 
     private async Task PublishRateLimitsChangedAsync(RateLimitsResult value, CancellationToken cancellationToken)
     {
+        if (!IsCurrentEmission())
+        {
+            return;
+        }
+
         if (clientRpc is not null)
         {
             await clientRpc.NotifyWithParameterObjectAsync("observer/rateLimitsChanged", new { notification = Stamp(value) }).ConfigureAwait(false);
