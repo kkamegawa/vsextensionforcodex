@@ -1,149 +1,144 @@
-﻿using System.Runtime.InteropServices;
+﻿namespace Codex.VisualStudio.Contracts;
 
-namespace Codex.VisualStudio.Contracts;
+/// <summary>Describes why a path could not be translated between local and server roots.</summary>
+public enum RemotePathMappingFailure
+{
+    None,
+    InvalidPath,
+    OutsideConfiguredRoot,
+    LocalBoundaryViolation,
+}
 
 /// <summary>
-/// Maps paths between the Visual Studio workspace and a remote app-server root.
-/// Mapping is segment based; a root named <c>C:\repo</c> never matches <c>C:\repo2</c>.
+/// Maps local and server paths by normalized path components. Methods without an
+/// <see cref="ILocalPathBoundary"/> perform lexical mapping only; trust-boundary operations must
+/// use the overload that validates the physical local location.
 /// </summary>
 public sealed class RemotePathMapper
 {
-    private static readonly char[] PathSeparators = { '/' };
-    private readonly string localRoot;
-    private readonly string serverRoot;
-    private readonly StringComparison localComparison;
-    private readonly char serverSeparator;
+    private readonly LocalPath localRoot;
+    private readonly ServerPath serverRoot;
 
-    public RemotePathMapper(string localRoot, string serverRoot)
+    public RemotePathMapper(LocalPath localRoot, ServerPath serverRoot)
     {
-        if (string.IsNullOrWhiteSpace(localRoot))
-        {
-            throw new ArgumentException("A local root is required.", nameof(localRoot));
-        }
-
-        if (string.IsNullOrWhiteSpace(serverRoot))
-        {
-            throw new ArgumentException("A server root is required.", nameof(serverRoot));
-        }
-
-        this.localRoot = NormalizeLocal(localRoot);
-        this.serverRoot = NormalizeServer(serverRoot);
-        localComparison = RuntimeInformation.IsOSPlatform(OSPlatform.Windows)
-            ? StringComparison.OrdinalIgnoreCase
-            : StringComparison.Ordinal;
-        serverSeparator = serverRoot.Contains('\\') && !serverRoot.Contains('/') ? '\\' : '/';
+        this.localRoot = localRoot ?? throw new ArgumentNullException(nameof(localRoot));
+        this.serverRoot = serverRoot ?? throw new ArgumentNullException(nameof(serverRoot));
     }
 
-    public bool TryMapLocalToServer(string localPath, out string serverPath)
+    public LocalPath LocalRoot => localRoot;
+
+    public ServerPath ServerRoot => serverRoot;
+
+    public bool TryMapLocalToServer(LocalPath localPath, out ServerPath serverPath)
+        => TryMapLocalToServer(localPath, out serverPath, out _);
+
+    public bool TryMapLocalToServer(
+        LocalPath localPath,
+        out ServerPath serverPath,
+        out RemotePathMappingFailure failure)
     {
-        serverPath = string.Empty;
-        string candidate;
+        serverPath = null!;
+        if (localPath is null)
+        {
+            failure = RemotePathMappingFailure.InvalidPath;
+            return false;
+        }
+
+        if (!localPath.StaysWithin(localRoot))
+        {
+            failure = RemotePathMappingFailure.OutsideConfiguredRoot;
+            return false;
+        }
+
         try
         {
-            candidate = NormalizeLocal(localPath);
-        }
-        catch (Exception) when (localPath is null or { Length: 0 })
-        {
-            return false;
-        }
-
-        if (!TryGetRelative(candidate, localRoot, localComparison, out string relative))
-        {
-            return false;
-        }
-
-        serverPath = CombineServer(relative);
-        return true;
-    }
-
-    public bool TryMapServerToLocal(string serverPath, out string localPath)
-    {
-        localPath = string.Empty;
-        if (string.IsNullOrWhiteSpace(serverPath))
-        {
-            return false;
-        }
-
-        string candidate = NormalizeServer(serverPath);
-        if (!TryGetRelative(candidate, serverRoot, StringComparison.Ordinal, out string relative)
-            || relative.Split(PathSeparators, StringSplitOptions.RemoveEmptyEntries).Any(static part => part == "." || part == ".."))
-        {
-            return false;
-        }
-
-        string localCandidate = relative.Length == 0
-            ? localRoot
-            : Path.Combine(localRoot, relative.Replace('/', Path.DirectorySeparatorChar));
-        string fullPath = NormalizeLocal(localCandidate);
-        if (!TryGetRelative(fullPath, localRoot, localComparison, out _))
-        {
-            return false;
-        }
-
-        localPath = fullPath.Replace('/', Path.DirectorySeparatorChar);
-        return true;
-    }
-
-    private string CombineServer(string relative)
-        => relative.Length == 0
-            ? serverRoot
-            : serverRoot.TrimEnd('/', '\\')
-                + serverSeparator
-                + relative.Replace('/', serverSeparator);
-
-    private static string NormalizeLocal(string path)
-    {
-        string fullPath = Path.GetFullPath(path).Replace('\\', '/');
-        string? root = Path.GetPathRoot(path);
-        string normalizedRoot = root?.Replace('\\', '/') ?? string.Empty;
-        if (normalizedRoot.Length > 0
-            && string.Equals(fullPath, normalizedRoot, StringComparison.OrdinalIgnoreCase))
-        {
-            return normalizedRoot;
-        }
-
-        return fullPath.Length > 1 ? fullPath.TrimEnd('/') : fullPath;
-    }
-
-    private static string NormalizeServer(string path)
-    {
-        string normalized = path.Trim().Replace('\\', '/');
-        while (normalized.Contains("//"))
-        {
-            normalized = normalized.Replace("//", "/");
-        }
-
-        if (normalized.Length > 1)
-        {
-            normalized = normalized.TrimEnd('/');
-        }
-
-        return normalized;
-    }
-
-    private static bool TryGetRelative(
-        string candidate,
-        string root,
-        StringComparison comparison,
-        out string relative)
-    {
-        relative = string.Empty;
-        if (string.Equals(candidate, root, comparison))
-        {
+            serverPath = serverRoot.AppendRelative(localPath.GetRelativeSegments(localRoot));
+            failure = RemotePathMappingFailure.None;
             return true;
         }
+        catch (ArgumentException)
+        {
+            failure = RemotePathMappingFailure.InvalidPath;
+            return false;
+        }
+    }
 
-        string prefix = root.EndsWith("/", StringComparison.Ordinal)
-            || root.EndsWith("\\", StringComparison.Ordinal)
-                ? root
-                : root + '/';
-        if (!candidate.StartsWith(prefix, comparison))
+    /// <summary>Maps a local path and verifies its resolved filesystem location remains in-root.</summary>
+    public bool TryMapLocalToServer(
+        LocalPath localPath,
+        ILocalPathBoundary boundary,
+        out ServerPath serverPath,
+        out RemotePathMappingFailure failure)
+    {
+        if (!TryMapLocalToServer(localPath, out serverPath, out failure))
         {
             return false;
         }
 
-        relative = candidate.Substring(prefix.Length).Replace('\\', '/');
-        return relative.Length == 0
-            || !relative.Split(PathSeparators).Any(static part => part == "." || part == "..");
+        if (boundary is null || !boundary.IsWithinRoot(localRoot, localPath))
+        {
+            serverPath = null!;
+            failure = RemotePathMappingFailure.LocalBoundaryViolation;
+            return false;
+        }
+
+        return true;
     }
+
+    public bool TryMapServerToLocal(ServerPath serverPath, out LocalPath localPath)
+        => TryMapServerToLocal(serverPath, out localPath, out _);
+
+    public bool TryMapServerToLocal(
+        ServerPath serverPath,
+        out LocalPath localPath,
+        out RemotePathMappingFailure failure)
+    {
+        localPath = null!;
+        if (serverPath is null)
+        {
+            failure = RemotePathMappingFailure.InvalidPath;
+            return false;
+        }
+
+        if (!serverPath.StaysWithin(serverRoot))
+        {
+            failure = RemotePathMappingFailure.OutsideConfiguredRoot;
+            return false;
+        }
+
+        try
+        {
+            localPath = localRoot.AppendRelative(serverPath.GetRelativeSegments(serverRoot));
+            failure = RemotePathMappingFailure.None;
+            return true;
+        }
+        catch (ArgumentException)
+        {
+            failure = RemotePathMappingFailure.InvalidPath;
+            return false;
+        }
+    }
+
+    /// <summary>Maps a server path and verifies the resulting local filesystem location remains in-root.</summary>
+    public bool TryMapServerToLocal(
+        ServerPath serverPath,
+        ILocalPathBoundary boundary,
+        out LocalPath localPath,
+        out RemotePathMappingFailure failure)
+    {
+        if (!TryMapServerToLocal(serverPath, out localPath, out failure))
+        {
+            return false;
+        }
+
+        if (boundary is null || !boundary.IsWithinRoot(localRoot, localPath))
+        {
+            localPath = null!;
+            failure = RemotePathMappingFailure.LocalBoundaryViolation;
+            return false;
+        }
+
+        return true;
+    }
+
 }

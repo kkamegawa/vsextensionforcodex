@@ -317,24 +317,21 @@ that the catalog is complete. Skill selection is not `SlashCommands.ActiveComman
 opaque selection key against the current `(Name, Scope, Path)` snapshot and clears only the slash
 query.
 
-Worker contract v15 force-reloads and validates the complete identity immediately before
-`turn/start`; only `{ type: "skill", name, path }` is serialized to app-server. Scope and raw
-path never enter Remote UI-bound data. Busy and approval-waiting states permit chip changes, but
-pending skills disable send/steer until removal or successful start. The live app-server
-`skills/list` response is the catalog system of record. The Worker owns both a 60-second in-memory
-hot snapshot and a versioned, per-workspace persistent stale-while-revalidate snapshot. A cached
-snapshot may populate non-selectable rows marked `Cached - refreshing` while one live refresh is in
-flight. Successful refresh publishes and atomically persists the new generation; `skills/changed`
-marks the snapshot stale, and sticky `-32601` remains distinct from an empty catalog.
+Worker contract v18 preserves the force-reload and exact identity validation before
+`turn/start`; only `{ type: "skill", name, path }` is serialized to App Server. Scope and raw
+path never enter Remote UI-bound data. Remote skill paths remain server-owned identifiers and
+are not probed on the Visual Studio host. Busy and approval-waiting states permit chip changes,
+but pending skills disable send/steer until removal or successful start.
 
-Persistent snapshots live below
-`%LOCALAPPDATA%\Kkamegawa.CodexForVisualStudio\skill-catalog\v1`, keyed by a SHA-256 workspace
-fingerprint. They are untrusted, limited to 200 skills and 4 MiB per workspace, a 24-hour hard
-expiry, and 64 MiB total, with LRU cleanup, atomic replacement, and a bounded cross-process lock. The Worker
-reapplies live-response bounds when loading them. Default prompts, dependency values, icon source
-paths, raw app-server JSON, and Remote UI selection IDs are not persisted. Cache failures fall back
-to live discovery; a stale snapshot can never authorize a turn because `turn/start` force-reloads
-and validates an enabled exact identity.
+The live `skills/list` response is the catalog system of record. The Worker owns a 60-second
+memory snapshot for the captured owner partition. `skills/changed` invalidates it, and sticky
+`-32601` remains distinct from an empty catalog. Owner replacement clears every catalog and
+rejects late refresh results. The v2 persistent store keys by workspace and owner partition,
+with 200 skills, 4 MiB per partition, 24-hour hard expiry, 64 MiB total, LRU cleanup, atomic
+replacement, and bounded cross-process locking. Default prompts, dependency values, icons,
+raw JSON, and Remote UI selection IDs are excluded. The pinned account contract cannot prove
+stable owner identity, so current local and remote sessions bypass disk reads and writes and
+never reuse v1 workspace-only snapshots. A stale catalog cannot authorize a turn.
 
 Metadata is untrusted display data: brand colors accept only normalized `#RRGGBB` and are applied
 as a narrow accent that must fall back to Visual Studio theme resources under High Contrast,
@@ -400,8 +397,8 @@ publishes Degraded. The degraded remote action is `Reconnect remote app-server` 
 The local action is `Restart local app-server`. Connect/reconnect/close are serialized and pending
 requests finish on retirement; stale close notifications cannot overwrite a newer Ready state.
 
-Remote mode remains Preview because upstream WebSocket support is experimental and account/principal
-cache isolation is tracked by Issue #152. Health diagnosis and the bounded, allowlisted overload retry
+Remote mode remains Preview because upstream WebSocket support is experimental. Issue #152 supplies
+account/principal state isolation as specified in section 14. Health diagnosis and the bounded, allowlisted overload retry
 contract are available independently of that limitation. Automatic reconnect/history recovery remains
 tracked by Issue #153; a failed liveness check does not resend user input or reconnect automatically.
 
@@ -415,3 +412,14 @@ elapsed time, and, for the interrupted turn only, the final `turn.status` with t
 request to the completion. Pending stop timestamps are keyed by connection generation, thread, and
 turn, and are cleared on reinitialization so a lost completion cannot accumulate state. The lines
 contain only server-assigned thread/turn identifiers and timings.
+
+## 14. Path mapping and connection state isolation
+
+[Path mapping and connection state isolation](path-state-isolation-design.md) and its
+[Japanese translation](path-state-isolation-design_ja.md) define the accepted Issue #152
+boundary. Local/server path domains use a single component mapper and physical local-root
+validation. Every cache, grant, selected conversation, draft, and asynchronous result belongs
+to a captured owner partition and connection generation. The pinned account contract cannot
+prove a stable account for every provider, so those owners use volatile partitions instead
+of sharing workspace-only persisted skill state. Account/principal replacement retires the
+previous remote socket before new-owner state is activated.

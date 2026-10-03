@@ -16,6 +16,41 @@
 
 The publisher is `kkamegawa` (see CLAUDE.md for the current VSIX identity string).
 
+## Issue #152: Path mapping and connection state isolation
+
+The accepted Wiki Phase 3 and ADR-013 are implemented according to
+[the path/state design](path-state-isolation-design.md). `LocalPath` and `ServerPath`
+retain their own Windows/POSIX grammar; mapping compares complete components and rejects
+root escapes and unsafe Windows aliases. The Worker resolves local links at attachment
+admission and keeps remote skill identifiers opaque. Unmappable explicit attachments
+reject the entire turn before `turn/start`.
+
+Contract v18 binds mutation requests and notification envelopes to the captured owner.
+The Worker uses a volatile partition for each Worker/connection attempt, retires old
+pending work and buffers, and scopes approval grants to the connection context. The
+Extension clears selected conversation, draft, attachments, skills, models, usage, and
+interaction state at an owner boundary and rejects late asynchronous completions.
+
+The pinned account schema cannot establish authoritative account continuity for every
+provider. Both skill-cache disk reads and writes are disabled for these sessions;
+the future-ready file store uses v2 composite workspace/owner keys and rejects old v1
+snapshots. Reconnect is explicit and starts a new owner; mutations are never replayed.
+
+Actual Experimental Instance rendering remains unverified: Visual Studio discovery
+returned no installed instance, and the selected `orca` executable was not recognized.
+The computer-use skill requires stopping when the selected executable cannot run.
+Source review and UI unit tests do not substitute for this visual acceptance gate.
+
+Validation on 2026-10-03:
+
+- Debug and Release solution/VSIX builds: zero warnings and errors.
+- Full Release Core: 311 passed, 5 skipped; UI: 317 passed, 1 skipped. All skips require unavailable symlink creation capability.
+- Actual Windows junction smoke: in-root existing/future files accepted, escaping existing/future files rejected.
+- Pinned CLI 0.159.1: stable/experimental contract-surface verification, schema-cache contract checks, and live initialize smoke passed.
+- Release VSIX: contract v18, Worker/Extension and both Contracts payload hashes match Release outputs; raw embedded XAML matches source; publisher `kkamegawa`, existing VSIX identity, and Preview flag verified.
+- Release VSIX SHA-256: `9F35C339BC4A1566553D9BFDBD5AAC28299F8BAD8DD08B068214FB04F867F73A`.
+- Changed files use UTF-8 BOM/CRLF; `git diff --check` passed. Experimental Instance screenshots remain pending.
+
 ## Issue #150: App-server protocol contract and transport core
 
 Issue [#150](https://github.com/kkamegawa/vsextensionforcodex/issues/150) fixes the local stdio
@@ -366,7 +401,7 @@ popup-level Escape commands, and UI Automation metadata. Raw Remote UI cannot ex
 
 ## Issue #140 unified slash menu
 
-The Worker/Extension contract is v15. `skills/list` is cached for 60 seconds with `TimeProvider`,
+The Worker/Extension contract is v18; v15 introduced this skill interface. `skills/list` is cached for 60 seconds with `TimeProvider`,
 single-flight locking, generation invalidation, and sticky `-32601` probing. Before a turn starts,
 the Worker force-reloads the catalog and requires an enabled exact `(Name, Scope, Path)` identity;
 the app-server receives only the structured skill item `{ type, name, path }`.
@@ -393,7 +428,7 @@ Not yet implemented against `doc/design.md`:
   `ExtensionDiagnostics`, because `AsyncCommand` swallows the exception. The user's message is
   already in the transcript and the chip is retained, but no failure text is shown.
 
-ADR-010 adds a Worker-owned persistent stale-while-revalidate catalog snapshot under the local
+ADR-010 introduced a Worker-owned persistent stale-while-revalidate catalog snapshot under the local
 application data profile. The cache is keyed by a workspace SHA-256, expires after 24 hours, is
 limited to 4 MiB per workspace and 64 MiB overall, and is written atomically under a bounded
 cross-process lock. It contains only validated catalog display/identity fields; default prompts,
@@ -401,6 +436,10 @@ dependency values, errors, raw app-server JSON, icon paths, and Remote UI select
 persisted. A cached catalog is never authoritative: it is shown as stale and non-selectable until
 the live generation is received, and `turn/start` always performs a live force reload and exact
 identity validation.
+
+ADR-013 supersedes the workspace-only key and disk-cache admission policy. Current pinned
+sessions cannot establish stable authoritative account continuity and use memory only;
+the retained file-store format is v2 with composite workspace/owner keys.
 
 Validation on 2026-08-11:
 

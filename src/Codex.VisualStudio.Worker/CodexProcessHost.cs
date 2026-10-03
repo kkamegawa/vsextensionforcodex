@@ -14,6 +14,10 @@ public interface ICodexProcessHost : IAsyncDisposable
 
     int? ProcessId { get; }
 
+    // SHA-256 of the current remote bearer credential; it is Worker-only and never logged or
+    // returned across the Extension boundary. Local process hosts have no credential fingerprint.
+    string? CredentialFingerprint => null;
+
     IJsonRpcConnection? Connection { get; }
 
     Task StartAsync(string codexPath, string workingDirectory, CancellationToken cancellationToken);
@@ -108,6 +112,7 @@ public sealed class CodexProcessHost : ICodexProcessHost
     // pumps, pending requests, and server-request handlers) has been disposed.
     private IDisposable? remoteSecretLease;
     private HttpMessageInvoker? ownedRemoteInvoker;
+    public string? CredentialFingerprint { get; private set; }
 
     public CodexProcessHost(
         ISecretRedactor redactor,
@@ -132,6 +137,7 @@ public sealed class CodexProcessHost : ICodexProcessHost
     public async Task StartAsync(string codexPath, string workingDirectory, CancellationToken cancellationToken)
     {
         await StopAsync(cancellationToken).ConfigureAwait(false);
+        CredentialFingerprint = null;
         string resolvedCodexPath = CodexExecutableResolver.Resolve(codexPath);
 
         ProcessStartInfo startInfo = CreateStartInfo(resolvedCodexPath, workingDirectory);
@@ -176,6 +182,9 @@ public sealed class CodexProcessHost : ICodexProcessHost
             stage => tokenReader.ReadAsync(request.TokenFilePath, stage),
             limits.TokenRead,
             cancellationToken).ConfigureAwait(false);
+        CredentialFingerprint = Convert.ToHexString(
+            System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(token)))
+            .ToLowerInvariant();
         IDisposable lease = redactor.RegisterSecret(token);
         (HttpMessageInvoker invoker, bool ownsInvoker) = network.SelectInvoker(endpoint);
         WebSocketJsonRpcConnection? connection = null;
@@ -194,6 +203,7 @@ public sealed class CodexProcessHost : ICodexProcessHost
         }
         catch (Exception ex)
         {
+            CredentialFingerprint = null;
             RemoteConnectionFailure failure = ex switch
             {
                 RemoteConnectionException remote => remote.Failure,
@@ -289,6 +299,7 @@ public sealed class CodexProcessHost : ICodexProcessHost
         // A remote stop closes only the Worker-owned socket; the external server keeps running.
         Interlocked.Exchange(ref ownedRemoteInvoker, null)?.Dispose();
         Interlocked.Exchange(ref remoteSecretLease, null)?.Dispose();
+        CredentialFingerprint = null;
 
         Process? current = process;
         process = null;

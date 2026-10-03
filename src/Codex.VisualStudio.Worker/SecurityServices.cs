@@ -183,6 +183,168 @@ public sealed class PathAccessPolicy : IPathAccessPolicy
     }
 }
 
+/// <summary>Resolves existing symlinks and junctions before a mapped path crosses a local trust boundary.</summary>
+public sealed class LocalPathBoundary : ILocalPathBoundary
+{
+    private static readonly StringComparison PathComparison = OperatingSystem.IsWindows()
+        ? StringComparison.OrdinalIgnoreCase
+        : StringComparison.Ordinal;
+
+    public LocalPathBoundary(IPathAccessPolicy? pathAccessPolicy = null)
+    {
+        _ = pathAccessPolicy;
+    }
+
+    public bool IsWithinRoot(LocalPath root, LocalPath candidate)
+    {
+        if (root is null || candidate is null
+            || !IsHostCompatible(root)
+            || !IsHostCompatible(candidate)
+            || root.Family != candidate.Family
+            || !TryResolvePhysicalPath(root.Value, out string physicalRoot)
+            || !TryResolvePhysicalPath(candidate.Value, out string physicalCandidate))
+        {
+            return false;
+        }
+
+        physicalRoot = Path.TrimEndingDirectorySeparator(physicalRoot);
+        physicalCandidate = Path.TrimEndingDirectorySeparator(physicalCandidate);
+        string rootPrefix = physicalRoot.EndsWith(Path.DirectorySeparatorChar)
+            || physicalRoot.EndsWith(Path.AltDirectorySeparatorChar)
+            ? physicalRoot
+            : physicalRoot + Path.DirectorySeparatorChar;
+        return physicalCandidate.Equals(physicalRoot, PathComparison)
+            || physicalCandidate.StartsWith(rootPrefix, PathComparison);
+    }
+
+    private static bool IsHostCompatible(LocalPath path)
+        => OperatingSystem.IsWindows()
+            ? path.Family is PathFamily.WindowsDrive or PathFamily.WindowsUnc
+            : path.Family == PathFamily.Posix;
+
+    private static bool TryResolvePhysicalPath(string path, out string resolved)
+    {
+        resolved = string.Empty;
+        try
+        {
+            resolved = ResolvePhysicalPath(path, new HashSet<string>(PathComparison == StringComparison.OrdinalIgnoreCase
+                ? StringComparer.OrdinalIgnoreCase
+                : StringComparer.Ordinal), 0);
+            return true;
+        }
+        catch (Exception ex) when (ex is ArgumentException
+            or IOException
+            or UnauthorizedAccessException
+            or NotSupportedException
+            or PathTooLongException
+            or System.Security.SecurityException)
+        {
+            return false;
+        }
+    }
+
+    private static string ResolvePhysicalPath(string path, HashSet<string> activeLinks, int depth)
+    {
+        if (depth > 64)
+        {
+            throw new IOException("The local path contains too many nested symbolic links.");
+        }
+
+        string fullPath = Path.GetFullPath(path);
+        string root = Path.GetPathRoot(fullPath) ?? string.Empty;
+        if (root.Length == 0)
+        {
+            throw new IOException("The local path has no filesystem root.");
+        }
+
+        string current = root;
+        string remainder = fullPath[root.Length..];
+        foreach (string segment in remainder.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar))
+        {
+            if (segment.Length == 0)
+            {
+                continue;
+            }
+
+            string next = Path.Combine(current, segment);
+            FileInfo fileInfo = new(next);
+            DirectoryInfo directoryInfo = new(next);
+            string? linkTarget = fileInfo.LinkTarget ?? directoryInfo.LinkTarget;
+            FileAttributes? attributes = TryGetAttributes(fileInfo);
+            if (attributes is null)
+            {
+                attributes = TryGetAttributes(directoryInfo);
+            }
+
+            if (attributes is null)
+            {
+                if (linkTarget is not null)
+                {
+                    throw new IOException("The local path contains a broken reparse point.");
+                }
+
+                // A not-yet-created leaf is permitted; all existing ancestors have
+                // already been checked as the path was walked from its filesystem root.
+                current = next;
+                continue;
+            }
+
+            bool isReparsePoint = (attributes.Value & FileAttributes.ReparsePoint) != 0;
+            if (!isReparsePoint)
+            {
+                if (linkTarget is not null)
+                {
+                    throw new IOException("The filesystem reported a link without a reparse point.");
+                }
+
+                current = next;
+                continue;
+            }
+
+            if (string.IsNullOrWhiteSpace(linkTarget) || !activeLinks.Add(next))
+            {
+                throw new IOException("The local path contains an unresolved or cyclic reparse point.");
+            }
+
+            try
+            {
+                FileSystemInfo info = fileInfo.LinkTarget is not null ? fileInfo : directoryInfo;
+                FileSystemInfo? target = info.ResolveLinkTarget(returnFinalTarget: true);
+                if (target is null)
+                {
+                    throw new IOException("The local path contains an unresolved reparse point.");
+                }
+
+                // Resolve the whole target path, including every ancestor. ResolveLinkTarget
+                // only guarantees the final target object, not that its parent chain is physical.
+                current = ResolvePhysicalPath(target.FullName, activeLinks, depth + 1);
+            }
+            finally
+            {
+                activeLinks.Remove(next);
+            }
+        }
+
+        return Path.GetFullPath(current);
+    }
+
+    private static FileAttributes? TryGetAttributes(FileSystemInfo info)
+    {
+        try
+        {
+            return File.GetAttributes(info.FullName);
+        }
+        catch (FileNotFoundException)
+        {
+            return null;
+        }
+        catch (DirectoryNotFoundException)
+        {
+            return null;
+        }
+    }
+}
+
 public sealed record ApprovalPolicyResult(
     ApprovalRiskCategory Risk,
     string RiskKey,

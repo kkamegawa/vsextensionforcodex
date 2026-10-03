@@ -108,42 +108,28 @@ internal static class IdeContextCaptureService
     private static bool TryGetWorkspaceRoot(string? workspaceRoot, out string normalizedRoot)
     {
         normalizedRoot = string.Empty;
-        if (string.IsNullOrWhiteSpace(workspaceRoot))
+        if (!LocalPath.TryCreate(workspaceRoot, out LocalPath root))
         {
             return false;
         }
 
-        try
-        {
-            normalizedRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(workspaceRoot));
-            return Directory.Exists(normalizedRoot);
-        }
-        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
-        {
-            return false;
-        }
+        normalizedRoot = root.Value;
+        return Directory.Exists(normalizedRoot);
     }
 
     private static string? NormalizeWorkspaceFile(string workspaceRoot, string? candidatePath)
     {
-        if (string.IsNullOrWhiteSpace(candidatePath))
+        if (!LocalPath.TryCreate(workspaceRoot, out LocalPath localRoot)
+            || !LocalPath.TryCreate(candidatePath, out LocalPath localPath))
         {
             return null;
         }
 
-        try
-        {
-            string fullPath = Path.GetFullPath(candidatePath);
-            string relativePath = Path.GetRelativePath(workspaceRoot, fullPath);
-            bool outsideWorkspace = Path.IsPathRooted(relativePath)
-                || string.Equals(relativePath, "..", StringComparison.Ordinal)
-                || relativePath.StartsWith(string.Concat("..", Path.DirectorySeparatorChar), StringComparison.Ordinal)
-                || relativePath.StartsWith(string.Concat("..", Path.AltDirectorySeparatorChar), StringComparison.Ordinal);
-            return outsideWorkspace ? null : fullPath;
-        }
-        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
-        {
-            return null;
-        }
+        // Use the same component-aware mapper as remote requests. The same-root target keeps this
+        // local-only capture in LocalPath space while rejecting sibling-prefix and traversal paths.
+        var mapper = new RemotePathMapper(localRoot, ServerPath.Create(localRoot.Value));
+        return mapper.TryMapLocalToServer(localPath, out _)
+            ? localPath.Value
+            : null;
     }
 }

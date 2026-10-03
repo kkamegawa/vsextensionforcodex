@@ -1,4 +1,4 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using Codex.AppServer.Protocol;
 using Codex.VisualStudio.Contracts;
 using Codex.VisualStudio.Worker;
@@ -42,9 +42,10 @@ public sealed class SkillCatalogStoreTests
             new SkillToolDependencyInfo { Type = "mcp", Value = "private-tool", Description = "not persisted" },
         ];
 
-        await store.WriteAsync(workspace, "1.2.3", live, now, CancellationToken.None);
+        await store.WriteAsync(workspace, "local-owner", "1.2.3", live, now, CancellationToken.None);
         ListSkillsResult? cached = await store.TryReadAsync(
             workspace,
+            "local-owner",
             "1.2.3",
             now.AddMinutes(1),
             CancellationToken.None);
@@ -71,21 +72,23 @@ public sealed class SkillCatalogStoreTests
         string workspace = CreateWorkspace("repo-expired");
         var store = CreateStore();
         DateTimeOffset now = new(2026, 8, 11, 0, 0, 0, TimeSpan.Zero);
-        await store.WriteAsync(workspace, "1.2.3", CreateResult("old", workspace), now, CancellationToken.None);
+        await store.WriteAsync(workspace, "partition-a", "1.2.3", CreateResult("old", workspace), now, CancellationToken.None);
 
         ListSkillsResult? expired = await store.TryReadAsync(
             workspace,
+            "partition-a",
             "1.2.3",
             now.Add(FileSkillCatalogStore.HardExpiry),
             CancellationToken.None);
 
         Assert.IsNull(expired);
-        await store.WriteAsync(workspace, "1.2.3", CreateResult("corrupt", workspace), now, CancellationToken.None);
+        await store.WriteAsync(workspace, "partition-a", "1.2.3", CreateResult("corrupt", workspace), now, CancellationToken.None);
         string cachePath = Directory.GetFiles(store.RootDirectory, "*.json").Single();
         await File.WriteAllTextAsync(cachePath, "{not-json");
 
         ListSkillsResult? corrupt = await store.TryReadAsync(
             workspace,
+            "partition-a",
             "1.2.3",
             now.AddMinutes(1),
             CancellationToken.None);
@@ -100,15 +103,17 @@ public sealed class SkillCatalogStoreTests
         string workspaceB = CreateWorkspace("repo-b");
         var store = CreateStore();
         DateTimeOffset now = new(2026, 8, 11, 0, 0, 0, TimeSpan.Zero);
-        await store.WriteAsync(workspaceA, "1.2.3", CreateResult("only-a", workspaceA), now, CancellationToken.None);
+        await store.WriteAsync(workspaceA, "partition-a", "1.2.3", CreateResult("only-a", workspaceA), now, CancellationToken.None);
 
         ListSkillsResult? wrongWorkspace = await store.TryReadAsync(
             workspaceB,
+            "partition-a",
             "1.2.3",
             now.AddMinutes(1),
             CancellationToken.None);
         ListSkillsResult? rightWorkspace = await store.TryReadAsync(
             workspaceA,
+            "partition-a",
             "1.2.3",
             now.AddMinutes(1),
             CancellationToken.None);
@@ -130,49 +135,53 @@ public sealed class SkillCatalogStoreTests
         ListSkillsResult oversized = CreateResult("oversized", workspace);
         oversized.Skills[0].Description = new string('x', checked((int)FileSkillCatalogStore.MaximumWorkspaceBytes));
 
-        await store.WriteAsync(workspace, "1.2.3", oversized, now, CancellationToken.None);
+        await store.WriteAsync(workspace, "partition-a", "1.2.3", oversized, now, CancellationToken.None);
 
         Assert.IsFalse(Directory.Exists(store.RootDirectory));
-        await store.WriteAsync(workspace, "1.2.3", CreateResult("normal", workspace), now, CancellationToken.None);
+        await store.WriteAsync(workspace, "partition-a", "1.2.3", CreateResult("normal", workspace), now, CancellationToken.None);
         Assert.AreEqual(1, Directory.GetFiles(store.RootDirectory, "*.json").Length);
         Assert.AreEqual(0, Directory.GetFiles(store.RootDirectory, "*.tmp").Length);
         Assert.AreEqual(TimeSpan.FromHours(24), FileSkillCatalogStore.HardExpiry);
     }
 
     [TestMethod]
-    public async Task ServiceReturnsStaleCatalogThenPublishesLiveGeneration()
+    public async Task CatalogsRemainIsolatedAcrossConnectionPartitions()
     {
-        string workspace = CreateWorkspace("repo-service");
-        var stale = CreateResult("cached", workspace);
-        var store = new StubSkillCatalogStore(stale);
-        var connection = new RecordingSkillConnection(workspace);
-        await using var service = new CodexSessionService(
-            new ApprovalPolicyEngine(new PathAccessPolicy()),
-            new SecretRedactor(),
-            pathAccessPolicy: null,
-            protectedDirectoryPolicy: null,
-            timeProvider: null,
-            skillCatalogStore: store);
-        var refreshed = new TaskCompletionSource<SkillsChangedEvent>(TaskCreationOptions.RunContinuationsAsynchronously);
-        service.SkillsChanged += (value, _) =>
+        string workspace = CreateWorkspace("repo-partitions");
+        var store = CreateStore();
+        DateTimeOffset now = new(2026, 8, 11, 0, 0, 0, TimeSpan.Zero);
+        string[] partitions = ["endpoint-a/account-a", "endpoint-b/account-a", "endpoint-a/account-b"];
+
+        await Task.WhenAll(partitions.Select((partition, index) => Task.Run(async () =>
+            await store.WriteAsync(
+                workspace,
+                partition,
+                "1.2.3",
+                CreateResult($"skill-{index}", workspace),
+                now.AddSeconds(index),
+                CancellationToken.None))));
+
+        for (int index = 0; index < partitions.Length; index++)
         {
-            refreshed.TrySetResult(value);
-            return Task.CompletedTask;
-        };
-        await service.InitializeAsync(connection, Options(workspace), CancellationToken.None);
+            ListSkillsResult? cached = await store.TryReadAsync(
+                workspace,
+                partitions[index],
+                "1.2.3",
+                now.AddMinutes(1),
+                CancellationToken.None);
+            Assert.AreEqual($"skill-{index}", cached?.Skills.Single().Name);
+        }
 
-        ListSkillsResult first = await service.ListSkillsAsync(forceReload: false, CancellationToken.None);
-        SkillsChangedEvent changed = await refreshed.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        ListSkillsResult live = await service.ListSkillsAsync(forceReload: false, CancellationToken.None);
+        await store.DeleteAsync(workspace, partitions[0], CancellationToken.None);
+        Assert.IsNull(await store.TryReadAsync(workspace, partitions[0], "1.2.3", now.AddMinutes(1), CancellationToken.None));
+        Assert.IsNotNull(await store.TryReadAsync(workspace, partitions[1], "1.2.3", now.AddMinutes(1), CancellationToken.None));
 
-        Assert.IsTrue(first.IsStale);
-        Assert.AreEqual("cached", first.Skills.Single().Name);
-        Assert.IsFalse(live.IsStale);
-        Assert.AreEqual("live", live.Skills.Single().Name);
-        Assert.AreEqual(live.Generation, changed.Generation);
-        Assert.AreEqual(first.Generation, live.Generation);
-        Assert.AreEqual(1, connection.SkillRequests);
-        Assert.IsNotNull(store.Written);
+        Assert.AreEqual(partitions.Length - 1, Directory.GetFiles(store.RootDirectory, "*.json").Length);
+        foreach (string file in Directory.GetFiles(store.RootDirectory, "*.json"))
+        {
+            using JsonDocument document = JsonDocument.Parse(await File.ReadAllBytesAsync(file));
+            Assert.AreEqual(2, document.RootElement.GetProperty("Version").GetInt32());
+        }
     }
 
     private FileSkillCatalogStore CreateStore()
@@ -203,101 +212,4 @@ public sealed class SkillCatalogStoreTests
         ],
     };
 
-    private static WorkerOptions Options(string workspace) => new()
-    {
-        WorkingDirectory = workspace,
-        ExtensionVersion = "test",
-    };
-
-    private sealed class StubSkillCatalogStore(ListSkillsResult cached) : ISkillCatalogStore
-    {
-        public ListSkillsResult? Written { get; private set; }
-
-        public ValueTask<ListSkillsResult?> TryReadAsync(
-            string workspace,
-            string? codexVersion,
-            DateTimeOffset now,
-            CancellationToken cancellationToken)
-            => ValueTask.FromResult<ListSkillsResult?>(cached);
-
-        public ValueTask WriteAsync(
-            string workspace,
-            string? codexVersion,
-            ListSkillsResult result,
-            DateTimeOffset now,
-            CancellationToken cancellationToken)
-        {
-            Written = result;
-            return ValueTask.CompletedTask;
-        }
-
-        public ValueTask DeleteAsync(string workspace, CancellationToken cancellationToken)
-            => ValueTask.CompletedTask;
-    }
-
-    private sealed class RecordingSkillConnection(string workspace) : IJsonRpcConnection
-    {
-        public event Func<JsonRpcMessage, CancellationToken, Task>? NotificationReceived
-        {
-            add { }
-            remove { }
-        }
-
-        public event Func<JsonRpcMessage, CancellationToken, Task<JsonElement>>? RequestReceived
-        {
-            add { }
-            remove { }
-        }
-
-        public event EventHandler<Exception?>? Closed
-        {
-            add { }
-            remove { }
-        }
-
-        public int SkillRequests { get; private set; }
-
-        public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-
-        public Task<JsonElement> SendRequestAsync(
-            string method,
-            object? parameters,
-            TimeSpan timeout,
-            CancellationToken cancellationToken)
-        {
-            if (method == "skills/list")
-            {
-                SkillRequests++;
-                return Task.FromResult(JsonSerializer.SerializeToElement(new
-                {
-                    data = new[]
-                    {
-                        new
-                        {
-                            cwd = workspace,
-                            errors = Array.Empty<object>(),
-                            skills = new[]
-                            {
-                                new
-                                {
-                                    name = "live",
-                                    description = "Live description",
-                                    enabled = true,
-                                    path = Path.Combine(workspace, "live", "SKILL.md"),
-                                    scope = "repo",
-                                },
-                            },
-                        },
-                    },
-                }));
-            }
-
-            return Task.FromResult(JsonSerializer.SerializeToElement(new { }));
-        }
-
-        public Task SendNotificationAsync(string method, object? parameters, CancellationToken cancellationToken)
-            => Task.CompletedTask;
-
-        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
-    }
 }

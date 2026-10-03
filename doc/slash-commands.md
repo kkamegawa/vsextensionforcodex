@@ -62,15 +62,15 @@ skill chip is pending, send/steer is disabled until the chip is removed or its
 turn starts successfully.
 
 The live app-server `skills/list` response is the skill catalog system of record.
-The Worker keeps a 60-second memory snapshot and a versioned, per-workspace
-persistent stale-while-revalidate snapshot. A persisted hit can populate
-non-selectable `Cached - refreshing` rows while one live refresh runs. It never
-authorizes a turn: `turn/start` force reloads the live catalog and requires an
+The Worker keeps a 60-second snapshot for the current owner in memory. The pinned
+account contract cannot prove stable account continuity, so disk-cache reads and
+writes are disabled. The cache never authorizes a turn: `turn/start` force reloads the live catalog and requires an
 enabled exact `Name + Scope + Path` identity.
 
 ## Worker contract
 
-Worker contract version 15 adds structured skill invocation, catalog freshness,
+Worker contract version 18 adds captured-owner request and notification scopes.
+Version 15 added structured skill invocation, catalog freshness,
 invalidation, and exact live identity validation. Version 9 added the validated connected Codex version to
 `WorkerStatus` for Remote UI status presentation. Version 8 added typed DTOs
 and RPC methods for compact, review, fork, goals, MCP status, feedback, and
@@ -122,14 +122,14 @@ All app-server text displayed in the UI passes through `SafeMarkdownService`.
 Worker diagnostics continue to pass through secret redaction. Raw payload JSON
 is not rendered.
 
-Persistent catalog snapshots are stored below
-`%LOCALAPPDATA%\Kkamegawa.CodexForVisualStudio\skill-catalog\v1`, keyed by a
-workspace SHA-256 fingerprint. They are limited to 200 skills, 4 MiB per
-workspace, a 24-hour hard expiry, and 64 MiB total, and use atomic replacement,
-LRU cleanup, and a bounded cross-process lock. Cache files are untrusted and revalidated on read.
-Default prompts, dependency values, icon source paths, raw app-server JSON, and
-Remote UI selection IDs are never persisted. Cache failure falls back to live
-discovery without blocking the composer.
+The file-store format uses composite workspace/owner SHA-256 keys under
+`%LOCALAPPDATA%\Kkamegawa.CodexForVisualStudio\skill-catalog\v2` for future
+authoritative owner identities. It retains limits of 200 skills, 4 MiB per
+workspace, a 24-hour hard expiry, and 64 MiB total, with atomic replacement,
+LRU cleanup, and bounded cross-process locking. Current sessions neither read nor
+write these snapshots and never reuse v1 snapshots. Default prompts, dependency
+values, icon source paths, raw app-server JSON, and Remote UI selection IDs are
+never persisted. See [the owner design](path-state-isolation-design.md).
 
 ## Known gaps
 

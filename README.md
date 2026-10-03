@@ -55,7 +55,7 @@ The extension is an out-of-process `Microsoft.VisualStudio.Extensibility` extens
 
 By default Codex runs on a local `codex app-server` child process. To run turns on an app-server that is already running on another machine instead:
 
-> **Preview.** The upstream WebSocket transport is experimental. You start and manage the remote app-server yourself; the extension owns only its own connection to it. Root health checks and bounded retry of a fixed set of read-only requests after a server-overload response are available. Cached state is not yet separated when you switch accounts or endpoints, and the connection does not reconnect by itself. Reconnect manually after a switch. These are tracked in the remote-connection and path-mapping issues.
+> **Preview.** The upstream WebSocket transport is experimental. You start and manage the remote app-server yourself; the extension owns only its own connection to it. Root health checks and bounded retry of a fixed set of read-only requests after a server-overload response are available. Account, profile, root, and connection changes clear the previous owner's selected state and caches. Reconnect manually after a switch; automatic reconnect and history recovery are tracked separately.
 
 1. Start the app-server with its WebSocket listener on the remote machine and save its bearer token to a file on this computer. The extension never starts, updates, or synchronizes the remote side.
 2. Make sure both machines see the same working tree, for example `C:\src\repo` locally and `/home/<user>/src/repo` on the server.
@@ -138,10 +138,10 @@ chip.
 **Where are my settings stored?**
 `%APPDATA%\Kkamegawa.CodexForVisualStudio\settings.json`. It holds the approval mode, reasoning effort, service tier, and the experimental-API switch. Deleting the file resets everything to the defaults; a corrupt file is ignored rather than blocking the tool window.
 
-The skill catalog is cached separately under `%LOCALAPPDATA%\Kkamegawa.CodexForVisualStudio\skill-catalog\v1`, keyed per workspace, so the menu opens without waiting for the CLI. Cached rows are shown as stale and cannot be selected until a live refresh lands, and a turn always revalidates the skill against the live catalog. Deleting the folder only costs one refresh.
+The Worker keeps a 60-second skill catalog in memory for the current connection owner. A turn always revalidates the selected skill against the live server catalog, and remote skill paths are server identifiers rather than host files. CLI 0.159.1 cannot prove a stable account identity for every provider, so disk skill-cache reads and writes are disabled; the old workspace-only `skill-catalog\v1` snapshots are not reused. Switching the profile, working root, account, or authentication owner clears the conversation, composer, attachments, catalogs, usage, and approvals. Reconnect establishes a fresh isolated owner.
 
 **Do I need a proxy or firewall exception?**
-The extension itself only talks to a local child process over stdio and a local named pipe. All outbound network traffic is made by the Codex CLI, so proxy and firewall configuration belongs to the CLI and its own configuration file.
+Local mode uses a child process over stdio and a local named pipe; provider traffic is made by the Codex CLI. Remote mode also opens a Worker-owned WebSocket and optional unauthenticated root-health probes using the existing proxy policy. The extension does not edit proxy or firewall configuration.
 
 ## Build and test
 
@@ -244,7 +244,7 @@ APM deploys `.codex/agents/`, `.github/agents/`, and `.claude/agents/`. The depe
 - Security layer: approval policy, path access checks, secret redaction, and audit logging.
 - Protocol layer: `codex app-server` process hosting, JSON-RPC dispatch, schema and version guards, and notification handling.
 
-The transport is stdio. WebSocket or Unix socket transports remain future options and must stay local and authenticated.
+Local stdio is the default transport. Explicit remote profiles use authenticated WebSocket connections under the shared endpoint policy; the Worker owns only its socket. See [Path mapping and connection state isolation](doc/path-state-isolation-design.md) for path and owner boundaries.
 
 Design and planning documents: [doc/design.md](doc/design.md), [doc/plan.md](doc/plan.md),
 [doc/task.md](doc/task.md), [doc/implementation.md](doc/implementation.md),

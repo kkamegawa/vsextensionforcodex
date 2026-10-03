@@ -1,4 +1,4 @@
-using System.Security.Cryptography;
+﻿using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using Codex.VisualStudio.Contracts;
@@ -9,18 +9,20 @@ internal interface ISkillCatalogStore
 {
     ValueTask<ListSkillsResult?> TryReadAsync(
         string workspace,
+        string statePartitionKey,
         string? codexVersion,
         DateTimeOffset now,
         CancellationToken cancellationToken);
 
     ValueTask WriteAsync(
         string workspace,
+        string statePartitionKey,
         string? codexVersion,
         ListSkillsResult result,
         DateTimeOffset now,
         CancellationToken cancellationToken);
 
-    ValueTask DeleteAsync(string workspace, CancellationToken cancellationToken);
+    ValueTask DeleteAsync(string workspace, string statePartitionKey, CancellationToken cancellationToken);
 }
 
 internal sealed class FileSkillCatalogStore : ISkillCatalogStore
@@ -30,7 +32,7 @@ internal sealed class FileSkillCatalogStore : ISkillCatalogStore
     internal const long MaximumTotalBytes = 64L * 1024 * 1024;
     internal static readonly TimeSpan HardExpiry = TimeSpan.FromHours(24);
 
-    private const int FormatVersion = 1;
+    private const int FormatVersion = 2;
     private const int MaximumNameLength = 128;
     private const int MaximumTextLength = 512;
     private const int MaximumPathLength = 1024;
@@ -46,7 +48,7 @@ internal sealed class FileSkillCatalogStore : ISkillCatalogStore
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "Kkamegawa.CodexForVisualStudio",
             "skill-catalog",
-            "v1"));
+            "v2"));
         mutexName = $"Local\\Kkamegawa.CodexForVisualStudio.SkillCatalog.{Hash(this.rootDirectory)}";
     }
 
@@ -54,12 +56,13 @@ internal sealed class FileSkillCatalogStore : ISkillCatalogStore
 
     public ValueTask<ListSkillsResult?> TryReadAsync(
         string workspace,
+        string statePartitionKey,
         string? codexVersion,
         DateTimeOffset now,
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        string workspaceKey = ComputeWorkspaceKey(workspace);
+        string workspaceKey = ComputeWorkspaceKey(workspace, statePartitionKey);
         string cachePath = GetCachePath(workspaceKey);
         try
         {
@@ -74,6 +77,7 @@ internal sealed class FileSkillCatalogStore : ISkillCatalogStore
             if (catalog is null
                 || catalog.Version != FormatVersion
                 || !string.Equals(catalog.WorkspaceKey, workspaceKey, StringComparison.Ordinal)
+                || !string.Equals(catalog.StatePartitionKey, statePartitionKey, StringComparison.Ordinal)
                 || !VersionsMatch(catalog.CodexVersion, codexVersion)
                 || catalog.WrittenAtUtc > now
                 || now - catalog.WrittenAtUtc >= HardExpiry
@@ -118,6 +122,7 @@ internal sealed class FileSkillCatalogStore : ISkillCatalogStore
 
     public ValueTask WriteAsync(
         string workspace,
+        string statePartitionKey,
         string? codexVersion,
         ListSkillsResult result,
         DateTimeOffset now,
@@ -129,11 +134,12 @@ internal sealed class FileSkillCatalogStore : ISkillCatalogStore
             return ValueTask.CompletedTask;
         }
 
-        string workspaceKey = ComputeWorkspaceKey(workspace);
+        string workspaceKey = ComputeWorkspaceKey(workspace, statePartitionKey);
         var catalog = new PersistedCatalog
         {
             Version = FormatVersion,
             WorkspaceKey = workspaceKey,
+            StatePartitionKey = statePartitionKey,
             CodexVersion = codexVersion,
             WrittenAtUtc = now,
             IsTruncated = result.IsTruncated,
@@ -190,14 +196,14 @@ internal sealed class FileSkillCatalogStore : ISkillCatalogStore
         return ValueTask.CompletedTask;
     }
 
-    public ValueTask DeleteAsync(string workspace, CancellationToken cancellationToken)
+    public ValueTask DeleteAsync(string workspace, string statePartitionKey, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        DeleteFile(GetCachePath(ComputeWorkspaceKey(workspace)));
+        DeleteFile(GetCachePath(ComputeWorkspaceKey(workspace, statePartitionKey)));
         return ValueTask.CompletedTask;
     }
 
-    internal static string ComputeWorkspaceKey(string workspace)
+    internal static string ComputeWorkspaceKey(string workspace, string statePartitionKey)
     {
         string canonical = Path.GetFullPath(workspace)
             .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
@@ -206,7 +212,7 @@ internal sealed class FileSkillCatalogStore : ISkillCatalogStore
             canonical = canonical.ToUpperInvariant();
         }
 
-        return Hash(canonical);
+        return Hash($"{canonical.Length}:{canonical}|{statePartitionKey.Length}:{statePartitionKey}");
     }
 
     private string GetCachePath(string workspaceKey)
@@ -281,16 +287,11 @@ internal sealed class FileSkillCatalogStore : ISkillCatalogStore
 
     private static string? NormalizePath(string? value)
     {
-        if (string.IsNullOrWhiteSpace(value))
-        {
-            return null;
-        }
-
-        string trimmed = value.Trim();
-        return trimmed.Length <= MaximumPathLength
-            && trimmed.All(character => !char.IsControl(character))
-            && Path.IsPathRooted(trimmed)
-                ? trimmed
+        return !string.IsNullOrEmpty(value)
+            && value.Length <= MaximumPathLength
+            && value.All(character => !char.IsControl(character))
+            && ServerPath.TryCreate(value, out _)
+                ? value
                 : null;
     }
 
@@ -337,6 +338,8 @@ internal sealed class FileSkillCatalogStore : ISkillCatalogStore
         public int Version { get; set; }
 
         public string WorkspaceKey { get; set; } = string.Empty;
+
+        public string StatePartitionKey { get; set; } = string.Empty;
 
         public string? CodexVersion { get; set; }
 

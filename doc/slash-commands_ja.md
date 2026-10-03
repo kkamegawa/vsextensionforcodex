@@ -56,15 +56,15 @@ steerとして送ることはありません。選択スキルは独立チップ
 Remote UIへバインドしません。pending中はチップを外すまでsend/steerを無効にします。
 
 liveのApp Server `skills/list`応答をスキルカタログの正本とします。Workerは60秒の
-memory snapshotと、version付き・workspace単位の永続stale-while-revalidate
-snapshotを保持します。永続cacheが見つかった場合は、一つのlive refreshを実行する間、
-`Cached - refreshing`の選択不可行を表示できます。ただしcacheはturnを許可しません。
+memory snapshotを現在の所有者ごとに保持します。固定account契約では安定した所有者の
+継続性を証明できないため、ディスクcacheの読み書きを無効化します。cacheはturnを許可しません。
 `turn/start`ではliveカタログをforce reloadし、有効な`Name + Scope + Path`の
 完全一致を必須とします。
 
 ## Worker契約
 
-Worker契約バージョン15で、構造化skill呼び出し、catalog freshness、invalidation、
+Worker契約バージョン18で、要求と通知に捕捉した所有者のscopeを追加しました。
+バージョン15で、構造化skill呼び出し、catalog freshness、invalidation、
 live identityの完全一致検証を追加しました。バージョン9で接続中Codex versionを、
 バージョン8でcompact、review、fork、goal、MCP状態、feedback、
 rate limitsの型付きDTOとRPCを追加しました。`StartTurnRequest`にはreasoning
@@ -107,12 +107,13 @@ UI Automationで21件目から最後の受理済み行まで到達できます�
 UIへ表示するApp Server由来文字列は`SafeMarkdownService`を通し、Workerログは
 secret redactionを維持します。未加工のpayload JSONは表示しません。
 
-永続カタログsnapshotはworkspaceのSHA-256 fingerprintをkeyとして、
-`%LOCALAPPDATA%\Kkamegawa.CodexForVisualStudio\skill-catalog\v1`配下へ保存します。
+file storeは将来の権威ある所有者識別に備え、workspaceとownerの複合SHA-256 keyを持つ
+`%LOCALAPPDATA%\Kkamegawa.CodexForVisualStudio\skill-catalog\v2`形式を使用します。
 最大200件、workspaceあたり4 MiB、HardExpiry 24時間、全体64 MiBに制限し、atomic replace、LRU cleanup、
 時間制限付きcross-process lockを適用します。cacheファイルも信頼せず、読み込み時に再検証します。
-default prompt、dependency value、icon source path、raw App Server JSON、Remote UI selection IDは
-永続化しません。cache障害時はComposerをblockせずlive discoveryへfallbackします。
+現在のsessionではsnapshotを読み書きせず、旧v1も再利用しません。default prompt、dependency value、
+icon source path、raw App Server JSON、Remote UI selection IDは永続化しません。
+詳細は [所有者の設計](path-state-isolation-design_ja.md) を参照してください。
 
 ## 既知の未対応事項
 

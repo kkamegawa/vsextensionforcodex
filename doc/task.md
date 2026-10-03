@@ -2,6 +2,20 @@
 
 `plan.md` のフェーズ分割に対応する詳細タスク。各タスクは独立してレビュー可能な小さなスライスを意図する。
 
+## 2026-10-03: Path mapping and owner state isolation ([Issue #152](https://github.com/kkamegawa/vsextensionforcodex/issues/152))
+
+Evidence: [English verification record](path-state-isolation-verification.md) / [Japanese verification record](path-state-isolation-verification_ja.md).
+
+- [x] Re-review the accepted Wiki Phase 3 and ADR-013 against the merged Issue #151 implementation; record the final owner/cache contract in the paired path/state design.
+- [x] Add separate local/server path domains, component-based Windows/POSIX mapping, safe Windows aliases, and physical local link containment; use them for cwd, IDE context, attachments, and inbound approval paths.
+- [x] Keep remote skill paths as bounded exact server identifiers and reject unmappable explicit attachments before `turn/start`.
+- [x] Add volatile Worker/attempt owner partitions, context-owned grants and streaming buffers, cache invalidation, contract v18 owner-scoped mutations and notifications, and serialized owner validation/send.
+- [x] Reset selected UI state at an owner boundary and reject stale model, skill, usage, history, input, authentication, send, and suggestion completions.
+- [x] Disable disk-cache reads and writes when authoritative account continuity cannot be established; retain the bounded v2 composite owner/workspace file format for future admitted owners.
+- [x] Verify Debug and Release solution builds (zero warnings/errors), full Release Core (311 passed / 5 symlink-capability skips) and UI (317 passed / 1 symlink-capability skip), pinned 0.159.1 stable/experimental contract surfaces, schema-cache contract, live initialize smoke, and `git diff --check`.
+- [x] Verify actual Windows junctions: accept existing and future files through an in-root junction; reject both through an escaping junction. Inspect the Release VSIX: contract v18, both Contracts copies and Worker/Extension DLL hashes match their Release outputs, raw embedded XAML matches source, and publisher/identity/Preview remain correct.
+- [ ] Observe Experimental Instance connection switches, attachment rejection, and remote skill selection in screenshots. Visual Studio discovery returned no installed instance; `orca` was not recognized, so the computer-use path cannot run.
+
 ## 2026-09-13: Codex App Server update and remote connection (approved plan)
 
 - [x] Phase 1 ([Issue #150](https://github.com/kkamegawa/vsextensionforcodex/issues/150)): target the CLI 0.155.1 contract, compare 0.154.0 and 0.155.1 stable/experimental schemas, update schema cache metadata, exact request routing, capability probes, and connection-generation state. Verified with four official schema generations, cache/contract checks, 72 focused tests, 130 full Core tests, a zero-warning Release solution build, and a live 0.155.1 initialize/thread/turn round trip.

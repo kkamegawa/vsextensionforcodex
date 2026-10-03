@@ -14,7 +14,12 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
     private readonly RemoteStartupLimits limits;
     private readonly RemoteWatchdogTiming watchdogTiming;
     private readonly TimeProvider timeProvider;
+    private readonly string workerInstanceId = Guid.NewGuid().ToString("N");
     private readonly SemaphoreSlim connectionTransitionGate = new(1, 1);
+    private readonly object targetGate = new();
+    private readonly AsyncLocal<ConnectionTargetSnapshot?> processEmissionTarget = new();
+    private readonly AsyncLocal<ConnectionTargetSnapshot?> requestEmissionTarget = new();
+    private readonly SortedDictionary<long, ConnectionTargetSnapshot> ownerTargetHistory = new();
     // Queued close and watchdog callbacks. They run outside the transition gate and are drained
     // after the gate is released during disposal.
     private readonly List<Task> trackedCallbacks = [];
@@ -27,6 +32,7 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
     private AccountStatus accountStatus = new();
     private ConnectionTargetSnapshot target = new() { Kind = ConnectionTargetKind.Local };
     private long connectionGeneration;
+    private long ownerGeneration;
     private int networkFailureReported;
     // A remote app-server has no child process, so its loss is observed through the transport's
     // Closed event instead of ICodexProcessHost.Exited.
@@ -34,6 +40,8 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
     // The observed connection whose close is waiting for the transition gate to be published.
     private IJsonRpcConnection? lostRemoteConnection;
     private RemoteIdleWatchdog? watchdog;
+    private EventHandler<string>? standardErrorHandler;
+    private EventHandler<int>? processExitedHandler;
 
     public WorkerRpcService(
         ISecretRedactor redactor,
@@ -51,8 +59,6 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
         this.limits = limits ?? RemoteStartupLimits.Default;
         this.watchdogTiming = watchdogTiming ?? RemoteWatchdogTiming.Default;
         this.timeProvider = timeProvider ?? TimeProvider.System;
-        processHost.StandardErrorReceived += (_, text) => _ = OnStandardErrorReceivedAsync(text);
-        processHost.Exited += (_, exitCode) => _ = OnProcessExitedAsync(exitCode);
         session.ConversationEventReceived += PublishEventAsync;
         session.ApprovalRequested += PublishApprovalAsync;
         session.ApprovalResolved += PublishApprovalResolvedAsync;
@@ -66,6 +72,7 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
         session.RateLimitsChanged += PublishRateLimitsChangedAsync;
         session.EffectiveApprovalStateChanged += PublishEffectiveApprovalStateAsync;
         session.SkillsChanged += PublishSkillsChangedAsync;
+        session.OwnerInvalidated += OnOwnerInvalidatedAsync;
     }
 
     public void AttachClient(JsonRpc rpc)
@@ -102,23 +109,51 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
             throw new InvalidOperationException("Remote path mapping requires both localRoot and serverRoot.");
         }
 
+        if (remote
+            && (!LocalPath.TryCreate(options.LocalRoot, out _)
+                || !ServerPath.TryCreate(options.ServerRoot, out _)))
+        {
+            throw new InvalidOperationException("Remote connection roots must be valid absolute local and server paths.");
+        }
+
         this.options = options;
         Interlocked.Exchange(ref networkFailureReported, 0);
         StopWatchdog();
         ObserveRemoteConnection(null);
+        DetachProcessObservers();
 
         // Every attempt gets a new generation. Its snapshot reports the intended target while
         // connecting or degraded, and the confirmed target once Ready.
         long generation = Interlocked.Increment(ref connectionGeneration);
-        target = remote
+        long nextOwnerGeneration = Math.Max(
+            Interlocked.Read(ref ownerGeneration),
+            session.OwnerGeneration) + 1;
+        Interlocked.Exchange(ref ownerGeneration, nextOwnerGeneration);
+        session.BeginOwnerPartition(options, workerInstanceId, nextOwnerGeneration, null);
+        string statePartitionFingerprint = session.StatePartitionFingerprint
+            ?? ConnectionStatePartition.Create(options, workerInstanceId, nextOwnerGeneration, null);
+        ConnectionTargetSnapshot newTarget = remote
             ? new ConnectionTargetSnapshot
             {
                 Kind = ConnectionTargetKind.Remote,
                 DisplayName = options.RemoteProfileName,
                 Fingerprint = options.RemoteProfileFingerprint,
                 Generation = generation,
+                StatePartitionFingerprint = statePartitionFingerprint,
+                OwnerGeneration = nextOwnerGeneration,
             }
-            : new ConnectionTargetSnapshot { Kind = ConnectionTargetKind.Local, Generation = generation };
+            : new ConnectionTargetSnapshot
+            {
+                Kind = ConnectionTargetKind.Local,
+                Generation = generation,
+                StatePartitionFingerprint = statePartitionFingerprint,
+                OwnerGeneration = nextOwnerGeneration,
+            };
+        lock (targetGate)
+        {
+            target = newTarget;
+            SaveTargetSnapshotLocked();
+        }
         await SetStatusAsync(
             WorkerConnectionState.Connecting,
             remote ? "Connecting to remote codex app-server..." : "Starting codex app-server...",
@@ -133,11 +168,16 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
         try
         {
             WorkerDiagnostics.Write("worker starting codex app-server");
+            AttachProcessObservers(SnapshotTarget());
             await processHost.StartAsync(options.CodexPath, options.WorkingDirectory, cancellationToken).ConfigureAwait(false);
+            BeginSessionOwnerPartition(options, processHost.CredentialFingerprint);
             WorkerDiagnostics.Write("worker initializing codex app-server");
             await session.InitializeAsync(processHost.Connection!, options, cancellationToken).ConfigureAwait(false);
             WorkerDiagnostics.Write("worker reading account status");
-            accountStatus = await session.GetAccountStatusAsync(cancellationToken).ConfigureAwait(false);
+            ConnectionTargetSnapshot accountReadTarget = SnapshotTarget();
+            AccountStatus initialAccountStatus = await session.GetAccountStatusAsync(cancellationToken).ConfigureAwait(false);
+            EnsureSessionStillActive();
+            CommitAccountStatus(accountReadTarget, initialAccountStatus);
             WorkerDiagnostics.Write("worker connect completed");
             return await SetStatusAsync(
                 WorkerConnectionState.Ready,
@@ -180,10 +220,12 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
             }
 
             WorkerDiagnostics.Write("worker connecting to remote codex app-server");
+            DetachProcessObservers();
             await processHost.StartRemoteAsync(
                 new RemoteConnectionRequest(options.RemoteEndpoint!, options.RemoteTokenFilePath),
                 startup.Token).ConfigureAwait(false);
             IJsonRpcConnection connection = processHost.Connection!;
+            BeginSessionOwnerPartition(options, processHost.CredentialFingerprint);
             ObserveRemoteConnection(connection);
 
             WorkerDiagnostics.Write("worker initializing remote codex app-server");
@@ -199,12 +241,15 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
 
             WorkerDiagnostics.Write("worker reading remote account status");
             stageFailure = RemoteConnectionFailure.AccountReadFailed;
+            ConnectionTargetSnapshot accountReadTarget = SnapshotTarget();
             try
             {
-                accountStatus = await CodexProcessHost.RunStageAsync(
+                AccountStatus initialAccountStatus = await CodexProcessHost.RunStageAsync(
                     stage => session.GetAccountStatusAsync(stage),
                     limits.AccountRead,
                     startup.Token).ConfigureAwait(false);
+                EnsureSessionStillActive();
+                CommitAccountStatus(accountReadTarget, initialAccountStatus);
             }
             catch (RemoteConnectionException ex) when (ex.Failure == RemoteConnectionFailure.Timeout)
             {
@@ -255,6 +300,7 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
     {
         StopWatchdog();
         ObserveRemoteConnection(null);
+        DetachProcessObservers();
         try
         {
             await processHost.StopAsync(CancellationToken.None).ConfigureAwait(false);
@@ -271,6 +317,165 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
             new AccountStatus { State = AccountState.Unavailable },
             CancellationToken.None).ConfigureAwait(false);
         return await SetStatusAsync(WorkerConnectionState.Degraded, message, CancellationToken.None).ConfigureAwait(false);
+    }
+
+    private void BeginSessionOwnerPartition(WorkerOptions options, string? credentialFingerprint)
+    {
+        lock (targetGate)
+        {
+            session.BeginOwnerPartition(options, workerInstanceId, target.OwnerGeneration, credentialFingerprint);
+            target.StatePartitionFingerprint = session.StatePartitionFingerprint
+                ?? ConnectionStatePartition.Create(options, workerInstanceId, target.OwnerGeneration, credentialFingerprint);
+            target.OwnerGeneration = Math.Max(target.OwnerGeneration, session.OwnerGeneration);
+            SaveTargetSnapshotLocked();
+        }
+    }
+
+    private void EnsureSessionStillActive()
+    {
+        if (!session.IsConnectionActive)
+        {
+            throw new InvalidOperationException("The account owner changed during connection startup. Reconnect to continue.");
+        }
+    }
+
+    private Task OnOwnerInvalidatedAsync(IJsonRpcConnection connection, CancellationToken cancellationToken)
+    {
+        if (!ReferenceEquals(processHost.Connection, connection))
+        {
+            return Task.CompletedTask;
+        }
+
+        long expectedGeneration;
+        lock (targetGate)
+        {
+            target.StatePartitionFingerprint = session.StatePartitionFingerprint;
+            target.OwnerGeneration = session.OwnerGeneration;
+            accountStatus = new AccountStatus
+            {
+                State = AccountState.Unavailable,
+                Message = "The account changed. Reconnect to check the new account.",
+            };
+            expectedGeneration = target.Generation;
+            SaveTargetSnapshotLocked();
+        }
+
+        using (SuppressWorkerEmissionContext())
+        using (session.SuppressEmissionOwnerContext())
+        {
+            TrackCallback(RetireInvalidatedOwnerAsync(connection, expectedGeneration));
+        }
+
+        return Task.CompletedTask;
+    }
+
+    private void AttachProcessObservers(ConnectionTargetSnapshot source)
+    {
+        DetachProcessObservers();
+        ConnectionTargetSnapshot captured = source.Clone();
+        standardErrorHandler = (_, text) => TrackCallback(InvokeProcessCallbackAsync(
+            captured,
+            () => OnStandardErrorReceivedAsync(text)));
+        processExitedHandler = (_, exitCode) => TrackCallback(InvokeProcessCallbackAsync(
+            captured,
+            () => OnProcessExitedAsync(exitCode)));
+        processHost.StandardErrorReceived += standardErrorHandler;
+        processHost.Exited += processExitedHandler;
+    }
+
+    private CallbackScope SuppressWorkerEmissionContext()
+    {
+        ConnectionTargetSnapshot? previousProcess = processEmissionTarget.Value;
+        ConnectionTargetSnapshot? previousRequest = requestEmissionTarget.Value;
+        processEmissionTarget.Value = null;
+        requestEmissionTarget.Value = null;
+        return new CallbackScope(() =>
+        {
+            processEmissionTarget.Value = previousProcess;
+            requestEmissionTarget.Value = previousRequest;
+        });
+    }
+
+    private void DetachProcessObservers()
+    {
+        if (standardErrorHandler is not null)
+        {
+            processHost.StandardErrorReceived -= standardErrorHandler;
+            standardErrorHandler = null;
+        }
+
+        if (processExitedHandler is not null)
+        {
+            processHost.Exited -= processExitedHandler;
+            processExitedHandler = null;
+        }
+    }
+
+    private async Task InvokeProcessCallbackAsync(ConnectionTargetSnapshot source, Func<Task> callback)
+    {
+        ConnectionTargetSnapshot current = SnapshotTarget();
+        if (source.Generation != current.Generation
+            || source.OwnerGeneration != current.OwnerGeneration
+            || !string.Equals(source.StatePartitionFingerprint, current.StatePartitionFingerprint, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        ConnectionTargetSnapshot? previous = processEmissionTarget.Value;
+        processEmissionTarget.Value = source;
+        try
+        {
+            await callback().ConfigureAwait(false);
+        }
+        finally
+        {
+            processEmissionTarget.Value = previous;
+        }
+    }
+
+    private async Task RetireInvalidatedOwnerAsync(IJsonRpcConnection connection, long expectedGeneration)
+    {
+        // The notification callback may be running on the transport receive loop. Let it unwind
+        // before StopAsync disposes and joins that transport.
+        await Task.Yield();
+        await connectionTransitionGate.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            if (SnapshotTarget().Generation != expectedGeneration || !ReferenceEquals(processHost.Connection, connection))
+            {
+                return;
+            }
+
+            StopWatchdog();
+            ObserveRemoteConnection(null);
+            DetachProcessObservers();
+            try
+            {
+                await processHost.StopAsync(CancellationToken.None).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                WorkerDiagnostics.Write("owner-change connection cleanup failed", ex);
+            }
+
+            await SetStatusAsync(
+                WorkerConnectionState.Degraded,
+                "The account changed. Reconnect to establish a new isolated session.",
+                CancellationToken.None).ConfigureAwait(false);
+            await PublishAccountStatusAsync(
+                new AccountStatus
+                {
+                    State = session.InvalidatedAccountState ?? AccountState.Unavailable,
+                    Message = session.InvalidatedAccountState == AccountState.SignedOut
+                        ? null
+                        : "The account changed. Reconnect to check the new account.",
+                },
+                CancellationToken.None).ConfigureAwait(false);
+        }
+        finally
+        {
+            connectionTransitionGate.Release();
+        }
     }
 
     public async Task<WorkerStatus> RestartAsync(CancellationToken cancellationToken)
@@ -302,6 +507,7 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
 
         // An intentional stop is not a connection loss; detach before the transport closes.
         ObserveRemoteConnection(null);
+        DetachProcessObservers();
         await processHost.StopAsync(cancellationToken).ConfigureAwait(false);
         return await ConnectCoreAsync(options, cancellationToken).ConfigureAwait(false);
     }
@@ -317,6 +523,7 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
             // file is read again so rotated contents take effect on this explicit reconnect.
             StopWatchdog();
             ObserveRemoteConnection(null);
+            DetachProcessObservers();
             await processHost.StopAsync(cancellationToken).ConfigureAwait(false);
             return await ConnectCoreAsync(bound, cancellationToken).ConfigureAwait(false);
         }
@@ -370,6 +577,115 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
             ErrorData = reason.ToString(),
         };
 
+    private ConnectionTargetSnapshot ValidateOwnerScope(OwnerScopedRequest request)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        ConnectionTargetSnapshot snapshot = SnapshotTarget();
+        if (request.OwnerGeneration != snapshot.OwnerGeneration
+            || request.ConnectionGeneration != snapshot.Generation
+            || string.IsNullOrWhiteSpace(request.StatePartitionFingerprint)
+            || !string.Equals(
+                request.StatePartitionFingerprint,
+                snapshot.StatePartitionFingerprint,
+                StringComparison.Ordinal))
+        {
+            throw Rejected(ConnectionOperationRejectionReason.StaleGeneration);
+        }
+
+        if (status.State is WorkerConnectionState.Disconnected
+            or WorkerConnectionState.Connecting
+            or WorkerConnectionState.Degraded)
+        {
+            throw Rejected(ConnectionOperationRejectionReason.StaleGeneration);
+        }
+
+        return snapshot;
+    }
+
+    private bool IsOwnerScopeCurrent(OwnerScopedRequest request)
+    {
+        ConnectionTargetSnapshot snapshot = SnapshotTarget();
+        return request.OwnerGeneration == snapshot.OwnerGeneration
+            && request.ConnectionGeneration == snapshot.Generation
+            && string.Equals(
+                request.StatePartitionFingerprint,
+                snapshot.StatePartitionFingerprint,
+                StringComparison.Ordinal);
+    }
+
+    private void CommitAccountStatus(ConnectionTargetSnapshot source, AccountStatus value)
+    {
+        lock (targetGate)
+        {
+            if (source.Generation != target.Generation
+                || source.OwnerGeneration != target.OwnerGeneration
+                || !string.Equals(source.StatePartitionFingerprint, target.StatePartitionFingerprint, StringComparison.Ordinal))
+            {
+                throw Rejected(ConnectionOperationRejectionReason.StaleGeneration);
+            }
+
+            accountStatus = value;
+        }
+    }
+
+    // The gate is held only while the request owner is validated against the current target, so a
+    // transition cannot interleave with the check. It is released before the awaited operation:
+    // StartTurn can wait for an approval or user-input answer that arrives through Resolve* calls,
+    // and owner retirement and the watchdog need the gate while a long app-server call is pending.
+    // Operations revalidate the owner after each await, and the session rejects stale contexts.
+    private async Task<ConnectionTargetSnapshot> ValidateOwnerScopeUnderGateAsync(
+        OwnerScopedRequest request,
+        CancellationToken cancellationToken)
+    {
+        await connectionTransitionGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            return ValidateOwnerScope(request);
+        }
+        finally
+        {
+            ReleaseTransitionGate();
+        }
+    }
+
+    private async Task<T> ExecuteOwnerScopedAsync<T>(
+        OwnerScopedRequest request,
+        Func<Task<T>> operation,
+        CancellationToken cancellationToken)
+    {
+        ConnectionTargetSnapshot validatedTarget = await ValidateOwnerScopeUnderGateAsync(request, cancellationToken)
+            .ConfigureAwait(false);
+        ConnectionTargetSnapshot? previous = requestEmissionTarget.Value;
+        requestEmissionTarget.Value = validatedTarget;
+        try
+        {
+            return await operation().ConfigureAwait(false);
+        }
+        finally
+        {
+            requestEmissionTarget.Value = previous;
+        }
+    }
+
+    private async Task ExecuteOwnerScopedAsync(
+        OwnerScopedRequest request,
+        Func<Task> operation,
+        CancellationToken cancellationToken)
+    {
+        ConnectionTargetSnapshot validatedTarget = await ValidateOwnerScopeUnderGateAsync(request, cancellationToken)
+            .ConfigureAwait(false);
+        ConnectionTargetSnapshot? previous = requestEmissionTarget.Value;
+        requestEmissionTarget.Value = validatedTarget;
+        try
+        {
+            await operation().ConfigureAwait(false);
+        }
+        finally
+        {
+            requestEmissionTarget.Value = previous;
+        }
+    }
+
     public async Task<ConnectionDiagnosticsResult> DiagnoseConnectionAsync(
         ConnectionDiagnosticsRequest request,
         CancellationToken cancellationToken)
@@ -397,12 +713,21 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
     public Task<AccountStatus> GetAccountStatusAsync(CancellationToken cancellationToken)
         => Task.FromResult(CloneAccountStatus());
 
-    public async Task<StartAccountLoginResult> StartAccountLoginAsync(CancellationToken cancellationToken)
+    public Task<StartAccountLoginResult> StartAccountLoginAsync(
+        StartAccountLoginRequest request,
+        CancellationToken cancellationToken)
+        => ExecuteOwnerScopedAsync(request, () => StartAccountLoginCoreAsync(request, cancellationToken), cancellationToken);
+
+    private async Task<StartAccountLoginResult> StartAccountLoginCoreAsync(
+        StartAccountLoginRequest request,
+        CancellationToken cancellationToken)
     {
+        ValidateOwnerScope(request);
         WorkerDiagnostics.Write("worker login RPC received");
         try
         {
             StartAccountLoginResult result = await session.StartAccountLoginAsync(cancellationToken).ConfigureAwait(false);
+            ValidateOwnerScope(request);
             if (result.Status.State != AccountState.SigningIn)
             {
                 WorkerDiagnostics.Write($"worker login RPC completed state={result.Status.State}");
@@ -422,6 +747,7 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
             }
             catch (Exception ex)
             {
+                ValidateOwnerScope(request);
                 WorkerDiagnostics.Write("default browser launch failed", ex);
                 return await AccountLoginUnavailableAsync(
                     "Could not open the default browser.",
@@ -434,6 +760,11 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
         }
         catch (Exception ex)
         {
+            if (!IsOwnerScopeCurrent(request))
+            {
+                throw;
+            }
+
             WorkerDiagnostics.Write("worker login RPC failed", ex);
             return await AccountLoginUnavailableAsync(
                 "Codex Worker could not start ChatGPT sign-in.",
@@ -441,32 +772,47 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
         }
     }
 
-    public async Task<AccountStatus> LogoutAccountAsync(CancellationToken cancellationToken)
+    public Task<AccountStatus> LogoutAccountAsync(
+        LogoutAccountRequest request,
+        CancellationToken cancellationToken)
+        => ExecuteOwnerScopedAsync(request, () => LogoutAccountCoreAsync(request, cancellationToken), cancellationToken);
+
+    private async Task<AccountStatus> LogoutAccountCoreAsync(
+        LogoutAccountRequest request,
+        CancellationToken cancellationToken)
     {
+        ValidateOwnerScope(request);
         WorkerDiagnostics.Write("worker logout RPC received");
         AccountStatus result = await session.LogoutAccountAsync(cancellationToken).ConfigureAwait(false);
         WorkerDiagnostics.Write($"worker logout RPC completed state={result.State}");
         return result;
     }
 
-    public async Task<ThreadSummary> StartThreadAsync(CancellationToken cancellationToken)
-    {
-        ThreadSummary thread = await session.StartThreadAsync(cancellationToken).ConfigureAwait(false);
-        UpdateSessionIds();
-        return thread;
-    }
+    public Task<ThreadSummary> StartThreadAsync(StartThreadRequest request, CancellationToken cancellationToken)
+        => ExecuteOwnerScopedAsync(request, async () =>
+        {
+            ThreadSummary thread = await session.StartThreadAsync(cancellationToken).ConfigureAwait(false);
+            ValidateOwnerScope(request);
+            UpdateSessionIds();
+            return thread;
+        }, cancellationToken);
 
-    public async Task<ThreadSummary> ResumeThreadAsync(string threadId, CancellationToken cancellationToken)
-    {
-        ThreadSummary thread = await session.ResumeThreadAsync(threadId, cancellationToken).ConfigureAwait(false);
-        UpdateSessionIds();
-        return thread;
-    }
+    public Task<ThreadSummary> ResumeThreadAsync(ResumeThreadRequest request, CancellationToken cancellationToken)
+        => ExecuteOwnerScopedAsync(request, async () =>
+        {
+            ThreadSummary thread = await session.ResumeThreadAsync(request.ThreadId, cancellationToken).ConfigureAwait(false);
+            ValidateOwnerScope(request);
+            UpdateSessionIds();
+            return thread;
+        }, cancellationToken);
 
-    public Task<ThreadPage> ListThreadsAsync(string? cursor, CancellationToken cancellationToken)
-        => session.ListThreadsAsync(cursor, cancellationToken);
+    public Task<ThreadPage> ListThreadsAsync(ListThreadsRequest request, CancellationToken cancellationToken)
+        => ExecuteOwnerScopedAsync(request, () => session.ListThreadsAsync(request.Cursor, cancellationToken), cancellationToken);
 
-    public async Task<ListModelsResult> ListModelsAsync(CancellationToken cancellationToken)
+    public Task<ListModelsResult> ListModelsAsync(ListModelsRequest request, CancellationToken cancellationToken)
+        => ExecuteOwnerScopedAsync(request, () => ListModelsCoreAsync(cancellationToken), cancellationToken);
+
+    private async Task<ListModelsResult> ListModelsCoreAsync(CancellationToken cancellationToken)
     {
         WorkerDiagnostics.Write("worker/models/list RPC received");
         try
@@ -487,117 +833,135 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
         }
     }
 
-    public Task<ListPermissionProfilesResult> ListPermissionProfilesAsync(CancellationToken cancellationToken)
-        => session.ListPermissionProfilesAsync(cancellationToken);
+    public Task<ListPermissionProfilesResult> ListPermissionProfilesAsync(
+        ListPermissionProfilesRequest request,
+        CancellationToken cancellationToken)
+        => ExecuteOwnerScopedAsync(request, () => session.ListPermissionProfilesAsync(cancellationToken), cancellationToken);
 
-    public async Task<string> StartTurnAsync(StartTurnRequest request, CancellationToken cancellationToken)
-    {
-        await SetStatusAsync(WorkerConnectionState.Busy, "Turn in progress.", cancellationToken).ConfigureAwait(false);
-        string turnId;
-        try
-        {
-            turnId = await session.StartTurnAsync(request, cancellationToken).ConfigureAwait(false);
-        }
-        catch (AttachmentRejectedException ex)
-        {
-            await SetStatusAsync(WorkerConnectionState.Ready, "Ready.", CancellationToken.None).ConfigureAwait(false);
-            throw new LocalRpcException(ex.Message) { ErrorCode = WorkerErrorCodes.AttachmentRejected };
-        }
-        catch
-        {
-            await SetStatusAsync(WorkerConnectionState.Ready, "Ready.", CancellationToken.None).ConfigureAwait(false);
-            throw;
-        }
-
-        // The server may complete the turn before the turn/start response arrives. Publish the
-        // post-response session state so a late response cannot leave the Worker Busy forever.
-        if (session.ActiveTurnId is null)
-        {
-            await SetStatusAsync(WorkerConnectionState.Ready, "Turn completed.", cancellationToken).ConfigureAwait(false);
-        }
-        else
+    public Task<string> StartTurnAsync(StartTurnRequest request, CancellationToken cancellationToken)
+        => ExecuteOwnerScopedAsync(request, async () =>
         {
             await SetStatusAsync(WorkerConnectionState.Busy, "Turn in progress.", cancellationToken).ConfigureAwait(false);
-        }
-        return turnId;
-    }
+            string turnId;
+            try
+            {
+                ValidateOwnerScope(request);
+                turnId = await session.StartTurnAsync(request, cancellationToken).ConfigureAwait(false);
+                ValidateOwnerScope(request);
+            }
+            catch (AttachmentRejectedException ex)
+            {
+                if (IsOwnerScopeCurrent(request))
+                {
+                    await SetStatusAsync(WorkerConnectionState.Ready, "Ready.", CancellationToken.None).ConfigureAwait(false);
+                }
+
+                throw new LocalRpcException(ex.Message) { ErrorCode = WorkerErrorCodes.AttachmentRejected };
+            }
+            catch
+            {
+                if (IsOwnerScopeCurrent(request))
+                {
+                    await SetStatusAsync(WorkerConnectionState.Ready, "Ready.", CancellationToken.None).ConfigureAwait(false);
+                }
+
+                throw;
+            }
+
+            if (session.ActiveTurnId is null)
+            {
+                await SetStatusAsync(WorkerConnectionState.Ready, "Turn completed.", cancellationToken).ConfigureAwait(false);
+            }
+            else
+            {
+                await SetStatusAsync(WorkerConnectionState.Busy, "Turn in progress.", cancellationToken).ConfigureAwait(false);
+            }
+
+            return turnId;
+        }, cancellationToken);
 
     public Task<string> SteerTurnAsync(SteerTurnRequest request, CancellationToken cancellationToken)
-        => session.SteerTurnAsync(request, cancellationToken);
+        => ExecuteOwnerScopedAsync(request, () => session.SteerTurnAsync(request, cancellationToken), cancellationToken);
 
     public Task InterruptTurnAsync(InterruptTurnRequest request, CancellationToken cancellationToken)
-        => session.InterruptTurnAsync(request, cancellationToken);
+        => ExecuteOwnerScopedAsync(request, () => session.InterruptTurnAsync(request, cancellationToken), cancellationToken);
 
-    public async Task<CompactThreadResult> CompactThreadAsync(
+    public Task<CompactThreadResult> CompactThreadAsync(
         CompactThreadRequest request,
         CancellationToken cancellationToken)
-    {
-        CompactThreadResult result = await session.CompactThreadAsync(request, cancellationToken).ConfigureAwait(false);
-        if (result.IsSupported)
+        => ExecuteOwnerScopedAsync(request, async () =>
         {
-            await SetStatusAsync(WorkerConnectionState.Busy, "Context compaction in progress.", cancellationToken).ConfigureAwait(false);
-        }
+            CompactThreadResult result = await session.CompactThreadAsync(request, cancellationToken).ConfigureAwait(false);
+            ValidateOwnerScope(request);
+            if (result.IsSupported)
+            {
+                await SetStatusAsync(WorkerConnectionState.Busy, "Context compaction in progress.", cancellationToken).ConfigureAwait(false);
+            }
 
-        return result;
-    }
+            return result;
+        }, cancellationToken);
 
-    public async Task<StartReviewResult> StartReviewAsync(
+    public Task<StartReviewResult> StartReviewAsync(
         StartReviewRequest request,
         CancellationToken cancellationToken)
-    {
-        StartReviewResult result = await session.StartReviewAsync(request, cancellationToken).ConfigureAwait(false);
-        if (result.IsSupported)
+        => ExecuteOwnerScopedAsync(request, async () =>
         {
-            await SetStatusAsync(WorkerConnectionState.Busy, "Code review in progress.", cancellationToken).ConfigureAwait(false);
-        }
+            StartReviewResult result = await session.StartReviewAsync(request, cancellationToken).ConfigureAwait(false);
+            ValidateOwnerScope(request);
+            if (result.IsSupported)
+            {
+                await SetStatusAsync(WorkerConnectionState.Busy, "Code review in progress.", cancellationToken).ConfigureAwait(false);
+            }
 
-        return result;
-    }
+            return result;
+        }, cancellationToken);
 
-    public async Task<ForkThreadResult> ForkThreadAsync(
+    public Task<ForkThreadResult> ForkThreadAsync(
         ForkThreadRequest request,
         CancellationToken cancellationToken)
-    {
-        ForkThreadResult result = await session.ForkThreadAsync(request, cancellationToken).ConfigureAwait(false);
-        UpdateSessionIds();
-        return result;
-    }
+        => ExecuteOwnerScopedAsync(request, async () =>
+        {
+            ForkThreadResult result = await session.ForkThreadAsync(request, cancellationToken).ConfigureAwait(false);
+            ValidateOwnerScope(request);
+            UpdateSessionIds();
+            return result;
+        }, cancellationToken);
 
-    public Task<ThreadGoalResult> GetThreadGoalAsync(string threadId, CancellationToken cancellationToken)
-        => session.GetThreadGoalAsync(threadId, cancellationToken);
+    public Task<ThreadGoalResult> GetThreadGoalAsync(ThreadGoalRequest request, CancellationToken cancellationToken)
+        => ExecuteOwnerScopedAsync(request, () => session.GetThreadGoalAsync(request.ThreadId, cancellationToken), cancellationToken);
 
     public Task<ThreadGoalResult> SetThreadGoalAsync(
         SetThreadGoalRequest request,
         CancellationToken cancellationToken)
-        => session.SetThreadGoalAsync(request, cancellationToken);
+        => ExecuteOwnerScopedAsync(request, () => session.SetThreadGoalAsync(request, cancellationToken), cancellationToken);
 
-    public Task<ThreadGoalResult> ClearThreadGoalAsync(string threadId, CancellationToken cancellationToken)
-        => session.ClearThreadGoalAsync(threadId, cancellationToken);
+    public Task<ThreadGoalResult> ClearThreadGoalAsync(ThreadGoalRequest request, CancellationToken cancellationToken)
+        => ExecuteOwnerScopedAsync(request, () => session.ClearThreadGoalAsync(request.ThreadId, cancellationToken), cancellationToken);
 
-    public Task<McpServerListResult> ListMcpServersAsync(string? threadId, CancellationToken cancellationToken)
-        => session.ListMcpServersAsync(threadId, cancellationToken);
+    public Task<McpServerListResult> ListMcpServersAsync(ListMcpServersRequest request, CancellationToken cancellationToken)
+        => ExecuteOwnerScopedAsync(request, () => session.ListMcpServersAsync(request.ThreadId, cancellationToken), cancellationToken);
 
-    public Task<ListSkillsResult> ListSkillsAsync(bool forceReload, CancellationToken cancellationToken)
-        => session.ListSkillsAsync(forceReload, cancellationToken);
+    public Task<ListSkillsResult> ListSkillsAsync(ListSkillsRequest request, CancellationToken cancellationToken)
+        => ExecuteOwnerScopedAsync(request, () => session.ListSkillsAsync(request.ForceReload, cancellationToken), cancellationToken);
 
     private Task PublishSkillsChangedAsync(SkillsChangedEvent value, CancellationToken cancellationToken)
         => clientRpc is null
             ? Task.CompletedTask
-            : clientRpc.NotifyWithParameterObjectAsync("observer/skillsChanged", new { value });
+            : clientRpc.NotifyWithParameterObjectAsync("observer/skillsChanged", new { notification = Stamp(value) });
 
     public Task<UploadFeedbackResult> UploadFeedbackAsync(
         UploadFeedbackRequest request,
         CancellationToken cancellationToken)
-        => session.UploadFeedbackAsync(request, cancellationToken);
+        => ExecuteOwnerScopedAsync(request, () => session.UploadFeedbackAsync(request, cancellationToken), cancellationToken);
 
-    public Task<RateLimitsResult> GetRateLimitsAsync(CancellationToken cancellationToken)
-        => session.GetRateLimitsAsync(cancellationToken);
+    public Task<RateLimitsResult> GetRateLimitsAsync(GetRateLimitsRequest request, CancellationToken cancellationToken)
+        => ExecuteOwnerScopedAsync(request, () => session.GetRateLimitsAsync(cancellationToken), cancellationToken);
 
     public Task ResolveApprovalAsync(ResolveApprovalRequest request, CancellationToken cancellationToken)
-        => session.ResolveApprovalAsync(request, cancellationToken);
+        => ExecuteOwnerScopedAsync(request, () => session.ResolveApprovalAsync(request, cancellationToken), cancellationToken);
 
     public Task ResolveUserInputAsync(ResolveUserInputRequest request, CancellationToken cancellationToken)
-        => session.ResolveUserInputAsync(request, cancellationToken);
+        => ExecuteOwnerScopedAsync(request, () => session.ResolveUserInputAsync(request, cancellationToken), cancellationToken);
 
     public async ValueTask DisposeAsync()
     {
@@ -606,6 +970,7 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
         {
             StopWatchdog();
             ObserveRemoteConnection(null);
+            DetachProcessObservers();
             await session.DisposeAsync().ConfigureAwait(false);
         }
         finally
@@ -648,25 +1013,150 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
 
     private async Task<WorkerStatus> SetStatusAsync(WorkerConnectionState state, string message, CancellationToken cancellationToken)
     {
-        status = new WorkerStatus
+        ConnectionTargetSnapshot targetSnapshot;
+        lock (targetGate)
         {
-            State = state,
-            Message = message,
-            ThreadId = session.ActiveThreadId,
-            TurnId = session.ActiveTurnId,
-            ProcessId = OwnedProcessId(),
-            CodexVersion = ShouldIncludeCodexVersion(state) ? session.CodexVersion : null,
-            EffectiveApprovalState = session.EffectiveApprovalState,
-            EffectiveReasoningEffort = session.EffectiveReasoningEffort,
-            EffectiveServiceTier = session.EffectiveServiceTier,
-            Target = target.Clone(),
-        };
+            if (!IsCurrentEmissionLocked(target))
+            {
+                return CloneStatus();
+            }
+
+            if (session.OwnerGeneration >= target.OwnerGeneration
+                && session.StatePartitionFingerprint is { } ownerPartition)
+            {
+                target.StatePartitionFingerprint = ownerPartition;
+                target.OwnerGeneration = session.OwnerGeneration;
+            }
+
+            targetSnapshot = target.Clone();
+            status = new WorkerStatus
+            {
+                State = state,
+                Message = message,
+                ThreadId = session.ActiveThreadId,
+                TurnId = session.ActiveTurnId,
+                ProcessId = targetSnapshot.Kind == ConnectionTargetKind.Local ? processHost.ProcessId : null,
+                CodexVersion = ShouldIncludeCodexVersion(state) ? session.CodexVersion : null,
+                EffectiveApprovalState = session.EffectiveApprovalState,
+                EffectiveReasoningEffort = session.EffectiveReasoningEffort,
+                EffectiveServiceTier = session.EffectiveServiceTier,
+                Target = targetSnapshot,
+            };
+        }
         if (clientRpc is not null)
         {
-            await clientRpc.NotifyWithParameterObjectAsync("observer/stateChanged", new { status }).ConfigureAwait(false);
+            await clientRpc.NotifyWithParameterObjectAsync(
+                "observer/stateChanged",
+                new { notification = Stamp(CloneStatus(), targetSnapshot, useEmissionOwner: false) }).ConfigureAwait(false);
         }
 
         return CloneStatus();
+    }
+
+    private WorkerNotification<T> Stamp<T>(T value) => Stamp(value, SnapshotTarget());
+
+    private bool IsCurrentEmission()
+    {
+        ConnectionTargetSnapshot snapshot = SnapshotTarget();
+        return IsCurrentEmissionLocked(snapshot);
+    }
+
+    private bool IsCurrentEmissionLocked(ConnectionTargetSnapshot snapshot)
+    {
+        ConnectionTargetSnapshot? processSource = processEmissionTarget.Value;
+        if (processSource is not null)
+        {
+            return processSource.Generation == snapshot.Generation
+                && processSource.OwnerGeneration == snapshot.OwnerGeneration
+                && string.Equals(
+                    processSource.StatePartitionFingerprint,
+                    snapshot.StatePartitionFingerprint,
+                    StringComparison.Ordinal);
+        }
+
+        ConnectionTargetSnapshot? requestSource = requestEmissionTarget.Value;
+        if (requestSource is not null)
+        {
+            return requestSource.Generation == snapshot.Generation
+                && requestSource.OwnerGeneration == snapshot.OwnerGeneration
+                && string.Equals(
+                    requestSource.StatePartitionFingerprint,
+                    snapshot.StatePartitionFingerprint,
+                    StringComparison.Ordinal);
+        }
+
+        return session.EmittingOwnerGeneration == snapshot.OwnerGeneration
+            && string.Equals(
+                session.EmittingStatePartitionFingerprint,
+                snapshot.StatePartitionFingerprint,
+                StringComparison.Ordinal);
+    }
+
+    private WorkerNotification<T> Stamp<T>(
+        T value,
+        ConnectionTargetSnapshot snapshot,
+        bool useEmissionOwner = true)
+    {
+        ConnectionTargetSnapshot? processSource = useEmissionOwner ? processEmissionTarget.Value : null;
+        ConnectionTargetSnapshot? requestSource = useEmissionOwner ? requestEmissionTarget.Value : null;
+        long owner = useEmissionOwner
+            ? processSource?.OwnerGeneration ?? requestSource?.OwnerGeneration ?? session.EmittingOwnerGeneration
+            : snapshot.OwnerGeneration;
+        string? partition = useEmissionOwner
+            ? processSource?.StatePartitionFingerprint
+                ?? requestSource?.StatePartitionFingerprint
+                ?? session.EmittingStatePartitionFingerprint
+                ?? snapshot.StatePartitionFingerprint
+            : snapshot.StatePartitionFingerprint;
+        if (useEmissionOwner && processSource is null && requestSource is null)
+        {
+            lock (targetGate)
+            {
+                if (ownerTargetHistory.TryGetValue(owner, out ConnectionTargetSnapshot? sourceTarget))
+                {
+                    snapshot = sourceTarget.Clone();
+                }
+            }
+        }
+        else if (processSource is not null)
+        {
+            snapshot = processSource.Clone();
+        }
+        else if (requestSource is not null)
+        {
+            snapshot = requestSource.Clone();
+        }
+        if (value is WorkerStatus workerStatus)
+        {
+            workerStatus.Target = snapshot.Clone();
+            workerStatus.Target.StatePartitionFingerprint = partition;
+            workerStatus.Target.OwnerGeneration = owner;
+        }
+
+        return new WorkerNotification<T>
+        {
+            Value = value,
+            StatePartitionFingerprint = partition,
+            OwnerGeneration = owner,
+            ConnectionGeneration = snapshot.Generation,
+        };
+    }
+
+    private ConnectionTargetSnapshot SnapshotTarget()
+    {
+        lock (targetGate)
+        {
+            return target.Clone();
+        }
+    }
+
+    private void SaveTargetSnapshotLocked()
+    {
+        ownerTargetHistory[target.OwnerGeneration] = target.Clone();
+        while (ownerTargetHistory.Count > 8)
+        {
+            ownerTargetHistory.Remove(ownerTargetHistory.Keys.First());
+        }
     }
 
     private async Task OnStandardErrorReceivedAsync(string text)
@@ -699,6 +1189,11 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
 
     private async Task PublishEventAsync(ConversationEvent conversationEvent, CancellationToken cancellationToken)
     {
+        if (!IsCurrentEmission())
+        {
+            return;
+        }
+
         if (conversationEvent.Kind == ConversationEventKind.TurnStarted)
         {
             await SetStatusAsync(WorkerConnectionState.Busy, "Turn in progress.", cancellationToken).ConfigureAwait(false);
@@ -716,7 +1211,7 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
         {
             await clientRpc.NotifyWithParameterObjectAsync(
                 "observer/conversationEvent",
-                new { conversationEvent }).ConfigureAwait(false);
+                new { notification = Stamp(conversationEvent) }).ConfigureAwait(false);
         }
     }
 
@@ -727,37 +1222,57 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
 
     private async Task PublishApprovalAsync(ApprovalRequest approval, CancellationToken cancellationToken)
     {
+        if (!IsCurrentEmission())
+        {
+            return;
+        }
+
         await SetStatusAsync(WorkerConnectionState.WaitingForApproval, "Waiting for approval.", cancellationToken).ConfigureAwait(false);
         if (clientRpc is not null)
         {
-            await clientRpc.NotifyWithParameterObjectAsync("observer/approvalRequested", new { approval }).ConfigureAwait(false);
+            await clientRpc.NotifyWithParameterObjectAsync("observer/approvalRequested", new { notification = Stamp(approval) }).ConfigureAwait(false);
         }
     }
 
     private async Task PublishApprovalResolvedAsync(string requestId, CancellationToken cancellationToken)
     {
+        if (!IsCurrentEmission())
+        {
+            return;
+        }
+
         await SetStatusAsync(WorkerConnectionState.Busy, "Turn in progress.", cancellationToken).ConfigureAwait(false);
         if (clientRpc is not null)
         {
-            await clientRpc.NotifyWithParameterObjectAsync("observer/approvalResolved", new { requestId }).ConfigureAwait(false);
+            await clientRpc.NotifyWithParameterObjectAsync("observer/approvalResolved", new { notification = Stamp(requestId) }).ConfigureAwait(false);
         }
     }
 
     private async Task PublishUserInputAsync(UserInputRequest request, CancellationToken cancellationToken)
     {
+        if (!IsCurrentEmission())
+        {
+            return;
+        }
+
         await SetStatusAsync(WorkerConnectionState.WaitingForApproval, "Waiting for input.", cancellationToken).ConfigureAwait(false);
         if (clientRpc is not null)
         {
-            await clientRpc.NotifyWithParameterObjectAsync("observer/userInputRequested", new { request }).ConfigureAwait(false);
+            await clientRpc.NotifyWithParameterObjectAsync("observer/userInputRequested", new { notification = Stamp(request) }).ConfigureAwait(false);
         }
     }
 
     private async Task PublishUserInputResolvedAsync(string requestId, CancellationToken cancellationToken)
     {
+        if (!IsCurrentEmission())
+        {
+            return;
+        }
+
         await SetStatusAsync(WorkerConnectionState.Busy, "Turn in progress.", cancellationToken).ConfigureAwait(false);
         if (clientRpc is not null)
         {
-            await clientRpc.NotifyWithParameterObjectAsync("observer/userInputResolved", new { requestId }).ConfigureAwait(false);
+            await clientRpc.NotifyWithParameterObjectAsync("observer/userInputResolved", new { notification = Stamp(requestId) }).ConfigureAwait(false);
         }
     }
 
@@ -775,7 +1290,7 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
 
         if (clientRpc is not null)
         {
-            await clientRpc.NotifyWithParameterObjectAsync("observer/contextCompacted", new { value }).ConfigureAwait(false);
+            await clientRpc.NotifyWithParameterObjectAsync("observer/contextCompacted", new { notification = Stamp(value) }).ConfigureAwait(false);
         }
     }
 
@@ -783,7 +1298,7 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
     {
         if (clientRpc is not null)
         {
-            await clientRpc.NotifyWithParameterObjectAsync("observer/reviewModeChanged", new { value }).ConfigureAwait(false);
+            await clientRpc.NotifyWithParameterObjectAsync("observer/reviewModeChanged", new { notification = Stamp(value) }).ConfigureAwait(false);
         }
     }
 
@@ -791,7 +1306,7 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
     {
         if (clientRpc is not null)
         {
-            await clientRpc.NotifyWithParameterObjectAsync("observer/threadGoalChanged", new { value }).ConfigureAwait(false);
+            await clientRpc.NotifyWithParameterObjectAsync("observer/threadGoalChanged", new { notification = Stamp(value) }).ConfigureAwait(false);
         }
     }
 
@@ -799,18 +1314,27 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
     {
         if (clientRpc is not null)
         {
-            await clientRpc.NotifyWithParameterObjectAsync("observer/rateLimitsChanged", new { value }).ConfigureAwait(false);
+            await clientRpc.NotifyWithParameterObjectAsync("observer/rateLimitsChanged", new { notification = Stamp(value) }).ConfigureAwait(false);
         }
     }
 
     private async Task PublishAccountStatusAsync(AccountStatus value, CancellationToken cancellationToken)
     {
-        accountStatus = value;
+        lock (targetGate)
+        {
+            if (!IsCurrentEmissionLocked(target))
+            {
+                return;
+            }
+
+            accountStatus = value;
+        }
+
         if (clientRpc is not null)
         {
             try
             {
-                await clientRpc.NotifyWithParameterObjectAsync("observer/accountChanged", new { status = value }).ConfigureAwait(false);
+                await clientRpc.NotifyWithParameterObjectAsync("observer/accountChanged", new { notification = Stamp(value) }).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -836,9 +1360,14 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
 
     private async Task PublishApprovalAuditAsync(ApprovalAuditRecord record, CancellationToken cancellationToken)
     {
+        if (!IsCurrentEmission())
+        {
+            return;
+        }
+
         if (clientRpc is not null)
         {
-            await clientRpc.NotifyWithParameterObjectAsync("observer/approvalAudit", new { record }).ConfigureAwait(false);
+            await clientRpc.NotifyWithParameterObjectAsync("observer/approvalAudit", new { notification = Stamp(record) }).ConfigureAwait(false);
         }
     }
 
@@ -1000,7 +1529,7 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
     };
 
     // A PID is reported only for a Worker-owned local process, never for a remote target.
-    private int? OwnedProcessId() => target.Kind == ConnectionTargetKind.Local ? processHost.ProcessId : null;
+    private int? OwnedProcessId() => SnapshotTarget().Kind == ConnectionTargetKind.Local ? processHost.ProcessId : null;
 
     private void TrackCallback(Task callback) => TryTrackCallback(callback);
 
@@ -1077,6 +1606,7 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
             WorkerDiagnostics.Write("remote codex app-server did not answer two liveness probes");
             watchdog = null;
             ObserveRemoteConnection(null);
+            DetachProcessObservers();
             await processHost.StopAsync(CancellationToken.None).ConfigureAwait(false);
             await PublishRemoteFailureAsync(RemoteConnectionException.Describe(RemoteConnectionFailure.PeerUnresponsive)).ConfigureAwait(false);
             return false;

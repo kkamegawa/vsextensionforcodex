@@ -4,7 +4,7 @@
 
 ## 目的と範囲
 
-Issue #151 で追跡する安全なリモート接続の動作を完成させます。Extension は引き続きローカル Worker と通信し、Worker がローカル stdio または明示的に適用した WebSocket プロファイルを選択します。本設計では endpoint policy、接続とトークンの所有権、health 診断、読み取り RPC の過負荷時再試行、プロファイルの鮮度、ローカル再起動とリモート再接続の動作を定めます。リモートサーバーは引き続き外部管理です。Issue #152 のアカウント・認証主体ごとの状態分離が完了するまでは、リモート機能を Preview とします。
+Issue #151 で追跡する安全なリモート接続の動作を完成させます。Extension は引き続きローカル Worker と通信し、Worker がローカル stdio または明示的に適用した WebSocket プロファイルを選択します。本設計では endpoint policy、接続とトークンの所有権、health 診断、読み取り RPC の過負荷時再試行、プロファイルの鮮度、ローカル再起動とリモート再接続の動作を定めます。リモートサーバーは引き続き外部管理です。上流の WebSocket が実験的機能のため、リモート機能は Preview とします。Issue #152 の所有者境界は併設する [パスと状態の設計](path-state-isolation-design_ja.md) に定めます。
 
 Issue #150 は固定 Codex CLI 0.159.1 の契約（0.155.1 を回帰基準）、共通 JSON-RPC dispatch、接続世代の動作を提供します。Issue #152 は完全なパスマッピングと、アカウント・認証主体・ルートごとの状態分離を担当します。Issue #153 は自動再接続と履歴復旧、下書き保持、不確実な変更操作の扱いを担当します。本設計は後続 Issue の保証を先取りしません。
 
@@ -102,7 +102,7 @@ Worker status に型付き connection target と diagnostic snapshot を追加�
 
 接続先 flyout は health/ready 結果と RPC state を分離し、診断対象と active target を区別し、pathful endpoint の authority-root 診断を説明します。Usage/History との排他、keyboard 操作、Escape/Tab、Visual Studio theme resource、accessibility name、live status を維持します。health 結果で Connect や機能の利用可否を変えません。
 
-Preview の説明を更新し、health diagnostics と許可済み read-only RPC の上限付き retry が利用できると伝えます。未完了の account/principal 状態分離と、外部管理 remote server・Worker 所有 socket の区別を維持します。
+Preview の説明を更新し、health diagnostics と許可済み read-only RPC の上限付き retry が利用できると伝えます。account/principal 状態分離は併設する Issue #152 の設計に従って説明し、外部管理 remote server・Worker 所有 socket の区別を維持します。
 
 ## 検証と受け入れ
 

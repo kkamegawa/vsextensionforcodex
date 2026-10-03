@@ -18,6 +18,53 @@ public sealed class CodexSessionServiceTests
     private static readonly string[] CreativeOnly = ["Creative"];
 
     [TestMethod]
+    public async Task RetiredSessionNeverPublishesQueuedStreamingDeltaIntoReplacementOwner()
+    {
+        var oldConnection = new RecordingConnection();
+        var newConnection = new RecordingConnection();
+        await using var service = CreateService();
+        var publishedTexts = new System.Collections.Concurrent.ConcurrentQueue<string>();
+        service.ConversationEventReceived += (value, _) =>
+        {
+            publishedTexts.Enqueue(value.Text ?? string.Empty);
+            return Task.CompletedTask;
+        };
+
+        await service.InitializeAsync(oldConnection, Options(), CancellationToken.None);
+        await oldConnection.EmitNotificationAsync(
+            "item/agentMessage/delta",
+            new { threadId = "old-thread", turnId = "old-turn", itemId = "old-item", delta = "retired-owner-secret" });
+        await service.InitializeAsync(newConnection, Options(), CancellationToken.None);
+        publishedTexts.Clear();
+        await Task.Delay(TimeSpan.FromMilliseconds(180));
+
+        Assert.IsFalse(publishedTexts.Any(text => text.Contains("retired-owner-secret", StringComparison.Ordinal)));
+    }
+
+    [TestMethod]
+    public async Task OwnerWithoutAuthoritativeAccountIdNeverReadsOrWritesSharedSkillCache()
+    {
+        var store = new NullSkillCatalogStore();
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "skills/list"
+                ? JsonSerializer.SerializeToElement(new { data = Array.Empty<object>() })
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        await using var service = CreateService(store);
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        ListSkillsResult first = await service.ListSkillsAsync(false, CancellationToken.None);
+        ListSkillsResult cached = await service.ListSkillsAsync(false, CancellationToken.None);
+
+        Assert.IsTrue(first.IsSupported);
+        Assert.IsTrue(cached.IsSupported);
+        Assert.AreEqual(0, store.ReadCount);
+        Assert.AreEqual(0, store.WriteCount);
+        Assert.AreEqual(0, store.DeleteCount);
+    }
+
+    [TestMethod]
     public async Task InitializeReadsVersionFromFirstUserAgentProduct()
     {
         var connection = new RecordingConnection
@@ -1871,7 +1918,7 @@ public sealed class CodexSessionServiceTests
     }
 
     [TestMethod]
-    public async Task LogoutRequestsAccountLogoutAndRefreshesSignedOutStatus()
+    public async Task LogoutRequestsAccountLogoutAndRetiresTheOwnerConnection()
     {
         bool signedIn = true;
         var connection = new RecordingConnection
@@ -1900,12 +1947,13 @@ public sealed class CodexSessionServiceTests
 
         Assert.AreEqual(AccountState.SignedOut, result.State);
         CollectionAssert.AreEqual(
-            new[] { "initialize", "account/logout", "account/read" },
+            new[] { "initialize", "account/logout" },
             connection.Requests.Select(item => item.Method).ToArray());
+        Assert.IsFalse(service.IsConnectionActive);
     }
 
     [TestMethod]
-    public async Task AccountNotificationsRefreshStatus()
+    public async Task AccountNotificationsRetireTheConnectionWithoutReusingOwnerStatus()
     {
         int reads = 0;
         var connection = new RecordingConnection
@@ -1927,7 +1975,8 @@ public sealed class CodexSessionServiceTests
         await connection.EmitNotificationAsync("account/login/completed", new { loginId = "login-1", success = true });
         await connection.EmitNotificationAsync("account/updated", new { authMode = "chatgpt", planType = "pro" });
 
-        Assert.AreEqual(2, reads);
+        Assert.AreEqual(0, reads);
+        Assert.IsFalse(service.IsConnectionActive);
     }
 
     [TestMethod]
@@ -2071,14 +2120,14 @@ public sealed class CodexSessionServiceTests
         CollectionAssert.AreEqual(CreativeOnly, selected);
     }
 
-    private static CodexSessionService CreateService()
+    private static CodexSessionService CreateService(ISkillCatalogStore? skillCatalogStore = null)
         => new(
             new ApprovalPolicyEngine(new PathAccessPolicy()),
             new SecretRedactor(),
             null,
             null,
             null,
-            new NullSkillCatalogStore());
+            skillCatalogStore ?? new NullSkillCatalogStore());
 
     private static WorkerOptions Options(string? workingDirectory = null, bool experimentalApi = false) => new()
     {
@@ -2729,22 +2778,37 @@ public sealed class CodexSessionServiceTests
 
     private sealed class NullSkillCatalogStore : ISkillCatalogStore
     {
+        public int ReadCount { get; private set; }
+        public int WriteCount { get; private set; }
+        public int DeleteCount { get; private set; }
+
         public ValueTask<ListSkillsResult?> TryReadAsync(
             string workspace,
+            string statePartitionKey,
             string? codexVersion,
             DateTimeOffset now,
             CancellationToken cancellationToken)
-            => ValueTask.FromResult<ListSkillsResult?>(null);
+        {
+            ReadCount++;
+            return ValueTask.FromResult<ListSkillsResult?>(null);
+        }
 
         public ValueTask WriteAsync(
             string workspace,
+            string statePartitionKey,
             string? codexVersion,
             ListSkillsResult result,
             DateTimeOffset now,
             CancellationToken cancellationToken)
-            => ValueTask.CompletedTask;
+        {
+            WriteCount++;
+            return ValueTask.CompletedTask;
+        }
 
-        public ValueTask DeleteAsync(string workspace, CancellationToken cancellationToken)
-            => ValueTask.CompletedTask;
+        public ValueTask DeleteAsync(string workspace, string statePartitionKey, CancellationToken cancellationToken)
+        {
+            DeleteCount++;
+            return ValueTask.CompletedTask;
+        }
     }
 }

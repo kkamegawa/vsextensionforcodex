@@ -1,14 +1,15 @@
 lockfile_version: '1'
-generated_at: '2026-07-19T05:35:18.255949+00:00'
-apm_version: 0.26.0
+generated_at: '2026-10-03T20:47:58.034734+00:00'
+apm_version: 0.32.0
 dependencies:
 - repo_url: github/awesome-copilot
   name: awesome-copilot-api-architect
   host: github.com
-  resolved_commit: 26fe2d126bf79aafb38f43344d450b69632200f8
+  resolved_commit: 143a3d976b3c1603cc8932984d5e1f28501cb5fc
   version: 1.0.0
   virtual_path: agents/api-architect.agent.md
   is_virtual: true
+  package_type: apm_package
   deployed_files:
   - .claude/agents/api-architect.md
   - .codex/agents/api-architect.toml
@@ -21,8 +22,8 @@ dependencies:
 - repo_url: tfsugjp/skills
   name: github-plan-wiki
   host: github.com
-  resolved_commit: 73b3e0070c901ebb34c0cb17a42352dccfd0b0e3
-  version: 0.1.0
+  resolved_commit: 877ec783235bb68ea13f1f9f67ad34ed5f58c7a7
+  version: 0.1.1
   virtual_path: plugins/github-plan-wiki
   is_virtual: true
   package_type: marketplace_plugin
@@ -30,110 +31,50 @@ dependencies:
   - .agents/skills/github-plan-issues
   - .agents/skills/github-plan-issues/SKILL.md
   - .agents/skills/github-plan-issues/references/gh-subissue-commands.md
+  - .agents/skills/github-plan-issues/scripts/validate_body.py
   - .agents/skills/github-wiki-plan
   - .agents/skills/github-wiki-plan/SKILL.md
+  - .agents/skills/github-wiki-plan/scripts/validate_wiki.py
   - .agents/skills/github-wiki-plan/templates/home.md
   - .agents/skills/github-wiki-plan/templates/home_ja.md
   - .agents/skills/github-wiki-plan/templates/plan-page.md
+  - .agents/skills/github-wiki-plan/tests/test_wiki_links.py
   - .claude/skills/github-plan-issues
   - .claude/skills/github-plan-issues/SKILL.md
   - .claude/skills/github-plan-issues/references/gh-subissue-commands.md
+  - .claude/skills/github-plan-issues/scripts/validate_body.py
   - .claude/skills/github-wiki-plan
   - .claude/skills/github-wiki-plan/SKILL.md
+  - .claude/skills/github-wiki-plan/scripts/validate_wiki.py
   - .claude/skills/github-wiki-plan/templates/home.md
   - .claude/skills/github-wiki-plan/templates/home_ja.md
   - .claude/skills/github-wiki-plan/templates/plan-page.md
+  - .claude/skills/github-wiki-plan/tests/test_wiki_links.py
   deployed_file_hashes:
-    .agents/skills/github-plan-issues/SKILL.md: sha256:24c4e18bcc0a4dd9f85d1d5b7562873514c5335520333747e34e963f8c19163c
+    .agents/skills/github-plan-issues/SKILL.md: sha256:8f45125c9ecd51c5ec3b5b84781084ad94bdb4d39dc0d9d1e5e4852c392c7d7c
     .agents/skills/github-plan-issues/references/gh-subissue-commands.md: sha256:abde9e32cde71880cc00aeaefcb5471ab67d91a047f564017c56eab3afaa315e
-    .agents/skills/github-wiki-plan/SKILL.md: sha256:d02ae81606906af07f921bc697f2d0f07895ac2203278b151995c3ded5212a36
-    .agents/skills/github-wiki-plan/templates/home.md: sha256:29b0801f3f5683e8274dbb8dfca1d8c9d1d05883088394452a9c72b22f8ce1a3
-    .agents/skills/github-wiki-plan/templates/home_ja.md: sha256:d4ac677bca804a85e507b297fbec4be0b8ec029e1529d22045ac6e2b86a0d6aa
-    .agents/skills/github-wiki-plan/templates/plan-page.md: sha256:71f8c24b52302123e62b9fcaed5f94eecd248b90e0f5f85f67a9931a4ced5c98
-    .claude/skills/github-plan-issues/SKILL.md: sha256:24c4e18bcc0a4dd9f85d1d5b7562873514c5335520333747e34e963f8c19163c
+    .agents/skills/github-plan-issues/scripts/validate_body.py: sha256:6e6bbb603ef4f1ed89a4c3f22bf48e57627278b9c00e57764500e6c83dc6e1b5
+    .agents/skills/github-wiki-plan/SKILL.md: sha256:aa1d43ce3424dc340c73a8cf7e1cb04fa833b314a04bb90fd1a16ad8cc8342e1
+    .agents/skills/github-wiki-plan/scripts/validate_wiki.py: sha256:f5d39396fb73302adbc2a50cfd55e00c3be6a099695a121221aa2124262ab65b
+    .agents/skills/github-wiki-plan/templates/home.md: sha256:9cd9da840f136f516f949cf15af96ed2f6ba8218278459c8c5395397549dd5b9
+    .agents/skills/github-wiki-plan/templates/home_ja.md: sha256:6a75a1870e9cf466cf0a189b69d00d71d9c9b458b52fbf166d1189bf0cf3d051
+    .agents/skills/github-wiki-plan/templates/plan-page.md: sha256:8a3bfaf287d2204b1039abc9ed945b2d8b5c23b5b43211fbc68daba5f92ff9d4
+    .agents/skills/github-wiki-plan/tests/test_wiki_links.py: sha256:638d037351acd8d2bb9bcab5976d94c89948e53a6ca35b2ea4dd0de19bd8d05f
+    .claude/skills/github-plan-issues/SKILL.md: sha256:8f45125c9ecd51c5ec3b5b84781084ad94bdb4d39dc0d9d1e5e4852c392c7d7c
     .claude/skills/github-plan-issues/references/gh-subissue-commands.md: sha256:abde9e32cde71880cc00aeaefcb5471ab67d91a047f564017c56eab3afaa315e
-    .claude/skills/github-wiki-plan/SKILL.md: sha256:d02ae81606906af07f921bc697f2d0f07895ac2203278b151995c3ded5212a36
-    .claude/skills/github-wiki-plan/templates/home.md: sha256:29b0801f3f5683e8274dbb8dfca1d8c9d1d05883088394452a9c72b22f8ce1a3
-    .claude/skills/github-wiki-plan/templates/home_ja.md: sha256:d4ac677bca804a85e507b297fbec4be0b8ec029e1529d22045ac6e2b86a0d6aa
-    .claude/skills/github-wiki-plan/templates/plan-page.md: sha256:71f8c24b52302123e62b9fcaed5f94eecd248b90e0f5f85f67a9931a4ced5c98
-  content_hash: sha256:c32a2d7f50ccd2b06ba3437b0e8478dcf27b582751904ef779d2bb8463d576b9
+    .claude/skills/github-plan-issues/scripts/validate_body.py: sha256:6e6bbb603ef4f1ed89a4c3f22bf48e57627278b9c00e57764500e6c83dc6e1b5
+    .claude/skills/github-wiki-plan/SKILL.md: sha256:aa1d43ce3424dc340c73a8cf7e1cb04fa833b314a04bb90fd1a16ad8cc8342e1
+    .claude/skills/github-wiki-plan/scripts/validate_wiki.py: sha256:f5d39396fb73302adbc2a50cfd55e00c3be6a099695a121221aa2124262ab65b
+    .claude/skills/github-wiki-plan/templates/home.md: sha256:9cd9da840f136f516f949cf15af96ed2f6ba8218278459c8c5395397549dd5b9
+    .claude/skills/github-wiki-plan/templates/home_ja.md: sha256:6a75a1870e9cf466cf0a189b69d00d71d9c9b458b52fbf166d1189bf0cf3d051
+    .claude/skills/github-wiki-plan/templates/plan-page.md: sha256:8a3bfaf287d2204b1039abc9ed945b2d8b5c23b5b43211fbc68daba5f92ff9d4
+    .claude/skills/github-wiki-plan/tests/test_wiki_links.py: sha256:638d037351acd8d2bb9bcab5976d94c89948e53a6ca35b2ea4dd0de19bd8d05f
+  content_hash: sha256:bec8ef8ddee8b91abc7e38e50166d29b60d356f5197a813ddaec786b37d6812c
   is_dev: true
   discovered_via: tfsugjp-agent-skills
   marketplace_plugin_name: github-plan-wiki
   declared_license: MIT
 deployments:
-- kind: project-relative
-  target: agents
-  value: .agents/skills/github-plan-issues
-  runtime: null
-  scope: project
-  owners:
-  - tfsugjp/skills/plugins/github-plan-wiki
-  active_owner: tfsugjp/skills/plugins/github-plan-wiki
-  content_hash: null
-- kind: project-relative
-  target: agents
-  value: .agents/skills/github-plan-issues/SKILL.md
-  runtime: null
-  scope: project
-  owners:
-  - tfsugjp/skills/plugins/github-plan-wiki
-  active_owner: tfsugjp/skills/plugins/github-plan-wiki
-  content_hash: sha256:24c4e18bcc0a4dd9f85d1d5b7562873514c5335520333747e34e963f8c19163c
-- kind: project-relative
-  target: agents
-  value: .agents/skills/github-plan-issues/references/gh-subissue-commands.md
-  runtime: null
-  scope: project
-  owners:
-  - tfsugjp/skills/plugins/github-plan-wiki
-  active_owner: tfsugjp/skills/plugins/github-plan-wiki
-  content_hash: sha256:abde9e32cde71880cc00aeaefcb5471ab67d91a047f564017c56eab3afaa315e
-- kind: project-relative
-  target: agents
-  value: .agents/skills/github-wiki-plan
-  runtime: null
-  scope: project
-  owners:
-  - tfsugjp/skills/plugins/github-plan-wiki
-  active_owner: tfsugjp/skills/plugins/github-plan-wiki
-  content_hash: null
-- kind: project-relative
-  target: agents
-  value: .agents/skills/github-wiki-plan/SKILL.md
-  runtime: null
-  scope: project
-  owners:
-  - tfsugjp/skills/plugins/github-plan-wiki
-  active_owner: tfsugjp/skills/plugins/github-plan-wiki
-  content_hash: sha256:d02ae81606906af07f921bc697f2d0f07895ac2203278b151995c3ded5212a36
-- kind: project-relative
-  target: agents
-  value: .agents/skills/github-wiki-plan/templates/home.md
-  runtime: null
-  scope: project
-  owners:
-  - tfsugjp/skills/plugins/github-plan-wiki
-  active_owner: tfsugjp/skills/plugins/github-plan-wiki
-  content_hash: sha256:29b0801f3f5683e8274dbb8dfca1d8c9d1d05883088394452a9c72b22f8ce1a3
-- kind: project-relative
-  target: agents
-  value: .agents/skills/github-wiki-plan/templates/home_ja.md
-  runtime: null
-  scope: project
-  owners:
-  - tfsugjp/skills/plugins/github-plan-wiki
-  active_owner: tfsugjp/skills/plugins/github-plan-wiki
-  content_hash: sha256:d4ac677bca804a85e507b297fbec4be0b8ec029e1529d22045ac6e2b86a0d6aa
-- kind: project-relative
-  target: agents
-  value: .agents/skills/github-wiki-plan/templates/plan-page.md
-  runtime: null
-  scope: project
-  owners:
-  - tfsugjp/skills/plugins/github-plan-wiki
-  active_owner: tfsugjp/skills/plugins/github-plan-wiki
-  content_hash: sha256:71f8c24b52302123e62b9fcaed5f94eecd248b90e0f5f85f67a9931a4ced5c98
 - kind: project-relative
   target: claude
   value: .claude/agents/api-architect.md
@@ -160,7 +101,7 @@ deployments:
   owners:
   - tfsugjp/skills/plugins/github-plan-wiki
   active_owner: tfsugjp/skills/plugins/github-plan-wiki
-  content_hash: sha256:24c4e18bcc0a4dd9f85d1d5b7562873514c5335520333747e34e963f8c19163c
+  content_hash: sha256:8f45125c9ecd51c5ec3b5b84781084ad94bdb4d39dc0d9d1e5e4852c392c7d7c
 - kind: project-relative
   target: claude
   value: .claude/skills/github-plan-issues/references/gh-subissue-commands.md
@@ -170,6 +111,15 @@ deployments:
   - tfsugjp/skills/plugins/github-plan-wiki
   active_owner: tfsugjp/skills/plugins/github-plan-wiki
   content_hash: sha256:abde9e32cde71880cc00aeaefcb5471ab67d91a047f564017c56eab3afaa315e
+- kind: project-relative
+  target: claude
+  value: .claude/skills/github-plan-issues/scripts/validate_body.py
+  runtime: null
+  scope: project
+  owners:
+  - tfsugjp/skills/plugins/github-plan-wiki
+  active_owner: tfsugjp/skills/plugins/github-plan-wiki
+  content_hash: sha256:6e6bbb603ef4f1ed89a4c3f22bf48e57627278b9c00e57764500e6c83dc6e1b5
 - kind: project-relative
   target: claude
   value: .claude/skills/github-wiki-plan
@@ -187,7 +137,16 @@ deployments:
   owners:
   - tfsugjp/skills/plugins/github-plan-wiki
   active_owner: tfsugjp/skills/plugins/github-plan-wiki
-  content_hash: sha256:d02ae81606906af07f921bc697f2d0f07895ac2203278b151995c3ded5212a36
+  content_hash: sha256:aa1d43ce3424dc340c73a8cf7e1cb04fa833b314a04bb90fd1a16ad8cc8342e1
+- kind: project-relative
+  target: claude
+  value: .claude/skills/github-wiki-plan/scripts/validate_wiki.py
+  runtime: null
+  scope: project
+  owners:
+  - tfsugjp/skills/plugins/github-plan-wiki
+  active_owner: tfsugjp/skills/plugins/github-plan-wiki
+  content_hash: sha256:f5d39396fb73302adbc2a50cfd55e00c3be6a099695a121221aa2124262ab65b
 - kind: project-relative
   target: claude
   value: .claude/skills/github-wiki-plan/templates/home.md
@@ -196,7 +155,7 @@ deployments:
   owners:
   - tfsugjp/skills/plugins/github-plan-wiki
   active_owner: tfsugjp/skills/plugins/github-plan-wiki
-  content_hash: sha256:29b0801f3f5683e8274dbb8dfca1d8c9d1d05883088394452a9c72b22f8ce1a3
+  content_hash: sha256:9cd9da840f136f516f949cf15af96ed2f6ba8218278459c8c5395397549dd5b9
 - kind: project-relative
   target: claude
   value: .claude/skills/github-wiki-plan/templates/home_ja.md
@@ -205,7 +164,7 @@ deployments:
   owners:
   - tfsugjp/skills/plugins/github-plan-wiki
   active_owner: tfsugjp/skills/plugins/github-plan-wiki
-  content_hash: sha256:d4ac677bca804a85e507b297fbec4be0b8ec029e1529d22045ac6e2b86a0d6aa
+  content_hash: sha256:6a75a1870e9cf466cf0a189b69d00d71d9c9b458b52fbf166d1189bf0cf3d051
 - kind: project-relative
   target: claude
   value: .claude/skills/github-wiki-plan/templates/plan-page.md
@@ -214,7 +173,115 @@ deployments:
   owners:
   - tfsugjp/skills/plugins/github-plan-wiki
   active_owner: tfsugjp/skills/plugins/github-plan-wiki
-  content_hash: sha256:71f8c24b52302123e62b9fcaed5f94eecd248b90e0f5f85f67a9931a4ced5c98
+  content_hash: sha256:8a3bfaf287d2204b1039abc9ed945b2d8b5c23b5b43211fbc68daba5f92ff9d4
+- kind: project-relative
+  target: claude
+  value: .claude/skills/github-wiki-plan/tests/test_wiki_links.py
+  runtime: null
+  scope: project
+  owners:
+  - tfsugjp/skills/plugins/github-plan-wiki
+  active_owner: tfsugjp/skills/plugins/github-plan-wiki
+  content_hash: sha256:638d037351acd8d2bb9bcab5976d94c89948e53a6ca35b2ea4dd0de19bd8d05f
+- kind: project-relative
+  target: codex
+  value: .agents/skills/github-plan-issues
+  runtime: null
+  scope: project
+  owners:
+  - tfsugjp/skills/plugins/github-plan-wiki
+  active_owner: tfsugjp/skills/plugins/github-plan-wiki
+  content_hash: null
+- kind: project-relative
+  target: codex
+  value: .agents/skills/github-plan-issues/SKILL.md
+  runtime: null
+  scope: project
+  owners:
+  - tfsugjp/skills/plugins/github-plan-wiki
+  active_owner: tfsugjp/skills/plugins/github-plan-wiki
+  content_hash: sha256:8f45125c9ecd51c5ec3b5b84781084ad94bdb4d39dc0d9d1e5e4852c392c7d7c
+- kind: project-relative
+  target: codex
+  value: .agents/skills/github-plan-issues/references/gh-subissue-commands.md
+  runtime: null
+  scope: project
+  owners:
+  - tfsugjp/skills/plugins/github-plan-wiki
+  active_owner: tfsugjp/skills/plugins/github-plan-wiki
+  content_hash: sha256:abde9e32cde71880cc00aeaefcb5471ab67d91a047f564017c56eab3afaa315e
+- kind: project-relative
+  target: codex
+  value: .agents/skills/github-plan-issues/scripts/validate_body.py
+  runtime: null
+  scope: project
+  owners:
+  - tfsugjp/skills/plugins/github-plan-wiki
+  active_owner: tfsugjp/skills/plugins/github-plan-wiki
+  content_hash: sha256:6e6bbb603ef4f1ed89a4c3f22bf48e57627278b9c00e57764500e6c83dc6e1b5
+- kind: project-relative
+  target: codex
+  value: .agents/skills/github-wiki-plan
+  runtime: null
+  scope: project
+  owners:
+  - tfsugjp/skills/plugins/github-plan-wiki
+  active_owner: tfsugjp/skills/plugins/github-plan-wiki
+  content_hash: null
+- kind: project-relative
+  target: codex
+  value: .agents/skills/github-wiki-plan/SKILL.md
+  runtime: null
+  scope: project
+  owners:
+  - tfsugjp/skills/plugins/github-plan-wiki
+  active_owner: tfsugjp/skills/plugins/github-plan-wiki
+  content_hash: sha256:aa1d43ce3424dc340c73a8cf7e1cb04fa833b314a04bb90fd1a16ad8cc8342e1
+- kind: project-relative
+  target: codex
+  value: .agents/skills/github-wiki-plan/scripts/validate_wiki.py
+  runtime: null
+  scope: project
+  owners:
+  - tfsugjp/skills/plugins/github-plan-wiki
+  active_owner: tfsugjp/skills/plugins/github-plan-wiki
+  content_hash: sha256:f5d39396fb73302adbc2a50cfd55e00c3be6a099695a121221aa2124262ab65b
+- kind: project-relative
+  target: codex
+  value: .agents/skills/github-wiki-plan/templates/home.md
+  runtime: null
+  scope: project
+  owners:
+  - tfsugjp/skills/plugins/github-plan-wiki
+  active_owner: tfsugjp/skills/plugins/github-plan-wiki
+  content_hash: sha256:9cd9da840f136f516f949cf15af96ed2f6ba8218278459c8c5395397549dd5b9
+- kind: project-relative
+  target: codex
+  value: .agents/skills/github-wiki-plan/templates/home_ja.md
+  runtime: null
+  scope: project
+  owners:
+  - tfsugjp/skills/plugins/github-plan-wiki
+  active_owner: tfsugjp/skills/plugins/github-plan-wiki
+  content_hash: sha256:6a75a1870e9cf466cf0a189b69d00d71d9c9b458b52fbf166d1189bf0cf3d051
+- kind: project-relative
+  target: codex
+  value: .agents/skills/github-wiki-plan/templates/plan-page.md
+  runtime: null
+  scope: project
+  owners:
+  - tfsugjp/skills/plugins/github-plan-wiki
+  active_owner: tfsugjp/skills/plugins/github-plan-wiki
+  content_hash: sha256:8a3bfaf287d2204b1039abc9ed945b2d8b5c23b5b43211fbc68daba5f92ff9d4
+- kind: project-relative
+  target: codex
+  value: .agents/skills/github-wiki-plan/tests/test_wiki_links.py
+  runtime: null
+  scope: project
+  owners:
+  - tfsugjp/skills/plugins/github-plan-wiki
+  active_owner: tfsugjp/skills/plugins/github-plan-wiki
+  content_hash: sha256:638d037351acd8d2bb9bcab5976d94c89948e53a6ca35b2ea4dd0de19bd8d05f
 - kind: project-relative
   target: codex
   value: .codex/agents/api-architect.toml

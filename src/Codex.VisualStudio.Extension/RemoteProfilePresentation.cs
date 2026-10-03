@@ -522,6 +522,18 @@ public sealed class RemoteProfilesPresentationViewModel : ObservableObject
             return false;
         }
 
+        if (!LocalPath.TryCreate(profile.LocalRoot, out _))
+        {
+            error = "The local root must be a supported absolute Windows drive, UNC, or POSIX path.";
+            return false;
+        }
+
+        if (!ServerPath.TryCreate(profile.ServerRoot, out _))
+        {
+            error = "The server root must be a supported absolute Windows drive, UNC, or POSIX path.";
+            return false;
+        }
+
         if (profile.IsEnabled && string.IsNullOrWhiteSpace(profile.TokenFilePath))
         {
             error = "An enabled remote profile requires a token file path.";
