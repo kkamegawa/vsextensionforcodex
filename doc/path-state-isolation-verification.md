@@ -43,11 +43,17 @@ and the missing remote-mode and junction tests.
 | Check | Result |
 |---|---|
 | Debug / Release solution builds | Zero warnings and errors |
-| Full Release Core tests | 327 passed, 5 skipped, 0 failed |
+| Full Release Core tests | 331 passed, 5 skipped, 0 failed |
 | Full Release UI tests | 318 passed, 1 skipped, 0 failed |
 | Automated junction test | In-root existing/future files accepted; escaping junction rejected |
 | Schema-cache contract / live initialize (CLI 0.159.1) | Passed |
 | Text format / diff | UTF-8 BOM, CRLF, `git diff --check` passed |
+
+The first Experimental Instance run degraded right after connecting: CLI 0.159.1 sends
+`account/updated` about 0.7 s after startup without any account change (reproduced against the
+real executable), and every account notification was treated as an owner boundary. Account
+notifications now reread the account and compare a Worker-only fingerprint. A notification
+processed during the owner's own logout counts as that logout (Codex review finding).
 
 The five skips are the symlink cases that need symlink creation capability. The new
 junction test runs without that capability.

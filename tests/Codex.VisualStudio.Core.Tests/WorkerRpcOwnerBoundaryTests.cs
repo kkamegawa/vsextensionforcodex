@@ -58,6 +58,7 @@ public sealed class WorkerRpcOwnerBoundaryTests
             Assert.IsFalse(oldTurn.IsCompleted, "The StartTurn operation completed before its delayed app-server response was released.");
             Assert.AreEqual(1, ownerAConnection.MethodCount("turn/start"));
 
+            ownerAConnection.AccountEmail = "other@example.test";
             await ownerAConnection.EmitNotificationAsync("account/updated", new { authMode = "chatgpt" });
             Assert.AreEqual(ownerATarget.OwnerGeneration + 1, session.OwnerGeneration);
             Task<WorkerStatus> replacement = worker.ConnectAsync(Options(ownerBPath), CancellationToken.None);
@@ -132,6 +133,39 @@ public sealed class WorkerRpcOwnerBoundaryTests
     }
 
     [TestMethod]
+    public async Task OwnerLogoutWhoseNotificationArrivesFirstStillConnectsANewOwner()
+    {
+        string workspace = Path.Combine(Path.GetTempPath(), $"worker-owner-logout-race-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(workspace);
+        try
+        {
+            var first = new RecordingConnection(workspace)
+            {
+                AccountEmail = "a@example.test",
+                EmitAccountUpdatedDuringLogout = true,
+            };
+            var second = new RecordingConnection(workspace);
+            var session = new CodexSessionService(new ApprovalPolicyEngine(new PathAccessPolicy()), new SecretRedactor());
+            await using var worker = new WorkerRpcService(new SecretRedactor(), new SequenceProcessHost(first, second), session);
+            await using var client = new RpcClientChannel(worker);
+            ConnectionTargetSnapshot ownerA = (await worker.ConnectAsync(Options(workspace), CancellationToken.None)).Target!;
+
+            AccountStatus result = await worker.LogoutAccountAsync(Request<LogoutAccountRequest>(ownerA), CancellationToken.None);
+
+            WorkerNotification<WorkerStatus> ready = await client.WaitForAsync(notification =>
+                notification.Value.State == WorkerConnectionState.Ready
+                && notification.OwnerGeneration > ownerA.OwnerGeneration).WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.AreEqual(AccountState.SignedOut, result.State);
+            Assert.AreNotEqual(ownerA.StatePartitionFingerprint, ready.StatePartitionFingerprint);
+            Assert.IsFalse(client.Notifications.Any(notification => notification.Value.State == WorkerConnectionState.Degraded));
+        }
+        finally
+        {
+            Directory.Delete(workspace, recursive: true);
+        }
+    }
+
+    [TestMethod]
     public async Task OwnerSignInCompletionConnectsANewIsolatedOwnerAutomatically()
     {
         string workspace = Path.Combine(Path.GetTempPath(), $"worker-owner-login-{Guid.NewGuid():N}");
@@ -165,7 +199,7 @@ public sealed class WorkerRpcOwnerBoundaryTests
     }
 
     [TestMethod]
-    public async Task UnsolicitedAccountChangeStaysDegradedUntilAnExplicitReconnect()
+    public async Task ChangedAccountStaysDegradedUntilAnExplicitReconnect()
     {
         string workspace = Path.Combine(Path.GetTempPath(), $"worker-owner-updated-{Guid.NewGuid():N}");
         Directory.CreateDirectory(workspace);
@@ -178,12 +212,44 @@ public sealed class WorkerRpcOwnerBoundaryTests
             await using var client = new RpcClientChannel(worker);
             await worker.ConnectAsync(Options(workspace), CancellationToken.None);
 
+            first.AccountEmail = "other@example.test";
             await first.EmitNotificationAsync("account/updated", new { authMode = "chatgpt", planType = "pro" });
 
             WorkerNotification<WorkerStatus> degraded = await client.WaitForAsync(notification =>
                 notification.Value.State == WorkerConnectionState.Degraded).WaitAsync(TimeSpan.FromSeconds(5));
             StringAssert.Contains(degraded.Value.Message, "Reconnect");
             Assert.AreEqual(0, second.MethodCount("initialize"));
+        }
+        finally
+        {
+            Directory.Delete(workspace, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public async Task AccountUpdatedDuringStartupForTheSameAccountKeepsTheConnectionReady()
+    {
+        // CLI 0.159.1 sends account/updated shortly after startup without any account change.
+        string workspace = Path.Combine(Path.GetTempPath(), $"worker-owner-startup-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(workspace);
+        try
+        {
+            var first = new RecordingConnection(workspace)
+            {
+                AccountEmail = "a@example.test",
+                EmitAccountUpdatedDuringRead = true,
+            };
+            var session = new CodexSessionService(new ApprovalPolicyEngine(new PathAccessPolicy()), new SecretRedactor());
+            await using var worker = new WorkerRpcService(new SecretRedactor(), new SequenceProcessHost(first), session);
+            await using var client = new RpcClientChannel(worker);
+
+            WorkerStatus status = await worker.ConnectAsync(Options(workspace), CancellationToken.None);
+            await first.EmitNotificationAsync("account/updated", new { authMode = "chatgpt", planType = "plus" });
+
+            Assert.AreEqual(WorkerConnectionState.Ready, status.State);
+            Assert.IsTrue(session.IsConnectionActive);
+            Assert.AreEqual(status.Target!.OwnerGeneration, session.OwnerGeneration);
+            Assert.IsFalse(client.Notifications.Any(notification => notification.Value.State == WorkerConnectionState.Degraded));
         }
         finally
         {
@@ -456,6 +522,12 @@ public sealed class WorkerRpcOwnerBoundaryTests
 
         public bool DelayTurnStart { get; set; }
 
+        public string? AccountEmail { get; set; }
+
+        public bool EmitAccountUpdatedDuringRead { get; set; }
+
+        public bool EmitAccountUpdatedDuringLogout { get; set; }
+
         public Task TurnStartSeen => turnStartSeen.Task;
 
         public void ReleaseTurnStart() => releaseTurnStart.TrySetResult();
@@ -489,6 +561,19 @@ public sealed class WorkerRpcOwnerBoundaryTests
                 await releaseTurnStart.Task.WaitAsync(cancellationToken);
             }
 
+            if (method == "account/read" && EmitAccountUpdatedDuringRead)
+            {
+                EmitAccountUpdatedDuringRead = false;
+                await EmitNotificationAsync("account/updated", new { authMode = "chatgpt", planType = "plus" });
+            }
+
+            if (method == "account/logout" && EmitAccountUpdatedDuringLogout)
+            {
+                EmitAccountUpdatedDuringLogout = false;
+                AccountEmail = null;
+                await EmitNotificationAsync("account/updated", new { authMode = (string?)null });
+            }
+
             JsonElement result = method switch
             {
                 "thread/start" => JsonSerializer.SerializeToElement(new
@@ -497,7 +582,12 @@ public sealed class WorkerRpcOwnerBoundaryTests
                 }),
                 "turn/start" => JsonSerializer.SerializeToElement(new { turn = new { id = "turn-a" } }),
                 "initialize" => JsonSerializer.SerializeToElement(new { userAgent = "codex-cli/0.1.0" }),
-                "account/read" => JsonSerializer.SerializeToElement(new { account = (object?)null }),
+                "account/read" => JsonSerializer.SerializeToElement(new
+                {
+                    account = AccountEmail is null
+                        ? null
+                        : (object)new { type = "chatgpt", email = AccountEmail, planType = "plus" },
+                }),
                 "account/login/start" => JsonSerializer.SerializeToElement(new
                 {
                     type = "chatgpt",

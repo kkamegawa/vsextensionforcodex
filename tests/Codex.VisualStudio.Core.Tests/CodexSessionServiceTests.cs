@@ -1764,21 +1764,24 @@ public sealed class CodexSessionServiceTests
     [TestMethod]
     public async Task AccountReadMapsSignedOutAndSignedInWithoutPersonalInformation()
     {
-        bool signedIn = false;
-        var connection = new RecordingConnection
+        // A different account on the same owner is an owner boundary, so each state uses its own owner.
+        async Task<AccountStatus> ReadAsync(bool signedIn)
         {
-            Handler = (method, _) => method == "account/read"
-                ? signedIn
-                    ? JsonSerializer.SerializeToElement(new { account = new { type = "chatgpt", email = "secret@example.com", planType = "plus" } })
-                    : JsonSerializer.SerializeToElement(new { account = (object?)null, requiresOpenaiAuth = true })
-                : JsonSerializer.SerializeToElement(new { }),
-        };
-        await using var service = CreateService();
-        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+            var connection = new RecordingConnection
+            {
+                Handler = (method, _) => method == "account/read"
+                    ? signedIn
+                        ? JsonSerializer.SerializeToElement(new { account = new { type = "chatgpt", email = "secret@example.com", planType = "plus" } })
+                        : JsonSerializer.SerializeToElement(new { account = (object?)null, requiresOpenaiAuth = true })
+                    : JsonSerializer.SerializeToElement(new { }),
+            };
+            await using var service = CreateService();
+            await service.InitializeAsync(connection, Options(), CancellationToken.None);
+            return await service.GetAccountStatusAsync(CancellationToken.None);
+        }
 
-        AccountStatus signedOut = await service.GetAccountStatusAsync(CancellationToken.None);
-        signedIn = true;
-        AccountStatus signedInStatus = await service.GetAccountStatusAsync(CancellationToken.None);
+        AccountStatus signedOut = await ReadAsync(signedIn: false);
+        AccountStatus signedInStatus = await ReadAsync(signedIn: true);
 
         Assert.AreEqual(AccountState.SignedOut, signedOut.State);
         Assert.AreEqual(AccountState.SignedIn, signedInStatus.State);
@@ -2004,6 +2007,37 @@ public sealed class CodexSessionServiceTests
     }
 
     [TestMethod]
+    public async Task AccountNotificationBeforeTheLogoutResponseIsStillTheOwnersLogout()
+    {
+        RecordingConnection? connection = null;
+        connection = new RecordingConnection
+        {
+            AsyncHandler = async (method, _, _) =>
+            {
+                if (method == "account/logout")
+                {
+                    // The notification for this logout is processed before its response.
+                    await connection!.EmitNotificationAsync("account/updated", new { authMode = (string?)null, planType = (string?)null });
+                }
+
+                return method == "account/read"
+                    ? JsonSerializer.SerializeToElement(new { account = new { type = "chatgpt", email = "a@example.test", planType = "plus" } })
+                    : JsonSerializer.SerializeToElement(new { });
+            },
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+        await service.GetAccountStatusAsync(CancellationToken.None);
+
+        AccountStatus result = await service.LogoutAccountAsync(CancellationToken.None);
+
+        Assert.AreEqual(AccountState.SignedOut, result.State);
+        Assert.IsFalse(service.IsConnectionActive);
+        Assert.IsTrue(service.InvalidatedByOwnerAction);
+        Assert.AreEqual(AccountState.SignedOut, service.InvalidatedAccountState);
+    }
+
+    [TestMethod]
     public async Task LoginCompletionForTheOwnersSignInIsAnOwnerAction()
     {
         var connection = new RecordingConnection
@@ -2026,31 +2060,72 @@ public sealed class CodexSessionServiceTests
     [DataRow("account/updated", null)]
     [DataRow("account/login/completed", "someone-else")]
     [DataRow("account/login/completed", "")]
-    public async Task UnsolicitedAccountChangesAreNotOwnerActions(string method, string? loginId)
+    public async Task UnsolicitedNotificationForTheSameAccountKeepsTheOwner(string method, string? loginId)
     {
+        int reads = 0;
         var connection = new RecordingConnection
         {
-            Handler = (requestMethod, _) => requestMethod == "account/login/start"
-                ? JsonSerializer.SerializeToElement(new { type = "chatgpt", loginId = "login-1", authUrl = "https://auth.example.test/start" })
-                : JsonSerializer.SerializeToElement(new { }),
+            Handler = (requestMethod, _) =>
+            {
+                if (requestMethod == "account/read")
+                {
+                    reads++;
+                    return JsonSerializer.SerializeToElement(new { account = new { type = "chatgpt", email = "a@example.test", planType = "plus" } });
+                }
+
+                return requestMethod == "account/login/start"
+                    ? JsonSerializer.SerializeToElement(new { type = "chatgpt", loginId = "login-1", authUrl = "https://auth.example.test/start" })
+                    : JsonSerializer.SerializeToElement(new { });
+            },
         };
         await using var service = CreateService();
         await service.InitializeAsync(connection, Options(), CancellationToken.None);
+        await service.GetAccountStatusAsync(CancellationToken.None);
         await service.StartAccountLoginAsync(CancellationToken.None);
 
         object parameters = method == "account/updated"
-            ? new { authMode = "chatgpt", planType = "pro" }
+            ? new { authMode = "chatgpt", planType = "plus" }
             : string.IsNullOrEmpty(loginId)
                 ? new { success = true }
                 : new { loginId, success = true };
         await connection.EmitNotificationAsync(method, parameters);
 
-        Assert.IsFalse(service.IsConnectionActive);
+        Assert.AreEqual(2, reads);
+        Assert.IsTrue(service.IsConnectionActive);
         Assert.IsFalse(service.InvalidatedByOwnerAction);
     }
 
     [TestMethod]
-    public async Task AccountNotificationsRetireTheConnectionWithoutReusingOwnerStatus()
+    public async Task UnsolicitedNotificationForAChangedAccountRetiresTheOwner()
+    {
+        string email = "a@example.test";
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "account/read"
+                ? JsonSerializer.SerializeToElement(new { account = new { type = "chatgpt", email, planType = "plus" } })
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+        var statuses = new List<AccountStatus>();
+        service.AccountStatusChanged += (value, _) =>
+        {
+            statuses.Add(value);
+            return Task.CompletedTask;
+        };
+        await service.GetAccountStatusAsync(CancellationToken.None);
+
+        email = "b@example.test";
+        await connection.EmitNotificationAsync("account/updated", new { authMode = "chatgpt", planType = "plus" });
+
+        Assert.IsFalse(service.IsConnectionActive);
+        Assert.IsFalse(service.InvalidatedByOwnerAction);
+        Assert.AreEqual(AccountState.Unavailable, statuses[^1].State);
+        Assert.AreEqual(1, statuses.Count(status => status.State == AccountState.SignedIn));
+    }
+
+    [TestMethod]
+    public async Task NotificationBeforeTheFirstAccountReadIsCoveredByThatRead()
     {
         int reads = 0;
         var connection = new RecordingConnection
@@ -2060,33 +2135,38 @@ public sealed class CodexSessionServiceTests
                 if (method == "account/read")
                 {
                     reads++;
-                    return JsonSerializer.SerializeToElement(new { account = new { type = "chatgpt", planType = "pro" } });
                 }
 
-                return JsonSerializer.SerializeToElement(new { });
+                return method == "account/read"
+                    ? JsonSerializer.SerializeToElement(new { account = new { type = "chatgpt", planType = "plus" } })
+                    : JsonSerializer.SerializeToElement(new { });
             },
         };
         await using var service = CreateService();
         await service.InitializeAsync(connection, Options(), CancellationToken.None);
 
-        await connection.EmitNotificationAsync("account/login/completed", new { loginId = "login-1", success = true });
-        await connection.EmitNotificationAsync("account/updated", new { authMode = "chatgpt", planType = "pro" });
+        await connection.EmitNotificationAsync("account/updated", new { authMode = "chatgpt", planType = "plus" });
+        AccountStatus status = await service.GetAccountStatusAsync(CancellationToken.None);
 
-        Assert.AreEqual(0, reads);
-        Assert.IsFalse(service.IsConnectionActive);
+        Assert.AreEqual(1, reads);
+        Assert.AreEqual(AccountState.SignedIn, status.State);
+        Assert.IsTrue(service.IsConnectionActive);
     }
 
     [TestMethod]
     public async Task AccountNotificationReadTimeoutReportsUnavailable()
     {
+        bool timeOut = false;
         var connection = new RecordingConnection
         {
-            AsyncHandler = (method, _, _) => method == "account/read"
+            AsyncHandler = (method, _, _) => method == "account/read" && timeOut
                 ? Task.FromCanceled<JsonElement>(new CancellationToken(canceled: true))
                 : Task.FromResult(JsonSerializer.SerializeToElement(new { })),
         };
         await using var service = CreateService();
         await service.InitializeAsync(connection, Options(), CancellationToken.None);
+        await service.GetAccountStatusAsync(CancellationToken.None);
+        timeOut = true;
         var statuses = new List<AccountStatus>();
         service.AccountStatusChanged += (value, _) =>
         {

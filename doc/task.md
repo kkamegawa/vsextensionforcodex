@@ -10,7 +10,8 @@ Plan: [English Wiki](https://github.com/kkamegawa/vsextensionforcodex/wiki/path-
 - [x] Record the account-change lifecycle in the design and ADR-013: the owner's own logout or matching sign-in completion connects a new owner automatically; an unsolicited account change stays Degraded.
 - [x] Implement the automatic new-owner connection, whole-turn rejection of missing/unreadable/protected attachments, mapped thread working directory, and the Worker rate-limit emission filter.
 - [x] Add remote-mode integration tests (working directory, permission profile, `localImage`, IDE context, unmappable approval path, thread working directory), an automated junction test, and account-change lifecycle tests (Worker and UI).
-- [x] Verify Debug/Release builds (zero warnings), Release Core 327 passed / 5 skipped and UI 318 passed / 1 skipped, CLI 0.159.1 schema-cache and live initialize, and `git diff --check`.
+- [x] Fix the Experimental Instance degradation: CLI 0.159.1 sends `account/updated` after startup without an account change. Account notifications now reread the account and retire the owner only when the Worker-only account fingerprint changes; a notification processed during the owner's own logout counts as that logout (Codex review finding).
+- [x] Verify Debug/Release builds (zero warnings), Release Core 331 passed / 5 skipped and UI 318 passed / 1 skipped, CLI 0.159.1 schema-cache and live initialize, and `git diff --check`.
 - [ ] Observe the Experimental Instance scenarios in screenshots (sign-in/sign-out reconnect, profile switch, cleared state, attachment rejection, remote skill selection). No desktop control in this session; requires the maintainer's account.
 
 ## 2026-10-03: Path mapping and owner state isolation ([Issue #152](https://github.com/kkamegawa/vsextensionforcodex/issues/152))
