@@ -93,7 +93,7 @@ Tracking: [#151](https://github.com/kkamegawa/vsextensionforcodex/issues/151)
 
 - Put endpoint-only `RemoteEndpointPolicy` in Contracts (`netstandard2.0`) for Extension, Worker, and Protocol. Accept remote `wss` and strictly defined loopback `ws`; reject URI credentials, query strings, fragments, and unspecified bind addresses.
 - Save validates metadata and the token-file path requirement; only the Worker reads and validates file existence, readability, encoding, bounded content, and bearer format immediately before handshake.
-- Read a local token file afresh on explicit connect/reconnect. Use lease-based exact-token redaction, platform TLS verification, no redirects, and the same captured proxy-resolution policy for WebSocket and HTTP diagnosis.
+- Read a local token file afresh on explicit connect/reconnect and on every #153 coordinator-triggered remote attempt. Token rotation alone does not trigger automatic recovery. Use lease-based exact-token redaction, platform TLS verification, no redirects, and the same captured proxy-resolution policy for WebSocket and HTTP diagnosis.
 - Local restart owns a child process. Remote reconnect owns only its socket. Reject remote `worker/restart` with the typed connection-operation rejection before any stop.
 - Reconnect reloads the latest saved profile by the applied name and requires enabled, unchanged metadata and the expected generation. Changed/disabled/deleted profiles require an explicit apply/target choice; token-file content rotation alone does not change profile metadata.
 - Serialize same-instance configuration mutations and reconnect snapshot validation/dispatch, then revalidate under the Worker transition gate. Persistent principal/cache partitioning and cross-instance configuration transactions remain Issue #152.
@@ -101,7 +101,7 @@ Tracking: [#151](https://github.com/kkamegawa/vsextensionforcodex/issues/151)
 ### Diagnosis, liveness, and retry
 
 - Health GETs to `/healthz` and `/readyz` use a five-second shared budget, no authentication/Origin, no redirects/body display, and independent typed results. Labels identify authority-root scope; a path-routed App Server remains unverified by a root probe. Health never determines RPC readiness or feature support.
-- Keep .NET 8. A 30-second keepalive interval does not prove peer responsiveness; a generation-bound idle RPC watchdog uses two silent ten-second probes to retire a half-open connection, with no automatic reconnect or mutation replay. Any valid inbound request, response, or notification during a probe returns the watchdog to the thirty-second silence period.
+- Keep .NET 8. A 30-second keepalive interval does not prove peer responsiveness; a generation-bound idle RPC watchdog uses two silent ten-second probes to retire a half-open connection. The watchdog only detects and closes; it does not own retries. The separate #153 Extension coordinator may retry eligible transient-loss signals. Neither path replays mutations. Any valid inbound request, response, or notification during a probe returns the watchdog to the thirty-second silence period.
 - Remote startup has a 45-second overall deadline: token read at most five seconds and handshake, initialize, and startup account read each at most fifteen seconds, all capped by remaining time.
 - The exact retry inventory contains eight current methods. `account/read` requires explicit `refreshToken=false`; `skills/list` requires explicit `forceReload=false`. Forced skill refresh remains a single request because cache eviction and rescanning add work. Future history-read methods require separate reviewed allowlist additions.
 - Retry only completed `-32001` responses, at most three retries/four sends, with 250/500/1000 ms base delays and plus/minus 20 percent jitter. One monotonic timeout budget includes sends and waits; connection retirement cancels pending retry work.
@@ -141,28 +141,30 @@ Tracking: [#152](https://github.com/kkamegawa/vsextensionforcodex/issues/152)
 
 Tracking: [#153](https://github.com/kkamegawa/vsextensionforcodex/issues/153)
 
-### Recovery state and draft retention
+Detailed design: [English](connection-history-recovery-design.md) / [日本語](connection-history-recovery-design_ja.md). Implemented with Worker contract v19; validation evidence is recorded in [implementation.md](implementation.md).
 
-- Serialize recovery and expose distinct `Reconnecting` and `Synchronizing history` states.
-- Attempt automatic recovery at most five times, then expose manual reconnect.
-- While the Visual Studio surface remains alive, retain composer text, attachments, selected skill, and next-turn model/reasoning/speed/personality settings.
-- Do not add new disk persistence for drafts in this phase.
+### Connection recovery and quarantined drafts
 
-### Reinitialize and rebuild history
+- One Extension-owned coordinator survives Worker death and schedules a single recovery episode. Retire a dead or disconnected Bridge, including a stale non-null RPC proxy, before recreating it. Each Worker connection attempt uses the existing transition gate; callbacks enqueue loss signals and return without awaiting recovery.
+- Recover only transient Worker/child-process exit, transport loss, silent peer, or unexpected server close. Authentication, TLS/certificate, profile/settings/root, known owner changes, and cancellation stop automatic attempts. Preserve #152's separate owner-initiated sign-in/sign-out connection lifecycle. Remote recovery reconnects the socket; the external server remains externally managed.
+- Make at most five attempts, with waits before successive attempts of 0, 1, 2, 4, and 8 seconds and ±20% jitter on nonzero waits. Each attempt is limited to 45 seconds and the whole episode to five minutes. Serialize manual operations and show a stable manual-reconnect action after exhaustion. Re-read the token file for each eligible remote attempt; rotation alone never starts recovery.
+- Distinguish Reconnecting, confirmation required, Synchronizing history, history-only viewing, and manual reconnect required. Before clearing active owner state, freeze the old draft's text, attachment references, skill, and next-turn model/reasoning/speed/personality settings in isolated Extension memory. Keep it unchanged across retries and only while the VS surface lives.
+- Initialize the new connection, refresh the current owner's thread list, and require target review plus current-owner conversation selection before explicit Restore or Discard. Restore copies into the composer only; Send is separate. Revalidate attachment mapping/physical boundaries and model/skill/settings catalogs. Never carry approvals, caches, credentials, pending server requests, or secret proofs into the new owner. Add no disk persistence.
 
-- Reconnect transport, run initialization again, and resume the selected conversation.
-- Restore transcript through explicit history reads. Use pagination where supported and do not materialize unbounded history at once.
-- Buffer notifications received during history synchronization and merge history/notifications by thread, turn, and item ID.
-- Treat completed item data as authoritative over earlier deltas while preserving stable display order.
-- Page `thread/attachment/list` to rebuild stored thread attachments without resuming the thread. Merge pages and `thread/attachment/updated` notifications by attachment identity and retain MIME, payload, and mapping status as bounded untrusted data.
+### Read-only history and attachment reconciliation
 
-### Uncertain mutations and multi-client ownership
+- Read thread/read with includeTurns=false, the latest 50 turn summaries using thread/turns/list with sortDirection=desc and itemsView=summary, and the latest 100 thread items using thread/items/list with sortDirection=desc. Load older pages and per-turn detail explicitly with returned string cursors. The 0.159.1 structured exclusive item anchor requires turnId and a known item boundary; the 0.155.1 regression path uses strings.
+- Merge pages and buffered notifications by owner, connection generation, thread, turn, and item IDs. Completed item data takes precedence over deltas; duplicates and late deltas cannot roll display back. Keep a moving window of at most 1,000 items/16 MiB displayed text. Cap notifications at 1,024 events/8 MiB; overflow visibly fails synchronization and offers explicit read-only resynchronization.
+- Keep viewing separate from Join/Resume. Only an explicit action calls thread/resume with excludeTurns=true. An active conversation is possibly in use; the contract does not prove another client's ownership. A resume failure preserves fetched history and the isolated draft; show a sanitized reason and explicit action.
+- Page thread/attachment/list with limit=50 until nextCursor is null. Validate a maximum of 100 active records/thread, 100/page, 64 KiB serialized payload/record, and 256 UTF-8 bytes each for attachmentType and identityKey. #153 validates payloads and produces bounded basic metadata; #155 owns rich interpretation, preview, add/remove, and file actions. Unknown or invalid formats show an unavailable reason without enabling an action. There is no universal protocol MIME field.
+- Merge attachment membership by (threadId, attachmentType, identityKey) and attachment ID. Created notifications contain no payload and trigger a bounded list refresh; deleted-ID tombstones prevent stale-page resurrection, while a later new ID can recreate the identity. Refresh after an explicit non-ephemeral fork. Ignore retired owners and generations.
+- Added the four read methods and attachment notification to the contract manifest and read-only overload allowlist. The existing three-retry/four-send policy remains separate from connection recovery; resume and mutations are not overload-retryable.
 
-- Never automatically resend a message, approval answer, MCP response, shell command, or other mutation if delivery is uncertain.
-- Treat `thread/attachment/add` and `thread/attachment/remove` as explicit mutations. Never replay them automatically after disconnect, and preserve an uncertain result for user review.
-- Present uncertain input in a reviewable state so the user can explicitly retry it.
-- If another client currently owns the conversation, offer history-only viewing, a reason, and explicit retry.
-- Drop all events from an older generation after a new generation becomes active.
+### Uncertain operations and verification
+
+- Record mutations locally at the dispatch boundary. NotSent requires proof that dispatch never began; a lost response after possible dispatch remains OutcomeUnknown. History absence or matching text/time proves nothing about the outcome. A definitive response can resolve the recorded outcome; a pre-correlated server item ID confirms acceptance only, not all side effects.
+- Automatically replay zero messages, approvals, MCP submissions, shell commands, file mutations, or attachment changes. Keep uncertain content reviewable and require Copy/Edit/revalidation followed by a separate new Send action. Local operation IDs are not wire idempotency fields; expired request IDs and secret proofs are never reused.
+- Recovery exclusions, five-attempt exhaustion, stale generations, draft Restore/Discard, history bounds, attachment pagination, and mutation non-replay are covered by Core/UI tests. Both solution configurations build with zero warnings; pinned 0.159.1/0.155.1 contracts and the Release VSIX passed inspection. Experimental Instance screenshots remain the outstanding visual acceptance evidence because Visual Studio is unavailable in the implementation environment; see [implementation.md](implementation.md).
 
 ## Phase 5 — Questions, permission scopes, and MCP interaction
 
@@ -170,7 +172,7 @@ Tracking: [#154](https://github.com/kkamegawa/vsextensionforcodex/issues/154)
 
 ### Worker contract and one-response lifecycle
 
-- Raise the Worker contract from v16 (which carries the remote connection options) and use distinct types for questions, permission requests, MCP input, user verification, and stored attachment state.
+- Starting from the Worker contract v19 delivered by Issue #153, evolve the contract for questions, permission requests, MCP input, user verification, and stored attachment state. Do not use the historical v15/v16 baselines for this future phase.
 - Use a common pending-request registry keyed by connection generation and request ID.
 - Guarantee at most one response across answer, cancel, timeout, disconnect, and `serverRequest/resolved` races.
 
@@ -238,10 +240,10 @@ Tracking: [#155](https://github.com/kkamegawa/vsextensionforcodex/issues/155)
 
 ### Stored thread attachments
 
-- Use `thread/attachment/list` with cursor pagination and the server limits to show saved attachments without resuming the thread.
-- Add and remove attachments only from explicit user actions through `thread/attachment/add` and `thread/attachment/remove`; merge `thread/attachment/updated` notifications without duplicate rows.
-- Validate supported MIME types, payload/size bounds, and local/server path mapping before enabling preview, open, add, or remove actions. An unmappable or unsupported attachment remains non-openable with a visible reason.
-- Preserve idempotent duplicate-add and absent-remove behavior, and rebuild attachment state after reconnect, history recovery, or a non-ephemeral fork.
+- Issue #153 reads bounded basic attachment metadata through `thread/attachment/list`; it does not restore MIME types or payloads.
+- Issue #155 adds typed attachment actions: explicit user-driven add/remove, MIME and payload validation, preview/open/reveal, path mapping, and merge of `thread/attachment/updated` notifications.
+- Validate supported MIME types, payload/size bounds, and local/server path mapping before enabling typed actions. An unmappable or unsupported attachment remains non-openable with a visible reason.
+- Preserve idempotent duplicate-add and absent-remove behavior in Issue #155, and rebuild only the supported metadata after reconnect or history recovery.
 
 ## Phase 7 — Integrated validation and release readiness
 
@@ -261,7 +263,7 @@ Tracking: [#156](https://github.com/kkamegawa/vsextensionforcodex/issues/156)
 - Cover Windows/POSIX roots, mixed separators, case, sibling-prefix escape, traversal, symlink/junction escape, unmappable attachments, and mapped file actions.
 - Verify multiple endpoints, accounts, roots, and Visual Studio instances cannot mix any cached/session state.
 - Switch authentication principals on the same endpoint and verify the previous owner's remote session, pending requests, WebSocket state, model catalog, caches, and late events cannot be reused.
-- Cover stored attachment page boundaries and limits, duplicate add, absent remove, MIME rejection, mapped/unmapped paths, notification merging, disconnect uncertainty, recovery reconstruction, and fork copy behavior.
+- Cover basic attachment metadata page/record limits, notification identity merging, disconnect uncertainty, and recovery reconstruction. Issue #155 separately covers duplicate add, absent remove, MIME/payload rejection, mapped/unmapped paths, typed actions, and fork copy behavior.
 
 ### Interaction and secret protection
 
@@ -284,7 +286,7 @@ Tracking: [#156](https://github.com/kkamegawa/vsextensionforcodex/issues/156)
 
 - Supported messages use exact method/type contracts; unsupported requests receive a protocol-appropriate rejection.
 - A response or notification from a stale connection cannot revive a completed turn or mutate current state.
-- Secure remote connection, root mapping, authentication-principal cache/state partitioning, reconnect, paged history, and stored attachment recovery work without replaying uncertain mutations.
+- Secure remote connection, root mapping, authentication-principal cache/state partitioning, transient reconnect, paged history, and bounded basic attachment metadata recovery work without replaying uncertain mutations.
 - Partial permission approval, asynchronous questions, resolved races, supported MCP forms, supported local native verification, browser flow, MCP reauthentication guidance, and safe secret handling work end to end.
 - Shell execution is explicit, bounded, connection-labelled, and governed by the existing approval policy.
 - Core/UI tests, zero-warning Debug and Release builds, VSIX checks, and Experimental Instance visual/accessibility checks pass.

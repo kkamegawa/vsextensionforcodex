@@ -2,6 +2,19 @@
 
 `plan.md` のフェーズ分割に対応する詳細タスク。各タスクは独立してレビュー可能な小さなスライスを意図する。
 
+## 2026-10-04: Issue #153 recovery design reconciliation ([Issue #153](https://github.com/kkamegawa/vsextensionforcodex/issues/153))
+
+Approved plan: [English design](connection-history-recovery-design.md) / [Japanese design](connection-history-recovery-design_ja.md). Publication: [English Wiki](https://github.com/kkamegawa/vsextensionforcodex/wiki/connection-history-recovery) / [Japanese Wiki](https://github.com/kkamegawa/vsextensionforcodex/wiki/connection-history-recovery_ja).
+
+- [x] Compare implementation baseline `517d991`, Issue #153, the pinned 0.159.1 contract, and completed dependencies #150/#151/#152; record the accepted scope without changing runtime behavior.
+- [x] Define transient-only, single-flight recovery with five attempts; quarantine the previous owner's draft until explicit review and restoration; separate read-only history from explicit resume.
+- [x] Define bounded history/notification reconciliation, complete attachment pagination and identity-only notifications, and uncertain operations with zero automatic replay. Keep rich attachment operations in #155.
+- [x] Prepare the English/Japanese detailed design, existing design/ADR amendments, Issue body, and bilingual Wiki/Home changes under the user-approved plan.
+- [x] Publish and read back the corrected Issue and bilingual Wiki (Wiki commit `ca79534`). Verify the Issue body matches, all 10 published documents match committed bytes, all 34 public Home Wiki links resolve, and routes/dates, relative document links, UTF-8 BOM/CRLF, and `git diff --check` pass.
+- [x] Implement Worker contract v19, bounded transient recovery, isolated draft review/restore/discard, explicit history selection and Join, paged history/attachment metadata, generation-aware notification merging, and unknown-outcome tracking with zero automatic replay.
+- [x] Verify Release Core tests (343 passed / 5 skipped) and UI tests (335 passed / 1 skipped); Debug and Release solution builds (zero warnings/errors); the 0.159.1 and 0.155.1 stable schema-cache, method-surface, and schema-difference contracts; and Release VSIX DLL hashes, embedded XAML, identity, publisher, and Preview flag.
+- [ ] Verify recovery, history, draft, and attachment presentation in Experimental Instance screenshots. Visual Studio discovery in this environment found only SQL Server Management Studio, so the instance could not be launched.
+
 ## 2026-10-04: Issue #152 reconciliation and follow-up ([Issue #152](https://github.com/kkamegawa/vsextensionforcodex/issues/152))
 
 Plan: [English Wiki](https://github.com/kkamegawa/vsextensionforcodex/wiki/path-state-isolation) / [Japanese Wiki](https://github.com/kkamegawa/vsextensionforcodex/wiki/path-state-isolation_ja). Evidence: [verification record](path-state-isolation-verification.md).

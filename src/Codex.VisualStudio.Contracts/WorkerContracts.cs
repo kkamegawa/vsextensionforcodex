@@ -5,7 +5,37 @@ namespace Codex.VisualStudio.Contracts;
 
 public static class ContractVersions
 {
-    public const int Current = 18;
+    public const int Current = 19;
+}
+
+public enum WorkerRecoveryFailureKind
+{
+    None,
+    WorkerProcessExit,
+    PipeClosed,
+    TransportClosed,
+    PeerUnresponsive,
+    ServerUnavailable,
+    AuthenticationRejected,
+    TlsRejected,
+    ProfileChanged,
+    RootChanged,
+    OwnerChanged,
+    ConfigurationChanged,
+    Cancelled,
+    Unknown,
+}
+
+public enum ThreadAttachmentOperation
+{
+    Created,
+    Deleted,
+}
+
+public enum ThreadItemCursorKind
+{
+    Opaque,
+    ExclusiveItem,
 }
 
 // JSON-RPC error codes the Worker uses for failures the Extension presents specifically. They
@@ -18,6 +48,16 @@ public static class WorkerErrorCodes
     // A connection operation was refused before it stopped, read, or sent anything. The error
     // data carries one ConnectionOperationRejectionReason value.
     public const int ConnectionOperationRejected = -32051;
+
+    // The selected skill identity failed local pre-dispatch validation. No turn/start was sent.
+    public const int SkillRejected = -32052;
+
+    // An app-server returned an error after the Worker dispatched a mutation. The outcome may be
+    // unknown to the client and must not be treated as a local pre-dispatch rejection.
+    public const int UpstreamOperationFailed = -32053;
+
+    // Local or preflight validation rejected a turn before the Worker sent turn/start.
+    public const int PreDispatchRejected = -32054;
 }
 
 public enum WorkerConnectionState
@@ -188,6 +228,9 @@ public sealed class WorkerStatus
     // local process; a remote target never has one.
     [DataMember]
     public ConnectionTargetSnapshot? Target { get; set; }
+
+    [DataMember]
+    public WorkerRecoveryFailureKind RecoveryFailureKind { get; set; }
 }
 
 /// <summary>Generation-stamped Worker callback payload; consumers recheck ownership before applying it.</summary>
@@ -214,6 +257,8 @@ public sealed class StartThreadRequest : OwnerScopedRequest
 public sealed class ResumeThreadRequest : OwnerScopedRequest
 {
     public string ThreadId { get; set; } = string.Empty;
+
+    public bool UserConfirmed { get; set; }
 }
 
 public sealed class ThreadGoalRequest : OwnerScopedRequest
@@ -228,6 +273,51 @@ public sealed class StartAccountLoginRequest : OwnerScopedRequest
 public sealed class ListThreadsRequest : OwnerScopedRequest
 {
     public string? Cursor { get; set; }
+}
+
+public sealed class ReadThreadRequest : OwnerScopedRequest
+{
+    public string ThreadId { get; set; } = string.Empty;
+}
+
+public sealed class ListThreadTurnsRequest : OwnerScopedRequest
+{
+    public string ThreadId { get; set; } = string.Empty;
+
+    public string? Cursor { get; set; }
+
+    public int Limit { get; set; } = 50;
+}
+
+public sealed class ThreadItemCursor
+{
+    public ThreadItemCursorKind Kind { get; set; }
+
+    public string? Value { get; set; }
+
+    public string? TurnId { get; set; }
+
+    public string? ItemId { get; set; }
+}
+
+public sealed class ListThreadItemsRequest : OwnerScopedRequest
+{
+    public string ThreadId { get; set; } = string.Empty;
+
+    public string? TurnId { get; set; }
+
+    public ThreadItemCursor? Cursor { get; set; }
+
+    public int Limit { get; set; } = 100;
+}
+
+public sealed class ListThreadAttachmentsRequest : OwnerScopedRequest
+{
+    public string ThreadId { get; set; } = string.Empty;
+
+    public string? Cursor { get; set; }
+
+    public int Limit { get; set; } = 50;
 }
 
 public sealed class ListModelsRequest : OwnerScopedRequest
@@ -300,11 +390,143 @@ public sealed class ThreadSummary
     public string? EffectiveServiceTier { get; set; }
 }
 
-public sealed class ThreadPage
+[DataContract]
+public sealed class ThreadPage : WorkerGenerationResult
 {
+    [DataMember]
     public IReadOnlyList<ThreadSummary> Threads { get; set; } = Array.Empty<ThreadSummary>();
 
+    [DataMember]
     public string? NextCursor { get; set; }
+}
+
+[DataContract]
+public abstract class WorkerGenerationResult
+{
+    [DataMember]
+    public string? StatePartitionFingerprint { get; set; }
+
+    [DataMember]
+    public long OwnerGeneration { get; set; }
+
+    [DataMember]
+    public long ConnectionGeneration { get; set; }
+}
+
+[DataContract]
+public sealed class ThreadReadResult : WorkerGenerationResult
+{
+    [DataMember]
+    public ThreadSummary Thread { get; set; } = new();
+}
+
+[DataContract]
+public sealed class ThreadTurnSummary
+{
+    [DataMember]
+    public string Id { get; set; } = string.Empty;
+
+    [DataMember]
+    public string Status { get; set; } = string.Empty;
+
+    [DataMember]
+    public long? StartedAt { get; set; }
+
+    [DataMember]
+    public long? CompletedAt { get; set; }
+}
+
+[DataContract]
+public sealed class ThreadTurnsPage : WorkerGenerationResult
+{
+    [DataMember]
+    public IReadOnlyList<ThreadTurnSummary> Turns { get; set; } = Array.Empty<ThreadTurnSummary>();
+
+    [DataMember]
+    public string? NextCursor { get; set; }
+}
+
+[DataContract]
+public sealed class ThreadHistoryItem
+{
+    [DataMember]
+    public string Id { get; set; } = string.Empty;
+
+    [DataMember]
+    public string TurnId { get; set; } = string.Empty;
+
+    [DataMember]
+    public string Type { get; set; } = string.Empty;
+
+    [DataMember]
+    public string? Text { get; set; }
+
+    [DataMember]
+    public long? StartedAtMs { get; set; }
+
+    [DataMember]
+    public long? CompletedAtMs { get; set; }
+}
+
+[DataContract]
+public sealed class ThreadItemsPage : WorkerGenerationResult
+{
+    [DataMember]
+    public IReadOnlyList<ThreadHistoryItem> Items { get; set; } = Array.Empty<ThreadHistoryItem>();
+
+    [DataMember]
+    public string? NextCursor { get; set; }
+}
+
+[DataContract]
+public sealed class ThreadAttachmentMetadata
+{
+    [DataMember]
+    public string Id { get; set; } = string.Empty;
+
+    [DataMember]
+    public string AttachmentType { get; set; } = string.Empty;
+
+    [DataMember]
+    public string IdentityKey { get; set; } = string.Empty;
+
+    [DataMember]
+    public long CreatedAt { get; set; }
+
+    [DataMember]
+    public string? UnavailableReason { get; set; }
+}
+
+[DataContract]
+public sealed class ThreadAttachmentsPage : WorkerGenerationResult
+{
+    [DataMember]
+    public IReadOnlyList<ThreadAttachmentMetadata> Attachments { get; set; } = Array.Empty<ThreadAttachmentMetadata>();
+
+    [DataMember]
+    public string? NextCursor { get; set; }
+
+    [DataMember]
+    public int RejectedEntryCount { get; set; }
+}
+
+[DataContract]
+public sealed class ThreadAttachmentUpdatedEvent
+{
+    [DataMember]
+    public string ThreadId { get; set; } = string.Empty;
+
+    [DataMember]
+    public string AttachmentId { get; set; } = string.Empty;
+
+    [DataMember]
+    public string AttachmentType { get; set; } = string.Empty;
+
+    [DataMember]
+    public string IdentityKey { get; set; } = string.Empty;
+
+    [DataMember]
+    public ThreadAttachmentOperation Operation { get; set; }
 }
 
 public sealed class ModelInfo
@@ -940,6 +1162,9 @@ public interface ICodexWorkerObserver
 
     [JsonRpcMethod("observer/skillsChanged")]
     Task OnSkillsChangedAsync(WorkerNotification<SkillsChangedEvent> notification, CancellationToken cancellationToken);
+
+    [JsonRpcMethod("observer/threadAttachmentUpdated")]
+    Task OnThreadAttachmentUpdatedAsync(WorkerNotification<ThreadAttachmentUpdatedEvent> notification, CancellationToken cancellationToken);
 }
 
 public interface ICodexWorkerClient
@@ -979,6 +1204,18 @@ public interface ICodexWorkerClient
 
     [JsonRpcMethod("worker/thread/list")]
     Task<ThreadPage> ListThreadsAsync(ListThreadsRequest request, CancellationToken cancellationToken);
+
+    [JsonRpcMethod("worker/thread/read")]
+    Task<ThreadReadResult> ReadThreadAsync(ReadThreadRequest request, CancellationToken cancellationToken);
+
+    [JsonRpcMethod("worker/thread/turns/list")]
+    Task<ThreadTurnsPage> ListThreadTurnsAsync(ListThreadTurnsRequest request, CancellationToken cancellationToken);
+
+    [JsonRpcMethod("worker/thread/items/list")]
+    Task<ThreadItemsPage> ListThreadItemsAsync(ListThreadItemsRequest request, CancellationToken cancellationToken);
+
+    [JsonRpcMethod("worker/thread/attachments/list")]
+    Task<ThreadAttachmentsPage> ListThreadAttachmentsAsync(ListThreadAttachmentsRequest request, CancellationToken cancellationToken);
 
     [JsonRpcMethod("worker/models/list")]
     Task<ListModelsResult> ListModelsAsync(ListModelsRequest request, CancellationToken cancellationToken);

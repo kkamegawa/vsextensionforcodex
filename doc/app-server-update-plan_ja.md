@@ -93,7 +93,7 @@ Visual Studio 拡張機能の既存 C#／`codex app-server` 連携を CLI 0.159.
 
 - endpoint 専用 `RemoteEndpointPolicy` を Contracts（`netstandard2.0`）に置き、Extension・Worker・Protocol が使う。remote `wss` と厳密に定義した loopback `ws` を許可し、URI 認証情報・query・fragment・未指定 bind address を拒否する。
 - Save はメタデータと token-file path の要件を検証する。Worker だけが handshake 直前に、ファイルの存在・読み取り可否・encoding・上限付き内容・bearer 形式を検査する。
-- 明示的な接続・再接続でローカルトークンファイルを再読込する。実値の lease 型秘匿、既定 TLS 検証、redirect なし、WebSocket と HTTP 診断で共通の proxy 解決方針を使う。
+- 明示的な接続・再接続および #153 coordinator が開始した各 remote 試行でローカルトークンファイルを再読込する。token rotation だけでは自動復旧を開始しない。実値の lease 型秘匿、既定 TLS 検証、redirect なし、WebSocket と HTTP 診断で共通の proxy 解決方針を使う。
 - local restart は子プロセスを所有し、remote reconnect は socket だけを所有する。remote への `worker/restart` は停止前に型付き接続操作拒否を返す。
 - 再接続は適用済みの名前で最新保存 profile を読み、有効・同一メタデータ・期待世代を要求する。変更・無効化・削除された profile は明示的な適用・接続先選択を必要とする。同じ token file の内容更新だけではメタデータは変わらない。
 - 同一 instance の設定変更と再接続 snapshot 検証・送信を直列化し、Worker 遷移ゲートでも再検証する。認証主体・cache の永続分離と instance 間設定 transaction は Issue #152 が追跡する。
@@ -101,7 +101,7 @@ Visual Studio 拡張機能の既存 C#／`codex app-server` 連携を CLI 0.159.
 ### 診断・死活検知・再試行
 
 - `/healthz`・`/readyz` GET は合計 5 秒、認証・Origin なし、redirect・本文表示なし、独立した型付き結果とする。authority root の診断範囲を表示し、path routing 先 App Server は root probe では未確認とする。health で RPC readiness・機能可否を判断しない。
-- .NET 8 を維持する。30 秒の keepalive interval を相手の応答証拠とせず、世代別 idle RPC watchdog の 10 秒 probe 2 回が無通信で timeout したら half-open 接続を退役させる。自動再接続・変更要求再送は行わない。probe 中に妥当な inbound request・response・notification があれば、30 秒の無通信監視に戻る。
+- .NET 8 を維持する。30 秒の keepalive interval は相手の応答証拠ではありません。世代別 idle RPC watchdog は無通信 probe 2回で half-open socket を閉じます。watchdog は検知と close だけを行い、retry は所有しません。独立した #153 Extension coordinator は対象となる一時切断通知を再試行できます。どちらも変更操作を再送しません。probe 中に妥当な inbound request・response・notification があれば、30 秒の無通信監視に戻ります。
 - remote 起動全体は 45 秒。token 読込最大 5 秒、handshake・initialize・起動時 account read は各最大 15 秒とし、すべて残り時間で制限する。
 - retry 棚卸しは現在の 8 メソッド。`account/read` は明示的 `refreshToken=false`、`skills/list` は明示的 `forceReload=false` を必要とする。強制 skill refresh は cache 消去・再走査の追加処理を抑えるため 1 回とし、将来の history read は別途レビューして許可リストへ追加する。
 - 完了した `-32001` だけを最大再試行 3 回・送信 4 回まで扱い、基準待機 250/500/1000 ms と ±20% jitter を使う。単一 monotonic timeout に送信・待機を含め、世代退役で保留再試行をキャンセルする。
@@ -137,32 +137,34 @@ Visual Studio 拡張機能の既存 C#／`codex app-server` 連携を CLI 0.159.
 - 有効な接続世代と送信結果を、取得時の認証主体に結び付ける。アカウント切替、logout、所有主体変更時は、旧リモートセッションを閉じるか無効化し、未完了応答、WebSocket キャッシュ、モデルカタログ、通知を破棄する。
 - リモート sandbox の実施をリモートサーバーの責務として扱う。
 
-## Phase 4 — 再接続と履歴復元
+## Phase 4 — 再接続と履歴復旧
 
-トラッキング: [#153](https://github.com/kkamegawa/vsextensionforcodex/issues/153)
+追跡: [#153](https://github.com/kkamegawa/vsextensionforcodex/issues/153)
 
-### 復旧状態と下書き保持
+詳細設計: [English](connection-history-recovery-design.md) / [日本語](connection-history-recovery-design_ja.md)。Worker contract v19 で実装済みです。検証結果は [implementation.md](implementation.md) に記録しています。
 
-- 復旧処理を直列化し、「再接続中」と「履歴同期中」を別の状態として表示する。
-- 自動復旧は最大5回とし、その後は手動再接続を表示する。
-- Visual Studio の画面が存続する間、入力本文、添付、選択中スキル、次ターンのモデル／推論量／速度／personality 設定を保持する。
-- この Phase では下書きの新しいディスク永続化を追加しない。
+### 接続回復と隔離した下書き
 
-### 再初期化と履歴再構築
+- Extension が単一の復旧管理を所有し、Worker 終了をまたいで1つの回復処理を行います。切断・終了した Bridge は、RPC proxy が non-null の場合も破棄して再作成します。各 Worker の接続試行には既存の遷移ゲートを使い、通知 callback は切断をキューに入れて戻り、回復を await しません。
+- 自動回復は一時的な Worker／子プロセス終了、通信断、応答停止、予期しないサーバー閉鎖だけを対象とします。認証、TLS／証明書、profile／設定／ルート、既知の所有者変更、キャンセルで自動試行を終了します。#152 の所有者自身による sign-in／sign-out 後の接続処理は別に維持します。Remote は socket を再接続し、外部サーバーは外部管理のままとします。
+- 試行は最大5回とし、各試行前の待機を順に0・1・2・4・8秒、0秒以外は ±20% の jitter とします。1試行45秒、全体5分を上限とし、手動操作との競合を直列化します。上限後は安定した手動再接続操作を示します。Remote の各試行で token file を再読込しますが、内容の更新だけでは回復を開始しません。
+- Reconnecting、復元確認待ち、Synchronizing history、履歴閲覧のみ、手動再接続待ちを区別します。有効な所有者状態を消去する前に、旧下書きの本文、添付参照、skill、次ターンの model／reasoning／speed／personality 設定を Extension のメモリに隔離します。試行中に上書きせず、VS 画面の寿命の間だけ保持します。
+- 新接続を initialize し、現在の所有者の thread 一覧を再取得します。接続先の確認と現在の所有者の会話選択の後、明示的な復元／破棄を提供します。復元は composer へのコピーだけとし、送信は別操作です。添付の対応付け・物理境界と model／skill／設定の catalog を再検証します。承認、cache、資格情報、保留 server request、秘密の proof は新所有者に移しません。ディスク保存は追加しません。
 
-- 転送を再接続し、初期化を再実行して、選択中会話を再開する。
-- 明示的な履歴読み取りで会話表示を復元する。対応する場合はページ取得を使用し、無制限の履歴を一度に実体化しない。
-- 履歴同期中に届いた通知を保持し、履歴と通知を thread、turn、item ID で統合する。
-- 完了 item の内容を以前の delta より確定的な情報として扱い、表示順序を安定させる。
-- `thread/attachment/list` をページ取得して、スレッドを再開せずに保存済み添付を再構築する。ページと `thread/attachment/updated` 通知を添付 identity で統合し、MIME、payload、対応付け状態を上限付きの信頼しない入力として保持する。
+### 読み取り専用の履歴と添付の統合
 
-### 配送不明な変更操作と複数クライアント所有
+- thread/read は includeTurns=false、thread/turns/list は sortDirection=desc・itemsView=summary で最新50 turns、thread/items/list は sortDirection=desc で最新100 items を取得します。過去ページと turn 内の詳細は明示操作で取得し、返された文字列 cursor を使います。0.159.1 の構造化 exclusive item anchor は turnId と既知の item 境界を必要とし、0.155.1 の回帰経路は文字列を使います。
+- ページと保留通知は所有者、接続世代、thread／turn／item ID で統合します。完了 item を delta より優先し、重複や遅延 delta で表示を戻しません。表示は最大1,000 items・本文16 MiB の移動窓とし、通知は最大1,024件・8 MiB とします。超過時は同期失敗を明示し、読み取り専用の再取得操作を提供します。
+- 閲覧と再参加を分け、明示操作だけが thread/resume を excludeTurns=true で呼びます。稼働中の会話は「使用中の可能性」とし、他クライアントの所有と断定しません。resume が失敗しても取得済み履歴と隔離下書きを保持し、安全に表示できる理由と明示操作を示します。
+- thread/attachment/list は limit=50 で nextCursor が null になるまで取得します。1会話最大100件、1ページ最大100件、1件の serialized payload 最大64 KiB、attachmentType と identityKey は各256 UTF-8 bytes を検証します。#153 は payload の検証と上限付きの基本 metadata、#155 は詳細な解釈、preview、追加／削除、ファイル操作を担当します。未知・不正な形式は理由を示して操作を無効にします。protocol に共通 MIME field はありません。
+- 添付は (threadId, attachmentType, identityKey) と attachment ID で統合します。作成通知に payload はなく、上限付きの一覧再取得を行います。削除 ID の tombstone で古いページによる復活を防ぎ、同じ identity の新 ID は再作成として扱います。明示的な非一時 fork 後にも再取得し、旧所有者・旧世代の通知は拒否します。
+- 4つの read method と添付通知を契約 manifest と read-only overload allowlist に追加しました。既存の3回再試行／合計4送信は接続回復と分離し、resume と変更操作は overload retry の対象外です。
 
-- 配送結果が不明なメッセージ、承認回答、MCP 応答、shell コマンド、その他の変更操作を自動再送しない。
-- `thread/attachment/add` と `thread/attachment/remove` を明示的な変更操作として扱う。切断後に自動再送せず、結果不明状態をユーザーが確認できる形で保持する。
-- 配送不明な入力を確認可能な状態で表示し、ユーザーが明示的に再試行できるようにする。
-- 別のクライアントが会話を使用中の場合、履歴のみの表示、理由、明示的な再試行を提供する。
-- 新しい世代が有効になった後は、古い世代の全イベントを破棄する。
+### 結果不明の操作と検証
+
+- dispatch 境界で変更操作をローカルに記録します。NotSent は dispatch が始まっていない証明を必要とし、送信開始の可能性がある後の応答消失は OutcomeUnknown とします。履歴にないことや本文・時刻の一致では結果を確定しません。確定応答は記録した結果を確定でき、切断前に相関付けた server item ID は受理だけを示し、すべての副作用の完了は証明しません。
+- メッセージ、承認、MCP、shell、ファイル変更、添付変更を自動再送しません。不確定な内容を確認可能に保ち、コピー／編集／再検証の後、新しい送信を別の明示操作とします。ローカル操作 ID を wire の idempotency field にせず、期限切れ request ID と秘密の proof を再利用しません。
+- 回復対象の除外、5回失敗、旧世代、下書き復元／破棄、履歴上限、添付ページング、自動再送ゼロを Core／UI テストで確認しました。Debug／Release solution build は警告ゼロで、0.159.1／0.155.1 契約と Release VSIX 検査も成功しました。実装環境に Visual Studio がないため Experimental Instance の画面確認は未実施です。詳細は [implementation.md](implementation.md) を参照してください。
 
 ## Phase 5 — 質問・権限範囲・MCP 対話
 
@@ -170,7 +172,7 @@ Visual Studio 拡張機能の既存 C#／`codex app-server` 連携を CLI 0.159.
 
 ### Worker 契約と一回答ライフサイクル
 
-- Worker 契約を v16 (リモート接続オプションを含む) から更新し、質問、権限要求、MCP 入力、本人確認、保存済み添付状態を別の型で表す。
+- Issue #153 で導入した Worker contract v19 を基準に、質問、権限要求、MCP 入力、本人確認、保存済み添付状態を拡張する。この将来 Phase では過去の v15/v16 基準を使わない。
 - 接続世代と request ID をキーとする共通の未完了要求レジストリを使用する。
 - 回答、キャンセル、timeout、切断、`serverRequest/resolved` の競合があっても、応答を最大1回に保証する。
 

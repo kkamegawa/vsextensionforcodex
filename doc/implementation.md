@@ -51,6 +51,47 @@ Validation on 2026-10-03:
 - Release VSIX SHA-256: `9F35C339BC4A1566553D9BFDBD5AAC28299F8BAD8DD08B068214FB04F867F73A`.
 - Changed files use UTF-8 BOM/CRLF; `git diff --check` passed. Experimental Instance screenshots remain pending.
 
+## Issue #153: Connection and history recovery
+
+Issue [#153](https://github.com/kkamegawa/vsextensionforcodex/issues/153) is implemented against
+the accepted [recovery design](connection-history-recovery-design.md). Worker contract v19 adds
+owner- and generation-stamped thread, turn, item, and attachment metadata reads, plus attachment
+membership notifications. The Extension retries only transient Worker/transport/server loss in
+one bounded five-attempt episode. Authentication, certificate, profile, configuration, root, and
+owner changes stop automatic retries. Remote recovery reconnects only to the configured external
+server and never launches or restarts that server.
+
+After recovery, the Extension refreshes the current owner's thread list. Selecting a thread reads
+bounded history without joining it; a separate Join action calls `thread/resume(excludeTurns=true)`.
+The previous draft remains isolated in memory until explicit restore or discard after a current
+conversation is selected. Restore revalidates settings and attachment paths and only copies values
+into the composer. The user sends separately. Approval state, caches, secrets, and pending requests
+do not cross owner generations.
+
+History pages and live notifications merge by owner, connection, thread, turn, and item identity.
+Completed items take precedence over late deltas. The Extension caps history at 1,000 items and
+16 MiB of displayed text and caps buffered notifications at 1,024 entries and 8 MiB. Attachment
+recovery retains bounded metadata only and reports the 100-record ceiling or unavailable payloads.
+Messages and other mutations with uncertain delivery are marked for review and are never retried.
+
+Validation on 2026-10-04:
+
+- Release Core tests: 343 passed, 5 skipped; Release UI tests: 335 passed, 1 skipped. All skips
+  require unavailable symlink capability.
+- Follow-up review regressions cover thread-less errors, bounded previews and descending history,
+  page ordering/window eviction, new-thread cursor reset, live-event draining, dispatch-boundary
+  outcome classification, transcript byte accounting, disconnect outcome visibility, and shared
+  attachment pagination/thread deduplication.
+- Debug and Release solution builds completed with zero warnings and errors.
+- Pinned 0.159.1 and 0.155.1 schema-cache metadata, used-method surfaces, and stable schema-difference comparison passed.
+- The Release VSIX contains the exact Release Extension, Worker, Protocol, and both Contracts
+  assemblies. Embedded Chat tool-window XAML matches the source byte-for-byte. The manifest retains
+  publisher `kkamegawa`, the existing extension identity, and `Preview=true`.
+- Experimental Instance screenshots were not captured because Visual Studio is not installed in
+  this environment; `vswhere` found only SQL Server Management Studio. Automated UI tests and source
+  inspection do not substitute for visual acceptance.
+- Changed files use UTF-8 BOM/CRLF; `git diff --check` passed.
+
 ## Issue #150: App-server protocol contract and transport core
 
 Issue [#150](https://github.com/kkamegawa/vsextensionforcodex/issues/150) fixes the local stdio
