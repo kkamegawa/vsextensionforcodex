@@ -1,6 +1,6 @@
 lockfile_version: '1'
-generated_at: '2026-10-03T20:47:58.034734+00:00'
-apm_version: 0.32.0
+generated_at: '2026-10-04T07:51:15.206673+00:00'
+apm_version: 0.33.0
 dependencies:
 - repo_url: github/awesome-copilot
   name: awesome-copilot-api-architect
@@ -22,7 +22,7 @@ dependencies:
 - repo_url: tfsugjp/skills
   name: github-plan-wiki
   host: github.com
-  resolved_commit: 877ec783235bb68ea13f1f9f67ad34ed5f58c7a7
+  resolved_commit: dae0fcd265e76953176ff2820c618b85883f839a
   version: 0.1.1
   virtual_path: plugins/github-plan-wiki
   is_virtual: true
