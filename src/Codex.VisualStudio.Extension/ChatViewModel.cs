@@ -1,5 +1,6 @@
 ﻿using System.Collections.ObjectModel;
 using System.ComponentModel;
+using System.Collections.Specialized;
 using System.Globalization;
 using System.IO;
 using System.Runtime.CompilerServices;
@@ -23,7 +24,8 @@ namespace Codex.VisualStudio.Extension;
 [DataContract]
 public sealed class ChatViewModel : ObservableObject, IDisposable
 {
-    private readonly IWorkerBridge bridge;
+    private IWorkerBridge bridge;
+    private readonly Func<IWorkerBridge> bridgeFactory;
     private readonly OutputChannel? outputChannel;
     private readonly SafeMarkdownService markdown = new();
     private readonly CancellationTokenSource lifetime = new();
@@ -105,6 +107,36 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     private long minimumSkillsGeneration;
     private long skillSelectionSequence;
     private Dictionary<string, SkillInfo> skillSelections = new(StringComparer.Ordinal);
+    private readonly Dictionary<Guid, ChatItemViewModel> inFlightMutations = [];
+    private Action<WorkerRecoveryFailureKind>? bridgeConnectionLostHandler;
+    private CancellationTokenSource? recoveryCancellation;
+    private RecoveryDraftViewModel? quarantinedDraft;
+    private string recoveryStatusText = string.Empty;
+    private bool isRecovering;
+    private bool historyIsStale;
+    private bool isHistoryLoading;
+    private bool isThreadJoined;
+    private bool canLoadOlderHistory;
+    private string historyStatusText = string.Empty;
+    private string? threadTurnsCursor;
+    private ThreadItemCursor? threadItemsCursor;
+    private readonly HashSet<string> deletedAttachmentIds = new(StringComparer.Ordinal);
+    private readonly object attachmentRefreshGate = new();
+    private bool attachmentRefreshRunning;
+    private bool attachmentRefreshRequested;
+    private readonly HashSet<string> historyItemKeys = new(StringComparer.Ordinal);
+    private long historyBytes;
+    private int bufferedEventCount;
+    private long bufferedEventBytes;
+    private readonly Queue<WorkerNotification<ConversationEvent>> pendingHistoryEvents = new();
+    private const int MaximumVisibleHistoryItems = 1000;
+    private const int MaxAttachmentReconciliationPasses = 3;
+    private const long MaximumVisibleHistoryBytes = 16 * 1024 * 1024;
+    private const int MaximumBufferedHistoryEvents = 1024;
+    private const long MaximumBufferedHistoryBytes = 8 * 1024 * 1024;
+    private readonly ObservableCollection<ThreadAttachmentPresentationViewModel> threadAttachments = [];
+    private readonly ObservableCollection<ThreadTurnSummary> threadTurns = [];
+    private string threadAttachmentsStatusText = string.Empty;
 
     private sealed record UnifiedSlashSuggestionSnapshot(
         List<SlashCommandSuggestionDescriptor> Suggestions,
@@ -113,7 +145,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     private readonly record struct PendingReasoningOverride(string Effort, string? RestoreEffort);
 
     public ChatViewModel(OutputChannel? outputChannel = null, VisualStudioExtensibility? extensibility = null)
-        : this(new WorkerBridge(outputChannel), outputChannel, extensibility, autoConnect: true)
+        : this(new WorkerBridge(outputChannel), outputChannel, extensibility, autoConnect: true, bridgeFactory: () => new WorkerBridge(outputChannel))
     {
     }
 
@@ -127,9 +159,11 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         IProtectedDirectoryPolicy? protectedDirectoryPolicy = null,
         IExtensionSettingsStore? settingsStore = null,
         IExternalLinkOpener? externalLinkOpener = null,
-        Func<DateTimeOffset>? utcNow = null)
+        Func<DateTimeOffset>? utcNow = null,
+        Func<IWorkerBridge>? bridgeFactory = null)
     {
         this.bridge = bridge;
+        this.bridgeFactory = bridgeFactory ?? (() => new WorkerBridge(outputChannel));
         this.outputChannel = outputChannel;
         this.extensibility = extensibility;
         workspaceDirectoryResolver = new WorkspaceDirectoryResolver(extensibility);
@@ -146,22 +180,11 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         connectionHealth = new ConnectionHealthPresentationViewModel(markdown);
         connectedProfileName = remoteProfiles.AppliedProfileName;
         slashCommandParser = new SlashCommandParser(slashCommandCatalog);
-        bridge.StateChanged += OnStateChangedAsync;
-        bridge.AccountChanged += OnAccountChangedAsync;
-        bridge.ConversationEventReceived += OnConversationEventAsync;
-        bridge.ApprovalRequested += OnApprovalRequestedAsync;
-        bridge.ApprovalResolved += OnApprovalResolvedAsync;
-        bridge.UserInputRequested += OnUserInputRequestedAsync;
-        bridge.UserInputResolved += OnUserInputResolvedAsync;
-        bridge.ContextCompacted += OnContextCompactedAsync;
-        bridge.ReviewModeChanged += OnReviewModeChangedAsync;
-        bridge.ThreadGoalChanged += OnThreadGoalChangedAsync;
-        bridge.RateLimitsChanged += OnRateLimitsChangedAsync;
-        bridge.SkillsChanged += OnSkillsChangedAsync;
-        bridge.ApprovalAuditReceived += OnApprovalAuditReceivedAsync;
+        SubscribeBridge(bridge);
         // The welcome/empty state is driven by IsThreadEmpty; keep it in sync with every
         // mutation of Items (Add/Clear from any call site) via a single subscription.
-        Items.CollectionChanged += (_, _) => OnPropertyChanged(nameof(IsThreadEmpty));
+        Items.CollectionChanged += OnItemsCollectionChanged;
+        ThreadTurns.CollectionChanged += (_, _) => OnPropertyChanged(nameof(HistoryTurnSummaryText));
         PendingSkills.CollectionChanged += (_, _) =>
         {
             OnPropertyChanged(nameof(HasPendingSkill));
@@ -171,8 +194,12 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         RestartCommand = new AsyncCommand(RestartAsync, () => Status.State == WorkerConnectionState.Degraded);
         NewThreadCommand = new AsyncCommand(NewThreadAsync, () => Status.State == WorkerConnectionState.Ready);
         LoadMoreCommand = new AsyncCommand(LoadMoreAsync, () => initialized && nextCursor is not null);
+        LoadOlderHistoryCommand = new AsyncCommand(LoadOlderHistoryAsync, () => SelectedThread is not null && canLoadOlderHistory && !isHistoryLoading && !historyIsStale);
+        JoinThreadCommand = new AsyncCommand(JoinSelectedThreadAsync, () => SelectedThread is not null && !IsThreadJoined && !IsRecovering && Status.State == WorkerConnectionState.Ready);
+        RefreshHistoryCommand = new AsyncCommand(RefreshSelectedHistoryAsync, () => SelectedThread is not null && historyIsStale && !isHistoryLoading && Status.State == WorkerConnectionState.Ready);
+        RefreshAttachmentsCommand = new AsyncCommand(RefreshAttachmentsAsync, () => SelectedThread is not null && Status.State == WorkerConnectionState.Ready);
         SendCommand = new AsyncCommand(SendAsync, CanSend);
-        InterruptCommand = new AsyncCommand(InterruptAsync, () => Status.TurnId is not null);
+        InterruptCommand = new AsyncCommand(InterruptAsync, CanInterruptSelectedThread);
         AccountCommand = new AsyncCommand(ExecuteAccountActionAsync, CanExecuteAccountAction);
         ToggleHistoryCommand = new AsyncCommand(() =>
         {
@@ -223,6 +250,8 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         OpenUsageDashboardCommand = new AsyncCommand(() => OpenExternalLinkAsync(ExternalLinkTarget.UsageDashboard));
         OpenUsageHelpCommand = new AsyncCommand(() => OpenExternalLinkAsync(ExternalLinkTarget.UsageHelp));
         AttachCommand = new AsyncCommand(AttachAsync);
+        RestoreQuarantinedDraftCommand = new AsyncCommand(RestoreQuarantinedDraftAsync, CanRestoreQuarantinedDraft);
+        DiscardQuarantinedDraftCommand = new AsyncCommand(DiscardQuarantinedDraftAsync, () => QuarantinedDraft is not null);
         ConfirmApprovalModeCommand = new AsyncCommand(ConfirmApprovalModeAsync, () => HasApprovalModeConfirmation);
         CancelApprovalModeCommand = new AsyncCommand(CancelApprovalModeAsync, () => HasApprovalModeConfirmation);
         SlashCommands.Configure(OnSlashSuggestionAcceptedAsync, ExecuteSlashSubmissionAsync, OnSlashCommandClearedAsync);
@@ -414,6 +443,60 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     public string StatusStateText => Status.State.ToString();
 
     [DataMember]
+    public bool IsRecovering
+    {
+        get => isRecovering;
+        private set
+        {
+            if (SetProperty(ref isRecovering, value))
+            {
+                OnPropertyChanged(nameof(HasRecoveryStatus));
+                RaiseCommandStates();
+            }
+        }
+    }
+
+    [DataMember]
+    public string RecoveryStatusText
+    {
+        get => recoveryStatusText;
+        private set
+        {
+            if (SetProperty(ref recoveryStatusText, value))
+            {
+                OnPropertyChanged(nameof(HasRecoveryStatus));
+            }
+        }
+    }
+
+    [DataMember]
+    public bool HasRecoveryStatus => IsRecovering || !string.IsNullOrWhiteSpace(RecoveryStatusText);
+
+    [DataMember]
+    public RecoveryDraftViewModel? QuarantinedDraft
+    {
+        get => quarantinedDraft;
+        private set
+        {
+            if (SetProperty(ref quarantinedDraft, value))
+            {
+                OnPropertyChanged(nameof(HasQuarantinedDraft));
+                RestoreQuarantinedDraftCommand?.RaiseCanExecuteChanged();
+                DiscardQuarantinedDraftCommand?.RaiseCanExecuteChanged();
+            }
+        }
+    }
+
+    [DataMember]
+    public bool HasQuarantinedDraft => QuarantinedDraft is not null;
+
+    [DataMember]
+    public AsyncCommand RestoreQuarantinedDraftCommand { get; }
+
+    [DataMember]
+    public AsyncCommand DiscardQuarantinedDraftCommand { get; }
+
+    [DataMember]
     public string StatusVersionText
     {
         get
@@ -469,6 +552,11 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 if (!string.Equals(previousPartition, currentPartition, StringComparison.Ordinal)
                     || previousOwnerGeneration != currentOwnerGeneration)
                 {
+                    if (QuarantinedDraft is null && HasDraftContent())
+                    {
+                        QuarantinedDraft = CaptureRecoveryDraft();
+                    }
+
                     ClearOwnerScopedState();
                 }
 
@@ -536,6 +624,493 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             notification.StatePartitionFingerprint,
             notification.OwnerGeneration,
             notification.ConnectionGeneration);
+
+    private void SubscribeBridge(IWorkerBridge source)
+    {
+        bridgeConnectionLostHandler = failureKind =>
+        {
+            if (ReferenceEquals(source, bridge))
+            {
+                _ = HandleConnectionLostAsync(source, failureKind);
+            }
+        };
+        source.ConnectionLost += bridgeConnectionLostHandler;
+        source.StateChanged += OnStateChangedAsync;
+        source.AccountChanged += OnAccountChangedAsync;
+        source.ConversationEventReceived += OnConversationEventAsync;
+        source.ThreadAttachmentUpdated += OnThreadAttachmentUpdatedAsync;
+        source.ApprovalRequested += OnApprovalRequestedAsync;
+        source.ApprovalResolved += OnApprovalResolvedAsync;
+        source.UserInputRequested += OnUserInputRequestedAsync;
+        source.UserInputResolved += OnUserInputResolvedAsync;
+        source.ContextCompacted += OnContextCompactedAsync;
+        source.ReviewModeChanged += OnReviewModeChangedAsync;
+        source.ThreadGoalChanged += OnThreadGoalChangedAsync;
+        source.RateLimitsChanged += OnRateLimitsChangedAsync;
+        source.SkillsChanged += OnSkillsChangedAsync;
+        source.ApprovalAuditReceived += OnApprovalAuditReceivedAsync;
+    }
+
+    private void UnsubscribeBridge(IWorkerBridge source)
+    {
+        if (bridgeConnectionLostHandler is not null)
+        {
+            source.ConnectionLost -= bridgeConnectionLostHandler;
+            bridgeConnectionLostHandler = null;
+        }
+        source.StateChanged -= OnStateChangedAsync;
+        source.AccountChanged -= OnAccountChangedAsync;
+        source.ConversationEventReceived -= OnConversationEventAsync;
+        source.ThreadAttachmentUpdated -= OnThreadAttachmentUpdatedAsync;
+        source.ApprovalRequested -= OnApprovalRequestedAsync;
+        source.ApprovalResolved -= OnApprovalResolvedAsync;
+        source.UserInputRequested -= OnUserInputRequestedAsync;
+        source.UserInputResolved -= OnUserInputResolvedAsync;
+        source.ContextCompacted -= OnContextCompactedAsync;
+        source.ReviewModeChanged -= OnReviewModeChangedAsync;
+        source.ThreadGoalChanged -= OnThreadGoalChangedAsync;
+        source.RateLimitsChanged -= OnRateLimitsChangedAsync;
+        source.SkillsChanged -= OnSkillsChangedAsync;
+        source.ApprovalAuditReceived -= OnApprovalAuditReceivedAsync;
+    }
+
+    private async Task HandleConnectionLostAsync(IWorkerBridge source, WorkerRecoveryFailureKind failureKind)
+    {
+        if (!ConnectionRecoveryCoordinator.IsTransient(failureKind) || lifetime.IsCancellationRequested)
+        {
+            await OnUiAsync(() => RecoveryStatusText = GetRecoveryFailureText(failureKind)).ConfigureAwait(false);
+            return;
+        }
+
+        string? root = workingDirectory;
+        string? profileName = connectedProfileName;
+        string? fingerprint = profileName is null
+            ? null
+            : settings.RemoteProfiles.FirstOrDefault(profile => string.Equals(profile.Name, profileName, StringComparison.Ordinal))?.ComputeFingerprint();
+        bool experimentalApi = settings.ExperimentalApiEnabled;
+        bool started = false;
+        await OnUiAsync(() =>
+        {
+            if (!ReferenceEquals(source, bridge) || IsRecovering)
+            {
+                return;
+            }
+
+            if (QuarantinedDraft is null && HasDraftContent())
+            {
+                QuarantinedDraft = CaptureRecoveryDraft();
+            }
+
+            ChatItemViewModel[] uncertainOperations = inFlightMutations.Values
+                .Concat(Items.Where(static item => item.IsDeliveryUnknown))
+                .Distinct()
+                .ToArray();
+            foreach (ChatItemViewModel item in uncertainOperations)
+            {
+                item.MarkDeliveryUnknown();
+            }
+            inFlightMutations.Clear();
+
+            ClearOwnerScopedState();
+            if (uncertainOperations.Length > 0)
+            {
+                Items.Add(new ChatItemViewModel(
+                    "Status",
+                    $"{uncertainOperations.Length} unresolved operation(s) have an unknown delivery outcome. They were not retried.",
+                    ConversationEventKind.Error));
+            }
+            IsRecovering = true;
+            RecoveryStatusText = "Connection lost. Reconnecting and verifying the active target…";
+            recoveryCancellation?.Cancel();
+            recoveryCancellation?.Dispose();
+            recoveryCancellation = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
+            started = true;
+        }).ConfigureAwait(false);
+
+        if (!started)
+        {
+            return;
+        }
+
+        CancellationTokenSource? cancellation = recoveryCancellation;
+        if (cancellation is null || cancellation.IsCancellationRequested || root is null)
+        {
+            await FinishRecoveryAsync(new ConnectionRecoveryResult(ConnectionRecoveryOutcome.Stopped, 0, WorkerRecoveryFailureKind.RootChanged)).ConfigureAwait(false);
+            return;
+        }
+
+        ConnectionRecoveryResult result = await ConnectionRecoveryCoordinator.RunAsync(
+            async (_, token) => await RecoverAttemptAsync(root, profileName, fingerprint, experimentalApi, token).ConfigureAwait(false),
+            token => IsRecoveryTargetValidAsync(root, profileName, fingerprint, experimentalApi, token),
+            cancellation.Token).ConfigureAwait(false);
+        await FinishRecoveryAsync(result).ConfigureAwait(false);
+    }
+
+    private bool HasDraftContent()
+        => ComposerText.Length > 0 || HasPendingAttachments || HasPendingSkill
+            || nextPersonality is not null || nextCollaborationMode is not null || inFlightMutations.Count > 0
+            || Items.Any(static item => item.IsDeliveryUnknown);
+
+    private RecoveryDraftViewModel CaptureRecoveryDraft()
+    {
+        string[] attachmentPaths = PendingAttachments.Select(static attachment => attachment.FullPath).ToArray();
+        SkillInvocationInfo? skill = PendingSkills.FirstOrDefault()?.Invocation;
+        SkillInvocationInfo? skillCopy = skill is null ? null : new SkillInvocationInfo { Name = skill.Name, Scope = skill.Scope, Path = skill.Path };
+        bool uncertain = inFlightMutations.Count > 0 || Items.Any(static item => item.IsDeliveryUnknown);
+        return new RecoveryDraftViewModel(
+            ComposerText,
+            attachmentPaths.Select(static path => Path.GetFileName(path) ?? "Attachment").ToArray(),
+            attachmentPaths,
+            selectedModel,
+            selectedReasoningEffortId,
+            selectedServiceTierId,
+            nextPersonality,
+            nextCollaborationMode,
+            skillCopy,
+            uncertain,
+            RestoreQuarantinedDraftCommand,
+            DiscardQuarantinedDraftCommand,
+            markdown);
+    }
+
+    private async Task<WorkerStatus> RecoverAttemptAsync(
+        string root,
+        string? profileName,
+        string? fingerprint,
+        bool experimentalApi,
+        CancellationToken cancellationToken)
+    {
+        await profileOperationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (!IsRecoveryTargetValid(root, profileName, fingerprint, experimentalApi))
+            {
+                return new WorkerStatus { State = WorkerConnectionState.Degraded, RecoveryFailureKind = WorkerRecoveryFailureKind.ProfileChanged };
+            }
+
+            IWorkerBridge previous = bridge;
+            UnsubscribeBridge(previous);
+            bridge = bridgeFactory();
+            SubscribeBridge(bridge);
+            await previous.DisposeAsync().ConfigureAwait(false);
+
+            WorkerStatus result;
+            try
+            {
+                result = await bridge.ConnectAsync(root, experimentalApi, cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                ExtensionDiagnostics.Write("Transient Worker recovery attempt failed", ex);
+                return new WorkerStatus { State = WorkerConnectionState.Degraded, RecoveryFailureKind = WorkerRecoveryFailureKind.PeerUnresponsive };
+            }
+
+            await OnUiAsync(() =>
+            {
+                if (CanApplyStatusSnapshot(result))
+                {
+                    Status = result;
+                }
+            }).ConfigureAwait(false);
+            if (result.State != WorkerConnectionState.Ready)
+            {
+                return result;
+            }
+
+            workingDirectory = root;
+            return result;
+        }
+        finally
+        {
+            profileOperationGate.Release();
+        }
+    }
+
+    private async Task<bool> IsRecoveryTargetValidAsync(
+        string root,
+        string? profileName,
+        string? fingerprint,
+        bool experimentalApi,
+        CancellationToken cancellationToken)
+    {
+        await profileOperationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            return IsRecoveryTargetValid(root, profileName, fingerprint, experimentalApi);
+        }
+        finally
+        {
+            profileOperationGate.Release();
+        }
+    }
+
+    private bool IsRecoveryTargetValid(string root, string? profileName, string? fingerprint, bool experimentalApi)
+    {
+        if (!string.Equals(workingDirectory, root, StringComparison.OrdinalIgnoreCase)
+            || !string.Equals(remoteProfiles.AppliedProfileName, profileName, StringComparison.Ordinal)
+            || settings.ExperimentalApiEnabled != experimentalApi)
+        {
+            return false;
+        }
+
+        if (profileName is null)
+        {
+            return fingerprint is null;
+        }
+
+        RemoteConnectionProfile? applied = settings.RemoteProfiles.FirstOrDefault(profile =>
+            string.Equals(profile.Name, profileName, StringComparison.Ordinal));
+        return applied is not null
+            && string.Equals(applied.ComputeFingerprint(), fingerprint, StringComparison.Ordinal);
+    }
+
+    private async Task FinishRecoveryAsync(ConnectionRecoveryResult result)
+    {
+        if (result.Outcome == ConnectionRecoveryOutcome.Reconnected)
+        {
+            using var synchronizationDeadline = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
+            synchronizationDeadline.CancelAfter(TimeSpan.FromSeconds(45));
+            try
+            {
+                await SynchronizeRecoveredThreadListAsync(synchronizationDeadline.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (synchronizationDeadline.IsCancellationRequested)
+            {
+                await OnUiAsync(() => MarkThreadListStale("Connection restored, but thread synchronization timed out. Refresh the thread list manually.")).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                ExtensionDiagnostics.Write("Recovered connection state synchronization failed", ex);
+                await OnUiAsync(() => MarkThreadListStale("Connection restored, but thread history could not be synchronized. Refresh manually.")).ConfigureAwait(false);
+            }
+        }
+
+        await OnUiAsync(() =>
+        {
+            IsRecovering = false;
+            RecoveryStatusText = result.Outcome switch
+            {
+                ConnectionRecoveryOutcome.Reconnected => "Connection restored. Choose a conversation to inspect its history, then Join explicitly before sending.",
+                ConnectionRecoveryOutcome.Cancelled => string.Empty,
+                _ => GetRecoveryFailureText(result.LastFailureKind),
+            };
+            RaiseCommandStates();
+        }).ConfigureAwait(false);
+    }
+
+    private async Task SynchronizeRecoveredThreadListAsync(CancellationToken cancellationToken)
+    {
+        OwnerSnapshot owner = CaptureOwnerSnapshot();
+        ThreadPage page = await bridge.ListThreadsAsync(
+            StampOwner(new ListThreadsRequest(), owner), cancellationToken).ConfigureAwait(false);
+        await OnUiAsync(() =>
+        {
+            if (!IsCurrentOwner(owner) || !MatchesOwner(page, owner))
+            {
+                return;
+            }
+
+            Threads.Clear();
+            foreach (ThreadSummary thread in page.Threads)
+            {
+                Threads.Add(thread);
+            }
+
+            nextCursor = page.NextCursor;
+            initialized = true;
+            HistoryStatusText = "Conversation list synchronized. Select one to inspect read-only history.";
+            RaiseCommandStates();
+        }).ConfigureAwait(false);
+    }
+
+    private void MarkThreadListStale(string message)
+    {
+        initialized = false;
+        RecoveryStatusText = message;
+        RaiseCommandStates();
+    }
+
+    private static string GetRecoveryFailureText(WorkerRecoveryFailureKind failureKind) => failureKind switch
+    {
+        WorkerRecoveryFailureKind.AuthenticationRejected => "Reconnection requires sign-in or updated credentials.",
+        WorkerRecoveryFailureKind.TlsRejected => "The server identity could not be verified. Reconnection stopped.",
+        WorkerRecoveryFailureKind.ProfileChanged => "The connection profile changed. Review the target and connect manually.",
+        WorkerRecoveryFailureKind.RootChanged => "The working directory changed. Choose a working directory and connect manually.",
+        WorkerRecoveryFailureKind.OwnerChanged => "The app-server owner changed. Select a conversation to inspect history; no conversation was resumed.",
+        WorkerRecoveryFailureKind.ConfigurationChanged => "The connection configuration changed. Review it and connect manually.",
+        WorkerRecoveryFailureKind.None => "Reconnection stopped. Connect manually to continue.",
+        _ => "Automatic reconnection stopped. Check the connection and connect manually.",
+    };
+
+    private async Task RestoreQuarantinedDraftAsync()
+    {
+        RecoveryDraftViewModel? draft = QuarantinedDraft;
+        if (draft is null || SelectedThread is null || !IsThreadJoined || IsRecovering)
+        {
+            return;
+        }
+
+        int requestedAttachments = draft.AttachmentPaths.Count;
+        int restoredAttachments = 0;
+        bool skillRestoreFailed = false;
+        bool settingsRestoreFailed = false;
+        await OnUiAsync(() =>
+        {
+            SetComposerText(draft.Text);
+            foreach (string path in draft.AttachmentPaths)
+            {
+                if (TryAddPendingAttachment(path))
+                {
+                    restoredAttachments++;
+                }
+            }
+
+            if (draft.Model is not null && modelCatalog.Models.Any(model => string.Equals(model.Id, draft.Model, StringComparison.Ordinal)))
+            {
+                SelectedModel = draft.Model;
+            }
+            else if (draft.Model is not null)
+            {
+                settingsRestoreFailed = true;
+            }
+
+            if (draft.ReasoningEffort is not null && FindReasoningEffort(draft.ReasoningEffort) is not null)
+            {
+                SelectedReasoningEffortId = draft.ReasoningEffort;
+            }
+            else if (draft.ReasoningEffort is not null)
+            {
+                settingsRestoreFailed = true;
+            }
+
+            if (draft.ServiceTier is not null && ServiceTiers.Any(option => string.Equals(option.Id, draft.ServiceTier, StringComparison.OrdinalIgnoreCase)))
+            {
+                SelectedServiceTierId = draft.ServiceTier;
+            }
+            else if (draft.ServiceTier is not null)
+            {
+                settingsRestoreFailed = true;
+            }
+
+            if (draft.Personality is not null)
+            {
+                if (GetSelectedModelInfo()?.SupportsPersonality == true
+                    && (draft.Personality is "none" or "friendly" or "pragmatic"))
+                {
+                    nextPersonality = draft.Personality;
+                }
+                else
+                {
+                    settingsRestoreFailed = true;
+                }
+            }
+
+            if (draft.CollaborationMode is not null)
+            {
+                if (string.Equals(draft.CollaborationMode, "plan", StringComparison.Ordinal))
+                {
+                    nextCollaborationMode = draft.CollaborationMode;
+                }
+                else
+                {
+                    settingsRestoreFailed = true;
+                }
+            }
+            if (draft.Skill is { } skill
+                && skillsSnapshot?.Skills.FirstOrDefault(candidate =>
+                    string.Equals(candidate.Name, skill.Name, StringComparison.Ordinal)
+                    && string.Equals(candidate.Scope, skill.Scope, StringComparison.Ordinal)
+                    && string.Equals(candidate.Path, skill.Path, StringComparison.Ordinal)) is { } currentSkill)
+            {
+                PendingSkills.Clear();
+                PendingSkills.Add(new PendingSkillViewModel(
+                    string.IsNullOrWhiteSpace(currentSkill.DisplayName) ? currentSkill.Name : currentSkill.DisplayName!,
+                    FormatSkillScope(currentSkill.Scope),
+                    currentSkill.Description,
+                    new SkillInvocationInfo { Name = currentSkill.Name, Scope = currentSkill.Scope, Path = currentSkill.Path },
+                    RemovePendingSkillAsync,
+                    currentSkill.DefaultPrompt,
+                    UsePendingSkillPromptAsync,
+                    markdown));
+            }
+            else if (draft.Skill is not null)
+            {
+                skillRestoreFailed = true;
+            }
+
+            QuarantinedDraft = null;
+            RecoveryStatusText = requestedAttachments != restoredAttachments || skillRestoreFailed || settingsRestoreFailed
+                ? "Draft text restored. Some attachments, selected skill, or settings were unavailable and must be reviewed and restored manually."
+                : "Draft restored to the composer. Review it before sending.";
+        }).ConfigureAwait(false);
+    }
+
+    private bool CanRestoreQuarantinedDraft()
+        => QuarantinedDraft is not null
+            && !IsRecovering
+            && SelectedThread is not null
+            && IsThreadJoined
+            && string.IsNullOrWhiteSpace(ComposerText)
+            && !HasPendingAttachments
+            && !HasPendingSkill;
+
+    private Task DiscardQuarantinedDraftAsync()
+    {
+        QuarantinedDraft = null;
+        RecoveryStatusText = "Quarantined draft discarded.";
+        return Task.CompletedTask;
+    }
+
+    private async Task<bool> RunTrackedMutationAsync(string operationName, OwnerSnapshot owner, Func<Task> dispatch)
+    {
+        var operationRow = new ChatItemViewModel("Status", $"{operationName} request sent.", ConversationEventKind.ItemStarted)
+        {
+            ThreadId = SelectedThread?.Id,
+            TurnId = Status.TurnId,
+            OwnerGeneration = owner.OwnerGeneration,
+            ConnectionGeneration = owner.ConnectionGeneration,
+        };
+        Guid operationId = Guid.NewGuid();
+        await OnUiAsync(() =>
+        {
+            if (IsCurrentOwner(owner))
+            {
+                Items.Add(operationRow);
+                inFlightMutations[operationId] = operationRow;
+            }
+        }).ConfigureAwait(false);
+
+        try
+        {
+            await dispatch().ConfigureAwait(false);
+            await OnUiAsync(() =>
+            {
+                inFlightMutations.Remove(operationId);
+                Items.Remove(operationRow);
+            }).ConfigureAwait(false);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            await OnUiAsync(() =>
+            {
+                if (inFlightMutations.Remove(operationId))
+                {
+                    operationRow.MarkDeliveryUnknown();
+                }
+            }).ConfigureAwait(false);
+            if (IsCurrentOwner(owner))
+            {
+                RecoveryStatusText = $"{operationName} outcome is unknown. It was not retried; review the current state before trying again.";
+            }
+            ExtensionDiagnostics.Write($"{operationName} outcome is unknown after dispatch", ex);
+            return false;
+        }
+    }
 
     private T StampOwner<T>(T request) where T : OwnerScopedRequest
     {
@@ -612,9 +1187,24 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
         selectedThread = null;
         OnPropertyChanged(nameof(SelectedThread));
+        IsThreadJoined = false;
+        IsHistoryStale = false;
+        HistoryStatusText = string.Empty;
+        CanLoadOlderHistory = false;
+        threadTurnsCursor = null;
+        threadItemsCursor = null;
+        historyItemKeys.Clear();
+        historyBytes = 0;
+        pendingHistoryEvents.Clear();
+        bufferedEventCount = 0;
+        bufferedEventBytes = 0;
+        ThreadAttachments.Clear();
+        ThreadAttachmentsStatusText = string.Empty;
+        ThreadTurns.Clear();
         OnPropertyChanged(nameof(EffectiveApprovalModeText));
         Threads.Clear();
         Items.Clear();
+        inFlightMutations.Clear();
         SetComposerText(string.Empty);
         PendingAttachments.Clear();
         OnPropertyChanged(nameof(HasPendingAttachments));
@@ -675,10 +1265,33 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             if (SetProperty(ref selectedThread, value))
             {
                 OnPropertyChanged(nameof(EffectiveApprovalModeText));
+                OnPropertyChanged(nameof(IsHistoryOnly));
+                OnPropertyChanged(nameof(HasHistoryNotice));
                 if (value is not null)
                 {
-                    _ = ResumeThreadAsync(value);
+                    IsThreadJoined = false;
+                    Items.Clear();
+                    ThreadAttachments.Clear();
+                    ThreadAttachmentsStatusText = string.Empty;
+                    ThreadTurns.Clear();
+                    deletedAttachmentIds.Clear();
+                    IsHistoryStale = false;
+                    HistoryStatusText = "Loading read-only history…";
+                    CanLoadOlderHistory = false;
+                    historyItemKeys.Clear();
+                    historyBytes = 0;
+                    threadTurnsCursor = null;
+                    threadItemsCursor = null;
+                    _ = ReadSelectedThreadHistoryAsync(value);
                     _ = DrainSlashQueuesAsync(value.Id);
+                }
+                else
+                {
+                    IsThreadJoined = false;
+                    Items.Clear();
+                    ThreadAttachments.Clear();
+                    ThreadAttachmentsStatusText = string.Empty;
+                    ThreadTurns.Clear();
                 }
             }
         }
@@ -1069,6 +1682,96 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     public AsyncCommand LoadMoreCommand { get; }
 
     [DataMember]
+    public AsyncCommand LoadOlderHistoryCommand { get; }
+
+    [DataMember]
+    public AsyncCommand JoinThreadCommand { get; }
+
+    [DataMember]
+    public AsyncCommand RefreshHistoryCommand { get; }
+
+    [DataMember]
+    public AsyncCommand RefreshAttachmentsCommand { get; }
+
+    [DataMember]
+    public bool IsThreadJoined
+    {
+        get => isThreadJoined;
+        private set
+        {
+            if (SetProperty(ref isThreadJoined, value))
+            {
+                OnPropertyChanged(nameof(IsHistoryOnly));
+                RaiseCommandStates();
+            }
+        }
+    }
+
+    [DataMember]
+    public bool IsHistoryOnly => SelectedThread is not null && !IsThreadJoined;
+
+    [DataMember]
+    public bool HasHistoryNotice => IsHistoryOnly || IsHistoryStale || !string.IsNullOrWhiteSpace(ThreadAttachmentsStatusText);
+
+    [DataMember]
+    public bool IsHistoryStale
+    {
+        get => historyIsStale;
+        private set
+        {
+            if (SetProperty(ref historyIsStale, value))
+            {
+                OnPropertyChanged(nameof(HasHistoryNotice));
+                OnPropertyChanged(nameof(HistoryStatusText));
+                RefreshHistoryCommand.RaiseCanExecuteChanged();
+                LoadOlderHistoryCommand.RaiseCanExecuteChanged();
+            }
+        }
+    }
+
+    [DataMember]
+    public string HistoryStatusText
+    {
+        get => historyStatusText;
+        private set => SetProperty(ref historyStatusText, value);
+    }
+
+    [DataMember]
+    public bool CanLoadOlderHistory
+    {
+        get => canLoadOlderHistory;
+        private set
+        {
+            if (SetProperty(ref canLoadOlderHistory, value))
+            {
+                LoadOlderHistoryCommand.RaiseCanExecuteChanged();
+            }
+        }
+    }
+
+    [DataMember]
+    public ObservableCollection<ThreadAttachmentPresentationViewModel> ThreadAttachments => threadAttachments;
+
+    [DataMember]
+    public string ThreadAttachmentsStatusText
+    {
+        get => threadAttachmentsStatusText;
+        private set
+        {
+            if (SetProperty(ref threadAttachmentsStatusText, value))
+            {
+                OnPropertyChanged(nameof(HasHistoryNotice));
+            }
+        }
+    }
+
+    [DataMember]
+    public ObservableCollection<ThreadTurnSummary> ThreadTurns => threadTurns;
+
+    [DataMember]
+    public string HistoryTurnSummaryText => ThreadTurns.Count == 1 ? "1 turn in loaded history" : $"{ThreadTurns.Count} turns in loaded history";
+
+    [DataMember]
     public AsyncCommand SendCommand { get; }
 
     [DataMember]
@@ -1105,6 +1808,10 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         Interlocked.Increment(ref usageConnectionGeneration);
         InvalidateUsage();
         connectionHealth.Clear();
+        recoveryCancellation?.Cancel();
+        recoveryCancellation?.Dispose();
+        recoveryCancellation = null;
+        UnsubscribeBridge(bridge);
         lifetime.Cancel();
         CancelFileSuggestionRefresh();
         slashCommandCoordinator.CancelAll();
@@ -1802,9 +2509,16 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     private async Task NewThreadAsync()
     {
         OwnerSnapshot owner = CaptureOwnerSnapshot();
-        ThreadSummary thread = await bridge.StartThreadAsync(
-            StampOwner(new StartThreadRequest(), owner),
-            lifetime.Token).ConfigureAwait(false);
+        ThreadSummary? thread = null;
+        bool started = await RunTrackedMutationAsync("New conversation", owner, async () =>
+        {
+            thread = await bridge.StartThreadAsync(StampOwner(new StartThreadRequest(), owner), lifetime.Token).ConfigureAwait(false);
+        }).ConfigureAwait(false);
+        if (!started || thread is null)
+        {
+            return;
+        }
+
         await OnUiAsync(() =>
         {
             if (!IsCurrentOwner(owner))
@@ -1814,23 +2528,40 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
             Threads.Insert(0, thread);
             selectedThread = thread;
+            IsThreadJoined = true;
             OnPropertyChanged(nameof(SelectedThread));
+            OnPropertyChanged(nameof(IsHistoryOnly));
             OnPropertyChanged(nameof(EffectiveApprovalModeText));
-            Items.Clear();
+            ResetSelectedHistoryState(thread);
         }).ConfigureAwait(false);
     }
 
-    private async Task ResumeThreadAsync(ThreadSummary thread)
+    private async Task JoinSelectedThreadAsync()
     {
+        ThreadSummary? thread = SelectedThread;
+        if (thread is null || IsThreadJoined || IsRecovering)
+        {
+            return;
+        }
+
         OwnerSnapshot owner = CaptureOwnerSnapshot();
         if (Status.TurnId is not null && !string.Equals(Status.ThreadId, thread.Id, StringComparison.Ordinal))
         {
             return;
         }
 
-        ThreadSummary resumed = await bridge.ResumeThreadAsync(
-            StampOwner(new ResumeThreadRequest { ThreadId = thread.Id }, owner),
-            lifetime.Token).ConfigureAwait(false);
+        ThreadSummary? resumed = null;
+        bool joined = await RunTrackedMutationAsync("Join conversation", owner, async () =>
+        {
+            resumed = await bridge.ResumeThreadAsync(
+                StampOwner(new ResumeThreadRequest { ThreadId = thread.Id, UserConfirmed = true }, owner),
+                lifetime.Token).ConfigureAwait(false);
+        }).ConfigureAwait(false);
+        if (!joined || resumed is null)
+        {
+            return;
+        }
+
         await OnUiAsync(() =>
         {
             if (!IsCurrentOwner(owner)
@@ -1839,13 +2570,601 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 return;
             }
 
-            thread.EffectiveApprovalState = resumed.EffectiveApprovalState;
-            thread.EffectiveReasoningEffort = resumed.EffectiveReasoningEffort;
-            thread.EffectiveServiceTier = resumed.EffectiveServiceTier;
+            if (resumed.EffectiveApprovalState is not null)
+            {
+                thread.EffectiveApprovalState = resumed.EffectiveApprovalState;
+            }
+            if (!string.IsNullOrWhiteSpace(resumed.EffectiveReasoningEffort))
+            {
+                thread.EffectiveReasoningEffort = resumed.EffectiveReasoningEffort;
+            }
+            if (!string.IsNullOrWhiteSpace(resumed.EffectiveServiceTier))
+            {
+                thread.EffectiveServiceTier = resumed.EffectiveServiceTier;
+            }
+            IsThreadJoined = true;
             OnPropertyChanged(nameof(EffectiveApprovalModeText));
-            Items.Clear();
+            HistoryStatusText = "Conversation joined. Sending and turn controls are enabled.";
         }).ConfigureAwait(false);
+
+        await DrainSlashQueuesAsync(thread.Id).ConfigureAwait(false);
     }
+
+    private async Task ReadSelectedThreadHistoryAsync(ThreadSummary thread)
+    {
+        OwnerSnapshot owner = CaptureOwnerSnapshot();
+        await OnUiAsync(() => isHistoryLoading = true).ConfigureAwait(false);
+        try
+        {
+            ThreadReadResult read = await bridge.ReadThreadAsync(
+                StampOwner(new ReadThreadRequest { ThreadId = thread.Id }, owner), lifetime.Token).ConfigureAwait(false);
+            ThreadTurnsPage turns = await bridge.ListThreadTurnsAsync(
+                StampOwner(new ListThreadTurnsRequest { ThreadId = thread.Id, Limit = 50 }, owner), lifetime.Token).ConfigureAwait(false);
+            ThreadItemsPage items = await bridge.ListThreadItemsAsync(
+                StampOwner(new ListThreadItemsRequest { ThreadId = thread.Id, Limit = 100 }, owner), lifetime.Token).ConfigureAwait(false);
+            (List<ThreadAttachmentMetadata> attachments, bool truncated) = await ListAllAttachmentMetadataAsync(thread.Id, owner, lifetime.Token).ConfigureAwait(false);
+
+            await OnUiAsync(() =>
+            {
+                if (!IsCurrentOwner(owner) || !ReferenceEquals(SelectedThread, thread) && SelectedThread?.Id != thread.Id)
+                {
+                    return;
+                }
+
+                if (!MatchesOwner(read, owner) || !MatchesOwner(turns, owner) || !MatchesOwner(items, owner))
+                {
+                    MarkHistoryStale("History changed while it was loading. Refresh before relying on this transcript.");
+                    return;
+                }
+
+                thread.Preview = read.Thread.Preview;
+                thread.Cwd = read.Thread.Cwd;
+                thread.UpdatedAt = read.Thread.UpdatedAt;
+                threadTurnsCursor = turns.NextCursor;
+                threadItemsCursor = items.NextCursor is null ? null : new ThreadItemCursor { Kind = ThreadItemCursorKind.Opaque, Value = items.NextCursor };
+                foreach (ThreadHistoryItem item in items.Items.Reverse())
+                {
+                    MergeHistoryItem(thread.Id, item, owner, prepend: false);
+                }
+
+                MergeThreadTurns(turns.Turns.Reverse(), prepend: false);
+
+                foreach (ThreadAttachmentMetadata attachment in attachments)
+                {
+                    MergeAttachment(attachment);
+                }
+
+                ThreadAttachmentsStatusText = truncated
+                    ? "Showing the first 100 attachment records; the bounded metadata view has more entries."
+                    : string.Empty;
+
+                CanLoadOlderHistory = threadItemsCursor is not null || threadTurnsCursor is not null;
+                isHistoryLoading = false;
+                HistoryStatusText = IsHistoryStale
+                    ? "History synchronization was incomplete. Refresh to load a consistent transcript."
+                    : "Read-only history. Join explicitly before sending or controlling this conversation.";
+                RefreshAttachmentsCommand.RaiseCanExecuteChanged();
+                DrainPendingHistoryEvents(owner, thread.Id);
+            }).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+        {
+            return;
+        }
+        catch (Exception ex)
+        {
+            ExtensionDiagnostics.Write("Could not load read-only thread history", ex);
+            await OnUiAsync(() => MarkHistoryStale("History could not be loaded completely. Refresh to try again.")).ConfigureAwait(false);
+        }
+        finally
+        {
+            await OnUiAsync(() => isHistoryLoading = false).ConfigureAwait(false);
+        }
+    }
+
+    private async Task LoadOlderHistoryAsync()
+    {
+        ThreadSummary? thread = SelectedThread;
+        ThreadItemCursor? cursor = threadItemsCursor;
+        string? turnsCursor = threadTurnsCursor;
+        if (thread is null || (cursor is null && turnsCursor is null) || IsHistoryStale || isHistoryLoading)
+        {
+            return;
+        }
+
+        OwnerSnapshot owner = CaptureOwnerSnapshot();
+        await OnUiAsync(() => isHistoryLoading = true).ConfigureAwait(false);
+        try
+        {
+            ThreadItemsPage? page = cursor is null ? null : await bridge.ListThreadItemsAsync(
+                StampOwner(new ListThreadItemsRequest { ThreadId = thread.Id, Cursor = cursor, Limit = 100 }, owner), lifetime.Token).ConfigureAwait(false);
+            ThreadTurnsPage? turns = turnsCursor is null ? null : await bridge.ListThreadTurnsAsync(
+                StampOwner(new ListThreadTurnsRequest { ThreadId = thread.Id, Cursor = turnsCursor, Limit = 50 }, owner), lifetime.Token).ConfigureAwait(false);
+            await OnUiAsync(() =>
+            {
+                if (!IsCurrentOwner(owner) || SelectedThread?.Id != thread.Id)
+                {
+                    return;
+                }
+
+                if ((page is not null && !MatchesOwner(page, owner)) || (turns is not null && !MatchesOwner(turns, owner)))
+                {
+                    MarkHistoryStale("History changed while paging. Refresh before relying on this transcript.");
+                    return;
+                }
+
+                foreach (ThreadHistoryItem item in page?.Items ?? Array.Empty<ThreadHistoryItem>())
+                {
+                    MergeHistoryItem(thread.Id, item, owner, prepend: true);
+                }
+
+                MergeThreadTurns(turns?.Turns ?? Array.Empty<ThreadTurnSummary>(), prepend: true);
+
+                threadItemsCursor = page?.NextCursor is null ? null : new ThreadItemCursor { Kind = ThreadItemCursorKind.Opaque, Value = page.NextCursor };
+                threadTurnsCursor = turns?.NextCursor;
+                CanLoadOlderHistory = threadItemsCursor is not null || threadTurnsCursor is not null;
+            }).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            ExtensionDiagnostics.Write("Could not load an older history page", ex);
+            await OnUiAsync(() => MarkHistoryStale("History paging failed. Refresh to load a consistent transcript.")).ConfigureAwait(false);
+        }
+        finally
+        {
+            await OnUiAsync(() =>
+            {
+                isHistoryLoading = false;
+                if (IsCurrentOwner(owner) && SelectedThread?.Id == thread.Id)
+                {
+                    DrainPendingHistoryEvents(owner, thread.Id);
+                }
+            }).ConfigureAwait(false);
+        }
+    }
+
+    private async Task RefreshSelectedHistoryAsync()
+    {
+        ThreadSummary? thread = SelectedThread;
+        if (thread is null || Status.State != WorkerConnectionState.Ready || isHistoryLoading)
+        {
+            return;
+        }
+
+        Items.Clear();
+        historyItemKeys.Clear();
+        historyBytes = 0;
+        pendingHistoryEvents.Clear();
+        bufferedEventCount = 0;
+        bufferedEventBytes = 0;
+        threadItemsCursor = null;
+        threadTurnsCursor = null;
+        ThreadAttachments.Clear();
+        ThreadAttachmentsStatusText = string.Empty;
+        ThreadTurns.Clear();
+        IsHistoryStale = false;
+        HistoryStatusText = "Refreshing read-only history…";
+        await ReadSelectedThreadHistoryAsync(thread).ConfigureAwait(false);
+    }
+
+    private static bool MatchesOwner(WorkerGenerationResult result, OwnerSnapshot owner)
+        => result.OwnerGeneration == owner.OwnerGeneration
+            && result.ConnectionGeneration == owner.ConnectionGeneration
+            && string.Equals(result.StatePartitionFingerprint, owner.StatePartitionFingerprint, StringComparison.Ordinal);
+
+    private void MergeHistoryItem(string threadId, ThreadHistoryItem historyItem, OwnerSnapshot owner, bool prepend)
+    {
+        string key = string.Concat(owner.StatePartitionFingerprint, ":", owner.OwnerGeneration, ":", owner.ConnectionGeneration, ":", threadId, ":", historyItem.TurnId, ":", historyItem.Id);
+        ChatItemViewModel? existingItem = Items.LastOrDefault(item => string.Equals(item.HistoryKey, key, StringComparison.Ordinal)
+            || (string.Equals(item.ThreadId, threadId, StringComparison.Ordinal)
+                && string.Equals(item.TurnId, historyItem.TurnId, StringComparison.Ordinal)
+                && string.Equals(item.ItemId, historyItem.Id, StringComparison.Ordinal)
+                && item.OwnerGeneration == owner.OwnerGeneration
+                && item.ConnectionGeneration == owner.ConnectionGeneration));
+        if (!historyItemKeys.Add(key))
+        {
+            if (existingItem is not null && !existingItem.IsHistoryCompleted)
+            {
+                string replacement = markdown.ToSafeText(historyItem.Text ?? string.Empty);
+                SetTranscriptText(existingItem, replacement);
+                existingItem.HistoryKey = key;
+                existingItem.IsHistoryCompleted = true;
+                TrimHistoryWindow();
+            }
+
+            return;
+        }
+
+        if (existingItem is not null)
+        {
+            SetTranscriptText(existingItem, markdown.ToSafeText(historyItem.Text ?? string.Empty));
+            existingItem.HistoryKey = key;
+            existingItem.IsHistoryCompleted = true;
+            TrimHistoryWindow();
+            return;
+        }
+
+        string type = historyItem.Type.ToLowerInvariant();
+        string role = type.Contains("user", StringComparison.Ordinal) ? "You"
+            : type.Contains("command", StringComparison.Ordinal) ? "Command"
+            : type.Contains("reason", StringComparison.Ordinal) ? "Reasoning"
+            : type.Contains("agent", StringComparison.Ordinal) || type.Contains("assistant", StringComparison.Ordinal) ? "Codex"
+            : "History";
+        ConversationEventKind kind = role switch
+        {
+            "You" => ConversationEventKind.ItemCompleted,
+            "Command" => ConversationEventKind.CommandOutputDelta,
+            "Reasoning" => ConversationEventKind.ReasoningSummaryDelta,
+            "Codex" => ConversationEventKind.AgentMessageDelta,
+            _ => ConversationEventKind.ItemCompleted,
+        };
+        string safeText = markdown.ToSafeText(historyItem.Text ?? string.Empty);
+        var item = new ChatItemViewModel(role, safeText, kind)
+        {
+            ItemId = historyItem.Id,
+            ThreadId = threadId,
+            TurnId = historyItem.TurnId,
+            HistoryKey = key,
+            IsHistoryCompleted = true,
+            StatePartitionFingerprint = owner.StatePartitionFingerprint,
+            OwnerGeneration = owner.OwnerGeneration,
+            ConnectionGeneration = owner.ConnectionGeneration,
+        };
+        if (prepend)
+        {
+            Items.Insert(0, item);
+        }
+        else
+        {
+            Items.Add(item);
+        }
+        TrimHistoryWindow();
+    }
+
+    private void TrimHistoryWindow()
+    {
+        bool trimmed = false;
+        while (Items.Count > MaximumVisibleHistoryItems || historyBytes > MaximumVisibleHistoryBytes)
+        {
+            ChatItemViewModel? oldest = Items.FirstOrDefault();
+            if (oldest is null)
+            {
+                break;
+            }
+
+            if (oldest.HistoryKey is not null)
+            {
+                historyItemKeys.Remove(oldest.HistoryKey);
+            }
+            Items.Remove(oldest);
+            trimmed = true;
+        }
+
+        if (trimmed)
+        {
+            MarkHistoryStale("The transcript reached its 1,000-item / 16 MiB display limit. Refresh to load a consistent recent window.");
+        }
+    }
+
+    private void MarkHistoryStale(string message)
+    {
+        IsHistoryStale = true;
+        CanLoadOlderHistory = false;
+        HistoryStatusText = message;
+    }
+
+    private void DrainPendingHistoryEvents(OwnerSnapshot owner, string threadId)
+    {
+        while (pendingHistoryEvents.TryDequeue(out WorkerNotification<ConversationEvent>? notification))
+        {
+            bufferedEventCount--;
+            bufferedEventBytes -= GetConversationEventBytes(notification.Value);
+            if (IsNotificationCurrent(notification) && string.Equals(notification.Value.ThreadId, threadId, StringComparison.Ordinal))
+            {
+                _ = OnConversationEventAsync(notification);
+            }
+        }
+    }
+
+    private void OnItemsCollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
+    {
+        if (e.Action == NotifyCollectionChangedAction.Reset)
+        {
+            historyBytes = 0;
+        }
+
+        if (e.OldItems is not null)
+        {
+            foreach (ChatItemViewModel item in e.OldItems)
+            {
+                historyBytes -= Encoding.UTF8.GetByteCount(item.Text);
+            }
+        }
+
+        if (e.NewItems is not null)
+        {
+            foreach (ChatItemViewModel item in e.NewItems)
+            {
+                historyBytes += Encoding.UTF8.GetByteCount(item.Text);
+            }
+        }
+
+        historyBytes = Math.Max(0, historyBytes);
+        OnPropertyChanged(nameof(IsThreadEmpty));
+    }
+
+    private void SetTranscriptText(ChatItemViewModel item, string text)
+    {
+        historyBytes -= Encoding.UTF8.GetByteCount(item.Text);
+        item.Text = text;
+        historyBytes += Encoding.UTF8.GetByteCount(text);
+    }
+
+    private void ResetSelectedHistoryState(ThreadSummary thread)
+    {
+        IsHistoryStale = false;
+        HistoryStatusText = "Read-only history. Join explicitly before sending or controlling this conversation.";
+        CanLoadOlderHistory = false;
+        threadTurnsCursor = null;
+        threadItemsCursor = null;
+        historyItemKeys.Clear();
+        historyBytes = 0;
+        pendingHistoryEvents.Clear();
+        bufferedEventCount = 0;
+        bufferedEventBytes = 0;
+        ThreadAttachments.Clear();
+        ThreadAttachmentsStatusText = string.Empty;
+        ThreadTurns.Clear();
+        deletedAttachmentIds.Clear();
+        Items.Clear();
+    }
+
+    private void MergeThreadTurns(IEnumerable<ThreadTurnSummary> turns, bool prepend)
+    {
+        var knownIds = ThreadTurns.Select(static turn => turn.Id).ToHashSet(StringComparer.Ordinal);
+        foreach (ThreadTurnSummary turn in turns)
+        {
+            if (knownIds.Add(turn.Id))
+            {
+                if (prepend)
+                {
+                    ThreadTurns.Insert(0, turn);
+                }
+                else
+                {
+                    ThreadTurns.Add(turn);
+                }
+            }
+        }
+    }
+
+    // Attachment refreshes are single-flight. A request that arrives while a scan runs is
+    // coalesced into one follow-up scan, so scans never overlap and an older scan can never
+    // overwrite a newer membership view. If membership keeps changing for the whole bounded
+    // reconciliation pass, the list is exposed as stale with the explicit Refresh action.
+    private async Task RefreshAttachmentsAsync()
+    {
+        lock (attachmentRefreshGate)
+        {
+            if (attachmentRefreshRunning)
+            {
+                attachmentRefreshRequested = true;
+                return;
+            }
+
+            attachmentRefreshRunning = true;
+            attachmentRefreshRequested = false;
+        }
+
+        bool released = false;
+        try
+        {
+            for (int pass = 1; ; pass++)
+            {
+                await RefreshAttachmentsOnceAsync().ConfigureAwait(false);
+                bool stale = false;
+                lock (attachmentRefreshGate)
+                {
+                    if (!attachmentRefreshRequested)
+                    {
+                        attachmentRefreshRunning = false;
+                        released = true;
+                        return;
+                    }
+
+                    attachmentRefreshRequested = false;
+                    if (pass >= MaxAttachmentReconciliationPasses)
+                    {
+                        attachmentRefreshRunning = false;
+                        released = true;
+                        stale = true;
+                    }
+                }
+
+                if (stale)
+                {
+                    await OnUiAsync(() => ThreadAttachmentsStatusText = "Attachment metadata kept changing while it was refreshed. Refresh again to load a consistent list.").ConfigureAwait(false);
+                    return;
+                }
+            }
+        }
+        finally
+        {
+            if (!released)
+            {
+                lock (attachmentRefreshGate)
+                {
+                    attachmentRefreshRunning = false;
+                }
+            }
+        }
+    }
+
+    private async Task RefreshAttachmentsOnceAsync()
+    {
+        ThreadSummary? thread = SelectedThread;
+        if (thread is null || Status.State != WorkerConnectionState.Ready)
+        {
+            return;
+        }
+
+        OwnerSnapshot owner = CaptureOwnerSnapshot();
+        try
+        {
+            var deleted = new HashSet<string>(deletedAttachmentIds, StringComparer.Ordinal);
+            (List<ThreadAttachmentMetadata> all, bool truncated) = await ListAllAttachmentMetadataAsync(
+                thread.Id,
+                owner,
+                lifetime.Token,
+                deleted,
+                () => IsCurrentOwner(owner) && SelectedThread?.Id == thread.Id).ConfigureAwait(false);
+
+            await OnUiAsync(() =>
+            {
+                if (!IsCurrentOwner(owner) || SelectedThread?.Id != thread.Id)
+                {
+                    return;
+                }
+
+                ThreadAttachments.Clear();
+                foreach (ThreadAttachmentMetadata attachment in all)
+                {
+                    MergeAttachment(attachment);
+                }
+
+                ThreadAttachmentsStatusText = truncated
+                    ? "Showing the first 100 attachment records; the bounded metadata view has more entries."
+                    : string.Empty;
+            }).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            ExtensionDiagnostics.Write("Could not refresh attachment metadata", ex);
+            await OnUiAsync(() => ThreadAttachmentsStatusText = "Attachment metadata could not be refreshed. Retry when the connection is ready.").ConfigureAwait(false);
+        }
+    }
+
+    private void MergeAttachment(ThreadAttachmentMetadata attachment)
+    {
+        // Deletion tombstones hide only that exact attachment ID; a newer generation of the
+        // same identity keeps its own ID and is not hidden by the old tombstone.
+        if (deletedAttachmentIds.Contains(attachment.Id)
+            || ThreadAttachments.Any(existing => string.Equals(existing.Id, attachment.Id, StringComparison.Ordinal)))
+        {
+            return;
+        }
+
+        var key = new AttachmentMembershipKey(attachment.AttachmentType, attachment.IdentityKey);
+        for (int index = 0; index < ThreadAttachments.Count; index++)
+        {
+            ThreadAttachmentPresentationViewModel existing = ThreadAttachments[index];
+            if (existing.MembershipKey == key)
+            {
+                if (attachment.CreatedAt >= existing.CreatedAt)
+                {
+                    ThreadAttachments[index] = new ThreadAttachmentPresentationViewModel(attachment, markdown);
+                }
+
+                return;
+            }
+        }
+
+        if (ThreadAttachments.Count >= 100)
+        {
+            return;
+        }
+
+        ThreadAttachments.Add(new ThreadAttachmentPresentationViewModel(attachment, markdown));
+    }
+
+    private async Task<(List<ThreadAttachmentMetadata> Items, bool Truncated)> ListAllAttachmentMetadataAsync(
+        string threadId,
+        OwnerSnapshot owner,
+        CancellationToken cancellationToken,
+        HashSet<string>? excludedIds = null,
+        Func<bool>? isCurrent = null)
+    {
+        var result = new List<ThreadAttachmentMetadata>(100);
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+
+        // Membership is keyed by (threadId, attachmentType, identityKey); the thread is fixed
+        // per scan. A recreated record or a duplicate page entry with a new server ID replaces
+        // the older generation of the same identity instead of adding a second row.
+        var memberships = new Dictionary<AttachmentMembershipKey, int>();
+        string? cursor = null;
+        bool truncated = false;
+        do
+        {
+            ThreadAttachmentsPage page = await bridge.ListThreadAttachmentsAsync(
+                StampOwner(new ListThreadAttachmentsRequest { ThreadId = threadId, Cursor = cursor, Limit = 50 }, owner), cancellationToken).ConfigureAwait(false);
+            if (!MatchesOwner(page, owner) || isCurrent is not null && !isCurrent())
+            {
+                throw new InvalidOperationException("Attachment page ownership changed during history synchronization.");
+            }
+
+            foreach (ThreadAttachmentMetadata attachment in page.Attachments)
+            {
+                if (excludedIds?.Contains(attachment.Id) == true || !seen.Add(attachment.Id))
+                {
+                    continue;
+                }
+
+                var key = new AttachmentMembershipKey(attachment.AttachmentType, attachment.IdentityKey);
+                if (memberships.TryGetValue(key, out int index))
+                {
+                    if (attachment.CreatedAt >= result[index].CreatedAt)
+                    {
+                        result[index] = attachment;
+                    }
+
+                    continue;
+                }
+
+                if (result.Count == 100)
+                {
+                    truncated = true;
+                    break;
+                }
+
+                memberships.Add(key, result.Count);
+                result.Add(attachment);
+            }
+
+            cursor = page.NextCursor;
+            truncated |= result.Count == 100 && cursor is not null;
+            if (truncated)
+            {
+                break;
+            }
+        }
+        while (cursor is not null && result.Count < 100);
+
+        return (result, truncated);
+    }
+
+    private Task OnThreadAttachmentUpdatedAsync(WorkerNotification<ThreadAttachmentUpdatedEvent> notification)
+        => OnUiAsync(() =>
+        {
+            if (!IsNotificationCurrent(notification) || SelectedThread?.Id != notification.Value.ThreadId)
+            {
+                return;
+            }
+
+            if (notification.Value.Operation == ThreadAttachmentOperation.Deleted)
+            {
+                deletedAttachmentIds.Add(notification.Value.AttachmentId);
+                ThreadAttachmentPresentationViewModel? existing = ThreadAttachments.FirstOrDefault(
+                    item => string.Equals(item.Id, notification.Value.AttachmentId, StringComparison.Ordinal));
+                if (existing is not null)
+                {
+                    ThreadAttachments.Remove(existing);
+                }
+            }
+            else
+            {
+                _ = RefreshAttachmentsAsync();
+            }
+        });
 
     private async Task LoadMoreAsync()
     {
@@ -2079,6 +3398,11 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         {
             return;
         }
+        if (SelectedThread is not null && !IsThreadJoined)
+        {
+            await ShowSlashFailureAsync("This conversation is read-only. Join it explicitly before sending.").ConfigureAwait(false);
+            return;
+        }
         if (HasPendingSkill && Status.State is WorkerConnectionState.Busy or WorkerConnectionState.WaitingForApproval)
         {
             await ShowSlashStatusAsync("A skill is pending. Wait for the current turn or remove the skill chip before sending.").ConfigureAwait(false);
@@ -2114,6 +3438,8 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             return;
         }
 
+        string targetThreadId = SelectedThread.Id;
+
         if (!IsCurrentOwner(owner))
         {
             return;
@@ -2126,15 +3452,23 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                     ? $"Invoked skill: {PendingSkills[0].DisplayName}."
                     : PendingAttachments.Count == 1 ? "Attached 1 file." : $"Attached {PendingAttachments.Count} files."
                 : markdown.ToSafeText(text);
+            ChatItemViewModel? optimisticItem = null;
             await OnUiAsync(() =>
             {
                 if (IsCurrentOwner(owner))
                 {
-                    Items.Add(new ChatItemViewModel("You", displayText, ConversationEventKind.ItemStarted));
+                    optimisticItem = new ChatItemViewModel("You", displayText, ConversationEventKind.ItemStarted)
+                    {
+                        ThreadId = targetThreadId,
+                        StatePartitionFingerprint = owner.StatePartitionFingerprint,
+                        OwnerGeneration = owner.OwnerGeneration,
+                        ConnectionGeneration = owner.ConnectionGeneration,
+                    };
+                    Items.Add(optimisticItem);
                 }
             }).ConfigureAwait(false);
             StartTurnRequest request = await CreateStartTurnRequestAsync(
-                SelectedThread.Id,
+                targetThreadId,
                 text,
                 forcePlanMode: false).ConfigureAwait(false);
             if (!IsCurrentOwner(owner))
@@ -2143,15 +3477,43 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             }
 
             StampOwner(request, owner);
+            Guid operationId = Guid.NewGuid();
             try
             {
-                await bridge.StartTurnAsync(request, lifetime.Token).ConfigureAwait(false);
+                await OnUiAsync(() =>
+                {
+                    if (IsCurrentOwner(owner) && optimisticItem is not null)
+                    {
+                        inFlightMutations[operationId] = optimisticItem;
+                    }
+                }).ConfigureAwait(false);
+                string startedTurnId = await bridge.StartTurnAsync(request, lifetime.Token).ConfigureAwait(false);
+                await OnUiAsync(() =>
+                {
+                    if (IsCurrentOwner(owner)
+                        && SelectedThread?.Id == targetThreadId
+                        && optimisticItem is not null
+                        && Items.Contains(optimisticItem))
+                    {
+                        optimisticItem.ThreadId = targetThreadId;
+                        optimisticItem.TurnId = startedTurnId;
+                        optimisticItem.OwnerGeneration = owner.OwnerGeneration;
+                        optimisticItem.ConnectionGeneration = owner.ConnectionGeneration;
+                    }
+                }).ConfigureAwait(false);
+                await OnUiAsync(() => inFlightMutations.Remove(operationId)).ConfigureAwait(false);
             }
             catch (StreamJsonRpc.RemoteInvocationException ex) when (ex.ErrorCode == WorkerErrorCodes.AttachmentRejected)
             {
+                await OnUiAsync(() => inFlightMutations.Remove(operationId)).ConfigureAwait(false);
                 if (!IsCurrentOwner(owner))
                 {
                     return;
+                }
+
+                if (optimisticItem is not null)
+                {
+                    await OnUiAsync(() => Items.Remove(optimisticItem)).ConfigureAwait(false);
                 }
 
                 // The Worker rejects an attachment a remote app-server cannot read (outside the
@@ -2160,18 +3522,59 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 await ShowSlashFailureAsync($"The message was not sent: {ex.Message}").ConfigureAwait(false);
                 return;
             }
-            catch (Exception ex) when (request.Skill is not null && ex is not OperationCanceledException)
+            catch (StreamJsonRpc.RemoteInvocationException ex) when (ex.ErrorCode == WorkerErrorCodes.SkillRejected)
             {
-                if (!IsCurrentOwner(owner))
+                await OnUiAsync(() => inFlightMutations.Remove(operationId)).ConfigureAwait(false);
+                if (optimisticItem is not null)
                 {
-                    return;
+                    await OnUiAsync(() => Items.Remove(optimisticItem)).ConfigureAwait(false);
                 }
 
-                // Worker-side skill identity validation (stale/disabled/removed since selection)
-                // throws before the turn starts. Surface it instead of letting AsyncCommand
-                // swallow it into diagnostics only, and keep the pending chip so the selection
-                // is never silently discarded.
-                await ShowSlashFailureAsync($"The skill could not be started: {ex.Message}").ConfigureAwait(false);
+                if (IsCurrentOwner(owner))
+                {
+                    await ShowSlashFailureAsync($"The selected skill is no longer available: {ex.Message}").ConfigureAwait(false);
+                }
+
+                return;
+            }
+            catch (StreamJsonRpc.RemoteInvocationException ex) when (ex.ErrorCode is WorkerErrorCodes.ConnectionOperationRejected or WorkerErrorCodes.PreDispatchRejected)
+            {
+                await OnUiAsync(() => inFlightMutations.Remove(operationId)).ConfigureAwait(false);
+                if (optimisticItem is not null)
+                {
+                    await OnUiAsync(() => Items.Remove(optimisticItem)).ConfigureAwait(false);
+                }
+
+                if (IsCurrentOwner(owner))
+                {
+                    await ShowSlashFailureAsync($"The message was rejected before it was sent: {ex.Message}").ConfigureAwait(false);
+                }
+
+                return;
+            }
+            catch (OperationCanceledException)
+            {
+                await OnUiAsync(() => inFlightMutations.Remove(operationId)).ConfigureAwait(false);
+                if (optimisticItem is not null)
+                {
+                    await OnUiAsync(() => Items.Remove(optimisticItem)).ConfigureAwait(false);
+                }
+
+                if (IsCurrentOwner(owner))
+                {
+                    await ShowSlashStatusAsync("The send was cancelled before it completed.").ConfigureAwait(false);
+                }
+
+                return;
+            }
+            catch (StreamJsonRpc.RemoteInvocationException ex) when (ex.ErrorCode == WorkerErrorCodes.UpstreamOperationFailed)
+            {
+                await ShowStartTurnOutcomeUnknownAsync(operationId, owner, ex).ConfigureAwait(false);
+                return;
+            }
+            catch (Exception ex)
+            {
+                await ShowStartTurnOutcomeUnknownAsync(operationId, owner, ex).ConfigureAwait(false);
                 return;
             }
 
@@ -2189,9 +3592,40 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         }
         else
         {
-            await bridge.SteerTurnAsync(
-                StampOwner(new SteerTurnRequest { ThreadId = SelectedThread.Id, ExpectedTurnId = Status.TurnId, Text = text }, owner),
-                lifetime.Token).ConfigureAwait(false);
+            var optimisticItem = new ChatItemViewModel("You", markdown.ToSafeText(text), ConversationEventKind.ItemStarted)
+            {
+                ThreadId = SelectedThread.Id,
+                TurnId = Status.TurnId,
+                StatePartitionFingerprint = owner.StatePartitionFingerprint,
+                OwnerGeneration = owner.OwnerGeneration,
+                ConnectionGeneration = owner.ConnectionGeneration,
+            };
+            Guid operationId = Guid.NewGuid();
+            await OnUiAsync(() =>
+            {
+                Items.Add(optimisticItem);
+                inFlightMutations[operationId] = optimisticItem;
+            }).ConfigureAwait(false);
+            try
+            {
+                await bridge.SteerTurnAsync(
+                    StampOwner(new SteerTurnRequest { ThreadId = SelectedThread.Id, ExpectedTurnId = Status.TurnId, Text = text }, owner),
+                    lifetime.Token).ConfigureAwait(false);
+                await OnUiAsync(() => inFlightMutations.Remove(operationId)).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                await OnUiAsync(() =>
+                {
+                    if (inFlightMutations.Remove(operationId))
+                    {
+                        optimisticItem.MarkDeliveryUnknown();
+                    }
+                }).ConfigureAwait(false);
+                await ShowSlashFailureAsync("Delivery is unknown. The message was not retried. Review the transcript and composer before sending again.").ConfigureAwait(false);
+                ExtensionDiagnostics.Write("Turn steer outcome is unknown after dispatch", ex);
+                return;
+            }
         }
 
         if (clearComposer)
@@ -2204,6 +3638,30 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 }
             }).ConfigureAwait(false);
         }
+    }
+
+    private async Task ShowStartTurnOutcomeUnknownAsync(Guid operationId, OwnerSnapshot owner, Exception exception)
+    {
+        await OnUiAsync(() =>
+        {
+            if (inFlightMutations.Remove(operationId, out ChatItemViewModel? item))
+            {
+                item.MarkDeliveryUnknown();
+            }
+
+            if (IsCurrentOwner(owner))
+            {
+                RecoveryStatusText = "Message delivery outcome is unknown. The request was not retried.";
+            }
+        }).ConfigureAwait(false);
+
+        if (IsCurrentOwner(owner))
+        {
+            await ShowSlashFailureAsync(
+                "Delivery is unknown. The message was not retried. Review the transcript and composer before sending again.").ConfigureAwait(false);
+        }
+
+        ExtensionDiagnostics.Write("Turn start outcome is unknown after dispatch", exception);
     }
 
     private async Task<StartTurnRequest> CreateStartTurnRequestAsync(
@@ -3284,6 +4742,12 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
     private async Task<bool> ScheduleOrExecuteSlashCommandAsync(SlashCommandInvocation invocation)
     {
+        if (SelectedThread is not null && !IsThreadJoined)
+        {
+            await ShowSlashFailureAsync("This conversation is read-only. Join it explicitly before running commands.").ConfigureAwait(false);
+            return false;
+        }
+
         OwnerSnapshot owner = CaptureOwnerSnapshot();
         if (RequiresWorkerConnection(invocation.Definition.Id)
             && Status.State is not (WorkerConnectionState.Ready or WorkerConnectionState.Busy or WorkerConnectionState.WaitingForApproval))
@@ -3508,8 +4972,8 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             }
 
             Threads.Insert(0, result.Thread);
-            // Select through the property setter so ResumeThreadAsync replays the forked
-            // thread's copied history instead of leaving an empty transcript.
+            // Selection loads read-only history. Joining the forked conversation remains an
+            // explicit user action, just like selecting any other history entry.
             SelectedThread = result.Thread;
         }).ConfigureAwait(false);
         await ShowSlashStatusAsync("Forked the thread and switched to the new copy.").ConfigureAwait(false);
@@ -4000,7 +5464,8 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     private async Task DrainSlashQueuesAsync(params string?[] threadIds)
     {
         OwnerSnapshot owner = CaptureOwnerSnapshot();
-        if (Status.TurnId is not null
+        if ((SelectedThread is not null && !IsThreadJoined)
+            || Status.TurnId is not null
             || Interlocked.CompareExchange(ref drainingSlashQueue, 1, 0) != 0)
         {
             return;
@@ -4020,11 +5485,20 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             queueKeys.Add(null);
             foreach (string? queueKey in queueKeys)
             {
+                // Thread-scoped queues belong to that selected, explicitly joined conversation.
+                // Session commands remain drainable when no conversation is selected.
+                if (queueKey is not null
+                    && (!IsThreadJoined || !string.Equals(SelectedThread?.Id, queueKey, StringComparison.Ordinal)))
+                {
+                    continue;
+                }
+
                 // The session queue (queueKey null) holds commands issued before any thread
                 // existed. By drain time a thread may already be selected, so target that
                 // thread instead of leaving thread-optional commands (e.g. /status) contextless.
                 string? executionThreadId = queueKey ?? SelectedThread?.Id;
                 while (IsCurrentOwner(owner)
+                    && (SelectedThread is null || IsThreadJoined)
                     && Status.TurnId is null
                     && slashCommandCoordinator.TryDequeue(queueKey, out SlashCommandInvocation? invocation)
                     && invocation is not null)
@@ -4288,18 +5762,19 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     private static bool IsImageAttachment(string path)
         => Path.GetExtension(path).ToLowerInvariant() is ".png" or ".jpg" or ".jpeg" or ".gif" or ".webp";
 
-    private Task InterruptAsync()
+    private async Task InterruptAsync()
     {
-        if (Status.ThreadId is null || Status.TurnId is null)
+        if (!CanInterruptSelectedThread() || Status.ThreadId is null || Status.TurnId is null)
         {
-            return Task.CompletedTask;
+            return;
         }
 
         // The click time anchors the Worker's interrupt timings in the shared diagnostics log.
         ExtensionDiagnostics.Write($"Interrupt requested by user thread={Status.ThreadId} turn={Status.TurnId}");
-        return bridge.InterruptTurnAsync(
+        OwnerSnapshot owner = CaptureOwnerSnapshot();
+        await RunTrackedMutationAsync("Interrupt request", owner, () => bridge.InterruptTurnAsync(
             StampOwner(new InterruptTurnRequest { ThreadId = Status.ThreadId, TurnId = Status.TurnId }),
-            lifetime.Token);
+            lifetime.Token)).ConfigureAwait(false);
     }
 
     private async Task OnStateChangedAsync(WorkerNotification<WorkerStatus> notification)
@@ -4386,6 +5861,19 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             && usageFetchedGeneration != usageConnectionGeneration)
         {
             await RefreshUsageAsync(force: false).ConfigureAwait(false);
+        }
+
+        if (applied && value.State == WorkerConnectionState.Degraded)
+        {
+            IWorkerBridge source = bridge;
+            if (ConnectionRecoveryCoordinator.IsTransient(value.RecoveryFailureKind))
+            {
+                _ = HandleConnectionLostAsync(source, value.RecoveryFailureKind);
+            }
+            else
+            {
+                await OnUiAsync(() => RecoveryStatusText = GetRecoveryFailureText(value.RecoveryFailureKind)).ConfigureAwait(false);
+            }
         }
     }
 
@@ -4517,14 +6005,59 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 return;
             }
 
+            if (string.IsNullOrWhiteSpace(value.ThreadId))
+            {
+                if (value.Kind != ConversationEventKind.Error)
+                {
+                    return;
+                }
+
+                string errorText = markdown.ToSafeText(string.IsNullOrWhiteSpace(value.Text)
+                    ? "The app-server reported an error without a conversation context."
+                    : value.Text);
+                Items.Add(new ChatItemViewModel("Error", errorText, ConversationEventKind.Error));
+                return;
+            }
+            else if (SelectedThread is null || !string.Equals(SelectedThread.Id, value.ThreadId, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            if (isHistoryLoading && !string.IsNullOrWhiteSpace(value.ThreadId))
+            {
+                long eventBytes = GetConversationEventBytes(value);
+                if (bufferedEventCount + 1 > MaximumBufferedHistoryEvents
+                    || bufferedEventBytes + eventBytes > MaximumBufferedHistoryBytes)
+                {
+                    pendingHistoryEvents.Clear();
+                    bufferedEventCount = 0;
+                    bufferedEventBytes = 0;
+                    MarkHistoryStale("Live updates exceeded the synchronization buffer. Refresh history before continuing.");
+                    return;
+                }
+
+                pendingHistoryEvents.Enqueue(notification);
+                bufferedEventCount++;
+                bufferedEventBytes += eventBytes;
+                return;
+            }
+
             // Plan events carry a full replacement payload — handle separately to avoid text append.
             if (value.Kind == ConversationEventKind.PlanUpdated)
             {
-                ChatItemViewModel? planItem = Items.LastOrDefault(item => item.ItemId == value.ItemId && item.Kind == value.Kind);
+                ChatItemViewModel? planItem = FindCurrentTranscriptItem(value, notification);
                 IReadOnlyList<string> steps = ChatItemViewModel.ParsePlanSteps(value.PayloadJson);
                 if (planItem is null)
                 {
-                    planItem = new ChatItemViewModel("Plan", string.Empty, ConversationEventKind.PlanUpdated) { ItemId = value.ItemId };
+                    planItem = new ChatItemViewModel("Plan", string.Empty, ConversationEventKind.PlanUpdated)
+                    {
+                        ItemId = value.ItemId,
+                        ThreadId = value.ThreadId,
+                        TurnId = value.TurnId,
+                        StatePartitionFingerprint = notification.StatePartitionFingerprint,
+                        OwnerGeneration = notification.OwnerGeneration,
+                        ConnectionGeneration = notification.ConnectionGeneration,
+                    };
                     Items.Add(planItem);
                 }
 
@@ -4555,8 +6088,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             // there is no text delta to render.
             if (value.Kind == ConversationEventKind.CommandOutputDelta && string.IsNullOrEmpty(value.Text))
             {
-                ChatItemViewModel? commandItem = Items.LastOrDefault(
-                    item => item.ItemId == value.ItemId && item.Kind == value.Kind);
+                ChatItemViewModel? commandItem = FindCurrentTranscriptItem(value, notification);
                 if (commandItem is not null)
                 {
                     commandItem.IsTruncated |= value.Truncated;
@@ -4599,12 +6131,21 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 renderedText = markdown.ToSafeText(text);
             }
 
-            ChatItemViewModel? existing = Items.LastOrDefault(item => item.ItemId == value.ItemId && item.Kind == value.Kind);
+            ChatItemViewModel? existing = FindCurrentTranscriptItem(value, notification);
+            if (existing?.IsHistoryCompleted == true)
+            {
+                return;
+            }
             if (existing is null)
             {
                 var item = new ChatItemViewModel(role, renderedText, value.Kind)
                 {
                     ItemId = value.ItemId,
+                    ThreadId = value.ThreadId,
+                    TurnId = value.TurnId,
+                    StatePartitionFingerprint = notification.StatePartitionFingerprint,
+                    OwnerGeneration = notification.OwnerGeneration,
+                    ConnectionGeneration = notification.ConnectionGeneration,
                     IsTruncated = value.Truncated,
                     OverflowFile = value.OverflowFile,
                 };
@@ -4614,16 +6155,17 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 }
 
                 Items.Add(item);
+                TrimHistoryWindow();
             }
             else
             {
                 if (value.Kind == ConversationEventKind.CommandOutputDelta)
                 {
-                    existing.AppendCommandOutput(renderedText);
+                    historyBytes += existing.AppendCommandOutput(renderedText);
                 }
                 else
                 {
-                    existing.Text = renderFromAccumulatedText ? renderedText : existing.Text + renderedText;
+                    SetTranscriptText(existing, renderFromAccumulatedText ? renderedText : existing.Text + renderedText);
                 }
                 if (renderFromAccumulatedText)
                 {
@@ -4632,6 +6174,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
                 existing.IsTruncated |= value.Truncated;
                 existing.OverflowFile = value.OverflowFile ?? existing.OverflowFile;
+                TrimHistoryWindow();
             }
         }).ConfigureAwait(false);
 
@@ -4659,6 +6202,32 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
     private static bool ShouldRenderFromAccumulatedText(ConversationEventKind kind)
         => kind is ConversationEventKind.AgentMessageDelta or ConversationEventKind.ReasoningSummaryDelta;
+
+    private ChatItemViewModel? FindCurrentTranscriptItem(ConversationEvent value, WorkerNotification<ConversationEvent> notification)
+    {
+        if (string.IsNullOrWhiteSpace(value.ThreadId) || string.IsNullOrWhiteSpace(value.TurnId) || string.IsNullOrWhiteSpace(value.ItemId))
+        {
+            return null;
+        }
+
+        return Items.LastOrDefault(item =>
+            string.Equals(item.ThreadId, value.ThreadId, StringComparison.Ordinal)
+            && string.Equals(item.TurnId, value.TurnId, StringComparison.Ordinal)
+            && string.Equals(item.ItemId, value.ItemId, StringComparison.Ordinal)
+            && item.Kind == value.Kind
+            && string.Equals(item.StatePartitionFingerprint, notification.StatePartitionFingerprint, StringComparison.Ordinal)
+            && item.OwnerGeneration == notification.OwnerGeneration
+            && item.ConnectionGeneration == notification.ConnectionGeneration);
+    }
+
+    private static long GetConversationEventBytes(ConversationEvent value)
+        => Encoding.UTF8.GetByteCount(value.Text ?? string.Empty)
+            + Encoding.UTF8.GetByteCount(value.PayloadJson ?? string.Empty)
+            + Encoding.UTF8.GetByteCount(value.ThreadId ?? string.Empty)
+            + Encoding.UTF8.GetByteCount(value.TurnId ?? string.Empty)
+            + Encoding.UTF8.GetByteCount(value.ItemId ?? string.Empty)
+            + Encoding.UTF8.GetByteCount(value.OverflowFile ?? string.Empty)
+            + 64;
 
     private Task OnApprovalRequestedAsync(WorkerNotification<ApprovalRequest> notification)
         => OnUiAsync(() =>
@@ -4752,9 +6321,13 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         // The DisplayText lookup must happen before the RPC call: a concurrent approvalResolved
         // echo from the worker can remove the card from the queue while the RPC is in flight.
         string summary = BuildDecisionSummary(requestId, decision);
-        await bridge.ResolveApprovalAsync(
+        bool delivered = await RunTrackedMutationAsync("Approval response", owner, () => bridge.ResolveApprovalAsync(
             StampOwner(new ResolveApprovalRequest { RequestId = requestId, Decision = decision }, owner),
-            lifetime.Token).ConfigureAwait(false);
+            lifetime.Token)).ConfigureAwait(false);
+        if (!delivered)
+        {
+            return;
+        }
         // Copilot Chat parity: the card disappears (via the worker's approvalResolved echo) and the
         // transcript keeps a single, safe result line so the outcome stays visible in context. Only
         // appended once the RPC has actually succeeded, so a failed resolve doesn't leave a
@@ -4877,13 +6450,17 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             return;
         }
 
-        await bridge.ResolveUserInputAsync(
+        bool delivered = await RunTrackedMutationAsync("Choice response", owner, () => bridge.ResolveUserInputAsync(
             StampOwner(new ResolveUserInputRequest
             {
                 RequestId = requestId,
                 Answers = answers.ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal),
             }, owner),
-            lifetime.Token).ConfigureAwait(false);
+            lifetime.Token)).ConfigureAwait(false);
+        if (!delivered)
+        {
+            return;
+        }
         // Appended only after the RPC succeeds, so a failed resolve doesn't leave a result line
         // for a selection the worker never received.
         await OnUiAsync(() =>
@@ -5263,10 +6840,17 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     // already started (and will reject a second attempt), disable Send until that attempt settles.
     private bool CanSend()
         => (!string.IsNullOrWhiteSpace(ComposerText) || (Status.TurnId is null && (HasPendingAttachments || HasPendingSkill)))
+        && !IsRecovering
+        && (SelectedThread is null || IsThreadJoined)
         && !(HasPendingSkill && (Status.State is WorkerConnectionState.Busy or WorkerConnectionState.WaitingForApproval))
         && (Status.State is WorkerConnectionState.Ready or WorkerConnectionState.Busy
                 or WorkerConnectionState.WaitingForApproval
             || (Status.State is WorkerConnectionState.Disconnected && Volatile.Read(ref connecting) == 0));
+
+    private bool CanInterruptSelectedThread()
+        => !IsRecovering && IsThreadJoined && SelectedThread is not null
+            && Status.TurnId is not null
+            && string.Equals(SelectedThread.Id, Status.ThreadId, StringComparison.Ordinal);
 
     private void RaiseCommandStates()
     {
@@ -5283,6 +6867,12 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
         // A connection generation change can clear an in-flight health check.
         CheckProfileHealthCommand?.RaiseCanExecuteChanged();
+        JoinThreadCommand?.RaiseCanExecuteChanged();
+        LoadOlderHistoryCommand?.RaiseCanExecuteChanged();
+        RefreshHistoryCommand?.RaiseCanExecuteChanged();
+        RefreshAttachmentsCommand?.RaiseCanExecuteChanged();
+        RestoreQuarantinedDraftCommand?.RaiseCanExecuteChanged();
+        DiscardQuarantinedDraftCommand?.RaiseCanExecuteChanged();
     }
 
     // In the OOP extension process, Application.Current is null so the null-conditional
@@ -5375,6 +6965,8 @@ public sealed class ChatItemViewModel : ObservableObject
 
     private readonly StringBuilder? commandOutputBuffer;
     private string text = string.Empty;
+    private bool isDeliveryUnknown;
+    private bool isHistoryCompleted;
     private bool isTruncated;
     private string? overflowFile;
     private bool isCollapsed;
@@ -5412,10 +7004,56 @@ public sealed class ChatItemViewModel : ObservableObject
     public string? ItemId { get; set; }
 
     [DataMember]
+    public string? ThreadId { get; set; }
+
+    [DataMember]
+    public string? TurnId { get; set; }
+
+    [DataMember]
+    public string? StatePartitionFingerprint { get; set; }
+
+    [DataMember]
+    public long OwnerGeneration { get; set; }
+
+    [DataMember]
+    public long ConnectionGeneration { get; set; }
+
+    internal string? HistoryKey { get; set; }
+
+    internal bool IsHistoryCompleted
+    {
+        get => isHistoryCompleted;
+        set => isHistoryCompleted = value;
+    }
+
+    [DataMember]
     public string Text
     {
         get => text;
         set => SetProperty(ref text, value);
+    }
+
+    [DataMember]
+    public bool IsDeliveryUnknown
+    {
+        get => isDeliveryUnknown;
+        private set => SetProperty(ref isDeliveryUnknown, value);
+    }
+
+    [DataMember]
+    public string DeliveryStatusText => IsDeliveryUnknown
+        ? "Delivery is unknown. This message was not retried; review it before sending again."
+        : string.Empty;
+
+    internal void MarkDeliveryUnknown()
+    {
+        if (IsDeliveryUnknown)
+        {
+            return;
+        }
+
+        IsDeliveryUnknown = true;
+        OnPropertyChanged(nameof(DeliveryStatusText));
     }
 
     [DataMember]
@@ -5547,11 +7185,11 @@ public sealed class ChatItemViewModel : ObservableObject
             ? 0
             : commandLineBreakCount + (commandEndsWithLineBreak ? 0 : 1);
 
-    internal void AppendCommandOutput(string value)
+    internal int AppendCommandOutput(string value)
     {
         if (!IsCommandItem || string.IsNullOrEmpty(value))
         {
-            return;
+            return 0;
         }
 
         StringBuilder buffer = commandOutputBuffer!;
@@ -5570,6 +7208,7 @@ public sealed class ChatItemViewModel : ObservableObject
         }
 
         RefreshCommandOutputPresentation();
+        return Encoding.UTF8.GetByteCount(value.AsSpan(0, acceptedLength));
     }
 
     private void UpdateCommandLineState(int startIndex)
@@ -6193,6 +7832,109 @@ public abstract class ObservableObject : INotifyPropertyChanged
 // command implements IAsyncCommand for the VS-side proxy and keeps ICommand for local WPF use
 // and unit tests. The proxy reads the IAsyncCommand.CanExecute property and listens to
 // INotifyPropertyChanged("CanExecute") to drive Button.IsEnabled across the process boundary.
+[DataContract]
+public sealed class RecoveryDraftViewModel
+{
+    private readonly string[] attachmentPaths;
+
+    internal RecoveryDraftViewModel(
+        string text,
+        string[] attachmentNames,
+        string[] attachmentPaths,
+        string? model,
+        string? reasoningEffort,
+        string? serviceTier,
+        string? personality,
+        string? collaborationMode,
+        SkillInvocationInfo? skill,
+        bool hasUncertainDelivery,
+        AsyncCommand restoreCommand,
+        AsyncCommand discardCommand,
+        SafeMarkdownService markdown)
+    {
+        Text = text;
+        string safeText = markdown.ToSafeText(text);
+        TextPreview = safeText.Length > 512 ? string.Concat(safeText.AsSpan(0, 512), "…") : safeText;
+        AttachmentSummary = attachmentNames.Length == 0 ? "No file attachments" : string.Join(", ", attachmentNames.Select(markdown.ToSafeText));
+        string? skillSummary = skill is null ? null : $"Skill: {skill.Name} ({skill.Scope})";
+        SettingsSummary = markdown.ToSafeText(string.Join(" · ", new[] { model, reasoningEffort, serviceTier, personality, collaborationMode, skillSummary }.Where(static value => !string.IsNullOrWhiteSpace(value))));
+        this.attachmentPaths = attachmentPaths;
+        Model = model;
+        ReasoningEffort = reasoningEffort;
+        ServiceTier = serviceTier;
+        Personality = personality;
+        CollaborationMode = collaborationMode;
+        Skill = skill;
+        HasUncertainDelivery = hasUncertainDelivery;
+        RestoreCommand = restoreCommand;
+        DiscardCommand = discardCommand;
+    }
+
+    [DataMember]
+    public string TextPreview { get; }
+
+    internal string Text { get; }
+
+    [DataMember]
+    public string AttachmentSummary { get; }
+
+    [DataMember]
+    public string SettingsSummary { get; }
+
+    [DataMember]
+    public bool HasUncertainDelivery { get; }
+
+    [DataMember]
+    public AsyncCommand RestoreCommand { get; }
+
+    [DataMember]
+    public AsyncCommand DiscardCommand { get; }
+
+    internal IReadOnlyList<string> AttachmentPaths => attachmentPaths;
+
+    internal string? Model { get; }
+
+    internal string? ReasoningEffort { get; }
+
+    internal string? ServiceTier { get; }
+
+    internal string? Personality { get; }
+
+    internal string? CollaborationMode { get; }
+
+    internal SkillInvocationInfo? Skill { get; }
+}
+
+[DataContract]
+internal readonly record struct AttachmentMembershipKey(string AttachmentType, string IdentityKey);
+
+public sealed class ThreadAttachmentPresentationViewModel
+{
+    internal ThreadAttachmentPresentationViewModel(ThreadAttachmentMetadata metadata, SafeMarkdownService markdown)
+    {
+        Id = metadata.Id;
+        MembershipKey = new AttachmentMembershipKey(metadata.AttachmentType, metadata.IdentityKey);
+        CreatedAt = metadata.CreatedAt;
+        DisplayText = $"{markdown.ToSafeText(metadata.AttachmentType)} · {markdown.ToSafeText(metadata.IdentityKey)}";
+        StatusText = string.IsNullOrWhiteSpace(metadata.UnavailableReason)
+            ? "Metadata only"
+            : markdown.ToSafeText(metadata.UnavailableReason);
+    }
+
+    [DataMember]
+    public string Id { get; }
+
+    [DataMember]
+    public string DisplayText { get; }
+
+    [DataMember]
+    public string StatusText { get; }
+
+    internal AttachmentMembershipKey MembershipKey { get; }
+
+    internal long CreatedAt { get; }
+}
+
 public sealed class AsyncCommand : ICommand, VSUI.IAsyncCommand, INotifyPropertyChanged
 {
     private static readonly PropertyChangedEventArgs CanExecuteChangedArgs = new(nameof(CanExecute));

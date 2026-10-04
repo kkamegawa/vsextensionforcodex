@@ -17,15 +17,51 @@ public sealed class TransportPoliciesTests
     ];
 
     [TestMethod]
-    public void Allowlist_ContainsExactlyTheEightReviewedReadOnlyMethods()
+    public void Allowlist_ContainsExactlyTheTwelveReviewedReadOnlyMethods()
     {
         CollectionAssert.AreEquivalent(
             new[]
             {
                 "account/read", "account/rateLimits/read", "thread/list", "thread/goal/get",
                 "model/list", "permissionProfile/list", "mcpServerStatus/list", "skills/list",
+                "thread/read", "thread/turns/list", "thread/items/list", "thread/attachment/list",
             },
             ReadOnlyRequestAllowlist.Methods.ToArray());
+    }
+
+    [TestMethod]
+    public void Allowlist_HistoryReadsRequireSafeThreadAndBoundedPageArguments()
+    {
+        Assert.IsTrue(ReadOnlyRequestAllowlist.IsRetryable(
+            "thread/read",
+            new { threadId = "thread-1", includeTurns = false }));
+        Assert.IsFalse(ReadOnlyRequestAllowlist.IsRetryable(
+            "thread/read",
+            new { threadId = "thread-1", includeTurns = true }));
+        Assert.IsTrue(ReadOnlyRequestAllowlist.IsRetryable(
+            "thread/turns/list",
+            new { threadId = "thread-1", cursor = (string?)null, limit = 50, itemsView = "summary" }));
+        Assert.IsFalse(ReadOnlyRequestAllowlist.IsRetryable(
+            "thread/turns/list",
+            new { threadId = "thread-1", limit = 51 }));
+        Assert.IsTrue(ReadOnlyRequestAllowlist.IsRetryable(
+            "thread/items/list",
+            new { threadId = "thread-1", turnId = (string?)null, cursor = (string?)null, limit = 100 }));
+        Assert.IsFalse(ReadOnlyRequestAllowlist.IsRetryable(
+            "thread/items/list",
+            new { threadId = "thread-1", cursor = new { type = "item", itemId = "item-1" }, limit = 100 }));
+        Assert.IsTrue(ReadOnlyRequestAllowlist.IsRetryable(
+            "thread/items/list",
+            new { threadId = "thread-1", turnId = "turn-1", cursor = new { type = "item", itemId = "item-1" }, limit = 100 }));
+        Assert.IsTrue(ReadOnlyRequestAllowlist.IsRetryable(
+            "thread/attachment/list",
+            new { threadId = "thread-1", cursor = (string?)null, limit = 50 }));
+        Assert.IsFalse(ReadOnlyRequestAllowlist.IsRetryable(
+            "thread/attachment/list",
+            new { threadId = "thread-1", limit = 51 }));
+        Assert.IsFalse(ReadOnlyRequestAllowlist.IsRetryable(
+            "thread/attachment/list",
+            new { threadId = "", limit = 50 }));
     }
 
     [TestMethod]

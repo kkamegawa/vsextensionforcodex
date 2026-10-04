@@ -424,3 +424,19 @@ prove a stable account for every provider, so those owners use volatile partitio
 of sharing workspace-only persisted skill state. Account/principal replacement retires the
 previous remote socket before new-owner state is activated. A logout or sign-in started by the
 owner then connects a new owner automatically; an unsolicited account change ends in Degraded.
+
+## 15. Connection and history recovery
+
+The [Issue #153 design](connection-history-recovery-design.md) and its
+[Japanese translation](connection-history-recovery-design_ja.md) define connection
+and history recovery. Worker contract v19 adds bounded history and attachment
+metadata reads. An Extension-owned coordinator recovers transient failures with
+five bounded attempts. It preserves the active owner boundary in section 14:
+only an isolated, in-memory old-owner draft may survive retirement, and explicit
+connection/conversation review is required before copying it into the composer.
+Restoration and sending are separate actions.
+
+History uses bounded read-only pages and generation-stamped notification
+merging. Joining a conversation remains an explicit resume action. Attachment
+notifications identify membership changes; bounded list reads supply metadata.
+Operations with uncertain delivery are never replayed automatically.

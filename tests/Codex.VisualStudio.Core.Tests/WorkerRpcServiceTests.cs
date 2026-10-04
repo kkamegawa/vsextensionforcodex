@@ -38,6 +38,33 @@ public sealed class WorkerRpcServiceTests
     }
 
     [TestMethod]
+    public async Task LocalConnectCancellation_StaysCancellationAndStopsThePartialProcess()
+    {
+        // A recovery attempt deadline cancels the connect. It must surface as cancellation, not a
+        // terminal Degraded status, so the coordinator can retry it as an unresponsive peer.
+        using var cancellation = new CancellationTokenSource();
+        var host = new FakeProcessHost(new StubConnection())
+        {
+            OnStartLocal = token =>
+            {
+                cancellation.Cancel();
+                token.ThrowIfCancellationRequested();
+                return Task.CompletedTask;
+            },
+        };
+        var session = new CodexSessionService(new ApprovalPolicyEngine(new PathAccessPolicy()), new SecretRedactor());
+        await using var worker = new WorkerRpcService(new SecretRedactor(), host, session);
+
+        await Assert.ThrowsAsync<OperationCanceledException>(
+            () => worker.ConnectAsync(Options(), cancellation.Token));
+
+        WorkerStatus status = await worker.GetStatusAsync(CancellationToken.None);
+        Assert.AreEqual(1, host.Stops);
+        Assert.AreEqual(WorkerConnectionState.Degraded, status.State);
+        Assert.AreEqual(WorkerRecoveryFailureKind.Cancelled, status.RecoveryFailureKind);
+    }
+
+    [TestMethod]
     public async Task ListModels_DelegatesToSession()
     {
         var connection = new StubConnection
@@ -60,6 +87,144 @@ public sealed class WorkerRpcServiceTests
         Assert.AreEqual(1, result.Models.Count);
         Assert.AreEqual("gpt-5-codex", result.Models[0].Id);
         Assert.AreEqual("gpt-5-codex", result.DefaultModel);
+    }
+
+    [TestMethod]
+    public async Task HistoryPagesAreOwnerStampedAndResumeRequiresExplicitConfirmation()
+    {
+        var connection = new StubConnection
+        {
+            Handler = method => method switch
+            {
+                "thread/list" => JsonSerializer.SerializeToElement(new { data = Array.Empty<object>(), nextCursor = (string?)null }),
+                "thread/resume" => JsonSerializer.SerializeToElement(new { thread = new { id = "thread-1" } }),
+                _ => JsonSerializer.SerializeToElement(new { }),
+            },
+        };
+        var session = new CodexSessionService(new ApprovalPolicyEngine(new PathAccessPolicy()), new SecretRedactor());
+        await using var worker = new WorkerRpcService(new SecretRedactor(), new FakeProcessHost(connection), session);
+        await worker.ConnectAsync(Options(), CancellationToken.None);
+
+        ThreadPage page = await worker.ListThreadsAsync(Scoped(worker, new ListThreadsRequest()), CancellationToken.None);
+        WorkerStatus status = await worker.GetStatusAsync(CancellationToken.None);
+        Assert.AreEqual(status.Target!.OwnerGeneration, page.OwnerGeneration);
+        Assert.AreEqual(status.Target.Generation, page.ConnectionGeneration);
+        Assert.AreEqual(status.Target.StatePartitionFingerprint, page.StatePartitionFingerprint);
+
+        int resumeCallsBefore = connection.Methods.Count(method => method == "thread/resume");
+        await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => worker.ResumeThreadAsync(
+            Scoped(worker, new ResumeThreadRequest { ThreadId = "thread-1" }),
+            CancellationToken.None));
+        Assert.AreEqual(resumeCallsBefore, connection.Methods.Count(method => method == "thread/resume"));
+
+        await worker.ResumeThreadAsync(
+            Scoped(worker, new ResumeThreadRequest { ThreadId = "thread-1", UserConfirmed = true }),
+            CancellationToken.None);
+        Assert.AreEqual(resumeCallsBefore + 1, connection.Methods.Count(method => method == "thread/resume"));
+    }
+
+    [TestMethod]
+    public async Task StartTurn_RejectsStaleSkillWithTypedCodeBeforeSendingTurnStart()
+    {
+        var connection = new StubConnection
+        {
+            Handler = method => method == "skills/list"
+                ? JsonSerializer.SerializeToElement(new { data = Array.Empty<object>() })
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        var session = new CodexSessionService(new ApprovalPolicyEngine(new PathAccessPolicy()), new SecretRedactor());
+        await using var worker = new WorkerRpcService(new SecretRedactor(), new FakeProcessHost(connection), session);
+        await worker.ConnectAsync(Options(), CancellationToken.None);
+
+        LocalRpcException rejected = await Assert.ThrowsExactlyAsync<LocalRpcException>(() => worker.StartTurnAsync(
+            Scoped(worker, new StartTurnRequest
+            {
+                ThreadId = "thread-1",
+                Text = "run selected skill",
+                Skill = new SkillInvocationInfo
+                {
+                    Name = "stale-skill",
+                    Scope = "repo",
+                    Path = "/repo/.codex/skills/stale-skill/SKILL.md",
+                },
+            }),
+            CancellationToken.None));
+
+        Assert.AreEqual(WorkerErrorCodes.SkillRejected, rejected.ErrorCode);
+        Assert.IsTrue(connection.Methods.Contains("skills/list"));
+        Assert.IsFalse(connection.Methods.Contains("turn/start"));
+    }
+
+    [TestMethod]
+    public async Task StartTurn_ReclassifiesUpstreamErrorCodesThatOverlapLocalPreDispatchCodes()
+    {
+        var connection = new StubConnection
+        {
+            AsyncHandler = (method, _, _) => method == "turn/start"
+                ? Task.FromException<JsonElement>(new RemoteInvocationException(
+                    "remote attachment error",
+                    WorkerErrorCodes.AttachmentRejected,
+                    "RemoteError"))
+                : Task.FromResult(JsonSerializer.SerializeToElement(new { })),
+        };
+        var session = new CodexSessionService(new ApprovalPolicyEngine(new PathAccessPolicy()), new SecretRedactor());
+        await using var worker = new WorkerRpcService(new SecretRedactor(), new FakeProcessHost(connection), session);
+        await worker.ConnectAsync(Options(), CancellationToken.None);
+
+        LocalRpcException error = await Assert.ThrowsExactlyAsync<LocalRpcException>(() => worker.StartTurnAsync(
+            Scoped(worker, new StartTurnRequest { ThreadId = "thread-1", Text = "hello" }),
+            CancellationToken.None));
+
+        Assert.AreEqual(WorkerErrorCodes.UpstreamOperationFailed, error.ErrorCode);
+        Assert.IsTrue(connection.Methods.Contains("turn/start"));
+    }
+
+    [TestMethod]
+    public async Task StartTurn_MapsSkillPreflightRpcFailureToPreDispatchRejection()
+    {
+        var connection = new StubConnection
+        {
+            AsyncHandler = (method, _, _) => method == "skills/list"
+                ? Task.FromException<JsonElement>(new RemoteInvocationException("skill catalog unavailable", -32000, "RemoteError"))
+                : Task.FromResult(JsonSerializer.SerializeToElement(new { })),
+        };
+        var session = new CodexSessionService(new ApprovalPolicyEngine(new PathAccessPolicy()), new SecretRedactor());
+        await using var worker = new WorkerRpcService(new SecretRedactor(), new FakeProcessHost(connection), session);
+        await worker.ConnectAsync(Options(), CancellationToken.None);
+
+        LocalRpcException error = await Assert.ThrowsExactlyAsync<LocalRpcException>(() => worker.StartTurnAsync(
+            Scoped(worker, new StartTurnRequest
+            {
+                ThreadId = "thread-1",
+                Text = "hello",
+                Skill = new SkillInvocationInfo { Name = "skill", Scope = "repo", Path = "/repo/SKILL.md" },
+            }),
+            CancellationToken.None));
+
+        Assert.AreEqual(WorkerErrorCodes.PreDispatchRejected, error.ErrorCode);
+        Assert.IsTrue(connection.Methods.Contains("skills/list"));
+        Assert.IsFalse(connection.Methods.Contains("turn/start"));
+    }
+
+    [TestMethod]
+    public async Task StartTurn_MapsCancellationInsideDispatchedRequestToUnknownOutcome()
+    {
+        var connection = new StubConnection
+        {
+            AsyncHandler = (method, _, _) => method == "turn/start"
+                ? Task.FromException<JsonElement>(new OperationCanceledException("response wait cancelled"))
+                : Task.FromResult(JsonSerializer.SerializeToElement(new { })),
+        };
+        var session = new CodexSessionService(new ApprovalPolicyEngine(new PathAccessPolicy()), new SecretRedactor());
+        await using var worker = new WorkerRpcService(new SecretRedactor(), new FakeProcessHost(connection), session);
+        await worker.ConnectAsync(Options(), CancellationToken.None);
+
+        LocalRpcException error = await Assert.ThrowsExactlyAsync<LocalRpcException>(() => worker.StartTurnAsync(
+            Scoped(worker, new StartTurnRequest { ThreadId = "thread-1", Text = "hello" }),
+            CancellationToken.None));
+
+        Assert.AreEqual(WorkerErrorCodes.UpstreamOperationFailed, error.ErrorCode);
+        Assert.IsTrue(connection.Methods.Contains("turn/start"));
     }
 
     [TestMethod]
@@ -422,6 +587,23 @@ public sealed class WorkerRpcServiceTests
 
         WorkerStatus lost = await WaitForStatusAsync(worker, WorkerConnectionState.Degraded);
         StringAssert.Contains(lost.Message, "Reconnect");
+    }
+
+    [TestMethod]
+    public async Task FirstNetworkFailureOnStandardErrorMarksServerUnavailable()
+    {
+        var connection = new StubConnection();
+        var host = new FakeProcessHost(connection);
+        var session = new CodexSessionService(new ApprovalPolicyEngine(new PathAccessPolicy()), new SecretRedactor());
+        await using var worker = new WorkerRpcService(new SecretRedactor(), host, session);
+        await worker.ConnectAsync(Options(), CancellationToken.None);
+
+        host.EmitStandardError(
+            "ERROR codex_api::endpoint::responses_websocket: failed to connect to websocket: " +
+            "IO error: ... (os error 11003), url: wss://chatgpt.com/backend-api/codex/responses");
+
+        WorkerStatus degraded = await WaitForStatusAsync(worker, WorkerConnectionState.Degraded);
+        Assert.AreEqual(WorkerRecoveryFailureKind.ServerUnavailable, degraded.RecoveryFailureKind);
     }
 
     [TestMethod]
@@ -1124,13 +1306,18 @@ public sealed class WorkerRpcServiceTests
     private sealed class FakeProcessHost : ICodexProcessHost
     {
         private readonly IJsonRpcConnection? connection;
+        private EventHandler<string>? standardErrorReceived;
 
         public FakeProcessHost(IJsonRpcConnection? connection = null)
         {
             this.connection = connection;
         }
 
-        public event EventHandler<string>? StandardErrorReceived { add { } remove { } }
+        public event EventHandler<string>? StandardErrorReceived
+        {
+            add => standardErrorReceived += value;
+            remove => standardErrorReceived -= value;
+        }
 
         public event EventHandler<int>? Exited { add { } remove { } }
 
@@ -1144,12 +1331,16 @@ public sealed class WorkerRpcServiceTests
 
         public Action? OnStop { get; init; }
 
+        public void EmitStandardError(string text) => standardErrorReceived?.Invoke(this, text);
+
         public Func<RemoteConnectionRequest, CancellationToken, Task>? OnStartRemote { get; set; }
 
         public RemoteConnectionRequest? LastRemoteRequest { get; private set; }
 
+        public Func<CancellationToken, Task>? OnStartLocal { get; set; }
+
         public Task StartAsync(string codexPath, string workingDirectory, CancellationToken cancellationToken)
-            => Task.CompletedTask;
+            => OnStartLocal?.Invoke(cancellationToken) ?? Task.CompletedTask;
 
         public Task StartRemoteAsync(RemoteConnectionRequest request, CancellationToken cancellationToken)
         {

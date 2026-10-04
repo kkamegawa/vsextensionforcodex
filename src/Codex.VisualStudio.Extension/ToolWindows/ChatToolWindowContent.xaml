@@ -734,7 +734,7 @@
                    VerticalOffset="2"
                    AllowsTransparency="True"
                    PopupAnimation="Fade">
-              <Border Width="280" MaxHeight="380" CornerRadius="6" BorderThickness="1"
+              <Border Width="340" MaxHeight="560" CornerRadius="6" BorderThickness="1"
                       Focusable="True"
                       KeyboardNavigation.TabNavigation="Cycle"
                       Background="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBackgroundBrushKey}}"
@@ -743,9 +743,48 @@
                   <KeyBinding Key="Escape" Command="{Binding CloseHistoryCommand}" />
                 </Border.InputBindings>
                 <DockPanel Margin="6">
-                  <Button DockPanel.Dock="Bottom" Margin="0,6,0,0" Content="Load more"
-                          Command="{Binding LoadMoreCommand}"
-                          Style="{StaticResource SmallRoundButtonStyle}" />
+                  <StackPanel DockPanel.Dock="Bottom" Margin="0,6,0,0">
+                    <TextBlock Margin="2,4" Text="{Binding HistoryStatusText}" TextWrapping="Wrap"
+                               Visibility="{Binding HasHistoryNotice, Converter={StaticResource BoolToVis}}"
+                               AutomationProperties.LiveSetting="Polite" />
+                    <TextBlock Margin="2,0,2,4" Opacity="0.75" Text="{Binding HistoryTurnSummaryText}"
+                               Visibility="{Binding IsHistoryOnly, Converter={StaticResource BoolToVis}}" />
+                    <WrapPanel>
+                      <Button Margin="0,0,4,4" Content="Join conversation"
+                              Command="{Binding JoinThreadCommand}"
+                              Visibility="{Binding IsHistoryOnly, Converter={StaticResource BoolToVis}}"
+                              Style="{StaticResource SmallRoundButtonStyle}"
+                              AutomationProperties.Name="Join selected conversation" />
+                      <Button Margin="0,0,4,4" Content="Load older"
+                              Command="{Binding LoadOlderHistoryCommand}"
+                              Style="{StaticResource SmallRoundButtonStyle}" />
+                      <Button Margin="0,0,4,4" Content="Refresh history"
+                              Command="{Binding RefreshHistoryCommand}"
+                              Visibility="{Binding IsHistoryStale, Converter={StaticResource BoolToVis}}"
+                              Style="{StaticResource SmallRoundButtonStyle}" />
+                      <Button Margin="0,0,4,4" Content="Refresh attachments"
+                              Command="{Binding RefreshAttachmentsCommand}"
+                              Style="{StaticResource SmallRoundButtonStyle}" />
+                      <Button Margin="0,0,4,4" Content="Load more conversations"
+                              Command="{Binding LoadMoreCommand}"
+                              Style="{StaticResource SmallRoundButtonStyle}" />
+                    </WrapPanel>
+                    <ItemsControl MaxHeight="130" ItemsSource="{Binding ThreadAttachments}"
+                                  AutomationProperties.Name="Conversation attachment metadata">
+                      <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                          <StackPanel Margin="2,3">
+                            <TextBlock FontWeight="SemiBold" Text="{Binding DisplayText}" TextWrapping="Wrap" />
+                            <TextBlock Opacity="0.75" FontSize="10" Text="{Binding StatusText}" TextWrapping="Wrap" />
+                          </StackPanel>
+                        </DataTemplate>
+                      </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                    <TextBlock Margin="2,2" Opacity="0.75" FontSize="10"
+                               Text="{Binding ThreadAttachmentsStatusText}"
+                               TextWrapping="Wrap"
+                               AutomationProperties.LiveSetting="Polite" />
+                  </StackPanel>
                   <ListBox Background="Transparent"
                            BorderThickness="0"
                            Foreground="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowTextBrushKey}}"
@@ -810,6 +849,10 @@
                        ToolTip="{Binding StatusAutomationHelpText}" />
           </Grid>
           <TextBlock Opacity="0.8" Text="{Binding StatusDetailText}" TextTrimming="CharacterEllipsis" />
+          <TextBlock Margin="0,3,0,0" Text="{Binding RecoveryStatusText}" TextWrapping="Wrap"
+                     Visibility="{Binding HasRecoveryStatus, Converter={StaticResource BoolToVis}}"
+                     AutomationProperties.Name="Connection recovery status"
+                     AutomationProperties.LiveSetting="Polite" />
         </StackPanel>
       </DockPanel>
     </Border>
@@ -862,6 +905,18 @@
                   <TextBlock FontWeight="SemiBold"
                              Foreground="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowTextBrushKey}}"
                              Text="{Binding Role}" />
+
+                  <Border Margin="0,6,0,0"
+                          Padding="6,4"
+                          BorderThickness="1"
+                          BorderBrush="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBorderBrushKey}}"
+                          Background="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBackgroundBrushKey}}"
+                          Visibility="{Binding IsDeliveryUnknown, Converter={StaticResource BoolToVis}}"
+                          AutomationProperties.LiveSetting="Polite">
+                    <TextBlock Text="{Binding DeliveryStatusText}"
+                               TextWrapping="Wrap"
+                               AutomationProperties.Name="Message delivery status" />
+                  </Border>
 
                   <!-- Collapse toggle button — visible only for reasoning items. -->
                   <Button Margin="0,4,0,0"
@@ -1560,6 +1615,32 @@
                visible at once (a turn may carry file attachments and a skill together), so they
                share this row as a vertical stack instead of overlapping in the same Grid cell. -->
           <StackPanel Grid.Row="1">
+            <Border Margin="10,8,10,0" Padding="8" CornerRadius="6" BorderThickness="1"
+                    Background="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBackgroundBrushKey}}"
+                    BorderBrush="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBorderBrushKey}}"
+                    Visibility="{Binding HasQuarantinedDraft, Converter={StaticResource BoolToVis}}"
+                    AutomationProperties.Name="Quarantined draft recovery">
+              <StackPanel>
+                <TextBlock FontWeight="SemiBold" Text="Draft held for review" />
+                <TextBlock Margin="0,4,0,0" Text="{Binding QuarantinedDraft.TextPreview}" TextWrapping="Wrap" MaxHeight="72" />
+                <TextBlock Margin="0,3,0,0" Opacity="0.75" Text="{Binding QuarantinedDraft.AttachmentSummary}" TextWrapping="Wrap" />
+                <TextBlock Margin="0,3,0,0" Opacity="0.75" Text="{Binding QuarantinedDraft.SettingsSummary}" TextWrapping="Wrap" />
+                <TextBlock Margin="0,3,0,0" FontWeight="SemiBold"
+                           Text="An earlier send has an unknown outcome. It was not replayed; review the conversation before sending again."
+                           Visibility="{Binding QuarantinedDraft.HasUncertainDelivery, Converter={StaticResource BoolToVis}}"
+                           TextWrapping="Wrap" AutomationProperties.LiveSetting="Assertive" />
+                <WrapPanel Margin="0,6,0,0">
+                  <Button Content="Restore to composer"
+                          Command="{Binding RestoreQuarantinedDraftCommand}"
+                          Style="{StaticResource SmallRoundButtonStyle}"
+                          AutomationProperties.Name="Restore quarantined draft to composer" />
+                  <Button Margin="6,0,0,0" Content="Discard"
+                          Command="{Binding DiscardQuarantinedDraftCommand}"
+                          Style="{StaticResource SmallRoundButtonStyle}"
+                          AutomationProperties.Name="Discard quarantined draft" />
+                </WrapPanel>
+              </StackPanel>
+            </Border>
             <!-- Pending attachments are compact, removable chips above the prompt. -->
             <ItemsControl Margin="10,8,10,0"
                           ItemsSource="{Binding PendingAttachments}"

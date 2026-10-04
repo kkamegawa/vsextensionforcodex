@@ -202,6 +202,418 @@ public sealed class ViewModelTests
         Assert.AreEqual(string.Empty, vm.ComposerText);
     }
 
+    [TestMethod]
+    public async Task ChatViewModel_SelectingHistoryIsReadOnlyUntilExplicitJoin()
+    {
+        var bridge = new FakeWorkerBridge();
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready });
+
+        var thread = new ThreadSummary { Id = "thread-history" };
+        vm.Threads.Add(thread);
+        vm.SelectedThread = thread;
+        await WaitForAsync(() => vm.HistoryStatusText.Contains("history", StringComparison.OrdinalIgnoreCase));
+
+        Assert.IsTrue(vm.IsHistoryOnly);
+        Assert.IsNull(bridge.LastResumeRequest);
+        Assert.IsTrue(vm.JoinThreadCommand.CanExecute, "Joining is available only as an explicit user action.");
+        Assert.IsFalse(vm.SendCommand.CanExecute);
+
+        await RunCommandAsync(vm.JoinThreadCommand);
+
+        Assert.AreEqual("thread-history", bridge.LastResumeRequest!.ThreadId);
+        Assert.IsTrue(bridge.LastResumeRequest.UserConfirmed);
+        Assert.IsTrue(vm.IsThreadJoined);
+        Assert.IsFalse(vm.IsHistoryOnly);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_OwnerChangeQuarantinesDraftAndRestoreRequiresJoinedThread()
+    {
+        var bridge = new FakeWorkerBridge();
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        await bridge.PublishStateAsync(OwnerStatus("owner-a", 1, 4));
+        vm.ComposerText = "unsubmitted prompt";
+
+        await bridge.PublishStateAsync(OwnerStatus("owner-b", 2, 5));
+
+        Assert.AreEqual(string.Empty, vm.ComposerText);
+        Assert.IsNotNull(vm.QuarantinedDraft);
+        Assert.IsFalse(vm.RestoreQuarantinedDraftCommand.CanExecute);
+
+        var thread = new ThreadSummary { Id = "new-owner-thread" };
+        vm.Threads.Add(thread);
+        vm.SelectedThread = thread;
+        await WaitForAsync(() => vm.HistoryStatusText.Contains("history", StringComparison.OrdinalIgnoreCase));
+        Assert.IsFalse(vm.RestoreQuarantinedDraftCommand.CanExecute);
+
+        await RunCommandAsync(vm.JoinThreadCommand);
+        Assert.IsTrue(vm.RestoreQuarantinedDraftCommand.CanExecute);
+        await RunCommandAsync(vm.RestoreQuarantinedDraftCommand);
+
+        Assert.AreEqual("unsubmitted prompt", vm.ComposerText);
+        Assert.IsNull(vm.QuarantinedDraft);
+        StringAssert.Contains(vm.RecoveryStatusText, "settings were unavailable");
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_DiscardQuarantinedDraftDoesNotPopulateComposer()
+    {
+        var bridge = new FakeWorkerBridge();
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        await bridge.PublishStateAsync(OwnerStatus("owner-a", 1, 4));
+        vm.ComposerText = "do not send automatically";
+        await bridge.PublishStateAsync(OwnerStatus("owner-b", 2, 5));
+
+        await RunCommandAsync(vm.DiscardQuarantinedDraftCommand);
+
+        Assert.IsNull(vm.QuarantinedDraft);
+        Assert.AreEqual(string.Empty, vm.ComposerText);
+        Assert.IsNull(bridge.LastStartTurnRequest);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_HistoryWindowOverflowMarksStaleAndKeepsVisibleBound()
+    {
+        var bridge = new FakeWorkerBridge();
+        bridge.ListThreadItemsHandler = (request, _) =>
+        {
+            int start = request.Cursor is null
+                ? 0
+                : int.TryParse(request.Cursor.Value, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out int cursorValue)
+                    ? cursorValue
+                    : throw new InvalidOperationException("The fake history cursor must be an integer.");
+            int end = Math.Min(start + request.Limit, 1001);
+            ThreadHistoryItem[] items = Enumerable.Range(start, end - start)
+                .Select(index => new ThreadHistoryItem
+                {
+                    Id = $"history-{index}",
+                    TurnId = "turn-history",
+                    Type = "assistant_message",
+                    Text = $"history row {index}",
+                })
+                .ToArray();
+            string? nextCursor = end < 1001 ? end.ToString(System.Globalization.CultureInfo.InvariantCulture) : null;
+            return Task.FromResult(new ThreadItemsPage { Items = items, NextCursor = nextCursor });
+        };
+
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready });
+        var thread = new ThreadSummary { Id = "thread-history-bound" };
+        vm.Threads.Add(thread);
+        vm.SelectedThread = thread;
+        await WaitForAsync(() => vm.CanLoadOlderHistory);
+
+        while (vm.CanLoadOlderHistory && !vm.IsHistoryStale)
+        {
+            await RunCommandAsync(vm.LoadOlderHistoryCommand);
+        }
+
+        Assert.IsTrue(vm.IsHistoryStale);
+        Assert.IsTrue(vm.HasHistoryNotice);
+        Assert.IsTrue(vm.HistoryStatusText.Contains("Refresh", StringComparison.OrdinalIgnoreCase));
+        Assert.IsTrue(vm.Items.Count <= 1000);
+        Assert.IsTrue(vm.RefreshHistoryCommand.CanExecute);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_HistoryPagesRenderChronologicallyAndNewThreadClearsCursor()
+    {
+        var bridge = new FakeWorkerBridge();
+        bridge.ListThreadItemsHandler = (request, _) => Task.FromResult(request.Cursor is null
+            ? new ThreadItemsPage
+            {
+                Items = [HistoryItem("h3"), HistoryItem("h2")],
+                NextCursor = "older",
+            }
+            : new ThreadItemsPage { Items = [HistoryItem("h1"), HistoryItem("h0")] });
+        bridge.ListThreadTurnsHandler = (request, _) => Task.FromResult(request.Cursor is null
+            ? new ThreadTurnsPage { Turns = [new ThreadTurnSummary { Id = "turn-3" }, new ThreadTurnSummary { Id = "turn-2" }], NextCursor = "older-turns" }
+            : new ThreadTurnsPage { Turns = [new ThreadTurnSummary { Id = "turn-1" }, new ThreadTurnSummary { Id = "turn-0" }] });
+
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready });
+        var oldThread = new ThreadSummary { Id = "old-thread" };
+        vm.Threads.Add(oldThread);
+        vm.SelectedThread = oldThread;
+        await WaitForAsync(() => vm.CanLoadOlderHistory);
+
+        CollectionAssert.AreEqual(new List<string> { "h2", "h3" }, HistoryItemIds(vm));
+        CollectionAssert.AreEqual(new List<string> { "turn-2", "turn-3" }, vm.ThreadTurns.Select(static turn => turn.Id).ToList());
+        await RunCommandAsync(vm.LoadOlderHistoryCommand);
+        CollectionAssert.AreEqual(new List<string> { "h0", "h1", "h2", "h3" }, HistoryItemIds(vm));
+        CollectionAssert.AreEqual(new List<string> { "turn-0", "turn-1", "turn-2", "turn-3" }, vm.ThreadTurns.Select(static turn => turn.Id).ToList());
+
+        await RunCommandAsync(vm.NewThreadCommand);
+        Assert.AreEqual("thread-1", vm.SelectedThread!.Id);
+        Assert.IsFalse(vm.CanLoadOlderHistory, "A new conversation must not inherit the previous thread's cursor.");
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_ReplaysLiveEventsBufferedDuringOlderPageLoad()
+    {
+        bool olderPageRequested = false;
+        using var releaseOlder = new ManualResetEventSlim();
+        var bridge = new FakeWorkerBridge
+        {
+            ListThreadItemsHandler = (request, _) =>
+            {
+                if (request.Cursor is null)
+                {
+                    return Task.FromResult(new ThreadItemsPage { Items = [HistoryItem("newest")], NextCursor = "older" });
+                }
+
+                olderPageRequested = true;
+                return Task.Run(() =>
+                {
+                    releaseOlder.Wait();
+                    return new ThreadItemsPage { Items = [HistoryItem("older")] };
+                });
+            },
+        };
+
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready });
+        var thread = new ThreadSummary { Id = "thread-live-buffer" };
+        vm.Threads.Add(thread);
+        vm.SelectedThread = thread;
+        await WaitForAsync(() => vm.CanLoadOlderHistory);
+
+        Task loadOlder = RunCommandAsync(vm.LoadOlderHistoryCommand);
+        await WaitForAsync(() => olderPageRequested);
+        await RaiseConversationEventAsync(vm, new ConversationEvent
+        {
+            ThreadId = thread.Id,
+            TurnId = "turn-live",
+            ItemId = "live-item",
+            Kind = ConversationEventKind.AgentMessageDelta,
+            Text = "live update",
+        });
+        releaseOlder.Set();
+        await loadOlder;
+
+        await WaitForAsync(() => vm.Items.Any(item => item.ItemId == "live-item"));
+        Assert.IsTrue(vm.Items.Any(item => item.ItemId == "live-item" && item.Text.Contains("live update", StringComparison.Ordinal)));
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_ThreadlessErrorEventIsShownInTranscript()
+    {
+        var bridge = new FakeWorkerBridge();
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready });
+        vm.SelectedThread = new ThreadSummary { Id = "thread-error-context" };
+
+        MethodInfo method = typeof(ChatViewModel).GetMethod("OnConversationEventAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
+        await (Task)method.Invoke(vm, [Notification(new ConversationEvent
+        {
+            Kind = ConversationEventKind.Error,
+            Text = "The connection was interrupted.",
+        })])!;
+
+        Assert.IsTrue(vm.Items.Any(item => item.Kind == ConversationEventKind.Error
+            && item.Text.Contains("connection was interrupted", StringComparison.OrdinalIgnoreCase)));
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_ConnectionLossKeepsUnknownOutcomeNoticeAfterTranscriptReset()
+    {
+        var bridge = new FakeWorkerBridge();
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready });
+        var inFlight = new ChatItemViewModel("You", "request pending", ConversationEventKind.ItemStarted);
+        vm.Items.Add(inFlight);
+        FieldInfo mutationsField = typeof(ChatViewModel).GetField("inFlightMutations", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        var mutations = (Dictionary<Guid, ChatItemViewModel>)mutationsField.GetValue(vm)!;
+        mutations.Add(Guid.NewGuid(), inFlight);
+
+        MethodInfo method = typeof(ChatViewModel).GetMethod("HandleConnectionLostAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
+        await (Task)method.Invoke(vm, [bridge, WorkerRecoveryFailureKind.PeerUnresponsive])!;
+
+        Assert.IsTrue(vm.Items.Any(item => item.Kind == ConversationEventKind.Error
+            && item.Text.Contains("unknown delivery outcome", StringComparison.OrdinalIgnoreCase)));
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_ConnectionLossKeepsPreviouslyUnknownOutcomeNotice()
+    {
+        var bridge = new FakeWorkerBridge();
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready });
+        var unresolved = new ChatItemViewModel("You", "earlier message", ConversationEventKind.ItemStarted);
+        unresolved.MarkDeliveryUnknown();
+        vm.Items.Add(unresolved);
+
+        MethodInfo method = typeof(ChatViewModel).GetMethod("HandleConnectionLostAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
+        await (Task)method.Invoke(vm, [bridge, WorkerRecoveryFailureKind.PeerUnresponsive])!;
+
+        Assert.IsTrue(vm.Items.Any(item => item.Kind == ConversationEventKind.Error
+            && item.Text.Contains("1 unresolved operation", StringComparison.OrdinalIgnoreCase)
+            && item.Text.Contains("unknown delivery outcome", StringComparison.OrdinalIgnoreCase)));
+    }
+
+    private static ThreadHistoryItem HistoryItem(string id)
+        => new() { Id = id, TurnId = $"turn-{id}", Type = "assistant_message", Text = id };
+
+    private static string[] HistoryItemIds(ChatViewModel vm)
+        => vm.Items.Where(static item => item.HistoryKey is not null).Select(static item => item.ItemId!).ToArray();
+
+    [TestMethod]
+    public async Task ChatViewModel_AttachmentMetadataCapIsVisible()
+    {
+        var bridge = new FakeWorkerBridge();
+        bridge.ListThreadAttachmentsHandler = (request, _) =>
+        {
+            int start = request.Cursor is null
+                ? 0
+                : int.TryParse(request.Cursor, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out int cursorValue)
+                    ? cursorValue
+                    : throw new InvalidOperationException("The fake attachment cursor must be an integer.");
+            int end = Math.Min(start + request.Limit, 120);
+            ThreadAttachmentMetadata[] attachments = Enumerable.Range(start, end - start)
+                .Select(index => new ThreadAttachmentMetadata
+                {
+                    Id = $"attachment-{index}",
+                    AttachmentType = "image",
+                    IdentityKey = $"sha256:identity-{index}",
+                })
+                .ToArray();
+            string? nextCursor = end < 120 ? end.ToString(System.Globalization.CultureInfo.InvariantCulture) : null;
+            return Task.FromResult(new ThreadAttachmentsPage { Attachments = attachments, NextCursor = nextCursor });
+        };
+
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready });
+        var thread = new ThreadSummary { Id = "thread-attachments" };
+        vm.Threads.Add(thread);
+        vm.SelectedThread = thread;
+
+        await WaitForAsync(() => vm.ThreadAttachments.Count == 100 && !string.IsNullOrWhiteSpace(vm.ThreadAttachmentsStatusText));
+
+        Assert.IsTrue(vm.HasHistoryNotice);
+        StringAssert.Contains(vm.ThreadAttachmentsStatusText, "first 100");
+        Assert.AreEqual(100, vm.ThreadAttachments.Count);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_AttachmentMembershipIsKeyedByTypeAndIdentity()
+    {
+        var bridge = new FakeWorkerBridge();
+        bridge.ListThreadAttachmentsHandler = (_, _) => Task.FromResult(new ThreadAttachmentsPage
+        {
+            Attachments =
+            [
+                new ThreadAttachmentMetadata { Id = "attachment-old", AttachmentType = "image", IdentityKey = "sha256:same", CreatedAt = 1 },
+                new ThreadAttachmentMetadata { Id = "attachment-other", AttachmentType = "image", IdentityKey = "sha256:other", CreatedAt = 1 },
+                new ThreadAttachmentMetadata { Id = "attachment-new", AttachmentType = "image", IdentityKey = "sha256:same", CreatedAt = 2 },
+            ],
+        });
+
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready });
+        var thread = new ThreadSummary { Id = "thread-attachment-identity" };
+        vm.Threads.Add(thread);
+        vm.SelectedThread = thread;
+
+        await WaitForAsync(() => vm.ThreadAttachments.Count == 2);
+
+        Assert.AreEqual(
+            "attachment-new,attachment-other",
+            string.Join(',', vm.ThreadAttachments.Select(static attachment => attachment.Id).Order(StringComparer.Ordinal)));
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_AttachmentRefreshesAreCoalescedAndNeverOverlap()
+    {
+        var bridge = new FakeWorkerBridge();
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        bool blockScans = false;
+        int blockedScans = 0;
+        int inFlight = 0;
+        int maxInFlight = 0;
+        bridge.ListThreadAttachmentsHandler = async (_, _) =>
+        {
+            int current = Interlocked.Increment(ref inFlight);
+            InterlockedMax(ref maxInFlight, current);
+            try
+            {
+                if (Volatile.Read(ref blockScans))
+                {
+                    Interlocked.Increment(ref blockedScans);
+#pragma warning disable VSTHRD003 // The test owns this completion source and releases it below.
+                    await release.Task;
+#pragma warning restore VSTHRD003
+                }
+
+                return new ThreadAttachmentsPage
+                {
+                    Attachments = [new ThreadAttachmentMetadata { Id = "attachment-1", AttachmentType = "image", IdentityKey = "sha256:one", CreatedAt = 1 }],
+                };
+            }
+            finally
+            {
+                Interlocked.Decrement(ref inFlight);
+            }
+        };
+
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready });
+        var thread = new ThreadSummary { Id = "thread-attachment-refresh" };
+        vm.Threads.Add(thread);
+        vm.SelectedThread = thread;
+        await WaitForAsync(() => vm.ThreadAttachments.Count == 1);
+
+        Volatile.Write(ref blockScans, true);
+        MethodInfo refresh = typeof(ChatViewModel).GetMethod("RefreshAttachmentsAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
+        Task first = (Task)refresh.Invoke(vm, null)!;
+        await WaitForAsync(() => Volatile.Read(ref blockedScans) == 1);
+        await (Task)refresh.Invoke(vm, null)!;
+        await (Task)refresh.Invoke(vm, null)!;
+        Assert.IsFalse(first.IsCompleted);
+
+        release.SetResult();
+        await first.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.AreEqual(2, Volatile.Read(ref blockedScans));
+        Assert.AreEqual(1, Volatile.Read(ref maxInFlight));
+        Assert.AreEqual(1, vm.ThreadAttachments.Count);
+    }
+
+    private static void InterlockedMax(ref int target, int value)
+    {
+        int observed = Volatile.Read(ref target);
+        while (value > observed)
+        {
+            int previous = Interlocked.CompareExchange(ref target, value, observed);
+            if (previous == observed)
+            {
+                return;
+            }
+
+            observed = previous;
+        }
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_ConnectionRejectionWithoutStageProofRemainsOutcomeUnknown()
+    {
+        var bridge = new FakeWorkerBridge
+        {
+            StartThreadException = new StreamJsonRpc.RemoteInvocationException(
+                "The Worker rejected the connection operation.",
+                WorkerErrorCodes.ConnectionOperationRejected,
+                errorData: "StaleGeneration"),
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready });
+
+        await RunCommandAsync(vm.NewThreadCommand);
+
+        Assert.AreEqual(1, bridge.StartThreadCallCount);
+        Assert.IsTrue(vm.Items.Any(static item => item.IsDeliveryUnknown));
+        StringAssert.Contains(vm.RecoveryStatusText, "outcome is unknown");
+    }
+
     private static WorkerStatus OwnerStatus(string fingerprint, long ownerGeneration, long connectionGeneration)
         => new()
         {
@@ -892,18 +1304,11 @@ public sealed class ViewModelTests
         MethodInfo resolve = typeof(ChatViewModel).GetMethod(
             "ResolveApprovalAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
 
-        InvalidOperationException? caught = null;
-        try
-        {
-            await (Task)resolve.Invoke(vm, ["req-fail", ApprovalDecision.Accept, CaptureOwnerSnapshot(vm)])!;
-        }
-        catch (InvalidOperationException ex)
-        {
-            caught = ex;
-        }
+        await (Task)resolve.Invoke(vm, ["req-fail", ApprovalDecision.Accept, CaptureOwnerSnapshot(vm)])!;
 
-        Assert.IsNotNull(caught);
         Assert.IsFalse(vm.Items.Any(item => item.Role == "Decision"));
+        Assert.IsTrue(vm.Items.Any(item => item.IsDeliveryUnknown));
+        StringAssert.Contains(vm.RecoveryStatusText, "outcome is unknown");
     }
 
     [TestMethod]
@@ -940,18 +1345,11 @@ public sealed class ViewModelTests
         MethodInfo resolve = typeof(ChatViewModel).GetMethod(
             "ResolveUserInputAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
 
-        InvalidOperationException? caught = null;
-        try
-        {
-            await (Task)resolve.Invoke(vm, ["req-1", answers, CaptureOwnerSnapshot(vm)])!;
-        }
-        catch (InvalidOperationException ex)
-        {
-            caught = ex;
-        }
+        await (Task)resolve.Invoke(vm, ["req-1", answers, CaptureOwnerSnapshot(vm)])!;
 
-        Assert.IsNotNull(caught);
         Assert.IsFalse(vm.Items.Any(item => item.Role == "Decision"));
+        Assert.IsTrue(vm.Items.Any(item => item.IsDeliveryUnknown));
+        StringAssert.Contains(vm.RecoveryStatusText, "outcome is unknown");
     }
 
     [TestMethod]
@@ -1243,7 +1641,7 @@ public sealed class ViewModelTests
     [TestMethod]
     public async Task ChatViewModel_AgentAndReasoningDeltas_WithSameItemId_DoNotShareAccumulator()
     {
-        using var vm = new ChatViewModel();
+        using var vm = new ChatViewModel(new FakeWorkerBridge(), autoConnect: false);
 
         await RaiseConversationEventAsync(vm, new ConversationEvent { Kind = ConversationEventKind.TurnStarted });
         await RaiseConversationEventAsync(vm, new ConversationEvent
@@ -2510,6 +2908,9 @@ public sealed class ViewModelTests
             ComposerText = "/status",
         };
         await bridge.PublishAccountAsync(new AccountStatus { State = AccountState.SignedIn });
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready, ThreadId = "thread-1" });
+        await RunCommandAsync(vm.JoinThreadCommand);
+        int rateLimitCallsBeforeStatus = bridge.RateLimitCallCount;
         await bridge.PublishStateAsync(new WorkerStatus
         {
             State = WorkerConnectionState.Busy,
@@ -2520,7 +2921,7 @@ public sealed class ViewModelTests
         await InvokeComposerSendAsync(vm);
 
         Assert.IsNull(bridge.LastSteerTurnRequest);
-        Assert.AreEqual(1, bridge.RateLimitCallCount);
+        Assert.AreEqual(rateLimitCallsBeforeStatus + 1, bridge.RateLimitCallCount);
         StringAssert.Contains(vm.Items.Last().Text, "5-hour limit: 80% remaining");
         StringAssert.Contains(vm.Items.Last().Text, "Weekly limit: 50% remaining");
         StringAssert.Contains(vm.Items.Last().Text, "Credits: 12.50");
@@ -2536,6 +2937,8 @@ public sealed class ViewModelTests
             SelectedThread = new ThreadSummary { Id = "thread-1" },
             ComposerText = "//status",
         };
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready, ThreadId = "thread-1" });
+        await RunCommandAsync(vm.JoinThreadCommand);
         await bridge.PublishStateAsync(new WorkerStatus
         {
             State = WorkerConnectionState.Busy,
@@ -2610,6 +3013,8 @@ public sealed class ViewModelTests
             SelectedThread = new ThreadSummary { Id = "thread-1" },
             ComposerText = "/review uncommitted",
         };
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready, ThreadId = "thread-1" });
+        await RunCommandAsync(vm.JoinThreadCommand);
         await bridge.PublishStateAsync(new WorkerStatus
         {
             State = WorkerConnectionState.Busy,
@@ -2720,7 +3125,8 @@ public sealed class ViewModelTests
         await InvokeComposerSendAsync(vm);
 
         bridge.StartTurnException = new InvalidOperationException("start failed");
-        await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => SendMessageAsync(vm, "fails", clearComposer: false));
+        await SendMessageAsync(vm, "fails", clearComposer: false);
+        Assert.IsTrue(vm.Items.Any(static item => item.IsDeliveryUnknown));
         Assert.AreEqual("Fast", bridge.LastStartTurnRequest!.ServiceTier);
         bridge.StartTurnException = null;
         await SendMessageAsync(vm, "fast succeeds", clearComposer: false);
@@ -3034,11 +3440,13 @@ public sealed class ViewModelTests
     public async Task ChatViewModel_StatusReportsUnsupportedPersistedReasoningId()
     {
         var store = new MemorySettingsStore(new ExtensionSettings { ReasoningEffortId = "organization-tier" });
-        using var vm = new ChatViewModel(new FakeWorkerBridge(), autoConnect: false, settingsStore: store)
+        var bridge = new FakeWorkerBridge();
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: store)
         {
             SelectedThread = new ThreadSummary { Id = "thread-1" },
             ComposerText = "/status",
         };
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready, ThreadId = "thread-1" });
         await InvokeComposerSendAsync(vm);
         StringAssert.Contains(vm.Items[^1].Text, "Desired reasoning effort: organization-tier");
         StringAssert.Contains(vm.Items[^1].Text, "Next-turn reasoning effort: (config.toml)");
@@ -3064,7 +3472,8 @@ public sealed class ViewModelTests
         await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready, ThreadId = "thread-1" });
         vm.ComposerText = "/reasoning high";
         await InvokeComposerSendAsync(vm);
-        await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => SendMessageAsync(vm, "fails", clearComposer: false));
+        await SendMessageAsync(vm, "fails", clearComposer: false);
+        Assert.IsTrue(vm.Items.Any(static item => item.IsDeliveryUnknown));
         bridge.StartTurnException = null;
         await SendMessageAsync(vm, "succeeds", clearComposer: false);
         Assert.AreEqual("high", bridge.LastStartTurnRequest!.Effort);
@@ -3102,6 +3511,8 @@ public sealed class ViewModelTests
             SelectedThread = new ThreadSummary { Id = "thread-1" },
             SelectedModel = "gpt-5-codex",
         };
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready, ThreadId = "thread-1" });
+        await RunCommandAsync(vm.JoinThreadCommand);
         await bridge.PublishStateAsync(new WorkerStatus
         {
             State = WorkerConnectionState.Busy,
@@ -3152,13 +3563,17 @@ public sealed class ViewModelTests
     {
         var bridge = new FakeWorkerBridge();
         using var vm = new ChatViewModel(bridge, autoConnect: false);
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready });
+        var thread = new ThreadSummary { Id = "thread-2" };
+        vm.Threads.Add(thread);
+        vm.SelectedThread = thread;
+        await RunCommandAsync(vm.JoinThreadCommand);
         await bridge.PublishStateAsync(new WorkerStatus
         {
             State = WorkerConnectionState.Busy,
             ThreadId = "thread-1",
             TurnId = "turn-1",
         });
-        vm.SelectedThread = new ThreadSummary { Id = "thread-2" };
 
         vm.ComposerText = "/review uncommitted";
         await InvokeComposerSendAsync(vm);
@@ -3171,7 +3586,41 @@ public sealed class ViewModelTests
     }
 
     [TestMethod]
-    public async Task ChatViewModel_ForkResumesForkedThreadHistory()
+    public async Task ChatViewModel_QueuedThreadMutationWaitsForExplicitJoinAfterHistorySelection()
+    {
+        var bridge = new FakeWorkerBridge();
+        using var vm = new ChatViewModel(bridge, autoConnect: false);
+        var original = new ThreadSummary { Id = "thread-queued" };
+        var history = new ThreadSummary { Id = "thread-history-only" };
+        vm.Threads.Add(original);
+        vm.Threads.Add(history);
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready, ThreadId = original.Id });
+        vm.SelectedThread = original;
+        await RunCommandAsync(vm.JoinThreadCommand);
+
+        await bridge.PublishStateAsync(new WorkerStatus
+        {
+            State = WorkerConnectionState.Busy,
+            ThreadId = original.Id,
+            TurnId = "turn-queued",
+        });
+        vm.ComposerText = "/review uncommitted";
+        await InvokeComposerSendAsync(vm);
+        Assert.AreEqual(0, bridge.ReviewCallCount);
+
+        vm.SelectedThread = history;
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready, ThreadId = original.Id });
+        Assert.AreEqual(0, bridge.ReviewCallCount, "A queued thread mutation must not execute while history is selected read-only.");
+
+        vm.SelectedThread = original;
+        await RunCommandAsync(vm.JoinThreadCommand);
+        await WaitForAsync(() => bridge.ReviewCallCount == 1);
+
+        Assert.AreEqual(1, bridge.ReviewCallCount);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_ForkSelectsReadOnlyHistoryUntilExplicitJoin()
     {
         var bridge = new FakeWorkerBridge();
         using var vm = new ChatViewModel(bridge, autoConnect: false)
@@ -3182,10 +3631,15 @@ public sealed class ViewModelTests
 
         vm.ComposerText = "/fork";
         await InvokeComposerSendAsync(vm);
-        await WaitForAsync(() => bridge.LastResumedThreadId == "thread-fork");
 
         Assert.AreEqual("thread-fork", vm.SelectedThread!.Id);
+        Assert.AreEqual("thread-1", bridge.LastResumedThreadId, "Fork selection must not implicitly resume the new thread.");
+        Assert.IsTrue(vm.IsHistoryOnly);
+
+        await RunCommandAsync(vm.JoinThreadCommand);
+
         Assert.AreEqual("thread-fork", bridge.LastResumedThreadId);
+        Assert.IsFalse(vm.IsHistoryOnly);
     }
 
     [TestMethod]
@@ -3701,17 +4155,57 @@ public sealed class ViewModelTests
                 item.Kind == ConversationEventKind.Error
                 && item.Text.Contains("outside the remote profile's local root", StringComparison.Ordinal)));
 
-            // Any other failure (connection loss, timeout) is not reported as "not sent": the turn
-            // may have started server-side, so it keeps the previous propagation behavior.
+            // Any other failure after dispatch may occur after server acceptance. Keep the input
+            // available and mark the optimistic transcript row as an unresolved delivery outcome.
             bridge.StartTurnException = new InvalidOperationException("failed");
-            await Assert.ThrowsExactlyAsync<InvalidOperationException>(
-                () => SendMessageAsync(vm, "inspect this", clearComposer: true));
+            vm.ComposerText = "inspect this";
+            await SendMessageAsync(vm, "inspect this", clearComposer: true);
             Assert.IsTrue(vm.HasPendingAttachments);
+            Assert.AreEqual("inspect this", vm.ComposerText);
+            ChatItemViewModel unknown = vm.Items.Last(item => item.Role == "You");
+            Assert.IsTrue(unknown.IsDeliveryUnknown);
+            StringAssert.Contains(unknown.DeliveryStatusText, "not retried");
+
+            bridge.StartTurnException = new StreamJsonRpc.RemoteInvocationException(
+                "The app-server returned an error while starting the turn.",
+                WorkerErrorCodes.UpstreamOperationFailed,
+                errorData: null);
+            vm.ComposerText = "inspect this after an RPC error";
+            int callsBeforeRpcError = bridge.StartTurnCallCount;
+            await SendMessageAsync(vm, "inspect this after an RPC error", clearComposer: true);
+            ChatItemViewModel rpcError = vm.Items.Last(item => item.Role == "You");
+            Assert.IsTrue(rpcError.IsDeliveryUnknown, "A generic remote error response does not prove that no side effect occurred.");
+            Assert.AreEqual(callsBeforeRpcError + 1, bridge.StartTurnCallCount, "The uncertain operation is not automatically replayed.");
+            StringAssert.Contains(vm.RecoveryStatusText, "outcome is unknown");
         }
         finally
         {
             File.Delete(filePath);
         }
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_StartTurnPreDispatchRejectionAndCancellationAreNotMarkedUnknown()
+    {
+        var bridge = new FakeWorkerBridge
+        {
+            StartTurnException = new StreamJsonRpc.RemoteInvocationException(
+                "The request belongs to an inactive connection.",
+                WorkerErrorCodes.ConnectionOperationRejected,
+                errorData: "StaleGeneration"),
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready });
+        vm.SelectedThread = new ThreadSummary { Id = "thread-pre-dispatch" };
+
+        await SendMessageAsync(vm, "rejected before dispatch", clearComposer: true);
+        Assert.IsFalse(vm.Items.Any(static item => item.IsDeliveryUnknown));
+        Assert.IsFalse(vm.Items.Any(static item => item.Role == "You"));
+
+        bridge.StartTurnException = new OperationCanceledException("The operation was cancelled before dispatch.");
+        await SendMessageAsync(vm, "cancelled before dispatch", clearComposer: true);
+        Assert.IsFalse(vm.Items.Any(static item => item.IsDeliveryUnknown));
+        Assert.IsFalse(vm.Items.Any(static item => item.Role == "You"));
     }
 
     [TestMethod]
@@ -3727,6 +4221,8 @@ public sealed class ViewModelTests
                 filePickerService: new FakeFilePickerService([filePath]),
                 protectedDirectoryPolicy: new ProtectedDirectoryPolicy([]));
             vm.SelectedThread = new ThreadSummary { Id = "thread-1" };
+            await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready, ThreadId = "thread-1" });
+            await RunCommandAsync(vm.JoinThreadCommand);
             await bridge.PublishStateAsync(new WorkerStatus
             {
                 State = WorkerConnectionState.Busy,
@@ -3940,24 +4436,37 @@ public sealed class ViewModelTests
         }
     }
 
-    private static Task SendMessageAsync(ChatViewModel viewModel, string text, bool clearComposer)
+    private static async Task SendMessageAsync(ChatViewModel viewModel, string text, bool clearComposer)
     {
+        await EnsureExplicitJoinAsync(viewModel);
         MethodInfo method = typeof(ChatViewModel).GetMethod(
             "SendMessageAsync",
             BindingFlags.NonPublic | BindingFlags.Instance)
             ?? throw new InvalidOperationException("Could not find SendMessageAsync.");
 
-        return (Task)method.Invoke(viewModel, [text, clearComposer, null])!;
+        await (Task)method.Invoke(viewModel, [text, clearComposer, null])!;
     }
 
-    private static Task InvokeComposerSendAsync(ChatViewModel viewModel)
+    private static async Task InvokeComposerSendAsync(ChatViewModel viewModel)
     {
+        await EnsureExplicitJoinAsync(viewModel);
         MethodInfo method = typeof(ChatViewModel).GetMethod(
             "SendAsync",
             BindingFlags.NonPublic | BindingFlags.Instance)
             ?? throw new InvalidOperationException("Could not find SendAsync.");
 
-        return (Task)method.Invoke(viewModel, null)!;
+        await (Task)method.Invoke(viewModel, null)!;
+    }
+
+    private static async Task EnsureExplicitJoinAsync(ChatViewModel viewModel)
+    {
+        if (viewModel.SelectedThread is not null
+            && !viewModel.IsThreadJoined
+            && viewModel.Status.State == WorkerConnectionState.Ready
+            && viewModel.JoinThreadCommand.CanExecute)
+        {
+            await RunCommandAsync(viewModel.JoinThreadCommand);
+        }
     }
 
     private static long GetPrivateLong(ChatViewModel viewModel, string fieldName)
@@ -4047,6 +4556,26 @@ public sealed class ViewModelTests
 
     private static Task RaiseConversationEventAsync(ChatViewModel viewModel, ConversationEvent value)
     {
+        if (viewModel.SelectedThread is null)
+        {
+            // Most event-rendering tests exercise presentation after the user selected a history
+            // entry. Avoid the setter here because it starts real asynchronous history reads; the
+            // selection state itself is all the event projection requires.
+            FieldInfo selectedThread = typeof(ChatViewModel).GetField("selectedThread", BindingFlags.Instance | BindingFlags.NonPublic)
+                ?? throw new InvalidOperationException("Could not find selectedThread.");
+            selectedThread.SetValue(viewModel, new ThreadSummary { Id = value.ThreadId ?? "test-thread" });
+        }
+
+        if (string.IsNullOrEmpty(value.ThreadId))
+        {
+            value.ThreadId = viewModel.SelectedThread!.Id;
+        }
+
+        if (!string.IsNullOrWhiteSpace(value.ItemId) && string.IsNullOrWhiteSpace(value.TurnId))
+        {
+            value.TurnId = "test-turn";
+        }
+
         MethodInfo method = typeof(ChatViewModel).GetMethod(
             "OnConversationEventAsync",
             BindingFlags.NonPublic | BindingFlags.Instance)
@@ -4297,6 +4826,9 @@ public sealed class ViewModelTests
     {
         var bridge = new FakeWorkerBridge();
         using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        var thread = new ThreadSummary { Id = "t" };
+        vm.Threads.Add(thread);
+        vm.SelectedThread = thread;
         // Remote UI refreshes a button only when its command raises CanExecute; the value alone
         // is never polled. Every status change must therefore raise the turn and account commands.
         var raised = 0;
@@ -4305,6 +4837,7 @@ public sealed class ViewModelTests
         vm.AccountCommand.PropertyChanged += (_, _) => accountRaised++;
 
         await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready, ThreadId = "t" });
+        await RunCommandAsync(vm.JoinThreadCommand);
         Assert.IsFalse(vm.IsTurnActive);
         Assert.IsFalse(vm.InterruptCommand.CanExecute);
 
@@ -4678,7 +5211,17 @@ public sealed class ViewModelTests
         ChatViewModel viewModel,
         string itemId,
         ConversationEventKind kind)
-        => viewModel.Items.Single(item => item.ItemId == itemId && item.Kind == kind);
+    {
+        string role = kind switch
+        {
+            ConversationEventKind.AgentMessageDelta => "Codex",
+            ConversationEventKind.ReasoningSummaryDelta => "Reasoning",
+            ConversationEventKind.CommandOutputDelta => "Command",
+            ConversationEventKind.DiffUpdated => "Diff",
+            _ => "Codex",
+        };
+        return viewModel.Items.Single(item => item.ItemId == itemId && item.Kind == kind && item.Role == role);
+    }
 
     private sealed class FakeFilePickerService(IReadOnlyList<string> files) : IFilePickerService
     {
@@ -4734,11 +5277,15 @@ public sealed class ViewModelTests
 
     private sealed class FakeWorkerBridge : IWorkerBridge
     {
+        public event Action<WorkerRecoveryFailureKind>? ConnectionLost { add { } remove { } }
+
         public event Func<WorkerNotification<WorkerStatus>, Task>? StateChanged;
 
         public event Func<WorkerNotification<AccountStatus>, Task>? AccountChanged;
 
         public event Func<WorkerNotification<ConversationEvent>, Task>? ConversationEventReceived { add { } remove { } }
+
+        public event Func<WorkerNotification<ThreadAttachmentUpdatedEvent>, Task>? ThreadAttachmentUpdated { add { } remove { } }
 
         public event Func<WorkerNotification<ApprovalRequest>, Task>? ApprovalRequested { add { } remove { } }
 
@@ -4770,6 +5317,8 @@ public sealed class ViewModelTests
 
         public StartTurnRequest? LastStartTurnRequest { get; private set; }
 
+        public int StartTurnCallCount { get; private set; }
+
         public SteerTurnRequest? LastSteerTurnRequest { get; private set; }
 
         public int ReviewCallCount { get; private set; }
@@ -4789,6 +5338,16 @@ public sealed class ViewModelTests
         public Func<int, Task<RateLimitsResult>>? RateLimitHandler { get; set; }
 
         public Func<string?, CancellationToken, Task<ThreadPage>>? ListThreadsHandler { get; set; }
+
+        public Func<ListThreadItemsRequest, CancellationToken, Task<ThreadItemsPage>>? ListThreadItemsHandler { get; set; }
+
+        public Func<ListThreadTurnsRequest, CancellationToken, Task<ThreadTurnsPage>>? ListThreadTurnsHandler { get; set; }
+
+        public Func<ListThreadAttachmentsRequest, CancellationToken, Task<ThreadAttachmentsPage>>? ListThreadAttachmentsHandler { get; set; }
+
+        public Exception? StartThreadException { get; set; }
+
+        public int StartThreadCallCount { get; private set; }
 
         public Exception? ResolveApprovalException { get; set; }
 
@@ -4884,6 +5443,18 @@ public sealed class ViewModelTests
         public Task<ThreadPage> ListThreadsAsync(ListThreadsRequest request, CancellationToken cancellationToken)
             => ListThreadsHandler?.Invoke(request.Cursor, cancellationToken) ?? Task.FromResult(new ThreadPage());
 
+        public Task<ThreadReadResult> ReadThreadAsync(ReadThreadRequest request, CancellationToken cancellationToken)
+            => Task.FromResult(new ThreadReadResult { Thread = new ThreadSummary { Id = request.ThreadId } });
+
+        public Task<ThreadTurnsPage> ListThreadTurnsAsync(ListThreadTurnsRequest request, CancellationToken cancellationToken)
+            => ListThreadTurnsHandler?.Invoke(request, cancellationToken) ?? Task.FromResult(new ThreadTurnsPage());
+
+        public Task<ThreadItemsPage> ListThreadItemsAsync(ListThreadItemsRequest request, CancellationToken cancellationToken)
+            => ListThreadItemsHandler?.Invoke(request, cancellationToken) ?? Task.FromResult(new ThreadItemsPage());
+
+        public Task<ThreadAttachmentsPage> ListThreadAttachmentsAsync(ListThreadAttachmentsRequest request, CancellationToken cancellationToken)
+            => ListThreadAttachmentsHandler?.Invoke(request, cancellationToken) ?? Task.FromResult(new ThreadAttachmentsPage());
+
         public Task<ListModelsResult> ListModelsAsync(ListModelsRequest request, CancellationToken cancellationToken)
         {
             ModelListCallCount++;
@@ -4894,18 +5465,27 @@ public sealed class ViewModelTests
             => Task.FromResult(PermissionProfilesResult);
 
         public Task<ThreadSummary> StartThreadAsync(StartThreadRequest request, CancellationToken cancellationToken)
-            => Task.FromResult(new ThreadSummary { Id = "thread-1" });
+        {
+            StartThreadCallCount++;
+            return StartThreadException is null
+                ? Task.FromResult(new ThreadSummary { Id = "thread-1" })
+                : Task.FromException<ThreadSummary>(StartThreadException);
+        }
 
         public string? LastResumedThreadId { get; private set; }
+
+        public ResumeThreadRequest? LastResumeRequest { get; private set; }
 
         public Task<ThreadSummary> ResumeThreadAsync(ResumeThreadRequest request, CancellationToken cancellationToken)
         {
             LastResumedThreadId = request.ThreadId;
+            LastResumeRequest = request;
             return Task.FromResult(new ThreadSummary { Id = request.ThreadId });
         }
 
         public Task<string> StartTurnAsync(StartTurnRequest request, CancellationToken cancellationToken)
         {
+            StartTurnCallCount++;
             LastStartTurnRequest = request;
             return StartTurnException is null
                 ? Task.FromResult("turn-1")

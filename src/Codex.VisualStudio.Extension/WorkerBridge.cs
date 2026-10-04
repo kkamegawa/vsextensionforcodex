@@ -10,11 +10,15 @@ namespace Codex.VisualStudio.Extension;
 
 internal interface IWorkerBridge : IAsyncDisposable
 {
+    event Action<WorkerRecoveryFailureKind>? ConnectionLost;
+
     event Func<WorkerNotification<WorkerStatus>, Task>? StateChanged;
 
     event Func<WorkerNotification<AccountStatus>, Task>? AccountChanged;
 
     event Func<WorkerNotification<ConversationEvent>, Task>? ConversationEventReceived;
+
+    event Func<WorkerNotification<ThreadAttachmentUpdatedEvent>, Task>? ThreadAttachmentUpdated;
 
     event Func<WorkerNotification<ApprovalRequest>, Task>? ApprovalRequested;
 
@@ -51,6 +55,14 @@ internal interface IWorkerBridge : IAsyncDisposable
     Task<AccountStatus> LogoutAccountAsync(LogoutAccountRequest request, CancellationToken cancellationToken);
 
     Task<ThreadPage> ListThreadsAsync(ListThreadsRequest request, CancellationToken cancellationToken);
+
+    Task<ThreadReadResult> ReadThreadAsync(ReadThreadRequest request, CancellationToken cancellationToken);
+
+    Task<ThreadTurnsPage> ListThreadTurnsAsync(ListThreadTurnsRequest request, CancellationToken cancellationToken);
+
+    Task<ThreadItemsPage> ListThreadItemsAsync(ListThreadItemsRequest request, CancellationToken cancellationToken);
+
+    Task<ThreadAttachmentsPage> ListThreadAttachmentsAsync(ListThreadAttachmentsRequest request, CancellationToken cancellationToken);
 
     Task<ListModelsResult> ListModelsAsync(ListModelsRequest request, CancellationToken cancellationToken);
 
@@ -109,17 +121,23 @@ public sealed class WorkerBridge : IWorkerBridge, ICodexWorkerObserver
     private CancellationTokenSource? diagnosticsCancellation;
     private Task? diagnosticsTask;
     private int disposed;
+    private int stopping;
+    private int connectionLossReported;
 
     public WorkerBridge(OutputChannel? outputChannel = null)
     {
         log = outputChannel;
     }
 
+    public event Action<WorkerRecoveryFailureKind>? ConnectionLost;
+
     public event Func<WorkerNotification<WorkerStatus>, Task>? StateChanged;
 
     public event Func<WorkerNotification<AccountStatus>, Task>? AccountChanged;
 
     public event Func<WorkerNotification<ConversationEvent>, Task>? ConversationEventReceived;
+
+    public event Func<WorkerNotification<ThreadAttachmentUpdatedEvent>, Task>? ThreadAttachmentUpdated;
 
     public event Func<WorkerNotification<ApprovalRequest>, Task>? ApprovalRequested;
 
@@ -248,6 +266,30 @@ public sealed class WorkerBridge : IWorkerBridge, ICodexWorkerObserver
     public Task<ThreadPage> ListThreadsAsync(ListThreadsRequest request, CancellationToken cancellationToken)
         => rpc!.InvokeWithCancellationAsync<ThreadPage>("worker/thread/list", new object[] { request }, cancellationToken);
 
+    public Task<ThreadReadResult> ReadThreadAsync(ReadThreadRequest request, CancellationToken cancellationToken)
+        => RequireRpc().InvokeWithCancellationAsync<ThreadReadResult>(
+            "worker/thread/read",
+            new object[] { request },
+            cancellationToken);
+
+    public Task<ThreadTurnsPage> ListThreadTurnsAsync(ListThreadTurnsRequest request, CancellationToken cancellationToken)
+        => RequireRpc().InvokeWithCancellationAsync<ThreadTurnsPage>(
+            "worker/thread/turns/list",
+            new object[] { request },
+            cancellationToken);
+
+    public Task<ThreadItemsPage> ListThreadItemsAsync(ListThreadItemsRequest request, CancellationToken cancellationToken)
+        => RequireRpc().InvokeWithCancellationAsync<ThreadItemsPage>(
+            "worker/thread/items/list",
+            new object[] { request },
+            cancellationToken);
+
+    public Task<ThreadAttachmentsPage> ListThreadAttachmentsAsync(ListThreadAttachmentsRequest request, CancellationToken cancellationToken)
+        => RequireRpc().InvokeWithCancellationAsync<ThreadAttachmentsPage>(
+            "worker/thread/attachments/list",
+            new object[] { request },
+            cancellationToken);
+
     public async Task<ListModelsResult> ListModelsAsync(ListModelsRequest request, CancellationToken cancellationToken)
     {
         ExtensionDiagnostics.Write("worker/models/list invocation starting");
@@ -375,6 +417,11 @@ public sealed class WorkerBridge : IWorkerBridge, ICodexWorkerObserver
     public Task OnConversationEventAsync(WorkerNotification<ConversationEvent> notification, CancellationToken cancellationToken)
         => ConversationEventReceived?.Invoke(notification) ?? Task.CompletedTask;
 
+    public Task OnThreadAttachmentUpdatedAsync(
+        WorkerNotification<ThreadAttachmentUpdatedEvent> notification,
+        CancellationToken cancellationToken)
+        => ThreadAttachmentUpdated?.Invoke(notification) ?? Task.CompletedTask;
+
     public Task OnApprovalRequestedAsync(WorkerNotification<ApprovalRequest> notification, CancellationToken cancellationToken)
     {
         return ApprovalRequested?.Invoke(notification) ?? Task.CompletedTask;
@@ -427,6 +474,7 @@ public sealed class WorkerBridge : IWorkerBridge, ICodexWorkerObserver
 
     private async Task StopWorkerCoreAsync()
     {
+        Interlocked.Exchange(ref stopping, 1);
         CancellationTokenSource? diagnosticsLifetime = Interlocked.Exchange(ref diagnosticsCancellation, null);
         Task? diagnosticsReader = Interlocked.Exchange(ref diagnosticsTask, null);
         JsonRpc? workerRpc = Interlocked.Exchange(ref rpc, null);
@@ -443,6 +491,7 @@ public sealed class WorkerBridge : IWorkerBridge, ICodexWorkerObserver
 
             if (workerRpc is not null)
             {
+                workerRpc.Disconnected -= OnRpcDisconnected;
                 await Task.Run(workerRpc.Dispose).ConfigureAwait(false);
             }
 
@@ -452,6 +501,7 @@ public sealed class WorkerBridge : IWorkerBridge, ICodexWorkerObserver
             }
             if (workerProcess is not null)
             {
+                workerProcess.Exited -= OnWorkerProcessExited;
                 try
                 {
                     if (!workerProcess.HasExited)
@@ -492,7 +542,7 @@ public sealed class WorkerBridge : IWorkerBridge, ICodexWorkerObserver
     private async Task EnsureWorkerStartedAsync(CancellationToken cancellationToken)
     {
         ObjectDisposedException.ThrowIf(Volatile.Read(ref disposed) != 0, this);
-        if (rpc is not null)
+        if (IsWorkerUsable())
         {
             return;
         }
@@ -501,10 +551,21 @@ public sealed class WorkerBridge : IWorkerBridge, ICodexWorkerObserver
         try
         {
             ObjectDisposedException.ThrowIf(Volatile.Read(ref disposed) != 0, this);
-            if (rpc is null)
+            if (IsWorkerUsable())
             {
-                await StartWorkerAsync(cancellationToken).ConfigureAwait(false);
+                return;
             }
+
+            if (rpc is not null)
+            {
+                // The Worker process exited or its RPC transport closed. Retire the dead
+                // transport so an explicit Connect starts a new Worker instead of invoking
+                // the stale proxy.
+                ExtensionDiagnostics.Write("Retiring stale Worker transport before restart");
+                await StopWorkerCoreAsync().ConfigureAwait(false);
+            }
+
+            await StartWorkerAsync(cancellationToken).ConfigureAwait(false);
         }
         finally
         {
@@ -515,6 +576,8 @@ public sealed class WorkerBridge : IWorkerBridge, ICodexWorkerObserver
     private async Task StartWorkerAsync(CancellationToken cancellationToken)
     {
         ObjectDisposedException.ThrowIf(Volatile.Read(ref disposed) != 0, this);
+        Interlocked.Exchange(ref stopping, 0);
+        Interlocked.Exchange(ref connectionLossReported, 0);
         string pipeName = $"Kkamegawa.CodexForVisualStudio.{Guid.NewGuid():N}";
         string assemblyDirectory = Path.GetDirectoryName(typeof(WorkerBridge).Assembly.Location) ?? string.Empty;
         ProcessStartInfo startInfo = CreateWorkerStartInfo(
@@ -523,6 +586,8 @@ public sealed class WorkerBridge : IWorkerBridge, ICodexWorkerObserver
             RuntimeEnvironment.GetRuntimeDirectory());
         ExtensionDiagnostics.Write($"Worker start requested launcher={Path.GetFileName(startInfo.FileName)} exists={File.Exists(startInfo.FileName)}");
         process = Process.Start(startInfo) ?? throw new InvalidOperationException("Failed to start the Codex worker.");
+        process.EnableRaisingEvents = true;
+        process.Exited += OnWorkerProcessExited;
         ExtensionDiagnostics.Write($"Worker process started pid={process.Id}");
 
         // Assign the worker (and, implicitly, every descendant process it spawns - codex
@@ -546,6 +611,7 @@ public sealed class WorkerBridge : IWorkerBridge, ICodexWorkerObserver
             ExtensionDiagnostics.Write("Worker pipe connected");
             rpc = new JsonRpc(pipe);
             rpc.AddLocalRpcTarget<ICodexWorkerObserver>(this, null);
+            rpc.Disconnected += OnRpcDisconnected;
             rpc.StartListening();
             ExtensionDiagnostics.Write("Worker RPC listening");
         }
@@ -615,6 +681,37 @@ public sealed class WorkerBridge : IWorkerBridge, ICodexWorkerObserver
         }
     }
 
+    private bool IsWorkerUsable()
+        => rpc is { } current
+            && !current.Completion.IsCompleted
+            && Volatile.Read(ref connectionLossReported) == 0;
+
     private JsonRpc RequireRpc()
         => rpc ?? throw new InvalidOperationException("The Codex Worker RPC connection is unavailable.");
+
+    private void OnWorkerProcessExited(object? sender, EventArgs eventArgs)
+        => ReportConnectionLost(WorkerRecoveryFailureKind.WorkerProcessExit);
+
+    private void OnRpcDisconnected(object? sender, EventArgs eventArgs)
+        => ReportConnectionLost(WorkerRecoveryFailureKind.TransportClosed);
+
+    private void ReportConnectionLost(WorkerRecoveryFailureKind failureKind)
+    {
+        if (Volatile.Read(ref stopping) != 0 || Interlocked.Exchange(ref connectionLossReported, 1) != 0)
+        {
+            return;
+        }
+
+        ExtensionDiagnostics.Write($"Worker connection lost kind={failureKind}");
+        try
+        {
+            ConnectionLost?.Invoke(failureKind);
+        }
+        catch (Exception)
+        {
+            // Connection recovery is best effort; an event consumer must not escape onto
+            // the process or JSON-RPC callback thread.
+            ExtensionDiagnostics.Write("Worker connection-loss event handler failed");
+        }
+    }
 }

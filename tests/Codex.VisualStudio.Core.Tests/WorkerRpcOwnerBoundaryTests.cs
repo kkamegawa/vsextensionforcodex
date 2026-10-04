@@ -64,8 +64,9 @@ public sealed class WorkerRpcOwnerBoundaryTests
             Task<WorkerStatus> replacement = worker.ConnectAsync(Options(ownerBPath), CancellationToken.None);
             ownerAConnection.ReleaseTurnStart();
 
-            JsonRpcConnectionClosedException turnFailure = await Assert.ThrowsExactlyAsync<JsonRpcConnectionClosedException>(
+            LocalRpcException turnFailure = await Assert.ThrowsExactlyAsync<LocalRpcException>(
                 async () => await oldTurn.WaitAsync(TimeSpan.FromSeconds(5)));
+            Assert.AreEqual(WorkerErrorCodes.UpstreamOperationFailed, turnFailure.ErrorCode);
             WorkerStatus ownerBStatus = await replacement.WaitAsync(TimeSpan.FromSeconds(5));
             WorkerNotification<WorkerStatus> busy = await client.BusyNotification.WaitAsync(TimeSpan.FromSeconds(5));
 

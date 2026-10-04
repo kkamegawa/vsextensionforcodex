@@ -174,6 +174,193 @@ public sealed class CodexSessionServiceTests
     }
 
     [TestMethod]
+    public async Task ThreadListOmitsAnOversizedPreviewWithoutFailingThePage()
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "thread/list"
+                ? JsonSerializer.SerializeToElement(new
+                {
+                    data = new[]
+                    {
+                        new { id = "large-preview", preview = new string('p', 8 * 1024 + 1) },
+                        new { id = "normal-preview", preview = "available" },
+                    },
+                    nextCursor = (string?)null,
+                })
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        ThreadPage page = await service.ListThreadsAsync(null, CancellationToken.None);
+
+        Assert.AreEqual(2, page.Threads.Count);
+        Assert.AreEqual("large-preview", page.Threads[0].Id);
+        Assert.IsNull(page.Threads[0].Preview);
+        Assert.AreEqual("available", page.Threads[1].Preview);
+    }
+
+    [TestMethod]
+    public async Task HistoryReadsUseMetadataOnlyAndBoundedPagesWithoutReturningAttachmentPayloads()
+    {
+        string oversizedPayload = new('x', 65_537);
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method switch
+            {
+                "thread/read" => JsonSerializer.SerializeToElement(new { thread = new { id = "thread-1" } }),
+                "thread/turns/list" => JsonSerializer.SerializeToElement(new
+                {
+                    data = new[] { new { id = "turn-1", status = "completed", startedAt = 10L, completedAt = 20L } },
+                    nextCursor = "turn-cursor",
+                }),
+                "thread/items/list" => JsonSerializer.SerializeToElement(new
+                {
+                    data = new[]
+                    {
+                        new
+                        {
+                            turnId = "turn-1",
+                            startedAtMs = 11L,
+                            item = new { id = "item-1", type = "agentMessage", text = "hello history" },
+                        },
+                    },
+                    nextCursor = "item-cursor",
+                }),
+                "thread/attachment/list" => JsonSerializer.SerializeToElement(new
+                {
+                    data = new object[]
+                    {
+                        new { id = "attachment-1", attachmentType = "example", identityKey = "key-1", createdAt = 30L, payload = new { safe = true } },
+                        new { id = "attachment-large", attachmentType = "example", identityKey = "key-large", createdAt = 31L, payload = oversizedPayload },
+                    },
+                    nextCursor = (string?)null,
+                }),
+                _ => JsonSerializer.SerializeToElement(new { }),
+            },
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        ThreadSummary thread = await service.ReadThreadAsync("thread-1", CancellationToken.None);
+        ThreadTurnsPage turns = await service.ListThreadTurnsAsync("thread-1", null, 500, CancellationToken.None);
+        ThreadItemsPage items = await service.ListThreadItemsAsync("thread-1", "turn-1", null, 500, CancellationToken.None);
+        ThreadAttachmentsPage attachments = await service.ListThreadAttachmentsAsync("thread-1", null, 500, CancellationToken.None);
+
+        Assert.AreEqual("thread-1", thread.Id);
+        Assert.AreEqual("turn-1", turns.Turns.Single().Id);
+        Assert.AreEqual("turn-cursor", turns.NextCursor);
+        Assert.AreEqual("hello history", items.Items.Single().Text);
+        Assert.AreEqual("item-cursor", items.NextCursor);
+        Assert.AreEqual(2, attachments.Attachments.Count);
+        Assert.IsNotNull(attachments.Attachments[0].UnavailableReason);
+        Assert.IsNotNull(attachments.Attachments[1].UnavailableReason);
+        Assert.IsFalse(JsonSerializer.Serialize(attachments).Contains("safe", StringComparison.Ordinal));
+        Assert.IsFalse(JsonSerializer.Serialize(attachments).Contains(oversizedPayload, StringComparison.Ordinal));
+
+        JsonElement readParameters = JsonSerializer.SerializeToElement(
+            connection.Requests.Single(item => item.Method == "thread/read").Parameters);
+        Assert.IsFalse(readParameters.GetProperty("includeTurns").GetBoolean());
+        JsonElement turnParameters = JsonSerializer.SerializeToElement(
+            connection.Requests.Single(item => item.Method == "thread/turns/list").Parameters);
+        Assert.AreEqual(50, turnParameters.GetProperty("limit").GetInt32());
+        Assert.AreEqual("summary", turnParameters.GetProperty("itemsView").GetString());
+        Assert.AreEqual("desc", turnParameters.GetProperty("sortDirection").GetString());
+        JsonElement itemParameters = JsonSerializer.SerializeToElement(
+            connection.Requests.Single(item => item.Method == "thread/items/list").Parameters);
+        Assert.AreEqual(100, itemParameters.GetProperty("limit").GetInt32());
+        Assert.AreEqual("desc", itemParameters.GetProperty("sortDirection").GetString());
+    }
+
+    [TestMethod]
+    public async Task ListThreadItemsSkipsEntriesFromAnotherTurn()
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "thread/items/list"
+                ? JsonSerializer.SerializeToElement(new
+                {
+                    data = new[]
+                    {
+                        new { turnId = "turn-1", item = new { id = "item-1", type = "agentMessage", text = "requested turn" } },
+                        new { turnId = "turn-2", item = new { id = "item-2", type = "agentMessage", text = "other turn" } },
+                    },
+                    nextCursor = (string?)null,
+                })
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        ThreadItemsPage items = await service.ListThreadItemsAsync("thread-1", "turn-1", null, 50, CancellationToken.None);
+
+        Assert.AreEqual("item-1", items.Items.Single().Id);
+        Assert.AreEqual("turn-1", items.Items.Single().TurnId);
+    }
+
+    [TestMethod]
+    public async Task ReadThreadRejectsMismatchedResponseId()
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "thread/read"
+                ? JsonSerializer.SerializeToElement(new { thread = new { id = "different-thread" } })
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        await Assert.ThrowsExactlyAsync<InvalidDataException>(
+            () => service.ReadThreadAsync("requested-thread", CancellationToken.None));
+    }
+
+    [TestMethod]
+    public async Task ReadThreadOmitsOverlongPreviewAndRejectsOverlongResponseId()
+    {
+        JsonElement response = JsonSerializer.SerializeToElement(new
+        {
+            thread = new { id = "thread-1", preview = new string('p', 8 * 1024 + 1) },
+        });
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "thread/read" ? response : JsonSerializer.SerializeToElement(new { }),
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        ThreadSummary summary = await service.ReadThreadAsync("thread-1", CancellationToken.None);
+        Assert.AreEqual("thread-1", summary.Id);
+        Assert.IsNull(summary.Preview);
+
+        response = JsonSerializer.SerializeToElement(new
+        {
+            thread = new { id = new string('i', 257), preview = "bounded preview" },
+        });
+        await Assert.ThrowsExactlyAsync<InvalidDataException>(
+            () => service.ReadThreadAsync("thread-1", CancellationToken.None));
+    }
+
+    [TestMethod]
+    public async Task ResumeThreadAlwaysExcludesTurns()
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "thread/resume"
+                ? JsonSerializer.SerializeToElement(new { thread = new { id = "thread-1" } })
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        await service.ResumeThreadAsync("thread-1", CancellationToken.None);
+
+        JsonElement parameters = JsonSerializer.SerializeToElement(
+            connection.Requests.Single(item => item.Method == "thread/resume").Parameters);
+        Assert.IsTrue(parameters.GetProperty("excludeTurns").GetBoolean());
+    }
+
+    [TestMethod]
     public async Task ListModelsReturnsModelsAndDefault()
     {
         var connection = new RecordingConnection
@@ -2517,7 +2704,8 @@ public sealed class CodexSessionServiceTests
             new { threadId = "old-thread", turn = new { id = "old-turn" } });
         response.TrySetResult(JsonSerializer.SerializeToElement(new { turn = new { id = "old-turn" } }));
 
-        await Assert.ThrowsExactlyAsync<JsonRpcConnectionClosedException>(() => oldStart);
+        TurnStartOutcomeUnknownException failure = await Assert.ThrowsExactlyAsync<TurnStartOutcomeUnknownException>(() => oldStart);
+        Assert.IsTrue(failure.InnerException is JsonRpcConnectionClosedException);
         Assert.IsNull(service.ActiveThreadId);
         Assert.IsNull(service.ActiveTurnId);
     }

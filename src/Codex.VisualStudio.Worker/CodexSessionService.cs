@@ -60,6 +60,8 @@ public interface ICodexSessionService : IAsyncDisposable
 
     event Func<SkillsChangedEvent, CancellationToken, Task>? SkillsChanged;
 
+    event Func<ThreadAttachmentUpdatedEvent, CancellationToken, Task>? ThreadAttachmentUpdated;
+
     string? ActiveThreadId { get; }
 
     string? ActiveTurnId { get; }
@@ -85,6 +87,27 @@ public interface ICodexSessionService : IAsyncDisposable
     Task<ThreadSummary> ResumeThreadAsync(string threadId, CancellationToken cancellationToken);
 
     Task<ThreadPage> ListThreadsAsync(string? cursor, CancellationToken cancellationToken);
+
+    Task<ThreadSummary> ReadThreadAsync(string threadId, CancellationToken cancellationToken)
+        => throw new NotSupportedException();
+
+    Task<ThreadTurnsPage> ListThreadTurnsAsync(string threadId, string? cursor, int limit, CancellationToken cancellationToken)
+        => throw new NotSupportedException();
+
+    Task<ThreadItemsPage> ListThreadItemsAsync(
+        string threadId,
+        string? turnId,
+        ThreadItemCursor? cursor,
+        int limit,
+        CancellationToken cancellationToken)
+        => throw new NotSupportedException();
+
+    Task<ThreadAttachmentsPage> ListThreadAttachmentsAsync(
+        string threadId,
+        string? cursor,
+        int limit,
+        CancellationToken cancellationToken)
+        => throw new NotSupportedException();
 
     Task<ListModelsResult> ListModelsAsync(CancellationToken cancellationToken);
 
@@ -130,6 +153,22 @@ public sealed class AttachmentRejectedException : InvalidOperationException
     }
 }
 
+public sealed class SkillInvocationRejectedException : InvalidOperationException
+{
+    public SkillInvocationRejectedException(string message)
+        : base(message)
+    {
+    }
+}
+
+public sealed class TurnStartOutcomeUnknownException : Exception
+{
+    public TurnStartOutcomeUnknownException(Exception innerException)
+        : base("The turn/start request was dispatched, but its result could not be confirmed.", innerException)
+    {
+    }
+}
+
 public sealed record AppServerInitializationMetadata(
     string? CodexHome,
     string? PlatformFamily,
@@ -138,6 +177,15 @@ public sealed record AppServerInitializationMetadata(
 
 public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
 {
+    private const int MaxHistoryPageTurns = 50;
+    private const int MaxHistoryPageItems = 100;
+    private const int MaxAttachmentPageSize = 50;
+    private const int MaxAttachmentsPerThread = 100;
+    private const int MaxAttachmentPayloadBytes = 64 * 1024;
+    private const int MaxAttachmentIdentityBytes = 256;
+    private const int MaxThreadPreviewBytes = 8 * 1024;
+    private const int MaxHistoryTextBytes = 64 * 1024;
+
     private static readonly string[] ThreadSourceKinds = ["cli", "vscode", "appServer"];
     private const int PermissionProfilePageSize = 100;
     private const int MaxPermissionProfilePages = 10;
@@ -253,6 +301,8 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
     public event Func<EffectiveApprovalState, CancellationToken, Task>? EffectiveApprovalStateChanged;
 
     public event Func<SkillsChangedEvent, CancellationToken, Task>? SkillsChanged;
+
+    public event Func<ThreadAttachmentUpdatedEvent, CancellationToken, Task>? ThreadAttachmentUpdated;
 
     public string? ActiveThreadId { get; private set; }
 
@@ -761,7 +811,7 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
 
     public async Task<ThreadSummary> ResumeThreadAsync(string threadId, CancellationToken cancellationToken)
     {
-        JsonElement result = await SendAsync("thread/resume", new { threadId }, cancellationToken).ConfigureAwait(false);
+        JsonElement result = await SendAsync("thread/resume", new { threadId, excludeTurns = true }, cancellationToken).ConfigureAwait(false);
         EffectiveApprovalState = ReadEffectiveApprovalState(result);
         ReadEffectiveTurnSettings(result, out string? reasoningEffort, out string? serviceTier);
         EffectiveReasoningEffort = reasoningEffort;
@@ -794,6 +844,203 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         {
             Threads = threads,
             NextCursor = GetString(result, "nextCursor"),
+        };
+    }
+
+    public async Task<ThreadSummary> ReadThreadAsync(string threadId, CancellationToken cancellationToken)
+    {
+        ValidateHistoryId(threadId, nameof(threadId));
+        JsonElement result = await SendReadOnlyAsync(
+            "thread/read",
+            new { threadId, includeTurns = false },
+            cancellationToken).ConfigureAwait(false);
+        if (!result.TryGetProperty("thread", out JsonElement thread) || thread.ValueKind != JsonValueKind.Object)
+        {
+            throw InvalidHistoryResponse();
+        }
+
+        ThreadSummary summary = ReadThread(thread);
+        if (!string.Equals(summary.Id, threadId, StringComparison.Ordinal))
+        {
+            throw InvalidHistoryResponse();
+        }
+
+        return summary;
+    }
+
+    public async Task<ThreadTurnsPage> ListThreadTurnsAsync(
+        string threadId,
+        string? cursor,
+        int limit,
+        CancellationToken cancellationToken)
+    {
+        ValidateHistoryId(threadId, nameof(threadId));
+        int boundedLimit = Math.Clamp(limit, 1, MaxHistoryPageTurns);
+        JsonElement result = await SendReadOnlyAsync(
+            "thread/turns/list",
+            new { threadId, cursor, limit = boundedLimit, itemsView = "summary", sortDirection = "desc" },
+            cancellationToken).ConfigureAwait(false);
+        JsonElement data = RequireArray(result, "data");
+        var turns = new List<ThreadTurnSummary>(Math.Min(data.GetArrayLength(), boundedLimit));
+        foreach (JsonElement turn in data.EnumerateArray())
+        {
+            string? id = GetBoundedString(turn, "id", MaxAttachmentIdentityBytes);
+            string? status = GetBoundedString(turn, "status", 64);
+            if (id is null || status is null)
+            {
+                continue;
+            }
+
+            turns.Add(new ThreadTurnSummary
+            {
+                Id = id,
+                Status = status,
+                StartedAt = GetInt64(turn, "startedAt"),
+                CompletedAt = GetInt64(turn, "completedAt"),
+            });
+            if (turns.Count == boundedLimit)
+            {
+                break;
+            }
+        }
+
+        return new ThreadTurnsPage
+        {
+            Turns = turns,
+            NextCursor = ReadOptionalCursor(result),
+        };
+    }
+
+    public async Task<ThreadItemsPage> ListThreadItemsAsync(
+        string threadId,
+        string? turnId,
+        ThreadItemCursor? cursor,
+        int limit,
+        CancellationToken cancellationToken)
+    {
+        ValidateHistoryId(threadId, nameof(threadId));
+        int boundedLimit = Math.Clamp(limit, 1, MaxHistoryPageItems);
+        object? wireCursor = cursor?.Kind switch
+        {
+            null => null,
+            ThreadItemCursorKind.Opaque => ValidateCursor(cursor.Value),
+            ThreadItemCursorKind.ExclusiveItem => CreateItemAnchor(cursor, turnId),
+            _ => throw new ArgumentOutOfRangeException(nameof(cursor)),
+        };
+        if (cursor?.Kind == ThreadItemCursorKind.ExclusiveItem
+            && (string.IsNullOrWhiteSpace(turnId) || !string.Equals(cursor.TurnId, turnId, StringComparison.Ordinal)))
+        {
+            throw new ArgumentException("An item anchor requires the matching turnId.", nameof(cursor));
+        }
+
+        JsonElement result = await SendReadOnlyAsync(
+            "thread/items/list",
+            new { threadId, turnId, cursor = wireCursor, limit = boundedLimit, sortDirection = "desc" },
+            cancellationToken).ConfigureAwait(false);
+        JsonElement data = RequireArray(result, "data");
+        var items = new List<ThreadHistoryItem>(Math.Min(data.GetArrayLength(), boundedLimit));
+        foreach (JsonElement entry in data.EnumerateArray())
+        {
+            if (entry.ValueKind != JsonValueKind.Object
+                || !entry.TryGetProperty("item", out JsonElement item)
+                || item.ValueKind != JsonValueKind.Object)
+            {
+                continue;
+            }
+
+            string? id = GetBoundedString(item, "id", MaxAttachmentIdentityBytes);
+            string? itemType = GetBoundedString(item, "type", 64);
+            string? itemTurnId = GetBoundedString(entry, "turnId", MaxAttachmentIdentityBytes);
+            if (id is null || itemType is null || itemTurnId is null)
+            {
+                continue;
+            }
+
+            // A per-turn page must only contain items for the requested turn. Mismatched
+            // entries are untrusted server data and must not leak into another turn.
+            if (turnId is not null && !string.Equals(itemTurnId, turnId, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            items.Add(new ThreadHistoryItem
+            {
+                Id = id,
+                TurnId = itemTurnId,
+                Type = itemType,
+                Text = ReadHistoryText(item, itemType),
+                StartedAtMs = GetInt64(entry, "startedAtMs"),
+                CompletedAtMs = GetInt64(entry, "completedAtMs"),
+            });
+            if (items.Count == boundedLimit)
+            {
+                break;
+            }
+        }
+
+        return new ThreadItemsPage
+        {
+            Items = items,
+            NextCursor = ReadOptionalCursor(result),
+        };
+    }
+
+    public async Task<ThreadAttachmentsPage> ListThreadAttachmentsAsync(
+        string threadId,
+        string? cursor,
+        int limit,
+        CancellationToken cancellationToken)
+    {
+        ValidateHistoryId(threadId, nameof(threadId));
+        int boundedLimit = Math.Clamp(limit, 1, MaxAttachmentPageSize);
+        JsonElement result = await SendReadOnlyAsync(
+            "thread/attachment/list",
+            new { threadId, cursor, limit = boundedLimit },
+            cancellationToken).ConfigureAwait(false);
+        JsonElement data = RequireArray(result, "data");
+        var attachments = new List<ThreadAttachmentMetadata>(Math.Min(data.GetArrayLength(), boundedLimit));
+        int rejectedEntryCount = 0;
+        foreach (JsonElement attachment in data.EnumerateArray())
+        {
+            if (attachment.ValueKind != JsonValueKind.Object)
+            {
+                rejectedEntryCount++;
+                continue;
+            }
+
+            string? id = GetBoundedString(attachment, "id", MaxAttachmentIdentityBytes);
+            string? attachmentType = GetBoundedString(attachment, "attachmentType", MaxAttachmentIdentityBytes);
+            string? identityKey = GetBoundedString(attachment, "identityKey", MaxAttachmentIdentityBytes);
+            long? createdAt = GetInt64(attachment, "createdAt");
+            if (id is null || attachmentType is null || identityKey is null || createdAt is null
+                || !attachment.TryGetProperty("payload", out JsonElement payload))
+            {
+                rejectedEntryCount++;
+                continue;
+            }
+
+            int payloadBytes = Encoding.UTF8.GetByteCount(payload.GetRawText());
+            attachments.Add(new ThreadAttachmentMetadata
+            {
+                Id = id,
+                AttachmentType = attachmentType,
+                IdentityKey = identityKey,
+                CreatedAt = createdAt.Value,
+                UnavailableReason = payloadBytes > MaxAttachmentPayloadBytes
+                    ? "Attachment payload exceeds the metadata validation limit."
+                    : "Attachment payload is not interpreted by the metadata-only recovery API.",
+            });
+            if (attachments.Count == boundedLimit || attachments.Count == MaxAttachmentsPerThread)
+            {
+                break;
+            }
+        }
+
+        return new ThreadAttachmentsPage
+        {
+            Attachments = attachments,
+            NextCursor = ReadOptionalCursor(result),
+            RejectedEntryCount = rejectedEntryCount,
         };
     }
 
@@ -963,6 +1210,7 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         }
 
         string? startedTurnId;
+        cancellationToken.ThrowIfCancellationRequested();
         try
         {
             JsonElement result = await context.Connection.SendRequestAsync(
@@ -995,6 +1243,10 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
                     ActiveTurnId = null;
                 }
             }
+        }
+        catch (Exception ex)
+        {
+            throw new TurnStartOutcomeUnknownException(ex);
         }
         finally
         {
@@ -1774,7 +2026,7 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
             || string.IsNullOrWhiteSpace(invocation.Scope)
             || string.IsNullOrWhiteSpace(invocation.Path))
         {
-            throw new InvalidOperationException("The selected skill identity is incomplete.");
+            throw new SkillInvocationRejectedException("The selected skill identity is incomplete.");
         }
 
         ListSkillsResult catalog = await ListSkillsAsync(forceReload: true, cancellationToken).ConfigureAwait(false);
@@ -1787,7 +2039,7 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
                 && string.Equals(skill.Path, invocation.Path, StringComparison.Ordinal));
         if (!exactEnabled)
         {
-            throw new InvalidOperationException("The selected skill is stale, disabled, or unavailable.");
+            throw new SkillInvocationRejectedException("The selected skill is stale, disabled, or unavailable.");
         }
     }
 
@@ -2181,6 +2433,17 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         }
 
         string? threadId = GetString(parameters, "threadId");
+        if (method == "thread/attachment/updated")
+        {
+            ThreadAttachmentUpdatedEvent? attachmentEvent = ReadThreadAttachmentUpdated(parameters);
+            if (attachmentEvent is not null && ThreadAttachmentUpdated is not null)
+            {
+                await ThreadAttachmentUpdated(attachmentEvent, cancellationToken).ConfigureAwait(false);
+            }
+
+            return;
+        }
+
         string? turnId = GetString(parameters, "turnId");
         string? itemId = GetString(parameters, "itemId");
         bool suppressTurnEvent = false;
@@ -3087,16 +3350,26 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         JsonElement thread,
         EffectiveApprovalState? effectiveApprovalState = null,
         string? effectiveReasoningEffort = null,
-        string? effectiveServiceTier = null) => new()
+        string? effectiveServiceTier = null)
+    {
+        string? threadId = GetBoundedString(thread, "id", MaxAttachmentIdentityBytes);
+        if (threadId is null)
         {
-            Id = GetString(thread, "id") ?? string.Empty,
-            Preview = GetString(thread, "preview"),
+            throw InvalidHistoryResponse();
+        }
+
+        string? preview = GetBoundedString(thread, "preview", MaxThreadPreviewBytes);
+        return new ThreadSummary
+        {
+            Id = threadId,
+            Preview = preview,
             Cwd = DisplayThreadWorkingDirectory(GetString(thread, "cwd")),
             UpdatedAt = thread.TryGetProperty("updatedAt", out JsonElement updated) && updated.TryGetInt64(out long value) ? value : null,
             EffectiveApprovalState = effectiveApprovalState,
             EffectiveReasoningEffort = effectiveReasoningEffort,
             EffectiveServiceTier = effectiveServiceTier,
         };
+    }
 
     private static void ReadEffectiveTurnSettings(
         JsonElement value,
@@ -3832,6 +4105,146 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
             && property.ValueKind == JsonValueKind.String
                 ? property.GetString()
                 : null;
+
+    private static string? GetBoundedString(JsonElement element, string name, int maximumUtf8Bytes)
+    {
+        string? value = GetString(element, name);
+        return !string.IsNullOrWhiteSpace(value)
+            && Encoding.UTF8.GetByteCount(value) <= maximumUtf8Bytes
+                ? value
+                : null;
+    }
+
+    private static void ValidateHistoryId(string value, string parameterName)
+    {
+        if (string.IsNullOrWhiteSpace(value)
+            || Encoding.UTF8.GetByteCount(value) > MaxAttachmentIdentityBytes)
+        {
+            throw new ArgumentException("A non-empty history identifier within the byte limit is required.", parameterName);
+        }
+    }
+
+    private static string ValidateCursor(string? cursor)
+    {
+        if (string.IsNullOrWhiteSpace(cursor) || Encoding.UTF8.GetByteCount(cursor) > 4096)
+        {
+            throw new ArgumentException("The history cursor is invalid.", nameof(cursor));
+        }
+
+        return cursor;
+    }
+
+    private static object CreateItemAnchor(ThreadItemCursor cursor, string? turnId)
+    {
+        ValidateHistoryId(turnId ?? string.Empty, nameof(turnId));
+        if (string.IsNullOrWhiteSpace(cursor.ItemId)
+            || Encoding.UTF8.GetByteCount(cursor.ItemId) > MaxAttachmentIdentityBytes
+            || !string.Equals(cursor.TurnId, turnId, StringComparison.Ordinal))
+        {
+            throw new ArgumentException("The exclusive item anchor is invalid.", nameof(cursor));
+        }
+
+        return new { type = "item", itemId = cursor.ItemId };
+    }
+
+    private static JsonElement RequireArray(JsonElement result, string name)
+    {
+        if (result.ValueKind != JsonValueKind.Object
+            || !result.TryGetProperty(name, out JsonElement property)
+            || property.ValueKind != JsonValueKind.Array)
+        {
+            throw InvalidHistoryResponse();
+        }
+
+        return property;
+    }
+
+    private static string? ReadOptionalCursor(JsonElement result)
+    {
+        if (!result.TryGetProperty("nextCursor", out JsonElement cursor)
+            || cursor.ValueKind == JsonValueKind.Null)
+        {
+            return null;
+        }
+
+        if (cursor.ValueKind != JsonValueKind.String
+            || string.IsNullOrWhiteSpace(cursor.GetString())
+            || Encoding.UTF8.GetByteCount(cursor.GetString()!) > 4096)
+        {
+            throw InvalidHistoryResponse();
+        }
+
+        return cursor.GetString();
+    }
+
+    private static string? ReadHistoryText(JsonElement item, string itemType)
+    {
+        var text = new StringBuilder();
+        if (itemType == "agentMessage" && GetString(item, "text") is { } agentText)
+        {
+            AppendBoundedHistoryText(text, agentText);
+        }
+        else if (itemType == "userMessage"
+            && item.TryGetProperty("content", out JsonElement content)
+            && content.ValueKind == JsonValueKind.Array)
+        {
+            foreach (JsonElement part in content.EnumerateArray())
+            {
+                if (GetString(part, "type") == "inputText" && GetString(part, "text") is { } userText)
+                {
+                    AppendBoundedHistoryText(text, userText);
+                    if (Encoding.UTF8.GetByteCount(text.ToString()) >= MaxHistoryTextBytes)
+                    {
+                        break;
+                    }
+                }
+            }
+        }
+
+        string value = text.ToString();
+        return Encoding.UTF8.GetByteCount(value) <= MaxHistoryTextBytes ? value : null;
+    }
+
+    private static void AppendBoundedHistoryText(StringBuilder target, string value)
+    {
+        if (Encoding.UTF8.GetByteCount(target.ToString()) + Encoding.UTF8.GetByteCount(value) <= MaxHistoryTextBytes)
+        {
+            target.Append(value);
+        }
+    }
+
+    private static ThreadAttachmentUpdatedEvent? ReadThreadAttachmentUpdated(JsonElement parameters)
+    {
+        string? threadId = GetBoundedString(parameters, "threadId", MaxAttachmentIdentityBytes);
+        string? attachmentId = GetBoundedString(parameters, "attachmentId", MaxAttachmentIdentityBytes);
+        string? attachmentType = GetBoundedString(parameters, "attachmentType", MaxAttachmentIdentityBytes);
+        string? identityKey = GetBoundedString(parameters, "identityKey", MaxAttachmentIdentityBytes);
+        string? operation = GetString(parameters, "operation");
+        if (threadId is null || attachmentId is null || attachmentType is null || identityKey is null)
+        {
+            return null;
+        }
+
+        ThreadAttachmentOperation? parsedOperation = operation switch
+        {
+            "created" => ThreadAttachmentOperation.Created,
+            "deleted" => ThreadAttachmentOperation.Deleted,
+            _ => null,
+        };
+        return parsedOperation is null
+            ? null
+            : new ThreadAttachmentUpdatedEvent
+            {
+                ThreadId = threadId,
+                AttachmentId = attachmentId,
+                AttachmentType = attachmentType,
+                IdentityKey = identityKey,
+                Operation = parsedOperation.Value,
+            };
+    }
+
+    private static InvalidDataException InvalidHistoryResponse()
+        => new("The app-server returned an invalid history response.");
 
     private static bool? GetBool(JsonElement element, string name)
         => element.ValueKind == JsonValueKind.Object

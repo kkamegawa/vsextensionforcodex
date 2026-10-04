@@ -49,7 +49,7 @@ Worker と Extension は、適用済み profile の表示名、canonical な非�
 
 token path は絶対 local path とします。UNC path、network drive、device namespace、その他 local でない形式を拒否します。symlink と junction を解決し、最終 target が local であることを要求します。開いた stream にサイズ上限を適用します。ACL の検査・変更・警告は行いません。local token file を非公開に保つ責任は運用者にあります。
 
-明示 handshake の直前に限り、Worker は strict UTF-8 で最大 16 KiB を非同期読み込みます。UTF-8 BOM は任意で許可して除去し、前後の空白だけを除去します。32 文字以上の単一 ASCII RFC 6750 bearer-token 値を要求します。空、短すぎる、上限超過、encoding 不正、ASCII 以外、内部 whitespace、制御文字を拒否します。file 不在、directory、読み取り失敗も拒否します。内容を cache せず watcher も設けません。token rotation は次の明示 reconnect で反映し、独自に接続や操作の再送を開始しません。
+明示 handshake および Issue #153 の各回復試行の直前に、Worker は strict UTF-8 で最大 16 KiB を非同期読み込みます。UTF-8 BOM は任意で許可して除去し、前後の空白だけを除去します。32 文字以上の単一 ASCII RFC 6750 bearer-token 値を要求します。空、短すぎる、上限超過、encoding 不正、ASCII 以外、内部 whitespace、制御文字を拒否します。file 不在、directory、読み取り失敗も拒否します。内容を cache せず watcher も設けません。token rotation は次の明示 reconnect または開始済みの一時障害回復試行で反映し、内容の更新だけでは接続や操作の再送を開始しません。
 
 値は WebSocket handshake の bearer Authorization header としてだけ送信します。Extension、settings、contract DTO、Remote UI、transcript、diagnostics に渡すのは token-file path までとし、token 値を含めません。`ISecretRedactor` は `RegisterSecret(string) -> IDisposable` を提供し、Worker ごとに参照数付き lease を使って、同じ値の重複登録が別の有効 lease を解除しないようにします。読み込み直後・handshake 処理前に登録します。診断文字列は enqueue または書き込みより前の生成時点で秘匿します。queue と callback が受け取るのは、すでに秘匿済み文字列か分類済み error だけです。cleanup で transition gate を保持している間に callback を unsubscribe または抑止し、候補 connection を dispose します。同じ gate を必要とする可能性のある callback を gate 保持中に await してはいけません。queue 済み close callback を追跡し、gate 解放後に drain してから lease を解放します。同等の secret 寿命を保つ callback-owned lease 方式も使えます。lease の寿命を超えて raw exception や header 文字列を保持しません。
 
@@ -57,7 +57,7 @@ token path は絶対 local path とします。UNC path、network drive、device
 
 ## 接続寿命、health、失敗結果
 
-明示的な remote 接続起動全体に monotonic 45 秒 budget を適用します。各段階の上限は token 読み込み 5 秒、WebSocket handshake 15 秒、`initialize` 15 秒、起動時 `account/read` 15 秒です。各段階には全体残り時間を超えない timeout を渡します。キャンセルは接続失敗ではなくキャンセルとして扱います。候補 socket 作成後の失敗では候補を退役させ、保留処理を完了してから戻ります。新しい generation を古い失敗で上書きしません。account-read 失敗は `initialize` 失敗と区別します。正常に返った `SignedOut` account state は接続状態を維持し、既存の sign-in 操作を可能にします。initialize 後に `Unavailable` と分類された account-read error だけでは RPC 接続を degraded にせず、Worker の既存 Ready state を維持します。transport close、caller cancellation、startup 全体 deadline は起動を失敗させ、保留処理を cleanup して候補接続を退役させます。
+明示的な接続または Issue #153 の回復を含め、各 remote 接続試行に monotonic 45 秒 budget を適用します。各段階の上限は token 読み込み 5 秒、WebSocket handshake 15 秒、`initialize` 15 秒、起動時 `account/read` 15 秒です。各段階には全体残り時間を超えない timeout を渡します。キャンセルは接続失敗ではなくキャンセルとして扱います。候補 socket 作成後の失敗では候補を退役させ、保留処理を完了してから戻ります。新しい generation を古い失敗で上書きしません。account-read 失敗は `initialize` 失敗と区別します。正常に返った `SignedOut` account state は接続状態を維持し、既存の sign-in 操作を可能にします。initialize 後に `Unavailable` と分類された account-read error だけでは RPC 接続を degraded にせず、Worker の既存 Ready state を維持します。transport close、caller cancellation、startup 全体 deadline は起動を失敗させ、保留処理を cleanup して候補接続を退役させます。
 
 Worker 所有の `RemoteConnectionDiagnostics` service は App Server 接続と独立して診断します。networking factory を使い、`ws` から HTTP、`wss` から HTTPS を導出し、authority と port を保持して固定 `/healthz` と `/readyz` だけへ要求します。認証なし GET 2 件を、monotonic 5 秒 budget で並行実行します。Authorization と Origin は送信せず、認証 header を継承しません。`ResponseHeadersRead` で status を分類し、body は読まずに response を破棄します。redirect と cookie は無効です。health 失敗で正常な RPC 接続を妨げません。
 
@@ -67,7 +67,7 @@ WebSocket URI に root 以外の routing path がある場合でも、probe は 
 
 UI は診断対象 profile と実際の接続先を分けます。profile 選択または保存済み endpoint metadata の変更で診断を消去・cancel します。別診断、接続・世代変更、dispose 後に完了した古い結果は破棄します。実行中は重複 check を無効化し、既存の polite live region に状態を出します。動的表示はすべて `SafeMarkdownService` で処理します。
 
-transport は有効に parse された inbound JSON-RPC response、notification、server request のすべてを activity として watchdog に通知し、monotonic inbound-activity sequence と、watchdog が時刻を記録する activity signal を提供します。silence は最後の inbound message から測ります。watchdog は時刻を更新するたびに自身の activity generation を進め、期限判定の前にその generation を記録します。これにより判定と競合した activity が probe の基準に取り込まれません。active remote 接続で最後の inbound message から 30 秒 activity がない場合、 `refreshToken: false` の `account/read` を overload retry なしで 10 秒 deadline で送ります。有効な parsed inbound message はすべて silence count をリセットします。最初の deadline 時に基準から activity generation が進んでいれば2回目を送らず、count を戻して通常の30秒 idle wait に戻ります。最初の probe 中に activity がなかった場合のみ、直ちにもう1回を送ります。2回目も probe episode 開始後に activity がないまま timeout し、socket を停止する直前に connection-transition gate の内側で再確認しても activity がない場合だけ、捕捉済み socket を閉じ、その generation が現行なら `Degraded` を通知します。その間に activity があれば socket を維持し、idle wait をやり直します。自動再接続や変更操作の再送はしません。新しい generation に置き換わった後の close は state を上書きしません。`SignedOut` account state は接続を維持し、既存の sign-in 操作を可能にします。
+transport は有効に parse された inbound JSON-RPC response、notification、server request のすべてを activity として watchdog に通知し、monotonic inbound-activity sequence と、watchdog が時刻を記録する activity signal を提供します。silence は最後の inbound message から測ります。watchdog は時刻を更新するたびに自身の activity generation を進め、期限判定の前にその generation を記録します。これにより判定と競合した activity が probe の基準に取り込まれません。active remote 接続で最後の inbound message から 30 秒 activity がない場合、 `refreshToken: false` の `account/read` を overload retry なしで 10 秒 deadline で送ります。有効な parsed inbound message はすべて silence count をリセットします。最初の deadline 時に基準から activity generation が進んでいれば2回目を送らず、count を戻して通常の30秒 idle wait に戻ります。最初の probe 中に activity がなかった場合のみ、直ちにもう1回を送ります。2回目も probe episode 開始後に activity がないまま timeout し、socket を停止する直前に connection-transition gate の内側で再確認しても activity がない場合だけ、捕捉済み socket を閉じ、その generation が現行なら `Degraded` を通知します。その間に activity があれば socket を維持し、idle wait をやり直します。watchdog 自身は再接続や変更操作の再送を行いません。計画する Issue #153 の Extension 側復旧管理は、この一時切断通知を受けて上限付きの接続回復を行えます。新しい generation に置き換わった後の close は state を上書きしません。`SignedOut` account state は接続を維持し、既存の sign-in 操作を可能にします。
 
 失敗は endpoint 不正、profile 変更・利用不可、token file 不在・読取不可・内容不正、認証拒否、証明書拒否、DNS/ネットワーク失敗、timeout、RPC initialize 失敗、account-read 失敗、health route の結果に分類します。秘匿が必要な詳細は redaction までの短時間だけ保持し、ユーザー表示は固定分類文言とします。
 
@@ -94,7 +94,7 @@ false のみを再試行可能とする前に、固定 upstream の `codex-rs/ap
 
 ## 契約とユーザーインターフェイス
 
-現在の契約基準は v16 です。本変更では同梱する Extension/Worker 契約をまとめて次の利用可能な version へ更新します（途中の変更がなければ v17）。merge 前に最新の契約へ rebase し、その次の version を採用します。Extension/Worker の不一致は fail closed とし、互換性交渉を追加しません。
+Issue #151 の本設計は、同梱 Extension/Worker 契約を v16 から v17 へ更新した履歴を記録します。Issue #152 が v18 を導入し、Issue #153 は bounded history と添付 metadata 読み取りを含む v19 を導入しました。この履歴上の Phase 2 version を将来の基準にしません。Extension/Worker の不一致は fail closed とし、互換性交渉を追加しません。
 
 Worker status に型付き connection target と diagnostic snapshot を追加します。snapshot は local/remote 種別、設定表示名、metadata fingerprint、接続試行・接続 generation を持ち、token 値を含みません。その generation の Ready/Busy/WaitingForApproval だけが接続済み target を確定します。Disconnected/Connecting/Degraded は意図した target を報告します。`worker/connection/diagnose` と接続のみを置換する `worker/reconnect` を追加します。remote reconnect は最後に適用した snapshot を使い、最新 token file を読みます。`worker/restart` は Worker が所有する local process に限定し、remote 状態では停止や送信の前に拒否します。
 
@@ -103,6 +103,10 @@ Worker status に型付き connection target と diagnostic snapshot を追加�
 接続先 flyout は health/ready 結果と RPC state を分離し、診断対象と active target を区別し、pathful endpoint の authority-root 診断を説明します。Usage/History との排他、keyboard 操作、Escape/Tab、Visual Studio theme resource、accessibility name、live status を維持します。health 結果で Connect や機能の利用可否を変えません。
 
 Preview の説明を更新し、health diagnostics と許可済み read-only RPC の上限付き retry が利用できると伝えます。account/principal 状態分離は併設する Issue #152 の設計に従って説明し、外部管理 remote server・Worker 所有 socket の区別を維持します。
+
+## Issue #153 の回復との統合
+
+[合意した復旧設計](connection-history-recovery-design_ja.md)は、Worker 置換をまたぐ Extension 所有の単一回復管理を追加します。最大5試行、各試行前の待機は順に0・1・2・4・8秒、1試行45秒、全体5分です。各試行で既存の endpoint／profile／token／TLS policy を維持し、handshake 直前に token を読みます。認証・証明書・設定・既知の所有者変更では自動試行を停止します。Remote server は外部管理のままで、変更操作は再送しません。現行契約 v18 は、予定する v19 の実装まで変更しません。
 
 ## 検証と受け入れ
 

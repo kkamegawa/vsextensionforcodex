@@ -39,3 +39,12 @@ Detailed contract: [Path mapping and connection state isolation](../path-state-i
 - Changed-file links, typed file artifacts, image preview, and open/reveal are delivered by Issue #155; stored attachments, recovered history, and retained drafts by Issue #153. Both must use the mapper, physical boundary, and owner partition delivered here.
 - Remote mode stays Preview until Issue #153 is complete and the upstream WebSocket transport is no longer experimental.
 - Amended the same day: an unsolicited `account/updated` or an unmatched login completion rereads the account for the same owner. Only a changed Worker-only account fingerprint (SHA-256 of type, email, and plan) retires the owner and ends in Degraded; an unchanged one refreshes the account status. Reason: CLI 0.159.1 sends `account/updated` shortly after startup without any account change, which retired every new connection in the Experimental Instance.
+
+## Transient recovery draft quarantine
+
+- Date: 2026-10-04
+- Task: Issue #153
+- Approval reference: user-approved plan in this conversation
+- On owner replacement, clear active conversation, transcript, and live owner state, but preserve the unsent draft only as an immutable, in-memory quarantine entry tagged with its old opaque owner and target snapshot. The quarantine is not part of the new owner partition and is never auto-restored.
+- A replacement Worker cannot prove continuity with the former Worker-only account fingerprint. Refresh the new target's thread list and require the user to review the active target, select a conversation in its history, and explicitly restore or discard the quarantined draft. Sending is a separate action and revalidates attachments and current skill/model choices.
+- Do not carry approvals, grants, pending requests, caches, prior thread identifiers, or credentials into the replacement owner. This clarifies the earlier instruction to clear drafts: clear active draft state while retaining only the isolated review copy.

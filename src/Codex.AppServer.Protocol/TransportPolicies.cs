@@ -75,6 +75,10 @@ public static class ReadOnlyRequestAllowlist
         "account/read",
         .. UnconditionalMethods,
         "skills/list",
+        "thread/read",
+        "thread/turns/list",
+        "thread/items/list",
+        "thread/attachment/list",
     ];
 
     public static bool IsRetryable(string method, object? parameters)
@@ -82,6 +86,11 @@ public static class ReadOnlyRequestAllowlist
         if (UnconditionalMethods.Contains(method))
         {
             return true;
+        }
+
+        if (method is "thread/read" or "thread/turns/list" or "thread/items/list" or "thread/attachment/list")
+        {
+            return HasSafeHistoryReadParameters(method, parameters);
         }
 
         return method switch
@@ -109,6 +118,66 @@ public static class ReadOnlyRequestAllowlist
         return element.ValueKind == JsonValueKind.Object
             && element.TryGetProperty(property, out JsonElement value)
             && value.ValueKind == JsonValueKind.False;
+    }
+
+    private static bool HasSafeHistoryReadParameters(string method, object? parameters)
+    {
+        if (parameters is null)
+        {
+            return false;
+        }
+
+        JsonElement element = parameters is JsonElement json
+            ? json
+            : JsonSerializer.SerializeToElement(parameters, parameters.GetType());
+        if (element.ValueKind != JsonValueKind.Object
+            || !element.TryGetProperty("threadId", out JsonElement threadId)
+            || threadId.ValueKind != JsonValueKind.String
+            || string.IsNullOrWhiteSpace(threadId.GetString()))
+        {
+            return false;
+        }
+
+        if (method == "thread/read")
+        {
+            return element.TryGetProperty("includeTurns", out JsonElement includeTurns)
+                && includeTurns.ValueKind == JsonValueKind.False;
+        }
+
+        if (!element.TryGetProperty("limit", out JsonElement limit)
+            || !limit.TryGetInt32(out int pageSize))
+        {
+            return false;
+        }
+
+        int maximum = method switch
+        {
+            "thread/turns/list" => 50,
+            "thread/items/list" => 100,
+            "thread/attachment/list" => 50,
+            _ => 0,
+        };
+        if (pageSize is < 1 || pageSize > maximum)
+        {
+            return false;
+        }
+
+        if (method == "thread/items/list"
+            && element.TryGetProperty("cursor", out JsonElement cursor)
+            && cursor.ValueKind == JsonValueKind.Object)
+        {
+            return element.TryGetProperty("turnId", out JsonElement turnId)
+                && turnId.ValueKind == JsonValueKind.String
+                && !string.IsNullOrWhiteSpace(turnId.GetString())
+                && cursor.TryGetProperty("type", out JsonElement anchorType)
+                && anchorType.ValueKind == JsonValueKind.String
+                && anchorType.GetString() == "item"
+                && cursor.TryGetProperty("itemId", out JsonElement itemId)
+                && itemId.ValueKind == JsonValueKind.String
+                && !string.IsNullOrWhiteSpace(itemId.GetString());
+        }
+
+        return true;
     }
 }
 
