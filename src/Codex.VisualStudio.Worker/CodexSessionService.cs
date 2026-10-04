@@ -21,6 +21,7 @@ public interface ICodexSessionService : IAsyncDisposable
     string? EmittingStatePartitionFingerprint => StatePartitionFingerprint;
     long EmittingOwnerGeneration => OwnerGeneration;
     AccountState? InvalidatedAccountState => null;
+    bool InvalidatedByOwnerAction => false;
     IDisposable SuppressEmissionOwnerContext() => new CallbackScope(static () => { });
     bool CanPersistOwnerState => false;
     bool IsConnectionActive => true;
@@ -196,6 +197,9 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
     private long ownerGeneration;
     private bool ownerPartitionPrepared;
     private AccountState? invalidatedAccountState;
+    private bool invalidatedByOwnerAction;
+    private const int MaxTurnAttachments = 10;
+    public const string RemoteWorkingDirectoryLabel = "(remote working directory)";
 
     public CodexSessionService(
         IApprovalPolicyEngine approvalPolicy,
@@ -274,6 +278,10 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
     public long EmittingOwnerGeneration => emittingContext.Value?.OwnerGeneration ?? OwnerGeneration;
     public AccountState? InvalidatedAccountState => invalidatedAccountState;
 
+    // True when the current owner itself requested the change (its own logout or the completion of
+    // the sign-in it started), so the Worker may activate a new owner without a manual reconnect.
+    public bool InvalidatedByOwnerAction => invalidatedByOwnerAction;
+
     public IDisposable SuppressEmissionOwnerContext()
     {
         ConnectionContext? previous = emittingContext.Value;
@@ -300,6 +308,7 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         this.credentialFingerprint = credentialFingerprint;
         this.ownerGeneration = ownerGeneration;
         invalidatedAccountState = null;
+        invalidatedByOwnerAction = false;
         statePartitionFingerprint = ConnectionStatePartition.Create(
             options,
             workerInstanceId,
@@ -593,6 +602,32 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
             EnsureCurrent(context);
             AccountStatus status = ReadAccountStatus(result);
             WorkerDiagnostics.Write($"account status read completed state={status.State} plan={status.PlanType ?? "none"}");
+
+            // The owner's first read records its account fingerprint. A later read that returns a
+            // different account is an owner boundary: the new account's status is never published
+            // under the old owner.
+            string fingerprint = ComputeAccountFingerprint(result);
+            string? recorded = context.AccountFingerprint;
+            if (recorded is null)
+            {
+                context.AccountFingerprint = fingerprint;
+            }
+            else if (!string.Equals(recorded, fingerprint, StringComparison.Ordinal))
+            {
+                WorkerDiagnostics.Write("account identity changed; retiring the owner");
+                bool ownLogout = context.LogoutRequested;
+                invalidatedAccountState = ownLogout ? AccountState.SignedOut : AccountState.Unavailable;
+                invalidatedByOwnerAction = ownLogout;
+                await InvalidateOwnerPartitionAsync(context, cancellationToken).ConfigureAwait(false);
+                var changed = new AccountStatus
+                {
+                    State = AccountState.Unavailable,
+                    Message = "The account changed. Reconnect to confirm the active account.",
+                };
+                await EmitAccountStatusAsync(changed, CancellationToken.None).ConfigureAwait(false);
+                return changed;
+            }
+
             await EmitAccountStatusAsync(status, cancellationToken).ConfigureAwait(false);
             return status;
         }
@@ -644,6 +679,7 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
                 return new StartAccountLoginResult { Status = unavailable };
             }
 
+            context.PendingLoginId = loginId;
             WorkerDiagnostics.Write("app-server login response accepted");
             return new StartAccountLoginResult
             {
@@ -672,16 +708,29 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
     public async Task<AccountStatus> LogoutAccountAsync(CancellationToken cancellationToken)
     {
         WorkerDiagnostics.Write("app-server logout request starting");
+        ConnectionContext? logoutContext = null;
         try
         {
             ConnectionContext context = RequireContext();
+            logoutContext = context;
+
+            // An account notification for this logout can be processed before the response. Marking
+            // the request first lets that path retire the owner as the owner's own logout.
+            context.LogoutRequested = true;
             await context.Connection.SendRequestAsync(
                 "account/logout",
                 new { },
                 TimeSpan.FromSeconds(15),
                 cancellationToken).ConfigureAwait(false);
+            if (!IsCurrent(context) && context.OwnerInvalidated && invalidatedByOwnerAction)
+            {
+                WorkerDiagnostics.Write("app-server logout request completed after its notification");
+                return new AccountStatus { State = AccountState.SignedOut };
+            }
+
             EnsureCurrent(context);
             invalidatedAccountState = AccountState.SignedOut;
+            invalidatedByOwnerAction = true;
             await InvalidateOwnerPartitionAsync(context, cancellationToken).ConfigureAwait(false);
             WorkerDiagnostics.Write("app-server logout request completed");
             var signedOut = new AccountStatus { State = AccountState.SignedOut };
@@ -694,6 +743,11 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
+            if (logoutContext is not null)
+            {
+                logoutContext.LogoutRequested = false;
+            }
+
             WorkerDiagnostics.Write("app-server logout request failed", ex);
             var unavailable = new AccountStatus
             {
@@ -1599,17 +1653,20 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         int attachmentCount = 0;
         foreach (AttachmentInfo attachment in request.Attachments)
         {
-            if (attachmentCount == 10)
-            {
-                break;
-            }
-
             bool isImage = string.Equals(attachment.Kind, "image", StringComparison.OrdinalIgnoreCase);
             bool isMention = string.Equals(attachment.Kind, "mention", StringComparison.OrdinalIgnoreCase);
-            if ((!isImage && !isMention)
-                || !TryNormalizeReadableFile(attachment.Path, allowOutsideWorkspace: true, out string normalizedPath))
+            if (!isImage && !isMention)
             {
                 continue;
+            }
+
+            // A partial attachment list must never be sent: a missing, unreadable, or protected
+            // file rejects the whole turn, naming only the file.
+            if (!TryNormalizeReadableFile(attachment.Path, allowOutsideWorkspace: true, out string normalizedPath))
+            {
+                throw new AttachmentRejectedException(
+                    $"The attachment '{SafeAttachmentName(attachment.Path)}' is missing, unreadable, or protected. "
+                    + "Remove it or attach a readable file.");
             }
 
             // An explicit attachment the remote server cannot see must never be dropped silently:
@@ -1626,7 +1683,13 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
                 continue;
             }
 
-            attachmentCount++;
+            // Every entry is validated; an excess attachment rejects the turn instead of being
+            // dropped from the list.
+            if (++attachmentCount > MaxTurnAttachments)
+            {
+                throw new AttachmentRejectedException(
+                    $"At most {MaxTurnAttachments} attachments can be sent in one turn. Remove some, then send again.");
+            }
 
             if (isImage)
             {
@@ -1807,6 +1870,34 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
                 out _)
                 ? localPath.Value
             : null;
+    }
+
+    // A remote thread's working directory is a server path. It is shown only as its mapped local
+    // path; an unmappable value becomes a fixed label so the raw server layout is not displayed.
+    private string? DisplayThreadWorkingDirectory(string? serverCwd)
+    {
+        if (remotePathMapper is null || string.IsNullOrWhiteSpace(serverCwd))
+        {
+            return serverCwd;
+        }
+
+        return MapServerPathToLocal(serverCwd) ?? RemoteWorkingDirectoryLabel;
+    }
+
+    private static string SafeAttachmentName(string? path)
+    {
+        string name;
+        try
+        {
+            name = Path.GetFileName(path ?? string.Empty);
+        }
+        catch (ArgumentException)
+        {
+            name = string.Empty;
+        }
+
+        name = new string(name.Where(static c => !char.IsControl(c)).Take(128).ToArray());
+        return string.IsNullOrWhiteSpace(name) ? "attachment" : name;
     }
 
     private bool TryNormalizeReadableFile(string? path, bool allowOutsideWorkspace, out string normalizedPath)
@@ -2184,7 +2275,35 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
             // The pinned notification carries only auth mode and plan, so it cannot prove that
             // the authenticated owner is unchanged. Retire the old generation before accepting
             // any later account-scoped result, even when email and plan appear unchanged.
+            // Only a completion for the sign-in this owner started counts as an owner action. Any
+            // other notification is verified by reading the account again: the app-server also
+            // sends account/updated without an account change (for example shortly after startup).
+            string? completedLoginId = method == "account/login/completed" ? GetString(parameters, "loginId") : null;
+            bool loginCompleted = completedLoginId is not null
+                && string.Equals(completedLoginId, context.PendingLoginId, StringComparison.Ordinal);
+            if (context.LogoutRequested)
+            {
+                invalidatedAccountState = AccountState.SignedOut;
+                invalidatedByOwnerAction = true;
+                await InvalidateOwnerPartitionAsync(context, cancellationToken).ConfigureAwait(false);
+                return;
+            }
+
+            if (!loginCompleted)
+            {
+                EnsureCurrent(context);
+
+                // Before the owner's first account read completes, that read covers the change.
+                if (context.AccountFingerprint is not null)
+                {
+                    await GetAccountStatusAsync(cancellationToken).ConfigureAwait(false);
+                }
+
+                return;
+            }
+
             invalidatedAccountState = AccountState.Unavailable;
+            invalidatedByOwnerAction = true;
             await InvalidateOwnerPartitionAsync(context, cancellationToken).ConfigureAwait(false);
             await EmitAccountStatusAsync(
                 new AccountStatus
@@ -2910,6 +3029,30 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
             },
             cancellationToken) ?? Task.CompletedTask;
 
+    // A Worker-only digest of the account identity fields. It never leaves the Worker.
+    private static string ComputeAccountFingerprint(JsonElement result)
+    {
+        if (!result.TryGetProperty("account", out JsonElement account)
+            || account.ValueKind != JsonValueKind.Object)
+        {
+            return "signed-out";
+        }
+
+        var builder = new StringBuilder();
+        foreach (string? field in new[]
+        {
+            GetString(account, "type"),
+            GetString(account, "email"),
+            GetString(account, "planType") ?? GetString(account, "chatgptPlanType"),
+        })
+        {
+            string value = field ?? string.Empty;
+            builder.Append(value.Length).Append(':').Append(value).Append('\0');
+        }
+
+        return Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(builder.ToString())));
+    }
+
     private static AccountStatus ReadAccountStatus(JsonElement result)
     {
         if (!result.TryGetProperty("account", out JsonElement account)
@@ -2940,7 +3083,7 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
             ? value
             : null;
 
-    private static ThreadSummary ReadThread(
+    private ThreadSummary ReadThread(
         JsonElement thread,
         EffectiveApprovalState? effectiveApprovalState = null,
         string? effectiveReasoningEffort = null,
@@ -2948,7 +3091,7 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         {
             Id = GetString(thread, "id") ?? string.Empty,
             Preview = GetString(thread, "preview"),
-            Cwd = GetString(thread, "cwd"),
+            Cwd = DisplayThreadWorkingDirectory(GetString(thread, "cwd")),
             UpdatedAt = thread.TryGetProperty("updatedAt", out JsonElement updated) && updated.TryGetInt64(out long value) ? value : null,
             EffectiveApprovalState = effectiveApprovalState,
             EffectiveReasoningEffort = effectiveReasoningEffort,
@@ -3919,6 +4062,9 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         public HashSet<string> UnsupportedMethods { get; } = new(StringComparer.Ordinal);
         public bool NotifyPendingResolution { get; set; }
         public bool OwnerInvalidated { get; set; }
+        public string? PendingLoginId { get; set; }
+        public string? AccountFingerprint { get; set; }
+        public bool LogoutRequested { get; set; }
         public CancellationTokenSource Lifetime { get; } = new();
         public Func<JsonRpcMessage, CancellationToken, Task> NotificationHandler { get; }
         public Func<JsonRpcMessage, CancellationToken, Task<JsonElement>> RequestHandler { get; }

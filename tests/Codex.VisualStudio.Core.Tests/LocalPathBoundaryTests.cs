@@ -112,11 +112,68 @@ public sealed class LocalPathBoundaryTests
         Assert.IsFalse(boundary.IsWithinRoot(root, LocalPath.Create(firstLoop)));
     }
 
+    [TestMethod]
+    public void JunctionsInsideTheRootAreAcceptedAndEscapingJunctionsAreRejected()
+    {
+        string rootPath = CreateDirectory("junction-root");
+        string insideTarget = CreateDirectory(Path.Combine("junction-root", "real"));
+        string outsideTarget = CreateDirectory("junction-outside");
+        File.WriteAllText(Path.Combine(insideTarget, "existing.txt"), "inside");
+        File.WriteAllText(Path.Combine(outsideTarget, "existing.txt"), "outside");
+        string insideJunction = Path.Combine(rootPath, "inside-junction");
+        string outsideJunction = Path.Combine(rootPath, "outside-junction");
+        RequireJunction(insideJunction, insideTarget);
+        RequireJunction(outsideJunction, outsideTarget);
+        var boundary = new LocalPathBoundary();
+        LocalPath root = LocalPath.Create(rootPath);
+
+        try
+        {
+            Assert.IsTrue(boundary.IsWithinRoot(root, LocalPath.Create(Path.Combine(insideJunction, "existing.txt"))));
+            Assert.IsTrue(boundary.IsWithinRoot(root, LocalPath.Create(Path.Combine(insideJunction, "future.txt"))));
+            Assert.IsFalse(boundary.IsWithinRoot(root, LocalPath.Create(Path.Combine(outsideJunction, "existing.txt"))));
+            Assert.IsFalse(boundary.IsWithinRoot(root, LocalPath.Create(Path.Combine(outsideJunction, "future.txt"))));
+            Assert.IsFalse(boundary.IsWithinRoot(root, LocalPath.Create(outsideJunction)));
+        }
+        finally
+        {
+            // Remove the reparse points first so cleanup never follows them into their targets.
+            Directory.Delete(insideJunction);
+            Directory.Delete(outsideJunction);
+        }
+    }
+
     private string CreateDirectory(string relativePath)
     {
         string path = Path.Combine(temporaryRoot, relativePath);
         Directory.CreateDirectory(path);
         return path;
+    }
+
+    // Junctions need no symlink privilege, so this check runs on ordinary Windows hosts.
+    private static void RequireJunction(string linkPath, string targetPath)
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            Assert.Inconclusive("Junctions are Windows-only.");
+        }
+
+        using var process = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+        {
+            FileName = Path.Combine(Environment.SystemDirectory, "cmd.exe"),
+            ArgumentList = { "/d", "/c", "mklink", "/J", linkPath, targetPath },
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+        })!;
+        process.StandardOutput.ReadToEnd();
+        process.StandardError.ReadToEnd();
+        process.WaitForExit();
+        if (process.ExitCode != 0 || !Directory.Exists(linkPath))
+        {
+            Assert.Inconclusive($"Directory junctions are unavailable (exit code {process.ExitCode}).");
+        }
     }
 
     private static void RequireDirectorySymlink(string linkPath, string targetPath)

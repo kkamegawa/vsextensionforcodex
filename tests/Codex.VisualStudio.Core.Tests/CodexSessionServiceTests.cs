@@ -595,7 +595,6 @@ public sealed class CodexSessionServiceTests
                     new AttachmentInfo(document, "file"),
                     new AttachmentInfo(document, "mention"),
                     new AttachmentInfo(Path.Combine(workspace, ".", "notes.md"), "mention"),
-                    new AttachmentInfo(Path.Combine(workspace, "missing.txt"), "mention"),
                 ],
                 IdeContext = new IdeContextInfo
                 {
@@ -617,7 +616,7 @@ public sealed class CodexSessionServiceTests
     }
 
     [TestMethod]
-    public async Task StartTurnAllowsOutsideWorkspaceAttachmentsButRejectsProtectedFilesAndCapsAtTen()
+    public async Task StartTurnAllowsOutsideWorkspaceAttachmentsAndRejectsMoreThanTen()
     {
         string root = Path.Combine(Path.GetTempPath(), $"codex-attachment-policy-{Guid.NewGuid():N}");
         string workspace = Path.Combine(root, "workspace");
@@ -636,7 +635,6 @@ public sealed class CodexSessionServiceTests
             attachments.Add(new AttachmentInfo(path, "mention"));
         }
 
-        attachments.Insert(0, new AttachmentInfo(protectedFile, "mention"));
         var protectedPolicy = new ProtectedDirectoryPolicy([protectedRoot]);
         var pathPolicy = new PathAccessPolicy();
         await using var service = new CodexSessionService(
@@ -653,15 +651,69 @@ public sealed class CodexSessionServiceTests
         await service.InitializeAsync(connection, Options(workspace), CancellationToken.None);
 
         await service.StartTurnAsync(
-            new StartTurnRequest { ThreadId = "thread-1", Text = "inspect", Attachments = attachments },
+            new StartTurnRequest { ThreadId = "thread-1", Text = "inspect", Attachments = attachments.Take(10).ToList() },
             CancellationToken.None);
+        await Assert.ThrowsExactlyAsync<AttachmentRejectedException>(() => service.StartTurnAsync(
+            new StartTurnRequest { ThreadId = "thread-1", Text = "inspect", Attachments = attachments },
+            CancellationToken.None));
 
         JsonElement[] input = ParametersFor(connection, "turn/start").GetProperty("input").EnumerateArray().ToArray();
         Assert.AreEqual(10, input.Count(item => item.GetProperty("type").GetString() == "mention"));
-        Assert.IsFalse(input.Any(item => item.TryGetProperty("path", out JsonElement path)
-            && string.Equals(path.GetString(), protectedFile, StringComparison.OrdinalIgnoreCase)));
 
         Directory.Delete(root, recursive: true);
+    }
+
+    [TestMethod]
+    public async Task ProtectedOrMissingAttachmentRejectsTheWholeTurn()
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"codex-attachment-reject-{Guid.NewGuid():N}");
+        string workspace = Path.Combine(root, "workspace");
+        string protectedRoot = Path.Combine(root, "protected");
+        Directory.CreateDirectory(workspace);
+        Directory.CreateDirectory(protectedRoot);
+        string readable = Path.Combine(workspace, "readable.txt");
+        string protectedFile = Path.Combine(protectedRoot, "blocked.txt");
+        string missing = Path.Combine(workspace, "missing.txt");
+        await File.WriteAllTextAsync(readable, "ok");
+        await File.WriteAllTextAsync(protectedFile, "blocked");
+        var protectedPolicy = new ProtectedDirectoryPolicy([protectedRoot]);
+        var pathPolicy = new PathAccessPolicy();
+        await using var service = new CodexSessionService(
+            new ApprovalPolicyEngine(pathPolicy, protectedPolicy),
+            new SecretRedactor(),
+            pathPolicy,
+            protectedPolicy);
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "turn/start"
+                ? JsonSerializer.SerializeToElement(new { turn = new { id = "turn-1" } })
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        await service.InitializeAsync(connection, Options(workspace), CancellationToken.None);
+
+        try
+        {
+            foreach ((string path, string name) in new[] { (protectedFile, "blocked.txt"), (missing, "missing.txt") })
+            {
+                AttachmentRejectedException rejected = await Assert.ThrowsExactlyAsync<AttachmentRejectedException>(() =>
+                    service.StartTurnAsync(
+                        new StartTurnRequest
+                        {
+                            ThreadId = "thread-1",
+                            Text = "inspect",
+                            Attachments = [new AttachmentInfo(readable, "mention"), new AttachmentInfo(path, "mention")],
+                        },
+                        CancellationToken.None));
+                StringAssert.Contains(rejected.Message, name);
+                Assert.IsFalse(rejected.Message.Contains(root, StringComparison.OrdinalIgnoreCase));
+            }
+
+            Assert.IsFalse(connection.Requests.Any(item => item.Method == "turn/start"));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
     }
 
     [TestMethod]
@@ -1715,21 +1767,24 @@ public sealed class CodexSessionServiceTests
     [TestMethod]
     public async Task AccountReadMapsSignedOutAndSignedInWithoutPersonalInformation()
     {
-        bool signedIn = false;
-        var connection = new RecordingConnection
+        // A different account on the same owner is an owner boundary, so each state uses its own owner.
+        async Task<AccountStatus> ReadAsync(bool signedIn)
         {
-            Handler = (method, _) => method == "account/read"
-                ? signedIn
-                    ? JsonSerializer.SerializeToElement(new { account = new { type = "chatgpt", email = "secret@example.com", planType = "plus" } })
-                    : JsonSerializer.SerializeToElement(new { account = (object?)null, requiresOpenaiAuth = true })
-                : JsonSerializer.SerializeToElement(new { }),
-        };
-        await using var service = CreateService();
-        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+            var connection = new RecordingConnection
+            {
+                Handler = (method, _) => method == "account/read"
+                    ? signedIn
+                        ? JsonSerializer.SerializeToElement(new { account = new { type = "chatgpt", email = "secret@example.com", planType = "plus" } })
+                        : JsonSerializer.SerializeToElement(new { account = (object?)null, requiresOpenaiAuth = true })
+                    : JsonSerializer.SerializeToElement(new { }),
+            };
+            await using var service = CreateService();
+            await service.InitializeAsync(connection, Options(), CancellationToken.None);
+            return await service.GetAccountStatusAsync(CancellationToken.None);
+        }
 
-        AccountStatus signedOut = await service.GetAccountStatusAsync(CancellationToken.None);
-        signedIn = true;
-        AccountStatus signedInStatus = await service.GetAccountStatusAsync(CancellationToken.None);
+        AccountStatus signedOut = await ReadAsync(signedIn: false);
+        AccountStatus signedInStatus = await ReadAsync(signedIn: true);
 
         Assert.AreEqual(AccountState.SignedOut, signedOut.State);
         Assert.AreEqual(AccountState.SignedIn, signedInStatus.State);
@@ -1950,10 +2005,130 @@ public sealed class CodexSessionServiceTests
             new[] { "initialize", "account/logout" },
             connection.Requests.Select(item => item.Method).ToArray());
         Assert.IsFalse(service.IsConnectionActive);
+        Assert.IsTrue(service.InvalidatedByOwnerAction);
+        Assert.AreEqual(AccountState.SignedOut, service.InvalidatedAccountState);
     }
 
     [TestMethod]
-    public async Task AccountNotificationsRetireTheConnectionWithoutReusingOwnerStatus()
+    public async Task AccountNotificationBeforeTheLogoutResponseIsStillTheOwnersLogout()
+    {
+        RecordingConnection? connection = null;
+        connection = new RecordingConnection
+        {
+            AsyncHandler = async (method, _, _) =>
+            {
+                if (method == "account/logout")
+                {
+                    // The notification for this logout is processed before its response.
+                    await connection!.EmitNotificationAsync("account/updated", new { authMode = (string?)null, planType = (string?)null });
+                }
+
+                return method == "account/read"
+                    ? JsonSerializer.SerializeToElement(new { account = new { type = "chatgpt", email = "a@example.test", planType = "plus" } })
+                    : JsonSerializer.SerializeToElement(new { });
+            },
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+        await service.GetAccountStatusAsync(CancellationToken.None);
+
+        AccountStatus result = await service.LogoutAccountAsync(CancellationToken.None);
+
+        Assert.AreEqual(AccountState.SignedOut, result.State);
+        Assert.IsFalse(service.IsConnectionActive);
+        Assert.IsTrue(service.InvalidatedByOwnerAction);
+        Assert.AreEqual(AccountState.SignedOut, service.InvalidatedAccountState);
+    }
+
+    [TestMethod]
+    public async Task LoginCompletionForTheOwnersSignInIsAnOwnerAction()
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "account/login/start"
+                ? JsonSerializer.SerializeToElement(new { type = "chatgpt", loginId = "login-1", authUrl = "https://auth.example.test/start" })
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+        await service.StartAccountLoginAsync(CancellationToken.None);
+
+        await connection.EmitNotificationAsync("account/login/completed", new { loginId = "login-1", success = true });
+
+        Assert.IsFalse(service.IsConnectionActive);
+        Assert.IsTrue(service.InvalidatedByOwnerAction);
+    }
+
+    [TestMethod]
+    [DataRow("account/updated", null)]
+    [DataRow("account/login/completed", "someone-else")]
+    [DataRow("account/login/completed", "")]
+    public async Task UnsolicitedNotificationForTheSameAccountKeepsTheOwner(string method, string? loginId)
+    {
+        int reads = 0;
+        var connection = new RecordingConnection
+        {
+            Handler = (requestMethod, _) =>
+            {
+                if (requestMethod == "account/read")
+                {
+                    reads++;
+                    return JsonSerializer.SerializeToElement(new { account = new { type = "chatgpt", email = "a@example.test", planType = "plus" } });
+                }
+
+                return requestMethod == "account/login/start"
+                    ? JsonSerializer.SerializeToElement(new { type = "chatgpt", loginId = "login-1", authUrl = "https://auth.example.test/start" })
+                    : JsonSerializer.SerializeToElement(new { });
+            },
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+        await service.GetAccountStatusAsync(CancellationToken.None);
+        await service.StartAccountLoginAsync(CancellationToken.None);
+
+        object parameters = method == "account/updated"
+            ? new { authMode = "chatgpt", planType = "plus" }
+            : string.IsNullOrEmpty(loginId)
+                ? new { success = true }
+                : new { loginId, success = true };
+        await connection.EmitNotificationAsync(method, parameters);
+
+        Assert.AreEqual(2, reads);
+        Assert.IsTrue(service.IsConnectionActive);
+        Assert.IsFalse(service.InvalidatedByOwnerAction);
+    }
+
+    [TestMethod]
+    public async Task UnsolicitedNotificationForAChangedAccountRetiresTheOwner()
+    {
+        string email = "a@example.test";
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "account/read"
+                ? JsonSerializer.SerializeToElement(new { account = new { type = "chatgpt", email, planType = "plus" } })
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+        var statuses = new List<AccountStatus>();
+        service.AccountStatusChanged += (value, _) =>
+        {
+            statuses.Add(value);
+            return Task.CompletedTask;
+        };
+        await service.GetAccountStatusAsync(CancellationToken.None);
+
+        email = "b@example.test";
+        await connection.EmitNotificationAsync("account/updated", new { authMode = "chatgpt", planType = "plus" });
+
+        Assert.IsFalse(service.IsConnectionActive);
+        Assert.IsFalse(service.InvalidatedByOwnerAction);
+        Assert.AreEqual(AccountState.Unavailable, statuses[^1].State);
+        Assert.AreEqual(1, statuses.Count(status => status.State == AccountState.SignedIn));
+    }
+
+    [TestMethod]
+    public async Task NotificationBeforeTheFirstAccountReadIsCoveredByThatRead()
     {
         int reads = 0;
         var connection = new RecordingConnection
@@ -1963,33 +2138,38 @@ public sealed class CodexSessionServiceTests
                 if (method == "account/read")
                 {
                     reads++;
-                    return JsonSerializer.SerializeToElement(new { account = new { type = "chatgpt", planType = "pro" } });
                 }
 
-                return JsonSerializer.SerializeToElement(new { });
+                return method == "account/read"
+                    ? JsonSerializer.SerializeToElement(new { account = new { type = "chatgpt", planType = "plus" } })
+                    : JsonSerializer.SerializeToElement(new { });
             },
         };
         await using var service = CreateService();
         await service.InitializeAsync(connection, Options(), CancellationToken.None);
 
-        await connection.EmitNotificationAsync("account/login/completed", new { loginId = "login-1", success = true });
-        await connection.EmitNotificationAsync("account/updated", new { authMode = "chatgpt", planType = "pro" });
+        await connection.EmitNotificationAsync("account/updated", new { authMode = "chatgpt", planType = "plus" });
+        AccountStatus status = await service.GetAccountStatusAsync(CancellationToken.None);
 
-        Assert.AreEqual(0, reads);
-        Assert.IsFalse(service.IsConnectionActive);
+        Assert.AreEqual(1, reads);
+        Assert.AreEqual(AccountState.SignedIn, status.State);
+        Assert.IsTrue(service.IsConnectionActive);
     }
 
     [TestMethod]
     public async Task AccountNotificationReadTimeoutReportsUnavailable()
     {
+        bool timeOut = false;
         var connection = new RecordingConnection
         {
-            AsyncHandler = (method, _, _) => method == "account/read"
+            AsyncHandler = (method, _, _) => method == "account/read" && timeOut
                 ? Task.FromCanceled<JsonElement>(new CancellationToken(canceled: true))
                 : Task.FromResult(JsonSerializer.SerializeToElement(new { })),
         };
         await using var service = CreateService();
         await service.InitializeAsync(connection, Options(), CancellationToken.None);
+        await service.GetAccountStatusAsync(CancellationToken.None);
+        timeOut = true;
         var statuses = new List<AccountStatus>();
         service.AccountStatusChanged += (value, _) =>
         {
@@ -2708,6 +2888,181 @@ public sealed class CodexSessionServiceTests
         finally
         {
             Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public async Task RemoteModeMapsWorkingDirectoryImagesAndIdeContextThroughTheSharedMapper()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "codex-map-" + Guid.NewGuid().ToString("N"));
+        string workspace = Path.Combine(root, "workspace");
+        string source = Path.Combine(workspace, "src");
+        Directory.CreateDirectory(source);
+        string image = Path.Combine(workspace, "shot.png");
+        string document = Path.Combine(source, "Program.cs");
+        string referenced = Path.Combine(source, "Helper.cs");
+        string outside = Path.Combine(root, "outside.cs");
+        File.WriteAllText(image, "png");
+        File.WriteAllText(document, "class Program {}");
+        File.WriteAllText(referenced, "class Helper {}");
+        File.WriteAllText(outside, "class Outside {}");
+        try
+        {
+            var connection = new RecordingConnection
+            {
+                Handler = (method, _) => method switch
+                {
+                    "thread/start" => JsonSerializer.SerializeToElement(new { thread = new { id = "thread-1", cwd = "/srv/workspace" } }),
+                    "turn/start" => JsonSerializer.SerializeToElement(new { turn = new { id = "turn-1" } }),
+                    _ => JsonSerializer.SerializeToElement(new { }),
+                },
+            };
+            await using var service = CreateService();
+            WorkerOptions options = Options(workspace);
+            options.LocalRoot = workspace;
+            options.ServerRoot = "/srv/workspace";
+            await service.InitializeAsync(connection, options, CancellationToken.None);
+
+            ThreadSummary thread = await service.StartThreadAsync(CancellationToken.None);
+            await service.StartTurnAsync(
+                new StartTurnRequest
+                {
+                    ThreadId = "thread-1",
+                    Text = "inspect",
+                    Attachments = [new AttachmentInfo(image, "image")],
+                    IdeContext = new IdeContextInfo
+                    {
+                        ActiveDocumentPath = document,
+                        ReferencedFilePaths = [referenced, outside],
+                    },
+                },
+                CancellationToken.None);
+
+            Assert.AreEqual("/srv/workspace", ParametersFor(connection, "thread/start").GetProperty("cwd").GetString());
+            Assert.AreEqual(
+                Path.TrimEndingDirectorySeparator(Path.GetFullPath(workspace)),
+                Path.TrimEndingDirectorySeparator(Path.GetFullPath(thread.Cwd!)));
+            JsonElement[] input = ParametersFor(connection, "turn/start").GetProperty("input").EnumerateArray().ToArray();
+            JsonElement localImage = input.Single(item => item.GetProperty("type").GetString() == "localImage");
+            Assert.AreEqual("/srv/workspace/shot.png", localImage.GetProperty("path").GetString());
+            string json = ParametersFor(connection, "turn/start").GetRawText();
+            StringAssert.Contains(json, "/srv/workspace/src/Program.cs");
+            StringAssert.Contains(json, "/srv/workspace/src/Helper.cs");
+            Assert.IsFalse(json.Contains("outside.cs", StringComparison.Ordinal));
+            Assert.IsFalse(json.Contains(Path.GetFileName(root), StringComparison.OrdinalIgnoreCase));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public async Task RemoteModeThreadListShowsMappedWorkingDirectoryOrAFixedLabel()
+    {
+        string workspace = Path.Combine(Path.GetTempPath(), "codex-map-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(Path.Combine(workspace, "sub"));
+        try
+        {
+            var connection = new RecordingConnection
+            {
+                Handler = (method, _) => method == "thread/list"
+                    ? JsonSerializer.SerializeToElement(new
+                    {
+                        data = new[]
+                        {
+                            new { id = "thread-1", cwd = "/srv/workspace/sub" },
+                            new { id = "thread-2", cwd = "/srv/other/secret" },
+                        },
+                    })
+                    : JsonSerializer.SerializeToElement(new { }),
+            };
+            await using var service = CreateService();
+            WorkerOptions options = Options(workspace);
+            options.LocalRoot = workspace;
+            options.ServerRoot = "/srv/workspace";
+            await service.InitializeAsync(connection, options, CancellationToken.None);
+
+            ThreadPage page = await service.ListThreadsAsync(null, CancellationToken.None);
+
+            Assert.AreEqual(
+                Path.Combine(Path.GetFullPath(workspace), "sub"),
+                Path.GetFullPath(page.Threads[0].Cwd!));
+            Assert.AreEqual(CodexSessionService.RemoteWorkingDirectoryLabel, page.Threads[1].Cwd);
+        }
+        finally
+        {
+            Directory.Delete(workspace, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public async Task RemoteModeMapsPermissionProfileWorkingDirectory()
+    {
+        string workspace = Path.Combine(Path.GetTempPath(), "codex-map-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(workspace);
+        try
+        {
+            var connection = new RecordingConnection();
+            await using var service = CreateService();
+            WorkerOptions options = Options(workspace, experimentalApi: true);
+            options.LocalRoot = workspace;
+            options.ServerRoot = "/srv/workspace";
+            await service.InitializeAsync(connection, options, CancellationToken.None);
+
+            await service.ListPermissionProfilesAsync(CancellationToken.None);
+
+            Assert.AreEqual(
+                "/srv/workspace",
+                ParametersFor(connection, "permissionProfile/list").GetProperty("cwd").GetString());
+        }
+        finally
+        {
+            Directory.Delete(workspace, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public async Task RemoteModeBlocksApprovalForAnUnmappableServerPath()
+    {
+        string workspace = Path.Combine(Path.GetTempPath(), "codex-map-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(workspace);
+        try
+        {
+            var connection = new RecordingConnection();
+            await using var service = CreateService();
+            var requests = new List<ApprovalRequest>();
+            service.ApprovalRequested += (request, cancellationToken) =>
+            {
+                requests.Add(request);
+                return service.ResolveApprovalAsync(
+                    new ResolveApprovalRequest { RequestId = request.RequestId, Decision = ApprovalDecision.Cancel },
+                    cancellationToken);
+            };
+            WorkerOptions options = Options(workspace);
+            options.LocalRoot = workspace;
+            options.ServerRoot = "/srv/workspace";
+            await service.InitializeAsync(connection, options, CancellationToken.None);
+
+            JsonElement blocked = await connection.EmitRequestAsync(
+                "approval-1",
+                "item/commandExecution/requestApproval",
+                new { command = "ls", cwd = "/srv/other", itemId = "item-1", threadId = "thread-1", turnId = "turn-1", startedAtMs = 1L });
+            await connection.EmitRequestAsync(
+                "approval-2",
+                "item/commandExecution/requestApproval",
+                new { command = "ls", cwd = "/srv/workspace", itemId = "item-2", threadId = "thread-1", turnId = "turn-1", startedAtMs = 2L });
+
+            // The unmappable request is declined without reaching the UI; the mapped one is shown
+            // with its local working directory.
+            Assert.AreEqual("decline", blocked.GetProperty("decision").GetString());
+            ApprovalRequest shown = requests.Single();
+            Assert.AreNotEqual("remote-path-unmappable", shown.RiskKey);
+            Assert.IsFalse(shown.IsPolicyBlocked);
+        }
+        finally
+        {
+            Directory.Delete(workspace, recursive: true);
         }
     }
 
