@@ -12,7 +12,7 @@ Plan: [English Wiki](https://github.com/kkamegawa/vsextensionforcodex/wiki/path-
 - [x] Add remote-mode integration tests (working directory, permission profile, `localImage`, IDE context, unmappable approval path, thread working directory), an automated junction test, and account-change lifecycle tests (Worker and UI).
 - [x] Fix the Experimental Instance degradation: CLI 0.159.1 sends `account/updated` after startup without an account change. Account notifications now reread the account and retire the owner only when the Worker-only account fingerprint changes; a notification processed during the owner's own logout counts as that logout (Codex review finding).
 - [x] Verify Debug/Release builds (zero warnings), Release Core 331 passed / 5 skipped and UI 318 passed / 1 skipped, CLI 0.159.1 schema-cache and live initialize, and `git diff --check`.
-- [ ] Observe the Experimental Instance scenarios in screenshots (sign-in/sign-out reconnect, profile switch, cleared state, attachment rejection, remote skill selection). No desktop control in this session; requires the maintainer's account.
+- [x] Experimental Instance acceptance by the maintainer: startup reaches Ready signed in, and Sign out reaches a new Ready session with Sign in available (screenshots). Remote profile switching, attachment rejection, and remote skill selection rely on the automated tests.
 
 ## 2026-10-03: Path mapping and owner state isolation ([Issue #152](https://github.com/kkamegawa/vsextensionforcodex/issues/152))
 

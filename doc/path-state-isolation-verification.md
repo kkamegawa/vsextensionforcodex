@@ -58,9 +58,15 @@ processed during the owner's own logout counts as that logout (Codex review find
 The five skips are the symlink cases that need symlink creation capability. The new
 junction test runs without that capability.
 
-## Pending acceptance (follow-up)
+## Experimental Instance acceptance (2026-10-04)
 
-Experimental Instance screenshots of sign-in/sign-out reconnect, remote profile switching,
-cleared selected state, attachment rejection, and remote skill selection remain unverified.
-Visual Studio 2026 Insiders is installed, but this session has no desktop control, and the
-sign-in scenarios require the maintainer's own ChatGPT account and remote app-server.
+The maintainer ran the follow-up build with CLI 0.159.1 in the Experimental Instance and
+accepted it. The screenshots show:
+
+- After startup: `Ready · Codex 0.159.1`, `Signed in · plus`, and the usage indicator, with no
+  degraded state.
+- After Sign out: a new session reaches `Ready · Codex 0.159.1`, `Not signed in`, and the
+  Sign in action is available without a manual reconnect.
+
+The screenshots do not show remote profile switching, attachment rejection, or remote skill
+selection; those are covered by the automated tests above and the maintainer's acceptance.
