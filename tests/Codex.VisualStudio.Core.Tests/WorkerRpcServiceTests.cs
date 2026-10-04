@@ -38,6 +38,33 @@ public sealed class WorkerRpcServiceTests
     }
 
     [TestMethod]
+    public async Task LocalConnectCancellation_StaysCancellationAndStopsThePartialProcess()
+    {
+        // A recovery attempt deadline cancels the connect. It must surface as cancellation, not a
+        // terminal Degraded status, so the coordinator can retry it as an unresponsive peer.
+        using var cancellation = new CancellationTokenSource();
+        var host = new FakeProcessHost(new StubConnection())
+        {
+            OnStartLocal = token =>
+            {
+                cancellation.Cancel();
+                token.ThrowIfCancellationRequested();
+                return Task.CompletedTask;
+            },
+        };
+        var session = new CodexSessionService(new ApprovalPolicyEngine(new PathAccessPolicy()), new SecretRedactor());
+        await using var worker = new WorkerRpcService(new SecretRedactor(), host, session);
+
+        await Assert.ThrowsAsync<OperationCanceledException>(
+            () => worker.ConnectAsync(Options(), cancellation.Token));
+
+        WorkerStatus status = await worker.GetStatusAsync(CancellationToken.None);
+        Assert.AreEqual(1, host.Stops);
+        Assert.AreEqual(WorkerConnectionState.Degraded, status.State);
+        Assert.AreEqual(WorkerRecoveryFailureKind.Cancelled, status.RecoveryFailureKind);
+    }
+
+    [TestMethod]
     public async Task ListModels_DelegatesToSession()
     {
         var connection = new StubConnection
@@ -1310,8 +1337,10 @@ public sealed class WorkerRpcServiceTests
 
         public RemoteConnectionRequest? LastRemoteRequest { get; private set; }
 
+        public Func<CancellationToken, Task>? OnStartLocal { get; set; }
+
         public Task StartAsync(string codexPath, string workingDirectory, CancellationToken cancellationToken)
-            => Task.CompletedTask;
+            => OnStartLocal?.Invoke(cancellationToken) ?? Task.CompletedTask;
 
         public Task StartRemoteAsync(RemoteConnectionRequest request, CancellationToken cancellationToken)
         {

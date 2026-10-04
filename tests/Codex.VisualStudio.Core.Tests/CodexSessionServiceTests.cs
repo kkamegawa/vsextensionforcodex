@@ -274,6 +274,32 @@ public sealed class CodexSessionServiceTests
     }
 
     [TestMethod]
+    public async Task ListThreadItemsSkipsEntriesFromAnotherTurn()
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "thread/items/list"
+                ? JsonSerializer.SerializeToElement(new
+                {
+                    data = new[]
+                    {
+                        new { turnId = "turn-1", item = new { id = "item-1", type = "agentMessage", text = "requested turn" } },
+                        new { turnId = "turn-2", item = new { id = "item-2", type = "agentMessage", text = "other turn" } },
+                    },
+                    nextCursor = (string?)null,
+                })
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        ThreadItemsPage items = await service.ListThreadItemsAsync("thread-1", "turn-1", null, 50, CancellationToken.None);
+
+        Assert.AreEqual("item-1", items.Items.Single().Id);
+        Assert.AreEqual("turn-1", items.Items.Single().TurnId);
+    }
+
+    [TestMethod]
     public async Task ReadThreadRejectsMismatchedResponseId()
     {
         var connection = new RecordingConnection

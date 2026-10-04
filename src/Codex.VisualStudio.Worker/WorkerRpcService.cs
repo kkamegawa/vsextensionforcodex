@@ -193,6 +193,26 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
                 "Connected to codex app-server.",
                 cancellationToken).ConfigureAwait(false);
         }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // Caller cancellation (including a recovery attempt deadline) stays cancellation so
+            // the caller can classify it; the partially started local process is stopped first.
+            WorkerDiagnostics.Write("worker connect canceled");
+            DetachProcessObservers();
+            try
+            {
+                await processHost.StopAsync(CancellationToken.None).ConfigureAwait(false);
+            }
+            catch (Exception stopException)
+            {
+                WorkerDiagnostics.Write("canceled local connect cleanup failed", stopException);
+            }
+
+            await PublishRemoteFailureAsync(
+                "The connection attempt was canceled.",
+                WorkerRecoveryFailureKind.Cancelled).ConfigureAwait(false);
+            throw;
+        }
         catch (Exception ex)
         {
             WorkerDiagnostics.Write("worker connect failed", ex);

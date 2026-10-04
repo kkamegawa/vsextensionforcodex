@@ -132,5 +132,3 @@ Preview の説明を更新し、health diagnostics と許可済み read-only RPC
 - Repository source: `src/Codex.AppServer.Protocol/TransportPolicies.cs`（`ReadOnlyRetryPolicy`、`ReadOnlyRequestAllowlist`、`SendReadOnlyRequestAsync`、`WebSocketTransportSecurityPolicy` を含む）、`src/Codex.VisualStudio.Worker/WorkerRpcService.cs`、`ISecretRedactor`、既存 diagnostics writer。
 - 固定 upstream source: health/ready route は `codex-rs/app-server-transport/src/transport/websocket.rs`、force-reload の動作は `codex-rs/app-server/src/request_processors/catalog_processor.rs` の `skills_list_response`、schema `codex-rs/app-server-protocol/schema/json/v2/SkillsListParams.json`、test `codex-rs/app-server/tests/suite/v2/skills_list.rs`。
 - Microsoft Learn: .NET `ClientWebSocket.ConnectAsync` の `HttpMessageInvoker` overload、`HttpClient.DefaultProxy`、`SocketsHttpHandler.ConnectCallback`、WebSocket keep-alive と unsolicited PONG の動作。
-0
-0

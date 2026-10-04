@@ -956,6 +956,13 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
                 continue;
             }
 
+            // A per-turn page must only contain items for the requested turn. Mismatched
+            // entries are untrusted server data and must not leak into another turn.
+            if (turnId is not null && !string.Equals(itemTurnId, turnId, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
             items.Add(new ThreadHistoryItem
             {
                 Id = id,

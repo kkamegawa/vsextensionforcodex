@@ -121,12 +121,16 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     private string? threadTurnsCursor;
     private ThreadItemCursor? threadItemsCursor;
     private readonly HashSet<string> deletedAttachmentIds = new(StringComparer.Ordinal);
+    private readonly object attachmentRefreshGate = new();
+    private bool attachmentRefreshRunning;
+    private bool attachmentRefreshRequested;
     private readonly HashSet<string> historyItemKeys = new(StringComparer.Ordinal);
     private long historyBytes;
     private int bufferedEventCount;
     private long bufferedEventBytes;
     private readonly Queue<WorkerNotification<ConversationEvent>> pendingHistoryEvents = new();
     private const int MaximumVisibleHistoryItems = 1000;
+    private const int MaxAttachmentReconciliationPasses = 3;
     private const long MaximumVisibleHistoryBytes = 16 * 1024 * 1024;
     private const int MaximumBufferedHistoryEvents = 1024;
     private const long MaximumBufferedHistoryBytes = 8 * 1024 * 1024;
@@ -2934,7 +2938,69 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         }
     }
 
+    // Attachment refreshes are single-flight. A request that arrives while a scan runs is
+    // coalesced into one follow-up scan, so scans never overlap and an older scan can never
+    // overwrite a newer membership view. If membership keeps changing for the whole bounded
+    // reconciliation pass, the list is exposed as stale with the explicit Refresh action.
     private async Task RefreshAttachmentsAsync()
+    {
+        lock (attachmentRefreshGate)
+        {
+            if (attachmentRefreshRunning)
+            {
+                attachmentRefreshRequested = true;
+                return;
+            }
+
+            attachmentRefreshRunning = true;
+            attachmentRefreshRequested = false;
+        }
+
+        bool released = false;
+        try
+        {
+            for (int pass = 1; ; pass++)
+            {
+                await RefreshAttachmentsOnceAsync().ConfigureAwait(false);
+                bool stale = false;
+                lock (attachmentRefreshGate)
+                {
+                    if (!attachmentRefreshRequested)
+                    {
+                        attachmentRefreshRunning = false;
+                        released = true;
+                        return;
+                    }
+
+                    attachmentRefreshRequested = false;
+                    if (pass >= MaxAttachmentReconciliationPasses)
+                    {
+                        attachmentRefreshRunning = false;
+                        released = true;
+                        stale = true;
+                    }
+                }
+
+                if (stale)
+                {
+                    await OnUiAsync(() => ThreadAttachmentsStatusText = "Attachment metadata kept changing while it was refreshed. Refresh again to load a consistent list.").ConfigureAwait(false);
+                    return;
+                }
+            }
+        }
+        finally
+        {
+            if (!released)
+            {
+                lock (attachmentRefreshGate)
+                {
+                    attachmentRefreshRunning = false;
+                }
+            }
+        }
+    }
+
+    private async Task RefreshAttachmentsOnceAsync()
     {
         ThreadSummary? thread = SelectedThread;
         if (thread is null || Status.State != WorkerConnectionState.Ready)
@@ -2980,8 +3046,30 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
     private void MergeAttachment(ThreadAttachmentMetadata attachment)
     {
-        if (ThreadAttachments.Count >= 100 || deletedAttachmentIds.Contains(attachment.Id)
+        // Deletion tombstones hide only that exact attachment ID; a newer generation of the
+        // same identity keeps its own ID and is not hidden by the old tombstone.
+        if (deletedAttachmentIds.Contains(attachment.Id)
             || ThreadAttachments.Any(existing => string.Equals(existing.Id, attachment.Id, StringComparison.Ordinal)))
+        {
+            return;
+        }
+
+        var key = new AttachmentMembershipKey(attachment.AttachmentType, attachment.IdentityKey);
+        for (int index = 0; index < ThreadAttachments.Count; index++)
+        {
+            ThreadAttachmentPresentationViewModel existing = ThreadAttachments[index];
+            if (existing.MembershipKey == key)
+            {
+                if (attachment.CreatedAt >= existing.CreatedAt)
+                {
+                    ThreadAttachments[index] = new ThreadAttachmentPresentationViewModel(attachment, markdown);
+                }
+
+                return;
+            }
+        }
+
+        if (ThreadAttachments.Count >= 100)
         {
             return;
         }
@@ -2998,6 +3086,11 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     {
         var result = new List<ThreadAttachmentMetadata>(100);
         var seen = new HashSet<string>(StringComparer.Ordinal);
+
+        // Membership is keyed by (threadId, attachmentType, identityKey); the thread is fixed
+        // per scan. A recreated record or a duplicate page entry with a new server ID replaces
+        // the older generation of the same identity instead of adding a second row.
+        var memberships = new Dictionary<AttachmentMembershipKey, int>();
         string? cursor = null;
         bool truncated = false;
         do
@@ -3016,12 +3109,24 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                     continue;
                 }
 
+                var key = new AttachmentMembershipKey(attachment.AttachmentType, attachment.IdentityKey);
+                if (memberships.TryGetValue(key, out int index))
+                {
+                    if (attachment.CreatedAt >= result[index].CreatedAt)
+                    {
+                        result[index] = attachment;
+                    }
+
+                    continue;
+                }
+
                 if (result.Count == 100)
                 {
                     truncated = true;
                     break;
                 }
 
+                memberships.Add(key, result.Count);
                 result.Add(attachment);
             }
 
@@ -7801,11 +7906,15 @@ public sealed class RecoveryDraftViewModel
 }
 
 [DataContract]
+internal readonly record struct AttachmentMembershipKey(string AttachmentType, string IdentityKey);
+
 public sealed class ThreadAttachmentPresentationViewModel
 {
     internal ThreadAttachmentPresentationViewModel(ThreadAttachmentMetadata metadata, SafeMarkdownService markdown)
     {
         Id = metadata.Id;
+        MembershipKey = new AttachmentMembershipKey(metadata.AttachmentType, metadata.IdentityKey);
+        CreatedAt = metadata.CreatedAt;
         DisplayText = $"{markdown.ToSafeText(metadata.AttachmentType)} · {markdown.ToSafeText(metadata.IdentityKey)}";
         StatusText = string.IsNullOrWhiteSpace(metadata.UnavailableReason)
             ? "Metadata only"
@@ -7820,6 +7929,10 @@ public sealed class ThreadAttachmentPresentationViewModel
 
     [DataMember]
     public string StatusText { get; }
+
+    internal AttachmentMembershipKey MembershipKey { get; }
+
+    internal long CreatedAt { get; }
 }
 
 public sealed class AsyncCommand : ICommand, VSUI.IAsyncCommand, INotifyPropertyChanged

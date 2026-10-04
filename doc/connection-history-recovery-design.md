@@ -64,8 +64,6 @@ Only transport/Worker unavailability and explicitly classified temporary connect
 
 Add only thread/read, thread/turns/list, thread/items/list, and thread/attachment/list to the existing bounded overload-retry allowlist, using its current retry count, delay, and deadline rules. These are read-only calls. Never retry thread/resume after a timeout or overload response; the server may already have rejoined the live thread.
 
-Add only thread/read, thread/turns/list, thread/items/list, and thread/attachment/list to the existing bounded overload-retry allowlist, using its current retry count, delay, and deadline rules. These are read-only calls. Never retry thread/resume after a timeout or overload response; the server may already have rejoined the live thread.
-
 ## Draft isolation and uncertain operations
 
 At the first eligible connection loss, freeze the old owner's in-memory draft as an immutable RecoveryDraft. It contains composer text, attachment descriptors needed to reconstruct the draft, selected skill identity, and next-turn model/reasoning/speed/personality choices. Keep it only while the Visual Studio surface lives. Do not store it on disk.

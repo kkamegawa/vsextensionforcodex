@@ -30,4 +30,4 @@
 - transport write が始まった可能性がある操作は再送しません。operation ID はローカルだけで使います。本文・時刻の類似や履歴ページにないことは証明になりません。確定応答は記録した結果を確定でき、切断前に相関付けた server item identity は受理だけを示して、すべての副作用の完了は証明しません。NotSent は dispatch が開始していない証明を必要とします。それ以外は不確定のまま、明示的な Copy/Edit/Send 確認を求めます。承認 ID/proof は再利用しません。
 - 追加する4つの read-only history method は overload allowlist へ個別審査し、既存8メソッドの policy と5回の接続試行から分けます。
 
-詳細設計: [接続・履歴の復旧](../connection-history-recovery-design_ja.md)。これは計画であり、実装証跡は未取得です。
+詳細設計: [接続・履歴の復旧](../connection-history-recovery-design_ja.md)。Worker contract v19 で実装済みで、検証証跡は [implementation.md](../implementation.md) に記録しています。

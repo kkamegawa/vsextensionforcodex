@@ -30,4 +30,4 @@ Recovery avoids duplicate side effects while keeping the user's draft and safely
 - Never replay an operation after transport write may have begun. Operation IDs stay local. Text/time similarity and absence from loaded history prove nothing. A definitive response can resolve the recorded outcome; a server item identity correlated before disconnect confirms acceptance only, not all side effects. NotSent requires proof that dispatch never began. Otherwise retain uncertainty and require explicit Copy/Edit/Send review. Never reuse approval IDs/proofs.
 - Review the four additional read-only history methods separately before adding the overload allowlist; they are separate from the existing eight-method policy and five connection attempts.
 
-Detailed target: [Connection and thread-history recovery](../connection-history-recovery-design.md). This is a plan; implementation evidence remains pending.
+Detailed target: [Connection and thread-history recovery](../connection-history-recovery-design.md). Implemented in Worker contract v19; validation evidence is recorded in [implementation.md](../implementation.md).

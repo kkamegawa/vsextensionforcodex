@@ -496,6 +496,105 @@ public sealed class ViewModelTests
     }
 
     [TestMethod]
+    public async Task ChatViewModel_AttachmentMembershipIsKeyedByTypeAndIdentity()
+    {
+        var bridge = new FakeWorkerBridge();
+        bridge.ListThreadAttachmentsHandler = (_, _) => Task.FromResult(new ThreadAttachmentsPage
+        {
+            Attachments =
+            [
+                new ThreadAttachmentMetadata { Id = "attachment-old", AttachmentType = "image", IdentityKey = "sha256:same", CreatedAt = 1 },
+                new ThreadAttachmentMetadata { Id = "attachment-other", AttachmentType = "image", IdentityKey = "sha256:other", CreatedAt = 1 },
+                new ThreadAttachmentMetadata { Id = "attachment-new", AttachmentType = "image", IdentityKey = "sha256:same", CreatedAt = 2 },
+            ],
+        });
+
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready });
+        var thread = new ThreadSummary { Id = "thread-attachment-identity" };
+        vm.Threads.Add(thread);
+        vm.SelectedThread = thread;
+
+        await WaitForAsync(() => vm.ThreadAttachments.Count == 2);
+
+        Assert.AreEqual(
+            "attachment-new,attachment-other",
+            string.Join(',', vm.ThreadAttachments.Select(static attachment => attachment.Id).Order(StringComparer.Ordinal)));
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_AttachmentRefreshesAreCoalescedAndNeverOverlap()
+    {
+        var bridge = new FakeWorkerBridge();
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        bool blockScans = false;
+        int blockedScans = 0;
+        int inFlight = 0;
+        int maxInFlight = 0;
+        bridge.ListThreadAttachmentsHandler = async (_, _) =>
+        {
+            int current = Interlocked.Increment(ref inFlight);
+            InterlockedMax(ref maxInFlight, current);
+            try
+            {
+                if (Volatile.Read(ref blockScans))
+                {
+                    Interlocked.Increment(ref blockedScans);
+#pragma warning disable VSTHRD003 // The test owns this completion source and releases it below.
+                    await release.Task;
+#pragma warning restore VSTHRD003
+                }
+
+                return new ThreadAttachmentsPage
+                {
+                    Attachments = [new ThreadAttachmentMetadata { Id = "attachment-1", AttachmentType = "image", IdentityKey = "sha256:one", CreatedAt = 1 }],
+                };
+            }
+            finally
+            {
+                Interlocked.Decrement(ref inFlight);
+            }
+        };
+
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready });
+        var thread = new ThreadSummary { Id = "thread-attachment-refresh" };
+        vm.Threads.Add(thread);
+        vm.SelectedThread = thread;
+        await WaitForAsync(() => vm.ThreadAttachments.Count == 1);
+
+        Volatile.Write(ref blockScans, true);
+        MethodInfo refresh = typeof(ChatViewModel).GetMethod("RefreshAttachmentsAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
+        Task first = (Task)refresh.Invoke(vm, null)!;
+        await WaitForAsync(() => Volatile.Read(ref blockedScans) == 1);
+        await (Task)refresh.Invoke(vm, null)!;
+        await (Task)refresh.Invoke(vm, null)!;
+        Assert.IsFalse(first.IsCompleted);
+
+        release.SetResult();
+        await first.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.AreEqual(2, Volatile.Read(ref blockedScans));
+        Assert.AreEqual(1, Volatile.Read(ref maxInFlight));
+        Assert.AreEqual(1, vm.ThreadAttachments.Count);
+    }
+
+    private static void InterlockedMax(ref int target, int value)
+    {
+        int observed = Volatile.Read(ref target);
+        while (value > observed)
+        {
+            int previous = Interlocked.CompareExchange(ref target, value, observed);
+            if (previous == observed)
+            {
+                return;
+            }
+
+            observed = previous;
+        }
+    }
+
+    [TestMethod]
     public async Task ChatViewModel_ConnectionRejectionWithoutStageProofRemainsOutcomeUnknown()
     {
         var bridge = new FakeWorkerBridge

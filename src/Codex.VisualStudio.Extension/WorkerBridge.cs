@@ -542,7 +542,7 @@ public sealed class WorkerBridge : IWorkerBridge, ICodexWorkerObserver
     private async Task EnsureWorkerStartedAsync(CancellationToken cancellationToken)
     {
         ObjectDisposedException.ThrowIf(Volatile.Read(ref disposed) != 0, this);
-        if (rpc is not null)
+        if (IsWorkerUsable())
         {
             return;
         }
@@ -551,10 +551,21 @@ public sealed class WorkerBridge : IWorkerBridge, ICodexWorkerObserver
         try
         {
             ObjectDisposedException.ThrowIf(Volatile.Read(ref disposed) != 0, this);
-            if (rpc is null)
+            if (IsWorkerUsable())
             {
-                await StartWorkerAsync(cancellationToken).ConfigureAwait(false);
+                return;
             }
+
+            if (rpc is not null)
+            {
+                // The Worker process exited or its RPC transport closed. Retire the dead
+                // transport so an explicit Connect starts a new Worker instead of invoking
+                // the stale proxy.
+                ExtensionDiagnostics.Write("Retiring stale Worker transport before restart");
+                await StopWorkerCoreAsync().ConfigureAwait(false);
+            }
+
+            await StartWorkerAsync(cancellationToken).ConfigureAwait(false);
         }
         finally
         {
@@ -669,6 +680,11 @@ public sealed class WorkerBridge : IWorkerBridge, ICodexWorkerObserver
             ExtensionDiagnostics.Write("Worker diagnostics stream ended", ex);
         }
     }
+
+    private bool IsWorkerUsable()
+        => rpc is { } current
+            && !current.Completion.IsCompleted
+            && Volatile.Read(ref connectionLossReported) == 0;
 
     private JsonRpc RequireRpc()
         => rpc ?? throw new InvalidOperationException("The Codex Worker RPC connection is unavailable.");
