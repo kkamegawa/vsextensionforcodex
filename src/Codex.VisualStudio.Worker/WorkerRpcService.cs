@@ -16,6 +16,9 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
     private readonly TimeProvider timeProvider;
     private readonly string workerInstanceId = Guid.NewGuid().ToString("N");
     private readonly SemaphoreSlim connectionTransitionGate = new(1, 1);
+
+    // Canceled first on dispose so an owner-change reconnect cannot delay Worker shutdown.
+    private readonly CancellationTokenSource lifetime = new();
     private readonly object targetGate = new();
     private readonly AsyncLocal<ConnectionTargetSnapshot?> processEmissionTarget = new();
     private readonly AsyncLocal<ConnectionTargetSnapshot?> requestEmissionTarget = new();
@@ -471,8 +474,12 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
                 {
                     await ConnectCoreAsync(
                         bound,
-                        CancellationToken.None,
+                        lifetime.Token,
                         "The account changed. Starting a new isolated session...").ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+                {
+                    WorkerDiagnostics.Write("owner-change connect canceled by worker shutdown");
                 }
                 catch (Exception ex)
                 {
@@ -996,6 +1003,7 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
+        await lifetime.CancelAsync().ConfigureAwait(false);
         await connectionTransitionGate.WaitAsync().ConfigureAwait(false);
         try
         {
@@ -1040,6 +1048,7 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
         }
 
         connectionTransitionGate.Dispose();
+        lifetime.Dispose();
     }
 
     private async Task<WorkerStatus> SetStatusAsync(WorkerConnectionState state, string message, CancellationToken cancellationToken)

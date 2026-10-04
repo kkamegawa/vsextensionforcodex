@@ -166,8 +166,18 @@ public sealed class ViewModelTests
         connecting.Message = "The account changed. Starting a new isolated session...";
         await bridge.PublishStateAsync(connecting);
         await bridge.PublishStateAsync(OwnerStatus("owner-b", 2, 5));
+        int canExecuteNotifications = 0;
+        vm.AccountCommand.PropertyChanged += (_, args) =>
+        {
+            if (args.PropertyName == nameof(AsyncCommand.CanExecute))
+            {
+                canExecuteNotifications++;
+            }
+        };
         await bridge.PublishAccountAsync(new AccountStatus { State = AccountState.SignedOut });
 
+        // Remote UI re-reads the button state only on PropertyChanged("CanExecute").
+        Assert.IsTrue(canExecuteNotifications > 0);
         Assert.AreEqual(0, vm.Items.Count);
         Assert.AreEqual(string.Empty, vm.ComposerText);
         Assert.AreEqual(AccountState.SignedOut, vm.Account.State);

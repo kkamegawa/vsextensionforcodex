@@ -616,7 +616,7 @@ public sealed class CodexSessionServiceTests
     }
 
     [TestMethod]
-    public async Task StartTurnAllowsOutsideWorkspaceAttachmentsAndCapsAtTen()
+    public async Task StartTurnAllowsOutsideWorkspaceAttachmentsAndRejectsMoreThanTen()
     {
         string root = Path.Combine(Path.GetTempPath(), $"codex-attachment-policy-{Guid.NewGuid():N}");
         string workspace = Path.Combine(root, "workspace");
@@ -651,8 +651,11 @@ public sealed class CodexSessionServiceTests
         await service.InitializeAsync(connection, Options(workspace), CancellationToken.None);
 
         await service.StartTurnAsync(
-            new StartTurnRequest { ThreadId = "thread-1", Text = "inspect", Attachments = attachments },
+            new StartTurnRequest { ThreadId = "thread-1", Text = "inspect", Attachments = attachments.Take(10).ToList() },
             CancellationToken.None);
+        await Assert.ThrowsExactlyAsync<AttachmentRejectedException>(() => service.StartTurnAsync(
+            new StartTurnRequest { ThreadId = "thread-1", Text = "inspect", Attachments = attachments },
+            CancellationToken.None));
 
         JsonElement[] input = ParametersFor(connection, "turn/start").GetProperty("input").EnumerateArray().ToArray();
         Assert.AreEqual(10, input.Count(item => item.GetProperty("type").GetString() == "mention"));

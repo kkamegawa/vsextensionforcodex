@@ -26,8 +26,9 @@ skipped symlink/loop cases.
 
 Release VSIX SHA-256: `9F35C339BC4A1566553D9BFDBD5AAC28299F8BAD8DD08B068214FB04F867F73A`.
 
-## Pending acceptance
+## Pending acceptance (2026-10-03, superseded)
 
+Superseded by the 2026-10-04 Experimental Instance acceptance below. Original note:
 Experimental Instance screenshots of connection switching, cleared selected state,
 attachment rejection, and remote skill selection remain unverified. Visual Studio
 discovery returned no installed instance. The selected `orca` executable was not

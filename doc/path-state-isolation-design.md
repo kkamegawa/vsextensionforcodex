@@ -35,7 +35,7 @@ Issue #152 delivers the mapper, the physical boundary, and owner stamping, and i
 
 The thread list shows a server working directory only as its mapped local path. When the path cannot be mapped, it shows a fixed remote-directory label instead of the server string.
 
-Before `turn/start`, validate every explicit attachment and its physical containment. An unmappable, missing, unreadable, or protected attachment rejects the whole start request with a bounded actionable reason that names only the file. It never sends a partial attachment list or exposes a sensitive full path in the error. Optional IDE context is included only when safely mappable. Validate physical containment again when opening or revealing a mapped local file.
+Before `turn/start`, validate every explicit attachment and its physical containment. An unmappable, missing, unreadable, or protected attachment, or more than ten distinct attachments, rejects the whole start request with a bounded actionable reason that names only the file. It never sends a partial attachment list or exposes a sensitive full path in the error. Optional IDE context is included only when safely mappable. Validate physical containment again when opening or revealing a mapped local file.
 
 Skill paths remain bounded server-provided identifiers. They are compared as part of the exact `(Name, Scope, Path)` identity and sent unchanged. Remote skills never depend on filesystem existence on the Visual Studio host.
 

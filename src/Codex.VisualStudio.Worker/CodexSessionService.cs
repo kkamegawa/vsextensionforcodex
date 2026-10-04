@@ -198,6 +198,7 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
     private bool ownerPartitionPrepared;
     private AccountState? invalidatedAccountState;
     private bool invalidatedByOwnerAction;
+    private const int MaxTurnAttachments = 10;
     public const string RemoteWorkingDirectoryLabel = "(remote working directory)";
 
     public CodexSessionService(
@@ -1652,11 +1653,6 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         int attachmentCount = 0;
         foreach (AttachmentInfo attachment in request.Attachments)
         {
-            if (attachmentCount == 10)
-            {
-                break;
-            }
-
             bool isImage = string.Equals(attachment.Kind, "image", StringComparison.OrdinalIgnoreCase);
             bool isMention = string.Equals(attachment.Kind, "mention", StringComparison.OrdinalIgnoreCase);
             if (!isImage && !isMention)
@@ -1687,7 +1683,13 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
                 continue;
             }
 
-            attachmentCount++;
+            // Every entry is validated; an excess attachment rejects the turn instead of being
+            // dropped from the list.
+            if (++attachmentCount > MaxTurnAttachments)
+            {
+                throw new AttachmentRejectedException(
+                    $"At most {MaxTurnAttachments} attachments can be sent in one turn. Remove some, then send again.");
+            }
 
             if (isImage)
             {
