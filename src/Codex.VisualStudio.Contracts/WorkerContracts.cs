@@ -5,7 +5,7 @@ namespace Codex.VisualStudio.Contracts;
 
 public static class ContractVersions
 {
-    public const int Current = 19;
+    public const int Current = 20;
 }
 
 public enum WorkerRecoveryFailureKind
@@ -231,6 +231,9 @@ public sealed class WorkerStatus
 
     [DataMember]
     public WorkerRecoveryFailureKind RecoveryFailureKind { get; set; }
+
+    [DataMember]
+    public bool GatewayOAuthRequired { get; set; }
 }
 
 /// <summary>Generation-stamped Worker callback payload; consumers recheck ownership before applying it.</summary>
@@ -1054,6 +1057,8 @@ public sealed class ApprovalRequest
     public string? PolicyBlockReason { get; set; }
 
     public IReadOnlyList<ApprovalDecision> AvailableDecisions { get; set; } = Array.Empty<ApprovalDecision>();
+
+    public IReadOnlyList<ApprovalChoice> Choices { get; set; } = Array.Empty<ApprovalChoice>();
 }
 
 public sealed class ResolveApprovalRequest : OwnerScopedRequest
@@ -1061,6 +1066,8 @@ public sealed class ResolveApprovalRequest : OwnerScopedRequest
     public string RequestId { get; set; } = string.Empty;
 
     public ApprovalDecision Decision { get; set; }
+
+    public string? ChoiceId { get; set; }
 }
 
 public sealed class ApprovalAuditRecord
@@ -1093,6 +1100,8 @@ public sealed class UserInputRequest
 
     public string? ItemId { get; set; }
 
+    public bool IsBlocking { get; set; }
+
     public IReadOnlyList<UserInputQuestion> Questions { get; set; } = Array.Empty<UserInputQuestion>();
 }
 
@@ -1104,11 +1113,15 @@ public sealed class UserInputQuestion
 
     public string Question { get; set; } = string.Empty;
 
+    public bool IsOther { get; set; }
+
     public IReadOnlyList<UserInputOption> Options { get; set; } = Array.Empty<UserInputOption>();
 }
 
 public sealed class UserInputOption
 {
+    public string OptionId { get; set; } = string.Empty;
+
     public string Label { get; set; } = string.Empty;
 
     public string Description { get; set; } = string.Empty;
@@ -1118,8 +1131,9 @@ public sealed class ResolveUserInputRequest : OwnerScopedRequest
 {
     public string RequestId { get; set; } = string.Empty;
 
-    // Maps each question id to the labels the user selected. Single-select answers carry one entry.
-    public IDictionary<string, string[]> Answers { get; set; } = new Dictionary<string, string[]>();
+    public UserInputAction Action { get; set; } = UserInputAction.Submit;
+
+    public IDictionary<string, UserInputAnswer> Answers { get; set; } = new Dictionary<string, UserInputAnswer>();
 }
 
 public interface ICodexWorkerObserver
@@ -1147,6 +1161,24 @@ public interface ICodexWorkerObserver
 
     [JsonRpcMethod("observer/userInputResolved")]
     Task OnUserInputResolvedAsync(WorkerNotification<string> notification, CancellationToken cancellationToken);
+
+    [JsonRpcMethod("observer/permissionRequested")]
+    Task OnPermissionRequestedAsync(WorkerNotification<PermissionRequest> notification, CancellationToken cancellationToken);
+
+    [JsonRpcMethod("observer/permissionResolved")]
+    Task OnPermissionResolvedAsync(WorkerNotification<string> notification, CancellationToken cancellationToken);
+
+    [JsonRpcMethod("observer/mcpElicitationRequested")]
+    Task OnMcpElicitationRequestedAsync(WorkerNotification<McpElicitationRequest> notification, CancellationToken cancellationToken);
+
+    [JsonRpcMethod("observer/mcpElicitationResolved")]
+    Task OnMcpElicitationResolvedAsync(WorkerNotification<string> notification, CancellationToken cancellationToken);
+
+    [JsonRpcMethod("observer/unsupportedInteraction")]
+    Task OnUnsupportedInteractionAsync(WorkerNotification<UnsupportedInteractionNotice> notification, CancellationToken cancellationToken);
+
+    [JsonRpcMethod("observer/interactionAuthStatusChanged")]
+    Task OnInteractionAuthStatusChangedAsync(WorkerNotification<InteractionAuthStatus> notification, CancellationToken cancellationToken);
 
     [JsonRpcMethod("observer/contextCompacted")]
     Task OnContextCompactedAsync(WorkerNotification<ContextCompactionEvent> notification, CancellationToken cancellationToken);
@@ -1267,4 +1299,28 @@ public interface ICodexWorkerClient
 
     [JsonRpcMethod("worker/userInput/resolve")]
     Task ResolveUserInputAsync(ResolveUserInputRequest request, CancellationToken cancellationToken);
+
+    [JsonRpcMethod("worker/permissionSelection/resolve")]
+    Task ResolvePermissionSelectionAsync(ResolvePermissionSelectionRequest request, CancellationToken cancellationToken);
+
+    [JsonRpcMethod("worker/mcpElicitation/resolve")]
+    Task ResolveMcpElicitationAsync(ResolveMcpElicitationRequest request, CancellationToken cancellationToken);
+
+    [JsonRpcMethod("worker/gatewayOAuth/read")]
+    Task<InteractionAuthStatus> ReadGatewayOAuthAsync(ReadGatewayOAuthRequest request, CancellationToken cancellationToken);
+
+    [JsonRpcMethod("worker/gatewayOAuth/login")]
+    Task<InteractionAuthStatus> LoginGatewayOAuthAsync(LoginGatewayOAuthRequest request, CancellationToken cancellationToken);
+
+    [JsonRpcMethod("worker/gatewayOAuth/cancel")]
+    Task<InteractionAuthStatus> CancelGatewayOAuthAsync(CancelGatewayOAuthRequest request, CancellationToken cancellationToken);
+
+    [JsonRpcMethod("worker/authorizationUrl/open")]
+    Task OpenAuthorizationUrlAsync(OpenAuthorizationUrlRequest request, CancellationToken cancellationToken);
+
+    [JsonRpcMethod("worker/mcpOAuth/start")]
+    Task<McpOAuthLoginStatus> StartMcpOAuthLoginAsync(StartMcpOAuthLoginRequest request, CancellationToken cancellationToken);
+
+    [JsonRpcMethod("worker/mcpOAuth/dismiss")]
+    Task DismissMcpOAuthLoginAsync(DismissMcpOAuthLoginRequest request, CancellationToken cancellationToken);
 }

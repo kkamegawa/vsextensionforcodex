@@ -28,6 +28,18 @@ internal interface IWorkerBridge : IAsyncDisposable
 
     event Func<WorkerNotification<string>, Task>? UserInputResolved;
 
+    event Func<WorkerNotification<PermissionRequest>, Task>? PermissionRequested;
+
+    event Func<WorkerNotification<string>, Task>? PermissionResolved;
+
+    event Func<WorkerNotification<McpElicitationRequest>, Task>? McpElicitationRequested;
+
+    event Func<WorkerNotification<string>, Task>? McpElicitationResolved;
+
+    event Func<WorkerNotification<UnsupportedInteractionNotice>, Task>? UnsupportedInteractionReceived;
+
+    event Func<WorkerNotification<InteractionAuthStatus>, Task>? InteractionAuthStatusChanged;
+
     event Func<WorkerNotification<ContextCompactionEvent>, Task>? ContextCompacted;
 
     event Func<WorkerNotification<ReviewModeEvent>, Task>? ReviewModeChanged;
@@ -106,6 +118,22 @@ internal interface IWorkerBridge : IAsyncDisposable
     Task ResolveApprovalAsync(ResolveApprovalRequest request, CancellationToken cancellationToken);
 
     Task ResolveUserInputAsync(ResolveUserInputRequest request, CancellationToken cancellationToken);
+
+    Task ResolvePermissionSelectionAsync(ResolvePermissionSelectionRequest request, CancellationToken cancellationToken);
+
+    Task ResolveMcpElicitationAsync(ResolveMcpElicitationRequest request, CancellationToken cancellationToken);
+
+    Task<InteractionAuthStatus> ReadGatewayOAuthAsync(ReadGatewayOAuthRequest request, CancellationToken cancellationToken);
+
+    Task<InteractionAuthStatus> LoginGatewayOAuthAsync(LoginGatewayOAuthRequest request, CancellationToken cancellationToken);
+
+    Task<InteractionAuthStatus> CancelGatewayOAuthAsync(CancelGatewayOAuthRequest request, CancellationToken cancellationToken);
+
+    Task OpenAuthorizationUrlAsync(OpenAuthorizationUrlRequest request, CancellationToken cancellationToken);
+
+    Task<McpOAuthLoginStatus> StartMcpOAuthLoginAsync(StartMcpOAuthLoginRequest request, CancellationToken cancellationToken);
+
+    Task DismissMcpOAuthLoginAsync(DismissMcpOAuthLoginRequest request, CancellationToken cancellationToken);
 }
 
 public sealed class WorkerBridge : IWorkerBridge, ICodexWorkerObserver
@@ -146,6 +174,18 @@ public sealed class WorkerBridge : IWorkerBridge, ICodexWorkerObserver
     public event Func<WorkerNotification<UserInputRequest>, Task>? UserInputRequested;
 
     public event Func<WorkerNotification<string>, Task>? UserInputResolved;
+
+    public event Func<WorkerNotification<PermissionRequest>, Task>? PermissionRequested;
+
+    public event Func<WorkerNotification<string>, Task>? PermissionResolved;
+
+    public event Func<WorkerNotification<McpElicitationRequest>, Task>? McpElicitationRequested;
+
+    public event Func<WorkerNotification<string>, Task>? McpElicitationResolved;
+
+    public event Func<WorkerNotification<UnsupportedInteractionNotice>, Task>? UnsupportedInteractionReceived;
+
+    public event Func<WorkerNotification<InteractionAuthStatus>, Task>? InteractionAuthStatusChanged;
 
     public event Func<WorkerNotification<ContextCompactionEvent>, Task>? ContextCompacted;
 
@@ -408,6 +448,48 @@ public sealed class WorkerBridge : IWorkerBridge, ICodexWorkerObserver
     public Task ResolveUserInputAsync(ResolveUserInputRequest request, CancellationToken cancellationToken)
         => rpc!.InvokeWithCancellationAsync("worker/userInput/resolve", new object[] { request }, cancellationToken);
 
+    public Task ResolvePermissionSelectionAsync(ResolvePermissionSelectionRequest request, CancellationToken cancellationToken)
+        => rpc!.InvokeWithCancellationAsync("worker/permissionSelection/resolve", new object[] { request }, cancellationToken);
+
+    public Task ResolveMcpElicitationAsync(ResolveMcpElicitationRequest request, CancellationToken cancellationToken)
+        => rpc!.InvokeWithCancellationAsync("worker/mcpElicitation/resolve", new object[] { request }, cancellationToken);
+
+    public Task<InteractionAuthStatus> ReadGatewayOAuthAsync(ReadGatewayOAuthRequest request, CancellationToken cancellationToken)
+        => RequireRpc().InvokeWithCancellationAsync<InteractionAuthStatus>(
+            "worker/gatewayOAuth/read",
+            new object[] { request },
+            cancellationToken);
+
+    public Task<InteractionAuthStatus> LoginGatewayOAuthAsync(LoginGatewayOAuthRequest request, CancellationToken cancellationToken)
+        => RequireRpc().InvokeWithCancellationAsync<InteractionAuthStatus>(
+            "worker/gatewayOAuth/login",
+            new object[] { request },
+            cancellationToken);
+
+    public Task<InteractionAuthStatus> CancelGatewayOAuthAsync(CancelGatewayOAuthRequest request, CancellationToken cancellationToken)
+        => RequireRpc().InvokeWithCancellationAsync<InteractionAuthStatus>(
+            "worker/gatewayOAuth/cancel",
+            new object[] { request },
+            cancellationToken);
+
+    public Task OpenAuthorizationUrlAsync(OpenAuthorizationUrlRequest request, CancellationToken cancellationToken)
+        => RequireRpc().InvokeWithCancellationAsync(
+            "worker/authorizationUrl/open",
+            new object[] { request },
+            cancellationToken);
+
+    public Task<McpOAuthLoginStatus> StartMcpOAuthLoginAsync(StartMcpOAuthLoginRequest request, CancellationToken cancellationToken)
+        => RequireRpc().InvokeWithCancellationAsync<McpOAuthLoginStatus>(
+            "worker/mcpOAuth/start",
+            new object[] { request },
+            cancellationToken);
+
+    public Task DismissMcpOAuthLoginAsync(DismissMcpOAuthLoginRequest request, CancellationToken cancellationToken)
+        => RequireRpc().InvokeWithCancellationAsync(
+            "worker/mcpOAuth/dismiss",
+            new object[] { request },
+            cancellationToken);
+
     public Task OnStateChangedAsync(WorkerNotification<WorkerStatus> notification, CancellationToken cancellationToken)
         => StateChanged?.Invoke(notification) ?? Task.CompletedTask;
 
@@ -435,6 +517,24 @@ public sealed class WorkerBridge : IWorkerBridge, ICodexWorkerObserver
 
     public Task OnUserInputResolvedAsync(WorkerNotification<string> notification, CancellationToken cancellationToken)
         => UserInputResolved?.Invoke(notification) ?? Task.CompletedTask;
+
+    public Task OnPermissionRequestedAsync(WorkerNotification<PermissionRequest> notification, CancellationToken cancellationToken)
+        => PermissionRequested?.Invoke(notification) ?? Task.CompletedTask;
+
+    public Task OnPermissionResolvedAsync(WorkerNotification<string> notification, CancellationToken cancellationToken)
+        => PermissionResolved?.Invoke(notification) ?? Task.CompletedTask;
+
+    public Task OnMcpElicitationRequestedAsync(WorkerNotification<McpElicitationRequest> notification, CancellationToken cancellationToken)
+        => McpElicitationRequested?.Invoke(notification) ?? Task.CompletedTask;
+
+    public Task OnMcpElicitationResolvedAsync(WorkerNotification<string> notification, CancellationToken cancellationToken)
+        => McpElicitationResolved?.Invoke(notification) ?? Task.CompletedTask;
+
+    public Task OnUnsupportedInteractionAsync(WorkerNotification<UnsupportedInteractionNotice> notification, CancellationToken cancellationToken)
+        => UnsupportedInteractionReceived?.Invoke(notification) ?? Task.CompletedTask;
+
+    public Task OnInteractionAuthStatusChangedAsync(WorkerNotification<InteractionAuthStatus> notification, CancellationToken cancellationToken)
+        => InteractionAuthStatusChanged?.Invoke(notification) ?? Task.CompletedTask;
 
     public Task OnContextCompactedAsync(WorkerNotification<ContextCompactionEvent> notification, CancellationToken cancellationToken)
         => ContextCompacted?.Invoke(notification) ?? Task.CompletedTask;

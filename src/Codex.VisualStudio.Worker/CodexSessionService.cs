@@ -1,4 +1,5 @@
 ﻿using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using Codex.AppServer.Protocol;
@@ -25,6 +26,7 @@ public interface ICodexSessionService : IAsyncDisposable
     IDisposable SuppressEmissionOwnerContext() => new CallbackScope(static () => { });
     bool CanPersistOwnerState => false;
     bool IsConnectionActive => true;
+    bool GatewayOAuthRequired => false;
     void BeginOwnerPartition(WorkerOptions options, string workerInstanceId, long ownerGeneration, string? credentialFingerprint)
     {
     }
@@ -47,6 +49,42 @@ public interface ICodexSessionService : IAsyncDisposable
     event Func<UserInputRequest, CancellationToken, Task>? UserInputRequested;
 
     event Func<string, CancellationToken, Task>? UserInputResolved;
+
+    event Func<PermissionRequest, CancellationToken, Task>? PermissionRequested
+    {
+        add { }
+        remove { }
+    }
+
+    event Func<string, CancellationToken, Task>? PermissionResolved
+    {
+        add { }
+        remove { }
+    }
+
+    event Func<McpElicitationRequest, CancellationToken, Task>? McpElicitationRequested
+    {
+        add { }
+        remove { }
+    }
+
+    event Func<string, CancellationToken, Task>? McpElicitationResolved
+    {
+        add { }
+        remove { }
+    }
+
+    event Func<UnsupportedInteractionNotice, CancellationToken, Task>? UnsupportedInteraction
+    {
+        add { }
+        remove { }
+    }
+
+    event Func<InteractionAuthStatus, CancellationToken, Task>? InteractionAuthStatusChanged
+    {
+        add { }
+        remove { }
+    }
 
     event Func<ContextCompactionEvent, CancellationToken, Task>? ContextCompacted;
 
@@ -142,6 +180,30 @@ public interface ICodexSessionService : IAsyncDisposable
     Task ResolveApprovalAsync(ResolveApprovalRequest request, CancellationToken cancellationToken);
 
     Task ResolveUserInputAsync(ResolveUserInputRequest request, CancellationToken cancellationToken);
+
+    Task ResolvePermissionSelectionAsync(ResolvePermissionSelectionRequest request, CancellationToken cancellationToken)
+        => throw new NotSupportedException();
+
+    Task ResolveMcpElicitationAsync(ResolveMcpElicitationRequest request, CancellationToken cancellationToken)
+        => throw new NotSupportedException();
+
+    Task<InteractionAuthStatus> ReadGatewayOAuthAsync(CancellationToken cancellationToken)
+        => throw new NotSupportedException();
+
+    Task<InteractionAuthStatus> LoginGatewayOAuthAsync(CancellationToken cancellationToken)
+        => throw new NotSupportedException();
+
+    Task<InteractionAuthStatus> CancelGatewayOAuthAsync(CancellationToken cancellationToken)
+        => throw new NotSupportedException();
+
+    Task OpenAuthorizationUrlAsync(OpenAuthorizationUrlRequest request, CancellationToken cancellationToken)
+        => throw new NotSupportedException();
+
+    Task<McpOAuthLoginStatus> StartMcpOAuthLoginAsync(StartMcpOAuthLoginRequest request, CancellationToken cancellationToken)
+        => throw new NotSupportedException();
+
+    Task DismissMcpOAuthLoginAsync(DismissMcpOAuthLoginRequest request, CancellationToken cancellationToken)
+        => throw new NotSupportedException();
 }
 
 /// <summary>An explicit turn attachment that the connected app-server cannot read.</summary>
@@ -203,7 +265,6 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
     private const int MaxSkillDependencyTypeLength = 64;
     private const int MaxSkillDependencyValueLength = 256;
     private const int MaxSkillDependencyDescriptionLength = 512;
-    private const char InteractionIdSeparator = '|';
 
     // Not the legacy Windows MAX_PATH (260): that limit only applies without the long-paths
     // opt-in and would silently drop valid skills under deep workspaces or long user-profile
@@ -215,8 +276,8 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
     private readonly IPathAccessPolicy pathAccessPolicy;
     private readonly ILocalPathBoundary localPathBoundary;
     private readonly IProtectedDirectoryPolicy protectedDirectoryPolicy;
-    private readonly ConcurrentDictionary<PendingRequestKey, PendingApproval> pendingApprovals = new();
-    private readonly ConcurrentDictionary<PendingRequestKey, PendingUserInput> pendingUserInputs = new();
+    private readonly PendingInteractionRegistry pendingInteractions;
+    private readonly ProtectedAuthorizationUrlStore authorizationUrls = new();
     private readonly AsyncLocal<ConnectionContext?> emittingContext = new();
     private readonly object turnStateLock = new();
     private readonly HashSet<TurnKey> completedTurnIds = new();
@@ -229,6 +290,7 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
     private readonly SemaphoreSlim skillsCacheGate = new(1, 1);
     private readonly TimeProvider timeProvider;
     private readonly ISkillCatalogStore skillCatalogStore;
+    private readonly Action<Uri> authorizationUrlOpener;
     private readonly object skillsBackgroundRefreshLock = new();
     private CancellationTokenSource skillsBackgroundRefreshCancellation = new();
     private Task? skillsBackgroundRefreshTask;
@@ -255,7 +317,7 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         IPathAccessPolicy? pathAccessPolicy = null,
         IProtectedDirectoryPolicy? protectedDirectoryPolicy = null,
         TimeProvider? timeProvider = null)
-        : this(approvalPolicy, redactor, pathAccessPolicy, protectedDirectoryPolicy, timeProvider, null)
+        : this(approvalPolicy, redactor, pathAccessPolicy, protectedDirectoryPolicy, timeProvider, null, null)
     {
     }
 
@@ -265,7 +327,8 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         IPathAccessPolicy? pathAccessPolicy,
         IProtectedDirectoryPolicy? protectedDirectoryPolicy,
         TimeProvider? timeProvider,
-        ISkillCatalogStore? skillCatalogStore)
+        ISkillCatalogStore? skillCatalogStore,
+        Action<Uri>? authorizationUrlOpener = null)
     {
         this.approvalPolicy = approvalPolicy;
         this.redactor = redactor;
@@ -274,6 +337,8 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         this.protectedDirectoryPolicy = protectedDirectoryPolicy ?? new ProtectedDirectoryPolicy();
         this.timeProvider = timeProvider ?? TimeProvider.System;
         this.skillCatalogStore = skillCatalogStore ?? new FileSkillCatalogStore(redactor);
+        this.authorizationUrlOpener = authorizationUrlOpener ?? OpenWithDefaultBrowser;
+        pendingInteractions = new PendingInteractionRegistry(this.timeProvider);
     }
 
     public event Func<ConversationEvent, CancellationToken, Task>? ConversationEventReceived;
@@ -289,6 +354,20 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
     public event Func<UserInputRequest, CancellationToken, Task>? UserInputRequested;
 
     public event Func<string, CancellationToken, Task>? UserInputResolved;
+
+    public event Func<PermissionRequest, CancellationToken, Task>? PermissionRequested;
+
+    public event Func<string, CancellationToken, Task>? PermissionResolved;
+
+    public event Func<McpElicitationRequest, CancellationToken, Task>? McpElicitationRequested;
+
+    public event Func<string, CancellationToken, Task>? McpElicitationResolved;
+
+    public event Func<UnsupportedInteractionNotice, CancellationToken, Task>? UnsupportedInteraction;
+
+    public event Func<InteractionAuthStatus, CancellationToken, Task>? InteractionAuthStatusChanged;
+
+    public bool GatewayOAuthRequired => Volatile.Read(ref connectionContext)?.GatewayOAuthRequired ?? false;
 
     public event Func<ContextCompactionEvent, CancellationToken, Task>? ContextCompacted;
 
@@ -383,6 +462,8 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         {
             previous.Detach();
             CancelPending(previous.Generation);
+            pendingInteractions.RetireGeneration(previous.Generation);
+            authorizationUrls.RetireGeneration(previous.Generation);
             await RetireStreamingBufferAsync().ConfigureAwait(false);
         }
         await ResetSkillsBackgroundRefreshAsync().ConfigureAwait(false);
@@ -410,7 +491,13 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
                 ? new RemotePathMapper(parsedLocalRoot, parsedServerRoot)
                 : null;
         long generation = Interlocked.Increment(ref connectionGeneration);
-        var context = new ConnectionContext(this, connection, generation, StatePartitionFingerprint, OwnerGeneration);
+        var context = new ConnectionContext(
+            this,
+            connection,
+            generation,
+            StatePartitionFingerprint,
+            OwnerGeneration,
+            string.IsNullOrWhiteSpace(options.RemoteEndpoint));
         connectionContext = context;
         connection.NotificationReceived += context.NotificationHandler;
         connection.RequestReceived += context.RequestHandler;
@@ -441,7 +528,7 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
                     title = "Codex for Visual Studio",
                     version = options.ExtensionVersion,
                 },
-                capabilities = new { experimentalApi = options.ExperimentalApi },
+                capabilities = CreateClientCapabilities(options),
             },
             TimeSpan.FromSeconds(15),
             cancellationToken).ConfigureAwait(false);
@@ -476,6 +563,542 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
                 Kind = ConversationEventKind.Unknown,
                 Text = $"Connected to {serverName ?? "codex"} app-server v{CodexVersion ?? "unknown"}.",
             }, CancellationToken.None).ConfigureAwait(false);
+        }
+
+        // Read the effective gateway policy after initialized on every connection. A malformed
+        // or failed response leaves the connection recoverable but gates credential-dependent RPCs.
+        await ReadGatewayOAuthCoreAsync(context, cancellationToken).ConfigureAwait(false);
+    }
+
+    private static Dictionary<string, object> CreateClientCapabilities(WorkerOptions options)
+    {
+        var capabilities = new Dictionary<string, object>(StringComparer.Ordinal)
+        {
+            ["experimentalApi"] = options.ExperimentalApi,
+        };
+        if (string.IsNullOrWhiteSpace(options.RemoteEndpoint))
+        {
+            capabilities["explicitGatewayOauth"] = true;
+        }
+
+        return capabilities;
+    }
+
+    public async Task<InteractionAuthStatus> ReadGatewayOAuthAsync(CancellationToken cancellationToken)
+    {
+        ConnectionContext context = RequireContext();
+        await ReadGatewayOAuthCoreAsync(context, cancellationToken).ConfigureAwait(false);
+        return CreateInteractionAuthStatus(context);
+    }
+
+    public async Task<InteractionAuthStatus> LoginGatewayOAuthAsync(CancellationToken cancellationToken)
+    {
+        ConnectionContext context = RequireContext();
+        EnsureCurrent(context);
+        if (!context.IsLocal)
+        {
+            throw new InvalidOperationException("Gateway OAuth login is available only for a local app-server connection.");
+        }
+
+        if (!context.GatewayOAuthReadSucceeded || !context.GatewayOAuthRequired)
+        {
+            throw new InvalidOperationException("Gateway OAuth status must be read successfully before login.");
+        }
+
+        RevokeGatewayAuthorizationAction(context);
+        context.GatewayOAuthReady = false;
+        context.GatewayOAuthMessage = "Waiting for gateway authorization.";
+        string attemptId = Guid.NewGuid().ToString("N");
+        context.GatewayLoginAttemptId = attemptId;
+        SetGatewayState(context, InteractionAuthState.LoginPending, context.GatewayOAuthMessage);
+        context.GatewayLoginTask = CompleteGatewayOAuthLoginAsync(context, attemptId);
+        await EmitInteractionAuthStatusAsync(context, cancellationToken).ConfigureAwait(false);
+        return CreateInteractionAuthStatus(context);
+    }
+
+    private async Task CompleteGatewayOAuthLoginAsync(ConnectionContext context, string attemptId)
+    {
+        try
+        {
+            JsonElement result = await context.Connection.SendRequestAsync(
+                "account/gatewayOAuth/login",
+                new { },
+                TimeSpan.FromMinutes(10),
+                context.Lifetime.Token).ConfigureAwait(false);
+            EnsureCurrent(context);
+            if (result.ValueKind != JsonValueKind.Object)
+            {
+                throw new JsonRpcRemoteException(-32603, "Gateway login returned an invalid response.");
+            }
+
+            if (string.Equals(context.GatewayLoginAttemptId, attemptId, StringComparison.Ordinal)
+                && context.GatewayOAuthState == InteractionAuthState.LoginPending)
+            {
+                context.GatewayOAuthMessage = "Gateway authorization completed. Refresh the status before continuing.";
+                SetGatewayState(context, InteractionAuthState.Authenticated, context.GatewayOAuthMessage);
+                context.GatewayOAuthReady = true;
+                context.GatewayLoginAttemptId = null;
+                await EmitInteractionAuthStatusAsync(context, CancellationToken.None).ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException) when (context.Lifetime.IsCancellationRequested)
+        {
+        }
+        catch (Exception)
+        {
+            if (IsCurrent(context)
+                && string.Equals(context.GatewayLoginAttemptId, attemptId, StringComparison.Ordinal)
+                && context.GatewayOAuthState == InteractionAuthState.LoginPending)
+            {
+                context.GatewayOAuthReady = false;
+                context.GatewayOAuthMessage = "Gateway authorization did not complete. Check the status and try again.";
+                SetGatewayState(context, InteractionAuthState.Failed, context.GatewayOAuthMessage);
+                context.GatewayLoginAttemptId = null;
+                await EmitInteractionAuthStatusAsync(context, CancellationToken.None).ConfigureAwait(false);
+            }
+        }
+    }
+
+    public async Task<InteractionAuthStatus> CancelGatewayOAuthAsync(CancellationToken cancellationToken)
+    {
+        ConnectionContext context = RequireContext();
+        EnsureCurrent(context);
+        if (!context.IsLocal)
+        {
+            throw new InvalidOperationException("Gateway OAuth cancellation is available only for a local app-server connection.");
+        }
+
+        if (!context.GatewayOAuthReadSucceeded || !context.GatewayOAuthRequired)
+        {
+            throw new InvalidOperationException("Gateway OAuth status must be read successfully before cancellation.");
+        }
+
+        RevokeGatewayAuthorizationAction(context);
+        context.GatewayLoginAttemptId = null;
+        try
+        {
+            await context.Connection.SendRequestAsync(
+                "account/gatewayOAuth/cancel",
+                new { },
+                TimeSpan.FromSeconds(15),
+                cancellationToken).ConfigureAwait(false);
+            EnsureCurrent(context);
+            context.GatewayOAuthReady = false;
+            context.GatewayOAuthMessage = "Gateway authorization was canceled.";
+            SetGatewayState(context, InteractionAuthState.Failed, context.GatewayOAuthMessage);
+            await EmitInteractionAuthStatusAsync(context, CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception)
+        {
+            context.GatewayOAuthReady = false;
+            context.GatewayOAuthMessage = "Gateway authorization could not be canceled. Read the status before continuing.";
+            SetGatewayState(context, InteractionAuthState.Unavailable, context.GatewayOAuthMessage);
+            await EmitInteractionAuthStatusAsync(context, CancellationToken.None).ConfigureAwait(false);
+        }
+
+        return CreateInteractionAuthStatus(context);
+    }
+
+    public Task OpenAuthorizationUrlAsync(OpenAuthorizationUrlRequest request, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        ConnectionContext context = RequireContext();
+        EnsureCurrent(context);
+        cancellationToken.ThrowIfCancellationRequested();
+        if (!context.AuthorizationActionOwners.TryRemove(request.ActionId, out _)
+            || !authorizationUrls.TryTake(context.Generation, request.ActionId, out Uri? uri)
+            || uri is null)
+        {
+            throw new InvalidOperationException("This authorization link is no longer available. Read the authentication status and try again.");
+        }
+
+        try
+        {
+            authorizationUrlOpener(uri);
+        }
+        catch (Exception)
+        {
+            throw new InvalidOperationException("The default browser could not be opened. You can retry from the current authorization status.");
+        }
+
+        return Task.CompletedTask;
+    }
+
+    private static void OpenWithDefaultBrowser(Uri uri)
+    {
+        Process.Start(new ProcessStartInfo
+        {
+            FileName = uri.AbsoluteUri,
+            UseShellExecute = true,
+        });
+    }
+
+    public async Task<McpOAuthLoginStatus> StartMcpOAuthLoginAsync(StartMcpOAuthLoginRequest request, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        string serverName = request.ServerName.Trim();
+        if (serverName.Length is 0 or > 256 || serverName.Any(char.IsControl))
+        {
+            throw new ArgumentException("The MCP server name is invalid.", nameof(request));
+        }
+
+        ConnectionContext context = RequireContext();
+        EnsureCurrent(context);
+        string? previousOperationId = context.McpOAuthOperationsByServer.GetValueOrDefault(serverName);
+        if (previousOperationId is not null && context.McpOAuthOperations.TryRemove(previousOperationId, out McpOAuthOperation? previous))
+        {
+            RevokeAuthorizationAction(context, previous.ActionId);
+        }
+
+        var operation = new McpOAuthOperation(Guid.NewGuid().ToString("N"), serverName, request.ThreadId);
+        context.McpOAuthOperations[operation.OperationId] = operation;
+        context.McpOAuthOperationsByServer[serverName] = operation.OperationId;
+        context.McpAuthStatuses[serverName] = new McpServerAuthStatus
+        {
+            ServerName = redactor.Redact(serverName) ?? string.Empty,
+            State = InteractionAuthState.LoginPending,
+            Message = "MCP server authorization is starting.",
+        };
+
+        JsonElement result;
+        try
+        {
+            result = await SendAsync(
+                "mcpServer/oauth/login",
+                new { name = serverName, threadId = request.ThreadId },
+                cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            if (context.McpOAuthOperations.TryGetValue(operation.OperationId, out McpOAuthOperation? active))
+            {
+                active.RequestCanceled = true;
+            }
+
+            throw;
+        }
+        catch (Exception)
+        {
+            if (IsCurrent(context) && context.McpOAuthOperations.TryGetValue(operation.OperationId, out McpOAuthOperation? active))
+            {
+                context.McpAuthStatuses[serverName] = new McpServerAuthStatus
+                {
+                    ServerName = redactor.Redact(serverName) ?? string.Empty,
+                    State = InteractionAuthState.Failed,
+                    Message = "MCP server authorization could not be started. Check the server status before retrying.",
+                };
+                RevokeAuthorizationAction(context, active.ActionId);
+            }
+
+            await EmitInteractionAuthStatusAsync(context, CancellationToken.None).ConfigureAwait(false);
+            return GetMcpOAuthLoginStatus(context, operation);
+        }
+
+        EnsureCurrent(context);
+        if (!context.McpOAuthOperations.TryGetValue(operation.OperationId, out McpOAuthOperation? current)
+            || current.Completed || current.RequestCanceled)
+        {
+            return GetMcpOAuthLoginStatus(context, operation);
+        }
+
+        string? authorizationUrl = GetString(result, "authorizationUrl") ?? GetString(result, "authUrl");
+
+        string message;
+        string? originDisplay = null;
+        string? actionId = null;
+        if (authorizationUrls.TryStore(context.Generation, authorizationUrl, out ProtectedAuthorizationUrlInfo urlInfo))
+        {
+            actionId = urlInfo.ActionId;
+            originDisplay = redactor.Redact(urlInfo.OriginDisplay);
+            operation.ActionId = actionId;
+            context.AuthorizationActionOwners[actionId] = operation.OperationId;
+            message = "MCP server authorization is waiting for completion.";
+        }
+        else
+        {
+            message = "The MCP server did not provide a valid authorization link. Check the server status and retry.";
+        }
+
+        context.McpAuthStatuses.TryGetValue(serverName, out McpServerAuthStatus? previousStatus);
+        var status = new McpServerAuthStatus
+        {
+            ServerName = redactor.Redact(serverName) ?? string.Empty,
+            State = current.NotificationObserved && previousStatus is not null
+                ? previousStatus.State
+                : actionId is null ? InteractionAuthState.Failed : InteractionAuthState.LoginPending,
+            Message = current.NotificationObserved && previousStatus is not null ? previousStatus.Message : message,
+            OriginDisplay = originDisplay,
+            OpenAuthorizationActionId = actionId,
+        };
+        if (context.McpOAuthOperations.TryGetValue(operation.OperationId, out current) && !current.Completed && !current.RequestCanceled)
+        {
+            context.McpAuthStatuses[serverName] = status;
+        }
+        else
+        {
+            RevokeAuthorizationAction(context, actionId);
+            return GetMcpOAuthLoginStatus(context, operation);
+        }
+
+        await EmitInteractionAuthStatusAsync(context, cancellationToken).ConfigureAwait(false);
+        return new McpOAuthLoginStatus
+        {
+            OperationId = operation.OperationId,
+            ServerName = status.ServerName,
+            State = status.State,
+            Message = status.Message,
+            OriginDisplay = status.OriginDisplay,
+            OpenAuthorizationActionId = status.OpenAuthorizationActionId,
+        };
+    }
+
+    private static McpOAuthLoginStatus GetMcpOAuthLoginStatus(ConnectionContext context, McpOAuthOperation operation)
+    {
+        if (context.McpAuthStatuses.TryGetValue(operation.ServerName, out McpServerAuthStatus? status))
+        {
+            return new McpOAuthLoginStatus
+            {
+                OperationId = operation.OperationId,
+                ServerName = status.ServerName,
+                State = status.State,
+                Message = status.Message,
+                OriginDisplay = status.OriginDisplay,
+                OpenAuthorizationActionId = status.OpenAuthorizationActionId,
+            };
+        }
+
+        return new McpOAuthLoginStatus
+        {
+            OperationId = operation.OperationId,
+            ServerName = operation.ServerName,
+            State = InteractionAuthState.Unavailable,
+            Message = "MCP server authorization status is unavailable.",
+        };
+    }
+
+    public async Task DismissMcpOAuthLoginAsync(DismissMcpOAuthLoginRequest request, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        ConnectionContext context = RequireContext();
+        EnsureCurrent(context);
+        if (!context.McpOAuthOperations.TryGetValue(request.OperationId, out McpOAuthOperation? operation))
+        {
+            return;
+        }
+
+        operation.Dismissed = true;
+        RevokeAuthorizationAction(context, operation.ActionId);
+        operation.ActionId = null;
+        string serverName = operation.ServerName;
+        if (context.McpAuthStatuses.TryGetValue(serverName, out McpServerAuthStatus? status))
+        {
+            context.McpAuthStatuses[serverName] = new McpServerAuthStatus
+            {
+                ServerName = status.ServerName,
+                State = status.State,
+                Message = "The authorization wait was dismissed. Server authentication may still be in progress.",
+            };
+            await EmitInteractionAuthStatusAsync(context, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private async Task ReadGatewayOAuthCoreAsync(ConnectionContext context, CancellationToken cancellationToken)
+    {
+        EnsureCurrent(context);
+        RevokeGatewayAuthorizationAction(context);
+        context.GatewayOAuthReadSucceeded = false;
+        context.GatewayOAuthReady = false;
+        context.GatewayOAuthRequired = true;
+        context.GatewayOAuthProviderId = null;
+        context.GatewayOAuthProviderName = null;
+        context.GatewayOAuthMessage = "Gateway authorization status is unavailable. Retry the status check before continuing.";
+        SetGatewayState(context, InteractionAuthState.Unavailable, context.GatewayOAuthMessage);
+
+        try
+        {
+            JsonElement result = await context.Connection.SendRequestAsync(
+                "account/gatewayOAuth/read",
+                new { },
+                TimeSpan.FromSeconds(15),
+                cancellationToken).ConfigureAwait(false);
+            EnsureCurrent(context);
+            if (!TryReadGatewayOAuthResponse(result, out string? providerId, out string? providerName, out bool required, out string? wireStatus, out string? safeError))
+            {
+                WorkerDiagnostics.Write("gateway OAuth status response rejected");
+                context.GatewayOAuthMessage = "Gateway authorization status is invalid. Retry the status check before continuing.";
+                SetGatewayState(context, InteractionAuthState.Unavailable, context.GatewayOAuthMessage);
+                await EmitInteractionAuthStatusAsync(context, CancellationToken.None).ConfigureAwait(false);
+                return;
+            }
+
+            context.GatewayOAuthReadSucceeded = true;
+            context.GatewayOAuthProviderId = redactor.Redact(providerId);
+            context.GatewayOAuthProviderName = redactor.Redact(providerName);
+            context.GatewayOAuthRequired = required;
+            context.GatewayOAuthMessage = safeError is null ? null : "Gateway authorization needs attention.";
+            context.GatewayOAuthReady = safeError is null
+                && (!required || string.Equals(wireStatus, "succeeded", StringComparison.Ordinal));
+            SetGatewayState(context, MapGatewayOAuthState(required, wireStatus, safeError), context.GatewayOAuthMessage);
+            WorkerDiagnostics.Write($"gateway OAuth status read completed required={required} state={wireStatus ?? "none"}");
+            await EmitInteractionAuthStatusAsync(context, CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception)
+        {
+            if (IsCurrent(context))
+            {
+                WorkerDiagnostics.Write("gateway OAuth status read failed");
+                context.GatewayOAuthMessage = "Gateway authorization status is unavailable. Retry the status check before continuing.";
+                SetGatewayState(context, InteractionAuthState.Unavailable, context.GatewayOAuthMessage);
+                await EmitInteractionAuthStatusAsync(context, CancellationToken.None).ConfigureAwait(false);
+            }
+        }
+    }
+
+    private static bool TryReadGatewayOAuthResponse(
+        JsonElement result,
+        out string? providerId,
+        out string? providerName,
+        out bool required,
+        out string? status,
+        out string? safeError)
+    {
+        providerId = GetBoundedString(result, "providerId", 256);
+        providerName = GetBoundedString(result, "providerName", 256);
+        required = false;
+        status = null;
+        safeError = null;
+        if (result.ValueKind != JsonValueKind.Object
+            || providerId is null
+            || providerName is null
+            || !HasBoolean(result, "required"))
+        {
+            return false;
+        }
+
+        required = result.GetProperty("required").GetBoolean();
+        if (result.TryGetProperty("error", out JsonElement error))
+        {
+            if (error.ValueKind is not (JsonValueKind.Null or JsonValueKind.String))
+            {
+                return false;
+            }
+
+            if (error.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(error.GetString()))
+            {
+                safeError = "error";
+            }
+        }
+
+        if (!result.TryGetProperty("status", out JsonElement statusElement)
+            || statusElement.ValueKind == JsonValueKind.Null)
+        {
+            return !required;
+        }
+
+        if (statusElement.ValueKind != JsonValueKind.String)
+        {
+            return false;
+        }
+
+        status = statusElement.GetString();
+        return required && status is "notReady" or "started" or "succeeded" or "failed";
+    }
+
+    private static InteractionAuthState MapGatewayOAuthState(bool required, string? status, string? error)
+    {
+        if (error is not null)
+        {
+            return InteractionAuthState.Failed;
+        }
+
+        if (!required)
+        {
+            return InteractionAuthState.Ready;
+        }
+
+        if (status == "failed")
+        {
+            return InteractionAuthState.Failed;
+        }
+
+        return status switch
+        {
+            "started" => InteractionAuthState.LoginPending,
+            "succeeded" => InteractionAuthState.Authenticated,
+            _ => InteractionAuthState.ReauthenticationRequired,
+        };
+    }
+
+    private static void SetGatewayState(ConnectionContext context, InteractionAuthState state, string? message)
+    {
+        lock (context.InteractionAuthLock)
+        {
+            context.GatewayOAuthState = state;
+            context.GatewayOAuthMessage = message;
+        }
+    }
+
+    private void RevokeGatewayAuthorizationAction(ConnectionContext context)
+    {
+        string? actionId = context.GatewayOAuthActionId;
+        context.GatewayOAuthActionId = null;
+        RevokeAuthorizationAction(context, actionId);
+    }
+
+    private void RevokeAuthorizationAction(ConnectionContext context, string? actionId)
+    {
+        if (string.IsNullOrWhiteSpace(actionId))
+        {
+            return;
+        }
+
+        context.AuthorizationActionOwners.TryRemove(actionId, out _);
+        authorizationUrls.Remove(context.Generation, actionId);
+    }
+
+    private void RevokeAuthorizationActionsForOwner(ConnectionContext context, string ownerId)
+    {
+        foreach ((string actionId, string owner) in context.AuthorizationActionOwners)
+        {
+            if (string.Equals(owner, ownerId, StringComparison.Ordinal))
+            {
+                RevokeAuthorizationAction(context, actionId);
+            }
+        }
+    }
+
+    private static InteractionAuthStatus CreateInteractionAuthStatus(ConnectionContext context)
+    {
+        lock (context.InteractionAuthLock)
+        {
+            return new InteractionAuthStatus
+            {
+                IsLocal = context.IsLocal,
+                IsSupported = context.GatewayOAuthReadSucceeded,
+                State = context.GatewayOAuthState,
+                Message = context.GatewayOAuthMessage,
+                OriginDisplay = context.GatewayOAuthOriginDisplay,
+                OpenAuthorizationActionId = context.GatewayOAuthActionId,
+                McpServers = context.McpAuthStatuses.Values
+                    .OrderBy(item => item.ServerName, StringComparer.OrdinalIgnoreCase)
+                    .ToArray(),
+            };
+        }
+    }
+
+    private async Task EmitInteractionAuthStatusAsync(ConnectionContext context, CancellationToken cancellationToken)
+    {
+        if (IsCurrent(context) && InteractionAuthStatusChanged is not null)
+        {
+            await InteractionAuthStatusChanged(CreateInteractionAuthStatus(context), cancellationToken).ConfigureAwait(false);
         }
     }
 
@@ -1050,6 +1673,7 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         try
         {
             ConnectionContext context = RequireContext();
+            EnsureCredentialReady(context);
             JsonElement result = await context.Connection.SendReadOnlyRequestAsync(
                 "model/list",
                 // Include hidden models so the catalog default (which may be a hidden preset and
@@ -1149,6 +1773,7 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
     public async Task<string> StartTurnAsync(StartTurnRequest request, CancellationToken cancellationToken)
     {
         ConnectionContext context = RequireContext();
+        EnsureCredentialReady(context);
         ValidateTurnApprovalOverrides(request);
         if (request.Skill is not null)
         {
@@ -1302,6 +1927,7 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
     public async Task InterruptTurnAsync(InterruptTurnRequest request, CancellationToken cancellationToken)
     {
         ConnectionContext context = RequireContext();
+        EnsureCredentialReady(context);
 
         // Record when the user asked to stop, so the diagnostics log shows how long the server took
         // to acknowledge the request and to actually end the turn.
@@ -1724,29 +2350,52 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
 
     private async Task ResolveApprovalCoreAsync(ResolveApprovalRequest request, CancellationToken cancellationToken)
     {
-        if (!TryParseInteractionId(request.RequestId, out long generation, out string clientRequestId, out _)
-            || Volatile.Read(ref connectionContext) is not { } context
-            || context.Generation != generation
-            || !pendingApprovals.TryRemove(new PendingRequestKey(generation, clientRequestId), out PendingApproval? pending))
+        if (Volatile.Read(ref connectionContext) is not { } context
+            || !pendingInteractions.TryGetByInteractionId(context.Generation, request.RequestId, out PendingInteractionEntry entry)
+            || entry.Method is not ("item/commandExecution/requestApproval" or "item/fileChange/requestApproval")
+            || !context.CommandChoices.TryGetValue(entry.InteractionId, out OfferedCommandChoiceSet? choices))
         {
             return;
         }
 
-        ApprovalScope scope = request.Decision switch
+        JsonElement response;
+        if (!string.IsNullOrWhiteSpace(request.ChoiceId))
         {
-            ApprovalDecision.AcceptForTurn => ApprovalScope.Turn,
-            ApprovalDecision.AcceptForThread => ApprovalScope.Thread,
-            ApprovalDecision.AcceptForSession => ApprovalScope.Session,
-            _ => ApprovalScope.Once,
-        };
-        context.ApprovalGrants.Add(pending.Request, scope);
-        if (scope != ApprovalScope.Once)
+            if (!choices.TryResolve(request.ChoiceId, out response))
+            {
+                throw new ArgumentException("The selected command-approval option is invalid.", nameof(request));
+            }
+        }
+        else
         {
-            await EmitApprovalAuditAsync(pending.Request, ApprovalAuditAction.GrantCreated, scope, cancellationToken).ConfigureAwait(false);
+            if (request.Decision is not (ApprovalDecision.Accept or ApprovalDecision.AcceptForSession or ApprovalDecision.Decline or ApprovalDecision.Cancel))
+            {
+                throw new ArgumentException("A scoped approval requires an exact offered ChoiceId.", nameof(request));
+            }
+
+            if (!choices.TryResolveDecision(ToWireDecision(request.Decision), out response))
+            {
+                throw new ArgumentException("The selected command-approval decision was not offered by the server.", nameof(request));
+            }
         }
 
-        pending.Completion.TrySetResult(ToWireDecision(request.Decision));
-        await EmitApprovalResolvedAsync(clientRequestId, cancellationToken).ConfigureAwait(false);
+        if (!pendingInteractions.TryComplete(entry.Key, entry, response))
+        {
+            return;
+        }
+
+        if (TryReadApprovalDecision(response, out string? wireDecision))
+        {
+            if (wireDecision == "acceptForSession" && CanReuseSessionApproval(entry.Parameters))
+            {
+                ApprovalRequest approval = CreateApprovalRequest(entry.InteractionId, entry.Method, entry.Parameters);
+                ApprovalScope grantScope = ApprovalScope.Session;
+                context.ApprovalGrants.Add(approval, grantScope);
+                await EmitApprovalAuditAsync(approval, ApprovalAuditAction.GrantCreated, grantScope, cancellationToken).ConfigureAwait(false);
+            }
+        }
+
+        context.CommandChoices.TryRemove(entry.InteractionId, out _);
     }
 
     public async Task ResolveUserInputAsync(ResolveUserInputRequest request, CancellationToken cancellationToken)
@@ -1766,45 +2415,322 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
 
     private async Task ResolveUserInputCoreAsync(ResolveUserInputRequest request, CancellationToken cancellationToken)
     {
-        if (!TryParseInteractionId(request.RequestId, out long generation, out string clientRequestId, out _)
-            || Volatile.Read(ref connectionContext) is not { } context
-            || context.Generation != generation
-            || !pendingUserInputs.TryRemove(new PendingRequestKey(generation, clientRequestId), out PendingUserInput? pending))
+        if (Volatile.Read(ref connectionContext) is not { } context
+            || !pendingInteractions.TryGetByInteractionId(context.Generation, request.RequestId, out PendingInteractionEntry entry)
+            || entry.Method != "item/tool/requestUserInput")
         {
             return;
         }
 
-        Dictionary<string, string[]> validated = ValidateAnswers(pending.Request, request.Answers);
-        pending.Completion.TrySetResult(validated);
-        await EmitUserInputResolvedAsync(clientRequestId, cancellationToken).ConfigureAwait(false);
+        if (!context.UserInputProjections.TryGetValue(entry.InteractionId, out UserInputProjection? projection))
+        {
+            return;
+        }
+        UserInputRequest projected = projection.Request;
+        JsonElement response;
+        if (request.Action == UserInputAction.Cancel)
+        {
+            if (request.Answers.Count != 0)
+            {
+                throw new ArgumentException("A canceled user-input request cannot contain answers.", nameof(request));
+            }
+
+            response = UserInputResponse(new Dictionary<string, UserInputAnswer>(StringComparer.Ordinal));
+        }
+        else if (request.Action == UserInputAction.Submit)
+        {
+            response = ValidateAnswers(projection, request.Answers);
+        }
+        else
+        {
+            throw new ArgumentException("The user-input action is invalid.", nameof(request));
+        }
+        if (!pendingInteractions.TryComplete(entry.Key, entry, response))
+        {
+            return;
+        }
+
+        context.UserInputProjections.TryRemove(entry.InteractionId, out _);
     }
 
-    private async Task<JsonElement> HandleUserInputRequestAsync(ConnectionContext context, string requestId, JsonElement parameters, CancellationToken cancellationToken)
+    public async Task ResolvePermissionSelectionAsync(ResolvePermissionSelectionRequest request, CancellationToken cancellationToken)
     {
-        string clientRequestId = CreateInteractionId(context.Generation, requestId);
-        UserInputRequest request = CreateUserInputRequest(clientRequestId, parameters);
-        var completion = new TaskCompletionSource<IReadOnlyDictionary<string, string[]>>(TaskCreationOptions.RunContinuationsAsynchronously);
-        pendingUserInputs.TryAdd(new PendingRequestKey(context.Generation, clientRequestId), new PendingUserInput(context.Generation, requestId, request, completion));
+        ConnectionContext? context = Volatile.Read(ref connectionContext);
+        if (context is null
+            || !pendingInteractions.TryGetByInteractionId(context.Generation, request.RequestId, out PendingInteractionEntry entry)
+            || entry.Method != "item/permissions/requestApproval"
+            || !context.PermissionSelections.TryGetValue(entry.InteractionId, out PermissionSelectionSet? selection)
+            || !selection.TryBuild(request.SelectedPermissionIds, request.Scope, out JsonElement response, out string safeError))
+        {
+            throw new ArgumentException("The permission selection is invalid or no longer active.", nameof(request));
+        }
+
+        pendingInteractions.TryComplete(entry.Key, entry, response);
+    }
+
+    public async Task ResolveMcpElicitationAsync(ResolveMcpElicitationRequest request, CancellationToken cancellationToken)
+    {
+        ConnectionContext? context = Volatile.Read(ref connectionContext);
+        if (context is null
+            || !pendingInteractions.TryGetByInteractionId(context.Generation, request.RequestId, out PendingInteractionEntry entry)
+            || entry.Method != "mcpServer/elicitation/request"
+            || !context.McpElicitations.TryGetValue(entry.InteractionId, out McpElicitationForm? form))
+        {
+            return;
+        }
+
+        if (request.Values.Count != 0 && (form.Request.Kind == McpElicitationKind.Url
+            || request.Action is McpElicitationAction.Decline or McpElicitationAction.Cancel))
+        {
+            throw new ArgumentException("Values are not allowed for this MCP elicitation response.", nameof(request));
+        }
+
+        JsonElement response;
+        switch (request.Action)
+        {
+            case McpElicitationAction.Accept when form.Request.Kind == McpElicitationKind.Form:
+                if (!form.TryValidateValues(request.Values, out JsonElement content, out string safeError))
+                {
+                    throw new ArgumentException(safeError, nameof(request));
+                }
+
+                response = JsonSerializer.SerializeToElement(new { action = "accept", content });
+                break;
+            case McpElicitationAction.Accept when form.Request.Kind == McpElicitationKind.Url:
+                response = JsonSerializer.SerializeToElement(new { action = "accept" });
+                break;
+            case McpElicitationAction.Decline:
+                response = JsonSerializer.SerializeToElement(new { action = "decline" });
+                break;
+            case McpElicitationAction.Cancel:
+                response = JsonSerializer.SerializeToElement(new { action = "cancel" });
+                break;
+            default:
+                throw new ArgumentException("The MCP elicitation response is invalid.", nameof(request));
+        }
+
+        if (pendingInteractions.TryComplete(entry.Key, entry, response))
+        {
+            RevokeAuthorizationActionsForOwner(context, entry.InteractionId);
+        }
+    }
+
+    private async Task<JsonElement> HandleUserInputRequestAsync(ConnectionContext context, JsonElement originalRequestId, string requestId, JsonElement parameters, CancellationToken cancellationToken)
+    {
+        if (parameters.GetProperty("questions").EnumerateArray().Any(question => GetBoolean(question, "isSecret") == true))
+        {
+            await EmitUnsupportedInteractionAsync(new UnsupportedInteractionNotice
+            {
+                Kind = UnsupportedInteractionKind.SecretInput,
+                Message = "This request asks for secret input, which this extension cannot collect safely.",
+                ThreadId = GetString(parameters, "threadId"),
+                TurnId = GetString(parameters, "turnId"),
+            }, cancellationToken).ConfigureAwait(false);
+            return UserInputResponse(new Dictionary<string, UserInputAnswer>(StringComparer.Ordinal));
+        }
+
+        var key = new PendingInteractionKey(context.Generation, requestId);
+        JsonElement timeoutResponse = UserInputResponse(new Dictionary<string, UserInputAnswer>(StringComparer.Ordinal));
+        if (!pendingInteractions.TryAdd(key, "item/tool/requestUserInput", originalRequestId, parameters,
+                TimeSpan.FromMinutes(5), timeoutResponse, out PendingInteractionEntry entry))
+        {
+            throw new JsonRpcRemoteException(-32600, "The user-input request is no longer active.");
+        }
+
+        if (entry.Completion.IsCompleted)
+        {
+            PendingInteractionResult earlyResult = await entry.Completion.ConfigureAwait(false);
+            if (earlyResult.Kind is PendingInteractionCompletionKind.ExternallyResolved or PendingInteractionCompletionKind.GenerationRetired)
+            {
+                throw new JsonRpcRequestResolvedException();
+            }
+
+            return earlyResult.Response;
+        }
+
+        UserInputRequest request = CreateUserInputRequest(entry.InteractionId, parameters, out Dictionary<string, Dictionary<string, string>> optionLabels);
+        context.UserInputProjections[entry.InteractionId] = new UserInputProjection(request, optionLabels);
         if (UserInputRequested is not null)
         {
             await UserInputRequested(request, cancellationToken).ConfigureAwait(false);
         }
 
-        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(5));
-        using var linked = CancellationTokenSource.CreateLinkedTokenSource(timeout.Token, cancellationToken);
-        using CancellationTokenRegistration registration = linked.Token.Register(() => completion.TrySetResult(EmptyAnswers));
-        IReadOnlyDictionary<string, string[]> answers = await completion.Task.ConfigureAwait(false);
-        bool removed = pendingUserInputs.TryRemove(new PendingRequestKey(context.Generation, clientRequestId), out _);
-        if (removed && ShouldNotifyPendingResolution(context))
+        PendingInteractionResult result = await entry.Completion.WaitAsync(cancellationToken).ConfigureAwait(false);
+        context.UserInputProjections.TryRemove(entry.InteractionId, out _);
+        RevokeAuthorizationActionsForOwner(context, entry.InteractionId);
+        if (ShouldNotifyPendingResolution(context))
         {
-            await EmitUserInputResolvedAsync(clientRequestId, CancellationToken.None).ConfigureAwait(false);
+            await EmitUserInputResolvedAsync(entry.InteractionId, CancellationToken.None).ConfigureAwait(false);
         }
-        return UserInputResponse(answers);
+
+        if (result.Kind is PendingInteractionCompletionKind.ExternallyResolved or PendingInteractionCompletionKind.GenerationRetired)
+        {
+            throw new JsonRpcRequestResolvedException();
+        }
+
+        return result.Response;
     }
 
-    private UserInputRequest CreateUserInputRequest(string requestId, JsonElement parameters)
+    private async Task<JsonElement> HandlePermissionSelectionRequestAsync(
+        ConnectionContext context,
+        JsonElement originalRequestId,
+        string requestId,
+        JsonElement parameters,
+        CancellationToken cancellationToken)
+    {
+        ValidateApprovalParameters("item/permissions/requestApproval", parameters);
+        ApprovalRequest policyRequest = CreateApprovalRequest(requestId, "item/permissions/requestApproval", parameters);
+        if (policyRequest.IsPolicyBlocked
+            || !parameters.TryGetProperty("permissions", out JsonElement requestedPermissions)
+            || !PermissionSelectionBuilder.TryCreate(requestedPermissions, value => redactor.Redact(value) ?? string.Empty,
+                static () => Guid.NewGuid().ToString("N"), out PermissionSelectionSet? selection)
+            || selection is null)
+        {
+            return JsonSerializer.SerializeToElement(new { permissions = new { }, scope = "turn" });
+        }
+
+        var key = new PendingInteractionKey(context.Generation, requestId);
+        JsonElement timeoutResponse = JsonSerializer.SerializeToElement(new { permissions = new { }, scope = "turn" });
+        if (!pendingInteractions.TryAdd(key, "item/permissions/requestApproval", originalRequestId, parameters,
+                TimeSpan.FromMinutes(5), timeoutResponse, out PendingInteractionEntry entry))
+        {
+            return timeoutResponse;
+        }
+
+        if (entry.Completion.IsCompleted)
+        {
+            PendingInteractionResult earlyResult = await entry.Completion.ConfigureAwait(false);
+            if (earlyResult.Kind is PendingInteractionCompletionKind.ExternallyResolved or PendingInteractionCompletionKind.GenerationRetired)
+            {
+                throw new JsonRpcRequestResolvedException();
+            }
+
+            return earlyResult.Response;
+        }
+
+        context.PermissionSelections[entry.InteractionId] = selection;
+        var request = new PermissionRequest
+        {
+            RequestId = entry.InteractionId,
+            ThreadId = GetString(parameters, "threadId") ?? string.Empty,
+            TurnId = GetString(parameters, "turnId") ?? string.Empty,
+            ItemId = GetString(parameters, "itemId"),
+            Reason = redactor.Redact(GetString(parameters, "reason")),
+            RequestedPermissions = selection.RequestedPermissions,
+        };
+        if (PermissionRequested is not null)
+        {
+            await PermissionRequested(request, cancellationToken).ConfigureAwait(false);
+        }
+
+        PendingInteractionResult result = await entry.Completion.WaitAsync(cancellationToken).ConfigureAwait(false);
+        context.PermissionSelections.TryRemove(entry.InteractionId, out _);
+        if (ShouldNotifyPendingResolution(context))
+        {
+            await EmitPermissionResolvedAsync(entry.InteractionId, CancellationToken.None).ConfigureAwait(false);
+        }
+
+        if (result.Kind is PendingInteractionCompletionKind.ExternallyResolved or PendingInteractionCompletionKind.GenerationRetired)
+        {
+            throw new JsonRpcRequestResolvedException();
+        }
+
+        return result.Response;
+    }
+
+    private async Task<JsonElement> HandleMcpElicitationRequestAsync(
+        ConnectionContext context,
+        JsonElement originalRequestId,
+        string requestId,
+        JsonElement parameters,
+        CancellationToken cancellationToken)
+    {
+        ProtectedAuthorizationUrlInfo? protectedUrlInfo = null;
+        if (!McpElicitationFormParser.TryParse(parameters, requestId, static () => Guid.NewGuid().ToString("N"),
+                url => authorizationUrls.TryStore(context.Generation, url, out ProtectedAuthorizationUrlInfo info)
+                    ? protectedUrlInfo = info
+                    : null,
+                out McpElicitationForm? form, out McpElicitationParseRefusal refusal)
+            || form is null)
+        {
+            if (refusal.Status == McpElicitationParseStatus.Invalid)
+            {
+                throw new JsonRpcRemoteException(-32602, "The MCP elicitation request is invalid.");
+            }
+
+            await EmitUnsupportedInteractionAsync(new UnsupportedInteractionNotice
+            {
+                Kind = refusal.UnsupportedKind ?? UnsupportedInteractionKind.McpElicitationSchema,
+                Message = refusal.SafeReason,
+                ThreadId = GetString(parameters, "threadId"),
+                TurnId = GetString(parameters, "turnId"),
+            }, cancellationToken).ConfigureAwait(false);
+            return JsonSerializer.SerializeToElement(new { action = "cancel" });
+        }
+
+        var key = new PendingInteractionKey(context.Generation, requestId);
+        JsonElement timeoutResponse = JsonSerializer.SerializeToElement(new { action = "cancel" });
+        if (!pendingInteractions.TryAdd(key, "mcpServer/elicitation/request", originalRequestId, parameters,
+                TimeSpan.FromMinutes(5), timeoutResponse, out PendingInteractionEntry entry))
+        {
+            if (protectedUrlInfo is not null)
+            {
+                authorizationUrls.Remove(context.Generation, protectedUrlInfo.ActionId);
+            }
+
+            return timeoutResponse;
+        }
+
+        if (entry.Completion.IsCompleted)
+        {
+            if (protectedUrlInfo is not null)
+            {
+                authorizationUrls.Remove(context.Generation, protectedUrlInfo.ActionId);
+            }
+
+            PendingInteractionResult earlyResult = await entry.Completion.ConfigureAwait(false);
+            if (earlyResult.Kind is PendingInteractionCompletionKind.ExternallyResolved or PendingInteractionCompletionKind.GenerationRetired)
+            {
+                throw new JsonRpcRequestResolvedException();
+            }
+
+            return earlyResult.Response;
+        }
+
+        form.Request.RequestId = entry.InteractionId;
+        context.McpElicitations[entry.InteractionId] = form;
+        if (protectedUrlInfo is not null)
+        {
+            context.AuthorizationActionOwners[protectedUrlInfo.ActionId] = entry.InteractionId;
+        }
+        if (McpElicitationRequested is not null)
+        {
+            await McpElicitationRequested(form.Request, cancellationToken).ConfigureAwait(false);
+        }
+
+        PendingInteractionResult result = await entry.Completion.WaitAsync(cancellationToken).ConfigureAwait(false);
+        context.McpElicitations.TryRemove(entry.InteractionId, out _);
+        RevokeAuthorizationActionsForOwner(context, entry.InteractionId);
+        if (ShouldNotifyPendingResolution(context))
+        {
+            await EmitMcpElicitationResolvedAsync(entry.InteractionId, CancellationToken.None).ConfigureAwait(false);
+        }
+
+        if (result.Kind is PendingInteractionCompletionKind.ExternallyResolved or PendingInteractionCompletionKind.GenerationRetired)
+        {
+            throw new JsonRpcRequestResolvedException();
+        }
+
+        return result.Response;
+    }
+
+    private UserInputRequest CreateUserInputRequest(
+        string requestId,
+        JsonElement parameters,
+        out Dictionary<string, Dictionary<string, string>> optionLabelsByQuestion)
     {
         var questions = new List<UserInputQuestion>();
+        optionLabelsByQuestion = new Dictionary<string, Dictionary<string, string>>(StringComparer.Ordinal);
         if (parameters.ValueKind == JsonValueKind.Object
             && parameters.TryGetProperty("questions", out JsonElement questionArray)
             && questionArray.ValueKind == JsonValueKind.Array)
@@ -1817,6 +2743,7 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
                 }
 
                 var options = new List<UserInputOption>();
+                var optionLabels = new Dictionary<string, string>(StringComparer.Ordinal);
                 if (question.TryGetProperty("options", out JsonElement optionArray)
                     && optionArray.ValueKind == JsonValueKind.Array)
                 {
@@ -1827,21 +2754,26 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
                             continue;
                         }
 
+                        string optionId = Guid.NewGuid().ToString("N");
+                        string rawLabel = GetString(option, "label") ?? string.Empty;
+                        optionLabels[optionId] = rawLabel;
                         options.Add(new UserInputOption
                         {
-                            // The label is echoed back to the app-server verbatim, so it must stay
-                            // unredacted; the extension sanitizes it for display via SafeMarkdownService.
-                            Label = GetString(option, "label") ?? string.Empty,
+                            OptionId = optionId,
+                            Label = redactor.Redact(rawLabel) ?? string.Empty,
                             Description = redactor.Redact(GetString(option, "description")),
                         });
                     }
                 }
 
+                string questionId = GetString(question, "id") ?? string.Empty;
+                optionLabelsByQuestion[questionId] = optionLabels;
                 questions.Add(new UserInputQuestion
                 {
-                    Id = GetString(question, "id") ?? string.Empty,
+                    Id = questionId,
                     Header = redactor.Redact(GetString(question, "header")),
                     Question = redactor.Redact(GetString(question, "question")),
+                    IsOther = GetBoolean(question, "isOther") == true,
                     Options = options,
                 });
             }
@@ -1853,35 +2785,54 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
             ThreadId = GetString(parameters, "threadId") ?? string.Empty,
             TurnId = GetString(parameters, "turnId") ?? string.Empty,
             ItemId = GetString(parameters, "itemId"),
+            IsBlocking = GetBoolean(parameters, "isBlocking") == true,
             Questions = questions,
         };
     }
 
-    // Only labels the server actually offered are echoed back; single-select keeps at most one.
-    // Questions without options (free text / secret) are out of scope and never answered.
-    private static Dictionary<string, string[]> ValidateAnswers(
-        UserInputRequest request,
-        IDictionary<string, string[]> answers)
+    private static JsonElement ValidateAnswers(
+        UserInputProjection projection,
+        IDictionary<string, UserInputAnswer> answers)
     {
-        var result = new Dictionary<string, string[]>(StringComparer.Ordinal);
-        foreach (UserInputQuestion question in request.Questions)
+        var result = new Dictionary<string, object>(StringComparer.Ordinal);
+        if (answers.Keys.Any(key => !projection.Request.Questions.Any(question => string.Equals(question.Id, key, StringComparison.Ordinal)))
+            || projection.Request.IsBlocking && projection.Request.Questions.Any(question => !answers.ContainsKey(question.Id)))
         {
-            if (question.Options.Count == 0
-                || !answers.TryGetValue(question.Id, out string[]? selected)
-                || selected is null)
+            throw new ArgumentException("The submitted answers do not match this request.", nameof(answers));
+        }
+
+        foreach ((string questionId, UserInputAnswer? answer) in answers)
+        {
+            UserInputQuestion question = projection.Request.Questions.Single(question => string.Equals(question.Id, questionId, StringComparison.Ordinal));
+            Dictionary<string, string> optionLabels = projection.OptionLabelsByQuestion[question.Id];
+            if (answer is null)
             {
-                continue;
+                throw new ArgumentException("An answer is invalid.", nameof(answers));
             }
 
-            var allowed = new HashSet<string>(question.Options.Select(option => option.Label), StringComparer.Ordinal);
-            string[] valid = selected.Where(allowed.Contains).Take(1).ToArray();
-            if (valid.Length > 0)
+            if (answer.Kind == UserInputAnswerKind.FreeText && question.Options.Count == 0 && !question.IsOther
+                && answer.OptionIds.Count == 0 && answer.Text is not null && answer.Text.Length <= 65536)
             {
-                result[question.Id] = valid;
+                result[question.Id] = new { answers = new[] { answer.Text } };
+            }
+            else if (answer.Kind == UserInputAnswerKind.Other && question.IsOther
+                && answer.OptionIds.Count == 0 && answer.Text is not null && answer.Text.Length <= 65536)
+            {
+                result[question.Id] = new { answers = new[] { answer.Text } };
+            }
+            else if (answer.Kind == UserInputAnswerKind.SelectedOptions && answer.OptionIds.Count == 1
+                && answer.Text is null
+                && optionLabels.TryGetValue(answer.OptionIds[0], out string? rawLabel))
+            {
+                result[question.Id] = new { answers = new[] { rawLabel } };
+            }
+            else
+            {
+                throw new ArgumentException("An answer does not match the question options.", nameof(answers));
             }
         }
 
-        return result;
+        return JsonSerializer.SerializeToElement(new { answers = result });
     }
 
     private List<object> BuildTurnInput(StartTurnRequest request)
@@ -2287,19 +3238,8 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         skillsBackgroundRefreshCancellation.Dispose();
         await RetireStreamingBufferAsync().ConfigureAwait(false);
 
-        foreach (PendingApproval approval in pendingApprovals.Values)
-        {
-            approval.Completion.TrySetResult("cancel");
-        }
-
-        pendingApprovals.Clear();
-
-        foreach (PendingUserInput userInput in pendingUserInputs.Values)
-        {
-            userInput.Completion.TrySetResult(EmptyAnswers);
-        }
-
-        pendingUserInputs.Clear();
+        pendingInteractions.Dispose();
+        authorizationUrls.Dispose();
         skillsCacheGate.Dispose();
     }
 
@@ -2323,14 +3263,29 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         {
             throw new JsonRpcRemoteException(-32000, "The app-server connection generation is no longer active.");
         }
-        string requestId = message.GetIdKey() ?? Guid.NewGuid().ToString("N");
+        JsonElement originalRequestId = message.Id
+            ?? throw new JsonRpcRemoteException(-32600, "The server request has no JSON-RPC id.");
+        if (!JsonRpcRequestId.TryGetKey(originalRequestId, out string requestId))
+        {
+            throw new JsonRpcRemoteException(-32600, "The server request id is invalid.");
+        }
         JsonElement parameters = message.Params ?? JsonSerializer.SerializeToElement(new { });
         string method = message.Method ?? string.Empty;
 
         if (method == "item/tool/requestUserInput")
         {
             ValidateUserInputParameters(parameters);
-            return await HandleUserInputRequestAsync(context, requestId, parameters, cancellationToken).ConfigureAwait(false);
+            return await HandleUserInputRequestAsync(context, originalRequestId, requestId, parameters, cancellationToken).ConfigureAwait(false);
+        }
+
+        if (method == "item/permissions/requestApproval")
+        {
+            return await HandlePermissionSelectionRequestAsync(context, originalRequestId, requestId, parameters, cancellationToken).ConfigureAwait(false);
+        }
+
+        if (method == "mcpServer/elicitation/request")
+        {
+            return await HandleMcpElicitationRequestAsync(context, originalRequestId, requestId, parameters, cancellationToken).ConfigureAwait(false);
         }
 
         // Only known approval requests may enter the approval policy and grant store.  App
@@ -2343,36 +3298,66 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
 
         ValidateApprovalParameters(method, parameters);
 
-        string clientRequestId = CreateInteractionId(context.Generation, requestId);
-        ApprovalRequest request = CreateApprovalRequest(clientRequestId, method, parameters);
+        ApprovalRequest request = CreateApprovalRequest(requestId, method, parameters);
         if (request.IsPolicyBlocked)
         {
             return ApprovalResponse("decline");
         }
 
-        if (context.ApprovalGrants.FindApproval(request) is { } grant)
+        if (!OfferedCommandChoiceSet.TryCreate(parameters, value => redactor.Redact(value) ?? string.Empty,
+                static () => Guid.NewGuid().ToString("N"), out OfferedCommandChoiceSet? choices)
+            || choices is null)
         {
-            await EmitApprovalAuditAsync(request, ApprovalAuditAction.AutoApproved, grant.Scope, cancellationToken).ConfigureAwait(false);
-            return ApprovalResponse("accept");
+            throw new JsonRpcRemoteException(-32602, "The command-approval choices are invalid.");
         }
 
-        var completion = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
-        pendingApprovals.TryAdd(new PendingRequestKey(context.Generation, clientRequestId), new PendingApproval(context.Generation, requestId, request, completion));
+        request.Choices = choices.Choices;
+        if (CanReuseSessionApproval(parameters)
+            && context.ApprovalGrants.FindApproval(request) is { Scope: ApprovalScope.Session } sessionGrant
+            && choices.TryResolveDecision("acceptForSession", out JsonElement automaticResponse))
+        {
+            await EmitApprovalAuditAsync(request, ApprovalAuditAction.AutoApproved, sessionGrant.Scope, cancellationToken).ConfigureAwait(false);
+            return automaticResponse;
+        }
+
+        var key = new PendingInteractionKey(context.Generation, requestId);
+        if (!pendingInteractions.TryAdd(key, method, originalRequestId, parameters, TimeSpan.FromMinutes(5),
+                ApprovalResponse("cancel"), out PendingInteractionEntry entry))
+        {
+            throw new JsonRpcRemoteException(-32600, "The approval request is no longer active.");
+        }
+
+        if (entry.Completion.IsCompleted)
+        {
+            PendingInteractionResult earlyResult = await entry.Completion.ConfigureAwait(false);
+            if (earlyResult.Kind is PendingInteractionCompletionKind.ExternallyResolved or PendingInteractionCompletionKind.GenerationRetired)
+            {
+                throw new JsonRpcRequestResolvedException();
+            }
+
+            return earlyResult.Response;
+        }
+
+        request.RequestId = entry.InteractionId;
+        context.CommandChoices[entry.InteractionId] = choices;
         if (ApprovalRequested is not null)
         {
             await ApprovalRequested(request, cancellationToken).ConfigureAwait(false);
         }
 
-        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(5));
-        using var linked = CancellationTokenSource.CreateLinkedTokenSource(timeout.Token, cancellationToken);
-        using CancellationTokenRegistration registration = linked.Token.Register(() => completion.TrySetResult("cancel"));
-        string decision = await completion.Task.ConfigureAwait(false);
-        bool removed = pendingApprovals.TryRemove(new PendingRequestKey(context.Generation, clientRequestId), out _);
-        if (removed && ShouldNotifyPendingResolution(context))
+        PendingInteractionResult result = await entry.Completion.WaitAsync(cancellationToken).ConfigureAwait(false);
+        context.CommandChoices.TryRemove(entry.InteractionId, out _);
+        if (result.Kind is PendingInteractionCompletionKind.ExternallyResolved or PendingInteractionCompletionKind.GenerationRetired)
         {
-            await EmitApprovalResolvedAsync(clientRequestId, CancellationToken.None).ConfigureAwait(false);
+            throw new JsonRpcRequestResolvedException();
         }
-        return ApprovalResponse(decision);
+
+        if (ShouldNotifyPendingResolution(context))
+        {
+            await EmitApprovalResolvedAsync(entry.InteractionId, CancellationToken.None).ConfigureAwait(false);
+        }
+
+        return result.Response;
     }
 
     private async Task OnNotificationAsync(ConnectionContext context, JsonRpcMessage message, CancellationToken cancellationToken)
@@ -2419,6 +3404,24 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         string method = message.Method ?? string.Empty;
         JsonElement parameters = message.Params ?? JsonSerializer.SerializeToElement(new { });
         EnsureCurrent(context);
+        if (method == "account/gatewayOAuth/changed")
+        {
+            await HandleGatewayOAuthChangedAsync(context, parameters, cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
+        if (method == "mcpServer/oauthLogin/completed")
+        {
+            await HandleMcpOAuthCompletedAsync(context, parameters, cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
+        if (method == "mcpServer/startupStatus/updated")
+        {
+            await HandleMcpStartupStatusAsync(context, parameters, cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
         if (method == "skills/changed")
         {
             long generation = InvalidateSkillsCache();
@@ -2507,26 +3510,18 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
 
         if (method == "serverRequest/resolved")
         {
-            // RequestId is string | int64 on the wire; use the same key format as JsonRpcMessage.GetIdKey.
-            string? requestId = GetRequestIdKey(parameters, "requestId");
-            if (requestId is not null
-                && TryRemovePendingApproval(context.Generation, requestId, out PendingApproval? pending)
-                && pending is not null)
+            if (parameters.ValueKind == JsonValueKind.Object
+                && parameters.TryGetProperty("requestId", out JsonElement resolvedId)
+                && JsonRpcRequestId.TryGetKey(resolvedId, out string requestId))
             {
-                pending.Completion.TrySetResult("cancel");
-                if (ShouldNotifyPendingResolution(context))
+                var key = new PendingInteractionKey(context.Generation, requestId);
+                pendingInteractions.TryGet(key, out PendingInteractionEntry? entry);
+                if (pendingInteractions.TryResolveExternally(key, entry))
                 {
-                    await EmitApprovalResolvedAsync(pending.Request.RequestId, cancellationToken).ConfigureAwait(false);
-                }
-            }
-            else if (requestId is not null
-                && TryRemovePendingUserInput(context.Generation, requestId, out PendingUserInput? pendingInput)
-                && pendingInput is not null)
-            {
-                pendingInput.Completion.TrySetResult(EmptyAnswers);
-                if (ShouldNotifyPendingResolution(context))
-                {
-                    await EmitUserInputResolvedAsync(pendingInput.Request.RequestId, cancellationToken).ConfigureAwait(false);
+                    if (entry is not null && ShouldNotifyPendingResolution(context))
+                    {
+                        await EmitInteractionResolvedAsync(entry, cancellationToken).ConfigureAwait(false);
+                    }
                 }
             }
 
@@ -2711,6 +3706,173 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         await EmitAsync(output, cancellationToken).ConfigureAwait(false);
     }
 
+    private async Task HandleGatewayOAuthChangedAsync(
+        ConnectionContext context,
+        JsonElement parameters,
+        CancellationToken cancellationToken)
+    {
+        if (!context.IsLocal
+            || !HasString(parameters, "providerId")
+            || !HasString(parameters, "status")
+            || !string.Equals(GetString(parameters, "providerId"), context.GatewayOAuthProviderId, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        string status = GetString(parameters, "status")!;
+        if (status is not ("notReady" or "started" or "succeeded" or "failed"))
+        {
+            context.GatewayOAuthReady = false;
+            context.GatewayOAuthMessage = "Gateway authorization status is invalid. Refresh the status before continuing.";
+            SetGatewayState(context, InteractionAuthState.Unavailable, context.GatewayOAuthMessage);
+            await EmitInteractionAuthStatusAsync(context, cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
+        RevokeGatewayAuthorizationAction(context);
+        string? error = GetString(parameters, "error");
+        string? authUrl = GetString(parameters, "authUrl");
+        if (status == "started" && authUrl is not null
+            && authorizationUrls.TryStore(context.Generation, authUrl, out ProtectedAuthorizationUrlInfo urlInfo))
+        {
+            context.GatewayOAuthActionId = urlInfo.ActionId;
+            context.GatewayOAuthOriginDisplay = redactor.Redact(urlInfo.OriginDisplay);
+            context.AuthorizationActionOwners[urlInfo.ActionId] = "gateway";
+        }
+        else
+        {
+            context.GatewayOAuthOriginDisplay = null;
+        }
+
+        context.GatewayOAuthReady = status == "succeeded" && string.IsNullOrWhiteSpace(error);
+        if (status is "succeeded" or "failed" or "notReady")
+        {
+            context.GatewayLoginAttemptId = null;
+        }
+        context.GatewayOAuthMessage = status switch
+        {
+            "notReady" => "Gateway authorization is required before using this app-server.",
+            "started" => "Complete gateway authorization in the browser.",
+            "succeeded" when context.GatewayOAuthReady => null,
+            "succeeded" => "Gateway authorization needs attention. Refresh the status before continuing.",
+            _ => "Gateway authorization failed. Retry the status check before continuing.",
+        };
+        SetGatewayState(context, status == "succeeded" && context.GatewayOAuthReady
+            ? InteractionAuthState.Authenticated
+            : MapGatewayOAuthState(required: true, status, error is null ? null : "error"), context.GatewayOAuthMessage);
+        await EmitInteractionAuthStatusAsync(context, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task HandleMcpOAuthCompletedAsync(
+        ConnectionContext context,
+        JsonElement parameters,
+        CancellationToken cancellationToken)
+    {
+        string? rawName = GetString(parameters, "name");
+        if (string.IsNullOrWhiteSpace(rawName) || !HasBoolean(parameters, "success"))
+        {
+            return;
+        }
+
+        bool succeeded = GetBoolean(parameters, "success") == true;
+        MarkMcpOAuthOperationsCompleted(context, rawName);
+        string serverName = redactor.Redact(rawName) ?? string.Empty;
+        var status = new McpServerAuthStatus
+        {
+            ServerName = serverName,
+            State = succeeded ? InteractionAuthState.Authenticated : InteractionAuthState.Failed,
+            Message = succeeded ? "MCP server authorization completed." : "MCP server authorization did not complete. Retry from the server status.",
+        };
+        context.McpAuthStatuses[rawName] = status;
+        if (!succeeded)
+        {
+            RetireMcpElicitations(context, rawName);
+        }
+
+        await EmitInteractionAuthStatusAsync(context, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task HandleMcpStartupStatusAsync(
+        ConnectionContext context,
+        JsonElement parameters,
+        CancellationToken cancellationToken)
+    {
+        string? rawName = GetString(parameters, "name");
+        string? wireStatus = GetString(parameters, "status");
+        if (string.IsNullOrWhiteSpace(rawName) || wireStatus is not ("starting" or "ready" or "failed" or "cancelled"))
+        {
+            return;
+        }
+
+        string? failureReason = GetString(parameters, "failureReason");
+        bool needsReauthentication = string.Equals(failureReason, "reauthenticationRequired", StringComparison.Ordinal);
+        InteractionAuthState state = needsReauthentication
+            ? InteractionAuthState.ReauthenticationRequired
+            : wireStatus switch
+            {
+                "ready" => InteractionAuthState.Authenticated,
+                "starting" => InteractionAuthState.Checking,
+                _ => InteractionAuthState.Failed,
+            };
+        string? message = needsReauthentication
+            ? "MCP server authorization expired. Sign in again to continue."
+            : wireStatus switch
+            {
+                "ready" => null,
+                "starting" => "MCP server is starting.",
+                "cancelled" => "MCP server startup was canceled.",
+                _ => "MCP server is unavailable. Check its status before retrying.",
+            };
+        context.McpAuthStatuses[rawName] = new McpServerAuthStatus
+        {
+            ServerName = redactor.Redact(rawName) ?? string.Empty,
+            State = state,
+            Message = message,
+        };
+        if (context.McpOAuthOperationsByServer.TryGetValue(rawName, out string? operationId)
+            && context.McpOAuthOperations.TryGetValue(operationId, out McpOAuthOperation? operation))
+        {
+            operation.NotificationObserved = true;
+        }
+        if (needsReauthentication || wireStatus is "failed" or "cancelled")
+        {
+            RetireMcpElicitations(context, rawName);
+        }
+
+        await EmitInteractionAuthStatusAsync(context, cancellationToken).ConfigureAwait(false);
+    }
+
+    private void MarkMcpOAuthOperationsCompleted(ConnectionContext context, string serverName)
+    {
+        foreach ((string operationId, McpOAuthOperation operation) in context.McpOAuthOperations)
+        {
+            if (string.Equals(operation.ServerName, serverName, StringComparison.Ordinal))
+            {
+                operation.Completed = true;
+                RevokeAuthorizationAction(context, operation.ActionId);
+                operation.ActionId = null;
+                context.McpOAuthOperations.TryRemove(operationId, out _);
+                context.McpOAuthOperationsByServer.TryRemove(serverName, out _);
+            }
+        }
+    }
+
+    private void RetireMcpElicitations(ConnectionContext context, string serverName)
+    {
+        foreach ((string interactionId, McpElicitationForm form) in context.McpElicitations)
+        {
+            if (string.Equals(form.Request.ServerName, serverName, StringComparison.Ordinal)
+                && pendingInteractions.TryGetByInteractionId(context.Generation, interactionId, out PendingInteractionEntry entry))
+            {
+                RevokeAuthorizationActionsForOwner(context, interactionId);
+                pendingInteractions.TryComplete(
+                    entry.Key,
+                    entry,
+                    JsonSerializer.SerializeToElement(new { action = "cancel" }));
+            }
+        }
+    }
+
     private ApprovalRequest CreateApprovalRequest(string requestId, string method, JsonElement parameters)
     {
         string? command = GetString(parameters, "command");
@@ -2804,75 +3966,13 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
             || string.Equals(ActiveThreadId, threadId, StringComparison.Ordinal)
             || string.Equals(pendingTurnThreadId, threadId, StringComparison.Ordinal);
 
-    private static string? GetRequestIdKey(JsonElement element, string name)
-        => element.ValueKind == JsonValueKind.Object && element.TryGetProperty(name, out JsonElement property)
-            ? property.ValueKind switch
-            {
-                JsonValueKind.String => property.GetString(),
-                JsonValueKind.Number => property.GetRawText(),
-                _ => null,
-            }
-            : null;
-
-    private static string CreateInteractionId(long generation, string serverRequestId)
-        => $"{generation}{InteractionIdSeparator}{serverRequestId}";
-
-    private static bool TryParseInteractionId(
-        string value,
-        out long generation,
-        out string clientRequestId,
-        out string serverRequestId)
-    {
-        generation = 0;
-        clientRequestId = string.Empty;
-        serverRequestId = string.Empty;
-        int separator = value.IndexOf(InteractionIdSeparator);
-        if (separator <= 0
-            || !long.TryParse(value.AsSpan(0, separator), out generation)
-            || generation <= 0
-            || separator == value.Length - 1)
-        {
-            return false;
-        }
-
-        clientRequestId = value;
-        serverRequestId = value[(separator + 1)..];
-        return true;
-    }
-
-    private bool TryRemovePendingApproval(long generation, string serverRequestId, out PendingApproval? pending)
-    {
-        foreach ((PendingRequestKey key, PendingApproval value) in pendingApprovals)
-        {
-            if (key.Generation == generation && string.Equals(value.ServerRequestId, serverRequestId, StringComparison.Ordinal)
-                && pendingApprovals.TryRemove(key, out pending))
-            {
-                return true;
-            }
-        }
-
-        pending = null;
-        return false;
-    }
-
-    private bool TryRemovePendingUserInput(long generation, string serverRequestId, out PendingUserInput? pending)
-    {
-        foreach ((PendingRequestKey key, PendingUserInput value) in pendingUserInputs)
-        {
-            if (key.Generation == generation && string.Equals(value.ServerRequestId, serverRequestId, StringComparison.Ordinal)
-                && pendingUserInputs.TryRemove(key, out pending))
-            {
-                return true;
-            }
-        }
-
-        pending = null;
-        return false;
-    }
-
     private async Task<JsonElement> SendAsync(string method, object parameters, CancellationToken cancellationToken)
     {
         ConnectionContext context = RequireContext();
+        if (method is not ("account/read" or "account/login/start" or "account/logout"))
+        {
+            EnsureCredentialReady(context);
+        }
         JsonElement result = await context.Connection.SendRequestAsync(
             method,
             parameters,
@@ -2885,6 +3985,10 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
     private async Task<JsonElement> SendReadOnlyAsync(string method, object parameters, CancellationToken cancellationToken)
     {
         ConnectionContext context = RequireContext();
+        if (method != "account/read")
+        {
+            EnsureCredentialReady(context);
+        }
         JsonElement result = await context.Connection.SendReadOnlyRequestAsync(
             method,
             parameters,
@@ -2921,20 +4025,15 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
 
     private void CancelPending(long? generation)
     {
-        foreach ((PendingRequestKey key, PendingApproval pending) in pendingApprovals)
+        if (generation is long currentGeneration)
         {
-            if (generation is null || pending.Generation == generation.Value)
-            {
-                pending.Completion.TrySetResult("cancel");
-            }
+            pendingInteractions.RetireGeneration(currentGeneration);
+            authorizationUrls.RetireGeneration(currentGeneration);
         }
-
-        foreach ((PendingRequestKey key, PendingUserInput pending) in pendingUserInputs)
+        else if (Volatile.Read(ref connectionContext) is { } context)
         {
-            if (generation is null || pending.Generation == generation.Value)
-            {
-                pending.Completion.TrySetResult(EmptyAnswers);
-            }
+            pendingInteractions.RetireGeneration(context.Generation);
+            authorizationUrls.RetireGeneration(context.Generation);
         }
     }
 
@@ -2945,6 +4044,10 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         CancellationToken cancellationToken)
     {
         ConnectionContext context = RequireContext();
+        if (method != "account/read")
+        {
+            EnsureCredentialReady(context);
+        }
         lock (context.UnsupportedMethodsLock)
         {
             if (context.UnsupportedMethods.Contains(method))
@@ -2977,6 +4080,17 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
 
             WorkerDiagnostics.Write($"app-server method disabled for this session method={method}", ex);
             return OperationCallResult.Unsupported;
+        }
+    }
+
+    private static void EnsureCredentialReady(ConnectionContext context)
+    {
+        if (!context.GatewayOAuthReadSucceeded || !context.GatewayOAuthReady)
+        {
+            throw new InvalidOperationException(
+                context.GatewayOAuthReadSucceeded
+                    ? "Complete gateway authorization or cancel it before using this app-server operation."
+                    : "Gateway authorization status is unavailable. Retry the status check before using this app-server operation.");
         }
     }
 
@@ -3244,6 +4358,24 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
 
     private Task EmitUserInputResolvedAsync(string requestId, CancellationToken cancellationToken)
         => UserInputResolved?.Invoke(requestId, cancellationToken) ?? Task.CompletedTask;
+
+    private Task EmitPermissionResolvedAsync(string requestId, CancellationToken cancellationToken)
+        => PermissionResolved?.Invoke(requestId, cancellationToken) ?? Task.CompletedTask;
+
+    private Task EmitMcpElicitationResolvedAsync(string requestId, CancellationToken cancellationToken)
+        => McpElicitationResolved?.Invoke(requestId, cancellationToken) ?? Task.CompletedTask;
+
+    private Task EmitUnsupportedInteractionAsync(UnsupportedInteractionNotice notice, CancellationToken cancellationToken)
+        => UnsupportedInteraction?.Invoke(notice, cancellationToken) ?? Task.CompletedTask;
+
+    private Task EmitInteractionResolvedAsync(PendingInteractionEntry entry, CancellationToken cancellationToken)
+        => entry.Method switch
+        {
+            "item/tool/requestUserInput" => EmitUserInputResolvedAsync(entry.InteractionId, cancellationToken),
+            "item/permissions/requestApproval" => EmitPermissionResolvedAsync(entry.InteractionId, cancellationToken),
+            "mcpServer/elicitation/request" => EmitMcpElicitationResolvedAsync(entry.InteractionId, cancellationToken),
+            _ => EmitApprovalResolvedAsync(entry.InteractionId, cancellationToken),
+        };
 
     private Task EmitContextCompactedAsync(ContextCompactionEvent value, CancellationToken cancellationToken)
         => ContextCompacted?.Invoke(value, cancellationToken) ?? Task.CompletedTask;
@@ -4106,6 +5238,13 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
                 ? property.GetString()
                 : null;
 
+    private static bool? GetBoolean(JsonElement element, string name)
+        => element.ValueKind == JsonValueKind.Object
+            && element.TryGetProperty(name, out JsonElement property)
+            && property.ValueKind is JsonValueKind.True or JsonValueKind.False
+                ? property.GetBoolean()
+                : null;
+
     private static string? GetBoundedString(JsonElement element, string name, int maximumUtf8Bytes)
     {
         string? value = GetString(element, name);
@@ -4279,12 +5418,20 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
     private static string ToWireDecision(ApprovalDecision decision) => decision switch
     {
         ApprovalDecision.Accept => "accept",
-        ApprovalDecision.AcceptForTurn => "accept",
-        ApprovalDecision.AcceptForThread => "accept",
-        ApprovalDecision.AcceptForSession => "acceptForSession",
         ApprovalDecision.Decline => "decline",
-        _ => "cancel",
+        ApprovalDecision.Cancel => "cancel",
+        _ => string.Empty,
     };
+
+    private static bool TryReadApprovalDecision(JsonElement response, out string? decision)
+    {
+        decision = response.ValueKind == JsonValueKind.Object
+            && response.TryGetProperty("decision", out JsonElement value)
+            && value.ValueKind == JsonValueKind.String
+                ? value.GetString()
+                : null;
+        return decision is not null;
+    }
 
     private static string ToWireGoalStatus(ThreadGoalStatus status) => status switch
     {
@@ -4309,9 +5456,6 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
 
     private static JsonElement ApprovalResponse(string decision)
         => JsonSerializer.SerializeToElement(new { decision });
-
-    private static readonly IReadOnlyDictionary<string, string[]> EmptyAnswers =
-        new Dictionary<string, string[]>(StringComparer.Ordinal);
 
     private static void ValidateApprovalParameters(string method, JsonElement parameters)
     {
@@ -4404,15 +5548,29 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
             or "item/fileChange/requestApproval"
             or "item/permissions/requestApproval";
 
-    // Shapes the result per ToolRequestUserInputResponse: { answers: { <id>: { answers: [...] } } }.
-    private static JsonElement UserInputResponse(IReadOnlyDictionary<string, string[]> answers)
+    private static bool CanReuseSessionApproval(JsonElement parameters)
     {
-        var map = answers.ToDictionary(
-            pair => pair.Key,
-            pair => (object)new { answers = pair.Value },
-            StringComparer.Ordinal);
-        return JsonSerializer.SerializeToElement(new { answers = map });
+        if (parameters.ValueKind != JsonValueKind.Object)
+        {
+            return false;
+        }
+
+        foreach (string name in new[] { "additionalPermissions", "proposedExecpolicyAmendment", "proposedNetworkPolicyAmendments" })
+        {
+            if (parameters.TryGetProperty(name, out JsonElement value)
+                && value.ValueKind is not (JsonValueKind.Null or JsonValueKind.Undefined)
+                && (value.ValueKind != JsonValueKind.Array || value.GetArrayLength() != 0))
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
+
+    // Shapes the result per ToolRequestUserInputResponse: { answers: { <id>: { answers: [...] } } }.
+    private static JsonElement UserInputResponse(IReadOnlyDictionary<string, UserInputAnswer> answers)
+        => JsonSerializer.SerializeToElement(new { answers = new Dictionary<string, object>(StringComparer.Ordinal) });
 
     private static ConversationEventKind MapKind(string method) => method switch
     {
@@ -4429,19 +5587,28 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         _ => ConversationEventKind.Unknown,
     };
 
-    private sealed record PendingApproval(
-        long Generation,
-        string ServerRequestId,
-        ApprovalRequest Request,
-        TaskCompletionSource<string> Completion);
+    private sealed class McpOAuthOperation(string operationId, string serverName, string? threadId)
+    {
+        public string OperationId { get; } = operationId;
 
-    private readonly record struct PendingRequestKey(long Generation, string RequestId);
+        public string ServerName { get; } = serverName;
 
-    private sealed record PendingUserInput(
-        long Generation,
-        string ServerRequestId,
+        public string? ThreadId { get; } = threadId;
+
+        public string? ActionId { get; set; }
+
+        public bool Dismissed { get; set; }
+
+        public bool Completed { get; set; }
+
+        public bool RequestCanceled { get; set; }
+
+        public bool NotificationObserved { get; set; }
+    }
+
+    private sealed record UserInputProjection(
         UserInputRequest Request,
-        TaskCompletionSource<IReadOnlyDictionary<string, string[]>> Completion);
+        IReadOnlyDictionary<string, Dictionary<string, string>> OptionLabelsByQuestion);
 
     private readonly record struct TurnKey(long Generation, string? ThreadId, string TurnId);
 
@@ -4454,13 +5621,15 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
             IJsonRpcConnection connection,
             long generation,
             string? statePartitionFingerprint,
-            long ownerGeneration)
+            long ownerGeneration,
+            bool isLocal)
         {
             this.owner = owner;
             Connection = connection;
             Generation = generation;
             StatePartitionFingerprint = statePartitionFingerprint;
             OwnerGeneration = ownerGeneration;
+            IsLocal = isLocal;
             NotificationHandler = (message, token) => owner.OnNotificationAsync(this, message, token);
             RequestHandler = (message, token) => owner.OnServerRequestAsync(this, message, token);
             ClosedHandler = (_, _) => owner.OnConnectionClosed(this);
@@ -4478,6 +5647,27 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         public string? PendingLoginId { get; set; }
         public string? AccountFingerprint { get; set; }
         public bool LogoutRequested { get; set; }
+        public bool GatewayOAuthRequired { get; set; }
+        public bool GatewayOAuthReady { get; set; }
+        public bool GatewayOAuthReadSucceeded { get; set; }
+        public bool IsLocal { get; set; }
+        public string? GatewayOAuthProviderId { get; set; }
+        public string? GatewayOAuthProviderName { get; set; }
+        public string? GatewayOAuthMessage { get; set; }
+        public string? GatewayOAuthActionId { get; set; }
+        public string? GatewayOAuthOriginDisplay { get; set; }
+        public string? GatewayLoginAttemptId { get; set; }
+        public InteractionAuthState GatewayOAuthState { get; set; } = InteractionAuthState.Checking;
+        public object InteractionAuthLock { get; } = new();
+        public ConcurrentDictionary<string, McpServerAuthStatus> McpAuthStatuses { get; } = new(StringComparer.Ordinal);
+        public ConcurrentDictionary<string, McpOAuthOperation> McpOAuthOperations { get; } = new(StringComparer.Ordinal);
+        public ConcurrentDictionary<string, string> McpOAuthOperationsByServer { get; } = new(StringComparer.Ordinal);
+        public ConcurrentDictionary<string, OfferedCommandChoiceSet> CommandChoices { get; } = new(StringComparer.Ordinal);
+        public ConcurrentDictionary<string, PermissionSelectionSet> PermissionSelections { get; } = new(StringComparer.Ordinal);
+        public ConcurrentDictionary<string, McpElicitationForm> McpElicitations { get; } = new(StringComparer.Ordinal);
+        public ConcurrentDictionary<string, UserInputProjection> UserInputProjections { get; } = new(StringComparer.Ordinal);
+        public ConcurrentDictionary<string, string> AuthorizationActionOwners { get; } = new(StringComparer.Ordinal);
+        public Task? GatewayLoginTask { get; set; }
         public CancellationTokenSource Lifetime { get; } = new();
         public Func<JsonRpcMessage, CancellationToken, Task> NotificationHandler { get; }
         public Func<JsonRpcMessage, CancellationToken, Task<JsonElement>> RequestHandler { get; }

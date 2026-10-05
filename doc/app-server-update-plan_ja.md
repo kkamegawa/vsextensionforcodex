@@ -31,7 +31,7 @@ Visual Studio 拡張機能の既存 C#／`codex app-server` 連携を CLI 0.159.
 | 高 | 安全なリモート接続、接続所有権、診断、読み取り専用再試行 | [#151](https://github.com/kkamegawa/vsextensionforcodex/issues/151) |
 | 高 | ローカル／サーバーパス対応付け、接続先／アカウント／認証主体／ルートごとの状態分離 | [#152](https://github.com/kkamegawa/vsextensionforcodex/issues/152) |
 | 高 | 再接続、下書き保持、ページ履歴と添付復旧、配送不明な変更操作の扱い | [#153](https://github.com/kkamegawa/vsextensionforcodex/issues/153) |
-| 高 | 非同期質問、権限の部分許可、ネイティブ本人確認、MCP フォーム／認証失効、秘密入力 | [#154](https://github.com/kkamegawa/vsextensionforcodex/issues/154) |
+| 高 | 非同期質問、権限の部分許可、秘密／本人確認要求の明示拒否、MCP form／認証回復、ローカル Gateway OAuth | [#154](https://github.com/kkamegawa/vsextensionforcodex/issues/154) |
 | 高 | 計画／スレッド／設定／モデル／MCP 状態、保存済み添付操作、型付き成果物表示 | [#155](https://github.com/kkamegawa/vsextensionforcodex/issues/155) |
 | 中 | モデル modality、推論量、明示的 shell 実行、独立した timeout | [#155](https://github.com/kkamegawa/vsextensionforcodex/issues/155) |
 | 中 | ローカル Windows sandbox 初期設定状態、対応付け済み画像／ファイル操作 | [#155](https://github.com/kkamegawa/vsextensionforcodex/issues/155) |
@@ -168,43 +168,41 @@ Visual Studio 拡張機能の既存 C#／`codex app-server` 連携を CLI 0.159.
 
 ## Phase 5 — 質問・権限範囲・MCP 対話
 
-トラッキング: [#154](https://github.com/kkamegawa/vsextensionforcodex/issues/154)
+追跡: [#154](https://github.com/kkamegawa/vsextensionforcodex/issues/154)
 
-### Worker 契約と一回答ライフサイクル
+Worker 契約 v19 から開始し、merge 時点で次に利用可能な契約 version を割り当てます（途中変更がなければ v20）。CLI／SDK／runtime は既存の基準を維持し、CLI 0.159.1 を対象、0.155.1 を回帰比較用とします。
 
-- Issue #153 で導入した Worker contract v19 を基準に、質問、権限要求、MCP 入力、本人確認、保存済み添付状態を拡張する。この将来 Phase では過去の v15/v16 基準を使わない。
-- 接続世代と request ID をキーとする共通の未完了要求レジストリを使用する。
-- 回答、キャンセル、timeout、切断、`serverRequest/resolved` の競合があっても、応答を最大1回に保証する。
+### 契約と要求ライフサイクル
 
-### 非同期質問
+- 非同期質問、権限要求、コマンド承認、MCP elicitation、Gateway OAuth、未対応の本人確認要求をそれぞれ別の要求／応答型で扱います。
+- 接続世代と元の JSON-RPC request ID をキーとする保留要求レジストリを使用します。turn ID のない MCP 要求も管理し、すべての応答に既存の owner 検証を適用します。
+- 回答を検証してから完了権を原子的に取得します。回答、キャンセル、timeout、切断、`serverRequest/resolved` の競合でも応答は最大1回とします。resolved 要求や破棄済み世代には応答せず、配送結果不明の応答を再送しません。
 
-- 質問を独立した回答カードとして表示し、処理が継続していても回答可能にする。
-- 選択済み／既定候補は表示情報としてだけ保持する。フォーカス、既定値、時間経過、事前選択を回答として扱わない。
-- 自由入力の「その他」や secret マーカーなど、サーバーの選択肢メタデータを扱う。
+### 質問と権限
 
-### 権限の部分許可とコマンド承認
+- ターンが継続中でも操作でき、通常 composer を塞がない独立カードを表示します。blocking／non-blocking 質問、自由入力、「その他」を扱います。選択・focus・既定値は表示状態であり、明示 Submit だけが回答です。
+- secret マーカー付き質問は UI 投影を作る前に Worker で検出します。安全な専用入力経路がないため理由を示して拒否し、秘密内容を通常 UI、会話、ログ、設定、診断、例外へ渡しません。
+- 要求されたネットワーク／ファイル権限のうち選択部分だけを返します。既定は turn scope、session scope は明示操作で選択します。サーバー要求にない権限は拒否します。
+- コマンド承認の全選択肢と追加権限を表示し、ルール変更の選択肢も独立したサーバー選択肢として保持します。破壊的操作には既存の承認ポリシーを適用します。
 
-- 要求されたネットワーク／ファイル権限のうち、選択した範囲だけを返す。
-- 権限許可は既定でターン単位とし、セッションへの継続許可は明示選択を必要とする。
-- サーバーが提示するコマンド承認の全選択肢と追加権限要求を表示する。
-- ルール変更を伴う選択肢を汎用的な「承認」にまとめない。
+### MCP elicitation と認証回復
 
-### ネイティブ本人確認
+- 正確な `mcpServer/elicitation/request` を処理します。対応する form field（string、number、integer、boolean、単一／複数選択）について required、型、長さ、範囲、形式、選択数を UI と Worker の両方で検証します。
+- `openai/form` など未対応の拡張 schema は理由付きで拒否し、拡張フォーム capability を宣言しません。
+- 認証 URL は Worker で検証・保持し、明示的なユーザー操作だけでブラウザーを開きます。ブラウザーを開いた事実だけでは認証成功とみなしません。
+- `mcpServer/oauth/login`、`mcpServer/oauthLogin/completed`、起動状態通知を連携します。期限切れ、失効、`reauthenticationRequired` では再認証を案内し、古い elicitation を終了します。MCP に取消 RPC がないため、UI 取消をサーバー認証の取消として扱いません。
+- 再認証後は新しい明示的なツール呼び出しを要求し、失敗したツール呼び出しを自動再送しません。
 
-- 実験的な `openai/userVerification` MCP elicitation は、ローカルの本人確認経路を完全に実装し、`experimentalApi` を有効化した場合だけ対応する。
-- 型付きの `userVerification/status`、`userVerification/enroll`、`userVerification/verify`、`userVerification/cancel`、`userVerification/delete` を通じて確認する。ネイティブ UI を表示する前に challenge、title、description の上限を検証する。
-- ネイティブ本人確認は対応するローカル stdio／in-process host に限定する。WebSocket や remote-control peer には宣言・転送せず、platform または transport が未対応の場合は理由を表示して拒否する。
-- キャンセル、切断、認証主体変更、timeout、`serverRequest/resolved` を一回答の競合として扱う。ネイティブ操作を明示的にキャンセルし、解決後に遅れて届いた proof を破棄する。
-- 本人確認 proof と credential 情報を会話、設定、ログ、診断、テレメトリ、クラッシュテキストへ出力しない。
+### Gateway OAuth とネイティブ本人確認
 
-### MCP フォーム・URL・秘密入力フロー
+- ローカル stdio だけで `explicitGatewayOauth` を宣言します。初期化後、認証を要する RPC より先に `account/gatewayOAuth/read` を成功させます。このゲートを接続ごとに行い、その後に login／cancel／changed 通知と明示的なブラウザー操作を扱います。
+- Gateway OAuth 通知を有効な接続と owner に結び付けます。login 待ちで他の RPC の処理を塞ぎません。未対応または初回 read 失敗時は認証付き RPC を止め、自動ブラウザー認証へ切り替えません。
+- Remote 接続では状態とサインイン案内だけを提供し、capability の宣言や Gateway OAuth の login／cancel 変更要求を行いません。
+- 固定版 CLI 0.159.1 の本人確認は macOS のみ対応し、この拡張 client は上流の適格対象に含まれません。Windows と拡張 client の上流対応までは成功経路を延期します。今回 capability を宣言・転送せず、要求を理由付きで拒否します。challenge、proof、credential を UI、会話、ログ、設定、診断、例外へ出しません。
 
-- 仕様化された MCP フォームのフィールド型に対応し、応答前に必須、型、範囲、選択肢を検証する。
-- 未対応スキーマは理由を表示して拒否し、拡張フォーム capability を先に宣言しない。
-- MCP の URL／ブラウザー認証は明示的なユーザー操作からだけ開き、完了後に状態を更新する。
-- 認証または elicitation 後に、失敗した MCP ツール呼び出しを自動再試行しない。
-- 保護された秘密入力経路を使用する。安全な経路がない場合は secret を含む要求を拒否する。
-- `mcpServer/startupStatus/updated` の `failureReason: "reauthenticationRequired"` と OAuth 完了失敗を認証の終端状態として扱う。再ログイン／再接続の案内を表示し、再接続後に未完了 elicitation 状態をリセットし、新しい明示的なツール呼び出しを要求する。
+### 添付の担当範囲
+
+- Phase 5 は保存済み添付の契約拡張や UI 動作を追加しません。上限付き metadata の復旧は Phase 4／Issue #153、添付の操作と表示は Phase 6／Issue #155 が担当します。
 
 ## Phase 6 — 日常利用の App Server 機能
 
@@ -267,10 +265,21 @@ Visual Studio 拡張機能の既存 C#／`codex app-server` 連携を CLI 0.159.
 
 ### 対話と秘密情報保護
 
-- 非同期回答、権限の部分許可、ターン／セッション範囲、MCP の対応／未対応フォーム、URL フロー、キャンセル、切断、解決競合を検証する。
-- 対応／未対応 platform のネイティブ本人確認、enroll／verify／cancel／delete、切断・resolved 競合、認証主体変更、遅延 proof 破棄、secret／proof の非表示を検証する。
-- MCP OAuth の期限切れ／失効、`reauthenticationRequired`、再ログイン成功／キャンセル／失敗、elicitation 状態リセット、失敗したツール呼び出しが自動再送されないことを検証する。
-- 会話、Remote UI DTO、ログ、診断、設定、失敗テキストを検査し、秘密情報が一切現れないことを確認する。
+- 複数質問カード、composer との独立性、自由入力／「その他」、明示 Submit、表示だけの既定値、UI 投影前の秘密要求拒否を検証する。
+- 回答／キャンセル、二重送信、timeout、切断、`serverRequest/resolved`、破棄済み接続世代の競合で、要求ごとの応答が最大1回であることを確認する。
+- ネットワーク／ファイル権限の正確な部分応答、turn／session scope、要求外権限の拒否、コマンド承認選択肢の忠実な表示と応答を検証する。
+- 対応 MCP form と検証、未対応 schema の拒否、明示的なブラウザー起動、取消／失敗／成功、OAuth 期限切れ／失効、`reauthenticationRequired`、古い elicitation の初期化を検証する。ツール呼び出しの自動再送がなく、UI 取消がサーバー側取消を意味しないことを確認する。
+- ローカル Gateway OAuth の起動ゲート、応答前に届く通知、キャンセル、再接続、Remote の読み取り専用動作を検証する。
+- ネイティブ本人確認要求が理由付きで拒否され、capability が未宣言であることを確認する。UI、会話、ログ、設定、診断、例外文に challenge／proof／credential が漏れないことを検査する。
+
+### UI・ビルド・配布物の証跡
+
+- 各 Phase の重点テスト後、Core と UI の全テストを実行する。
+- Debug と Release の solution build を警告ゼロで実行する。
+- VSIX 内容、Worker payload、manifest、生成スキーマ／cache metadata、埋め込み XAML、関連 hash を検査する。
+- インストールした拡張機能を Visual Studio Experimental Instance で実行する。
+- Light、Dark、High Contrast の実表示、狭い幅、キーボード操作、accessible name／live region、質問カードと認証状態を確認する。スクリーンショットを取得して合否を記録し、取得できない場合は視覚検証を未完了とする。
+- 証跡と受容した制限を `doc/implementation.md` と `doc/task.md` に記録し、この Issue 階層へリンクする。
 
 ### UI・ビルド・配布物の証跡
 
@@ -287,7 +296,9 @@ Visual Studio 拡張機能の既存 C#／`codex app-server` 連携を CLI 0.159.
 - 対応メッセージはメソッド／型の厳密な契約を使用し、未対応要求にはプロトコル上適切な拒否を返す。
 - 古い接続からの応答または通知によって、完了済みターンが実行中へ戻ったり、現在状態が変更されたりしない。
 - 安全なリモート接続、ルート対応付け、認証主体ごとのキャッシュ／状態分離、再接続、ページ履歴、保存済み添付復旧が、配送不明な変更操作を再送せず動作する。
-- 権限の部分許可、非同期質問、resolved 競合、対応 MCP フォーム、対応ローカル platform のネイティブ本人確認、ブラウザーフロー、MCP 再認証案内、安全な秘密入力が end-to-end で動作する。
+- 権限の部分許可、非同期質問、resolved 競合、対応 MCP form、ブラウザーフロー、MCP 再認証案内、秘密入力の安全な拒否、ローカル／Remote の Gateway OAuth が end-to-end で動作する。ネイティブ本人確認の成功経路は、上流が Windows とこの拡張 client に対応するまで延期する。
+- shell 実行は明示的で上限があり、接続先を表示し、既存の承認ポリシーに従う。
+- Core／UI テスト、警告ゼロの Debug／Release build、VSIX 検査、Experimental Instance の表示／アクセシビリティ検証に合格し、画面状態の証跡としてスクリーンショットを記録する。
 - shell 実行は明示的で上限があり、接続先を表示し、既存の承認ポリシーに従う。
 - Core／UI テスト、警告ゼロの Debug／Release build、VSIX 検査、Experimental Instance の表示／アクセシビリティ検証が合格する。
 

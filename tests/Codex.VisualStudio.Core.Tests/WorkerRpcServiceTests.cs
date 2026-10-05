@@ -1001,7 +1001,7 @@ public sealed class WorkerRpcServiceTests
         Assert.IsTrue(Volatile.Read(ref probes) >= 4, "The watchdog should keep probing an idle connection.");
         Assert.AreEqual(WorkerConnectionState.Ready, (await worker.GetStatusAsync(CancellationToken.None)).State);
         Assert.AreEqual(0, host.Stops);
-        Assert.IsTrue(connection.Methods.All(static method => method is "initialize" or "account/read"));
+        Assert.IsTrue(connection.Methods.All(static method => method is "initialize" or "account/gatewayOAuth/read" or "account/read"));
     }
 
     [TestMethod]
@@ -1371,6 +1371,14 @@ public sealed class WorkerRpcServiceTests
 
         public Func<string, JsonElement> Handler { get; set; } = _ => JsonSerializer.SerializeToElement(new { });
 
+        public JsonElement GatewayOAuthReadResponse { get; set; } = JsonSerializer.SerializeToElement(new
+        {
+            providerId = "test-provider",
+            providerName = "Test provider",
+            required = false,
+            status = (string?)null,
+        });
+
         // When set, replaces Handler and may hang until the per-request timeout elapses.
         public Func<string, TimeSpan, CancellationToken, Task<JsonElement>>? AsyncHandler { get; set; }
 
@@ -1397,9 +1405,11 @@ public sealed class WorkerRpcServiceTests
                 Methods.Add(method);
             }
 
-            JsonElement result = AsyncHandler is null
-                ? Handler(method)
-                : await AsyncHandler(method, timeout, cancellationToken);
+            JsonElement result = method == "account/gatewayOAuth/read"
+                ? GatewayOAuthReadResponse.Clone()
+                : AsyncHandler is null
+                    ? Handler(method)
+                    : await AsyncHandler(method, timeout, cancellationToken);
 
             // A delivered response is inbound activity, as in the real transports.
             RecordInboundActivity();

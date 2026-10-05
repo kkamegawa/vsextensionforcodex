@@ -39,13 +39,7 @@ public sealed class JsonRpcMessage
             return null;
         }
 
-        JsonElement id = Id.Value;
-        return id.ValueKind switch
-        {
-            JsonValueKind.String => id.GetString(),
-            JsonValueKind.Number => id.GetRawText(),
-            _ => id.GetRawText(),
-        };
+        return JsonRpcRequestId.TryGetKey(Id.Value, out string key) ? key : null;
     }
 }
 
@@ -76,6 +70,18 @@ public sealed class JsonRpcConnectionClosedException : Exception
 {
     public JsonRpcConnectionClosedException(string message)
         : base(message)
+    {
+    }
+}
+
+/// <summary>
+/// An externally resolved server request no longer needs a client response. The connection
+/// dispatcher recognizes this exception and suppresses the JSON-RPC reply.
+/// </summary>
+public sealed class JsonRpcRequestResolvedException : Exception
+{
+    public JsonRpcRequestResolvedException()
+        : base("The server request was resolved by the app-server.")
     {
     }
 }

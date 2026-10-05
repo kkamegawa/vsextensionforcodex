@@ -50,13 +50,11 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     private readonly SemaphoreSlim profileOperationGate = new(1, 1);
     private readonly ConnectionHealthPresentationViewModel connectionHealth;
     private RemoteProfileViewModel? observedHealthProfile;
-    private readonly Queue<UserInputViewModel> userInputQueue = new();
-    private readonly Queue<ApprovalViewModel> approvalQueue = new();
+    private readonly Dictionary<string, InteractionCardViewModel> interactionCards = new(StringComparer.Ordinal);
     private readonly Dictionary<string, StringBuilder> agentRawText = new(StringComparer.Ordinal);
     private readonly Dictionary<string, StringBuilder> itemRawText = new(StringComparer.Ordinal);
     private static readonly Regex HeaderWhitespace = new(@"\s+", RegexOptions.Compiled | RegexOptions.CultureInvariant);
-    private UserInputViewModel? activeUserInput;
-    private ApprovalViewModel? activeApproval;
+    private InteractionAuthStatus? interactionAuthStatus;
     private string? lastAgentRawKey;
     private int disposed;
     private int connecting;
@@ -230,6 +228,11 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         ApplyRemoteProfileCommand = new AsyncCommand(ApplyRemoteProfileAsync, () => CanReconnectForProfile() && remoteProfiles.HasSelection);
         UseLocalAppServerCommand = new AsyncCommand(UseLocalAppServerAsync, CanReconnectForProfile);
         CheckProfileHealthCommand = new AsyncCommand(CheckProfileHealthAsync, CanCheckProfileHealth);
+        ReadGatewayOAuthCommand = new AsyncCommand(ReadGatewayOAuthAsync, CanReadGatewayOAuth);
+        LoginGatewayOAuthCommand = new AsyncCommand(LoginGatewayOAuthAsync, CanLoginGatewayOAuth);
+        CancelGatewayOAuthCommand = new AsyncCommand(CancelGatewayOAuthAsync, CanCancelGatewayOAuth);
+        OpenGatewayAuthorizationCommand = new AsyncCommand(OpenGatewayAuthorizationAsync, CanOpenGatewayAuthorization);
+        PendingInteractions.CollectionChanged += (_, _) => NotifyPendingInteractionProperties();
         remoteProfiles.PropertyChanged += (_, e) =>
         {
             if (e.PropertyName is nameof(RemoteProfilesPresentationViewModel.SelectedProfile))
@@ -352,61 +355,64 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     [DataMember]
     public ObservableCollection<ChatItemViewModel> Items { get; } = new();
 
-    // Approval prompts are shown one at a time, matching the interactive choice card: a single
-    // active card pinned above the composer, with the rest held in a FIFO queue. A burst of
-    // concurrent prompts never stacks up and pushes the transcript out of view.
+    // Every outstanding interaction remains independently actionable while the composer and
+    // transcript continue to work. The XAML hosts this collection in a bounded virtualized list.
     [DataMember]
-    public ApprovalViewModel? ActiveApproval
-    {
-        get => activeApproval;
-        private set
-        {
-            if (SetProperty(ref activeApproval, value))
-            {
-                OnPropertyChanged(nameof(HasActiveApproval));
-                OnPropertyChanged(nameof(ApprovalQueueText));
-            }
-        }
-    }
+    public ObservableCollection<InteractionCardViewModel> PendingInteractions { get; } = new();
+
+    // Compatibility projections for existing tests and extensions that inspect the first card.
+    // These do not drive the UI and never serialize a queue-only state.
+    [DataMember]
+    public ApprovalViewModel? ActiveApproval => PendingInteractions.Select(card => card.Approval).FirstOrDefault(item => item is not null);
 
     [DataMember]
     public bool HasActiveApproval => ActiveApproval is not null;
 
     [DataMember]
-    public string ApprovalQueueText => approvalQueue.Count switch
+    public string ApprovalQueueText => PendingInteractions.Count(card => card.Approval is not null) switch
     {
         0 => string.Empty,
-        1 => "1 approval waiting",
-        _ => $"{approvalQueue.Count} approvals waiting",
+        1 => "1 approval pending",
+        int count => $"{count} approvals pending",
     };
 
-    // Interactive choices are shown one at a time, Claude Code-style: a single active card pinned
-    // above the composer, with the rest held in a FIFO queue. This keeps a burst of choice prompts
-    // from filling/scrolling the panel.
     [DataMember]
-    public UserInputViewModel? ActiveUserInput
-    {
-        get => activeUserInput;
-        private set
-        {
-            if (SetProperty(ref activeUserInput, value))
-            {
-                OnPropertyChanged(nameof(HasActiveUserInput));
-                OnPropertyChanged(nameof(UserInputQueueText));
-            }
-        }
-    }
+    public UserInputViewModel? ActiveUserInput => PendingInteractions.Select(card => card.UserInput).FirstOrDefault(item => item is not null);
 
     [DataMember]
     public bool HasActiveUserInput => ActiveUserInput is not null;
 
     [DataMember]
-    public string UserInputQueueText => userInputQueue.Count switch
+    public string UserInputQueueText => PendingInteractions.Count(card => card.UserInput is not null) switch
     {
         0 => string.Empty,
-        1 => "1 choice waiting",
-        _ => $"{userInputQueue.Count} choices waiting",
+        1 => "1 question pending",
+        int count => $"{count} questions pending",
     };
+
+    [DataMember]
+    public InteractionAuthStatusPresentationViewModel? InteractionAuthStatus { get; private set; }
+
+    [DataMember]
+    public bool HasInteractionAuthStatus => InteractionAuthStatus is not null && !string.IsNullOrWhiteSpace(InteractionAuthStatus.StatusText);
+
+    [DataMember]
+    public bool ShowGatewayOAuthLogin => CanLoginGatewayOAuth();
+
+    [DataMember]
+    public bool ShowGatewayOAuthCancel => CanCancelGatewayOAuth();
+
+    [DataMember]
+    public AsyncCommand ReadGatewayOAuthCommand { get; private set; } = null!;
+
+    [DataMember]
+    public AsyncCommand LoginGatewayOAuthCommand { get; private set; } = null!;
+
+    [DataMember]
+    public AsyncCommand CancelGatewayOAuthCommand { get; private set; } = null!;
+
+    [DataMember]
+    public AsyncCommand OpenGatewayAuthorizationCommand { get; private set; } = null!;
 
     // Opt-in structured API support. Natural-language confirmation/choice prompts are detected
     // locally regardless of this flag; this setting only asks codex to expose experimental
@@ -643,6 +649,12 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         source.ApprovalResolved += OnApprovalResolvedAsync;
         source.UserInputRequested += OnUserInputRequestedAsync;
         source.UserInputResolved += OnUserInputResolvedAsync;
+        source.PermissionRequested += OnPermissionRequestedAsync;
+        source.PermissionResolved += OnPermissionResolvedAsync;
+        source.McpElicitationRequested += OnMcpElicitationRequestedAsync;
+        source.McpElicitationResolved += OnMcpElicitationResolvedAsync;
+        source.UnsupportedInteractionReceived += OnUnsupportedInteractionReceivedAsync;
+        source.InteractionAuthStatusChanged += OnInteractionAuthStatusChangedAsync;
         source.ContextCompacted += OnContextCompactedAsync;
         source.ReviewModeChanged += OnReviewModeChangedAsync;
         source.ThreadGoalChanged += OnThreadGoalChangedAsync;
@@ -666,6 +678,12 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         source.ApprovalResolved -= OnApprovalResolvedAsync;
         source.UserInputRequested -= OnUserInputRequestedAsync;
         source.UserInputResolved -= OnUserInputResolvedAsync;
+        source.PermissionRequested -= OnPermissionRequestedAsync;
+        source.PermissionResolved -= OnPermissionResolvedAsync;
+        source.McpElicitationRequested -= OnMcpElicitationRequestedAsync;
+        source.McpElicitationResolved -= OnMcpElicitationResolvedAsync;
+        source.UnsupportedInteractionReceived -= OnUnsupportedInteractionReceivedAsync;
+        source.InteractionAuthStatusChanged -= OnInteractionAuthStatusChangedAsync;
         source.ContextCompacted -= OnContextCompactedAsync;
         source.ReviewModeChanged -= OnReviewModeChangedAsync;
         source.ThreadGoalChanged -= OnThreadGoalChangedAsync;
@@ -1211,14 +1229,16 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         PendingSkills.Clear();
         OnPropertyChanged(nameof(HasPendingSkill));
 
-        ActiveApproval?.MarkResolved();
-        ActiveApproval = null;
-        approvalQueue.Clear();
-        OnPropertyChanged(nameof(ApprovalQueueText));
-        ActiveUserInput?.MarkResolved();
-        ActiveUserInput = null;
-        userInputQueue.Clear();
-        OnPropertyChanged(nameof(UserInputQueueText));
+        foreach (InteractionCardViewModel card in PendingInteractions)
+        {
+            card.MarkResolved();
+        }
+
+        PendingInteractions.Clear();
+        InteractionAuthStatus = null;
+        OnPropertyChanged(nameof(HasInteractionAuthStatus));
+        OnPropertyChanged(nameof(ShowGatewayOAuthLogin));
+        OnPropertyChanged(nameof(ShowGatewayOAuthCancel));
 
         ClearApprovalModeConfirmation();
         for (int index = ApprovalModes.Count - 1; index >= 0; index--)
@@ -5791,6 +5811,12 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             WorkerStatus previousStatus = Status;
             WorkerConnectionState previous = previousStatus.State;
             Status = value;
+            ReadGatewayOAuthCommand.RaiseCanExecuteChanged();
+            LoginGatewayOAuthCommand.RaiseCanExecuteChanged();
+            CancelGatewayOAuthCommand.RaiseCanExecuteChanged();
+            OpenGatewayAuthorizationCommand.RaiseCanExecuteChanged();
+            OnPropertyChanged(nameof(ShowGatewayOAuthLogin));
+            OnPropertyChanged(nameof(ShowGatewayOAuthCancel));
             applied = true;
             if (SelectedThread is not null
                 && string.Equals(SelectedThread.Id, value.ThreadId, StringComparison.Ordinal))
@@ -6242,9 +6268,11 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             _ = ExtensionDiagnostics.WriteOutputAsync(
                 outputChannel,
                 $"[AUDIT] Approval requested: {approval.Risk} — {approval.DisplayText}");
-            EnqueueApproval(new ApprovalViewModel(
+            var approvalViewModel = new ApprovalViewModel(
                 approval,
-                (requestId, decision) => ResolveApprovalAsync(requestId, decision, owner)));
+                (requestId, decision, choiceId) => ResolveApprovalAsync(requestId, decision, choiceId, owner),
+                markdown);
+            AddPendingInteraction(new InteractionCardViewModel("Approval", approval.RequestId, approval: approvalViewModel));
         });
 
     private Task OnApprovalAuditReceivedAsync(WorkerNotification<ApprovalAuditRecord> notification)
@@ -6261,21 +6289,6 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 $"[AUDIT] Approval {record.Action}: request={record.RequestId}, scope={record.Scope}, risk={record.Risk}, target={record.DisplayText}");
         });
 
-    // Show one approval card, queue the rest. Concurrent requestApproval prompts must not stack up
-    // and push the transcript out of view.
-    private void EnqueueApproval(ApprovalViewModel approval)
-    {
-        if (ActiveApproval is null)
-        {
-            ActiveApproval = approval;
-        }
-        else
-        {
-            approvalQueue.Enqueue(approval);
-            OnPropertyChanged(nameof(ApprovalQueueText));
-        }
-    }
-
     private Task OnApprovalResolvedAsync(WorkerNotification<string> notification)
         => OnUiAsync(() =>
         {
@@ -6285,32 +6298,47 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             }
         });
 
-    // Idempotent, mirroring RemoveUserInput: a repeat resolve for an already-removed id is a no-op.
     private void RemoveApproval(string requestId)
     {
-        if (ActiveApproval?.RequestId == requestId)
+        RemovePendingInteraction(requestId, "Approval");
+    }
+
+    private void AddPendingInteraction(InteractionCardViewModel card)
+    {
+        if (interactionCards.TryGetValue(card.RequestId, out InteractionCardViewModel? previous))
         {
-            ActiveApproval.MarkResolved();
-            ActiveApproval = approvalQueue.Count > 0 ? approvalQueue.Dequeue() : null;
-            OnPropertyChanged(nameof(ApprovalQueueText));
+            previous.MarkResolved();
+            PendingInteractions.Remove(previous);
+        }
+
+        interactionCards[card.RequestId] = card;
+        PendingInteractions.Add(card);
+    }
+
+    private void RemovePendingInteraction(string requestId, string kind)
+    {
+        if (!interactionCards.TryGetValue(requestId, out InteractionCardViewModel? card)
+            || !string.Equals(card.Kind, kind, StringComparison.Ordinal))
+        {
             return;
         }
 
-        // Resolved/cancelled while still queued: drop it without promoting.
-        if (approvalQueue.Any(item => item.RequestId == requestId))
-        {
-            ApprovalViewModel[] remaining = approvalQueue.Where(item => item.RequestId != requestId).ToArray();
-            approvalQueue.Clear();
-            foreach (ApprovalViewModel item in remaining)
-            {
-                approvalQueue.Enqueue(item);
-            }
-
-            OnPropertyChanged(nameof(ApprovalQueueText));
-        }
+        card.MarkResolved();
+        interactionCards.Remove(requestId);
+        PendingInteractions.Remove(card);
     }
 
-    private async Task ResolveApprovalAsync(string requestId, ApprovalDecision decision, OwnerSnapshot owner)
+    private void NotifyPendingInteractionProperties()
+    {
+        OnPropertyChanged(nameof(ActiveApproval));
+        OnPropertyChanged(nameof(HasActiveApproval));
+        OnPropertyChanged(nameof(ApprovalQueueText));
+        OnPropertyChanged(nameof(ActiveUserInput));
+        OnPropertyChanged(nameof(HasActiveUserInput));
+        OnPropertyChanged(nameof(UserInputQueueText));
+    }
+
+    private async Task ResolveApprovalAsync(string requestId, ApprovalDecision decision, string? choiceId, OwnerSnapshot owner)
     {
         if (!IsCurrentOwner(owner))
         {
@@ -6322,7 +6350,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         // echo from the worker can remove the card from the queue while the RPC is in flight.
         string summary = BuildDecisionSummary(requestId, decision);
         bool delivered = await RunTrackedMutationAsync("Approval response", owner, () => bridge.ResolveApprovalAsync(
-            StampOwner(new ResolveApprovalRequest { RequestId = requestId, Decision = decision }, owner),
+            StampOwner(new ResolveApprovalRequest { RequestId = requestId, Decision = decision, ChoiceId = choiceId }, owner),
             lifetime.Token)).ConfigureAwait(false);
         if (!delivered)
         {
@@ -6347,9 +6375,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     // Internal: exercised directly by the UI test assembly (InternalsVisibleTo).
     internal string BuildDecisionSummary(string requestId, ApprovalDecision decision)
     {
-        ApprovalViewModel? approval = ActiveApproval?.RequestId == requestId
-            ? ActiveApproval
-            : approvalQueue.FirstOrDefault(item => item.RequestId == requestId);
+        ApprovalViewModel? approval = PendingInteractions.FirstOrDefault(card => card.RequestId == requestId)?.Approval;
         return approval is null
             ? DescribeDecision(decision)
             : string.Concat(DescribeDecision(decision), " — ", approval.DisplayText);
@@ -6380,25 +6406,375 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             }
 
             OwnerSnapshot owner = NotificationOwner(notification);
-            EnqueueUserInput(new UserInputViewModel(
+            var userInput = new UserInputViewModel(
                 notification.Value,
-                (requestId, answers) => ResolveUserInputAsync(requestId, answers, owner),
-                markdown));
+                (requestId, answers, action) => ResolveUserInputAsync(requestId, answers, action, owner),
+                markdown);
+            AddPendingInteraction(new InteractionCardViewModel("Question", notification.Value.RequestId, userInput: userInput));
         });
 
-    // Shared by the structured (server-request) path and the prose-detection path: show one card,
-    // queue the rest.
-    private void EnqueueUserInput(UserInputViewModel userInput)
-    {
-        if (ActiveUserInput is null)
+    private Task OnPermissionRequestedAsync(WorkerNotification<PermissionRequest> notification)
+        => OnUiAsync(() =>
         {
-            ActiveUserInput = userInput;
+            if (!IsNotificationCurrent(notification))
+            {
+                return;
+            }
+
+            OwnerSnapshot owner = NotificationOwner(notification);
+            var permission = new PermissionSelectionViewModel(
+                notification.Value,
+                (requestId, selectedPermissionIds, scope) => ResolvePermissionSelectionAsync(requestId, selectedPermissionIds, scope, owner),
+                markdown);
+            AddPendingInteraction(new InteractionCardViewModel("Permission", notification.Value.RequestId, permission: permission));
+        });
+
+    private Task OnPermissionResolvedAsync(WorkerNotification<string> notification)
+        => OnUiAsync(() =>
+        {
+            if (IsNotificationCurrent(notification))
+            {
+                RemovePendingInteraction(notification.Value, "Permission");
+            }
+        });
+
+    private Task OnMcpElicitationRequestedAsync(WorkerNotification<McpElicitationRequest> notification)
+        => OnUiAsync(() =>
+        {
+            if (!IsNotificationCurrent(notification))
+            {
+                return;
+            }
+
+            OwnerSnapshot owner = NotificationOwner(notification);
+            var elicitation = new McpElicitationViewModel(
+                notification.Value,
+                (requestId, action, values) => ResolveMcpElicitationAsync(requestId, action, values, owner),
+                markdown);
+            elicitation.ConfigureOpenAuthorization(actionId => OpenAuthorizationUrlAsync(actionId, owner));
+            AddPendingInteraction(new InteractionCardViewModel("MCP input", notification.Value.RequestId, elicitation: elicitation));
+        });
+
+    private Task OnMcpElicitationResolvedAsync(WorkerNotification<string> notification)
+        => OnUiAsync(() =>
+        {
+            if (IsNotificationCurrent(notification))
+            {
+                RemovePendingInteraction(notification.Value, "MCP input");
+            }
+        });
+
+    private Task OnUnsupportedInteractionReceivedAsync(WorkerNotification<UnsupportedInteractionNotice> notification)
+        => OnUiAsync(() =>
+        {
+            if (!IsNotificationCurrent(notification))
+            {
+                return;
+            }
+
+            UnsupportedInteractionNotice notice = notification.Value;
+            string reason = markdown.ToSafeText(notice.Message).Trim();
+            string title = notice.Kind switch
+            {
+                UnsupportedInteractionKind.SecretInput => "Secret input request declined",
+                UnsupportedInteractionKind.UserVerification => "Identity verification unavailable",
+                _ => "MCP input unavailable",
+            };
+            AddPendingInteraction(new InteractionCardViewModel(title, Guid.NewGuid().ToString("N"), message: reason));
+        });
+
+    private Task OnInteractionAuthStatusChangedAsync(WorkerNotification<InteractionAuthStatus> notification)
+        => OnUiAsync(() =>
+        {
+            if (!IsNotificationCurrent(notification))
+            {
+                return;
+            }
+
+            SetInteractionAuthStatus(notification.Value, NotificationOwner(notification));
+        });
+
+    private void SetInteractionAuthStatus(InteractionAuthStatus status, OwnerSnapshot owner)
+    {
+        interactionAuthStatus = status;
+        if (InteractionAuthStatus is null)
+        {
+            InteractionAuthStatus = new InteractionAuthStatusPresentationViewModel(
+                status,
+                markdown,
+                serverName => StartMcpOAuthLoginAsync(serverName, owner),
+                operationId => DismissMcpOAuthLoginAsync(operationId, owner),
+                actionId => OpenAuthorizationUrlAsync(actionId, owner));
         }
         else
         {
-            userInputQueue.Enqueue(userInput);
-            OnPropertyChanged(nameof(UserInputQueueText));
+            InteractionAuthStatus.Update(status);
         }
+
+        OnPropertyChanged(nameof(InteractionAuthStatus));
+        OnPropertyChanged(nameof(HasInteractionAuthStatus));
+        ReadGatewayOAuthCommand.RaiseCanExecuteChanged();
+        LoginGatewayOAuthCommand.RaiseCanExecuteChanged();
+        CancelGatewayOAuthCommand.RaiseCanExecuteChanged();
+        OpenGatewayAuthorizationCommand.RaiseCanExecuteChanged();
+    }
+
+    private bool CanReadGatewayOAuth()
+        => Status.State is WorkerConnectionState.Ready or WorkerConnectionState.Busy or WorkerConnectionState.WaitingForApproval;
+
+    private bool CanLoginGatewayOAuth()
+        => CanReadGatewayOAuth()
+            && !IsRemoteTarget
+            && interactionAuthStatus is { IsLocal: true, IsSupported: true }
+            && interactionAuthStatus.State is not InteractionAuthState.Checking;
+
+    private bool CanCancelGatewayOAuth()
+        => CanLoginGatewayOAuth() && interactionAuthStatus?.State == InteractionAuthState.LoginPending;
+
+    private bool CanOpenGatewayAuthorization()
+        => CanReadGatewayOAuth()
+            && !string.IsNullOrWhiteSpace(interactionAuthStatus?.OpenAuthorizationActionId);
+
+    private async Task ReadGatewayOAuthAsync()
+    {
+        OwnerSnapshot owner = CaptureOwnerSnapshot();
+        try
+        {
+            InteractionAuthStatus result = await bridge.ReadGatewayOAuthAsync(
+                StampOwner(new ReadGatewayOAuthRequest(), owner),
+                lifetime.Token).ConfigureAwait(false);
+            if (IsCurrentOwner(owner))
+            {
+                await OnUiAsync(() =>
+                {
+                    if (IsCurrentOwner(owner))
+                    {
+                        SetInteractionAuthStatus(result, owner);
+                    }
+                }).ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+        {
+        }
+        catch (Exception ex)
+        {
+            await OnUiAsync(() =>
+            {
+                if (IsCurrentOwner(owner))
+                {
+                    SetInteractionAuthStatus(new InteractionAuthStatus
+                    {
+                        IsLocal = !IsRemoteTarget,
+                        IsSupported = false,
+                        State = InteractionAuthState.Failed,
+                        Message = "Gateway OAuth status could not be read (" + ex.GetType().Name + ").",
+                    }, owner);
+                }
+            }).ConfigureAwait(false);
+        }
+    }
+
+    private Task LoginGatewayOAuthAsync()
+        => UpdateGatewayOAuthAsync(owner => bridge.LoginGatewayOAuthAsync(
+            StampOwner(new LoginGatewayOAuthRequest(), owner), lifetime.Token));
+
+    private Task CancelGatewayOAuthAsync()
+        => UpdateGatewayOAuthAsync(owner => bridge.CancelGatewayOAuthAsync(
+            StampOwner(new CancelGatewayOAuthRequest(), owner), lifetime.Token));
+
+    private async Task UpdateGatewayOAuthAsync(Func<OwnerSnapshot, Task<InteractionAuthStatus>> operation)
+    {
+        OwnerSnapshot owner = CaptureOwnerSnapshot();
+        if (!CanLoginGatewayOAuth())
+        {
+            return;
+        }
+
+        try
+        {
+            InteractionAuthStatus result = await operation(owner).ConfigureAwait(false);
+            if (IsCurrentOwner(owner))
+            {
+                await OnUiAsync(() =>
+                {
+                    if (IsCurrentOwner(owner))
+                    {
+                        SetInteractionAuthStatus(result, owner);
+                    }
+                }).ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+        {
+        }
+        catch (Exception ex)
+        {
+            await OnUiAsync(() =>
+            {
+                if (IsCurrentOwner(owner))
+                {
+                    SetInteractionAuthStatus(new InteractionAuthStatus
+                    {
+                        IsLocal = true,
+                        IsSupported = false,
+                        State = InteractionAuthState.Failed,
+                        Message = "Gateway OAuth operation failed (" + ex.GetType().Name + ").",
+                    }, owner);
+                }
+            }).ConfigureAwait(false);
+        }
+    }
+
+    private Task OpenGatewayAuthorizationAsync()
+        => interactionAuthStatus?.OpenAuthorizationActionId is { Length: > 0 } actionId
+            ? OpenAuthorizationUrlAsync(actionId, CaptureOwnerSnapshot())
+            : Task.CompletedTask;
+
+    private async Task StartMcpOAuthLoginAsync(string serverName, OwnerSnapshot owner)
+    {
+        if (!IsCurrentOwner(owner) || string.IsNullOrWhiteSpace(serverName))
+        {
+            return;
+        }
+
+        try
+        {
+            McpOAuthLoginStatus result = await bridge.StartMcpOAuthLoginAsync(
+                StampOwner(new StartMcpOAuthLoginRequest
+                {
+                    ServerName = serverName,
+                    ThreadId = SelectedThread?.Id,
+                }, owner),
+                lifetime.Token).ConfigureAwait(false);
+            await OnUiAsync(() =>
+            {
+                if (!IsCurrentOwner(owner) || InteractionAuthStatus is null)
+                {
+                    return;
+                }
+
+                McpServerAuthPresentationViewModel? server = InteractionAuthStatus.McpServers
+                    .FirstOrDefault(item => item.MatchesServer(result.ServerName));
+                server?.Update(result, markdown);
+            }).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+        {
+        }
+        catch (Exception ex)
+        {
+            await OnUiAsync(() =>
+            {
+                if (IsCurrentOwner(owner))
+                {
+                    Items.Add(new ChatItemViewModel(
+                        "Status",
+                        markdown.ToSafeText("MCP sign-in could not start (" + ex.GetType().Name + ")."),
+                        ConversationEventKind.ItemCompleted));
+                }
+            }).ConfigureAwait(false);
+        }
+    }
+
+    private async Task DismissMcpOAuthLoginAsync(string operationId, OwnerSnapshot owner)
+    {
+        if (!IsCurrentOwner(owner) || string.IsNullOrWhiteSpace(operationId))
+        {
+            return;
+        }
+
+        try
+        {
+            await bridge.DismissMcpOAuthLoginAsync(
+                StampOwner(new DismissMcpOAuthLoginRequest { OperationId = operationId }, owner),
+                lifetime.Token).ConfigureAwait(false);
+            await OnUiAsync(() =>
+            {
+                if (IsCurrentOwner(owner))
+                {
+                    Items.Add(new ChatItemViewModel(
+                        "Status",
+                        "The sign-in prompt was dismissed. Server authentication may continue.",
+                        ConversationEventKind.ItemCompleted));
+                }
+            }).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+        {
+        }
+        catch (Exception ex)
+        {
+            await OnUiAsync(() =>
+            {
+                if (IsCurrentOwner(owner))
+                {
+                    Items.Add(new ChatItemViewModel(
+                        "Status",
+                        markdown.ToSafeText("MCP sign-in prompt could not be dismissed (" + ex.GetType().Name + ")."),
+                        ConversationEventKind.ItemCompleted));
+                }
+            }).ConfigureAwait(false);
+        }
+    }
+
+    private async Task ResolvePermissionSelectionAsync(
+        string requestId,
+        IReadOnlyList<string> selectedPermissionIds,
+        PermissionScope scope,
+        OwnerSnapshot owner)
+    {
+        if (!IsCurrentOwner(owner))
+        {
+            return;
+        }
+
+        await RunTrackedMutationAsync("Permission response", owner, () => bridge.ResolvePermissionSelectionAsync(
+            StampOwner(new ResolvePermissionSelectionRequest
+            {
+                RequestId = requestId,
+                SelectedPermissionIds = selectedPermissionIds,
+                Scope = scope,
+            }, owner),
+            lifetime.Token)).ConfigureAwait(false);
+    }
+
+    private async Task ResolveMcpElicitationAsync(
+        string requestId,
+        McpElicitationAction action,
+        IReadOnlyList<McpElicitationValue> values,
+        OwnerSnapshot owner)
+    {
+        if (!IsCurrentOwner(owner))
+        {
+            return;
+        }
+
+        await RunTrackedMutationAsync("MCP input response", owner, () => bridge.ResolveMcpElicitationAsync(
+            StampOwner(new ResolveMcpElicitationRequest
+            {
+                RequestId = requestId,
+                Action = action,
+                Values = values,
+            }, owner),
+            lifetime.Token)).ConfigureAwait(false);
+    }
+
+    private async Task OpenAuthorizationUrlAsync(string actionId, OwnerSnapshot owner)
+    {
+        if (!IsCurrentOwner(owner) || string.IsNullOrWhiteSpace(actionId))
+        {
+            return;
+        }
+
+        await RunTrackedMutationAsync("Open authorization page", owner, () => bridge.OpenAuthorizationUrlAsync(
+            StampOwner(new OpenAuthorizationUrlRequest { ActionId = actionId }, owner),
+            lifetime.Token)).ConfigureAwait(false);
+    }
+
+    private void EnqueueUserInput(UserInputViewModel userInput)
+    {
+        AddPendingInteraction(new InteractionCardViewModel("Question", userInput.RequestId, userInput: userInput));
     }
 
     private Task OnUserInputResolvedAsync(WorkerNotification<string> notification)
@@ -6414,35 +6790,15 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     // request handler after it returns), so a repeat call for an already-removed id is a no-op.
     private void RemoveUserInput(string requestId)
     {
-        if (ActiveUserInput?.RequestId == requestId)
-        {
-            ActiveUserInput.MarkResolved();
-            ActiveUserInput = userInputQueue.Count > 0 ? userInputQueue.Dequeue() : null;
-            OnPropertyChanged(nameof(UserInputQueueText));
-            return;
-        }
-
-        // Resolved/cancelled while still queued: drop it without promoting.
-        if (userInputQueue.Any(item => item.RequestId == requestId))
-        {
-            UserInputViewModel[] remaining = userInputQueue.Where(item => item.RequestId != requestId).ToArray();
-            userInputQueue.Clear();
-            foreach (UserInputViewModel item in remaining)
-            {
-                userInputQueue.Enqueue(item);
-            }
-
-            OnPropertyChanged(nameof(UserInputQueueText));
-        }
+        RemovePendingInteraction(requestId, "Question");
     }
 
-    // Structured choice (real item/tool/requestUserInput server request): answer it via RPC. The
-    // card is removed by the worker's userInputResolved echo; a result-only line keeps the picked
-    // option visible in the transcript (Copilot Chat parity), sanitized because option labels come
-    // from untrusted app-server data.
+    // Structured answers may contain user-entered text, so the transcript records only that a
+    // response was submitted instead of copying answer content into conversation history.
     private async Task ResolveUserInputAsync(
         string requestId,
-        IReadOnlyDictionary<string, string[]> answers,
+        IReadOnlyDictionary<string, UserInputAnswer> answers,
+        UserInputAction action,
         OwnerSnapshot owner)
     {
         if (!IsCurrentOwner(owner))
@@ -6454,6 +6810,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             StampOwner(new ResolveUserInputRequest
             {
                 RequestId = requestId,
+                Action = action,
                 Answers = answers.ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal),
             }, owner),
             lifetime.Token)).ConfigureAwait(false);
@@ -6473,23 +6830,22 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     }
 
     // Internal: exercised directly by the UI test assembly (InternalsVisibleTo).
-    internal void AppendUserInputResultItem(IReadOnlyDictionary<string, string[]> answers)
+    internal void AppendUserInputResultItem(IReadOnlyDictionary<string, UserInputAnswer> answers)
     {
-        string[] selections = answers.Values.SelectMany(values => values).ToArray();
-        if (selections.Length == 0)
+        if (answers.Count == 0)
         {
             return;
         }
 
-        string summary = string.Concat("Selected — ", string.Join(", ", selections));
-        Items.Add(new ChatItemViewModel("Decision", markdown.ToSafeText(summary), ConversationEventKind.ItemCompleted));
+        Items.Add(new ChatItemViewModel("Decision", "Response submitted", ConversationEventKind.ItemCompleted));
     }
 
     // Prose-detected choice: there is no pending server request, so the picked option is sent as the
     // next turn (it also shows in the transcript as the user's message), then the card is removed.
     private async Task ResolveSyntheticUserInputAsync(
         string requestId,
-        IReadOnlyDictionary<string, string[]> answers,
+        IReadOnlyDictionary<string, UserInputAnswer> answers,
+        UserInputAction action,
         OwnerSnapshot owner)
     {
         if (!IsCurrentOwner(owner))
@@ -6497,7 +6853,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             return;
         }
 
-        string? choice = answers.Values.SelectMany(values => values).FirstOrDefault();
+        string? choice = answers.Values.SelectMany(answer => answer.OptionIds).FirstOrDefault();
         await OnUiAsync(() =>
         {
             if (IsCurrentOwner(owner))
@@ -6505,7 +6861,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 RemoveUserInput(requestId);
             }
         }).ConfigureAwait(false);
-        if (!string.IsNullOrWhiteSpace(choice))
+        if (action == UserInputAction.Submit && !string.IsNullOrWhiteSpace(choice))
         {
             await SendMessageAsync(choice!, clearComposer: false, expectedOwner: owner).ConfigureAwait(false);
         }
@@ -6547,7 +6903,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         {
             EnqueueUserInput(new UserInputViewModel(
                 synthesized,
-                (requestId, answers) => ResolveSyntheticUserInputAsync(requestId, answers, owner),
+                (requestId, answers, action) => ResolveSyntheticUserInputAsync(requestId, answers, action, owner),
                 markdown) { IsSynthetic = true });
         }
     }
@@ -7527,11 +7883,11 @@ public sealed class ChatBlockViewModel : ObservableObject
 [DataContract]
 public sealed class ApprovalViewModel : ObservableObject
 {
-    private readonly Func<string, ApprovalDecision, Task> resolver;
+    private readonly Func<string, ApprovalDecision, string?, Task> resolver;
     private bool isResolved;
     private int resolving;
 
-    public ApprovalViewModel(ApprovalRequest request, Func<string, ApprovalDecision, Task> resolver)
+    public ApprovalViewModel(ApprovalRequest request, Func<string, ApprovalDecision, string?, Task> resolver, SafeMarkdownService markdown)
     {
         this.resolver = resolver;
         RequestId = request.RequestId;
@@ -7547,6 +7903,9 @@ public sealed class ApprovalViewModel : ObservableObject
         ShowAcceptForSession = request.AvailableDecisions.Contains(ApprovalDecision.AcceptForSession);
         ShowDecline = request.AvailableDecisions.Contains(ApprovalDecision.Decline);
         ShowCancel = request.AvailableDecisions.Contains(ApprovalDecision.Cancel);
+        Choices = new ObservableCollection<ApprovalChoiceViewModel>(request.Choices.Select(choice =>
+            new ApprovalChoiceViewModel(choice, markdown, choiceId => ResolveOnceAsync(ApprovalDecision.Accept, choiceId), () => CanResolve)));
+        HasExactChoices = Choices.Count > 0;
 
         if (request.Risk == ApprovalRiskCategory.Network)
         {
@@ -7557,12 +7916,12 @@ public sealed class ApprovalViewModel : ObservableObject
             NetworkPort = parts.Length > 2 ? parts[2] : null;
         }
 
-        AcceptCommand = new AsyncCommand(() => ResolveOnceAsync(ApprovalDecision.Accept), () => CanResolve);
-        AcceptForTurnCommand = new AsyncCommand(() => ResolveOnceAsync(ApprovalDecision.AcceptForTurn), () => CanResolve);
-        AcceptForThreadCommand = new AsyncCommand(() => ResolveOnceAsync(ApprovalDecision.AcceptForThread), () => CanResolve);
-        AcceptForSessionCommand = new AsyncCommand(() => ResolveOnceAsync(ApprovalDecision.AcceptForSession), () => CanResolve);
-        DeclineCommand = new AsyncCommand(() => ResolveOnceAsync(ApprovalDecision.Decline), () => CanResolve);
-        CancelCommand = new AsyncCommand(() => ResolveOnceAsync(ApprovalDecision.Cancel), () => CanResolve);
+        AcceptCommand = new AsyncCommand(() => ResolveOnceAsync(ApprovalDecision.Accept, null), () => CanResolve && !HasExactChoices);
+        AcceptForTurnCommand = new AsyncCommand(() => ResolveOnceAsync(ApprovalDecision.AcceptForTurn, null), () => CanResolve && !HasExactChoices);
+        AcceptForThreadCommand = new AsyncCommand(() => ResolveOnceAsync(ApprovalDecision.AcceptForThread, null), () => CanResolve && !HasExactChoices);
+        AcceptForSessionCommand = new AsyncCommand(() => ResolveOnceAsync(ApprovalDecision.AcceptForSession, null), () => CanResolve && !HasExactChoices);
+        DeclineCommand = new AsyncCommand(() => ResolveOnceAsync(ApprovalDecision.Decline, null), () => CanResolve && !HasExactChoices);
+        CancelCommand = new AsyncCommand(() => ResolveOnceAsync(ApprovalDecision.Cancel, null), () => CanResolve && !HasExactChoices);
     }
 
     public string RequestId { get; }
@@ -7609,6 +7968,15 @@ public sealed class ApprovalViewModel : ObservableObject
     [DataMember]
     public string? NetworkPort { get; }
 
+    [DataMember]
+    public ObservableCollection<ApprovalChoiceViewModel> Choices { get; }
+
+    [DataMember]
+    public bool HasExactChoices { get; }
+
+    [DataMember]
+    public bool ShowLegacyDecisions => !HasExactChoices;
+
     public bool IsResolved
     {
         get => isResolved;
@@ -7616,6 +7984,11 @@ public sealed class ApprovalViewModel : ObservableObject
         {
             if (SetProperty(ref isResolved, value))
             {
+                foreach (ApprovalChoiceViewModel choice in Choices)
+                {
+                    choice.NotifyCanExecuteChanged();
+                }
+
                 AcceptCommand.RaiseCanExecuteChanged();
                 AcceptForTurnCommand.RaiseCanExecuteChanged();
                 AcceptForThreadCommand.RaiseCanExecuteChanged();
@@ -7648,7 +8021,10 @@ public sealed class ApprovalViewModel : ObservableObject
 
     public void MarkResolved() => IsResolved = true;
 
-    private async Task ResolveOnceAsync(ApprovalDecision decision)
+    internal Task ResolveChoiceAsync(string choiceId)
+        => ResolveOnceAsync(ApprovalDecision.Accept, choiceId);
+
+    private async Task ResolveOnceAsync(ApprovalDecision decision, string? choiceId)
     {
         if (Interlocked.Exchange(ref resolving, 1) != 0 || !CanResolve)
         {
@@ -7656,7 +8032,7 @@ public sealed class ApprovalViewModel : ObservableObject
         }
 
         IsResolved = true;
-        await resolver(RequestId, decision).ConfigureAwait(false);
+        await resolver(RequestId, decision, choiceId).ConfigureAwait(false);
     }
 }
 
@@ -7666,20 +8042,31 @@ public sealed class ApprovalViewModel : ObservableObject
 [DataContract]
 public sealed class UserInputViewModel : ObservableObject
 {
-    private readonly Func<string, IReadOnlyDictionary<string, string[]>, Task> resolver;
+    private readonly Func<string, IReadOnlyDictionary<string, UserInputAnswer>, UserInputAction, Task> resolver;
     private bool isResolved;
     private int resolving;
+    private string? validationText;
 
     public UserInputViewModel(
         UserInputRequest request,
-        Func<string, IReadOnlyDictionary<string, string[]>, Task> resolver,
+        Func<string, IReadOnlyDictionary<string, UserInputAnswer>, UserInputAction, Task> resolver,
         SafeMarkdownService markdown)
     {
         this.resolver = resolver;
         RequestId = request.RequestId;
+        IsBlocking = request.IsBlocking;
         Questions = new ObservableCollection<UserInputQuestionViewModel>(
             request.Questions.Select(question => new UserInputQuestionViewModel(question, markdown)));
+        foreach (UserInputQuestionViewModel question in Questions)
+        {
+            question.PropertyChanged += OnQuestionChanged;
+            foreach (UserInputOptionViewModel option in question.Options)
+            {
+                option.PropertyChanged += OnQuestionChanged;
+            }
+        }
         SubmitCommand = new AsyncCommand(SubmitOnceAsync, () => CanSubmit);
+        CancelCommand = new AsyncCommand(CancelOnceAsync, () => !IsResolved);
     }
 
     public string RequestId { get; }
@@ -7689,10 +8076,23 @@ public sealed class UserInputViewModel : ObservableObject
     public bool IsSynthetic { get; init; }
 
     [DataMember]
+    public bool IsBlocking { get; }
+
+    [DataMember]
     public ObservableCollection<UserInputQuestionViewModel> Questions { get; }
 
     [DataMember]
     public AsyncCommand SubmitCommand { get; }
+
+    [DataMember]
+    public AsyncCommand CancelCommand { get; }
+
+    [DataMember]
+    public string? ValidationText
+    {
+        get => validationText ?? (IsBlocking && !CanSubmit ? "Answer each question before submitting." : null);
+        private set => SetProperty(ref validationText, value);
+    }
 
     [DataMember]
     public bool IsResolved
@@ -7701,11 +8101,14 @@ public sealed class UserInputViewModel : ObservableObject
         private set
         {
             if (SetProperty(ref isResolved, value))
+            {
                 SubmitCommand.RaiseCanExecuteChanged();
+                CancelCommand.RaiseCanExecuteChanged();
+            }
         }
     }
 
-    public bool CanSubmit => !IsResolved;
+    public bool CanSubmit => !IsResolved && (!IsBlocking || Questions.All(question => question.CreateAnswer() is not null));
 
     public void MarkResolved() => IsResolved = true;
 
@@ -7713,31 +8116,56 @@ public sealed class UserInputViewModel : ObservableObject
     {
         if (Interlocked.Exchange(ref resolving, 1) != 0 || !CanSubmit)
         {
+            ValidationText = "Answer each question before submitting.";
             return;
         }
 
         IsResolved = true;
-        var answers = new Dictionary<string, string[]>(StringComparer.Ordinal);
+        var answers = new Dictionary<string, UserInputAnswer>(StringComparer.Ordinal);
         foreach (UserInputQuestionViewModel question in Questions)
         {
-            if (question.SelectedLabel is { } label)
+            if (question.CreateAnswer() is { } answer)
             {
-                answers[question.Id] = [label];
+                answers[question.Id] = answer;
             }
         }
 
-        await resolver(RequestId, answers).ConfigureAwait(false);
+        ValidationText = null;
+        await resolver(RequestId, answers, UserInputAction.Submit).ConfigureAwait(false);
+    }
+
+    private async Task CancelOnceAsync()
+    {
+        if (Interlocked.Exchange(ref resolving, 1) != 0 || IsResolved)
+        {
+            return;
+        }
+
+        IsResolved = true;
+        await resolver(RequestId, new Dictionary<string, UserInputAnswer>(StringComparer.Ordinal), UserInputAction.Cancel).ConfigureAwait(false);
+    }
+
+    private void OnQuestionChanged(object? sender, PropertyChangedEventArgs args)
+    {
+        SubmitCommand.RaiseCanExecuteChanged();
+        OnPropertyChanged(nameof(CanSubmit));
+        OnPropertyChanged(nameof(ValidationText));
     }
 }
 
 [DataContract]
 public sealed class UserInputQuestionViewModel : ObservableObject
 {
+    private bool isOtherSelected;
+    private string freeText = string.Empty;
+    private string otherText = string.Empty;
+
     public UserInputQuestionViewModel(UserInputQuestion question, SafeMarkdownService markdown)
     {
         Id = question.Id;
         Header = markdown.ToSafeText(question.Header).Trim();
         Question = markdown.ToSafeText(question.Question).Trim();
+        IsOther = question.IsOther;
         Options = new ObservableCollection<UserInputOptionViewModel>(
             question.Options.Select(option => new UserInputOptionViewModel(option, markdown, OnOptionSelected)));
     }
@@ -7752,10 +8180,68 @@ public sealed class UserInputQuestionViewModel : ObservableObject
     public string Question { get; }
 
     [DataMember]
+    public bool IsOther { get; }
+
+    [DataMember]
+    public bool HasOptions => Options.Count > 0;
+
+    [DataMember]
+    public bool IsFreeText => Options.Count == 0;
+
+    [DataMember]
     public ObservableCollection<UserInputOptionViewModel> Options { get; }
 
-    // The verbatim (unsanitized) label of the selected option, echoed back to the app-server.
-    public string? SelectedLabel => Options.FirstOrDefault(option => option.IsSelected)?.Label;
+    [DataMember]
+    public bool IsOtherSelected
+    {
+        get => isOtherSelected;
+        set
+        {
+            if (SetProperty(ref isOtherSelected, value) && value)
+            {
+                foreach (UserInputOptionViewModel option in Options)
+                {
+                    option.SetSelectedSilently(false);
+                }
+            }
+        }
+    }
+
+    [DataMember]
+    public string FreeText
+    {
+        get => freeText;
+        set => SetProperty(ref freeText, value);
+    }
+
+    [DataMember]
+    public string OtherText
+    {
+        get => otherText;
+        set => SetProperty(ref otherText, value);
+    }
+
+    public UserInputAnswer? CreateAnswer()
+    {
+        if (!HasOptions)
+        {
+            return string.IsNullOrWhiteSpace(FreeText)
+                ? null
+                : new UserInputAnswer { Kind = UserInputAnswerKind.FreeText, Text = FreeText };
+        }
+
+        if (IsOtherSelected)
+        {
+            return string.IsNullOrWhiteSpace(OtherText)
+                ? null
+                : new UserInputAnswer { Kind = UserInputAnswerKind.Other, Text = OtherText };
+        }
+
+        string[] optionIds = Options.Where(option => option.IsSelected).Select(option => option.OptionId).ToArray();
+        return optionIds.Length == 0
+            ? null
+            : new UserInputAnswer { Kind = UserInputAnswerKind.SelectedOptions, OptionIds = optionIds };
+    }
 
     // Single-select: selecting one option clears the rest of this question's group.
     private void OnOptionSelected(UserInputOptionViewModel selected)
@@ -7765,6 +8251,8 @@ public sealed class UserInputQuestionViewModel : ObservableObject
             if (!ReferenceEquals(option, selected))
                 option.SetSelectedSilently(false);
         }
+
+        IsOtherSelected = false;
     }
 }
 
@@ -7777,15 +8265,13 @@ public sealed class UserInputOptionViewModel : ObservableObject
     public UserInputOptionViewModel(UserInputOption option, SafeMarkdownService markdown, Action<UserInputOptionViewModel> onSelected)
     {
         this.onSelected = onSelected;
-        // Label is echoed back verbatim so it matches the server's option; DisplayLabel is the
-        // sanitized text actually rendered.
-        Label = option.Label;
+        // Opaque option IDs remain inside the Extension and are never rendered in Remote UI.
+        OptionId = string.IsNullOrEmpty(option.OptionId) ? option.Label : option.OptionId;
         DisplayLabel = markdown.ToSafeText(option.Label).Trim();
         Description = markdown.ToSafeText(option.Description).Trim();
     }
 
-    // Not a DataMember: the raw value, never rendered, only submitted back to the app-server.
-    public string Label { get; }
+    public string OptionId { get; }
 
     [DataMember]
     public string DisplayLabel { get; }

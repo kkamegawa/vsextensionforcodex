@@ -10,8 +10,9 @@ namespace Codex.AppServer.Protocol;
 /// </summary>
 internal sealed class JsonRpcServerRequestDispatcher
 {
+    private const string GenericRequestError = "The client could not process the server request.";
     private readonly Func<object, CancellationToken, Task> send;
-    private readonly ConcurrentDictionary<string, Task> outstanding = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, RequestRegistration> outstanding = new(StringComparer.Ordinal);
 
     public JsonRpcServerRequestDispatcher(Func<object, CancellationToken, Task> send)
     {
@@ -33,8 +34,8 @@ internal sealed class JsonRpcServerRequestDispatcher
             return;
         }
 
-        var registration = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        if (!outstanding.TryAdd(id, registration.Task))
+        var registration = new RequestRegistration();
+        if (!outstanding.TryAdd(id, registration))
         {
             return;
         }
@@ -44,25 +45,45 @@ internal sealed class JsonRpcServerRequestDispatcher
             {
                 try
                 {
-                    await RespondAsync(message, handler, cancellationToken).ConfigureAwait(false);
+                    await RespondAsync(message, registration, handler, cancellationToken).ConfigureAwait(false);
                 }
                 catch (Exception ex)
                 {
-                    // The response path already shapes protocol errors; this guard only covers a
-                    // close/write race so the request task never becomes unobserved.
+                    // This guard only covers an internal dispatch failure; it never sends a
+                    // second response after the terminal delivery attempt.
                     _ = ex;
                 }
                 finally
                 {
-                    outstanding.TryRemove(new KeyValuePair<string, Task>(id, registration.Task));
-                    registration.TrySetResult();
+                    outstanding.TryRemove(new KeyValuePair<string, RequestRegistration>(id, registration));
+                    registration.CompleteTask.TrySetResult();
                 }
             },
             CancellationToken.None);
     }
 
     /// <summary>Completes when every request that was outstanding at the time of the call ends.</summary>
-    public Task WhenOutstandingCompletedAsync() => Task.WhenAll(outstanding.Values.ToArray());
+    public Task WhenOutstandingCompletedAsync()
+        => Task.WhenAll(outstanding.Values.Select(item => item.CompleteTask.Task).ToArray());
+
+    /// <summary>
+    /// Suppresses a pending server request response when the ordered app-server notification
+    /// reports that the original request was resolved elsewhere.
+    /// </summary>
+    public void ResolveServerRequest(JsonElement parameters)
+    {
+        if (parameters.ValueKind != JsonValueKind.Object
+            || !parameters.TryGetProperty("requestId", out JsonElement requestId)
+            || !JsonRpcRequestId.TryGetKey(requestId, out string key))
+        {
+            return;
+        }
+
+        if (outstanding.TryGetValue(key, out RequestRegistration? registration))
+        {
+            registration.TrySuppressResponse();
+        }
+    }
 
     public static void ResolveResponse(
         ConcurrentDictionary<string, TaskCompletionSource<JsonElement>> pending,
@@ -85,52 +106,105 @@ internal sealed class JsonRpcServerRequestDispatcher
 
     private async Task RespondAsync(
         JsonRpcMessage message,
+        RequestRegistration registration,
         Func<JsonRpcMessage, CancellationToken, Task<JsonElement>>? handler,
         CancellationToken cancellationToken)
     {
-        object? id = ToWireId(message.Id!.Value);
+        object id = JsonRpcRequestId.ToWireValue(message.Id!.Value);
+        object response;
         try
         {
             JsonElement result = handler is null
                 ? JsonSerializer.SerializeToElement(new { })
                 : await handler(message, cancellationToken).ConfigureAwait(false);
-            await SendUnlessClosedAsync(new { id, result }, cancellationToken).ConfigureAwait(false);
+            response = new { id, result };
+        }
+        catch (JsonRpcRequestResolvedException)
+        {
+            registration.TrySuppressResponse();
+            return;
         }
         catch (JsonRpcRemoteException ex)
         {
-            await SendUnlessClosedAsync(
-                new { id, error = new { code = ex.Code, message = ex.Message } },
-                cancellationToken).ConfigureAwait(false);
+            response = new { id, error = new { code = ex.Code, message = ex.Message } };
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             // Closing the connection cancels the handler and intentionally suppresses its response.
+            return;
         }
         catch (Exception ex)
         {
-            await SendUnlessClosedAsync(
-                new { id, error = new { code = -32603, message = ex.Message } },
-                cancellationToken).ConfigureAwait(false);
+            _ = ex;
+            // Server-request data can contain challenges or credentials. Never copy unexpected
+            // exception text onto the wire.
+            response = new { id, error = new { code = -32603, message = GenericRequestError } };
         }
-    }
 
-    private async Task SendUnlessClosedAsync(object response, CancellationToken cancellationToken)
-    {
-        if (cancellationToken.IsCancellationRequested)
+        // Claim the only response slot before attempting transport delivery. If the write fails
+        // after partially reaching the peer, a second error response would violate JSON-RPC.
+        if (cancellationToken.IsCancellationRequested
+            || !registration.TryBeginResponse(() => send(response, cancellationToken), out Task delivery))
         {
             return;
         }
 
         try
         {
-            await send(response, cancellationToken).ConfigureAwait(false);
+            await delivery.ConfigureAwait(false);
         }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        catch (Exception ex)
         {
-            // The connection closed while the response was being written.
+            _ = ex;
+            // The delivery state is uncertain; the terminal response is never retried.
         }
     }
 
-    private static object? ToWireId(JsonElement id)
-        => id.ValueKind == JsonValueKind.Number ? id.GetInt64() : id.GetString();
+    private sealed class RequestRegistration
+    {
+        private readonly object gate = new();
+        private int terminalState;
+
+        public TaskCompletionSource CompleteTask { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public bool TryBeginResponse(Func<Task> beginDelivery, out Task delivery)
+        {
+            lock (gate)
+            {
+                if (terminalState != 0)
+                {
+                    delivery = Task.CompletedTask;
+                    return false;
+                }
+
+                terminalState = 1;
+                try
+                {
+                    // Start delivery before allowing the ordered notification pump to mark this
+                    // request resolved. A failure remains terminal because peer delivery is unknown.
+                    delivery = beginDelivery();
+                }
+                catch (Exception exception)
+                {
+                    delivery = Task.FromException(exception);
+                }
+
+                return true;
+            }
+        }
+
+        public bool TrySuppressResponse()
+        {
+            lock (gate)
+            {
+                if (terminalState != 0)
+                {
+                    return false;
+                }
+
+                terminalState = 2;
+                return true;
+            }
+        }
+    }
 }

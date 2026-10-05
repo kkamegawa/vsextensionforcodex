@@ -695,3 +695,29 @@ The user restricted this follow-up to Issue/Wiki publication. Wiki commits `2705
 - [x] PR #161 fourth review fixes: the read-only retry's close handler tolerates invocation after its cancellation source is disposed; the token reader no longer pre-checks `FileInfo.Exists`, so an existing but unreadable file is `TokenFileUnreadable` and only a missing file or directory is `TokenFileMissing`. Release build zero warnings; Core 281 passed (same 2 order-dependent failures, 1 skipped); UI 306 passed (1 skipped). Tracking: [PR #161](https://github.com/kkamegawa/vsextensionforcodex/pull/161).
 
 Implementation record: [implementation.md](implementation.md#secure-remote-app-server-connection-issue-151-2026-10-02). Tracking: [Issue #151](https://github.com/kkamegawa/vsextensionforcodex/issues/151).
+## 2026-10-05: Questions, permissions, and MCP interaction (Issue #154)
+
+- [x] Review the v19 contract, fixed CLI 0.159.1 protocol, existing implementation, and published bilingual plan; correct the contract baseline to v20 (the next available version).
+- [x] Approve and publish the bilingual interaction design, ADR-015 revision, Issue #154 scope, and child issue hierarchy (#165–#168).
+- [x] Add typed Worker/Extension contracts and RPCs for questions, scoped permissions, command choices, MCP elicitation, unsupported interactions, and authentication state/actions.
+- [x] Add a shared owner/generation/request-scoped pending registry with validation, timeout, external-resolution, retirement, and at-most-once completion handling.
+- [x] Add independent pending interaction cards and explicit response flows for questions, permissions, approvals, and supported MCP forms.
+- [x] Add local Gateway OAuth status/read gating and explicit login/cancel/browser actions; restrict remote profiles to status and guidance.
+- [x] Reject secret-marked input and unsupported native user-verification requests before sensitive payloads reach the UI; keep success-path capability undeclared.
+- [x] Complete the Fake App Server and fixed CLI 0.159.1 contract checks, CLI contract surface verification, stable schema comparison from 0.155.1 to 0.159.1, and schema-cache tests.
+- [x] Record final Core/UI test totals: Core Debug 369 passed, 0 failed, 5 skipped (374 total); UI Debug 342 passed, 0 failed, 1 skipped (343 total).
+- [x] Verify full solution Debug and Release builds with 0 warnings and 0 errors; emit the Release VSIX.
+- [x] Inspect the Release assembly raw XAML hash against the source XAML and record the VSIX SHA-256: `BA83A86AFA1988B8FA8A2C387415435F5F727054E0379C3E241ED252AF83AB85`.
+- [ ] Complete Experimental Instance screenshots for Light/Dark/High Contrast, narrow width, keyboard, read-aloud/accessibility, multiple cards, and authentication states. Visual acceptance remains pending because `vswhere` found no Visual Studio instance on the host.
+
+### Validation evidence
+
+- Initial Core run during implementation: 336 passed, 18 failed, 5 skipped; this interim result is superseded by final validation.
+- Core Debug: 369 passed, 0 failed, 5 skipped (374 total).
+- UI Debug: 342 passed, 0 failed, 1 skipped (343 total).
+- Full solution Debug and Release builds: 0 warnings, 0 errors in each; Release VSIX emitted.
+- CLI contract surface verification: passed; stable schema comparison 0.155.1→0.159.1: passed; schema-cache tests: passed.
+- Release assembly raw XAML SHA-256 matches source XAML. Release VSIX SHA-256: `BA83A86AFA1988B8FA8A2C387415435F5F727054E0379C3E241ED252AF83AB85`.
+- Visual/accessibility acceptance: pending; `vswhere` found no Visual Studio instances and no Experimental Instance screenshots are recorded.
+
+Tracking: [Issue #154](https://github.com/kkamegawa/vsextensionforcodex/issues/154) and children [#165](https://github.com/kkamegawa/vsextensionforcodex/issues/165), [#166](https://github.com/kkamegawa/vsextensionforcodex/issues/166), [#167](https://github.com/kkamegawa/vsextensionforcodex/issues/167), and [#168](https://github.com/kkamegawa/vsextensionforcodex/issues/168).
