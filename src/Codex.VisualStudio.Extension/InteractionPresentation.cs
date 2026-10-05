@@ -17,7 +17,8 @@ public sealed class InteractionCardViewModel
         UserInputViewModel? userInput = null,
         PermissionSelectionViewModel? permission = null,
         McpElicitationViewModel? elicitation = null,
-        string? message = null)
+        string? message = null,
+        Func<Task>? dismiss = null)
     {
         Kind = kind;
         RequestId = requestId;
@@ -26,7 +27,16 @@ public sealed class InteractionCardViewModel
         Permission = permission;
         Elicitation = elicitation;
         Message = message;
+        CanDismiss = dismiss is not null;
+        DismissCommand = new AsyncCommand(dismiss ?? (static () => Task.CompletedTask), () => CanDismiss);
     }
+
+    // Information-only cards have no server request to resolve, so the user removes them explicitly.
+    [DataMember]
+    public bool CanDismiss { get; }
+
+    [DataMember]
+    public AsyncCommand DismissCommand { get; }
 
     [DataMember]
     public string Kind { get; }

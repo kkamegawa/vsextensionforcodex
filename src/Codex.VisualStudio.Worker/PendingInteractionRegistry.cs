@@ -259,6 +259,29 @@ internal sealed class PendingInteractionRegistry : IDisposable
         }
     }
 
+    /// <summary>
+    /// Records that a server request finished its handler. Requests answered without ever being
+    /// registered would otherwise leave an external-resolution marker that is never consumed.
+    /// </summary>
+    public void MarkHandled(PendingInteractionKey key)
+    {
+        lock (registrationGate)
+        {
+            if (Volatile.Read(ref disposed) != 0
+                || key.Generation <= retiredGenerationCutoff
+                || pending.ContainsKey(key))
+            {
+                return;
+            }
+
+            externallyResolvedBeforeRegistration.TryRemove(key, out _);
+            if (!recentlyCompleted.ContainsKey(key))
+            {
+                RememberRecentlyCompleted(key);
+            }
+        }
+    }
+
     public void RetireGeneration(long generation)
     {
         lock (registrationGate)

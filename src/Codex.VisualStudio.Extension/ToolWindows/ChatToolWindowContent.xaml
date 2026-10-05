@@ -1321,6 +1321,9 @@
                 <TextBlock FontWeight="Bold" Text="{Binding Kind}" Margin="0,0,0,6" />
                 <TextBlock Text="{Binding Message}" TextWrapping="Wrap"
                            Visibility="{Binding IsInformation, Converter={StaticResource BoolToVis}}" />
+                <Button Margin="0,8,0,0" HorizontalAlignment="Left" Content="Dismiss"
+                        Command="{Binding DismissCommand}" Style="{StaticResource RoundButtonStyle}"
+                        Visibility="{Binding CanDismiss, Converter={StaticResource BoolToVis}}" />
 
                 <StackPanel Visibility="{Binding IsApproval, Converter={StaticResource BoolToVis}}">
                   <TextBlock FontWeight="SemiBold" Text="{Binding Approval.Risk}" />

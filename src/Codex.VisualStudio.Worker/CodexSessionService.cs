@@ -1926,8 +1926,9 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
 
     public async Task InterruptTurnAsync(InterruptTurnRequest request, CancellationToken cancellationToken)
     {
+        // Not credential-gated: a turn already running must stay stoppable when gateway
+        // authorization lapses mid-turn.
         ConnectionContext context = RequireContext();
-        EnsureCredentialReady(context);
 
         // Record when the user asked to stop, so the diagnostics log shows how long the server took
         // to acknowledge the request and to actually end the turn.
@@ -3254,6 +3255,14 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         finally
         {
             emittingContext.Value = previousContext;
+
+            // Requests answered without a registry entry (auto-approved, policy-declined, refused)
+            // must still count as completed so a later serverRequest/resolved does not leave a
+            // stale pre-registration marker behind.
+            if (message.Id is { } id && JsonRpcRequestId.TryGetKey(id, out string requestKey))
+            {
+                pendingInteractions.MarkHandled(new PendingInteractionKey(context.Generation, requestKey));
+            }
         }
     }
 
@@ -4085,6 +4094,13 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
 
     private static void EnsureCredentialReady(ConnectionContext context)
     {
+        // The gateway OAuth gate applies to local stdio only; a remote peer owns its own
+        // authentication and may not implement account/gatewayOAuth/read at all.
+        if (!context.IsLocal)
+        {
+            return;
+        }
+
         if (!context.GatewayOAuthReadSucceeded || !context.GatewayOAuthReady)
         {
             throw new InvalidOperationException(

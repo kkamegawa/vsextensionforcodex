@@ -6480,7 +6480,12 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 UnsupportedInteractionKind.UserVerification => "Identity verification unavailable",
                 _ => "MCP input unavailable",
             };
-            AddPendingInteraction(new InteractionCardViewModel(title, Guid.NewGuid().ToString("N"), message: reason));
+            string noticeId = Guid.NewGuid().ToString("N");
+            AddPendingInteraction(new InteractionCardViewModel(
+                title,
+                noticeId,
+                message: reason,
+                dismiss: () => OnUiAsync(() => RemovePendingInteraction(noticeId, title))));
         });
 
     private Task OnInteractionAuthStatusChangedAsync(WorkerNotification<InteractionAuthStatus> notification)
@@ -6526,7 +6531,8 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         => CanReadGatewayOAuth()
             && !IsRemoteTarget
             && interactionAuthStatus is { IsLocal: true, IsSupported: true }
-            && interactionAuthStatus.State is not InteractionAuthState.Checking;
+            // Ready means the effective provider does not use gateway OAuth; the Worker rejects login.
+            && interactionAuthStatus.State is not (InteractionAuthState.Checking or InteractionAuthState.Ready);
 
     private bool CanCancelGatewayOAuth()
         => CanLoginGatewayOAuth() && interactionAuthStatus?.State == InteractionAuthState.LoginPending;
@@ -8114,9 +8120,15 @@ public sealed class UserInputViewModel : ObservableObject
 
     private async Task SubmitOnceAsync()
     {
-        if (Interlocked.Exchange(ref resolving, 1) != 0 || !CanSubmit)
+        // Validate before claiming the resolve slot so a rejected submit leaves Submit/Cancel usable.
+        if (!CanSubmit)
         {
             ValidationText = "Answer each question before submitting.";
+            return;
+        }
+
+        if (Interlocked.Exchange(ref resolving, 1) != 0)
+        {
             return;
         }
 
