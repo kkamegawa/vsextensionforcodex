@@ -1290,181 +1290,251 @@
         </StackPanel>
       </Grid>
 
-      <!-- Active approval prompt: a single bounded card pinned below the transcript and above the
-           composer. Only one approval shows at a time; concurrent prompts are queued in the view
-           model and counted by ApprovalQueueText, so a burst never stacks up and pushes the
-           transcript out of view. -->
-      <Border Grid.Row="1" Margin="10,0,10,10" Padding="12" CornerRadius="8"
-              Background="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBackgroundBrushKey}}"
-              BorderThickness="1"
-              BorderBrush="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBorderBrushKey}}"
-              Visibility="{Binding HasActiveApproval, Converter={StaticResource BoolToVis}}">
-        <Border.Style>
-          <Style TargetType="Border">
-            <Setter Property="Opacity" Value="1" />
-            <Style.Triggers>
-              <!-- Policy-blocked approvals are dimmed since no user action is possible. -->
-              <DataTrigger Binding="{Binding ActiveApproval.IsPolicyBlocked}" Value="True">
-                <Setter Property="Opacity" Value="0.6" />
-              </DataTrigger>
-            </Style.Triggers>
+      <!-- Pending interaction cards share a bounded, virtualized surface. Every request stays
+           independently actionable while the composer and transcript remain available. -->
+      <ListBox Grid.Row="1"
+               Margin="10,0,10,10"
+               Padding="0"
+               MaxHeight="300"
+               Background="Transparent"
+               BorderThickness="0"
+               ItemsSource="{Binding PendingInteractions}"
+               ScrollViewer.CanContentScroll="True"
+               ScrollViewer.VerticalScrollBarVisibility="Auto"
+               ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+               VirtualizingPanel.IsVirtualizing="True"
+               VirtualizingPanel.VirtualizationMode="Recycling">
+        <ListBox.ItemContainerStyle>
+          <Style TargetType="ListBoxItem" BasedOn="{StaticResource MessageRowStyle}">
+            <Setter Property="Padding" Value="0" />
+            <Setter Property="Margin" Value="0,0,0,8" />
+            <Setter Property="HorizontalContentAlignment" Value="Stretch" />
           </Style>
-        </Border.Style>
-        <StackPanel>
-          <!-- Queue summary header (e.g. "2 approvals waiting"); collapses when none are queued. -->
-          <TextBlock FontSize="11" Opacity="0.7" Margin="0,0,0,6" Text="{Binding ApprovalQueueText}">
-            <TextBlock.Style>
-              <Style TargetType="TextBlock">
-                <Setter Property="Foreground" Value="{DynamicResource {x:Static styles:VsBrushes.WindowTextKey}}" />
-                <Setter Property="Visibility" Value="Visible" />
-                <Style.Triggers>
-                  <DataTrigger Binding="{Binding ApprovalQueueText}" Value="">
-                    <Setter Property="Visibility" Value="Collapsed" />
-                  </DataTrigger>
-                </Style.Triggers>
-              </Style>
-            </TextBlock.Style>
-          </TextBlock>
+        </ListBox.ItemContainerStyle>
+        <ListBox.ItemTemplate>
+          <DataTemplate>
+            <Border Padding="12" CornerRadius="8"
+                    Background="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBackgroundBrushKey}}"
+                    BorderThickness="1"
+                    BorderBrush="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBorderBrushKey}}">
+              <StackPanel>
+                <TextBlock FontWeight="Bold" Text="{Binding Kind}" Margin="0,0,0,6" />
+                <TextBlock Text="{Binding Message}" TextWrapping="Wrap"
+                           Visibility="{Binding IsInformation, Converter={StaticResource BoolToVis}}" />
+                <Button Margin="0,8,0,0" HorizontalAlignment="Left" Content="Dismiss"
+                        Command="{Binding DismissCommand}" Style="{StaticResource RoundButtonStyle}"
+                        Visibility="{Binding CanDismiss, Converter={StaticResource BoolToVis}}" />
 
-          <!-- Card body bound to the single active approval. Details scroll within a bounded height
-               so a long command/diff can never grow the card past the composer. -->
-          <ScrollViewer MaxHeight="220"
-                        VerticalScrollBarVisibility="Auto"
-                        HorizontalScrollBarVisibility="Auto"
-                        CanContentScroll="True">
-            <StackPanel>
-              <TextBlock FontWeight="Bold" Text="{Binding ActiveApproval.Risk}" />
-              <TextBlock Margin="0,4,0,0" Text="{Binding ActiveApproval.DisplayText}" TextWrapping="Wrap" />
-              <TextBlock Margin="0,4,0,0" Opacity="0.8" Text="{Binding ActiveApproval.Reason}" TextWrapping="Wrap" />
-
-              <!-- Network-specific context (host and port). -->
-              <StackPanel Margin="0,4,0,0" Orientation="Horizontal"
-                          Visibility="{Binding ActiveApproval.IsNetworkApproval, Converter={StaticResource BoolToVis}}">
-                <TextBlock Text="Host: " FontWeight="SemiBold" />
-                <TextBlock Text="{Binding ActiveApproval.NetworkHost}" Margin="0,0,12,0" />
-                <TextBlock Text="Port: " FontWeight="SemiBold" />
-                <TextBlock Text="{Binding ActiveApproval.NetworkPort}" />
-              </StackPanel>
-
-              <!-- Policy-block reason (shown when a managed policy auto-declined). -->
-              <TextBlock Margin="0,4,0,0" TextWrapping="Wrap" FontStyle="Italic"
-                         Text="{Binding ActiveApproval.PolicyBlockReason, StringFormat='Policy blocked: {0}'}">
-                <TextBlock.Style>
-                  <Style TargetType="TextBlock">
-                    <Setter Property="Foreground" Value="{DynamicResource {x:Static styles:VsBrushes.WindowTextKey}}" />
-                    <Setter Property="Visibility" Value="Collapsed" />
-                    <Style.Triggers>
-                      <DataTrigger Binding="{Binding ActiveApproval.IsPolicyBlocked}" Value="True">
-                        <Setter Property="Visibility" Value="Visible" />
-                      </DataTrigger>
-                    </Style.Triggers>
-                  </Style>
-                </TextBlock.Style>
-              </TextBlock>
-            </StackPanel>
-          </ScrollViewer>
-
-          <!-- Decision buttons — shown only for decisions the server allows. They wrap so a full
-               set of choices never overflows the bounded card, and stay outside the details
-               ScrollViewer so they are always reachable. -->
-          <WrapPanel Margin="0,10,0,0">
-            <Button Margin="0,0,6,6" Content="Accept" Command="{Binding ActiveApproval.AcceptCommand}"
-                    Style="{StaticResource RoundButtonStyle}" Padding="12,5"
-                    Visibility="{Binding ActiveApproval.ShowAccept, Converter={StaticResource BoolToVis}}" />
-            <Button Margin="0,0,6,6" Content="Accept for turn" Command="{Binding ActiveApproval.AcceptForTurnCommand}"
-                    Style="{StaticResource RoundButtonStyle}" Padding="12,5"
-                    Visibility="{Binding ActiveApproval.ShowAcceptForTurn, Converter={StaticResource BoolToVis}}" />
-            <Button Margin="0,0,6,6" Content="Accept for thread" Command="{Binding ActiveApproval.AcceptForThreadCommand}"
-                    Style="{StaticResource RoundButtonStyle}" Padding="12,5"
-                    Visibility="{Binding ActiveApproval.ShowAcceptForThread, Converter={StaticResource BoolToVis}}" />
-            <Button Margin="0,0,6,6" Content="Accept for session" Command="{Binding ActiveApproval.AcceptForSessionCommand}"
-                    Style="{StaticResource RoundButtonStyle}" Padding="12,5"
-                    Visibility="{Binding ActiveApproval.ShowAcceptForSession, Converter={StaticResource BoolToVis}}" />
-            <Button Margin="0,0,6,6" Content="Decline" Command="{Binding ActiveApproval.DeclineCommand}"
-                    Style="{StaticResource RoundButtonStyle}" Padding="12,5"
-                    Visibility="{Binding ActiveApproval.ShowDecline, Converter={StaticResource BoolToVis}}" />
-            <Button Margin="0,0,0,6" Content="Cancel" Command="{Binding ActiveApproval.CancelCommand}"
-                    Style="{StaticResource RoundButtonStyle}" Padding="12,5"
-                    Visibility="{Binding ActiveApproval.ShowCancel, Converter={StaticResource BoolToVis}}" />
-          </WrapPanel>
-        </StackPanel>
-      </Border>
-    </Grid>
-
-    <!-- Active interactive choice (request_user_input): a single bounded card pinned just above the
-         composer. Only one shows at a time; further prompts are queued and counted by
-         UserInputQueueText so a burst never fills or scrolls the panel. -->
-    <Border Grid.Row="2"
-            Margin="10,0,10,10"
-            Padding="12"
-            CornerRadius="8"
-            Background="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBackgroundBrushKey}}"
-            BorderThickness="1"
-            BorderBrush="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBorderBrushKey}}"
-            Visibility="{Binding HasActiveUserInput, Converter={StaticResource BoolToVis}}">
-      <Grid>
-        <Grid.RowDefinitions>
-          <RowDefinition Height="Auto" />
-          <RowDefinition Height="Auto" />
-          <RowDefinition Height="Auto" />
-        </Grid.RowDefinitions>
-
-        <!-- Queue summary header (e.g. "2 choices waiting"); collapses when none are queued. -->
-        <TextBlock Grid.Row="0" FontSize="11" Opacity="0.7" Margin="0,0,0,6"
-                   Text="{Binding UserInputQueueText}">
-          <TextBlock.Style>
-            <Style TargetType="TextBlock">
-              <Setter Property="Foreground" Value="{DynamicResource {x:Static styles:VsBrushes.WindowTextKey}}" />
-              <Setter Property="Visibility" Value="Visible" />
-              <Style.Triggers>
-                <DataTrigger Binding="{Binding UserInputQueueText}" Value="">
-                  <Setter Property="Visibility" Value="Collapsed" />
-                </DataTrigger>
-              </Style.Triggers>
-            </Style>
-          </TextBlock.Style>
-        </TextBlock>
-
-        <!-- Questions scroll WITHIN the card (bounded height) so the card never grows the panel. -->
-        <ScrollViewer Grid.Row="1" MaxHeight="240" VerticalScrollBarVisibility="Auto">
-          <ItemsControl ItemsSource="{Binding ActiveUserInput.Questions}">
-            <ItemsControl.ItemTemplate>
-              <DataTemplate>
-                <StackPanel Margin="0,0,0,8">
-                  <TextBlock FontWeight="Bold" Text="{Binding Header}" TextWrapping="Wrap" />
-                  <TextBlock Margin="0,2,0,0" Text="{Binding Question}" TextWrapping="Wrap" />
-
-                  <!-- Options as a single-select radio group -->
-                  <ItemsControl Margin="0,6,0,0" ItemsSource="{Binding Options}">
+                <StackPanel Visibility="{Binding IsApproval, Converter={StaticResource BoolToVis}}">
+                  <TextBlock FontWeight="SemiBold" Text="{Binding Approval.Risk}" />
+                  <TextBlock Margin="0,4,0,0" Text="{Binding Approval.DisplayText}" TextWrapping="Wrap" />
+                  <TextBlock Margin="0,4,0,0" Text="{Binding Approval.Reason}" TextWrapping="Wrap" />
+                  <ItemsControl Margin="0,8,0,0" ItemsSource="{Binding Approval.Choices}">
                     <ItemsControl.ItemTemplate>
                       <DataTemplate>
-                        <!-- Single-select is enforced by the view model (selecting one clears its
-                             siblings); IsChecked is two-way so the choice flows back. -->
-                        <RadioButton Margin="0,2"
-                                     IsChecked="{Binding IsSelected, Mode=TwoWay}">
+                        <Button Margin="0,0,0,6" Padding="10,6"
+                                HorizontalContentAlignment="Stretch"
+                                Command="{Binding SelectCommand}"
+                                Style="{StaticResource RoundButtonStyle}">
                           <StackPanel>
-                            <TextBlock Text="{Binding DisplayLabel}" TextWrapping="Wrap" />
-                            <TextBlock Text="{Binding Description}" TextWrapping="Wrap"
-                                       FontSize="11" Opacity="0.7" />
+                            <TextBlock FontWeight="SemiBold" Text="{Binding Label}" TextWrapping="Wrap" />
+                            <TextBlock FontSize="11" Opacity="0.8" Text="{Binding Description}" TextWrapping="Wrap" />
                           </StackPanel>
-                        </RadioButton>
+                        </Button>
                       </DataTemplate>
                     </ItemsControl.ItemTemplate>
                   </ItemsControl>
+                  <WrapPanel Visibility="{Binding Approval.ShowLegacyDecisions, Converter={StaticResource BoolToVis}}">
+                    <Button Margin="0,0,6,6" Content="Accept" Command="{Binding Approval.AcceptCommand}"
+                            Style="{StaticResource RoundButtonStyle}" Visibility="{Binding Approval.ShowAccept, Converter={StaticResource BoolToVis}}" />
+                    <Button Margin="0,0,6,6" Content="Accept for turn" Command="{Binding Approval.AcceptForTurnCommand}"
+                            Style="{StaticResource RoundButtonStyle}" Visibility="{Binding Approval.ShowAcceptForTurn, Converter={StaticResource BoolToVis}}" />
+                    <Button Margin="0,0,6,6" Content="Accept for thread" Command="{Binding Approval.AcceptForThreadCommand}"
+                            Style="{StaticResource RoundButtonStyle}" Visibility="{Binding Approval.ShowAcceptForThread, Converter={StaticResource BoolToVis}}" />
+                    <Button Margin="0,0,6,6" Content="Accept for session" Command="{Binding Approval.AcceptForSessionCommand}"
+                            Style="{StaticResource RoundButtonStyle}" Visibility="{Binding Approval.ShowAcceptForSession, Converter={StaticResource BoolToVis}}" />
+                    <Button Margin="0,0,6,6" Content="Decline" Command="{Binding Approval.DeclineCommand}"
+                            Style="{StaticResource RoundButtonStyle}" Visibility="{Binding Approval.ShowDecline, Converter={StaticResource BoolToVis}}" />
+                    <Button Margin="0,0,6,6" Content="Cancel" Command="{Binding Approval.CancelCommand}"
+                            Style="{StaticResource RoundButtonStyle}" Visibility="{Binding Approval.ShowCancel, Converter={StaticResource BoolToVis}}" />
+                  </WrapPanel>
                 </StackPanel>
-              </DataTemplate>
-            </ItemsControl.ItemTemplate>
-          </ItemsControl>
-        </ScrollViewer>
 
-        <!-- Submit — disabled once answered (the card is removed on resolve and the next promoted). -->
-        <WrapPanel Grid.Row="2" Margin="0,8,0,0">
-          <Button Content="Submit" Command="{Binding ActiveUserInput.SubmitCommand}"
-                  Style="{StaticResource RoundButtonStyle}" Padding="12,5" />
+                <StackPanel Visibility="{Binding IsQuestion, Converter={StaticResource BoolToVis}}">
+                  <TextBlock FontSize="11" Opacity="0.75" Text="Waiting for your response" />
+                  <ItemsControl ItemsSource="{Binding UserInput.Questions}">
+                    <ItemsControl.ItemTemplate>
+                      <DataTemplate>
+                        <StackPanel Margin="0,8,0,0">
+                          <TextBlock FontWeight="Bold" Text="{Binding Header}" TextWrapping="Wrap" />
+                          <TextBlock Margin="0,2,0,0" Text="{Binding Question}" TextWrapping="Wrap" />
+                          <TextBox Margin="0,5,0,0" MinHeight="50" TextWrapping="Wrap" AcceptsReturn="True"
+                                   Text="{Binding FreeText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                   Visibility="{Binding IsFreeText, Converter={StaticResource BoolToVis}}" />
+                          <ItemsControl Margin="0,5,0,0" ItemsSource="{Binding Options}"
+                                        Visibility="{Binding HasOptions, Converter={StaticResource BoolToVis}}">
+                            <ItemsControl.ItemTemplate>
+                              <DataTemplate>
+                                <RadioButton Margin="0,2" IsChecked="{Binding IsSelected, Mode=TwoWay}">
+                                  <StackPanel>
+                                    <TextBlock Text="{Binding DisplayLabel}" TextWrapping="Wrap" />
+                                    <TextBlock FontSize="11" Opacity="0.75" Text="{Binding Description}" TextWrapping="Wrap" />
+                                  </StackPanel>
+                                </RadioButton>
+                              </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                          </ItemsControl>
+                          <RadioButton Margin="0,4,0,0" Content="Other" IsChecked="{Binding IsOtherSelected, Mode=TwoWay}"
+                                       Visibility="{Binding IsOther, Converter={StaticResource BoolToVis}}" />
+                          <TextBox Margin="22,3,0,0" Text="{Binding OtherText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                   Visibility="{Binding IsOtherSelected, Converter={StaticResource BoolToVis}}" />
+                        </StackPanel>
+                      </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                  </ItemsControl>
+                  <TextBlock Margin="0,6,0,0" Text="{Binding UserInput.ValidationText}" TextWrapping="Wrap" />
+                  <WrapPanel Margin="0,8,0,0">
+                    <Button Margin="0,0,6,0" Content="Submit" Command="{Binding UserInput.SubmitCommand}"
+                            Style="{StaticResource RoundButtonStyle}" />
+                    <Button Content="Cancel" Command="{Binding UserInput.CancelCommand}"
+                            Style="{StaticResource RoundButtonStyle}" />
+                  </WrapPanel>
+                </StackPanel>
+
+                <StackPanel Visibility="{Binding IsPermission, Converter={StaticResource BoolToVis}}">
+                  <TextBlock Text="{Binding Permission.Reason}" TextWrapping="Wrap" />
+                  <ItemsControl Margin="0,6,0,0" ItemsSource="{Binding Permission.Options}">
+                    <ItemsControl.ItemTemplate>
+                      <DataTemplate>
+                        <CheckBox Margin="0,3" IsChecked="{Binding IsSelected, Mode=TwoWay}">
+                          <StackPanel>
+                            <TextBlock FontWeight="SemiBold" Text="{Binding Label}" TextWrapping="Wrap" />
+                            <TextBlock FontSize="11" Opacity="0.75" Text="{Binding Description}" TextWrapping="Wrap" />
+                          </StackPanel>
+                        </CheckBox>
+                      </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                  </ItemsControl>
+                  <StackPanel Margin="0,8,0,0" Orientation="Horizontal">
+                    <TextBlock VerticalAlignment="Center" Text="Grant scope" Margin="0,0,8,0" />
+                    <RadioButton Content="This turn" GroupName="{Binding Permission.ScopeGroupName}"
+                                 IsChecked="{Binding Permission.IsTurnScope, Mode=TwoWay}" Margin="0,0,10,0" />
+                    <RadioButton Content="This session" GroupName="{Binding Permission.ScopeGroupName}"
+                                 IsChecked="{Binding Permission.IsSessionScope, Mode=TwoWay}" />
+                  </StackPanel>
+                  <WrapPanel Margin="0,8,0,0">
+                    <Button Margin="0,0,6,0" Content="Submit selection" Command="{Binding Permission.SubmitCommand}"
+                            Style="{StaticResource RoundButtonStyle}" />
+                    <Button Content="Decline" Command="{Binding Permission.DeclineCommand}" Style="{StaticResource RoundButtonStyle}" />
+                  </WrapPanel>
+                  <TextBlock Margin="0,5,0,0" Text="{Binding Permission.ValidationText}" TextWrapping="Wrap" />
+                </StackPanel>
+
+                <StackPanel Visibility="{Binding IsElicitation, Converter={StaticResource BoolToVis}}">
+                  <TextBlock Text="{Binding Elicitation.ServerName}" FontWeight="SemiBold" />
+                  <TextBlock Margin="0,3,0,0" Text="{Binding Elicitation.Message}" TextWrapping="Wrap" />
+                  <TextBlock Margin="0,3,0,0" Text="{Binding Elicitation.OriginDisplay}" FontSize="11" Opacity="0.75" TextWrapping="Wrap" />
+                  <ItemsControl Margin="0,6,0,0" ItemsSource="{Binding Elicitation.Fields}"
+                                Visibility="{Binding Elicitation.IsFormRequest, Converter={StaticResource BoolToVis}}">
+                    <ItemsControl.ItemTemplate>
+                      <DataTemplate>
+                        <StackPanel Margin="0,0,0,8">
+                          <TextBlock FontWeight="SemiBold" Text="{Binding Title}" TextWrapping="Wrap" />
+                          <TextBlock Margin="0,2,0,0" Text="{Binding Description}" TextWrapping="Wrap" />
+                          <TextBox Margin="0,4,0,0" Text="{Binding InputText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                   Visibility="{Binding IsTextInput, Converter={StaticResource BoolToVis}}" />
+                          <CheckBox Margin="0,4,0,0" Content="Yes" IsThreeState="True"
+                                    IsChecked="{Binding BooleanValue, Mode=TwoWay}"
+                                    Visibility="{Binding IsBoolean, Converter={StaticResource BoolToVis}}" />
+                          <ItemsControl Margin="0,4,0,0" ItemsSource="{Binding Choices}"
+                                        Visibility="{Binding IsSingleSelect, Converter={StaticResource BoolToVis}}">
+                            <ItemsControl.ItemTemplate>
+                              <DataTemplate>
+                                <RadioButton Margin="0,2" Content="{Binding Label}" IsChecked="{Binding IsSelected, Mode=TwoWay}" />
+                              </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                          </ItemsControl>
+                          <ItemsControl Margin="0,4,0,0" ItemsSource="{Binding Choices}"
+                                        Visibility="{Binding IsMultiSelect, Converter={StaticResource BoolToVis}}">
+                            <ItemsControl.ItemTemplate>
+                              <DataTemplate>
+                                <CheckBox Margin="0,2" Content="{Binding Label}" IsChecked="{Binding IsSelected, Mode=TwoWay}" />
+                              </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                          </ItemsControl>
+                          <TextBlock Margin="0,3,0,0" Text="{Binding ValidationText}" TextWrapping="Wrap" />
+                        </StackPanel>
+                      </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                  </ItemsControl>
+                  <WrapPanel Margin="0,8,0,0">
+                    <Button Margin="0,0,6,6" Content="Open authorization page" Command="{Binding Elicitation.OpenAuthorizationCommand}"
+                            Style="{StaticResource RoundButtonStyle}" Visibility="{Binding Elicitation.CanOpenAuthorization, Converter={StaticResource BoolToVis}}" />
+                    <Button Margin="0,0,6,6" Content="Submit" Command="{Binding Elicitation.SubmitCommand}"
+                            Style="{StaticResource RoundButtonStyle}" Visibility="{Binding Elicitation.IsFormRequest, Converter={StaticResource BoolToVis}}" />
+                    <Button Margin="0,0,6,6" Content="Continue" Command="{Binding Elicitation.SubmitCommand}"
+                            Style="{StaticResource RoundButtonStyle}" Visibility="{Binding Elicitation.IsUrlRequest, Converter={StaticResource BoolToVis}}" />
+                    <Button Margin="0,0,6,6" Content="Decline" Command="{Binding Elicitation.DeclineCommand}" Style="{StaticResource RoundButtonStyle}" />
+                    <Button Content="Dismiss" Command="{Binding Elicitation.CancelCommand}" Style="{StaticResource RoundButtonStyle}" />
+                  </WrapPanel>
+                  <TextBlock Margin="0,3,0,0" Text="{Binding Elicitation.ValidationText}" TextWrapping="Wrap" />
+                </StackPanel>
+              </StackPanel>
+            </Border>
+          </DataTemplate>
+        </ListBox.ItemTemplate>
+      </ListBox>
+    </Grid>
+
+    <!-- Compact authentication recovery row. Local Gateway OAuth exposes explicit actions;
+         remote connections receive status and guidance without login/cancel controls. -->
+    <Border Grid.Row="2" Margin="10,0,10,8" Padding="8,6" CornerRadius="6"
+            Background="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBackgroundBrushKey}}"
+            BorderThickness="1" BorderBrush="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBorderBrushKey}}"
+            Visibility="{Binding HasInteractionAuthStatus, Converter={StaticResource BoolToVis}}">
+      <StackPanel>
+        <TextBlock FontWeight="SemiBold" Text="Authentication" />
+        <TextBlock Text="{Binding InteractionAuthStatus.StatusText}" TextWrapping="Wrap" />
+        <TextBlock Text="{Binding InteractionAuthStatus.OriginDisplay}" FontSize="11" Opacity="0.75"
+                   Visibility="{Binding InteractionAuthStatus.HasOpenAuthorizationAction, Converter={StaticResource BoolToVis}}" />
+        <ItemsControl Margin="0,5,0,0" ItemsSource="{Binding InteractionAuthStatus.McpServers}">
+          <ItemsControl.ItemTemplate>
+            <DataTemplate>
+              <StackPanel Margin="0,4,0,0">
+                <TextBlock FontWeight="SemiBold" Text="{Binding ServerName}" />
+                <TextBlock Text="{Binding StatusText}" TextWrapping="Wrap" />
+                <TextBlock Text="{Binding OriginDisplay}" FontSize="11" Opacity="0.75"
+                           Visibility="{Binding CanOpenAuthorization, Converter={StaticResource BoolToVis}}" />
+                <WrapPanel Margin="0,3,0,0">
+                  <Button Margin="0,0,6,0" Content="Sign in to MCP server" Command="{Binding LoginCommand}"
+                          Style="{StaticResource RoundButtonStyle}"
+                          Visibility="{Binding CanStartLogin, Converter={StaticResource BoolToVis}}" />
+                  <Button Margin="0,0,6,0" Content="Open authorization page" Command="{Binding OpenAuthorizationCommand}"
+                          Style="{StaticResource RoundButtonStyle}"
+                          Visibility="{Binding CanOpenAuthorization, Converter={StaticResource BoolToVis}}" />
+                  <Button Content="Dismiss prompt" Command="{Binding DismissCommand}"
+                          Style="{StaticResource RoundButtonStyle}"
+                          Visibility="{Binding CanDismiss, Converter={StaticResource BoolToVis}}" />
+                </WrapPanel>
+              </StackPanel>
+            </DataTemplate>
+          </ItemsControl.ItemTemplate>
+        </ItemsControl>
+        <WrapPanel Margin="0,5,0,0">
+          <Button Margin="0,0,6,0" Content="Check status" Command="{Binding ReadGatewayOAuthCommand}"
+                  Style="{StaticResource RoundButtonStyle}" />
+          <Button Margin="0,0,6,0" Content="Sign in to Gateway" Command="{Binding LoginGatewayOAuthCommand}"
+                  Style="{StaticResource RoundButtonStyle}"
+                  Visibility="{Binding ShowGatewayOAuthLogin, Converter={StaticResource BoolToVis}}" />
+          <Button Margin="0,0,6,0" Content="Cancel sign-in" Command="{Binding CancelGatewayOAuthCommand}"
+                  Style="{StaticResource RoundButtonStyle}"
+                  Visibility="{Binding ShowGatewayOAuthCancel, Converter={StaticResource BoolToVis}}" />
+          <Button Content="Open authorization page" Command="{Binding OpenGatewayAuthorizationCommand}"
+                  Style="{StaticResource RoundButtonStyle}"
+                  Visibility="{Binding InteractionAuthStatus.HasOpenAuthorizationAction, Converter={StaticResource BoolToVis}}" />
         </WrapPanel>
-      </Grid>
+      </StackPanel>
     </Border>
-
     <!-- Composer: rounded container with textarea + action row (attach · mode · model · send) -->
     <Border Grid.Row="3"
             Padding="10"

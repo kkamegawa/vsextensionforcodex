@@ -491,3 +491,26 @@ Validation on 2026-08-11:
 - Release Extension DLL SHA-256: `7511CD158CD3DCD122E5A4938349935EAE819806F1A3722C470F192AD5C66E7C`.
 - Release VSIX SHA-256: `260191253EA4AB66BDC0C83A621D8AC9E4D7274158B486138DB2731E765E6249`.
 - Embedded `ChatToolWindowContent.xaml` SHA-256 matches the source: `93AD99EE57AFB1D8A09C98071D69CB6D231D8FBBBB6345558876540076D726C0`.
+### 2026-10-05: Questions, permissions, and MCP interaction (Issue #154)
+
+The implementation adds Worker contract v20 interaction DTOs and owner-scoped RPCs, a shared
+generation-scoped pending registry, independent question/permission/approval/MCP cards, validated
+MCP form elicitation, and local Gateway OAuth state and action handling. The Worker retains
+upstream request IDs and wire values, rejects stale or externally resolved requests, and makes
+completion at-most-once. Secret-bearing and unsupported native-verification requests are refused
+before payload projection. Remote Gateway OAuth remains status and guidance only. Attachment
+metadata recovery belongs to #153; attachment actions and presentation belong to #155.
+
+Final automated validation is complete. The first Core test run during implementation reported 336
+passed, 18 failed, and 5 skipped; those were interim results and are superseded by the final run:
+
+- Core Debug tests: 369 passed, 0 failed, 5 skipped (374 total).
+- UI Debug tests: 342 passed, 0 failed, 1 skipped (343 total).
+- Full solution Debug and Release builds: 0 warnings, 0 errors in each configuration; Release VSIX emitted.
+- CLI contract surface verification: passed.
+- Stable schema comparison from CLI 0.155.1 to 0.159.1: passed.
+- Schema-cache tests: passed.
+- Release assembly raw XAML SHA-256 matches the source XAML.
+- Release VSIX SHA-256: `BA83A86AFA1988B8FA8A2C387415435F5F727054E0379C3E241ED252AF83AB85`.
+- Visual Studio availability: `vswhere` found no Visual Studio instances on this host. Experimental Instance screenshots and Light/Dark/High Contrast, narrow-width, keyboard, read-aloud/accessibility, multiple-card, and authentication-state acceptance remain pending; no visual completion is claimed.
+Tracking: parent [Issue #154](https://github.com/kkamegawa/vsextensionforcodex/issues/154); children [#165](https://github.com/kkamegawa/vsextensionforcodex/issues/165), [#166](https://github.com/kkamegawa/vsextensionforcodex/issues/166), [#167](https://github.com/kkamegawa/vsextensionforcodex/issues/167), and [#168](https://github.com/kkamegawa/vsextensionforcodex/issues/168).

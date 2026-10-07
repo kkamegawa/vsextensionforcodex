@@ -583,6 +583,13 @@ public sealed class WorkerRpcOwnerBoundaryTests
                 }),
                 "turn/start" => JsonSerializer.SerializeToElement(new { turn = new { id = "turn-a" } }),
                 "initialize" => JsonSerializer.SerializeToElement(new { userAgent = "codex-cli/0.1.0" }),
+                "account/gatewayOAuth/read" => JsonSerializer.SerializeToElement(new
+                {
+                    providerId = "test-provider",
+                    providerName = "Test provider",
+                    required = false,
+                    status = (string?)null,
+                }),
                 "account/read" => JsonSerializer.SerializeToElement(new
                 {
                     account = AccountEmail is null

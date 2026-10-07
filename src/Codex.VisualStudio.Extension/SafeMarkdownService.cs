@@ -19,6 +19,9 @@ public sealed class SafeMarkdownService
         return CjkSpace.Replace(StripHtmlTags(plainText), string.Empty);
     }
 
+    public static string ToSafeLiteralText(string value)
+        => Sanitize(value);
+
     public IReadOnlyList<ChatBlockViewModel> ToBlocks(string value)
         => ToSafeTextAndBlocks(value).Blocks;
 

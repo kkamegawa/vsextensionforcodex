@@ -47,13 +47,18 @@
       "mcpServerStatus/list",
       "skills/list",
       "feedback/upload",
-      "account/rateLimits/read"
+      "account/rateLimits/read",
+      "mcpServer/oauth/login",
+      "account/gatewayOAuth/read",
+      "account/gatewayOAuth/login",
+      "account/gatewayOAuth/cancel"
     ],
     "serverRequests": [
       "item/commandExecution/requestApproval",
       "item/fileChange/requestApproval",
       "item/permissions/requestApproval",
-      "item/tool/requestUserInput"
+      "item/tool/requestUserInput",
+      "mcpServer/elicitation/request"
     ],
     "serverNotifications": [
       "account/login/completed",
@@ -76,7 +81,10 @@
       "item/commandExecution/outputDelta",
       "turn/diff/updated",
       "turn/plan/updated",
-      "error"
+      "error",
+      "mcpServer/oauthLogin/completed",
+      "mcpServer/startupStatus/updated",
+      "account/gatewayOAuth/changed"
     ]
   },
   "knownDifferences": {

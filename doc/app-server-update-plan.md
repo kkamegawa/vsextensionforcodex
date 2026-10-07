@@ -6,7 +6,7 @@
 
 ## Summary
 
-Update the Visual Studio extension's existing C# integration with `codex app-server` for the CLI 0.159.1 contract and add secure, explicitly enabled connections to an already running remote App Server. Local stdio remains the default. The work includes exact request dispatch, event-order safety, remote transport, root mapping and authentication-principal isolation, reconnect and history recovery, stored thread attachments, asynchronous questions and scoped permissions, native user verification, MCP interaction and authentication recovery, daily-use events, shell execution, typed artifacts, Windows sandbox status, and integrated release validation.
+Update the Visual Studio extension's existing C# integration with `codex app-server` for the CLI 0.159.1 contract and add secure, explicitly enabled connections to an already running remote App Server. Local stdio remains the default. The work includes exact request dispatch, event-order safety, remote transport, root mapping and authentication-principal isolation, reconnect and history recovery, stored thread attachments, asynchronous questions and scoped permissions, explicit refusal of unsupported native verification and secret input, MCP interaction and authentication recovery, and Gateway OAuth, daily-use events, shell execution, typed artifacts, Windows sandbox status, and integrated release validation.
 
 ## Background and decisions
 
@@ -31,7 +31,7 @@ The approved operating model is:
 | High | Secure remote connection, connection ownership, diagnostics, and read-only retry | [#151](https://github.com/kkamegawa/vsextensionforcodex/issues/151) |
 | High | Local/server path mapping and connection/account/authentication-principal/root state partitioning | [#152](https://github.com/kkamegawa/vsextensionforcodex/issues/152) |
 | High | Reconnect, draft retention, paged history and attachment recovery, and uncertain-mutation handling | [#153](https://github.com/kkamegawa/vsextensionforcodex/issues/153) |
-| High | Asynchronous questions, partial permissions, native user verification, MCP forms/authentication revocation, and secret input | [#154](https://github.com/kkamegawa/vsextensionforcodex/issues/154) |
+| High | Asynchronous questions, partial permissions, explicit secret/native-verification refusal, MCP forms/authentication recovery, and local Gateway OAuth | [#154](https://github.com/kkamegawa/vsextensionforcodex/issues/154) |
 | High | Plan/thread/config/model/MCP state, stored attachment operations, and typed artifact presentation | [#155](https://github.com/kkamegawa/vsextensionforcodex/issues/155) |
 | Medium | Model modalities, reasoning levels, explicit shell execution, and independent timeouts | [#155](https://github.com/kkamegawa/vsextensionforcodex/issues/155) |
 | Medium | Local Windows sandbox setup status and mapped image/file actions | [#155](https://github.com/kkamegawa/vsextensionforcodex/issues/155) |
@@ -170,41 +170,39 @@ Detailed design: [English](connection-history-recovery-design.md) / [日本語](
 
 Tracking: [#154](https://github.com/kkamegawa/vsextensionforcodex/issues/154)
 
-### Worker contract and one-response lifecycle
+The implementation starts from Worker contract v19 and allocates the next available contract version at merge time (v20 if no intervening change). CLI/SDK/runtime versions remain pinned to the existing baseline: CLI 0.159.1 is the target and 0.155.1 is the regression comparison.
 
-- Starting from the Worker contract v19 delivered by Issue #153, evolve the contract for questions, permission requests, MCP input, user verification, and stored attachment state. Do not use the historical v15/v16 baselines for this future phase.
-- Use a common pending-request registry keyed by connection generation and request ID.
-- Guarantee at most one response across answer, cancel, timeout, disconnect, and `serverRequest/resolved` races.
+### Contract and request lifecycle
 
-### Asynchronous questions
+- Use distinct request and response types for asynchronous questions, permission requests, command approvals, MCP elicitation, Gateway OAuth, and unsupported user-verification requests.
+- Keep one pending-request registry keyed by connection generation and original JSON-RPC request ID, including MCP requests without a turn ID. Apply existing owner validation to every response.
+- Validate an answer before atomically claiming completion. Answer, cancel, timeout, disconnect, and `serverRequest/resolved` races produce at most one response. Never answer resolved requests or requests from retired generations; never retry when delivery is uncertain.
 
-- Render questions as independent answer cards that remain actionable while work continues.
-- Preserve selected/default choices for display only. Focus, defaults, elapsed time, and preselection are not answers.
-- Support server option metadata such as free-form “other” and secret markers.
+### Questions and permissions
 
-### Partial permissions and command approval
+- Show independent question cards that remain actionable while the turn continues and do not block the normal composer. Handle blocking/non-blocking questions, free text, and “Other” options. A selection, focus, or default value is display state; only explicit Submit answers.
+- Detect secret-marked questions in the Worker before creating a UI projection. Refuse them with a reason because no safe dedicated input route exists; do not expose secret content to ordinary controls, transcript, logs, settings, diagnostics, or exceptions.
+- Return only the selected subset of requested network/file permissions. Default to turn scope; session scope requires an explicit action. Reject permissions outside the server request.
+- Present every command-approval choice and additional permission, preserving rule-changing choices as their own server options. Route destructive operations through the existing approval policy.
 
-- Return only the selected subset of requested network/file permissions.
-- Default permission grants to turn scope; require explicit selection for session persistence.
-- Display every server-provided command approval choice and additional permission request.
-- Do not collapse a rule-changing choice into a generic “Accept”.
+### MCP elicitation and recovery
 
-### Native user verification
+- Handle the exact `mcpServer/elicitation/request` method. Validate supported form fields (string, number, integer, boolean, single choice, and multiple choice) for required, type, length, range, format, and selection-count constraints in both UI and Worker.
+- Refuse unsupported extension schemas such as `openai/form` with a reason and do not advertise an extended-form capability.
+- Validate and retain authentication URLs in the Worker. Open a browser only after an explicit user action; opening it does not prove authentication succeeded.
+- Connect `mcpServer/oauth/login`, `mcpServer/oauthLogin/completed`, and startup-status notifications. On expiration, revocation, or `reauthenticationRequired`, explain reauthentication and retire stale elicitation state. UI cancellation does not claim to cancel server-side OAuth because MCP defines no cancellation RPC.
+- After reauthentication, require a new explicit tool invocation. Never automatically replay the failed tool call.
 
-- Support the experimental `openai/userVerification` MCP elicitation only when the complete local verification path is implemented and `experimentalApi` is enabled.
-- Route verification through typed `userVerification/status`, `userVerification/enroll`, `userVerification/verify`, `userVerification/cancel`, and `userVerification/delete` operations. Validate bounded challenge, title, and description fields before showing native platform UI.
-- Limit native verification to supported local stdio/in-process hosts. Do not advertise or forward it over WebSocket or remote-control peers; return a visible reason when the platform or transport is unsupported.
-- Treat cancellation, disconnect, authentication-principal change, timeout, and `serverRequest/resolved` as one-response races. Cancel the native operation explicitly and discard any proof that arrives after resolution.
-- Keep verification proofs and credential material out of transcript, settings, logs, diagnostics, telemetry, and crash text.
+### Gateway OAuth and native user verification
 
-### MCP form, URL, and secret flow
+- On local stdio only, declare `explicitGatewayOauth`; after initialization, successfully call `account/gatewayOAuth/read` before any RPC requiring authentication. Gate each connection this way, then support login/cancel/change notifications and an explicit browser action.
+- Bind Gateway OAuth notifications to the active connection and owner. Do not block unrelated RPC dispatch while login is pending. If unsupported or the initial read fails, stop authenticated RPCs and do not fall back to automatic browser login.
+- For remote connections, expose status and sign-in guidance only: do not declare the capability or send Gateway OAuth login/cancel mutations.
+- Fixed CLI 0.159.1 user-verification support is macOS-only, and this extension client is not in the upstream eligibility set. Defer the successful native path until upstream supports Windows and the extension client. For this implementation, do not declare or forward the capability; reject a request with a visible reason and keep challenges, proofs, and credentials out of all UI, transcript, logs, settings, diagnostics, and exceptions.
 
-- Support documented MCP form field types and validate required/type/range/choice rules before responding.
-- Reject unsupported schemas with a visible reason and do not advertise extended-form capability early.
-- Open MCP URL/browser authentication only through explicit user action and refresh status afterward.
-- Do not automatically retry a failed MCP tool call after authentication or elicitation.
-- Use a protected secret-input path. Refuse a secret-bearing request when no safe path is available.
-- Treat `mcpServer/startupStatus/updated` with `failureReason: "reauthenticationRequired"` and failed OAuth completion as terminal authentication states. Show re-login/reconnect guidance, reset pending elicitation state after reconnect, and require a new explicit tool invocation.
+### Attachment ownership
+
+- Phase 5 adds no stored-attachment contract or UI behavior. Phase 4 / Issue #153 owns bounded metadata recovery; Phase 6 / Issue #155 owns attachment actions and presentation.
 
 ## Phase 6 — Daily-use App Server features
 
@@ -267,10 +265,21 @@ Tracking: [#156](https://github.com/kkamegawa/vsextensionforcodex/issues/156)
 
 ### Interaction and secret protection
 
-- Cover asynchronous answers, partial permission grants, turn/session scope, MCP supported/unsupported forms, URL flow, cancellation, disconnect, and resolved races.
-- Cover supported and unsupported native user verification, enroll/verify/cancel/delete, disconnect and resolved races, principal changes, late-proof disposal, and secret/proof non-disclosure.
-- Cover expired/revoked MCP OAuth, `reauthenticationRequired`, re-login success/cancel/failure, elicitation-state reset, and zero automatic replay of the failed tool call.
-- Inspect transcript, Remote UI DTOs, logs, diagnostics, settings, and failure text to ensure secret values never appear.
+- Cover multiple question cards, composer independence, free text/Other, explicit Submit, display-only defaults, and secret rejection before UI projection.
+- Exercise answer/cancel, duplicate submission, timeout, disconnect, `serverRequest/resolved`, and retired-generation races; each request produces at most one response.
+- Verify exact partial network/file permission responses, turn/session scope, out-of-request permission rejection, and faithful command-approval choices.
+- Cover supported MCP form fields and validation, unsupported schema refusal, explicit browser launch, cancellation/failure/success, OAuth expiration/revocation, `reauthenticationRequired`, and reset of stale elicitation. Confirm zero automatic tool replay and that UI cancellation does not imply server-side cancellation.
+- Verify local Gateway OAuth startup gating, notifications arriving before responses, cancellation, reconnect, and remote read-only behavior.
+- Verify native user-verification requests are rejected with a reason and capability remains undeclared. Inspect UI, transcript, logs, settings, diagnostics, and exception text for challenge/proof/credential disclosure.
+
+### UI, build, and package evidence
+
+- Run focused tests for each phase, then full Core and UI test suites.
+- Run Debug and Release solution builds with zero warnings.
+- Inspect VSIX contents, Worker payload, manifests, generated schema/cache metadata, embedded XAML, and relevant hashes.
+- Run the installed extension in a Visual Studio Experimental Instance.
+- Verify actual Light, Dark, and High Contrast rendering; narrow widths; keyboard navigation; accessible names/live regions; question cards and authentication states. Capture screenshots and record pass/fail; unavailable screenshots remain incomplete visual acceptance evidence.
+- Record evidence and accepted limitations in `doc/implementation.md` and `doc/task.md` with links to this issue hierarchy.
 
 ### UI, build, and package evidence
 
@@ -287,7 +296,9 @@ Tracking: [#156](https://github.com/kkamegawa/vsextensionforcodex/issues/156)
 - Supported messages use exact method/type contracts; unsupported requests receive a protocol-appropriate rejection.
 - A response or notification from a stale connection cannot revive a completed turn or mutate current state.
 - Secure remote connection, root mapping, authentication-principal cache/state partitioning, transient reconnect, paged history, and bounded basic attachment metadata recovery work without replaying uncertain mutations.
-- Partial permission approval, asynchronous questions, resolved races, supported MCP forms, supported local native verification, browser flow, MCP reauthentication guidance, and safe secret handling work end to end.
+- Partial permission approval, asynchronous questions, resolved races, supported MCP forms, browser flow, MCP reauthentication guidance, safe refusal of secret input, and local/remote Gateway OAuth behavior work end to end. Native user-verification success remains deferred until upstream supports Windows and this extension client.
+- Shell execution is explicit, bounded, connection-labelled, and governed by the existing approval policy.
+- Core/UI tests, zero-warning Debug and Release builds, VSIX checks, and Experimental Instance visual/accessibility checks pass; screenshots provide evidence for the displayed states.
 - Shell execution is explicit, bounded, connection-labelled, and governed by the existing approval policy.
 - Core/UI tests, zero-warning Debug and Release builds, VSIX checks, and Experimental Instance visual/accessibility checks pass.
 

@@ -70,6 +70,12 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
         session.ApprovalAuditRecorded += PublishApprovalAuditAsync;
         session.UserInputRequested += PublishUserInputAsync;
         session.UserInputResolved += PublishUserInputResolvedAsync;
+        session.PermissionRequested += PublishPermissionAsync;
+        session.PermissionResolved += PublishPermissionResolvedAsync;
+        session.McpElicitationRequested += PublishMcpElicitationAsync;
+        session.McpElicitationResolved += PublishMcpElicitationResolvedAsync;
+        session.UnsupportedInteraction += PublishUnsupportedInteractionAsync;
+        session.InteractionAuthStatusChanged += PublishInteractionAuthStatusAsync;
         session.ContextCompacted += PublishContextCompactedAsync;
         session.ReviewModeChanged += PublishReviewModeChangedAsync;
         session.ThreadGoalChanged += PublishThreadGoalChangedAsync;
@@ -1186,6 +1192,30 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
     public Task ResolveUserInputAsync(ResolveUserInputRequest request, CancellationToken cancellationToken)
         => ExecuteOwnerScopedAsync(request, () => session.ResolveUserInputAsync(request, cancellationToken), cancellationToken);
 
+    public Task ResolvePermissionSelectionAsync(ResolvePermissionSelectionRequest request, CancellationToken cancellationToken)
+        => ExecuteOwnerScopedAsync(request, () => session.ResolvePermissionSelectionAsync(request, cancellationToken), cancellationToken);
+
+    public Task ResolveMcpElicitationAsync(ResolveMcpElicitationRequest request, CancellationToken cancellationToken)
+        => ExecuteOwnerScopedAsync(request, () => session.ResolveMcpElicitationAsync(request, cancellationToken), cancellationToken);
+
+    public Task<InteractionAuthStatus> ReadGatewayOAuthAsync(ReadGatewayOAuthRequest request, CancellationToken cancellationToken)
+        => ExecuteOwnerScopedAsync(request, () => session.ReadGatewayOAuthAsync(cancellationToken), cancellationToken);
+
+    public Task<InteractionAuthStatus> LoginGatewayOAuthAsync(LoginGatewayOAuthRequest request, CancellationToken cancellationToken)
+        => ExecuteOwnerScopedAsync(request, () => session.LoginGatewayOAuthAsync(cancellationToken), cancellationToken);
+
+    public Task<InteractionAuthStatus> CancelGatewayOAuthAsync(CancelGatewayOAuthRequest request, CancellationToken cancellationToken)
+        => ExecuteOwnerScopedAsync(request, () => session.CancelGatewayOAuthAsync(cancellationToken), cancellationToken);
+
+    public Task OpenAuthorizationUrlAsync(OpenAuthorizationUrlRequest request, CancellationToken cancellationToken)
+        => ExecuteOwnerScopedAsync(request, () => session.OpenAuthorizationUrlAsync(request, cancellationToken), cancellationToken);
+
+    public Task<McpOAuthLoginStatus> StartMcpOAuthLoginAsync(StartMcpOAuthLoginRequest request, CancellationToken cancellationToken)
+        => ExecuteOwnerScopedAsync(request, () => session.StartMcpOAuthLoginAsync(request, cancellationToken), cancellationToken);
+
+    public Task DismissMcpOAuthLoginAsync(DismissMcpOAuthLoginRequest request, CancellationToken cancellationToken)
+        => ExecuteOwnerScopedAsync(request, () => session.DismissMcpOAuthLoginAsync(request, cancellationToken), cancellationToken);
+
     public async ValueTask DisposeAsync()
     {
         await lifetime.CancelAsync().ConfigureAwait(false);
@@ -1274,6 +1304,7 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
                 EffectiveServiceTier = session.EffectiveServiceTier,
                 Target = targetSnapshot,
                 RecoveryFailureKind = recoveryFailureKind,
+                GatewayOAuthRequired = session.GatewayOAuthRequired,
             };
         }
         if (clientRpc is not null)
@@ -1475,7 +1506,7 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
             return;
         }
 
-        await SetStatusAsync(WorkerConnectionState.Busy, "Turn in progress.", cancellationToken).ConfigureAwait(false);
+        await SetStatusAfterInteractionResolvedAsync(cancellationToken).ConfigureAwait(false);
         if (clientRpc is not null)
         {
             await clientRpc.NotifyWithParameterObjectAsync("observer/approvalResolved", new { notification = Stamp(requestId) }).ConfigureAwait(false);
@@ -1503,10 +1534,102 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
             return;
         }
 
-        await SetStatusAsync(WorkerConnectionState.Busy, "Turn in progress.", cancellationToken).ConfigureAwait(false);
+        await SetStatusAfterInteractionResolvedAsync(cancellationToken).ConfigureAwait(false);
         if (clientRpc is not null)
         {
             await clientRpc.NotifyWithParameterObjectAsync("observer/userInputResolved", new { notification = Stamp(requestId) }).ConfigureAwait(false);
+        }
+    }
+
+    // Independent interaction cards resolve one at a time; stay in WaitingForApproval until the
+    // last pending interaction of the current generation is resolved, timed out, or retired.
+    private Task<WorkerStatus> SetStatusAfterInteractionResolvedAsync(CancellationToken cancellationToken)
+        => session.PendingInteractionCount > 0
+            ? SetStatusAsync(WorkerConnectionState.WaitingForApproval, "Waiting for approval.", cancellationToken)
+            : SetStatusAsync(WorkerConnectionState.Busy, "Turn in progress.", cancellationToken);
+
+    private async Task PublishPermissionAsync(PermissionRequest request, CancellationToken cancellationToken)
+    {
+        if (!IsCurrentEmission())
+        {
+            return;
+        }
+
+        await SetStatusAsync(WorkerConnectionState.WaitingForApproval, "Waiting for permission selection.", cancellationToken).ConfigureAwait(false);
+        if (clientRpc is not null)
+        {
+            await clientRpc.NotifyWithParameterObjectAsync("observer/permissionRequested", new { notification = Stamp(request) }).ConfigureAwait(false);
+        }
+    }
+
+    private async Task PublishPermissionResolvedAsync(string requestId, CancellationToken cancellationToken)
+    {
+        if (!IsCurrentEmission())
+        {
+            return;
+        }
+
+        await SetStatusAfterInteractionResolvedAsync(cancellationToken).ConfigureAwait(false);
+        if (clientRpc is not null)
+        {
+            await clientRpc.NotifyWithParameterObjectAsync("observer/permissionResolved", new { notification = Stamp(requestId) }).ConfigureAwait(false);
+        }
+    }
+
+    private async Task PublishMcpElicitationAsync(McpElicitationRequest request, CancellationToken cancellationToken)
+    {
+        if (!IsCurrentEmission())
+        {
+            return;
+        }
+
+        if (request.Kind == McpElicitationKind.Form)
+        {
+            await SetStatusAsync(WorkerConnectionState.WaitingForApproval, "Waiting for MCP input.", cancellationToken).ConfigureAwait(false);
+        }
+
+        if (clientRpc is not null)
+        {
+            await clientRpc.NotifyWithParameterObjectAsync("observer/mcpElicitationRequested", new { notification = Stamp(request) }).ConfigureAwait(false);
+        }
+    }
+
+    private async Task PublishMcpElicitationResolvedAsync(string requestId, CancellationToken cancellationToken)
+    {
+        if (!IsCurrentEmission())
+        {
+            return;
+        }
+
+        await SetStatusAfterInteractionResolvedAsync(cancellationToken).ConfigureAwait(false);
+        if (clientRpc is not null)
+        {
+            await clientRpc.NotifyWithParameterObjectAsync("observer/mcpElicitationResolved", new { notification = Stamp(requestId) }).ConfigureAwait(false);
+        }
+    }
+
+    private async Task PublishUnsupportedInteractionAsync(UnsupportedInteractionNotice notice, CancellationToken cancellationToken)
+    {
+        if (!IsCurrentEmission() || clientRpc is null)
+        {
+            return;
+        }
+
+        notice.Message = redactor.Redact(notice.Message);
+        notice.ServerName = redactor.Redact(notice.ServerName);
+        await clientRpc.NotifyWithParameterObjectAsync("observer/unsupportedInteraction", new { notification = Stamp(notice) }).ConfigureAwait(false);
+    }
+
+    private async Task PublishInteractionAuthStatusAsync(InteractionAuthStatus authStatus, CancellationToken cancellationToken)
+    {
+        if (!IsCurrentEmission())
+        {
+            return;
+        }
+
+        if (clientRpc is not null)
+        {
+            await clientRpc.NotifyWithParameterObjectAsync("observer/interactionAuthStatusChanged", new { notification = Stamp(authStatus) }).ConfigureAwait(false);
         }
     }
 
@@ -1749,6 +1872,7 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
         status.EffectiveApprovalState = session.EffectiveApprovalState;
         status.EffectiveReasoningEffort = session.EffectiveReasoningEffort;
         status.EffectiveServiceTier = session.EffectiveServiceTier;
+        status.GatewayOAuthRequired = session.GatewayOAuthRequired;
     }
 
     private static bool ShouldIncludeCodexVersion(WorkerConnectionState state)
@@ -1769,6 +1893,7 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
         EffectiveServiceTier = status.EffectiveServiceTier,
         Target = status.Target?.Clone(),
         RecoveryFailureKind = status.RecoveryFailureKind,
+        GatewayOAuthRequired = status.GatewayOAuthRequired,
     };
 
     private static WorkerRecoveryFailureKind ClassifyRecoveryFailure(Exception exception)

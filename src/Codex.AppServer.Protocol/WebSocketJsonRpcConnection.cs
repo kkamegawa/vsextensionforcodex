@@ -166,7 +166,8 @@ public sealed class WebSocketJsonRpcConnection : IJsonRpcConnection, IInboundAct
         CancellationToken cancellationToken)
     {
         ThrowIfClosed();
-        string id = Interlocked.Increment(ref nextId).ToString(System.Globalization.CultureInfo.InvariantCulture);
+        long wireId = Interlocked.Increment(ref nextId);
+        string id = JsonRpcRequestId.GetNumberKey(wireId);
         var completion = new TaskCompletionSource<JsonElement>(TaskCreationOptions.RunContinuationsAsynchronously);
         if (!pending.TryAdd(id, completion))
         {
@@ -185,7 +186,7 @@ public sealed class WebSocketJsonRpcConnection : IJsonRpcConnection, IInboundAct
         try
         {
             await SendMessageAsync(
-                new { method, @params = parameters, id = long.Parse(id, System.Globalization.CultureInfo.InvariantCulture) },
+                new { method, @params = parameters, id = wireId },
                 linked.Token).ConfigureAwait(false);
             return await completion.Task.ConfigureAwait(false);
         }
@@ -349,6 +350,11 @@ public sealed class WebSocketJsonRpcConnection : IJsonRpcConnection, IInboundAct
                 {
                     dispatcher.Start(message, RequestReceived, cancellationToken);
                     continue;
+                }
+
+                if (string.Equals(message.Method, "serverRequest/resolved", StringComparison.Ordinal))
+                {
+                    dispatcher.ResolveServerRequest(message.Params ?? default);
                 }
 
                 Func<JsonRpcMessage, CancellationToken, Task>? handler = NotificationReceived;

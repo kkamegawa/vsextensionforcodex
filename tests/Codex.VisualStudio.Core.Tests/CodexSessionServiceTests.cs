@@ -1741,6 +1741,7 @@ public sealed class CodexSessionServiceTests
             new[]
             {
                 "initialize",
+                "account/gatewayOAuth/read",
                 "thread/compact/start",
                 "review/start",
                 "thread/fork",
@@ -2189,7 +2190,7 @@ public sealed class CodexSessionServiceTests
 
         Assert.AreEqual(AccountState.SignedOut, result.State);
         CollectionAssert.AreEqual(
-            new[] { "initialize", "account/logout" },
+            new[] { "initialize", "account/gatewayOAuth/read", "account/logout" },
             connection.Requests.Select(item => item.Method).ToArray());
         Assert.IsFalse(service.IsConnectionActive);
         Assert.IsTrue(service.InvalidatedByOwnerAction);
@@ -2401,7 +2402,7 @@ public sealed class CodexSessionServiceTests
             new ResolveApprovalRequest
             {
                 RequestId = request.RequestId,
-                Decision = ApprovalDecision.AcceptForThread,
+                ChoiceId = request.Choices.Single(choice => choice.Label == "Approve for this session").ChoiceId,
             },
             cancellationToken);
         await service.InitializeAsync(connection, Options(), CancellationToken.None);
@@ -2410,17 +2411,19 @@ public sealed class CodexSessionServiceTests
         await connection.EmitRequestAsync(
             "approval-1",
             "item/commandExecution/requestApproval",
-            new { command = "dotnet build", cwd, itemId = "item-1", threadId = "thread-1", turnId = "turn-1", startedAtMs = 1L });
+            new { command = "dotnet build", cwd, itemId = "item-1", threadId = "thread-1", turnId = "turn-1", startedAtMs = 1L,
+                availableDecisions = new[] { "accept", "acceptForSession", "decline", "cancel" } });
         await connection.EmitRequestAsync(
             "approval-2",
             "item/commandExecution/requestApproval",
-            new { command = "dotnet build", cwd, itemId = "item-2", threadId = "thread-1", turnId = "turn-2", startedAtMs = 2L });
+            new { command = "dotnet build", cwd, itemId = "item-2", threadId = "thread-1", turnId = "turn-2", startedAtMs = 2L,
+                availableDecisions = new[] { "accept", "acceptForSession", "decline", "cancel" } });
 
         Assert.AreEqual(2, audit.Count);
         Assert.AreEqual(ApprovalAuditAction.GrantCreated, audit[0].Action);
-        Assert.AreEqual(ApprovalScope.Thread, audit[0].Scope);
+        Assert.AreEqual(ApprovalScope.Session, audit[0].Scope);
         Assert.AreEqual(ApprovalAuditAction.AutoApproved, audit[1].Action);
-        Assert.AreEqual(ApprovalScope.Thread, audit[1].Scope);
+        Assert.AreEqual(ApprovalScope.Session, audit[1].Scope);
     }
 
     [TestMethod]
@@ -2433,14 +2436,18 @@ public sealed class CodexSessionServiceTests
         {
             captured = request;
 
-            // Simulate the user picking the second option, plus an invalid label that must be filtered.
+            // Simulate the user picking the second option using its opaque Worker-issued id.
             return service.ResolveUserInputAsync(
                 new ResolveUserInputRequest
                 {
                     RequestId = request.RequestId,
-                    Answers = new Dictionary<string, string[]>
+                    Answers = new Dictionary<string, UserInputAnswer>
                     {
-                        [request.Questions[0].Id] = [request.Questions[0].Options[1].Label, "not-an-option"],
+                        [request.Questions[0].Id] = new UserInputAnswer
+                        {
+                            Kind = UserInputAnswerKind.SelectedOptions,
+                            OptionIds = [request.Questions[0].Options[1].OptionId],
+                        },
                     },
                 },
                 cancellationToken);
@@ -2711,7 +2718,7 @@ public sealed class CodexSessionServiceTests
     }
 
     [TestMethod]
-    public async Task ConnectionCloseReleasesApprovalAndEmitsResolvedOnce()
+    public async Task ConnectionCloseReleasesApprovalWithoutStaleResolvedNotification()
     {
         var connection = new RecordingConnection();
         var requested = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -2736,9 +2743,8 @@ public sealed class CodexSessionServiceTests
         await requested.Task;
         connection.EmitClosed();
 
-        JsonElement result = await pending;
-        Assert.AreEqual("cancel", result.GetProperty("decision").GetString());
-        Assert.AreEqual(1, resolved);
+        await Assert.ThrowsExactlyAsync<JsonRpcRequestResolvedException>(() => pending);
+        Assert.AreEqual(0, resolved);
     }
 
     [TestMethod]
@@ -2777,8 +2783,7 @@ public sealed class CodexSessionServiceTests
         await requested.Task;
         connection.EmitClosed();
 
-        JsonElement result = await pending;
-        Assert.AreEqual(0, result.GetProperty("answers").EnumerateObject().Count());
+        await Assert.ThrowsExactlyAsync<JsonRpcRequestResolvedException>(() => pending);
         Assert.AreEqual(1, resolved);
     }
 
@@ -2821,7 +2826,7 @@ public sealed class CodexSessionServiceTests
         Task<JsonElement> oldRequest = oldConnection.EmitRequestAsync("same-id", "item/commandExecution/requestApproval", parameters);
         await firstRequested.Task;
         await service.InitializeAsync(currentConnection, Options(), CancellationToken.None);
-        Assert.AreEqual("cancel", (await oldRequest).GetProperty("decision").GetString());
+        await Assert.ThrowsExactlyAsync<JsonRpcRequestResolvedException>(() => oldRequest);
         Assert.AreEqual(0, resolved);
 
         Task<JsonElement> currentRequest = currentConnection.EmitRequestAsync("same-id", "item/commandExecution/requestApproval", parameters);
@@ -3021,8 +3026,7 @@ public sealed class CodexSessionServiceTests
         await requested.Task;
         await connection.EmitNotificationAsync("serverRequest/resolved", new { threadId = "thread-1", requestId = 7L });
 
-        JsonElement result = await pending.WaitAsync(TimeSpan.FromSeconds(5));
-        Assert.AreEqual("cancel", result.GetProperty("decision").GetString());
+        await Assert.ThrowsExactlyAsync<JsonRpcRequestResolvedException>(() => pending.WaitAsync(TimeSpan.FromSeconds(5)));
         Assert.AreEqual(1, resolved);
     }
 
@@ -3264,6 +3268,14 @@ public sealed class CodexSessionServiceTests
 
         public Func<string, object?, JsonElement> Handler { get; set; } = (_, _) => JsonSerializer.SerializeToElement(new { });
 
+        public JsonElement GatewayOAuthReadResponse { get; set; } = JsonSerializer.SerializeToElement(new
+        {
+            providerId = "test-provider",
+            providerName = "Test provider",
+            required = false,
+            status = (string?)null,
+        });
+
         public Func<string, object?, CancellationToken, Task<JsonElement>>? AsyncHandler { get; set; }
 
         public List<RecordedRequest> Requests { get; } = new();
@@ -3274,6 +3286,11 @@ public sealed class CodexSessionServiceTests
         {
             cancellationToken.ThrowIfCancellationRequested();
             Requests.Add(new RecordedRequest(method, parameters, timeout));
+            if (method == "account/gatewayOAuth/read")
+            {
+                return Task.FromResult(GatewayOAuthReadResponse.Clone());
+            }
+
             return AsyncHandler?.Invoke(method, parameters, cancellationToken)
                 ?? Task.FromResult(Handler(method, parameters));
         }

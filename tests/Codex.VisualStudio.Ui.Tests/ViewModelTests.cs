@@ -33,7 +33,10 @@ public sealed class ViewModelTests
     private static readonly string[] ExpectedRefreshedModels = ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini"];
     private static readonly string[] ExpectedReorderedModels = ["gpt-5", "gpt-5-codex", "gpt-5-mini"];
     private static readonly string[] ExpectedStatusHeaderColumnWidths = ["Auto", "*"];
-    private static readonly string[] CreativeOnly = ["Creative"];
+    private static readonly string[] IndependentQuestionIds = ["ui-1", "ui-2"];
+    private static readonly string[] IndependentApprovalIds = ["req-1", "req-2", "req-3"];
+    private static readonly string[] ExpectedCreativeOptionIds = ["creative-id"];
+    private static readonly string[] ExpectedModeChoiceIds = ["mode-id"];
 
     [TestMethod]
     public async Task ChatViewModel_OwnerChangeClearsOwnerScopedPresentationState()
@@ -194,8 +197,11 @@ public sealed class ViewModelTests
         await bridge.PublishStateAsync(OwnerStatus("owner-b", 2, 5));
 
         MethodInfo resolve = typeof(ChatViewModel).GetMethod("ResolveSyntheticUserInputAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
-        var answers = new Dictionary<string, string[]> { ["choice"] = ["old owner answer"] };
-        await (Task)resolve.Invoke(vm, ["synthetic-old", answers, oldOwner])!;
+        var answers = new Dictionary<string, UserInputAnswer>
+        {
+            ["choice"] = new() { Kind = UserInputAnswerKind.SelectedOptions, OptionIds = ["old-owner-id"] },
+        };
+        await (Task)resolve.Invoke(vm, ["synthetic-old", answers, UserInputAction.Submit, oldOwner])!;
 
         Assert.IsNull(bridge.LastStartTurnRequest);
         Assert.IsFalse(vm.HasActiveUserInput);
@@ -652,11 +658,11 @@ public sealed class ViewModelTests
                 DisplayText = "git reset --hard",
                 AvailableDecisions = AcceptDeclineCancel,
             },
-            (_, _) =>
+            (_, _, _) =>
             {
                 Interlocked.Increment(ref calls);
                 return Task.CompletedTask;
-            });
+            }, new SafeMarkdownService());
 
         viewModel.AcceptCommand.Execute(null);
         viewModel.DeclineCommand.Execute(null);
@@ -670,7 +676,8 @@ public sealed class ViewModelTests
     public async Task UserInputViewModel_SingleSelect_SubmitsSelectedRawLabel()
     {
         string? capturedRequestId = null;
-        IReadOnlyDictionary<string, string[]>? capturedAnswers = null;
+        IReadOnlyDictionary<string, UserInputAnswer>? capturedAnswers = null;
+        UserInputAction? capturedAction = null;
         var request = new UserInputRequest
         {
             RequestId = "ui-1",
@@ -683,18 +690,19 @@ public sealed class ViewModelTests
                     Question = "Which style?",
                     Options =
                     [
-                        new UserInputOption { Label = "Sharp", Description = "d1" },
-                        new UserInputOption { Label = "Creative", Description = "d2" },
+                        new UserInputOption { OptionId = "sharp-id", Label = "Sharp", Description = "d1" },
+                        new UserInputOption { OptionId = "creative-id", Label = "Creative", Description = "d2" },
                     ],
                 },
             ],
         };
         var vm = new UserInputViewModel(
             request,
-            (id, answers) =>
+            (id, answers, action) =>
             {
                 capturedRequestId = id;
                 capturedAnswers = answers;
+                capturedAction = action;
                 return Task.CompletedTask;
             },
             new SafeMarkdownService());
@@ -712,12 +720,14 @@ public sealed class ViewModelTests
 
         Assert.AreEqual("ui-1", capturedRequestId);
         Assert.IsNotNull(capturedAnswers);
-        CollectionAssert.AreEqual(CreativeOnly, capturedAnswers!["q1"]);
+        CollectionAssert.AreEqual(ExpectedCreativeOptionIds, capturedAnswers!["q1"].OptionIds.ToArray());
+        Assert.AreEqual(UserInputAnswerKind.SelectedOptions, capturedAnswers["q1"].Kind);
+        Assert.AreEqual(UserInputAction.Submit, capturedAction);
         Assert.IsTrue(vm.IsResolved);
     }
 
     [TestMethod]
-    public async Task ChatViewModel_UserInputQueue_ShowsOneActiveCardAtATime()
+    public async Task ChatViewModel_UserInputRequests_ShowIndependentCards()
     {
         using var vm = new ChatViewModel();
         MethodInfo requested = typeof(ChatViewModel).GetMethod(
@@ -728,17 +738,17 @@ public sealed class ViewModelTests
         await (Task)requested.Invoke(vm, [Notification(MakeUserInputRequest("ui-1"))])!;
         Assert.IsTrue(vm.HasActiveUserInput);
         Assert.AreEqual("ui-1", vm.ActiveUserInput!.RequestId);
-        Assert.AreEqual(string.Empty, vm.UserInputQueueText);
+        Assert.AreEqual("1 question pending", vm.UserInputQueueText);
 
-        // Second request is queued, not shown — the active card stays put.
         await (Task)requested.Invoke(vm, [Notification(MakeUserInputRequest("ui-2"))])!;
-        Assert.AreEqual("ui-1", vm.ActiveUserInput!.RequestId);
-        Assert.AreEqual("1 choice waiting", vm.UserInputQueueText);
+        Assert.AreEqual(2, vm.PendingInteractions.Count(card => card.UserInput is not null));
+        CollectionAssert.AreEquivalent(IndependentQuestionIds, vm.PendingInteractions
+            .Where(card => card.UserInput is not null).Select(card => card.UserInput!.RequestId).ToArray());
 
-        // Resolving the active one promotes the queued one.
         await (Task)resolved.Invoke(vm, [Notification("ui-1")])!;
         Assert.AreEqual("ui-2", vm.ActiveUserInput!.RequestId);
-        Assert.AreEqual(string.Empty, vm.UserInputQueueText);
+        Assert.AreEqual(1, vm.PendingInteractions.Count(card => card.UserInput is not null));
+        Assert.AreEqual("1 question pending", vm.UserInputQueueText);
 
         // Resolving the last clears the card; a duplicate resolve is a no-op.
         await (Task)resolved.Invoke(vm, [Notification("ui-2")])!;
@@ -748,7 +758,7 @@ public sealed class ViewModelTests
     }
 
     [TestMethod]
-    public async Task ChatViewModel_ApprovalQueue_ShowsOneActiveCardAtATime()
+    public async Task ChatViewModel_ApprovalRequests_ShowIndependentCards()
     {
         using var vm = new ChatViewModel();
         MethodInfo requested = typeof(ChatViewModel).GetMethod(
@@ -759,31 +769,212 @@ public sealed class ViewModelTests
         await (Task)requested.Invoke(vm, [Notification(MakeApprovalRequest("req-1"))])!;
         Assert.IsTrue(vm.HasActiveApproval);
         Assert.AreEqual("req-1", vm.ActiveApproval!.RequestId);
-        Assert.AreEqual(string.Empty, vm.ApprovalQueueText);
+        Assert.AreEqual("1 approval pending", vm.ApprovalQueueText);
 
-        // Concurrent prompts are queued, not stacked: the active card stays put and the rest are counted.
         await (Task)requested.Invoke(vm, [Notification(MakeApprovalRequest("req-2"))])!;
-        Assert.AreEqual("req-1", vm.ActiveApproval!.RequestId);
-        Assert.AreEqual("1 approval waiting", vm.ApprovalQueueText);
 
         await (Task)requested.Invoke(vm, [Notification(MakeApprovalRequest("req-3"))])!;
-        Assert.AreEqual("2 approvals waiting", vm.ApprovalQueueText);
+        Assert.AreEqual(3, vm.PendingInteractions.Count(card => card.Approval is not null));
+        CollectionAssert.AreEquivalent(IndependentApprovalIds, vm.PendingInteractions
+            .Where(card => card.Approval is not null).Select(card => card.Approval!.RequestId).ToArray());
 
-        // Resolving the active one promotes the next queued prompt.
         await (Task)resolved.Invoke(vm, [Notification("req-1")])!;
         Assert.AreEqual("req-2", vm.ActiveApproval!.RequestId);
-        Assert.AreEqual("1 approval waiting", vm.ApprovalQueueText);
+        Assert.AreEqual(2, vm.PendingInteractions.Count(card => card.Approval is not null));
 
-        // A prompt resolved while still queued is dropped without becoming active.
         await (Task)resolved.Invoke(vm, [Notification("req-3")])!;
         Assert.AreEqual("req-2", vm.ActiveApproval!.RequestId);
-        Assert.AreEqual(string.Empty, vm.ApprovalQueueText);
+        Assert.AreEqual("1 approval pending", vm.ApprovalQueueText);
 
         // Resolving the last clears the card; a duplicate resolve is a no-op.
         await (Task)resolved.Invoke(vm, [Notification("req-2")])!;
         Assert.IsFalse(vm.HasActiveApproval);
         await (Task)resolved.Invoke(vm, [Notification("req-2")])!;
         Assert.IsFalse(vm.HasActiveApproval);
+    }
+
+    [TestMethod]
+    public async Task McpElicitation_DefaultValuesArePrefilledButOnlySubmittedExplicitly()
+    {
+        McpElicitationRequest request = new()
+        {
+            RequestId = "mcp-1",
+            ServerName = "forms",
+            Kind = McpElicitationKind.Form,
+            Message = "Provide values",
+            Fields =
+            [
+                new McpElicitationField
+                {
+                    Name = "text",
+                    Title = "Text",
+                    Type = McpElicitationFieldType.Text,
+                    Required = true,
+                    MinLength = 4,
+                    DefaultValue = new McpElicitationValue { StringValue = "**x**" },
+                },
+                new McpElicitationField
+                {
+                    Name = "empty",
+                    Title = "Optional text",
+                    Type = McpElicitationFieldType.Text,
+                    DefaultValue = new McpElicitationValue { StringValue = string.Empty },
+                },
+                new McpElicitationField
+                {
+                    Name = "enabled",
+                    Title = "Enabled",
+                    Type = McpElicitationFieldType.Boolean,
+                    DefaultValue = new McpElicitationValue { BooleanValue = false },
+                },
+                new McpElicitationField
+                {
+                    Name = "count",
+                    Title = "Count",
+                    Type = McpElicitationFieldType.Number,
+                    DefaultValue = new McpElicitationValue { NumberValue = 0 },
+                },
+                new McpElicitationField
+                {
+                    Name = "mode",
+                    Title = "Mode",
+                    Type = McpElicitationFieldType.SingleSelect,
+                    Required = true,
+                    Choices = [new McpElicitationChoice { ChoiceId = "mode-id", Label = "Mode A" }],
+                },
+            ],
+        };
+        string? submittedId = null;
+        IReadOnlyList<McpElicitationValue>? submittedValues = null;
+        var vm = new McpElicitationViewModel(request, (id, _, values) =>
+        {
+            submittedId = id;
+            submittedValues = values;
+            return Task.CompletedTask;
+        }, new SafeMarkdownService());
+
+        Assert.IsFalse(vm.IsResolved);
+        Assert.IsTrue(vm.CanAccept);
+        Assert.AreEqual("**x**", vm.Fields[0].InputText);
+        Assert.AreEqual(string.Empty, vm.Fields[1].InputText);
+        Assert.IsFalse(vm.Fields[2].BooleanValue);
+        Assert.AreEqual("0", vm.Fields[3].InputText);
+        Assert.IsNull(submittedValues);
+
+        await RunCommandAsync(vm.SubmitCommand);
+        Assert.IsFalse(vm.IsResolved, "Required single-select fields need an explicit selection.");
+        Assert.IsNull(submittedValues);
+        vm.Fields[4].Choices[0].IsSelected = true;
+        await RunCommandAsync(vm.SubmitCommand);
+
+        Assert.AreEqual("mcp-1", submittedId);
+        Assert.IsNotNull(submittedValues);
+        Assert.AreEqual("**x**", submittedValues![0].StringValue);
+        Assert.AreEqual(string.Empty, submittedValues[1].StringValue);
+        Assert.AreEqual(false, submittedValues[2].BooleanValue);
+        Assert.AreEqual(0d, submittedValues[3].NumberValue);
+        CollectionAssert.AreEqual(ExpectedModeChoiceIds, submittedValues[4].ChoiceIds.ToArray());
+        Assert.IsTrue(vm.IsResolved);
+    }
+
+    [TestMethod]
+    public async Task McpAuthPresentation_NotifiesDismissabilityAndRetiresStaleOperationIds()
+    {
+        string? dismissedOperationId = null;
+        var vm = new McpServerAuthPresentationViewModel(
+            new McpServerAuthStatus { ServerName = "server", State = InteractionAuthState.ReauthenticationRequired },
+            new SafeMarkdownService(),
+            _ => Task.CompletedTask,
+            operationId =>
+            {
+                dismissedOperationId = operationId;
+                return Task.CompletedTask;
+            },
+            _ => Task.CompletedTask);
+        var changedProperties = new List<string?>();
+        vm.PropertyChanged += (_, args) => changedProperties.Add(args.PropertyName);
+
+        vm.Update(new McpOAuthLoginStatus
+        {
+            OperationId = "login-operation",
+            ServerName = "server",
+            State = InteractionAuthState.LoginPending,
+        }, new SafeMarkdownService());
+
+        Assert.IsTrue(vm.CanDismiss);
+        Assert.IsTrue(changedProperties.Contains(nameof(vm.CanDismiss), StringComparer.Ordinal));
+
+        await RunCommandAsync(vm.DismissCommand);
+        Assert.AreEqual("login-operation", dismissedOperationId);
+        Assert.IsFalse(vm.CanDismiss, "Dismissing the local wait must retire the action without claiming server cancellation.");
+
+        vm.Update(new McpOAuthLoginStatus
+        {
+            OperationId = "login-operation-2",
+            ServerName = "server",
+            State = InteractionAuthState.LoginPending,
+        }, new SafeMarkdownService());
+        Assert.IsTrue(vm.CanDismiss);
+
+        changedProperties.Clear();
+        vm.Update(new McpServerAuthStatus { ServerName = "server", State = InteractionAuthState.Authenticated }, new SafeMarkdownService());
+
+        Assert.IsFalse(vm.CanDismiss);
+        Assert.IsFalse(vm.DismissCommand.CanExecute);
+        Assert.IsTrue(changedProperties.Contains(nameof(vm.CanDismiss), StringComparer.Ordinal));
+    }
+
+    [TestMethod]
+    public async Task UserInput_OtherAndCancelAreExplicitTypedResponses()
+    {
+        IReadOnlyDictionary<string, UserInputAnswer>? submittedAnswers = null;
+        UserInputAction? submittedAction = null;
+        var request = new UserInputRequest
+        {
+            RequestId = "question-other",
+            IsBlocking = true,
+            Questions =
+            [
+                new UserInputQuestion
+                {
+                    Id = "q1",
+                    Header = "Choice",
+                    Question = "Select a value",
+                    IsOther = true,
+                    Options = [new UserInputOption { OptionId = "known", Label = "Known choice" }],
+                },
+            ],
+        };
+        var vm = new UserInputViewModel(request, (_, answers, action) =>
+        {
+            submittedAnswers = answers;
+            submittedAction = action;
+            return Task.CompletedTask;
+        }, new SafeMarkdownService());
+
+        Assert.IsFalse(vm.CanSubmit);
+        Assert.IsNull(submittedAnswers);
+        vm.Questions[0].IsOtherSelected = true;
+        vm.Questions[0].OtherText = "custom response";
+        await RunCommandAsync(vm.SubmitCommand);
+
+        Assert.AreEqual(UserInputAction.Submit, submittedAction);
+        Assert.AreEqual(UserInputAnswerKind.Other, submittedAnswers!["q1"].Kind);
+        Assert.AreEqual("custom response", submittedAnswers["q1"].Text);
+
+        submittedAnswers = null;
+        submittedAction = null;
+        var cancelVm = new UserInputViewModel(request, (_, answers, action) =>
+        {
+            submittedAnswers = answers;
+            submittedAction = action;
+            return Task.CompletedTask;
+        }, new SafeMarkdownService());
+        await RunCommandAsync(cancelVm.CancelCommand);
+
+        Assert.AreEqual(UserInputAction.Cancel, submittedAction);
+        Assert.AreEqual(0, submittedAnswers!.Count);
+        Assert.IsTrue(cancelVm.IsResolved);
     }
 
     private static ApprovalRequest MakeApprovalRequest(string requestId) => new()
@@ -953,6 +1144,14 @@ public sealed class ViewModelTests
         Assert.IsFalse(text.Contains('\x1b'));
         Assert.IsFalse(text.Contains('\x00'));
         Assert.IsTrue(text.Contains("safe", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    public void SafeMarkdown_LiteralTextRemovesControlsWithoutChangingMarkdownOrHtmlCharacters()
+    {
+        string text = SafeMarkdownService.ToSafeLiteralText("**literal** <b>value</b>\x1b[31m\x00");
+
+        Assert.AreEqual("**literal** <b>value</b>", text);
     }
 
     [TestMethod]
@@ -1161,7 +1360,7 @@ public sealed class ViewModelTests
             DisplayText = "read file",
             AvailableDecisions = AcceptCancel,
         };
-        var vm = new ApprovalViewModel(request, (_, _) => Task.CompletedTask);
+        var vm = new ApprovalViewModel(request, (_, _, _) => Task.CompletedTask, new SafeMarkdownService());
 
         Assert.IsTrue(vm.ShowAccept);
         Assert.IsFalse(vm.ShowAcceptForTurn);
@@ -1182,7 +1381,7 @@ public sealed class ViewModelTests
             DisplayText = "api.example.com",
             AvailableDecisions = AcceptDecline,
         };
-        var vm = new ApprovalViewModel(request, (_, _) => Task.CompletedTask);
+        var vm = new ApprovalViewModel(request, (_, _, _) => Task.CompletedTask, new SafeMarkdownService());
 
         Assert.IsTrue(vm.IsNetworkApproval);
         Assert.AreEqual("api.example.com", vm.NetworkHost);
@@ -1201,7 +1400,7 @@ public sealed class ViewModelTests
             PolicyBlockReason = "Destructive commands are blocked by policy.",
             AvailableDecisions = NoDecisions,
         };
-        var vm = new ApprovalViewModel(request, (_, _) => Task.CompletedTask);
+        var vm = new ApprovalViewModel(request, (_, _, _) => Task.CompletedTask, new SafeMarkdownService());
 
         Assert.IsFalse(vm.ShowAccept);
         Assert.IsFalse(vm.ShowAcceptForSession);
@@ -1250,18 +1449,15 @@ public sealed class ViewModelTests
     public void ChatViewModel_UserInputResult_AppendsSanitizedSelection()
     {
         using var vm = new ChatViewModel();
-        var answers = new Dictionary<string, string[]>(StringComparer.Ordinal)
+        var answers = new Dictionary<string, UserInputAnswer>(StringComparer.Ordinal)
         {
-            ["q1"] = ["<b>Sharp</b> \x1b[31mstyle\x1b[0m"],
+            ["q1"] = new() { Kind = UserInputAnswerKind.FreeText, Text = "<b>Sharp</b> \x1b[31mstyle\x1b[0m" },
         };
 
         vm.AppendUserInputResultItem(answers);
 
         ChatItemViewModel result = vm.Items.Single(item => item.Role == "Decision");
-        Assert.IsTrue(result.Text.Contains("Selected", StringComparison.Ordinal));
-        Assert.IsTrue(result.Text.Contains("Sharp style", StringComparison.Ordinal));
-        Assert.IsFalse(result.Text.Contains('<'));
-        Assert.IsFalse(result.Text.Contains('\x1b'));
+        Assert.AreEqual("Response submitted", result.Text);
     }
 
     [TestMethod]
@@ -1269,7 +1465,7 @@ public sealed class ViewModelTests
     {
         using var vm = new ChatViewModel();
 
-        vm.AppendUserInputResultItem(new Dictionary<string, string[]>(StringComparer.Ordinal));
+        vm.AppendUserInputResultItem(new Dictionary<string, UserInputAnswer>(StringComparer.Ordinal));
 
         Assert.AreEqual(0, vm.Items.Count);
     }
@@ -1304,7 +1500,7 @@ public sealed class ViewModelTests
         MethodInfo resolve = typeof(ChatViewModel).GetMethod(
             "ResolveApprovalAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
 
-        await (Task)resolve.Invoke(vm, ["req-fail", ApprovalDecision.Accept, CaptureOwnerSnapshot(vm)])!;
+        await (Task)resolve.Invoke(vm, ["req-fail", ApprovalDecision.Accept, null, CaptureOwnerSnapshot(vm)])!;
 
         Assert.IsFalse(vm.Items.Any(item => item.Role == "Decision"));
         Assert.IsTrue(vm.Items.Any(item => item.IsDeliveryUnknown));
@@ -1328,7 +1524,7 @@ public sealed class ViewModelTests
 
         MethodInfo resolve = typeof(ChatViewModel).GetMethod(
             "ResolveApprovalAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
-        await (Task)resolve.Invoke(vm, ["req-ok", ApprovalDecision.Accept, CaptureOwnerSnapshot(vm)])!;
+        await (Task)resolve.Invoke(vm, ["req-ok", ApprovalDecision.Accept, null, CaptureOwnerSnapshot(vm)])!;
 
         ChatItemViewModel result = vm.Items.Single(item => item.Role == "Decision");
         Assert.IsTrue(result.Text.Contains("Accepted", StringComparison.Ordinal));
@@ -1340,12 +1536,15 @@ public sealed class ViewModelTests
     {
         var bridge = new FakeWorkerBridge { ResolveUserInputException = new InvalidOperationException("disconnected") };
         using var vm = new ChatViewModel(bridge, autoConnect: false);
-        var answers = new Dictionary<string, string[]>(StringComparer.Ordinal) { ["q1"] = ["Yes"] };
+        var answers = new Dictionary<string, UserInputAnswer>(StringComparer.Ordinal)
+        {
+            ["q1"] = new() { Kind = UserInputAnswerKind.FreeText, Text = "Yes" },
+        };
 
         MethodInfo resolve = typeof(ChatViewModel).GetMethod(
             "ResolveUserInputAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
 
-        await (Task)resolve.Invoke(vm, ["req-1", answers, CaptureOwnerSnapshot(vm)])!;
+        await (Task)resolve.Invoke(vm, ["req-1", answers, UserInputAction.Submit, CaptureOwnerSnapshot(vm)])!;
 
         Assert.IsFalse(vm.Items.Any(item => item.Role == "Decision"));
         Assert.IsTrue(vm.Items.Any(item => item.IsDeliveryUnknown));
@@ -1357,14 +1556,17 @@ public sealed class ViewModelTests
     {
         var bridge = new FakeWorkerBridge();
         using var vm = new ChatViewModel(bridge, autoConnect: false);
-        var answers = new Dictionary<string, string[]>(StringComparer.Ordinal) { ["q1"] = ["Yes"] };
+        var answers = new Dictionary<string, UserInputAnswer>(StringComparer.Ordinal)
+        {
+            ["q1"] = new() { Kind = UserInputAnswerKind.FreeText, Text = "Yes" },
+        };
 
         MethodInfo resolve = typeof(ChatViewModel).GetMethod(
             "ResolveUserInputAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
-        await (Task)resolve.Invoke(vm, ["req-1", answers, CaptureOwnerSnapshot(vm)])!;
+        await (Task)resolve.Invoke(vm, ["req-1", answers, UserInputAction.Submit, CaptureOwnerSnapshot(vm)])!;
 
         ChatItemViewModel result = vm.Items.Single(item => item.Role == "Decision");
-        Assert.IsTrue(result.Text.Contains("Selected — Yes", StringComparison.Ordinal));
+        Assert.AreEqual("Response submitted", result.Text);
     }
 
     [TestMethod]
@@ -2100,7 +2302,10 @@ public sealed class ViewModelTests
     private static readonly Type[] RemoteUiContextTypes =
         [
             typeof(ChatViewModel), typeof(ChatItemViewModel), typeof(ChatBlockViewModel), typeof(ApprovalViewModel),
-            typeof(UserInputViewModel), typeof(UserInputQuestionViewModel), typeof(UserInputOptionViewModel),
+            typeof(InteractionCardViewModel), typeof(ApprovalChoiceViewModel), typeof(PermissionSelectionViewModel),
+            typeof(PermissionGrantOptionViewModel), typeof(McpElicitationViewModel), typeof(McpElicitationFieldViewModel),
+            typeof(McpElicitationChoiceViewModel), typeof(InteractionAuthStatusPresentationViewModel),
+            typeof(McpServerAuthPresentationViewModel), typeof(UserInputViewModel), typeof(UserInputQuestionViewModel), typeof(UserInputOptionViewModel),
             typeof(SuggestionChip), typeof(SlashCommandPresentationViewModel),
             typeof(SlashCommandSuggestionViewModel), typeof(SlashCommandOptionViewModel),
             typeof(AttachmentChipViewModel), typeof(FileSuggestionPresentationViewModel),
@@ -2170,7 +2375,7 @@ public sealed class ViewModelTests
     }
 
     [TestMethod]
-    public void ChatToolWindowXaml_ActiveApprovalDetails_AreBoundedAndScrollable()
+    public void ChatToolWindowXaml_InteractionCards_AreBoundedVirtualizedAndExplicit()
     {
         const string resourceName = "Codex.VisualStudio.Extension.ToolWindows.ChatToolWindowContent.xaml";
         using Stream? stream = typeof(ChatViewModel).Assembly.GetManifestResourceStream(resourceName);
@@ -2178,32 +2383,26 @@ public sealed class ViewModelTests
         XDocument doc = XDocument.Load(stream);
         XNamespace presentation = "http://schemas.microsoft.com/winfx/2006/xaml/presentation";
 
-        XElement? displayText = doc
-            .Descendants(presentation + "TextBlock")
-            .SingleOrDefault(tb => string.Equals(
-                tb.Attribute("Text")?.Value,
-                "{Binding ActiveApproval.DisplayText}",
-                StringComparison.Ordinal));
-        Assert.IsNotNull(displayText, "Could not find ActiveApproval.DisplayText TextBlock.");
+        XElement? interactionCards = doc
+            .Descendants(presentation + "ListBox")
+            .SingleOrDefault(list => list.Attribute("ItemsSource")?.Value == "{Binding PendingInteractions}");
+        Assert.IsNotNull(interactionCards, "Pending interactions must render as a dedicated ListBox.");
+        Assert.AreEqual("300", interactionCards!.Attribute("MaxHeight")?.Value);
+        string xaml = doc.ToString(SaveOptions.DisableFormatting);
+        Assert.IsTrue(xaml.Contains("VirtualizingPanel.IsVirtualizing=\"True\"", StringComparison.Ordinal));
+        Assert.IsTrue(xaml.Contains("VirtualizingPanel.VirtualizationMode=\"Recycling\"", StringComparison.Ordinal));
 
-        XElement? detailsScrollViewer = displayText!
-            .Ancestors(presentation + "ScrollViewer")
-            .FirstOrDefault();
-        Assert.IsNotNull(detailsScrollViewer, "Approval details must be wrapped in a ScrollViewer.");
-        Assert.AreEqual("Auto", detailsScrollViewer!.Attribute("VerticalScrollBarVisibility")?.Value);
-        Assert.AreEqual("Auto", detailsScrollViewer.Attribute("HorizontalScrollBarVisibility")?.Value);
-        Assert.AreEqual("220", detailsScrollViewer.Attribute("MaxHeight")?.Value);
-
-        XElement? acceptButton = doc
-            .Descendants(presentation + "Button")
-            .SingleOrDefault(btn => string.Equals(
-                btn.Attribute("Command")?.Value,
-                "{Binding ActiveApproval.AcceptCommand}",
-                StringComparison.Ordinal));
-        Assert.IsNotNull(acceptButton, "Could not find ActiveApproval.AcceptCommand button.");
-        Assert.IsNull(
-            acceptButton!.Ancestors(presentation + "ScrollViewer").FirstOrDefault(),
-            "Approval decision buttons must remain outside the details ScrollViewer.");
+        string[] actionableBindings =
+        [
+            "{Binding Approval.DisplayText}", "{Binding SelectCommand}",
+            "{Binding UserInput.SubmitCommand}", "{Binding UserInput.CancelCommand}",
+            "{Binding Permission.SubmitCommand}", "{Binding Permission.DeclineCommand}",
+            "{Binding Elicitation.SubmitCommand}", "{Binding Elicitation.DeclineCommand}",
+        ];
+        foreach (string binding in actionableBindings)
+        {
+            Assert.IsTrue(xaml.Contains(binding, StringComparison.Ordinal), $"Missing explicit interaction binding {binding}.");
+        }
     }
 
     [TestMethod]
@@ -5295,6 +5494,18 @@ public sealed class ViewModelTests
 
         public event Func<WorkerNotification<string>, Task>? UserInputResolved { add { } remove { } }
 
+        public event Func<WorkerNotification<PermissionRequest>, Task>? PermissionRequested { add { } remove { } }
+
+        public event Func<WorkerNotification<string>, Task>? PermissionResolved { add { } remove { } }
+
+        public event Func<WorkerNotification<McpElicitationRequest>, Task>? McpElicitationRequested { add { } remove { } }
+
+        public event Func<WorkerNotification<string>, Task>? McpElicitationResolved { add { } remove { } }
+
+        public event Func<WorkerNotification<UnsupportedInteractionNotice>, Task>? UnsupportedInteractionReceived { add { } remove { } }
+
+        public event Func<WorkerNotification<InteractionAuthStatus>, Task>? InteractionAuthStatusChanged { add { } remove { } }
+
         public event Func<WorkerNotification<ContextCompactionEvent>, Task>? ContextCompacted { add { } remove { } }
 
         public event Func<WorkerNotification<ReviewModeEvent>, Task>? ReviewModeChanged { add { } remove { } }
@@ -5553,6 +5764,30 @@ public sealed class ViewModelTests
 
         public Task ResolveUserInputAsync(ResolveUserInputRequest request, CancellationToken cancellationToken)
             => ResolveUserInputException is not null ? Task.FromException(ResolveUserInputException) : Task.CompletedTask;
+
+        public Task ResolvePermissionSelectionAsync(ResolvePermissionSelectionRequest request, CancellationToken cancellationToken)
+            => Task.CompletedTask;
+
+        public Task ResolveMcpElicitationAsync(ResolveMcpElicitationRequest request, CancellationToken cancellationToken)
+            => Task.CompletedTask;
+
+        public Task<InteractionAuthStatus> ReadGatewayOAuthAsync(ReadGatewayOAuthRequest request, CancellationToken cancellationToken)
+            => Task.FromResult(new InteractionAuthStatus());
+
+        public Task<InteractionAuthStatus> LoginGatewayOAuthAsync(LoginGatewayOAuthRequest request, CancellationToken cancellationToken)
+            => Task.FromResult(new InteractionAuthStatus());
+
+        public Task<InteractionAuthStatus> CancelGatewayOAuthAsync(CancelGatewayOAuthRequest request, CancellationToken cancellationToken)
+            => Task.FromResult(new InteractionAuthStatus());
+
+        public Task OpenAuthorizationUrlAsync(OpenAuthorizationUrlRequest request, CancellationToken cancellationToken)
+            => Task.CompletedTask;
+
+        public Task<McpOAuthLoginStatus> StartMcpOAuthLoginAsync(StartMcpOAuthLoginRequest request, CancellationToken cancellationToken)
+            => Task.FromResult(new McpOAuthLoginStatus());
+
+        public Task DismissMcpOAuthLoginAsync(DismissMcpOAuthLoginRequest request, CancellationToken cancellationToken)
+            => Task.CompletedTask;
 
         public int DisposeCallCount { get; private set; }
 

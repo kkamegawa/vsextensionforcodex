@@ -440,3 +440,55 @@ History uses bounded read-only pages and generation-stamped notification
 merging. Joining a conversation remains an explicit resume action. Attachment
 notifications identify membership changes; bounded list reads supply metadata.
 Operations with uncertain delivery are never replayed automatically.
+## 16. Questions, permissions, and MCP interaction
+
+[Questions, Permissions, and MCP Interaction Design](interaction-design.md) and its
+[Japanese counterpart](interaction-design_ja.md) define the Issue #154 interaction contract.
+The Worker contract is v20; allocate the next available version at merge time if the branch
+contract changes before integration. CLI, SDK, and runtime versions remain pinned.
+
+App-server questions, permissions, command approvals, and MCP elicitation are independent
+pending interactions. The Worker retains the upstream JSON-RPC ID and original wire values;
+the Remote UI receives owner/generation-scoped request identities and sanitized display data.
+The chat presents each pending interaction in its own card while the turn and regular composer
+remain independent. This card collection is separate from the protocol receive pump: notifications
+and requests continue to follow the bounded wire-order dispatch rules in section 1. Explicit
+submission is required; defaults, focus, and selection do not answer a request. Opaque choice IDs
+are mapped to original server values only in the Worker.
+
+Responses are validated against the captured request before the Worker atomically claims its
+completion. Answer, cancel, timeout, external resolution, disconnect, and generation retirement
+race to at most one response. Resolved and stale requests receive no response, and uncertain
+response delivery is never retried. MCP elicitation is keyed by request identity even without a
+turn ID.
+
+Question cards support blocking and non-blocking prompts, free text, and “Other”. Secret-marked
+input and unsupported native user-verification requests are rejected before their sensitive
+payloads reach the Remote UI. Their visible refusal reason contains no challenge, proof, or secret.
+Native verification success remains deferred until upstream supports Windows and this extension's
+client identity.
+
+Permission approval returns only a subset of requested network/file permissions, scoped to the
+turn by default; session persistence requires an explicit choice. Command approval retains every
+server-provided choice and its associated permission or rule changes. Neither a permission grant
+outside the request nor a rule change disguised as ordinary acceptance is allowed. Destructive
+operations continue through the existing approval policy.
+
+MCP form elicitation supports string, number, integer, boolean, single-choice, and multiple-choice
+fields with UI- and Worker-side validation. Unsupported extension schemas are refused with a safe
+reason and are not advertised as supported. Authorization URLs are Worker-validated and opened
+only after an explicit action. Browser launch alone does not prove authentication success. UI
+dismissal ends only the local wait because MCP has no OAuth cancellation RPC, and a failed tool
+call is never replayed after reauthentication.
+
+For local stdio, the Worker advertises `explicitGatewayOauth` and successfully reads
+`account/gatewayOAuth/read` after initialize for each connection before any authentication-required
+RPC. A failed or unsupported gate blocks those RPCs and never falls back to automatic browser
+authentication. Login, cancellation, changed notifications, and browser actions are bound to the
+active owner and generation; the login wait does not block unrelated RPC dispatch. Remote
+WebSocket profiles expose status and guidance only and never advertise or invoke Gateway login or
+cancellation. Issue #153 owns bounded attachment metadata recovery; Issue #155 owns attachment
+operations and presentation.
+
+Implementation and verification tracking is recorded in [Issue #154](https://github.com/kkamegawa/vsextensionforcodex/issues/154) and child issues
+[#165](https://github.com/kkamegawa/vsextensionforcodex/issues/165), [#166](https://github.com/kkamegawa/vsextensionforcodex/issues/166), [#167](https://github.com/kkamegawa/vsextensionforcodex/issues/167), and [#168](https://github.com/kkamegawa/vsextensionforcodex/issues/168).
