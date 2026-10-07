@@ -27,6 +27,7 @@ public interface ICodexSessionService : IAsyncDisposable
     bool CanPersistOwnerState => false;
     bool IsConnectionActive => true;
     bool GatewayOAuthRequired => false;
+    int PendingInteractionCount => 0;
     void BeginOwnerPartition(WorkerOptions options, string workerInstanceId, long ownerGeneration, string? credentialFingerprint)
     {
     }
@@ -368,6 +369,9 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
     public event Func<InteractionAuthStatus, CancellationToken, Task>? InteractionAuthStatusChanged;
 
     public bool GatewayOAuthRequired => Volatile.Read(ref connectionContext)?.GatewayOAuthRequired ?? false;
+
+    public int PendingInteractionCount
+        => Volatile.Read(ref connectionContext) is { } context ? pendingInteractions.CountPending(context.Generation) : 0;
 
     public event Func<ContextCompactionEvent, CancellationToken, Task>? ContextCompacted;
 
@@ -2436,7 +2440,7 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
                 throw new ArgumentException("A canceled user-input request cannot contain answers.", nameof(request));
             }
 
-            response = UserInputResponse(new Dictionary<string, UserInputAnswer>(StringComparer.Ordinal));
+            response = EmptyUserInputResponse();
         }
         else if (request.Action == UserInputAction.Submit)
         {
@@ -2527,11 +2531,11 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
                 ThreadId = GetString(parameters, "threadId"),
                 TurnId = GetString(parameters, "turnId"),
             }, cancellationToken).ConfigureAwait(false);
-            return UserInputResponse(new Dictionary<string, UserInputAnswer>(StringComparer.Ordinal));
+            return EmptyUserInputResponse();
         }
 
         var key = new PendingInteractionKey(context.Generation, requestId);
-        JsonElement timeoutResponse = UserInputResponse(new Dictionary<string, UserInputAnswer>(StringComparer.Ordinal));
+        JsonElement timeoutResponse = EmptyUserInputResponse();
         if (!pendingInteractions.TryAdd(key, "item/tool/requestUserInput", originalRequestId, parameters,
                 TimeSpan.FromMinutes(5), timeoutResponse, out PendingInteractionEntry entry))
         {
@@ -5584,8 +5588,9 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         return true;
     }
 
-    // Shapes the result per ToolRequestUserInputResponse: { answers: { <id>: { answers: [...] } } }.
-    private static JsonElement UserInputResponse(IReadOnlyDictionary<string, UserInputAnswer> answers)
+    // The empty ToolRequestUserInputResponse used for cancel, timeout, and refused requests.
+    // Submitted answers are serialized by ValidateAnswers as { answers: { <id>: { answers: [...] } } }.
+    private static JsonElement EmptyUserInputResponse()
         => JsonSerializer.SerializeToElement(new { answers = new Dictionary<string, object>(StringComparer.Ordinal) });
 
     private static ConversationEventKind MapKind(string method) => method switch

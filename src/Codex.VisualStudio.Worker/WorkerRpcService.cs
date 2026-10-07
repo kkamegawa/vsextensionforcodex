@@ -1506,7 +1506,7 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
             return;
         }
 
-        await SetStatusAsync(WorkerConnectionState.Busy, "Turn in progress.", cancellationToken).ConfigureAwait(false);
+        await SetStatusAfterInteractionResolvedAsync(cancellationToken).ConfigureAwait(false);
         if (clientRpc is not null)
         {
             await clientRpc.NotifyWithParameterObjectAsync("observer/approvalResolved", new { notification = Stamp(requestId) }).ConfigureAwait(false);
@@ -1534,12 +1534,19 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
             return;
         }
 
-        await SetStatusAsync(WorkerConnectionState.Busy, "Turn in progress.", cancellationToken).ConfigureAwait(false);
+        await SetStatusAfterInteractionResolvedAsync(cancellationToken).ConfigureAwait(false);
         if (clientRpc is not null)
         {
             await clientRpc.NotifyWithParameterObjectAsync("observer/userInputResolved", new { notification = Stamp(requestId) }).ConfigureAwait(false);
         }
     }
+
+    // Independent interaction cards resolve one at a time; stay in WaitingForApproval until the
+    // last pending interaction of the current generation is resolved, timed out, or retired.
+    private Task<WorkerStatus> SetStatusAfterInteractionResolvedAsync(CancellationToken cancellationToken)
+        => session.PendingInteractionCount > 0
+            ? SetStatusAsync(WorkerConnectionState.WaitingForApproval, "Waiting for approval.", cancellationToken)
+            : SetStatusAsync(WorkerConnectionState.Busy, "Turn in progress.", cancellationToken);
 
     private async Task PublishPermissionAsync(PermissionRequest request, CancellationToken cancellationToken)
     {
@@ -1562,7 +1569,7 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
             return;
         }
 
-        await SetStatusAsync(WorkerConnectionState.Busy, "Turn in progress.", cancellationToken).ConfigureAwait(false);
+        await SetStatusAfterInteractionResolvedAsync(cancellationToken).ConfigureAwait(false);
         if (clientRpc is not null)
         {
             await clientRpc.NotifyWithParameterObjectAsync("observer/permissionResolved", new { notification = Stamp(requestId) }).ConfigureAwait(false);
@@ -1594,7 +1601,7 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
             return;
         }
 
-        await SetStatusAsync(WorkerConnectionState.Busy, "Turn in progress.", cancellationToken).ConfigureAwait(false);
+        await SetStatusAfterInteractionResolvedAsync(cancellationToken).ConfigureAwait(false);
         if (clientRpc is not null)
         {
             await clientRpc.NotifyWithParameterObjectAsync("observer/mcpElicitationResolved", new { notification = Stamp(requestId) }).ConfigureAwait(false);

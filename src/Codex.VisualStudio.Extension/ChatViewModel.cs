@@ -7897,8 +7897,9 @@ public sealed class ApprovalViewModel : ObservableObject
     {
         this.resolver = resolver;
         RequestId = request.RequestId;
-        DisplayText = request.DisplayText;
-        Reason = request.Reason;
+        // App-server strings are untrusted; sanitize them before they reach Remote UI.
+        DisplayText = markdown.ToSafeText(request.DisplayText).Trim();
+        Reason = request.Reason is null ? null : markdown.ToSafeText(request.Reason).Trim();
         Risk = request.Risk;
         IsPolicyBlocked = request.IsPolicyBlocked;
         PolicyBlockReason = request.PolicyBlockReason;

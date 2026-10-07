@@ -188,6 +188,9 @@ internal sealed class PendingInteractionRegistry : IDisposable
         }
     }
 
+    public int CountPending(long generation)
+        => pending.Keys.Count(key => key.Generation == generation);
+
     public bool TryGet(PendingInteractionKey key, out PendingInteractionEntry entry)
         => pending.TryGetValue(key, out entry!);
 
