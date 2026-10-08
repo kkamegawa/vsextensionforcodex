@@ -82,8 +82,9 @@ function Add-Scenario([string]$Id, [string]$Command, [scriptblock]$Action, [stri
     return $status -eq 'passed'
 }
 
+$completed = $false
 try {
-    $dotnetText = (& dotnet --version 2>&1 | Out-String).Trim()
+    $dotnetText =(& dotnet --version 2>&1 | Out-String).Trim()
     if ($LASTEXITCODE -ne 0) { throw "Unable to query dotnet SDK: $dotnetText" }
     $manifest.host.dotnet = $dotnetText
     $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
@@ -197,9 +198,11 @@ try {
             & pwsh -NoProfile -File (Join-Path $PSScriptRoot 'Test-VsixContents.ps1') -Configuration Release -OutputPath (Join-Path $outputRoot 'vsix-inspection.json')
         } 'vsix-inspection.log')
     }
+    $completed = $true
 }
 finally {
-    if (@($manifest.scenarios | Where-Object status -in @('failed', 'flaky')).Count -gt 0) {
+    # An exception that escapes before every scenario is recorded must never read as a pass.
+    if (-not $completed -or @($manifest.scenarios | Where-Object status -in @('failed', 'flaky')).Count -gt 0) {
         $manifest.status = 'failed'
     }
     elseif (@($manifest.scenarios | Where-Object status -in @('blocked', 'not-run')).Count -gt 0) {

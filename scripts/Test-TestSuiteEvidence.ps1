@@ -33,6 +33,16 @@ if ($env:FAKE_DOTNET_MODE -eq 'data-driven') {
         $results += "<UnitTestResult testId=`"$id`" testName=`"Sample row $number`" outcome=`"Failed`" />"
     }
 }
+elseif ($env:FAKE_DOTNET_MODE -eq 'empty') {
+    # No definitions or results: discovery found nothing yet vstest still exits 0.
+}
+elseif ($env:FAKE_DOTNET_MODE -eq 'skip-and-flaky') {
+    $definitions = '<UnitTest id="case-1" name="Sample"><TestMethod className="Fixture.Tests" name="Sample" /></UnitTest>' +
+        '<UnitTest id="case-2" name="Unstable"><TestMethod className="Fixture.Tests" name="Unstable" /></UnitTest>'
+    $unstableOutcome = if ($calls -eq 2) { 'Passed' } else { 'Failed' }
+    $results = '<UnitTestResult testId="case-1" testName="Sample" outcome="NotExecuted"><Output><ErrorInfo><Message>Required capability was unavailable.</Message></ErrorInfo></Output></UnitTestResult>' +
+        "<UnitTestResult testId=`"case-2`" testName=`"Unstable`" outcome=`"$unstableOutcome`" />"
+}
 elseif ($env:FAKE_DOTNET_MODE -eq 'skip') {
     $definitions = '<UnitTest id="case-1" name="Sample"><TestMethod className="Fixture.Tests" name="Sample" /></UnitTest>'
     $results = '<UnitTestResult testId="case-1" testName="Sample" outcome="NotExecuted"><Output><ErrorInfo><Message>Required capability was unavailable.</Message></ErrorInfo></Output></UnitTestResult>'
@@ -44,20 +54,20 @@ else {
 }
 $trx = "<TestRun><TestDefinitions>$definitions</TestDefinitions><Results>$results</Results></TestRun>"
 [IO.File]::WriteAllText((Join-Path $resultsDirectory $trxName), $trx)
-if ($env:FAKE_DOTNET_MODE -eq 'flaky' -and $calls -eq 1) { exit 1 }
+if ($env:FAKE_DOTNET_MODE -in @('flaky', 'skip-and-flaky') -and $calls -eq 1) { exit 1 }
 if ($env:FAKE_DOTNET_MODE -eq 'data-driven') { exit 1 }
 exit 0
 '@
 
+$oldPath = $env:PATH
+$oldScript = $env:FAKE_DOTNET_SCRIPT
+$oldCallFile = $env:FAKE_DOTNET_CALL_FILE
+$oldMode = $env:FAKE_DOTNET_MODE
+$oldCodexPath = $env:CODEX_PATH
 try {
     New-Item -ItemType Directory -Force -Path $stubRoot | Out-Null
     [IO.File]::WriteAllText($fakeDotnetPath, $fakeDotnet, [Text.UTF8Encoding]::new($true))
     [IO.File]::WriteAllText($shimPath, '@echo off' + "`r`n" + 'pwsh -NoProfile -File "%FAKE_DOTNET_SCRIPT%" %*' + "`r`n" + 'exit /b %ERRORLEVEL%' + "`r`n", [Text.UTF8Encoding]::new($true))
-    $oldPath = $env:PATH
-    $oldScript = $env:FAKE_DOTNET_SCRIPT
-    $oldCallFile = $env:FAKE_DOTNET_CALL_FILE
-    $oldMode = $env:FAKE_DOTNET_MODE
-    $oldCodexPath = $env:CODEX_PATH
     $env:PATH = "$stubRoot;$oldPath"
     $env:FAKE_DOTNET_SCRIPT = $fakeDotnetPath
     Remove-Item Env:CODEX_PATH -ErrorAction SilentlyContinue
@@ -66,6 +76,8 @@ try {
         [pscustomobject]@{ Name = 'passed'; Mode = 'passed'; ExpectedExit = 0; ExpectedStatus = 'passed'; ExpectedRetry = 'not-needed'; ExpectedCalls = 1 },
         [pscustomobject]@{ Name = 'flaky'; Mode = 'flaky'; ExpectedExit = 1; ExpectedStatus = 'flaky'; ExpectedRetry = 'flaky-failure-gate'; ExpectedCalls = 2 },
         [pscustomobject]@{ Name = 'required-skip'; Mode = 'skip'; ExpectedExit = 1; ExpectedStatus = 'blocked'; ExpectedRetry = 'not-retried-required-skip'; ExpectedCalls = 1 },
+        [pscustomobject]@{ Name = 'skip-and-flaky'; Mode = 'skip-and-flaky'; ExpectedExit = 1; ExpectedStatus = 'flaky'; ExpectedRetry = 'flaky-failure-gate'; ExpectedCalls = 2 },
+        [pscustomobject]@{ Name = 'zero-tests'; Mode = 'empty'; ExpectedExit = 1; ExpectedStatus = 'failed'; ExpectedRetry = 'no-tests-executed'; ExpectedCalls = 1 },
         [pscustomobject]@{ Name = 'data-driven'; Mode = 'data-driven'; ExpectedExit = 1; ExpectedStatus = 'failed'; ExpectedRetry = 'not-retryable-non-isolatable-test-case'; ExpectedCalls = 1 },
         [pscustomobject]@{ Name = 'abnormal-host'; Mode = 'host-crash'; ExpectedExit = 1; ExpectedStatus = 'blocked'; ExpectedRetry = 'no-trx-result'; ExpectedCalls = 1 }
     )
@@ -89,7 +101,7 @@ try {
         $actualCalls = [int](Get-Content -LiteralPath $env:FAKE_DOTNET_CALL_FILE -Raw)
         if ($actualCalls -ne $scenario.ExpectedCalls) { throw "$($scenario.Name): expected $($scenario.ExpectedCalls) dotnet calls, got $actualCalls." }
     }
-    Write-Host 'Test-suite evidence behavior passed: pass, sticky flaky, required skip, non-isolatable data row, and abnormal host.'
+    Write-Host 'Test-suite evidence behavior passed: pass, sticky flaky, required skip, skip with retried failure, zero tests, non-isolatable data row, and abnormal host.'
 }
 finally {
     if ($null -eq $oldPath) { Remove-Item Env:PATH -ErrorAction SilentlyContinue } else { $env:PATH = $oldPath }

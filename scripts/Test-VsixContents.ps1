@@ -28,12 +28,23 @@ try {
     $namespaces.AddNamespace('v', 'http://schemas.microsoft.com/developer/vsx-schema/2011')
     $identity = $vsixManifest.SelectSingleNode('//v:PackageManifest/v:Metadata/v:Identity', $namespaces)
     if ($null -eq $identity) { throw 'VSIX identity is missing.' }
+    $identitySource = Get-Content -LiteralPath (Join-Path $root 'src/Codex.VisualStudio.Extension/CodexExtension.cs') -Raw
+    $expectedId = [regex]::Match($identitySource, 'public const string Id = "(?<value>[^"]+)";').Groups['value'].Value
+    $expectedPublisher = [regex]::Match($identitySource, 'public const string PublisherName = "(?<value>[^"]+)";').Groups['value'].Value
+    if ([string]::IsNullOrWhiteSpace($expectedId) -or [string]::IsNullOrWhiteSpace($expectedPublisher)) {
+        throw 'ExtensionIdentity Id or PublisherName declaration was not found.'
+    }
+    if ($identity.Id -cne $expectedId) { throw "VSIX identity '$($identity.Id)' does not match ExtensionIdentity.Id '$expectedId'." }
+    if ($identity.Publisher -cne $expectedPublisher) {
+        throw "VSIX publisher '$($identity.Publisher)' does not match ExtensionIdentity.PublisherName '$expectedPublisher'."
+    }
     if (-not [string]::IsNullOrWhiteSpace($ExpectedVersion) -and $identity.Version -ne $ExpectedVersion) {
         throw "VSIX version '$($identity.Version)' does not match expected '$ExpectedVersion'."
     }
 
     $pairs = @(
         [pscustomobject]@{ Entry = 'Codex.VisualStudio.Extension.dll'; Output = Join-Path $extensionOutput 'Codex.VisualStudio.Extension.dll' }
+        [pscustomobject]@{ Entry = 'Codex.VisualStudio.Contracts.dll'; Output = Join-Path $extensionOutput 'Codex.VisualStudio.Contracts.dll' }
     )
     foreach ($pair in $pairs) {
         $entry = $entries[$pair.Entry]
@@ -52,18 +63,19 @@ try {
     }
 
     $allWorkerFiles = @(Get-ChildItem -LiteralPath $workerOutput -File -Recurse | Where-Object Extension -ne '.pdb')
+    # Only culture satellite assemblies may be excluded (the VSIX packager flattens Worker/<culture>/
+    # so they cannot be paired one-to-one); any other nested runtime file must be packaged and verified.
+    $excludedWorkerSatellites = @($allWorkerFiles |
+        ForEach-Object { [IO.Path]::GetRelativePath($workerOutput, $_.FullName).Replace('\', '/') } |
+        Where-Object { $_ -match '^[^/]+/[^/]+\.resources\.dll$' })
     $workerFiles = @($allWorkerFiles | Where-Object {
-        [IO.Path]::GetRelativePath($workerOutput, $_.FullName) -notmatch '[\\/]'
+        [IO.Path]::GetRelativePath($workerOutput, $_.FullName).Replace('\', '/') -notin $excludedWorkerSatellites
     })
     if ($workerFiles.Count -eq 0) { throw "Worker build output is empty: $workerOutput" }
     foreach ($workerFile in $workerFiles) {
         $relativeWorkerPath = [IO.Path]::GetRelativePath($workerOutput, $workerFile.FullName).Replace('\', '/')
         $entryName = "Worker/$relativeWorkerPath"
         $entry = $entries[$entryName]
-        if ($null -eq $entry -and $relativeWorkerPath -match '^[^/]+/.+\.resources\.dll$') {
-            $entryName = $relativeWorkerPath
-            $entry = $entries[$entryName]
-        }
         if ($null -eq $entry) { throw "VSIX is missing Worker build output '$relativeWorkerPath'." }
         $stream = $entry.Open()
         try {
@@ -110,7 +122,8 @@ $result = [ordered]@{
     sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $package.FullName).Hash.ToLowerInvariant()
     publisher = [string]$identity.Publisher
     version = [string]$identity.Version
-    excludedWorkerSatelliteFileCount = $allWorkerFiles.Count - $workerFiles.Count
+    identity = [string]$identity.Id
+    excludedWorkerSatellites = $excludedWorkerSatellites
     checks = @($checks)
     status = 'passed'
 }

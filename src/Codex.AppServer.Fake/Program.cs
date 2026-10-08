@@ -719,6 +719,7 @@ Task EmitInteractionScenarioAsync()
         {
             serverName = "docs", threadId = "fake-thread-1", mode = "openai/userVerification",
             title = "Verify identity", description = "Untrusted challenge text must not be projected.", challenge = "fake-secret-challenge",
+            proof = "fake-secret-proof",
         })
     );
 

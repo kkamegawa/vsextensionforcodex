@@ -155,6 +155,7 @@ function Invoke-DotnetTest([string]$ProjectPath, [string]$SuiteName, [string]$Tr
     }
 }
 
+$completed = $false
 try {
     foreach ($projectPath in $Project) {
         $resolvedProject = [IO.Path]::GetFullPath((Join-Path $root $projectPath))
@@ -176,9 +177,10 @@ try {
             $suite.status = 'blocked'
             $suite.retryStatus = 'no-trx-result'
         }
-        elseif ($initial.Counts.skipped -gt 0) {
-            $suite.status = 'blocked'
-            $suite.retryStatus = 'not-retried-required-skip'
+        elseif ($initial.Counts.total -eq 0) {
+            # vstest exits 0 when discovery finds nothing; an empty run is never evidence of a pass.
+            $suite.status = 'failed'
+            $suite.retryStatus = 'no-tests-executed'
         }
         elseif ($initial.exitCode -ne 0 -or $initial.Counts.failed -gt 0) {
             $suite.status = 'failed'
@@ -221,11 +223,19 @@ try {
                 }
             }
         }
+        elseif ($initial.Counts.skipped -gt 0) {
+            $suite.status = 'blocked'
+            $suite.retryStatus = 'not-retried-required-skip'
+        }
         $manifest.suites.Add($suite)
     }
+    $completed = $true
 }
 finally {
-    if (@($manifest.suites | Where-Object status -in @('failed', 'flaky')).Count -gt 0) {
+    if (-not $completed) {
+        $manifest.status = 'failed'
+    }
+    elseif (@($manifest.suites | Where-Object status -in @('failed', 'flaky')).Count -gt 0) {
         $manifest.status = 'failed'
     }
     elseif (@($manifest.suites | Where-Object status -eq 'blocked').Count -gt 0) {
@@ -236,6 +246,6 @@ finally {
 }
 
 if ($manifest.status -ne 'passed') {
-    throw "One or more test suites failed or were flaky. See sanitized evidence: $manifestPath"
+    throw "Test suites did not pass (status: $($manifest.status)). See sanitized evidence: $manifestPath"
 }
 Write-Host "All test suites passed. Evidence: $manifestPath"
