@@ -48,6 +48,8 @@ public sealed class StreamingBuffer : IAsyncDisposable
         }
     }
 
+    public void Discard(string key) => entries.TryRemove(key, out _);
+
     public async ValueTask DisposeAsync()
     {
         lifetime.Cancel();
@@ -80,6 +82,10 @@ public sealed class StreamingBuffer : IAsyncDisposable
 
                     outgoing = Clone(entry.Template);
                     outgoing.Text = entry.Visible.ToString();
+                    if (outgoing.PlanDelta is not null)
+                    {
+                        outgoing.PlanDelta.Text = outgoing.Text;
+                    }
                     entry.Visible.Clear();
                     entry.Dirty = false;
                     if (entry.Overflow.Length > 0)
@@ -110,6 +116,13 @@ public sealed class StreamingBuffer : IAsyncDisposable
         PayloadJson = value.PayloadJson,
         Truncated = value.Truncated,
         OverflowFile = value.OverflowFile,
+        PlanDelta = value.PlanDelta is null ? null : new TurnPlanDeltaEvent
+        {
+            ThreadId = value.PlanDelta.ThreadId,
+            TurnId = value.PlanDelta.TurnId,
+            ItemId = value.PlanDelta.ItemId,
+            Text = value.PlanDelta.Text,
+        },
     };
 
     private static string SanitizeFileName(string value)

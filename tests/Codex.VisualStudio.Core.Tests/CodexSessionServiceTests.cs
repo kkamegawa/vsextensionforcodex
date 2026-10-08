@@ -256,8 +256,11 @@ public sealed class CodexSessionServiceTests
         Assert.AreEqual(2, attachments.Attachments.Count);
         Assert.IsNotNull(attachments.Attachments[0].UnavailableReason);
         Assert.IsNotNull(attachments.Attachments[1].UnavailableReason);
-        Assert.IsFalse(JsonSerializer.Serialize(attachments).Contains("safe", StringComparison.Ordinal));
-        Assert.IsFalse(JsonSerializer.Serialize(attachments).Contains(oversizedPayload, StringComparison.Ordinal));
+        string serializedAttachments = JsonSerializer.Serialize(attachments);
+        Assert.IsFalse(serializedAttachments.Contains("\"safe\":true", StringComparison.Ordinal));
+        Assert.IsFalse(serializedAttachments.Contains("\"payload\":", StringComparison.OrdinalIgnoreCase));
+        Assert.IsFalse(serializedAttachments.Contains("ServerPath", StringComparison.Ordinal));
+        Assert.IsFalse(serializedAttachments.Contains(oversizedPayload, StringComparison.Ordinal));
 
         JsonElement readParameters = JsonSerializer.SerializeToElement(
             connection.Requests.Single(item => item.Method == "thread/read").Parameters);
@@ -555,6 +558,279 @@ public sealed class CodexSessionServiceTests
     }
 
     [TestMethod]
+    public async Task ModelModalitiesDefaultOnlyWhenPropertyIsOmitted()
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "model/list"
+                ? JsonSerializer.SerializeToElement(new
+                {
+                    data = new object[]
+                    {
+                        new { model = "omitted", isDefault = true },
+                        new { model = "explicit-empty", inputModalities = Array.Empty<string>() },
+                    },
+                })
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        ListModelsResult result = await service.ListModelsAsync(CancellationToken.None);
+
+        CollectionAssert.AreEqual(new[] { "text", "image" }, result.Models.Single(model => model.Id == "omitted").InputModalities.ToArray());
+        Assert.AreEqual(0, result.Models.Single(model => model.Id == "explicit-empty").InputModalities.Count);
+    }
+
+    [TestMethod]
+    public async Task StartTurnRejectsExplicitEmptyModalitiesBeforeDispatch()
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "model/list"
+                ? JsonSerializer.SerializeToElement(new
+                {
+                    data = new object[] { new { model = "empty-input", isDefault = true, inputModalities = Array.Empty<string>() } },
+                })
+                : method == "thread/read"
+                    ? JsonSerializer.SerializeToElement(new { thread = new { id = "thread-1", model = "empty-input" } })
+                : JsonSerializer.SerializeToElement(new { turn = new { id = "turn-1" } }),
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        await Assert.ThrowsExactlyAsync<AttachmentRejectedException>(() => service.StartTurnAsync(
+            new StartTurnRequest { ThreadId = "thread-1", Text = "hello" },
+            CancellationToken.None));
+
+        Assert.AreEqual(0, connection.Requests.Count(request => request.Method == "turn/start"));
+    }
+
+    [TestMethod]
+    public async Task PlanDeltaBatchesAndFinalCompletionSuppressesQueuedAndLateDeltas()
+    {
+        var connection = new RecordingConnection();
+        await using var service = CreateService();
+        var events = new System.Collections.Concurrent.ConcurrentQueue<ConversationEvent>();
+        service.ConversationEventReceived += (value, _) =>
+        {
+            events.Enqueue(value);
+            return Task.CompletedTask;
+        };
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        await connection.EmitNotificationAsync("item/plan/delta", new
+        {
+            threadId = "thread-1", turnId = "turn-1", itemId = "plan-1", delta = "draft "
+        });
+        await connection.EmitNotificationAsync("item/plan/delta", new
+        {
+            threadId = "thread-1", turnId = "turn-1", itemId = "plan-1", delta = "text"
+        });
+        await Task.Delay(TimeSpan.FromMilliseconds(120));
+        ConversationEvent delta = events.Single(item => item.Kind == ConversationEventKind.PlanDelta);
+        Assert.AreEqual("draft text", delta.PlanDelta?.Text);
+
+        await connection.EmitNotificationAsync("item/plan/delta", new
+        {
+            threadId = "thread-1", turnId = "turn-1", itemId = "plan-1", delta = "discard me"
+        });
+        await connection.EmitNotificationAsync("item/completed", new
+        {
+            threadId = "thread-1", turnId = "turn-1",
+            item = new { id = "plan-1", type = "plan", text = "authoritative final" },
+        });
+        await connection.EmitNotificationAsync("item/plan/delta", new
+        {
+            threadId = "thread-1", turnId = "turn-1", itemId = "plan-1", delta = "late"
+        });
+        await Task.Delay(TimeSpan.FromMilliseconds(120));
+
+        ConversationEvent final = events.Last(item => item.Kind == ConversationEventKind.ItemCompleted);
+        Assert.AreEqual("authoritative final", final.Text);
+        Assert.IsTrue(final.Plan?.IsComplete);
+        Assert.AreEqual(1, events.Count(item => item.Kind == ConversationEventKind.PlanDelta));
+    }
+
+    [TestMethod]
+    public async Task ItemStartedIsEmittedWithoutTranscriptParts()
+    {
+        var connection = new RecordingConnection();
+        await using var service = CreateService();
+        var events = new System.Collections.Concurrent.ConcurrentQueue<ConversationEvent>();
+        service.ConversationEventReceived += (value, _) =>
+        {
+            events.Enqueue(value);
+            return Task.CompletedTask;
+        };
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        await connection.EmitNotificationAsync("item/started", new
+        {
+            threadId = "thread-1", turnId = "turn-1",
+            item = new { id = "item-1", type = "commandExecution" },
+        });
+
+        ConversationEvent started = events.Single(item => item.Kind == ConversationEventKind.ItemStarted);
+        Assert.AreEqual(0, started.Parts.Count);
+        Assert.IsNull(started.PayloadJson);
+    }
+
+    [TestMethod]
+    public async Task ThreadStatusSnapshotAcceptsOnlyCurrentIdleOrBusyState()
+    {
+        var connection = new RecordingConnection();
+        await using var service = CreateService();
+        var notices = new List<AppServerNotice>();
+        service.ConversationEventReceived += (value, _) =>
+        {
+            if (value.Notice is { } notice)
+            {
+                notices.Add(notice);
+            }
+
+            return Task.CompletedTask;
+        };
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+        long firstGeneration = service.ConnectionGeneration;
+
+        await connection.EmitNotificationAsync("thread/status/changed", new
+        {
+            threadId = "thread-1", status = new { type = "idle" },
+        });
+        Assert.IsTrue(service.TryGetThreadStatus("thread-1", firstGeneration, out string idle));
+        Assert.AreEqual("idle", idle);
+
+        await connection.EmitNotificationAsync("thread/status/changed", new
+        {
+            threadId = "thread-1", status = new { type = "active", activeFlags = new[] { "turn" } },
+        });
+        Assert.IsTrue(service.TryGetThreadStatus("thread-1", firstGeneration, out string busy));
+        Assert.AreEqual("busy", busy);
+
+        await connection.EmitNotificationAsync("thread/status/changed", new
+        {
+            threadId = "thread-1", status = new { type = "notLoaded" },
+        });
+        Assert.IsFalse(service.TryGetThreadStatus("thread-1", firstGeneration, out _));
+        Assert.AreEqual(AppServerNoticeKind.ThreadStatusChanged, notices.Last().Kind);
+
+        await service.InitializeAsync(new RecordingConnection(), Options(), CancellationToken.None);
+        Assert.IsFalse(service.TryGetThreadStatus("thread-1", firstGeneration, out _));
+        Assert.IsFalse(service.TryGetThreadStatus("thread-1", service.ConnectionGeneration, out _));
+    }
+
+    [TestMethod]
+    public async Task FileChangeActionResolvesOnlyOwnerBoundLocalPath()
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"codex-artifact-action-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        string localFile = Path.Combine(root, "changed.txt");
+        await File.WriteAllTextAsync(localFile, "changed");
+        var connection = new RecordingConnection();
+        await using var service = CreateService();
+        ConversationEvent? completed = null;
+        service.ConversationEventReceived += (value, _) =>
+        {
+            if (value.Kind == ConversationEventKind.ItemCompleted)
+            {
+                completed = value;
+            }
+
+            return Task.CompletedTask;
+        };
+        await service.InitializeAsync(connection, Options(root), CancellationToken.None);
+
+        await connection.EmitNotificationAsync("item/completed", new
+        {
+            threadId = "thread-1",
+            turnId = "turn-1",
+            item = new
+            {
+                id = "file-change-1",
+                type = "fileChange",
+                status = "completed",
+                changes = new[]
+                {
+                    new { path = localFile, diff = "+changed", kind = new { type = "update", move_path = (string?)null } },
+                },
+            },
+        });
+
+        ArtifactPart part = completed?.Parts.Single(item => item.Kind == ArtifactPartKind.File)
+            ?? throw new AssertFailedException("The completed file change did not produce a typed file part.");
+        Assert.IsNotNull(part.ActionId);
+        Assert.IsFalse(JsonSerializer.Serialize(completed).Contains(localFile, StringComparison.Ordinal));
+        ArtifactActionResult action = await service.ResolveArtifactActionAsync(new ArtifactActionRequest
+        {
+            StatePartitionFingerprint = service.StatePartitionFingerprint,
+            OwnerGeneration = service.OwnerGeneration,
+            ConnectionGeneration = service.ConnectionGeneration,
+            ActionId = part.ActionId,
+            Action = ArtifactActionKind.Open,
+        }, CancellationToken.None);
+
+        Assert.IsTrue(action.Success, action.FailureReason);
+        Assert.AreEqual(localFile, action.LocalPath);
+        Assert.IsNull(action.PreviewBytes);
+        Directory.Delete(root, recursive: true);
+    }
+
+    [TestMethod]
+    public async Task HistoryProjectsTypedFileAndPlanAndSuppressesOverlappingLateDelta()
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"codex-history-artifacts-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        string localFile = Path.Combine(root, "history.txt");
+        await File.WriteAllTextAsync(localFile, "history");
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "thread/items/list"
+                ? JsonSerializer.SerializeToElement(new
+                {
+                    data = new object[]
+                    {
+                        new
+                        {
+                            turnId = "turn-1",
+                            item = new
+                            {
+                                id = "file-change-1", type = "fileChange", status = "completed",
+                                changes = new[] { new { path = localFile, diff = "+history", kind = new { type = "update", move_path = (string?)null } } },
+                            },
+                        },
+                        new
+                        {
+                            turnId = "turn-1",
+                            item = new { id = "plan-1", type = "plan", text = "final history plan" },
+                        },
+                    },
+                    nextCursor = (string?)null,
+                })
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(root), CancellationToken.None);
+
+        ThreadItemsPage page = await service.ListThreadItemsAsync("thread-1", "turn-1", null, 10, CancellationToken.None);
+
+        ThreadHistoryItem fileItem = page.Items.Single(item => item.Type == "fileChange");
+        Assert.IsNotNull(fileItem.Parts.Single().ActionId);
+        Assert.IsFalse(JsonSerializer.Serialize(fileItem).Contains(localFile, StringComparison.Ordinal));
+        ThreadHistoryItem planItem = page.Items.Single(item => item.Type == "plan");
+        Assert.IsTrue(planItem.Plan?.IsComplete);
+        Assert.AreEqual("final history plan", planItem.Plan?.Explanation);
+
+        await connection.EmitNotificationAsync("item/plan/delta", new
+        {
+            threadId = "thread-1", turnId = "turn-1", itemId = "plan-1", delta = "late history overlap",
+        });
+        await Task.Delay(TimeSpan.FromMilliseconds(100));
+        Assert.IsFalse(connection.Requests.Any(request => request.Method == "turn/start"));
+        Directory.Delete(root, recursive: true);
+    }
+
+    [TestMethod]
     public async Task ListModelsReturnsEmptyWhenAppServerDoesNotSupportMethod()
     {
         var connection = new RecordingConnection
@@ -696,11 +972,11 @@ public sealed class CodexSessionServiceTests
 
         JsonElement parameters = ParametersFor(connection, "turn/start");
         JsonElement[] input = parameters.GetProperty("input").EnumerateArray().ToArray();
-        Assert.AreEqual(2, input.Length);
-        Assert.AreEqual("skill", input[1].GetProperty("type").GetString());
-        Assert.AreEqual("space.dot", input[1].GetProperty("name").GetString());
-        Assert.AreEqual("/repo/.codex/skills/space.dot/SKILL.md", input[1].GetProperty("path").GetString());
-        Assert.IsFalse(input[1].TryGetProperty("scope", out _));
+        Assert.AreEqual(1, input.Length);
+        Assert.AreEqual("skill", input[0].GetProperty("type").GetString());
+        Assert.AreEqual("space.dot", input[0].GetProperty("name").GetString());
+        Assert.AreEqual("/repo/.codex/skills/space.dot/SKILL.md", input[0].GetProperty("path").GetString());
+        Assert.IsFalse(input[0].TryGetProperty("scope", out _));
     }
 
     [TestMethod]
@@ -3291,8 +3567,9 @@ public sealed class CodexSessionServiceTests
                 return Task.FromResult(GatewayOAuthReadResponse.Clone());
             }
 
-            return AsyncHandler?.Invoke(method, parameters, cancellationToken)
-                ?? Task.FromResult(Handler(method, parameters));
+            return ApplyUnconfiguredFixture(method, parameters,
+                AsyncHandler?.Invoke(method, parameters, cancellationToken)
+                ?? Task.FromResult(Handler(method, parameters)));
         }
 
         public Task SendNotificationAsync(string method, object? parameters, CancellationToken cancellationToken)
@@ -3332,6 +3609,56 @@ public sealed class CodexSessionServiceTests
         public void EmitClosed(Exception? exception = null) => Closed?.Invoke(this, exception);
 
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+
+        private static async Task<JsonElement> ApplyUnconfiguredFixture(
+            string method,
+            object? parameters,
+            Task<JsonElement> responseTask)
+        {
+            JsonElement response = await responseTask.ConfigureAwait(false);
+            if (response.ValueKind != JsonValueKind.Object || response.EnumerateObject().Any())
+            {
+                return response;
+            }
+
+            return method switch
+            {
+                "model/list" => JsonSerializer.SerializeToElement(new
+                {
+                    data = new object[]
+                    {
+                        new { model = "model-a", isDefault = true },
+                        new { model = "gpt-5", isDefault = false },
+                        new { model = "gpt-5-codex", isDefault = false },
+                        new { model = "model-x", isDefault = false },
+                    },
+                    nextCursor = (string?)null,
+                }),
+                "thread/read" => JsonSerializer.SerializeToElement(new
+                {
+                    thread = new { id = ReadStringParameter(parameters, "threadId") ?? "thread-1", model = "model-a" },
+                }),
+                "thread/start" => JsonSerializer.SerializeToElement(new
+                {
+                    thread = new { id = "thread-1", model = "model-a" },
+                }),
+                _ => response,
+            };
+        }
+
+        private static string? ReadStringParameter(object? parameters, string propertyName)
+        {
+            if (parameters is null)
+            {
+                return null;
+            }
+
+            JsonElement value = JsonSerializer.SerializeToElement(parameters);
+            return value.TryGetProperty(propertyName, out JsonElement property)
+                && property.ValueKind == JsonValueKind.String
+                    ? property.GetString()
+                    : null;
+        }
     }
 
     private sealed record RecordedRequest(string Method, object? Parameters, TimeSpan Timeout);

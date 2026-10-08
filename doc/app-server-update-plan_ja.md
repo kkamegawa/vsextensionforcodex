@@ -206,42 +206,13 @@ Worker 契約 v19 から開始し、merge 時点で次に利用可能な契約 v
 
 ## Phase 6 — 日常利用の App Server 機能
 
-トラッキング: [#155](https://github.com/kkamegawa/vsextensionforcodex/issues/155)
+トラッキング: [#155](https://github.com/kkamegawa/vsextensionforcodex/issues/155)。承認済み最終設計と package 計画は [日常利用の App Server 機能](daily-use-app-server-design_ja.md) と[実装計画](daily-use-app-server-plan_ja.md)に記録する。
 
-### 計画と状態
+CLI 0.159.1 stable を対象とし、0.155.1 の回帰 fixture を使う。基準は commit `69deda1`（PR #169 マージ済み）、Worker contract v20 とし、統合時に次の利用可能版を割り当てる。CLI、SDK、runtime、package は固定する。#152 の mapping/ownership、#153 の上限付き履歴・保存済み添付 metadata 復旧、#154 の質問／権限／MCP 基盤を再利用する。
 
-- `item/plan/delta` を逐次表示し、重複ステップや無制限の増加を生じさせず、完了 plan item と統合する。
-- スレッド状態、設定警告、モデル変更／追加確認、MCP 実行状態を用途ごとに区別した上限付き UI で表示する。
-- 表示する全テキストをサニタイズし、診断情報を秘匿化する。
+Phase 6 は、任意の experimental plan delta と上限付き notice、実行時カタログに基づく入力受け入れと 0.159.1 追加 field、正確なコマンド保持・確認・ローカル policy・独立 RPC／実行期限・thread ごとの pending lock を備えた `/shell [--timeout-ms N] -- <command>`、型付き上限結果・PNG/JPEG preview・操作時の物理検証付き mapped Open/Reveal、クライアント所有 `relaycodex.file.v1` payload を使う明示的な添付 add/remove、ローカル Windows のみの sandbox 設定を含む。CLI 0.159.1 の shell method は常に sandbox 外の full access で実行する。保存済み添付は metadata のままとし、composer input へ自動追加しない。
 
-### モデル capability の扱い
-
-- モデル ID、`max`／`ultra` を含む推論量、速度／service tier、入力 modality はモデルカタログを正本とする。
-- 既存の継承、永続、一時的な次ターン上書きの意味を維持する。
-- 未対応の画像／ファイル modality はターン開始前に説明または無効化する。
-
-### 明示的な shell 実行
-
-- `thread/shellCommand` を利用する `/shell [--timeout-ms N] -- <command>` を追加する。
-- 明示的なユーザー操作からだけ実行する。
-- 実行前に接続／プロファイル、正確なコマンド、作業ディレクトリ、サーバーが報告する sandbox 動作を表示する。
-- コマンド実行期限と JSON-RPC 応答期限を分離する。
-- timeout 省略時はサーバー既定、`0` は即時 timeout、負数は入力エラーとする。
-
-### 型付き成果物と Windows sandbox 状態
-
-- MCP 結果、画像、ファイル成果物を型付きの上限付きコンテンツとして表示する。
-- サーバーが報告した切り詰めとローカル表示上限を区別する。
-- 画像プレビューに上限を設け、対応付け済みファイルだけ操作可能にする。
-- ローカル Windows sandbox の初期設定、進行、完了、対処可能な失敗理由を表示する。
-- ローカル設定フローをリモートサーバーの設定エディターとして公開しない。
-
-### 保存済みスレッド添付
-
-- `thread/attachment/list` を cursor でページ取得し、サーバーの上限に従って、スレッドを再開せずに保存済み添付を表示する。
-- 添付の追加・削除は明示的なユーザー操作からだけ `thread/attachment/add`／`thread/attachment/remove` を呼び、`thread/attachment/updated` 通知を重複行なく統合する。
-- preview、open、add、remove を有効にする前に、対応 MIME、payload／size 上限、ローカル／サーバーパス対応付けを検証する。対応付け不能または未対応の添付は、理由を表示した非 open 状態にする。
-- 重複 add と存在しない remove の冪等性を維持し、再接続、履歴復旧、非 ephemeral fork 後に添付状態を再構築する。
+P0–P6 と依存関係は詳細計画に定める。検証は固定 0.159.1／0.155.1 fixture、対象から Core/UI 全テスト、warning-free Debug/Release build、contract/schema と VSIX integrity、Experimental Instance のテーマ・狭幅・keyboard/focus・accessibility のスクリーンショットを含む。スクリーンショットがなければ未達とする。証跡を記録するまで Issue #155 を open とし、Issue #156 の release gate を維持する。
 
 ## Phase 7 — 統合検証とリリース準備
 

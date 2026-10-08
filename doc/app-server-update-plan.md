@@ -206,42 +206,13 @@ The implementation starts from Worker contract v19 and allocates the next availa
 
 ## Phase 6 — Daily-use App Server features
 
-Tracking: [#155](https://github.com/kkamegawa/vsextensionforcodex/issues/155)
+Tracking: [#155](https://github.com/kkamegawa/vsextensionforcodex/issues/155). The approved final design and package plan are [Daily-use App Server Features](daily-use-app-server-design.md) and [its implementation plan](daily-use-app-server-plan.md).
 
-### Plans and status
+The phase targets CLI 0.159.1 stable with 0.155.1 regression fixtures. Baseline: commit `69deda1` (PR #169 merged), Worker contract v20; allocate the next available contract version at merge time. CLI, SDK, runtime, and packages stay pinned. Reuse the #152 mapping/ownership, #153 bounded history and saved-attachment metadata recovery, and #154 question/permission/MCP foundations.
 
-- Render `item/plan/delta` incrementally and reconcile it with the completed plan item without duplicate steps or unbounded growth.
-- Present thread state, configuration warnings, model changes/additional confirmation, and MCP execution state with distinct bounded UI treatments.
-- Sanitize all displayed text and redact diagnostics.
+Phase 6 includes optional experimental plan deltas and bounded notices; live-catalog input admission and additive 0.159.1 fields; `/shell [--timeout-ms N] -- <command>` with exact command preservation, confirmation, local policy evaluation, independent RPC/execution deadlines, and a per-thread pending lock; typed bounded result parts, PNG/JPEG preview, and mapped Open/Reveal with action-time physical validation; explicit saved-attachment add/remove using the client-owned `relaycodex.file.v1` payload; and local-Windows-only sandbox setup with indeterminate progress and truthful outcome states. The shell method always executes unsandboxed with full access in CLI 0.159.1. Saved attachments remain metadata and never become composer input automatically.
 
-### Model capability handling
-
-- Treat the model catalog as the source of truth for model ID, reasoning levels (including `max`/`ultra`), speed/service tier, and input modalities.
-- Preserve existing inherited, persistent, and next-turn override semantics.
-- Explain or disable unsupported image/file modalities before starting a turn.
-
-### Explicit shell execution
-
-- Add `/shell [--timeout-ms N] -- <command>` backed by `thread/shellCommand`.
-- Execute only from explicit user action.
-- Show connection/profile, exact command, working directory, and server-reported sandbox behavior before execution.
-- Keep command execution timeout separate from JSON-RPC response timeout.
-- Omitted timeout uses the server default; `0` means immediate timeout; negative values are input errors.
-
-### Typed artifacts and Windows sandbox status
-
-- Render MCP results, images, and file artifacts as typed bounded content.
-- Distinguish server-reported truncation from a local display limit.
-- Use a bounded image preview and enable file operations only for mapped files.
-- Show local Windows sandbox initial setup, progress, completion, and actionable failure reasons.
-- Do not expose the local setup flow as a remote-server configuration editor.
-
-### Stored thread attachments
-
-- Issue #153 reads bounded basic attachment metadata through `thread/attachment/list`; it does not restore MIME types or payloads.
-- Issue #155 adds typed attachment actions: explicit user-driven add/remove, MIME and payload validation, preview/open/reveal, path mapping, and merge of `thread/attachment/updated` notifications.
-- Validate supported MIME types, payload/size bounds, and local/server path mapping before enabling typed actions. An unmappable or unsupported attachment remains non-openable with a visible reason.
-- Preserve idempotent duplicate-add and absent-remove behavior in Issue #155, and rebuild only the supported metadata after reconnect or history recovery.
+Work packages P0–P6 and their dependencies are defined in the detailed plan. Verification includes pinned 0.159.1/0.155.1 fixtures, targeted then full Core/UI tests, warning-free Debug/Release builds, contract/schema and VSIX integrity checks, plus Experimental Instance screenshots for themes, narrow width, keyboard/focus, and accessibility. Missing screenshots remain unmet criteria. Issue #155 stays open until evidence is recorded; Issue #156 retains the release gate.
 
 ## Phase 7 — Integrated validation and release readiness
 

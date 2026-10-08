@@ -25,6 +25,7 @@ internal enum SlashCommandId
     Memories,
     Project,
     Side,
+    Shell,
 }
 
 internal enum SlashCommandArgumentKind
@@ -81,6 +82,7 @@ internal sealed class SlashCommandCatalog
         new(SlashCommandId.Memories, "memories", "Memories are not exposed by the current app-server API.", SlashCommandArgumentKind.None, false, false, false, "The app-server does not expose a compatible memories API."),
         new(SlashCommandId.Project, "project", "Project switching is not supported by the current single-workspace session.", SlashCommandArgumentKind.None, false, false, false, "Project switching requires multi-workspace session support."),
         new(SlashCommandId.Side, "side", "Side threads are not supported by the current single-thread view.", SlashCommandArgumentKind.None, false, false, false, "Side threads require simultaneous multi-thread UI support."),
+        new(SlashCommandId.Shell, "shell", "Run an explicit server shell command after confirmation.", SlashCommandArgumentKind.RequiredText, true, false, false),
     ];
 
     // Suggestions further than this edit distance are noise rather than likely typos.
@@ -107,7 +109,7 @@ internal sealed class SlashCommandCatalog
         return command is not null;
     }
 
-    public IReadOnlyList<SlashCommandDefinition> Filter(string filter, int maximum = 8)
+    public IReadOnlyList<SlashCommandDefinition> Filter(string filter, int maximum = 9)
     {
         string normalized = filter.TrimStart('/');
         return definitions

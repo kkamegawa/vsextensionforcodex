@@ -22,7 +22,7 @@ namespace Codex.VisualStudio.Extension;
 // serialized as an EMPTY object and every binding to it silently fails (buttons with bound
 // Content render as empty pills, bound text stays blank).
 [DataContract]
-public sealed class ChatViewModel : ObservableObject, IDisposable
+public sealed partial class ChatViewModel : ObservableObject, IDisposable
 {
     private IWorkerBridge bridge;
     private readonly Func<IWorkerBridge> bridgeFactory;
@@ -58,6 +58,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     private string? lastAgentRawKey;
     private int disposed;
     private int connecting;
+    private string? locallyStartedTurnId;
     private WorkerStatus status = new() { State = WorkerConnectionState.Disconnected, Message = "Open Codex to connect." };
     private ThreadSummary? selectedThread;
     private string composerText = string.Empty;
@@ -164,6 +165,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         this.bridgeFactory = bridgeFactory ?? (() => new WorkerBridge(outputChannel));
         this.outputChannel = outputChannel;
         this.extensibility = extensibility;
+        artifactFileActions = new ArtifactFileActions(extensibility);
         workspaceDirectoryResolver = new WorkspaceDirectoryResolver(extensibility);
         projectScaffolder = new ProjectScaffolder(extensibility);
         agentsFileInitializer = new AgentsFileInitializer(extensibility);
@@ -257,6 +259,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         DiscardQuarantinedDraftCommand = new AsyncCommand(DiscardQuarantinedDraftAsync, () => QuarantinedDraft is not null);
         ConfirmApprovalModeCommand = new AsyncCommand(ConfirmApprovalModeAsync, () => HasApprovalModeConfirmation);
         CancelApprovalModeCommand = new AsyncCommand(CancelApprovalModeAsync, () => HasApprovalModeConfirmation);
+        InitializeDailyUseCommands();
         SlashCommands.Configure(OnSlashSuggestionAcceptedAsync, ExecuteSlashSubmissionAsync, OnSlashCommandClearedAsync);
         FileSuggestions.Configure(OnFileSuggestionAcceptedAsync);
 
@@ -551,6 +554,14 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             long previousOwnerGeneration = observedOwnerGeneration;
             if (SetProperty(ref status, value))
             {
+                if (value.TurnId is null || !string.Equals(value.TurnId, locallyStartedTurnId, StringComparison.Ordinal))
+                {
+                    locallyStartedTurnId = null;
+                }
+
+                // The Interrupt button visibility depends on the status turn and thread.
+                OnPropertyChanged(nameof(IsLocallyInterruptible));
+
                 string? currentPartition = value.Target?.StatePartitionFingerprint;
                 long currentOwnerGeneration = value.Target?.OwnerGeneration ?? 0;
                 observedStatePartitionFingerprint = currentPartition;
@@ -592,6 +603,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 OnPropertyChanged(nameof(StatusAutomationHelpText));
                 OnPropertyChanged(nameof(EffectiveApprovalModeText));
                 OnPropertyChanged(nameof(IsUsageAvailable));
+                OnDailyUseStatusChanged(previousGeneration, value);
             }
         }
     }
@@ -645,6 +657,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         source.AccountChanged += OnAccountChangedAsync;
         source.ConversationEventReceived += OnConversationEventAsync;
         source.ThreadAttachmentUpdated += OnThreadAttachmentUpdatedAsync;
+        source.WindowsSandboxSetupChanged += OnWindowsSandboxSetupChangedAsync;
         source.ApprovalRequested += OnApprovalRequestedAsync;
         source.ApprovalResolved += OnApprovalResolvedAsync;
         source.UserInputRequested += OnUserInputRequestedAsync;
@@ -1204,7 +1217,9 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         nextCursor = null;
 
         selectedThread = null;
+        locallyStartedTurnId = null;
         OnPropertyChanged(nameof(SelectedThread));
+        OnPropertyChanged(nameof(IsLocallyInterruptible));
         IsThreadJoined = false;
         IsHistoryStale = false;
         HistoryStatusText = string.Empty;
@@ -1228,6 +1243,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         OnPropertyChanged(nameof(HasPendingAttachments));
         PendingSkills.Clear();
         OnPropertyChanged(nameof(HasPendingSkill));
+        ClearDailyUseOwnerState();
 
         foreach (InteractionCardViewModel card in PendingInteractions)
         {
@@ -1284,6 +1300,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         {
             if (SetProperty(ref selectedThread, value))
             {
+                OnDailyUseThreadChanged(value?.Id);
                 OnPropertyChanged(nameof(EffectiveApprovalModeText));
                 OnPropertyChanged(nameof(IsHistoryOnly));
                 OnPropertyChanged(nameof(HasHistoryNotice));
@@ -1330,6 +1347,8 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
             composerText = value;
             UpdateComposerSuggestions(value);
+            OnPropertyChanged(nameof(ComposerAdmissionReason));
+            OnPropertyChanged(nameof(HasComposerAdmissionReason));
 
             // Deliberately do NOT raise PropertyChanged for ComposerText on this binding-driven
             // (user-typing) path. The data context is replicated to a proxy in a separate process,
@@ -1578,6 +1597,9 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 RefreshReasoningEfforts();
                 RefreshServiceTiers();
                 UpdateComposerSuggestions(ComposerText);
+                OnPropertyChanged(nameof(ComposerAdmissionReason));
+                OnPropertyChanged(nameof(HasComposerAdmissionReason));
+                RaiseCommandStates();
             }
         }
     }
@@ -1835,6 +1857,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         lifetime.Cancel();
         CancelFileSuggestionRefresh();
         slashCommandCoordinator.CancelAll();
+        DisposeDailyUse();
         lifetime.Dispose();
         ValueTask bridgeDisposal = bridge.DisposeAsync();
         if (!bridgeDisposal.IsCompletedSuccessfully)
@@ -2787,6 +2810,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             {
                 string replacement = markdown.ToSafeText(historyItem.Text ?? string.Empty);
                 SetTranscriptText(existingItem, replacement);
+                ApplyDailyUseHistoryItem(existingItem, historyItem, threadId, owner);
                 existingItem.HistoryKey = key;
                 existingItem.IsHistoryCompleted = true;
                 TrimHistoryWindow();
@@ -2798,6 +2822,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         if (existingItem is not null)
         {
             SetTranscriptText(existingItem, markdown.ToSafeText(historyItem.Text ?? string.Empty));
+            ApplyDailyUseHistoryItem(existingItem, historyItem, threadId, owner);
             existingItem.HistoryKey = key;
             existingItem.IsHistoryCompleted = true;
             TrimHistoryWindow();
@@ -2830,6 +2855,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             OwnerGeneration = owner.OwnerGeneration,
             ConnectionGeneration = owner.ConnectionGeneration,
         };
+        ApplyDailyUseHistoryItem(item, historyItem, threadId, owner);
         if (prepend)
         {
             Items.Insert(0, item);
@@ -3082,7 +3108,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             {
                 if (attachment.CreatedAt >= existing.CreatedAt)
                 {
-                    ThreadAttachments[index] = new ThreadAttachmentPresentationViewModel(attachment, markdown);
+                    ThreadAttachments[index] = new ThreadAttachmentPresentationViewModel(attachment, markdown, RemoveSavedAttachmentAsync, CreateSavedAttachmentPresentation(attachment));
                 }
 
                 return;
@@ -3094,7 +3120,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             return;
         }
 
-        ThreadAttachments.Add(new ThreadAttachmentPresentationViewModel(attachment, markdown));
+        ThreadAttachments.Add(new ThreadAttachmentPresentationViewModel(attachment, markdown, RemoveSavedAttachmentAsync, CreateSavedAttachmentPresentation(attachment)));
     }
 
     private async Task<(List<ThreadAttachmentMetadata> Items, bool Truncated)> ListAllAttachmentMetadataAsync(
@@ -3363,6 +3389,8 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             RefreshServiceTiers();
             UpdateComposerSuggestions(ComposerText);
             RefreshReasoningEfforts();
+            OnPropertyChanged(nameof(ComposerAdmissionReason));
+            OnPropertyChanged(nameof(HasComposerAdmissionReason));
         }).ConfigureAwait(false);
     }
 
@@ -3510,6 +3538,13 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 string startedTurnId = await bridge.StartTurnAsync(request, lifetime.Token).ConfigureAwait(false);
                 await OnUiAsync(() =>
                 {
+                    if (IsCurrentOwner(owner) && SelectedThread?.Id == targetThreadId)
+                    {
+                        locallyStartedTurnId = startedTurnId;
+                        OnPropertyChanged(nameof(IsLocallyInterruptible));
+                        InterruptCommand.RaiseCanExecuteChanged();
+                    }
+
                     if (IsCurrentOwner(owner)
                         && SelectedThread?.Id == targetThreadId
                         && optimisticItem is not null
@@ -4538,6 +4573,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             SlashCommandId.Goal => "Goal objective for Set or Edit",
             SlashCommandId.Review => "Branch, commit, or custom instructions",
             SlashCommandId.Plan => "Optional prompt to start in Plan mode",
+            SlashCommandId.Shell => "[--timeout-ms N] -- <command>. The command stays inert until you confirm it.",
             _ => string.Empty,
         };
         bool showArgumentInput = definition.ArgumentKind is
@@ -4733,7 +4769,12 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         string? optionValue,
         string argumentText)
     {
-        string argument = argumentText.Trim();
+        // `/shell` passes an executable string to the local Worker. Preserve every character
+        // after its delimiter, including trailing spaces and newlines; other slash commands
+        // retain their existing normalized argument behavior.
+        string argument = string.Equals(commandName, "shell", StringComparison.OrdinalIgnoreCase)
+            ? argumentText
+            : argumentText.Trim();
         if (string.Equals(commandName, "goal", StringComparison.OrdinalIgnoreCase))
         {
             return optionValue switch
@@ -4762,6 +4803,12 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
     private async Task<bool> ScheduleOrExecuteSlashCommandAsync(SlashCommandInvocation invocation)
     {
+        if (invocation.Definition.Id == SlashCommandId.Shell && Status.TurnId is not null)
+        {
+            await ShowSlashFailureAsync("Wait for the active turn to finish before preparing a shell command.").ConfigureAwait(false);
+            return false;
+        }
+
         if (SelectedThread is not null && !IsThreadJoined)
         {
             await ShowSlashFailureAsync("This conversation is read-only. Join it explicitly before running commands.").ConfigureAwait(false);
@@ -4830,6 +4877,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             or SlashCommandId.Goal
             or SlashCommandId.Reasoning
             or SlashCommandId.Review
+            or SlashCommandId.Shell
             || (invocation.Definition.Id == SlashCommandId.Plan
                 && !string.IsNullOrWhiteSpace(invocation.Arguments));
 
@@ -4840,7 +4888,8 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             or SlashCommandId.Fork
             or SlashCommandId.Goal
             or SlashCommandId.Mcp
-            or SlashCommandId.Review;
+            or SlashCommandId.Review
+            or SlashCommandId.Shell;
 
     private async Task<bool> ExecuteSlashCommandAsync(
         SlashCommandInvocation invocation,
@@ -4871,6 +4920,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 SlashCommandId.Init => await ExecuteInitAsync().ConfigureAwait(false),
                 SlashCommandId.Status => await ExecuteStatusAsync(targetThreadId).ConfigureAwait(false),
                 SlashCommandId.Permissions => await ExecutePermissionsAsync(invocation.Arguments).ConfigureAwait(false),
+                SlashCommandId.Shell => await PrepareShellCommandAsync(invocation.Arguments, targetThreadId!).ConfigureAwait(false),
                 _ => false,
             };
         }
@@ -5743,8 +5793,10 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             return false;
         }
 
-        PendingAttachments.Add(new AttachmentChipViewModel(fullPath, markdown, RemovePendingAttachmentAsync));
+        PendingAttachments.Add(new AttachmentChipViewModel(fullPath, markdown, RemovePendingAttachmentAsync, SavePendingAsThreadAttachmentAsync));
         OnPropertyChanged(nameof(HasPendingAttachments));
+        OnPropertyChanged(nameof(ComposerAdmissionReason));
+        OnPropertyChanged(nameof(HasComposerAdmissionReason));
         RaiseCommandStates();
         return true;
     }
@@ -5753,6 +5805,8 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     {
         PendingAttachments.Remove(attachment);
         OnPropertyChanged(nameof(HasPendingAttachments));
+        OnPropertyChanged(nameof(ComposerAdmissionReason));
+        OnPropertyChanged(nameof(HasComposerAdmissionReason));
         RaiseCommandStates();
         return Task.CompletedTask;
     }
@@ -5776,6 +5830,8 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         }
 
         OnPropertyChanged(nameof(HasPendingAttachments));
+        OnPropertyChanged(nameof(ComposerAdmissionReason));
+        OnPropertyChanged(nameof(HasComposerAdmissionReason));
         RaiseCommandStates();
     }
 
@@ -6068,6 +6124,11 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 return;
             }
 
+            if (ApplyDailyUseEvent(value, notification))
+            {
+                return;
+            }
+
             // Plan events carry a full replacement payload — handle separately to avoid text append.
             if (value.Kind == ConversationEventKind.PlanUpdated)
             {
@@ -6088,6 +6149,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 }
 
                 planItem.UpdatePlanSteps(steps);
+                ApplyDailyUsePlanSnapshot(planItem, value.Plan, notification);
                 return;
             }
 
@@ -7204,6 +7266,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         => (!string.IsNullOrWhiteSpace(ComposerText) || (Status.TurnId is null && (HasPendingAttachments || HasPendingSkill)))
         && !IsRecovering
         && (SelectedThread is null || IsThreadJoined)
+        && !HasComposerAdmissionReason
         && !(HasPendingSkill && (Status.State is WorkerConnectionState.Busy or WorkerConnectionState.WaitingForApproval))
         && (Status.State is WorkerConnectionState.Ready or WorkerConnectionState.Busy
                 or WorkerConnectionState.WaitingForApproval
@@ -7212,6 +7275,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     private bool CanInterruptSelectedThread()
         => !IsRecovering && IsThreadJoined && SelectedThread is not null
             && Status.TurnId is not null
+            && string.Equals(Status.TurnId, locallyStartedTurnId, StringComparison.Ordinal)
             && string.Equals(SelectedThread.Id, Status.ThreadId, StringComparison.Ordinal);
 
     private void RaiseCommandStates()
@@ -7335,6 +7399,10 @@ public sealed class ChatItemViewModel : ObservableObject
     private bool isCommandOutputExpanded;
     private int commandLineBreakCount;
     private bool commandEndsWithLineBreak;
+    private string planDeltaText = string.Empty;
+    private int planDeltaBytes;
+    private bool isPlanComplete;
+    private bool planWasTruncated;
 
     public ChatItemViewModel(string role, string text, ConversationEventKind kind)
     {
@@ -7538,6 +7606,45 @@ public sealed class ChatItemViewModel : ObservableObject
     public ObservableCollection<string> PlanSteps { get; } = [];
 
     [DataMember]
+    public ObservableCollection<PlanStepPresentationViewModel> StructuredPlanSteps { get; } = [];
+
+    [DataMember]
+    public bool HasStructuredPlanSteps => StructuredPlanSteps.Count > 0;
+
+    [DataMember]
+    public string PlanDeltaText
+    {
+        get => planDeltaText;
+        private set
+        {
+            if (SetProperty(ref planDeltaText, value))
+            {
+                OnPropertyChanged(nameof(HasPlanDeltaText));
+            }
+        }
+    }
+
+    [DataMember]
+    public bool HasPlanDeltaText => !string.IsNullOrEmpty(PlanDeltaText);
+
+    [DataMember]
+    public bool PlanWasTruncated
+    {
+        get => planWasTruncated;
+        private set => SetProperty(ref planWasTruncated, value);
+    }
+
+    [DataMember]
+    public bool IsPlanComplete
+    {
+        get => isPlanComplete;
+        private set => SetProperty(ref isPlanComplete, value);
+    }
+
+    [DataMember]
+    public ObservableCollection<ArtifactPartPresentationViewModel> ArtifactParts { get; } = [];
+
+    [DataMember]
     public AsyncCommand ToggleCollapseCommand { get; }
 
     internal int BufferedCommandCharacterCount => commandOutputBuffer?.Length ?? 0;
@@ -7657,6 +7764,83 @@ public sealed class ChatItemViewModel : ObservableObject
         PlanSteps.Clear();
         foreach (string step in steps)
             PlanSteps.Add("• " + step);
+    }
+
+    internal void AppendPlanDelta(string text, int maximumUtf8Bytes)
+    {
+        if (isPlanComplete || string.IsNullOrEmpty(text))
+        {
+            return;
+        }
+
+        int remaining = Math.Max(0, maximumUtf8Bytes - planDeltaBytes);
+        if (remaining == 0)
+        {
+            PlanWasTruncated = true;
+            return;
+        }
+
+        int appendLength = 0;
+        int appendBytes = 0;
+        foreach (Rune rune in text.EnumerateRunes())
+        {
+            if (appendBytes + rune.Utf8SequenceLength > remaining)
+            {
+                break;
+            }
+
+            appendBytes += rune.Utf8SequenceLength;
+            appendLength += rune.Utf16SequenceLength;
+        }
+
+        if (appendLength < text.Length)
+        {
+            PlanWasTruncated = true;
+        }
+
+        if (appendLength > 0)
+        {
+            planDeltaBytes += appendBytes;
+            PlanDeltaText = string.Concat(PlanDeltaText, text.AsSpan(0, appendLength));
+        }
+    }
+
+    internal void SetPlanSnapshot(
+        TurnPlanSnapshot snapshot,
+        SafeMarkdownService markdown,
+        bool wasTruncated = false,
+        string? finalText = null)
+    {
+        // A completed plan item carries its authoritative content as text, not steps; keep the
+        // structured steps already shown from turn/plan/updated instead of erasing them.
+        bool keepSteps = snapshot.IsComplete && snapshot.Steps.Count == 0 && StructuredPlanSteps.Count > 0;
+        if (!keepSteps)
+        {
+            PlanSteps.Clear();
+            StructuredPlanSteps.Clear();
+            foreach (PlanStepInfo step in snapshot.Steps.Take(200))
+            {
+                PlanSteps.Add("• " + markdown.ToSafeText(step.Text).Trim());
+                StructuredPlanSteps.Add(new PlanStepPresentationViewModel(step, markdown));
+            }
+
+            OnPropertyChanged(nameof(HasStructuredPlanSteps));
+        }
+
+        string? completedText = snapshot.IsComplete ? finalText ?? snapshot.Explanation : null;
+        PlanDeltaText = string.IsNullOrWhiteSpace(completedText) ? string.Empty : markdown.ToSafeText(completedText).Trim();
+        planDeltaBytes = Encoding.UTF8.GetByteCount(PlanDeltaText);
+        IsPlanComplete = snapshot.IsComplete;
+        PlanWasTruncated = wasTruncated || (!keepSteps && snapshot.Steps.Count > 200);
+    }
+
+    internal void ReplaceArtifactParts(IReadOnlyList<ArtifactPartPresentationViewModel> parts)
+    {
+        ArtifactParts.Clear();
+        foreach (ArtifactPartPresentationViewModel part in parts.Take(50))
+        {
+            ArtifactParts.Add(part);
+        }
     }
 
     public void UpdateBlocks(IReadOnlyList<ChatBlockViewModel> blocks)
@@ -8407,17 +8591,35 @@ public sealed class RecoveryDraftViewModel
 [DataContract]
 internal readonly record struct AttachmentMembershipKey(string AttachmentType, string IdentityKey);
 
-public sealed class ThreadAttachmentPresentationViewModel
+[DataContract]
+public sealed class ThreadAttachmentPresentationViewModel : ObservableObject
 {
-    internal ThreadAttachmentPresentationViewModel(ThreadAttachmentMetadata metadata, SafeMarkdownService markdown)
+    private bool isRemovalConfirmationOpen;
+
+    internal ThreadAttachmentPresentationViewModel(
+        ThreadAttachmentMetadata metadata,
+        SafeMarkdownService markdown,
+        Func<ThreadAttachmentPresentationViewModel, Task>? remove = null,
+        ArtifactPartPresentationViewModel? fileActions = null)
     {
         Id = metadata.Id;
         MembershipKey = new AttachmentMembershipKey(metadata.AttachmentType, metadata.IdentityKey);
         CreatedAt = metadata.CreatedAt;
-        DisplayText = $"{markdown.ToSafeText(metadata.AttachmentType)} · {markdown.ToSafeText(metadata.IdentityKey)}";
+        FileActions = fileActions;
+        IsKnownPayload = metadata.IsKnownPayload;
+        CanRemove = metadata.CanRemove && IsKnownPayload;
+        DisplayText = IsKnownPayload && !string.IsNullOrWhiteSpace(metadata.DisplayName)
+            ? markdown.ToSafeText(metadata.DisplayName).Trim()
+            : $"{markdown.ToSafeText(metadata.AttachmentType)} · {markdown.ToSafeText(metadata.IdentityKey)}";
+        MimeType = markdown.ToSafeText(metadata.MimeType ?? string.Empty).Trim();
         StatusText = string.IsNullOrWhiteSpace(metadata.UnavailableReason)
-            ? "Metadata only"
-            : markdown.ToSafeText(metadata.UnavailableReason);
+            ? IsKnownPayload ? $"Saved attachment · {MimeType}" : "Metadata only; payload type is not recognized"
+            : markdown.ToSafeText(metadata.UnavailableReason).Trim();
+        RemoveCommand = new AsyncCommand(() => { IsRemovalConfirmationOpen = true; return Task.CompletedTask; }, () => CanRemove && !IsRemovalConfirmationOpen);
+        ConfirmRemoveCommand = new AsyncCommand(
+            () => remove?.Invoke(this) ?? Task.CompletedTask,
+            () => CanRemove && IsRemovalConfirmationOpen);
+        CancelRemoveCommand = new AsyncCommand(() => { IsRemovalConfirmationOpen = false; return Task.CompletedTask; }, () => IsRemovalConfirmationOpen);
     }
 
     [DataMember]
@@ -8428,6 +8630,46 @@ public sealed class ThreadAttachmentPresentationViewModel
 
     [DataMember]
     public string StatusText { get; }
+
+    [DataMember]
+    public string MimeType { get; }
+
+    [DataMember]
+    public bool IsKnownPayload { get; }
+
+    [DataMember]
+    public bool CanRemove { get; }
+
+    [DataMember]
+    public bool IsRemovalConfirmationOpen
+    {
+        get => isRemovalConfirmationOpen;
+        private set
+        {
+            if (SetProperty(ref isRemovalConfirmationOpen, value))
+            {
+                RemoveCommand.RaiseCanExecuteChanged();
+                ConfirmRemoveCommand.RaiseCanExecuteChanged();
+                CancelRemoveCommand.RaiseCanExecuteChanged();
+            }
+        }
+    }
+
+    [DataMember]
+    public AsyncCommand RemoveCommand { get; }
+
+    [DataMember]
+    public AsyncCommand ConfirmRemoveCommand { get; }
+
+    [DataMember]
+    public AsyncCommand CancelRemoveCommand { get; }
+
+    [DataMember]
+    public ArtifactPartPresentationViewModel? FileActions { get; }
+
+    internal string IdentityKey => MembershipKey.IdentityKey;
+
+    internal void CloseRemovalConfirmation() => IsRemovalConfirmationOpen = false;
 
     internal AttachmentMembershipKey MembershipKey { get; }
 

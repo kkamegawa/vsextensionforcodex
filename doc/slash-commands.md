@@ -13,7 +13,7 @@ The implementation is tracked by GitHub Issue #46 and its four sub-issues.
 
 | Category | Commands | Behavior |
 |---|---|---|
-| App Server operations | `/compact`, `/feedback`, `/fork`, `/goal`, `/mcp`, `/review` | Invoke dedicated typed Worker RPC methods. |
+| App Server operations | `/compact`, `/feedback`, `/fork`, `/goal`, `/mcp`, `/review`, `/shell` | Invoke dedicated typed Worker RPC methods. `/shell` executes only through explicit invocation and confirmation. |
 | Next-turn settings | `/fast`, `/model`, `/permissions` (`/approve` alias), `/personality`, `/plan`, `/reasoning` | Update typed fields used by the next `turn/start`. Except for picker selections, these settings are consumed by the next started turn. |
 | Visual Studio operations | `/ide-context`, `/init`, `/status` | Toggle bounded editor context, safely create `AGENTS.md`, or show local session state. |
 
@@ -159,3 +159,29 @@ virtualized navigation; stale-to-fresh replacement; empty, unsupported, failed,
 and truncated states; workspace isolation; corrupt, expired, and oversized cache
 files; generation races; concurrent instances; LRU cleanup; and mandatory live
 force-reload validation before skill invocation.
+
+## Explicit shell command (Issue #155)
+
+The supported form is exactly `/shell [--timeout-ms N] -- <command>`. `/shell` is the ninth built-in;
+the inline suggestions can show up to nine built-ins without dropping skills. Selecting its
+suggestion only fills the command chip. Execution requires the explicit Execute action in the
+confirmation flow. The parser preserves every character after `--` and rejects an empty command,
+duplicate or unknown options, negative or malformed values, and timeout values above `int64`.
+Omitting `--timeout-ms` uses the server default of one hour; zero is an immediate timeout;
+`--timeout-ms` without a value is rejected.
+
+Only a joined, current-owner idle thread can run `/shell`. Confirmation displays the connection and
+profile, thread, exact command as inert text, server working directory, timeout, and the CLI 0.159.1
+fact that `thread/shellCommand` always runs unsandboxed with full access. Raw command text is not
+written to logs. After Execute, the Worker revalidates target, generation, and cwd and evaluates
+`IApprovalPolicyEngine` locally; policy denial is final. Full access and prior grants never bypass
+the confirmation.
+
+The empty RPC response acknowledges receipt and does not prove completion. The RPC response
+deadline is independent of the command timeout. Events retain their actual thread/turn/item IDs and
+are not claimed to correlate with the submission. At most one shell submission is pending per
+thread: a definitive acknowledgement or error releases it; acknowledgement timeout or disconnect
+keeps it locked until generation retirement. A new generation can submit only after thread status
+reports idle. Cancel before dispatch sends nothing. There is no request-specific Stop after dispatch,
+no interruption inference from timing/text, no replay, and no fallback to `command/exec` or a local
+process.

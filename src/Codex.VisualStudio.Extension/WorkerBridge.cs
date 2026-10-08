@@ -20,6 +20,8 @@ internal interface IWorkerBridge : IAsyncDisposable
 
     event Func<WorkerNotification<ThreadAttachmentUpdatedEvent>, Task>? ThreadAttachmentUpdated;
 
+    event Func<WorkerNotification<WindowsSandboxSetupCompletedEvent>, Task>? WindowsSandboxSetupChanged;
+
     event Func<WorkerNotification<ApprovalRequest>, Task>? ApprovalRequested;
 
     event Func<WorkerNotification<string>, Task>? ApprovalResolved;
@@ -75,6 +77,20 @@ internal interface IWorkerBridge : IAsyncDisposable
     Task<ThreadItemsPage> ListThreadItemsAsync(ListThreadItemsRequest request, CancellationToken cancellationToken);
 
     Task<ThreadAttachmentsPage> ListThreadAttachmentsAsync(ListThreadAttachmentsRequest request, CancellationToken cancellationToken);
+
+    Task<ArtifactActionResult> ResolveArtifactActionAsync(ArtifactActionRequest request, CancellationToken cancellationToken);
+
+    Task<ShellCommandPrepareResult> PrepareShellCommandAsync(ShellCommandPrepareRequest request, CancellationToken cancellationToken);
+
+    Task<ShellCommandExecuteResult> ExecuteShellCommandAsync(ShellCommandExecuteRequest request, CancellationToken cancellationToken);
+
+    Task<SavedAttachmentMutationResult> AddSavedAttachmentAsync(SavedAttachmentAddRequest request, CancellationToken cancellationToken);
+
+    Task<SavedAttachmentMutationResult> RemoveSavedAttachmentAsync(SavedAttachmentRemoveRequest request, CancellationToken cancellationToken);
+
+    Task<WindowsSandboxReadinessResult> GetWindowsSandboxReadinessAsync(WindowsSandboxReadinessRequest request, CancellationToken cancellationToken);
+
+    Task<WindowsSandboxSetupStartResult> StartWindowsSandboxSetupAsync(WindowsSandboxSetupStartRequest request, CancellationToken cancellationToken);
 
     Task<ListModelsResult> ListModelsAsync(ListModelsRequest request, CancellationToken cancellationToken);
 
@@ -166,6 +182,8 @@ public sealed class WorkerBridge : IWorkerBridge, ICodexWorkerObserver
     public event Func<WorkerNotification<ConversationEvent>, Task>? ConversationEventReceived;
 
     public event Func<WorkerNotification<ThreadAttachmentUpdatedEvent>, Task>? ThreadAttachmentUpdated;
+
+    public event Func<WorkerNotification<WindowsSandboxSetupCompletedEvent>, Task>? WindowsSandboxSetupChanged;
 
     public event Func<WorkerNotification<ApprovalRequest>, Task>? ApprovalRequested;
 
@@ -329,6 +347,27 @@ public sealed class WorkerBridge : IWorkerBridge, ICodexWorkerObserver
             "worker/thread/attachments/list",
             new object[] { request },
             cancellationToken);
+
+    public Task<ArtifactActionResult> ResolveArtifactActionAsync(ArtifactActionRequest request, CancellationToken cancellationToken)
+        => RequireRpc().InvokeWithCancellationAsync<ArtifactActionResult>("worker/artifact/action", new object[] { request }, cancellationToken);
+
+    public Task<ShellCommandPrepareResult> PrepareShellCommandAsync(ShellCommandPrepareRequest request, CancellationToken cancellationToken)
+        => RequireRpc().InvokeWithCancellationAsync<ShellCommandPrepareResult>("worker/command/prepare", new object[] { request }, cancellationToken);
+
+    public Task<ShellCommandExecuteResult> ExecuteShellCommandAsync(ShellCommandExecuteRequest request, CancellationToken cancellationToken)
+        => RequireRpc().InvokeWithCancellationAsync<ShellCommandExecuteResult>("worker/command/execute", new object[] { request }, cancellationToken);
+
+    public Task<SavedAttachmentMutationResult> AddSavedAttachmentAsync(SavedAttachmentAddRequest request, CancellationToken cancellationToken)
+        => RequireRpc().InvokeWithCancellationAsync<SavedAttachmentMutationResult>("worker/thread/attachments/add", new object[] { request }, cancellationToken);
+
+    public Task<SavedAttachmentMutationResult> RemoveSavedAttachmentAsync(SavedAttachmentRemoveRequest request, CancellationToken cancellationToken)
+        => RequireRpc().InvokeWithCancellationAsync<SavedAttachmentMutationResult>("worker/thread/attachments/remove", new object[] { request }, cancellationToken);
+
+    public Task<WindowsSandboxReadinessResult> GetWindowsSandboxReadinessAsync(WindowsSandboxReadinessRequest request, CancellationToken cancellationToken)
+        => RequireRpc().InvokeWithCancellationAsync<WindowsSandboxReadinessResult>("worker/windowsSandbox/readiness", new object[] { request }, cancellationToken);
+
+    public Task<WindowsSandboxSetupStartResult> StartWindowsSandboxSetupAsync(WindowsSandboxSetupStartRequest request, CancellationToken cancellationToken)
+        => RequireRpc().InvokeWithCancellationAsync<WindowsSandboxSetupStartResult>("worker/windowsSandbox/setup/start", new object[] { request }, cancellationToken);
 
     public async Task<ListModelsResult> ListModelsAsync(ListModelsRequest request, CancellationToken cancellationToken)
     {
@@ -503,6 +542,11 @@ public sealed class WorkerBridge : IWorkerBridge, ICodexWorkerObserver
         WorkerNotification<ThreadAttachmentUpdatedEvent> notification,
         CancellationToken cancellationToken)
         => ThreadAttachmentUpdated?.Invoke(notification) ?? Task.CompletedTask;
+
+    public Task OnWindowsSandboxSetupChangedAsync(
+        WorkerNotification<WindowsSandboxSetupCompletedEvent> notification,
+        CancellationToken cancellationToken)
+        => WindowsSandboxSetupChanged?.Invoke(notification) ?? Task.CompletedTask;
 
     public Task OnApprovalRequestedAsync(WorkerNotification<ApprovalRequest> notification, CancellationToken cancellationToken)
     {

@@ -5,7 +5,7 @@ namespace Codex.VisualStudio.Contracts;
 
 public static class ContractVersions
 {
-    public const int Current = 20;
+    public const int Current = 21;
 }
 
 public enum WorkerRecoveryFailureKind
@@ -88,6 +88,8 @@ public enum ConversationEventKind
     CommandOutputDelta,
     DiffUpdated,
     PlanUpdated,
+    PlanDelta,
+    AppServerNotice,
     TurnStarted,
     TurnCompleted,
     Error,
@@ -223,6 +225,9 @@ public sealed class WorkerStatus
 
     [DataMember]
     public string? EffectiveServiceTier { get; set; }
+
+    [DataMember]
+    public string? EffectiveModelId { get; set; }
 
     // The local or remote target this status describes. ProcessId is set only for a Worker-owned
     // local process; a remote target never has one.
@@ -391,6 +396,12 @@ public sealed class ThreadSummary
 
     [DataMember]
     public string? EffectiveServiceTier { get; set; }
+
+    [DataMember]
+    public string? EffectiveModelId { get; set; }
+
+    [DataMember]
+    public IReadOnlyList<string> DisabledPluginIds { get; set; } = Array.Empty<string>();
 }
 
 [DataContract]
@@ -465,6 +476,12 @@ public sealed class ThreadHistoryItem
     public string? Text { get; set; }
 
     [DataMember]
+    public IReadOnlyList<ArtifactPart> Parts { get; set; } = Array.Empty<ArtifactPart>();
+
+    [DataMember]
+    public TurnPlanSnapshot? Plan { get; set; }
+
+    [DataMember]
     public long? StartedAtMs { get; set; }
 
     [DataMember]
@@ -498,6 +515,24 @@ public sealed class ThreadAttachmentMetadata
 
     [DataMember]
     public string? UnavailableReason { get; set; }
+
+    [DataMember]
+    public string? DisplayName { get; set; }
+
+    [DataMember]
+    public string? MimeType { get; set; }
+
+    [DataMember]
+    public bool IsKnownPayload { get; set; }
+
+    [DataMember]
+    public bool CanRemove { get; set; }
+
+    [DataMember]
+    public string? ActionId { get; set; }
+
+    [DataMember]
+    public IReadOnlyList<ArtifactActionKind> AllowedActions { get; set; } = Array.Empty<ArtifactActionKind>();
 }
 
 [DataContract]
@@ -538,6 +573,14 @@ public sealed class ModelInfo
 
     public string? DisplayName { get; set; }
 
+    public bool IsDefault { get; set; }
+
+    public bool IsHidden { get; set; }
+
+    public IReadOnlyList<string> InputModalities { get; set; } = Array.Empty<string>();
+
+    public ModelAccessPrograms? AvailableAccessPrograms { get; set; }
+
     public string? DefaultReasoningEffort { get; set; }
 
     public IReadOnlyList<ReasoningEffortInfo> SupportedReasoningEfforts { get; set; } = Array.Empty<ReasoningEffortInfo>();
@@ -547,6 +590,11 @@ public sealed class ModelInfo
     public string? DefaultServiceTier { get; set; }
 
     public IReadOnlyList<ServiceTierInfo> ServiceTiers { get; set; } = Array.Empty<ServiceTierInfo>();
+}
+
+public sealed class ModelAccessPrograms
+{
+    public IReadOnlyList<string> Cyber { get; set; } = Array.Empty<string>();
 }
 
 public sealed class ReasoningEffortInfo
@@ -822,6 +870,10 @@ public sealed class McpServerStatusInfo
     public int ResourceCount { get; set; }
 
     public int ResourceTemplateCount { get; set; }
+
+    public string? HttpOrigin { get; set; }
+
+    public IReadOnlyList<string> ServerCapabilities { get; set; } = Array.Empty<string>();
 }
 
 public sealed class McpServerListResult : AppServerOperationResult
@@ -1030,6 +1082,16 @@ public sealed class ConversationEvent
     public bool Truncated { get; set; }
 
     public string? OverflowFile { get; set; }
+
+    public string? ErrorReason { get; set; }
+
+    public TurnPlanSnapshot? Plan { get; set; }
+
+    public TurnPlanDeltaEvent? PlanDelta { get; set; }
+
+    public AppServerNotice? Notice { get; set; }
+
+    public IReadOnlyList<ArtifactPart> Parts { get; set; } = Array.Empty<ArtifactPart>();
 }
 
 public sealed class ApprovalRequest
@@ -1197,6 +1259,9 @@ public interface ICodexWorkerObserver
 
     [JsonRpcMethod("observer/threadAttachmentUpdated")]
     Task OnThreadAttachmentUpdatedAsync(WorkerNotification<ThreadAttachmentUpdatedEvent> notification, CancellationToken cancellationToken);
+
+    [JsonRpcMethod("observer/windowsSandboxSetupChanged")]
+    Task OnWindowsSandboxSetupChangedAsync(WorkerNotification<WindowsSandboxSetupCompletedEvent> notification, CancellationToken cancellationToken);
 }
 
 public interface ICodexWorkerClient
@@ -1249,11 +1314,32 @@ public interface ICodexWorkerClient
     [JsonRpcMethod("worker/thread/attachments/list")]
     Task<ThreadAttachmentsPage> ListThreadAttachmentsAsync(ListThreadAttachmentsRequest request, CancellationToken cancellationToken);
 
+    [JsonRpcMethod("worker/thread/attachments/add")]
+    Task<SavedAttachmentMutationResult> AddSavedAttachmentAsync(SavedAttachmentAddRequest request, CancellationToken cancellationToken);
+
+    [JsonRpcMethod("worker/thread/attachments/remove")]
+    Task<SavedAttachmentMutationResult> RemoveSavedAttachmentAsync(SavedAttachmentRemoveRequest request, CancellationToken cancellationToken);
+
     [JsonRpcMethod("worker/models/list")]
     Task<ListModelsResult> ListModelsAsync(ListModelsRequest request, CancellationToken cancellationToken);
 
     [JsonRpcMethod("worker/permissionProfiles/list")]
     Task<ListPermissionProfilesResult> ListPermissionProfilesAsync(ListPermissionProfilesRequest request, CancellationToken cancellationToken);
+
+    [JsonRpcMethod("worker/artifact/action")]
+    Task<ArtifactActionResult> ResolveArtifactActionAsync(ArtifactActionRequest request, CancellationToken cancellationToken);
+
+    [JsonRpcMethod("worker/command/prepare")]
+    Task<ShellCommandPrepareResult> PrepareShellCommandAsync(ShellCommandPrepareRequest request, CancellationToken cancellationToken);
+
+    [JsonRpcMethod("worker/command/execute")]
+    Task<ShellCommandExecuteResult> ExecuteShellCommandAsync(ShellCommandExecuteRequest request, CancellationToken cancellationToken);
+
+    [JsonRpcMethod("worker/windowsSandbox/readiness")]
+    Task<WindowsSandboxReadinessResult> GetWindowsSandboxReadinessAsync(WindowsSandboxReadinessRequest request, CancellationToken cancellationToken);
+
+    [JsonRpcMethod("worker/windowsSandbox/setup/start")]
+    Task<WindowsSandboxSetupStartResult> StartWindowsSandboxSetupAsync(WindowsSandboxSetupStartRequest request, CancellationToken cancellationToken);
 
     [JsonRpcMethod("worker/turn/start")]
     Task<string> StartTurnAsync(StartTurnRequest request, CancellationToken cancellationToken);

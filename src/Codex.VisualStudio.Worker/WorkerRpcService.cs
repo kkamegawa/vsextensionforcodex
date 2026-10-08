@@ -83,6 +83,7 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
         session.EffectiveApprovalStateChanged += PublishEffectiveApprovalStateAsync;
         session.SkillsChanged += PublishSkillsChangedAsync;
         session.ThreadAttachmentUpdated += OnThreadAttachmentUpdatedAsync;
+        session.WindowsSandboxSetupCompleted += PublishWindowsSandboxSetupChangedAsync;
         session.OwnerInvalidated += OnOwnerInvalidatedAsync;
     }
 
@@ -948,6 +949,89 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
             () => session.ListThreadAttachmentsAsync(request.ThreadId, request.Cursor, request.Limit, cancellationToken),
             cancellationToken);
 
+    public Task<ArtifactActionResult> ResolveArtifactActionAsync(
+        ArtifactActionRequest request,
+        CancellationToken cancellationToken)
+        => ExecuteOwnerScopedAsync(request, async () =>
+        {
+            ValidateOwnerScope(request);
+            ArtifactActionResult result = await session.ResolveArtifactActionAsync(request, cancellationToken).ConfigureAwait(false);
+            ValidateOwnerScope(request);
+            return result;
+        }, cancellationToken);
+
+    public Task<ShellCommandPrepareResult> PrepareShellCommandAsync(
+        ShellCommandPrepareRequest request,
+        CancellationToken cancellationToken)
+        => ExecuteOwnerScopedAsync(request, async () =>
+        {
+            ValidateOwnerScope(request);
+            ShellCommandPrepareResult result = await session.PrepareShellCommandAsync(
+                request,
+                SnapshotTarget().DisplayName,
+                cancellationToken).ConfigureAwait(false);
+            ValidateOwnerScope(request);
+            return result;
+        }, cancellationToken);
+
+    public Task<ShellCommandExecuteResult> ExecuteShellCommandAsync(
+        ShellCommandExecuteRequest request,
+        CancellationToken cancellationToken)
+        => ExecuteOwnerScopedAsync(request, async () =>
+        {
+            ValidateOwnerScope(request);
+            ShellCommandExecuteResult result = await session.ExecuteShellCommandAsync(
+                request,
+                SnapshotTarget().DisplayName,
+                cancellationToken).ConfigureAwait(false);
+            ValidateOwnerScope(request);
+            return result;
+        }, cancellationToken);
+
+    public Task<SavedAttachmentMutationResult> AddSavedAttachmentAsync(
+        SavedAttachmentAddRequest request,
+        CancellationToken cancellationToken)
+        => ExecuteOwnerScopedAsync(request, async () =>
+        {
+            ValidateOwnerScope(request);
+            SavedAttachmentMutationResult result = await session.AddSavedAttachmentAsync(request, cancellationToken).ConfigureAwait(false);
+            ValidateOwnerScope(request);
+            return result;
+        }, cancellationToken);
+
+    public Task<SavedAttachmentMutationResult> RemoveSavedAttachmentAsync(
+        SavedAttachmentRemoveRequest request,
+        CancellationToken cancellationToken)
+        => ExecuteOwnerScopedAsync(request, async () =>
+        {
+            ValidateOwnerScope(request);
+            SavedAttachmentMutationResult result = await session.RemoveSavedAttachmentAsync(request, cancellationToken).ConfigureAwait(false);
+            ValidateOwnerScope(request);
+            return result;
+        }, cancellationToken);
+
+    public Task<WindowsSandboxReadinessResult> GetWindowsSandboxReadinessAsync(
+        WindowsSandboxReadinessRequest request,
+        CancellationToken cancellationToken)
+        => ExecuteOwnerScopedAsync(request, async () =>
+        {
+            ValidateOwnerScope(request);
+            WindowsSandboxReadinessResult result = await session.GetWindowsSandboxReadinessAsync(request, cancellationToken).ConfigureAwait(false);
+            ValidateOwnerScope(request);
+            return result;
+        }, cancellationToken);
+
+    public Task<WindowsSandboxSetupStartResult> StartWindowsSandboxSetupAsync(
+        WindowsSandboxSetupStartRequest request,
+        CancellationToken cancellationToken)
+        => ExecuteOwnerScopedAsync(request, async () =>
+        {
+            ValidateOwnerScope(request);
+            WindowsSandboxSetupStartResult result = await session.StartWindowsSandboxSetupAsync(request, cancellationToken).ConfigureAwait(false);
+            ValidateOwnerScope(request);
+            return result;
+        }, cancellationToken);
+
     public Task<ListModelsResult> ListModelsAsync(ListModelsRequest request, CancellationToken cancellationToken)
         => ExecuteOwnerScopedAsync(request, () => ListModelsCoreAsync(cancellationToken), cancellationToken);
 
@@ -1178,6 +1262,13 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
                 "observer/threadAttachmentUpdated",
                 new { notification = Stamp(value) });
 
+    private Task PublishWindowsSandboxSetupChangedAsync(WindowsSandboxSetupCompletedEvent value, CancellationToken cancellationToken)
+        => !IsCurrentEmission() || clientRpc is null
+            ? Task.CompletedTask
+            : clientRpc.NotifyWithParameterObjectAsync(
+                "observer/windowsSandboxSetupChanged",
+                new { notification = Stamp(value) });
+
     public Task<UploadFeedbackResult> UploadFeedbackAsync(
         UploadFeedbackRequest request,
         CancellationToken cancellationToken)
@@ -1302,6 +1393,7 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
                 EffectiveApprovalState = session.EffectiveApprovalState,
                 EffectiveReasoningEffort = session.EffectiveReasoningEffort,
                 EffectiveServiceTier = session.EffectiveServiceTier,
+                EffectiveModelId = session.EffectiveModelId,
                 Target = targetSnapshot,
                 RecoveryFailureKind = recoveryFailureKind,
                 GatewayOAuthRequired = session.GatewayOAuthRequired,
@@ -1891,6 +1983,7 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
         EffectiveApprovalState = status.EffectiveApprovalState,
         EffectiveReasoningEffort = status.EffectiveReasoningEffort,
         EffectiveServiceTier = status.EffectiveServiceTier,
+        EffectiveModelId = status.EffectiveModelId,
         Target = status.Target?.Clone(),
         RecoveryFailureKind = status.RecoveryFailureKind,
         GatewayOAuthRequired = status.GatewayOAuthRequired,
