@@ -1073,7 +1073,9 @@ public sealed partial class CodexSessionService
 
     internal static string? ReadTurnErrorReason(JsonElement parameters)
     {
-        if (!parameters.TryGetProperty("error", out JsonElement error)
+        if (parameters.ValueKind != JsonValueKind.Object
+            || !parameters.TryGetProperty("error", out JsonElement error)
+            || error.ValueKind != JsonValueKind.Object
             || !error.TryGetProperty("codexErrorInfo", out JsonElement info))
         {
             return null;

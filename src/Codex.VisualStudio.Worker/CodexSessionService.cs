@@ -478,7 +478,6 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             CancelPending(previous.Generation);
             pendingInteractions.RetireGeneration(previous.Generation);
             authorizationUrls.RetireGeneration(previous.Generation);
-            dailyUseArtifactStore.RetireGeneration(previous.Generation);
             await RetireStreamingBufferAsync().ConfigureAwait(false);
         }
         lock (dailyUseStateLock)
@@ -3808,7 +3807,8 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             string? startedType = GetBoundedString(startedItem, "type", 64);
             output.PayloadJson = null;
             output.Text = startedType is null ? "An app-server item started." : $"App-server item started: {redactor.Redact(startedType)}.";
-            output.Parts = [new ArtifactPart { Kind = ArtifactPartKind.Fallback, Text = output.Text }];
+            // Lifecycle only: no artifact parts, so the extension routes it to diagnostics
+            // instead of adding a transcript row for every started item.
             await EmitForContextAsync(context, output, cancellationToken).ConfigureAwait(false);
             return;
         }
@@ -4139,11 +4139,13 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         {
             pendingInteractions.RetireGeneration(currentGeneration);
             authorizationUrls.RetireGeneration(currentGeneration);
+            dailyUseArtifactStore.RetireGeneration(currentGeneration);
         }
         else if (Volatile.Read(ref connectionContext) is { } context)
         {
             pendingInteractions.RetireGeneration(context.Generation);
             authorizationUrls.RetireGeneration(context.Generation);
+            dailyUseArtifactStore.RetireGeneration(context.Generation);
         }
     }
 

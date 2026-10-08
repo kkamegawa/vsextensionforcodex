@@ -35,6 +35,41 @@ public sealed class DailyUseArtifactStoreTests
     }
 
     [TestMethod]
+    public void RegisteringSamePathReusesActionInsteadOfExhaustingStore()
+    {
+        var store = new DailyUseArtifactStore();
+        ServerPath path = ServerPath.Create("/workspace/output.png");
+        Assert.IsTrue(store.TryRegister("partition-a", 4, 9, path, out string first));
+
+        for (int index = 0; index < 1000; index++)
+        {
+            Assert.IsTrue(store.TryRegister("partition-a", 4, 9, path, out string repeated));
+            Assert.AreEqual(first, repeated);
+        }
+
+        Assert.IsTrue(store.TryRegister("partition-a", 4, 9, ServerPath.Create("/workspace/other.png"), out string other));
+        Assert.AreNotEqual(first, other);
+        Assert.IsTrue(store.TryRegister("partition-a", 4, 9, path, out string previewable,
+            new[] { ArtifactActionKind.Preview, ArtifactActionKind.Open }));
+        Assert.AreNotEqual(first, previewable);
+        Assert.IsTrue(store.TryRegister("partition-a", 4, 10, path, out string nextGeneration));
+        Assert.AreNotEqual(first, nextGeneration);
+    }
+
+    [TestMethod]
+    public void TurnErrorReasonIgnoresNonObjectErrorPayloads()
+    {
+        foreach (string json in new[] { "{\"error\":null}", "{\"error\":\"boom\"}", "{\"error\":[1]}", "[]" })
+        {
+            using var document = System.Text.Json.JsonDocument.Parse(json);
+            Assert.IsNull(CodexSessionService.ReadTurnErrorReason(document.RootElement), json);
+        }
+
+        using var known = System.Text.Json.JsonDocument.Parse("{\"error\":{\"codexErrorInfo\":\"flexUnavailable\"}}");
+        Assert.AreEqual("flexUnavailable", CodexSessionService.ReadTurnErrorReason(known.RootElement));
+    }
+
+    [TestMethod]
     public void InlinePreviewActionIsOwnerBoundAndPreviewOnly()
     {
         byte[] png = CreatePng(1, 1);

@@ -420,6 +420,7 @@ public sealed partial class CodexSessionService
             return new ShellCommandExecuteResult { Outcome = ShellCommandOutcome.NotSent, ErrorMessage = "The shell command target changed immediately before dispatch." };
         }
 
+        Guid pendingId = Guid.NewGuid();
         lock (dailyUseGate)
         {
             if (pendingShellSubmissions.TryGetValue(expected.ThreadId, out PendingShellSubmission? pending)
@@ -428,13 +429,7 @@ public sealed partial class CodexSessionService
                 return new ShellCommandExecuteResult { Outcome = ShellCommandOutcome.NotSent, ErrorMessage = "A shell command is already pending for this thread." };
             }
 
-            pendingShellSubmissions[expected.ThreadId] = new PendingShellSubmission(expected.ConnectionGeneration, Guid.NewGuid());
-        }
-
-        Guid pendingId;
-        lock (dailyUseGate)
-        {
-            pendingId = pendingShellSubmissions[expected.ThreadId].SubmissionId;
+            pendingShellSubmissions[expected.ThreadId] = new PendingShellSubmission(expected.ConnectionGeneration, pendingId);
         }
 
         try
@@ -898,12 +893,21 @@ public sealed partial class CodexSessionService
         {
             if (cancellationToken.IsCancellationRequested)
             {
+                // Nothing was sent, so release this generation's single attempt for a retry.
                 lock (dailyUseGate)
                 {
-                    windowsSandboxSetupState = WindowsSandboxSetupState.OutcomeUnknown;
+                    if (IsCurrentWindowsSandboxAttemptLocked(context)
+                        && windowsSandboxSetupState == WindowsSandboxSetupState.Starting)
+                    {
+                        windowsSandboxAttemptGeneration = -1;
+                        windowsSandboxAttemptOwnerGeneration = -1;
+                        windowsSandboxAttemptPartitionFingerprint = null;
+                        windowsSandboxAttemptMode = null;
+                        windowsSandboxSetupState = WindowsSandboxSetupState.NotObserved;
+                    }
                 }
 
-                return new WindowsSandboxSetupStartResult { State = WindowsSandboxSetupState.OutcomeUnknown, Started = null, Message = "The setup delivery outcome is unknown." };
+                return new WindowsSandboxSetupStartResult { State = WindowsSandboxSetupState.NotObserved, Started = false, Message = "Windows sandbox setup was canceled before dispatch." };
             }
 
             response = await context.Connection.SendRequestAsync(

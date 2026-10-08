@@ -19,7 +19,6 @@ public sealed partial class ChatViewModel
     private readonly HashSet<string> completedPlanKeys = new(StringComparer.Ordinal);
     private readonly Dictionary<string, int> noticeIndices = new(StringComparer.Ordinal);
     private readonly ArtifactPreviewCache artifactPreviewCache = new();
-    private readonly Dictionary<string, StringBuilder> provisionalPlanText = new(StringComparer.Ordinal);
     private readonly ArtifactFileActions artifactFileActions;
     private string? noticeThreadId;
     private ShellCommandConfirmationSnapshot? shellCommandSnapshot;
@@ -191,7 +190,6 @@ public sealed partial class ChatViewModel
                     {
                         completedPlanKeys.Remove(completedPlanKeys.First());
                     }
-                    provisionalPlanText.Remove(key);
                 }
             }
 
@@ -213,11 +211,24 @@ public sealed partial class ChatViewModel
             }
             if (item is not null)
             {
-                var projected = value.Parts.Take(MaximumArtifactParts)
-                    .Select(part => CreateArtifactPartPresentation(part, notification))
-                    .ToArray();
-                item.ReplaceArtifactParts(projected);
-                item.Text = markdown.ToSafeText(value.Text ?? string.Empty);
+                // A fallback-only completion carries no content; keep text already streamed
+                // into the item (for example reasoning) instead of replacing it with a notice.
+                bool keepStreamedContent = value.Text is null
+                    && !string.IsNullOrEmpty(item.Text)
+                    && value.Parts.All(static part => part.Kind == ArtifactPartKind.Fallback);
+                if (!keepStreamedContent)
+                {
+                    var projected = value.Parts.Take(MaximumArtifactParts)
+                        .Select(part => CreateArtifactPartPresentation(part, notification))
+                        .ToArray();
+                    item.ReplaceArtifactParts(projected);
+                }
+
+                if (value.Text is not null)
+                {
+                    item.Text = markdown.ToSafeText(value.Text);
+                }
+
                 item.IsHistoryCompleted = value.Kind == ConversationEventKind.ItemCompleted;
                 return true;
             }
@@ -269,37 +280,7 @@ public sealed partial class ChatViewModel
             Items.Add(item);
         }
 
-        if (!provisionalPlanText.TryGetValue(key, out StringBuilder? text))
-        {
-            if (provisionalPlanText.Count >= 200)
-            {
-                provisionalPlanText.Remove(provisionalPlanText.Keys.First());
-            }
-
-            text = new StringBuilder();
-            provisionalPlanText.Add(key, text);
-        }
-
-        int remaining = Math.Max(0, MaximumPlanTextBytes - Encoding.UTF8.GetByteCount(text.ToString()));
-        if (remaining > 0 && !string.IsNullOrEmpty(delta.Text))
-        {
-            int length = delta.Text.Length;
-            while (length > 0 && Encoding.UTF8.GetByteCount(delta.Text.AsSpan(0, length)) > remaining)
-            {
-                length--;
-            }
-
-            if (length > 0 && char.IsHighSurrogate(delta.Text[length - 1]))
-            {
-                length--;
-            }
-
-            if (length > 0)
-            {
-                text.Append(delta.Text.AsSpan(0, length));
-                item.AppendPlanDelta(delta.Text[..length], MaximumPlanTextBytes);
-            }
-        }
+        item.AppendPlanDelta(delta.Text, MaximumPlanTextBytes);
     }
 
     private void ApplyDailyUsePlanSnapshot(
@@ -329,7 +310,6 @@ public sealed partial class ChatViewModel
             {
                 completedPlanKeys.Remove(completedPlanKeys.First());
             }
-            provisionalPlanText.Remove(key);
         }
     }
 
@@ -475,7 +455,6 @@ public sealed partial class ChatViewModel
 
         noticeThreadId = threadId;
         completedPlanKeys.Clear();
-        provisionalPlanText.Clear();
         ClearShellCommandConfirmation();
         ShellCommandStatusText = string.Empty;
         appServerNotices.Clear();
@@ -497,7 +476,6 @@ public sealed partial class ChatViewModel
         appServerNotices.Clear();
         noticeIndices.Clear();
         completedPlanKeys.Clear();
-        provisionalPlanText.Clear();
         noticeThreadId = null;
         ClearShellCommandConfirmation();
         ShellCommandStatusText = string.Empty;
@@ -621,9 +599,20 @@ public sealed partial class ChatViewModel
             ClearShellCommandConfirmation();
             ShellCommandStatusText = "Sending the confirmed command…";
         }).ConfigureAwait(false);
-        ShellCommandExecuteResult result = await bridge.ExecuteShellCommandAsync(
-            StampOwner(new ShellCommandExecuteRequest { Confirmation = snapshot, UserConfirmed = true }, owner.Value),
-            lifetime.Token).ConfigureAwait(false);
+        ShellCommandExecuteResult result;
+        try
+        {
+            result = await bridge.ExecuteShellCommandAsync(
+                StampOwner(new ShellCommandExecuteRequest { Confirmation = snapshot, UserConfirmed = true }, owner.Value),
+                lifetime.Token).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (!lifetime.IsCancellationRequested)
+        {
+            // The request may have reached the server before the failure; never imply it did not run.
+            ExtensionDiagnostics.Write("Shell command dispatch failed", ex);
+            result = new ShellCommandExecuteResult { Outcome = ShellCommandOutcome.OutcomeUnknown };
+        }
+
         if (!IsCurrentOwner(owner.Value))
         {
             return;
@@ -689,7 +678,7 @@ public sealed partial class ChatViewModel
                 DisplayName = Path.GetFileName(attachment.FullPath),
             }, owner),
             lifetime.Token).ConfigureAwait(false);
-        if (!IsCurrentOwner(owner) || SelectedThread?.Id != threadId)
+        if (!IsCurrentOwner(owner) || !string.Equals(SelectedThread?.Id ?? Status.ThreadId, threadId, StringComparison.Ordinal))
         {
             return;
         }
@@ -734,7 +723,7 @@ public sealed partial class ChatViewModel
                 UserConfirmed = true,
             }, owner),
             lifetime.Token).ConfigureAwait(false);
-        if (!IsCurrentOwner(owner) || SelectedThread?.Id != threadId)
+        if (!IsCurrentOwner(owner) || !string.Equals(SelectedThread?.Id ?? Status.ThreadId, threadId, StringComparison.Ordinal))
         {
             return;
         }
@@ -931,9 +920,20 @@ public sealed partial class ChatViewModel
             return;
         }
 
-        WindowsSandboxSetupStartResult result = await bridge.StartWindowsSandboxSetupAsync(
-            StampOwner(new WindowsSandboxSetupStartRequest { Mode = confirmedMode, Cwd = solutionRoot }, owner),
-            lifetime.Token).ConfigureAwait(false);
+        WindowsSandboxSetupStartResult result;
+        try
+        {
+            result = await bridge.StartWindowsSandboxSetupAsync(
+                StampOwner(new WindowsSandboxSetupStartRequest { Mode = confirmedMode, Cwd = solutionRoot }, owner),
+                lifetime.Token).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (!lifetime.IsCancellationRequested)
+        {
+            // The Worker may already have dispatched setup; report the uncertainty instead of a silent stall.
+            ExtensionDiagnostics.Write("Windows sandbox setup start failed", ex);
+            result = new WindowsSandboxSetupStartResult { State = WindowsSandboxSetupState.OutcomeUnknown };
+        }
+
         if (!IsCurrentOwner(owner))
         {
             return;

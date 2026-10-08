@@ -1680,6 +1680,46 @@ public sealed class ViewModelTests
     }
 
     [TestMethod]
+    public async Task ChatViewModel_FallbackCompletionKeepsStreamedReasoningText()
+    {
+        using var vm = new ChatViewModel(new FakeWorkerBridge(), autoConnect: false);
+        await RaiseConversationEventAsync(vm, new ConversationEvent
+        {
+            Kind = ConversationEventKind.ReasoningSummaryDelta,
+            ItemId = "reasoning-item",
+            TurnId = "reasoning-turn",
+            Text = "streamed reasoning",
+        });
+
+        await RaiseConversationEventAsync(vm, new ConversationEvent
+        {
+            Kind = ConversationEventKind.ItemCompleted,
+            ItemId = "reasoning-item",
+            TurnId = "reasoning-turn",
+            Parts = [new ArtifactPart { Kind = ArtifactPartKind.Fallback, Text = "The reasoning result is not supported for display." }],
+        });
+
+        ChatItemViewModel item = vm.Items.Single(value => value.ItemId == "reasoning-item");
+        StringAssert.Contains(item.Text, "streamed reasoning");
+        Assert.AreEqual(0, item.ArtifactParts.Count);
+        Assert.IsTrue(item.IsHistoryCompleted);
+    }
+
+    [TestMethod]
+    public void ChatItemViewModel_AppendPlanDeltaClipsAtUtf8LimitWithoutSplittingSurrogates()
+    {
+        var item = new ChatItemViewModel("Plan", string.Empty, ConversationEventKind.PlanUpdated);
+        item.AppendPlanDelta("ab", 5);
+        item.AppendPlanDelta("😀c", 5);
+
+        Assert.AreEqual("ab", item.PlanDeltaText);
+        Assert.IsTrue(item.PlanWasTruncated);
+
+        item.AppendPlanDelta("é", 5);
+        Assert.AreEqual("abé", item.PlanDeltaText);
+    }
+
+    [TestMethod]
     public async Task ChatViewModel_TypedArtifactCompletionCreatesAndReplacesOneItem()
     {
         using var vm = new ChatViewModel(new FakeWorkerBridge(), autoConnect: false);

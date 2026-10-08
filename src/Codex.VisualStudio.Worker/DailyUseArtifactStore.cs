@@ -34,16 +34,33 @@ internal sealed class DailyUseArtifactStore
         string candidate = Guid.NewGuid().ToString("N");
         lock (gate)
         {
-            if (entries.Count >= MaximumEntries)
+            ArtifactActionKind[] actions = (allowedActions ?? new[] { ArtifactActionKind.Open, ArtifactActionKind.Reveal })
+                .Distinct()
+                .Order()
+                .ToArray();
+            if (actions.Length == 0
+                || actions.Any(action => action is not (ArtifactActionKind.Preview or ArtifactActionKind.Open or ArtifactActionKind.Reveal)))
             {
                 return false;
             }
 
-            ArtifactActionKind[] actions = (allowedActions ?? new[] { ArtifactActionKind.Open, ArtifactActionKind.Reveal })
-                .Distinct()
-                .ToArray();
-            if (actions.Length == 0
-                || actions.Any(action => action is not (ArtifactActionKind.Preview or ArtifactActionKind.Open or ArtifactActionKind.Reveal)))
+            // History pages and attachment lists re-project the same paths; reuse the existing
+            // action so repeated refreshes cannot exhaust the bounded store.
+            foreach ((string existingId, Entry existing) in entries)
+            {
+                if (existing.ServerPath is not null
+                    && existing.OwnerGeneration == ownerGeneration
+                    && existing.ConnectionGeneration == connectionGeneration
+                    && string.Equals(existing.StatePartitionFingerprint, statePartitionFingerprint, StringComparison.Ordinal)
+                    && string.Equals(existing.ServerPath.Value, serverPath.Value, StringComparison.Ordinal)
+                    && existing.AllowedActions.SequenceEqual(actions))
+                {
+                    actionId = existingId;
+                    return true;
+                }
+            }
+
+            if (entries.Count >= MaximumEntries)
             {
                 return false;
             }

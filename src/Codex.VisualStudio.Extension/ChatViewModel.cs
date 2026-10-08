@@ -7396,6 +7396,7 @@ public sealed class ChatItemViewModel : ObservableObject
     private int commandLineBreakCount;
     private bool commandEndsWithLineBreak;
     private string planDeltaText = string.Empty;
+    private int planDeltaBytes;
     private bool isPlanComplete;
     private bool planWasTruncated;
 
@@ -7768,23 +7769,24 @@ public sealed class ChatItemViewModel : ObservableObject
             return;
         }
 
-        int currentBytes = Encoding.UTF8.GetByteCount(PlanDeltaText);
-        int remaining = Math.Max(0, maximumUtf8Bytes - currentBytes);
+        int remaining = Math.Max(0, maximumUtf8Bytes - planDeltaBytes);
         if (remaining == 0)
         {
             PlanWasTruncated = true;
             return;
         }
 
-        int appendLength = text.Length;
-        while (appendLength > 0 && Encoding.UTF8.GetByteCount(text.AsSpan(0, appendLength)) > remaining)
+        int appendLength = 0;
+        int appendBytes = 0;
+        foreach (Rune rune in text.EnumerateRunes())
         {
-            appendLength--;
-        }
+            if (appendBytes + rune.Utf8SequenceLength > remaining)
+            {
+                break;
+            }
 
-        if (appendLength > 0 && char.IsHighSurrogate(text[appendLength - 1]))
-        {
-            appendLength--;
+            appendBytes += rune.Utf8SequenceLength;
+            appendLength += rune.Utf16SequenceLength;
         }
 
         if (appendLength < text.Length)
@@ -7794,7 +7796,8 @@ public sealed class ChatItemViewModel : ObservableObject
 
         if (appendLength > 0)
         {
-            PlanDeltaText = string.Concat(PlanDeltaText, text[..appendLength]);
+            planDeltaBytes += appendBytes;
+            PlanDeltaText = string.Concat(PlanDeltaText, text.AsSpan(0, appendLength));
         }
     }
 
@@ -7811,6 +7814,7 @@ public sealed class ChatItemViewModel : ObservableObject
         OnPropertyChanged(nameof(HasStructuredPlanSteps));
 
         PlanDeltaText = string.Empty;
+        planDeltaBytes = 0;
         IsPlanComplete = snapshot.IsComplete;
         PlanWasTruncated = wasTruncated || snapshot.Steps.Count > 200;
     }

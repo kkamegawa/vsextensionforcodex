@@ -653,6 +653,30 @@ public sealed class CodexSessionServiceTests
     }
 
     [TestMethod]
+    public async Task ItemStartedIsEmittedWithoutTranscriptParts()
+    {
+        var connection = new RecordingConnection();
+        await using var service = CreateService();
+        var events = new System.Collections.Concurrent.ConcurrentQueue<ConversationEvent>();
+        service.ConversationEventReceived += (value, _) =>
+        {
+            events.Enqueue(value);
+            return Task.CompletedTask;
+        };
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        await connection.EmitNotificationAsync("item/started", new
+        {
+            threadId = "thread-1", turnId = "turn-1",
+            item = new { id = "item-1", type = "commandExecution" },
+        });
+
+        ConversationEvent started = events.Single(item => item.Kind == ConversationEventKind.ItemStarted);
+        Assert.AreEqual(0, started.Parts.Count);
+        Assert.IsNull(started.PayloadJson);
+    }
+
+    [TestMethod]
     public async Task ThreadStatusSnapshotAcceptsOnlyCurrentIdleOrBusyState()
     {
         var connection = new RecordingConnection();
