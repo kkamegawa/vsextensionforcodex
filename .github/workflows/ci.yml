@@ -119,36 +119,21 @@ jobs:
           CODEX_PATH: ${{ steps.install_pinned_codex.outputs.codex_path }}
         run: dotnet build CodexForVisualStudio.slnx -c Release --no-restore -v minimal
 
-      - name: Test core
+      - name: Verify test evidence and retry policy
+        shell: pwsh
+        run: pwsh -NoProfile -File scripts/Test-TestSuiteEvidence.ps1
+
+      - name: Probe required link capabilities
+        id: probe_links
         shell: pwsh
         run: |
-          $maxAttempts = 3
-          for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
-            dotnet test tests\Codex.VisualStudio.Core.Tests\Codex.VisualStudio.Core.Tests.csproj -c Release --no-build -v minimal
-            if ($LASTEXITCODE -eq 0) {
-              break
-            }
-            if ($attempt -eq $maxAttempts) {
-              throw "Test core failed after $maxAttempts attempts (exit code $LASTEXITCODE)."
-            }
-            Write-Warning "Test core attempt $attempt failed (exit code $LASTEXITCODE); retrying in 5s..."
-            Start-Sleep -Seconds 5
-          }
-      - name: Test UI
+          pwsh -NoProfile -File scripts/Test-LinkCapabilities.ps1 -OutputPath (Join-Path $env:RUNNER_TEMP 'release-validation/link-capabilities.json')
+
+      - name: Run Core and UI tests with evidence
+        if: success() || steps.probe_links.outcome == 'failure'
         shell: pwsh
         run: |
-          $maxAttempts = 3
-          for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
-            dotnet test tests\Codex.VisualStudio.Ui.Tests\Codex.VisualStudio.Ui.Tests.csproj -c Release --no-build -v minimal
-            if ($LASTEXITCODE -eq 0) {
-              break
-            }
-            if ($attempt -eq $maxAttempts) {
-              throw "Test UI failed after $maxAttempts attempts (exit code $LASTEXITCODE)."
-            }
-            Write-Warning "Test UI attempt $attempt failed (exit code $LASTEXITCODE); retrying in 5s..."
-            Start-Sleep -Seconds 5
-          }
+          pwsh -NoProfile -File scripts/Invoke-TestSuitesWithEvidence.ps1 -Configuration Release -OutputDirectory (Join-Path $env:RUNNER_TEMP 'release-validation') -NoBuild
 
       - name: Find VSIX
         id: find_vsix
@@ -163,6 +148,8 @@ jobs:
           if (-not $vsix) {
             throw "VSIX artifact was not generated."
           }
+          pwsh -NoProfile -File scripts/Test-VsixContents.ps1 -Configuration Release `
+            -OutputPath (Join-Path $env:RUNNER_TEMP 'release-validation/vsix-inspection.json')
           Write-Host "Found VSIX: $($vsix.FullName)"
           "vsix_path=$($vsix.FullName)" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
 
@@ -171,6 +158,17 @@ jobs:
         with:
           name: CodexForVisualStudio-vsix
           path: ${{ steps.find_vsix.outputs.vsix_path }}
+
+      - name: Upload validation evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-validation-evidence-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/release-validation/
+            schemas/
+          if-no-files-found: warn
+          retention-days: 30
 
       # The pinned 0.159.1 executable is the schema and build contract. The latest stable release
       # is only smoke-tested (start + initialize) so an upstream break is visible without blocking.
