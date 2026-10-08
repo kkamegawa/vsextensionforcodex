@@ -212,66 +212,45 @@ The phase targets CLI 0.159.1 stable with 0.155.1 regression fixtures. Baseline:
 
 Phase 6 includes optional experimental plan deltas and bounded notices; live-catalog input admission and additive 0.159.1 fields; `/shell [--timeout-ms N] -- <command>` with exact command preservation, confirmation, local policy evaluation, independent RPC/execution deadlines, and a per-thread pending lock; typed bounded result parts, PNG/JPEG preview, and mapped Open/Reveal with action-time physical validation; explicit saved-attachment add/remove using the client-owned `relaycodex.file.v1` payload; and local-Windows-only sandbox setup with indeterminate progress and truthful outcome states. The shell method always executes unsandboxed with full access in CLI 0.159.1. Saved attachments remain metadata and never become composer input automatically.
 
-Work packages P0–P6 and their dependencies are defined in the detailed plan. Verification includes pinned 0.159.1/0.155.1 fixtures, targeted then full Core/UI tests, warning-free Debug/Release builds, contract/schema and VSIX integrity checks, plus Experimental Instance screenshots for themes, narrow width, keyboard/focus, and accessibility. Missing screenshots remain unmet criteria. Issue #155 stays open until evidence is recorded; Issue #156 retains the release gate.
+Work packages P0–P6 and their dependencies are defined in the detailed plan. Verification includes pinned 0.159.1/0.155.1 fixtures, targeted then full Core/UI tests, warning-free Debug/Release builds, contract/schema and VSIX integrity checks, plus Experimental Instance screenshots for themes, narrow width, keyboard/focus, and accessibility. Missing screenshots remain unmet criteria. PR #170 implementation and automated validation are complete, and Issue #155 is closed. Unfinished Experimental Instance visual/interaction acceptance carries into Issue #156 as Local-required.
 
 ## Phase 7 — Integrated validation and release readiness
 
-Tracking: [#156](https://github.com/kkamegawa/vsextensionforcodex/issues/156)
+Tracking: [Issue #156](https://github.com/kkamegawa/vsextensionforcodex/issues/156). The approved [release-validation design](release-validation-design.md) and [implementation plan](release-validation-plan.md), with Japanese counterparts, define the detailed matrix.
 
-### Contract and ordering
+Baseline for this plan: main commit b44e856, Worker contract v21, CLI 0.159.1, and 0.155.1 regression fixtures. PR #170's results remain historical and are not results for a later release candidate.
 
-- Generate and structurally compare CLI 0.155.1 and 0.159.1 standard/experimental schemas, then compare the 0.159.1 target with representative live request, response, and notification traffic.
-- Cover unknown methods/items/enums, extra fields, malformed payloads, missing required fields, nullability drift, and schema-cache invalidation.
-- Reproduce completion-before-start-response, notification-during-history-read, duplicate item, resolved-response race, and older-generation events.
+### Scenario classes and evidence
 
-### Recovery, transport, and isolation
+- **Local-required:** pinned schema comparisons, Fake App Server and local suites, transport/TLS/token-rotation simulations, path boundaries, VSIX integrity, Windows Experimental Instance, and isolation between two Experimental Instances on one machine. All required cases must pass.
+- **External:** authenticated pinned-CLI traffic, real MCP OAuth expiry/re-authentication, and real remote TLS/certificate/token rotation. These run manually outside public CI; each must pass or have a specifically accepted blocked limitation with its risk, substitute evidence, approver, date, and approval reference recorded.
+- Record passed, failed, blocked, not-run, and flaky per scenario. Any failed, flaky, or not-run blocks readiness. Required skips count as blocked; Local-required blocked is incomplete. Environment constraints alone do not waive External scenarios.
+- Preserve initial test results and retry only failed test cases once. A retry pass is flaky and fails the gate. Do not rerun an entire suite when a data-driven case cannot be isolated or the test host exits abnormally.
+- Probe symlink/junction creation in a dedicated temporary directory under the actual test identity. Record each skipped test and its reason; do not infer the six PR #170 skips without their TRX.
+- Save sanitized TRX, diagnostics, schema reports, hashes, and a result manifest with `if: always()`. Keep live authenticated traffic out of public CI and artifacts.
 
-- Reproduce Worker exit, transport loss, authentication failure, token rotation, overload, endpoint/root/profile switch, and another-client ownership.
-- Verify draft retention and zero automatic replay of uncertain mutations.
-- Exercise remote `wss`, loopback `ws`, forbidden remote `ws`, certificate failure, health/RPC disagreement, retry exhaustion, and manual reconnect.
-- Cover Windows/POSIX roots, mixed separators, case, sibling-prefix escape, traversal, symlink/junction escape, unmappable attachments, and mapped file actions.
-- Verify multiple endpoints, accounts, roots, and Visual Studio instances cannot mix any cached/session state.
-- Switch authentication principals on the same endpoint and verify the previous owner's remote session, pending requests, WebSocket state, model catalog, caches, and late events cannot be reused.
-- Cover basic attachment metadata page/record limits, notification identity merging, disconnect uncertainty, and recovery reconstruction. Issue #155 separately covers duplicate add, absent remove, MIME/payload rejection, mapped/unmapped paths, typed actions, and fork copy behavior.
+### User-interface and Windows acceptance
 
-### Interaction and secret protection
+Use the SDK-managed F5/Experimental Instance workflow and duplicate-identity guard. Check Light, Dark, High Contrast, narrow layouts, connection/recovery/history/draft states, question/permission/MCP cards, attachments/artifacts, shell confirmation, Windows setup, keyboard and focus order, accessible names, Narrator/Accessibility Insights announcements, long-history operation, and two same-machine instances.
 
-- Cover multiple question cards, composer independence, free text/Other, explicit Submit, display-only defaults, and secret rejection before UI projection.
-- Exercise answer/cancel, duplicate submission, timeout, disconnect, `serverRequest/resolved`, and retired-generation races; each request produces at most one response.
-- Verify exact partial network/file permission responses, turn/session scope, out-of-request permission rejection, and faithful command-approval choices.
-- Cover supported MCP form fields and validation, unsupported schema refusal, explicit browser launch, cancellation/failure/success, OAuth expiration/revocation, `reauthenticationRequired`, and reset of stale elicitation. Confirm zero automatic tool replay and that UI cancellation does not imply server-side cancellation.
-- Verify local Gateway OAuth startup gating, notifications arriving before responses, cancellation, reconnect, and remote read-only behavior.
-- Verify native user-verification requests are rejected with a reason and capability remains undeclared. Inspect UI, transcript, logs, settings, diagnostics, and exception text for challenge/proof/credential disclosure.
+Screenshots must reference scenario IDs and include environment, expected result, and outcome. Keyboard and screen-reader checks also require steps and observations. Off-screen WPF rendering is supplementary. Full solution, WPF UI, fixed Windows CLI schema generation, VSIX, and Experimental Instance acceptance require Windows; Core/Worker net8.0 runs elsewhere do not replace Windows evidence.
 
-### UI, build, and package evidence
+### Native verification boundary
 
-- Run focused tests for each phase, then full Core and UI test suites.
-- Run Debug and Release solution builds with zero warnings.
-- Inspect VSIX contents, Worker payload, manifests, generated schema/cache metadata, embedded XAML, and relevant hashes.
-- Run the installed extension in a Visual Studio Experimental Instance.
-- Verify actual Light, Dark, and High Contrast rendering; narrow widths; keyboard navigation; accessible names/live regions; question cards and authentication states. Capture screenshots and record pass/fail; unavailable screenshots remain incomplete visual acceptance evidence.
-- Record evidence and accepted limitations in `doc/implementation.md` and `doc/task.md` with links to this issue hierarchy.
+Test only that capability is undeclared, requests are rejected before payload projection, challenge/proof material is never exposed, delayed resolution/cancellation events are ignored, and principal changes discard pending state. Successful enroll/verify/cancel/delete flows are unsupported and are not acceptance requirements. No new ADR is needed.
 
-### UI, build, and package evidence
+### Follow-up implementation boundary
 
-- Run focused tests for each phase, then full Core and UI test suites.
-- Run Debug and Release solution builds with zero warnings.
-- Inspect VSIX contents, Worker payload, manifests, generated schema/cache metadata, embedded XAML, and relevant hashes.
-- Run the installed extension in a Visual Studio Experimental Instance.
-- Verify actual Light, Dark, and High Contrast rendering; keyboard navigation; focus order; accessible names/live regions; virtualization; reconnect/history states; interaction cards; artifacts; and shell confirmation.
-- Capture screenshots for required themes/states and record pass/fail evidence rather than relying only on source inspection.
-- Record evidence and accepted limitations in `doc/implementation.md` and `doc/task.md` with links to this issue hierarchy.
+This phase defines evidence and readiness. The PowerShell 7 orchestrator, CI/release workflow changes, uncovered tests, External runs, and Experimental Instance acceptance are follow-up implementation tracked by Issue #156 and its approved plan.
 
 ## Completion criteria
 
-- Supported messages use exact method/type contracts; unsupported requests receive a protocol-appropriate rejection.
-- A response or notification from a stale connection cannot revive a completed turn or mutate current state.
-- Secure remote connection, root mapping, authentication-principal cache/state partitioning, transient reconnect, paged history, and bounded basic attachment metadata recovery work without replaying uncertain mutations.
-- Partial permission approval, asynchronous questions, resolved races, supported MCP forms, browser flow, MCP reauthentication guidance, safe refusal of secret input, and local/remote Gateway OAuth behavior work end to end. Native user-verification success remains deferred until upstream supports Windows and this extension client.
-- Shell execution is explicit, bounded, connection-labelled, and governed by the existing approval policy.
-- Core/UI tests, zero-warning Debug and Release builds, VSIX checks, and Experimental Instance visual/accessibility checks pass; screenshots provide evidence for the displayed states.
-- Shell execution is explicit, bounded, connection-labelled, and governed by the existing approval policy.
-- Core/UI tests, zero-warning Debug and Release builds, VSIX checks, and Experimental Instance visual/accessibility checks pass.
+- All Local-required scenarios pass at the exact final candidate commit; no failed, flaky, or not-run remains, and required skips or blocked cases remain incomplete.
+- Every External scenario passes or has a specifically accepted, evidence-backed blocked limitation with approver, date, and approval source recorded.
+- The final record includes the result manifest and sanitized evidence; PR #170's counts and hashes are labeled historical, not current-candidate results.
+- Experimental Instance theme, narrow-width, workflow, keyboard, focus, accessibility, long-history, and same-machine instance-isolation checks pass with linked evidence.
+- Issue #155's closed status does not satisfy outstanding Phase 6 visual/interaction acceptance; that work is carried into #156 as Local-required.
+- Native verification refusal and secret-boundary checks pass; successful native verification flows are not required.
 
 ## Deferred follow-up capabilities
 

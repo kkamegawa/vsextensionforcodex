@@ -212,66 +212,45 @@ CLI 0.159.1 stable を対象とし、0.155.1 の回帰 fixture を使う。基�
 
 Phase 6 は、任意の experimental plan delta と上限付き notice、実行時カタログに基づく入力受け入れと 0.159.1 追加 field、正確なコマンド保持・確認・ローカル policy・独立 RPC／実行期限・thread ごとの pending lock を備えた `/shell [--timeout-ms N] -- <command>`、型付き上限結果・PNG/JPEG preview・操作時の物理検証付き mapped Open/Reveal、クライアント所有 `relaycodex.file.v1` payload を使う明示的な添付 add/remove、ローカル Windows のみの sandbox 設定を含む。CLI 0.159.1 の shell method は常に sandbox 外の full access で実行する。保存済み添付は metadata のままとし、composer input へ自動追加しない。
 
-P0–P6 と依存関係は詳細計画に定める。検証は固定 0.159.1／0.155.1 fixture、対象から Core/UI 全テスト、warning-free Debug/Release build、contract/schema と VSIX integrity、Experimental Instance のテーマ・狭幅・keyboard/focus・accessibility のスクリーンショットを含む。スクリーンショットがなければ未達とする。証跡を記録するまで Issue #155 を open とし、Issue #156 の release gate を維持する。
+P0–P6 と依存関係は詳細計画に定める。検証は固定 0.159.1／0.155.1 fixture、対象から Core/UI 全テスト、warning-free Debug/Release build、contract/schema と VSIX integrity、Experimental Instance のテーマ・狭幅・keyboard/focus・accessibility のスクリーンショットを含む。スクリーンショットがなければ未達とする。PR #170 の実装と自動検証は完了し、Issue #155 は close 済み。未完了の Experimental Instance 表示／対話受入は Issue #156 の Local-required 条件へ引き継ぐ。
 
 ## Phase 7 — 統合検証とリリース準備
 
-トラッキング: [#156](https://github.com/kkamegawa/vsextensionforcodex/issues/156)
+トラッキング：[Issue #156](https://github.com/kkamegawa/vsextensionforcodex/issues/156)。詳細条件は承認済み[統合リリース検証設計](release-validation-design_ja.md)と[実装計画](release-validation-plan_ja.md)に定める。
 
-### 契約と順序
+この計画の基準は main commit b44e856、Worker contract v21、CLI 0.159.1、回帰 fixture 0.155.1。PR #170 の結果は過去の証跡であり、後続 release candidate の結果には流用しない。
 
-- CLI 0.155.1 と 0.159.1 の標準／実験的スキーマを生成して構造比較し、0.159.1 の対象契約を代表的な実送受信の要求、応答、通知と照合する。
-- 未知メソッド／item／列挙値、追加フィールド、不正 payload、必須フィールド欠落、null 許容の変化、スキーマキャッシュ無効化を検証する。
-- 完了通知が開始応答より先に届く場合、履歴取得中通知、item 重複、resolved／response 競合、古い接続世代イベントを再現する。
+### シナリオ区分と証跡
 
-### 復旧・転送・分離
+- **Local-required:** 固定 schema 比較、Fake App Server とローカル suite、transport／TLS／token rotation 模擬、path 境界、VSIX integrity、Windows Experimental Instance、同一マシン上の2 instance 分離。必須項目すべての合格を必要とする。
+- **External:** 認証を伴う固定 CLI 通信、実 MCP OAuth の期限切れ／再認証、実 remote TLS／証明書／token rotation。公開 CI 外で手動実行し、合格またはリスク、代替証拠、承認者、日付、承認元を記録した明示承認済み blocked とする。
+- passed、failed、blocked、not-run、flaky をシナリオごとに記録する。failed／flaky／not-run が残れば準備完了としない。必須 skip は blocked とし、Local-required の blocked は未完了。環境制約だけで External を免除しない。
+- 初回結果を保存し、失敗した test case だけを1回再試行する。再試行合格は flaky として gate を失敗させる。data-driven case を分離できない場合や test host が異常終了した場合、suite 全体を再実行しない。
+- 実際の test identity で専用一時領域への symlink／junction 作成を試す。skip は test 名と実際の理由を記録し、PR #170 の6件は TRX なしに原因を推定しない。
+- 秘密除去済み TRX、diagnostic、schema report、hash、結果 manifest を `if: always()` で保存する。認証済み生通信は公開 CI／成果物へ含めない。
 
-- Worker 終了、通信断、認証失敗、トークン更新、過負荷、接続先／ルート／プロファイル変更、他クライアント所有を再現する。
-- 下書き保持と、配送不明な変更操作が一切自動再送されないことを確認する。
-- リモート `wss`、loopback `ws`、禁止されるリモート `ws`、証明書失敗、health／RPC 不一致、再試行上限、手動再接続を検証する。
-- Windows／POSIX ルート、区切り文字混在、大文字小文字、兄弟 prefix 脱出、traversal、symlink／junction 脱出、対応付け不能添付、対応付け済みファイル操作を検証する。
-- 複数の接続先、アカウント、ルート、Visual Studio インスタンス間でキャッシュ／セッション状態が混在しないことを確認する。
-- 同じ接続先で認証主体を切り替え、旧主体のリモートセッション、未完了要求、WebSocket 状態、モデルカタログ、キャッシュ、遅延イベントを再利用できないことを確認する。
-- 保存済み添付のページ境界と上限、重複 add、存在しない remove、MIME 拒否、対応付け済み／不能パス、通知統合、切断時の結果不明、復旧再構築、fork 複製を検証する。
+### UI と Windows 受入
 
-### 対話と秘密情報保護
+SDK 管理の F5／Experimental Instance 手順と重複 identity guard を使用する。Light／Dark／High Contrast、狭幅、接続／復旧／履歴／下書き、質問／権限／MCP、添付／成果物、shell 確認、Windows setup、keyboard／focus 順、accessible name、Narrator／Accessibility Insights の通知、長い履歴、同一マシン上の2 instance を確認する。
 
-- 複数質問カード、composer との独立性、自由入力／「その他」、明示 Submit、表示だけの既定値、UI 投影前の秘密要求拒否を検証する。
-- 回答／キャンセル、二重送信、timeout、切断、`serverRequest/resolved`、破棄済み接続世代の競合で、要求ごとの応答が最大1回であることを確認する。
-- ネットワーク／ファイル権限の正確な部分応答、turn／session scope、要求外権限の拒否、コマンド承認選択肢の忠実な表示と応答を検証する。
-- 対応 MCP form と検証、未対応 schema の拒否、明示的なブラウザー起動、取消／失敗／成功、OAuth 期限切れ／失効、`reauthenticationRequired`、古い elicitation の初期化を検証する。ツール呼び出しの自動再送がなく、UI 取消がサーバー側取消を意味しないことを確認する。
-- ローカル Gateway OAuth の起動ゲート、応答前に届く通知、キャンセル、再接続、Remote の読み取り専用動作を検証する。
-- ネイティブ本人確認要求が理由付きで拒否され、capability が未宣言であることを確認する。UI、会話、ログ、設定、診断、例外文に challenge／proof／credential が漏れないことを検査する。
+スクリーンショットには scenario ID、環境、期待結果、合否を付ける。keyboard／読み上げには手順と観測記録も必要とする。オフスクリーン WPF 描画は補助証跡。全 solution、WPF UI、固定 Windows CLI の schema 生成、VSIX、Experimental Instance の受入は Windows で実施し、Core／Worker net8.0 の他 OS 実行を Windows 証跡の代替にしない。
 
-### UI・ビルド・配布物の証跡
+### ネイティブ本人確認の境界
 
-- 各 Phase の重点テスト後、Core と UI の全テストを実行する。
-- Debug と Release の solution build を警告ゼロで実行する。
-- VSIX 内容、Worker payload、manifest、生成スキーマ／cache metadata、埋め込み XAML、関連 hash を検査する。
-- インストールした拡張機能を Visual Studio Experimental Instance で実行する。
-- Light、Dark、High Contrast の実表示、狭い幅、キーボード操作、accessible name／live region、質問カードと認証状態を確認する。スクリーンショットを取得して合否を記録し、取得できない場合は視覚検証を未完了とする。
-- 証跡と受容した制限を `doc/implementation.md` と `doc/task.md` に記録し、この Issue 階層へリンクする。
+capability 未宣言、payload 投影前の拒否、challenge／proof の非露出、遅延 resolve／cancel event の無視、principal 変更時の未完了状態破棄を検証する。enroll／verify／cancel／delete の成功フローは未対応であり受入条件にしない。新規 ADR は不要。
 
-### UI・ビルド・配布物の証跡
+### 後続実装の範囲
 
-- 各 Phase の重点テスト後、Core と UI の全テストを実行する。
-- Debug と Release の solution build を警告ゼロで実行する。
-- VSIX 内容、Worker payload、manifest、生成スキーマ／キャッシュメタデータ、埋め込み XAML、関連 hash を検査する。
-- インストールした拡張機能を Visual Studio Experimental Instance で実行する。
-- Light、Dark、High Contrast の実表示、キーボード操作、フォーカス順序、accessible name／live region、virtualization、再接続／履歴状態、対話カード、成果物、shell 確認を検証する。
-- 必要なテーマ／状態のスクリーンショットを取得し、ソース確認だけに頼らず合否の証跡を記録する。
-- 証跡と受容した制限を `doc/implementation.md` と `doc/task.md` に記録し、この Issue 階層へリンクする。
+本 Phase は証跡と準備完了基準を定める。PowerShell 7 統合 script、CI／Release workflow、不足 test、External 実行、Experimental Instance 受入は Issue #156 の承認済み計画に基づく後続実装とする。
 
 ## 完了条件
 
-- 対応メッセージはメソッド／型の厳密な契約を使用し、未対応要求にはプロトコル上適切な拒否を返す。
-- 古い接続からの応答または通知によって、完了済みターンが実行中へ戻ったり、現在状態が変更されたりしない。
-- 安全なリモート接続、ルート対応付け、認証主体ごとのキャッシュ／状態分離、再接続、ページ履歴、保存済み添付復旧が、配送不明な変更操作を再送せず動作する。
-- 権限の部分許可、非同期質問、resolved 競合、対応 MCP form、ブラウザーフロー、MCP 再認証案内、秘密入力の安全な拒否、ローカル／Remote の Gateway OAuth が end-to-end で動作する。ネイティブ本人確認の成功経路は、上流が Windows とこの拡張 client に対応するまで延期する。
-- shell 実行は明示的で上限があり、接続先を表示し、既存の承認ポリシーに従う。
-- Core／UI テスト、警告ゼロの Debug／Release build、VSIX 検査、Experimental Instance の表示／アクセシビリティ検証に合格し、画面状態の証跡としてスクリーンショットを記録する。
-- shell 実行は明示的で上限があり、接続先を表示し、既存の承認ポリシーに従う。
-- Core／UI テスト、警告ゼロの Debug／Release build、VSIX 検査、Experimental Instance の表示／アクセシビリティ検証が合格する。
+- 正確な最終 candidate commit で Local-required をすべて合格させる。failed／flaky／not-run を残さず、必須 skip／blocked は未完了とする。
+- すべての External が合格、または承認者・日付・承認元を記録した証跡付きの明示承認済み blocked である。
+- 結果 manifest と秘密除去済み証跡を記録し、PR #170 の件数／hash は現 candidate の結果と区別する。
+- Experimental Instance のテーマ、狭幅、workflow、keyboard、focus、accessibility、長い履歴、同一マシン上の instance 分離が合格し、証跡がある。
+- Issue #155 の close 状態で Phase 6 の未完了な画面／対話受入を完了扱いにしない。Issue #156 に Local-required として引き継ぐ。
+- ネイティブ本人確認の拒否と秘密情報境界を検証する。成功フローは要求しない。
 
 ## 後続計画とする機能
 

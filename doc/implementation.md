@@ -564,4 +564,12 @@ dotnet test tests/Codex.VisualStudio.Core.Tests/Codex.VisualStudio.Core.Tests.cs
 dotnet test tests/Codex.VisualStudio.Ui.Tests/Codex.VisualStudio.Ui.Tests.csproj -c Release --no-build --no-restore
 ~~~
 
-Visual Studio 2026 Enterprise 18.10.3 is installed. Native CUA APIs are disabled, so Experimental Instance Light/Dark/High Contrast, narrow width, keyboard/focus, and accessibility states could not be inspected. The off-screen image is separate evidence and does not satisfy those criteria. Issue #155 remains open; Issue #156 remains the release gate.
+Visual Studio 2026 Enterprise 18.10.3 is installed. Native CUA APIs are disabled, so Experimental Instance Light/Dark/High Contrast, narrow width, keyboard/focus, and accessibility states could not be inspected. The off-screen image is separate evidence and does not satisfy those criteria. Issue #155 is closed; its unfinished Experimental Instance visual/accessibility acceptance is carried into #156 as Local-required.
+
+## Issue #156: Integrated release validation
+
+Approved [design](release-validation-design.md) and [implementation plan](release-validation-plan.md), with Japanese translations. Tracking: [Issue #156](https://github.com/kkamegawa/vsextensionforcodex/issues/156), under [#149](https://github.com/kkamegawa/vsextensionforcodex/issues/149); [Japanese work record](implementation-issue156_ja.md). Baseline: main at b44e856, Worker contract v21, CLI 0.159.1, and 0.155.1 regression fixtures.
+
+This change synchronizes the design, issue, repository documents, and bilingual Wiki. It does not implement or execute the integrated validation orchestrator, CI/release workflow changes, uncovered tests, External scenarios, or Experimental Instance acceptance. No runtime validation result is claimed here.
+
+PR #170 evidence remains historical: Debug/Release builds reported zero warnings/errors; Core reported 399 passed and 5 skipped; UI reported 370 passed and 1 skipped; schema/cache/method and package/XAML/hash checks were recorded. Those results do not establish readiness for a later candidate. Issue #155 is closed, while its unfinished Experimental Instance visual/accessibility acceptance remains Local-required under #156.
