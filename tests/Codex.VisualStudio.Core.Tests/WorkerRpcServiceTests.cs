@@ -247,6 +247,157 @@ public sealed class WorkerRpcServiceTests
     }
 
     [TestMethod]
+    public async Task SavedAttachmentMutation_RejectsOldConnectionGenerationForSameOwner()
+    {
+        var connection = new StubConnection();
+        var session = new CodexSessionService(new ApprovalPolicyEngine(new PathAccessPolicy()), new SecretRedactor());
+        await using var worker = new WorkerRpcService(new SecretRedactor(), new FakeProcessHost(connection), session);
+        WorkerStatus current = await worker.ConnectAsync(Options(), CancellationToken.None);
+
+        var stale = new SavedAttachmentAddRequest
+        {
+            ThreadId = "thread-1",
+            LocalPath = Path.Combine(Path.GetTempPath(), "not-read-before-owner-validation.txt"),
+            MimeType = "text/plain",
+            DisplayName = "notes.txt",
+            StatePartitionFingerprint = current.Target!.StatePartitionFingerprint,
+            OwnerGeneration = current.Target.OwnerGeneration,
+            ConnectionGeneration = current.Target.Generation - 1,
+        };
+        int callsBefore = connection.Methods.Count;
+
+        await Assert.ThrowsExactlyAsync<InvalidOperationException>(
+            async () => await session.AddSavedAttachmentAsync(stale, CancellationToken.None));
+
+        Assert.AreEqual(callsBefore, connection.Methods.Count);
+        Assert.IsFalse(connection.Methods.Contains("thread/attachment/add", StringComparer.Ordinal));
+    }
+
+    [TestMethod]
+    public async Task ShellMalformedAcknowledgementKeepsPendingLockAndDoesNotReplay()
+    {
+        string cwd = Options().WorkingDirectory;
+        var connection = new StubConnection
+        {
+            Handler = method => method switch
+            {
+                "thread/start" => JsonSerializer.SerializeToElement(new { thread = new { id = "thread-1" } }),
+                "thread/read" => JsonSerializer.SerializeToElement(new { thread = new { id = "thread-1", cwd } }),
+                "thread/shellCommand" => JsonSerializer.SerializeToElement(new { unexpected = "not an empty acknowledgement" }),
+                _ => JsonSerializer.SerializeToElement(new { }),
+            },
+        };
+        var session = new CodexSessionService(new ApprovalPolicyEngine(new PathAccessPolicy()), new SecretRedactor());
+        await using var worker = new WorkerRpcService(new SecretRedactor(), new FakeProcessHost(connection), session);
+        await worker.ConnectAsync(Options(), CancellationToken.None);
+        await worker.StartThreadAsync(Scoped(worker, new StartThreadRequest()), CancellationToken.None);
+        await connection.EmitNotificationAsync("thread/status/changed", new { threadId = "thread-1", status = new { type = "idle" } });
+
+        ShellCommandPrepareResult firstPrepared = await worker.PrepareShellCommandAsync(
+            Scoped(worker, new ShellCommandPrepareRequest { ThreadId = "thread-1", Command = "echo one" }),
+            CancellationToken.None);
+        Assert.IsTrue(firstPrepared.IsEligible, firstPrepared.RejectionReason);
+        ShellCommandExecuteResult first = await worker.ExecuteShellCommandAsync(
+            Scoped(worker, new ShellCommandExecuteRequest { Confirmation = firstPrepared.Confirmation!, UserConfirmed = true }),
+            CancellationToken.None);
+        Assert.AreEqual(ShellCommandOutcome.OutcomeUnknown, first.Outcome);
+
+        ShellCommandPrepareResult secondPrepared = await worker.PrepareShellCommandAsync(
+            Scoped(worker, new ShellCommandPrepareRequest { ThreadId = "thread-1", Command = "echo two" }),
+            CancellationToken.None);
+        Assert.IsTrue(secondPrepared.IsEligible, secondPrepared.RejectionReason);
+        ShellCommandExecuteResult second = await worker.ExecuteShellCommandAsync(
+            Scoped(worker, new ShellCommandExecuteRequest { Confirmation = secondPrepared.Confirmation!, UserConfirmed = true }),
+            CancellationToken.None);
+
+        Assert.AreEqual(ShellCommandOutcome.NotSent, second.Outcome);
+        Assert.AreEqual(1, connection.Methods.Count(method => method == "thread/shellCommand"));
+    }
+
+    [TestMethod]
+    public async Task WindowsSandboxStartedFalseIsDefinitiveAndCannotBeRetriedInGeneration()
+    {
+        int setupCalls = 0;
+        var connection = new StubConnection
+        {
+            Handler = method =>
+            {
+                if (method == "initialize")
+                {
+                    return JsonSerializer.SerializeToElement(new { platformOs = "windows", platformFamily = "windows" });
+                }
+
+                if (method == "windowsSandbox/setupStart")
+                {
+                    setupCalls++;
+                    return JsonSerializer.SerializeToElement(new { started = false });
+                }
+
+                return JsonSerializer.SerializeToElement(new { });
+            },
+        };
+        var session = new CodexSessionService(new ApprovalPolicyEngine(new PathAccessPolicy()), new SecretRedactor());
+        await using var worker = new WorkerRpcService(new SecretRedactor(), new FakeProcessHost(connection), session);
+        await worker.ConnectAsync(Options(), CancellationToken.None);
+        WindowsSandboxSetupStartRequest request = Scoped(worker, new WindowsSandboxSetupStartRequest
+        {
+            Mode = WindowsSandboxSetupMode.Unelevated,
+            Cwd = Options().WorkingDirectory,
+        });
+
+        WindowsSandboxSetupStartResult first = await worker.StartWindowsSandboxSetupAsync(request, CancellationToken.None);
+        WindowsSandboxSetupStartResult second = await worker.StartWindowsSandboxSetupAsync(
+            Scoped(worker, new WindowsSandboxSetupStartRequest { Mode = WindowsSandboxSetupMode.Unelevated, Cwd = Options().WorkingDirectory }),
+            CancellationToken.None);
+
+        Assert.AreEqual(WindowsSandboxSetupState.Failed, first.State);
+        Assert.AreEqual(false, first.Started);
+        Assert.AreEqual(WindowsSandboxSetupState.Failed, second.State);
+        Assert.AreEqual(1, setupCalls);
+    }
+
+    [TestMethod]
+    public async Task SavedAttachmentRemoveRejectsInvalidIdentityButAllowsKnownAbsentRecord()
+    {
+        var connection = new StubConnection
+        {
+            Handler = method => method == "thread/start"
+                ? JsonSerializer.SerializeToElement(new { thread = new { id = "thread-1" } })
+                : method == "thread/attachment/list"
+                    ? JsonSerializer.SerializeToElement(new { data = Array.Empty<object>() })
+                    : JsonSerializer.SerializeToElement(new { }),
+        };
+        var session = new CodexSessionService(new ApprovalPolicyEngine(new PathAccessPolicy()), new SecretRedactor());
+        await using var worker = new WorkerRpcService(new SecretRedactor(), new FakeProcessHost(connection), session);
+        await worker.ConnectAsync(Options(), CancellationToken.None);
+        await worker.StartThreadAsync(Scoped(worker, new StartThreadRequest()), CancellationToken.None);
+        int listCallsBefore = connection.Methods.Count(method => method == "thread/attachment/list");
+        SavedAttachmentRemoveRequest malformed = Scoped(worker, new SavedAttachmentRemoveRequest
+        {
+            ThreadId = "thread-1",
+            AttachmentType = SavedAttachmentPayloadRegistry.FileAttachmentType,
+            IdentityKey = "not-a-valid-key",
+            UserConfirmed = true,
+        });
+
+        SavedAttachmentMutationResult rejected = await worker.RemoveSavedAttachmentAsync(malformed, CancellationToken.None);
+        SavedAttachmentMutationResult absent = await worker.RemoveSavedAttachmentAsync(
+            Scoped(worker, new SavedAttachmentRemoveRequest
+            {
+                ThreadId = "thread-1",
+                AttachmentType = SavedAttachmentPayloadRegistry.FileAttachmentType,
+                IdentityKey = SavedAttachmentPayloadRegistry.CreateIdentityKey(ServerPath.Create("/workspace/missing.txt"), serverIsWindows: false),
+                UserConfirmed = true,
+            }),
+            CancellationToken.None);
+
+        Assert.AreEqual(AttachmentMutationOutcome.Rejected, rejected.Outcome);
+        Assert.AreEqual(AttachmentMutationOutcome.AlreadyAbsent, absent.Outcome);
+        Assert.AreEqual(listCallsBefore + 1, connection.Methods.Count(method => method == "thread/attachment/list"));
+        Assert.IsFalse(connection.Methods.Contains("thread/attachment/remove", StringComparer.Ordinal));
+    }
+
+    [TestMethod]
     public async Task PendingTurnStart_DoesNotBlockOtherOwnerScopedRequests()
     {
         var releaseTurn = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -1410,6 +1561,23 @@ public sealed class WorkerRpcServiceTests
                 : AsyncHandler is null
                     ? Handler(method)
                     : await AsyncHandler(method, timeout, cancellationToken);
+
+            if (method == "model/list" && !result.TryGetProperty("data", out _))
+            {
+                result = JsonSerializer.SerializeToElement(new
+                {
+                    data = new[] { new { model = "gpt-5-codex", isDefault = true } },
+                    nextCursor = (string?)null,
+                });
+            }
+            if (method == "thread/read" && !result.TryGetProperty("thread", out _))
+            {
+                JsonElement request = JsonSerializer.SerializeToElement(parameters);
+                result = JsonSerializer.SerializeToElement(new
+                {
+                    thread = new { id = request.GetProperty("threadId").GetString(), model = "gpt-5-codex" },
+                });
+            }
 
             // A delivered response is inbound activity, as in the real transports.
             RecordInboundActivity();

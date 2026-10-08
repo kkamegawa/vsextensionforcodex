@@ -70,6 +70,39 @@ public sealed class WorkspaceDirectoryResolver : IWorkspaceDirectoryResolver
         return solutionDirectory is not null && IsUsable(solutionDirectory) ? solutionDirectory : null;
     }
 
+    /// <summary>Returns only the active solution directory, never a project/current-directory fallback.</summary>
+    public async Task<string?> TryResolveOpenSolutionDirectoryAsync(CancellationToken cancellationToken)
+    {
+        if (extensibility is null)
+        {
+            return null;
+        }
+
+        try
+        {
+            IQueryResults<ISolutionSnapshot> solutions = await extensibility.Workspaces().QuerySolutionAsync(
+                solution => solution.With(s => s.Path).With(s => s.Directory),
+                cancellationToken).ConfigureAwait(false);
+            ISolutionSnapshot? solution = solutions.FirstOrDefault();
+            string? directory = solution?.Directory;
+            if (string.IsNullOrWhiteSpace(directory) && solution?.Path is { Length: > 0 } solutionPath)
+            {
+                directory = Path.GetDirectoryName(solutionPath);
+            }
+
+            return directory is not null && IsUsable(directory) ? Path.GetFullPath(directory) : null;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            ExtensionDiagnostics.Write("Querying the active solution directory failed", ex);
+            return null;
+        }
+    }
+
     public async Task<string?> ResolveAsync(CancellationToken cancellationToken)
     {
         string? solutionDirectory = await TryGetSolutionDirectoryAsync(cancellationToken).ConfigureAwait(false);

@@ -137,7 +137,7 @@ public sealed class FileAttachmentPresentationTests
             "ToolWindowButtonDownActiveGlyphBrushKey",
             StringComparison.Ordinal) == true);
 
-        XElement remove = chip.Descendants(Presentation + "Button").Single();
+        XElement remove = chip.Descendants(Presentation + "Button").Single(element => element.Attribute("Command")?.Value == "{Binding RemoveCommand}");
         Assert.AreEqual("{Binding RemoveCommand}", remove.Attribute("Command")?.Value);
         Assert.AreEqual(
             "{StaticResource SelectedChipIconButtonStyle}",

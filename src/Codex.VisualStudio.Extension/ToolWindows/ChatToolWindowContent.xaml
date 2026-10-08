@@ -776,6 +776,26 @@
                           <StackPanel Margin="2,3">
                             <TextBlock FontWeight="SemiBold" Text="{Binding DisplayText}" TextWrapping="Wrap" />
                             <TextBlock Opacity="0.75" FontSize="10" Text="{Binding StatusText}" TextWrapping="Wrap" />
+                            <WrapPanel Margin="0,3,0,0">
+                              <Button Content="Preview" Command="{Binding FileActions.PreviewCommand}" Visibility="{Binding FileActions.CanPreview, Converter={StaticResource BoolToVis}}" Style="{StaticResource SmallRoundButtonStyle}" AutomationProperties.Name="Preview saved attachment" />
+                              <Button Margin="4,0,0,0" Content="Open in Visual Studio" Command="{Binding FileActions.OpenCommand}" Visibility="{Binding FileActions.CanOpen, Converter={StaticResource BoolToVis}}" Style="{StaticResource SmallRoundButtonStyle}" AutomationProperties.Name="Open saved attachment in Visual Studio" />
+                              <Button Margin="4,0,0,0" Content="Reveal" Command="{Binding FileActions.RevealCommand}" Visibility="{Binding FileActions.CanReveal, Converter={StaticResource BoolToVis}}" Style="{StaticResource SmallRoundButtonStyle}" AutomationProperties.Name="Reveal saved attachment" />
+                            </WrapPanel>
+                            <ContentControl Content="{Binding FileActions.PreviewFragment}" Visibility="{Binding FileActions.HasPreview, Converter={StaticResource BoolToVis}}" AutomationProperties.Name="Verified saved attachment preview" />
+                            <TextBlock Text="{Binding FileActions.ActionStatusText}" TextWrapping="Wrap" Visibility="{Binding FileActions.HasActionStatus, Converter={StaticResource BoolToVis}}" AutomationProperties.LiveSetting="Polite" />
+                            <WrapPanel Margin="0,3,0,0">
+                              <Button Content="Remove saved attachment" Command="{Binding RemoveCommand}"
+                                      Visibility="{Binding CanRemove, Converter={StaticResource BoolToVis}}"
+                                      Style="{StaticResource SmallRoundButtonStyle}" />
+                              <StackPanel Margin="6,0,0,0" Orientation="Horizontal"
+                                          Visibility="{Binding IsRemovalConfirmationOpen, Converter={StaticResource BoolToVis}}">
+                                <TextBlock VerticalAlignment="Center" Text="Remove metadata from this conversation?" TextWrapping="Wrap" />
+                                <Button Margin="6,0,0,0" Content="Confirm" Command="{Binding ConfirmRemoveCommand}"
+                                        Style="{StaticResource SmallRoundButtonStyle}" />
+                                <Button Margin="4,0,0,0" Content="Cancel" Command="{Binding CancelRemoveCommand}"
+                                        Style="{StaticResource SmallRoundButtonStyle}" />
+                              </StackPanel>
+                            </WrapPanel>
                           </StackPanel>
                         </DataTemplate>
                       </ItemsControl.ItemTemplate>
@@ -861,11 +881,89 @@
     <Grid Grid.Row="1"
           Background="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowCodeBlockBackgroundBrushKey}}">
       <Grid.RowDefinitions>
+        <RowDefinition Height="Auto" />
         <RowDefinition Height="*" />
         <RowDefinition Height="Auto" />
       </Grid.RowDefinitions>
 
-      <Grid Grid.Row="0">
+      <StackPanel Grid.Row="0" Margin="8,6,8,0">
+        <Border Padding="8,6" CornerRadius="5" BorderThickness="1"
+                BorderBrush="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBorderBrushKey}}"
+                Background="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBackgroundBrushKey}}"
+                Visibility="{Binding HasAppServerNotices, Converter={StaticResource BoolToVis}}"
+                AutomationProperties.Name="Conversation status notices">
+          <StackPanel>
+            <TextBlock FontWeight="SemiBold" Text="Conversation notices" />
+            <ItemsControl MaxHeight="120" ItemsSource="{Binding AppServerNotices}">
+              <ItemsControl.ItemTemplate>
+                <DataTemplate>
+                  <StackPanel Margin="0,3">
+                    <TextBlock FontWeight="SemiBold" Text="{Binding KindText}" />
+                    <TextBlock Text="{Binding Text}" TextWrapping="Wrap"
+                               AutomationProperties.LiveSetting="Polite" />
+                    <TextBlock FontSize="10" Opacity="0.75" Text="Informational only"
+                               Visibility="{Binding IsInformationalOnly, Converter={StaticResource BoolToVis}}" />
+                  </StackPanel>
+                </DataTemplate>
+              </ItemsControl.ItemTemplate>
+            </ItemsControl>
+          </StackPanel>
+        </Border>
+        <Border Margin="0,4,0,0" Padding="8,6" CornerRadius="5" BorderThickness="1"
+                BorderBrush="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBorderBrushKey}}"
+                Background="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBackgroundBrushKey}}"
+                Visibility="{Binding HasShellCommandConfirmation, Converter={StaticResource BoolToVis}}"
+                AutomationProperties.Name="Confirm server shell command">
+          <StackPanel>
+            <TextBlock FontWeight="SemiBold" Text="Confirm server shell command" />
+            <TextBlock Margin="0,3,0,0" TextWrapping="Wrap">
+              <Run Text="Connection: " /><Run Text="{Binding ShellCommandConfirmation.ConnectionProfile}" />
+              <Run Text=" · Conversation: " /><Run Text="{Binding ShellCommandConfirmation.ThreadTitle}" />
+            </TextBlock>
+            <TextBlock Margin="0,3,0,0" TextWrapping="Wrap">
+              <Run Text="Server working directory: " /><Run Text="{Binding ShellCommandConfirmation.WorkingDirectory}" />
+              <Run Text=" · Timeout: " /><Run Text="{Binding ShellCommandConfirmation.Timeout}" />
+            </TextBlock>
+            <TextBlock Margin="0,4,0,0" FontFamily="Consolas, Courier New, monospace"
+                       Text="{Binding ShellCommandConfirmation.Command}" TextWrapping="Wrap" />
+            <TextBlock Margin="0,4,0,0" Text="{Binding ShellCommandConfirmation.UnsandboxedWarning}"
+                       TextWrapping="Wrap" AutomationProperties.LiveSetting="Polite" />
+            <WrapPanel Margin="0,5,0,0">
+              <Button Content="Run this command" Command="{Binding ConfirmShellCommandCommand}"
+                      Style="{StaticResource SmallRoundButtonStyle}" AutomationProperties.Name="Confirm shell command dispatch" />
+              <Button Margin="6,0,0,0" Content="Cancel" Command="{Binding CancelShellCommandCommand}"
+                      Style="{StaticResource SmallRoundButtonStyle}" AutomationProperties.Name="Cancel shell command" />
+            </WrapPanel>
+          </StackPanel>
+        </Border>
+        <TextBlock Margin="2,3,2,0" Text="{Binding ShellCommandStatusText}" TextWrapping="Wrap"
+                   Visibility="{Binding HasShellCommandStatus, Converter={StaticResource BoolToVis}}"
+                   AutomationProperties.LiveSetting="Polite" />
+        <Border Margin="0,4,0,0" Padding="8,6" CornerRadius="5" BorderThickness="1"
+                BorderBrush="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBorderBrushKey}}"
+                Background="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBackgroundBrushKey}}"
+                Visibility="{Binding ShowWindowsSandboxSetup, Converter={StaticResource BoolToVis}}">
+          <StackPanel>
+            <TextBlock FontWeight="SemiBold" Text="Windows sandbox setup" />
+            <TextBlock Margin="0,2,0,0" Text="{Binding WindowsSandboxSolutionRootText}" TextWrapping="Wrap" />
+            <TextBlock Margin="0,2,0,0" Text="{Binding WindowsSandboxStatusText}" TextWrapping="Wrap"
+                       AutomationProperties.LiveSetting="Polite" />
+            <ProgressBar Height="4" Margin="0,4,0,0" IsIndeterminate="True"
+                         Visibility="{Binding IsWindowsSandboxSetupInProgress, Converter={StaticResource BoolToVis}}" />
+            <WrapPanel Margin="0,4,0,0">
+              <Button Content="Check readiness" Command="{Binding CheckWindowsSandboxReadinessCommand}"
+                      Style="{StaticResource SmallRoundButtonStyle}" />
+              <ComboBox Margin="6,0,0,0" Width="130" ItemsSource="{Binding WindowsSandboxSetupModes}"
+                        SelectedItem="{Binding SelectedWindowsSandboxMode, Mode=TwoWay}"
+                        AutomationProperties.Name="Windows sandbox setup mode" />
+              <Button Margin="6,0,0,0" Content="Start setup" Command="{Binding StartWindowsSandboxSetupCommand}"
+                      Style="{StaticResource SmallRoundButtonStyle}" />
+            </WrapPanel>
+          </StackPanel>
+        </Border>
+      </StackPanel>
+
+      <Grid Grid.Row="1">
         <!-- Transcript -->
         <ListBox Margin="0"
                  Padding="10"
@@ -1232,6 +1330,9 @@
                           <DataTrigger Binding="{Binding IsPlanItem}" Value="True">
                             <Setter Property="Visibility" Value="Visible" />
                           </DataTrigger>
+                          <DataTrigger Binding="{Binding HasStructuredPlanSteps}" Value="True">
+                            <Setter Property="Visibility" Value="Collapsed" />
+                          </DataTrigger>
                         </Style.Triggers>
                       </Style>
                     </ItemsControl.Style>
@@ -1240,6 +1341,74 @@
                         <TextBlock Margin="0,2" Text="{Binding}" TextWrapping="Wrap"
                                    Foreground="{DynamicResource {x:Static styles:VsBrushes.WindowTextKey}}"
                                    TextOptions.TextFormattingMode="Display" />
+                      </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                  </ItemsControl>
+
+                  <TextBlock Margin="0,4,0,0" Text="{Binding PlanDeltaText}" TextWrapping="Wrap"
+                             Visibility="{Binding HasPlanDeltaText, Converter={StaticResource BoolToVis}}"
+                             AutomationProperties.Name="Provisional plan update" />
+                  <TextBlock Margin="0,3,0,0" FontSize="11"
+                             Text="Plan preview was truncated by the display size limit."
+                             Visibility="{Binding PlanWasTruncated, Converter={StaticResource BoolToVis}}"
+                             AutomationProperties.LiveSetting="Polite" />
+                  <ItemsControl Margin="0,4,0,0" ItemsSource="{Binding StructuredPlanSteps}"
+                                Visibility="{Binding HasStructuredPlanSteps, Converter={StaticResource BoolToVis}}"
+                                AutomationProperties.Name="Structured plan steps">
+                    <ItemsControl.ItemTemplate>
+                      <DataTemplate>
+                        <Grid Margin="0,2">
+                          <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                          </Grid.ColumnDefinitions>
+                          <TextBlock Margin="0,0,6,0" Grid.Column="0" FontWeight="SemiBold" Text="{Binding StatusText}" />
+                          <TextBlock Grid.Column="1" Text="{Binding Text}" TextWrapping="Wrap" />
+                        </Grid>
+                      </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                  </ItemsControl>
+
+                  <ItemsControl Margin="0,6,0,0" ItemsSource="{Binding ArtifactParts}"
+                                AutomationProperties.Name="Generated artifact parts">
+                    <ItemsControl.ItemTemplate>
+                      <DataTemplate>
+                        <Border Margin="0,3" Padding="7,5" CornerRadius="4" BorderThickness="1"
+                                BorderBrush="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBorderBrushKey}}">
+                          <StackPanel>
+                            <TextBlock FontWeight="SemiBold" Text="{Binding KindText}" />
+                            <TextBlock Margin="0,2,0,0" Text="{Binding DisplayName}" TextWrapping="Wrap"
+                                       Visibility="{Binding HasDisplayName, Converter={StaticResource BoolToVis}}" />
+                            <TextBlock Margin="0,2,0,0" Text="{Binding MimeType}" FontSize="10" Opacity="0.75"
+                                       Visibility="{Binding HasMimeType, Converter={StaticResource BoolToVis}}" />
+                            <TextBlock Margin="0,3,0,0" Text="{Binding Text}" TextWrapping="Wrap"
+                                       Visibility="{Binding HasText, Converter={StaticResource BoolToVis}}" />
+                            <TextBlock Margin="0,3,0,0" Text="Artifact content was truncated by the server."
+                                       Visibility="{Binding IsServerTruncated, Converter={StaticResource BoolToVis}}" />
+                            <TextBlock Margin="0,3,0,0" Text="Artifact content was shortened for display."
+                                       Visibility="{Binding IsLocallyTruncated, Converter={StaticResource BoolToVis}}" />
+                            <WrapPanel Margin="0,4,0,0">
+                              <Button Content="Preview" Command="{Binding PreviewCommand}"
+                                      Visibility="{Binding CanPreview, Converter={StaticResource BoolToVis}}"
+                                      Style="{StaticResource SmallRoundButtonStyle}"
+                                      AutomationProperties.Name="Preview generated image" />
+                              <Button Margin="4,0,0,0" Content="Open in Visual Studio" Command="{Binding OpenCommand}"
+                                      Visibility="{Binding CanOpen, Converter={StaticResource BoolToVis}}"
+                                      Style="{StaticResource SmallRoundButtonStyle}"
+                                      AutomationProperties.Name="Open generated artifact in Visual Studio" />
+                              <Button Margin="4,0,0,0" Content="Reveal" Command="{Binding RevealCommand}"
+                                      Visibility="{Binding CanReveal, Converter={StaticResource BoolToVis}}"
+                                      Style="{StaticResource SmallRoundButtonStyle}"
+                                      AutomationProperties.Name="Reveal generated artifact" />
+                            </WrapPanel>
+                            <ContentControl Margin="0,4,0,0" Content="{Binding PreviewFragment}"
+                                            Visibility="{Binding HasPreview, Converter={StaticResource BoolToVis}}"
+                                            AutomationProperties.Name="Verified artifact image preview" />
+                            <TextBlock Margin="0,3,0,0" Text="{Binding ActionStatusText}" TextWrapping="Wrap"
+                                       Visibility="{Binding HasActionStatus, Converter={StaticResource BoolToVis}}"
+                                       AutomationProperties.LiveSetting="Polite" />
+                          </StackPanel>
+                        </Border>
                       </DataTemplate>
                     </ItemsControl.ItemTemplate>
                   </ItemsControl>
@@ -1292,7 +1461,7 @@
 
       <!-- Pending interaction cards share a bounded, virtualized surface. Every request stays
            independently actionable while the composer and transcript remain available. -->
-      <ListBox Grid.Row="1"
+      <ListBox Grid.Row="2"
                Margin="10,0,10,10"
                Padding="0"
                MaxHeight="300"
@@ -1735,6 +1904,12 @@
                                  Text="{Binding DisplayName}"
                                  TextTrimming="CharacterEllipsis"
                                  MaxWidth="220" />
+                      <Button Margin="6,0,0,0" Content="Save to conversation"
+                              Command="{Binding SaveToThreadCommand}"
+                              Visibility="{Binding CanSaveToThread, Converter={StaticResource BoolToVis}}"
+                              Style="{StaticResource SmallRoundButtonStyle}"
+                              ToolTip="Stores attachment metadata in this conversation; it does not add file content to the current prompt."
+                              AutomationProperties.Name="Save selected file as a conversation attachment" />
                       <Button Margin="6,0,0,0"
                               Padding="2,0"
                               MinWidth="18"
@@ -1929,6 +2104,11 @@
                stealing focus from the composer. Dynamic text is sanitized before it reaches
                this presentation view model. -->
           <StackPanel Grid.Row="3">
+            <TextBlock Margin="12,2,12,4" FontSize="11"
+                       Text="{Binding ComposerAdmissionReason}" TextWrapping="Wrap"
+                       Visibility="{Binding HasComposerAdmissionReason, Converter={StaticResource BoolToVis}}"
+                       AutomationProperties.Name="Input is not supported by the selected model"
+                       AutomationProperties.LiveSetting="Polite" />
             <TextBlock Margin="12,2,12,4"
                        FontSize="11"
                        Opacity="0.75"
@@ -2038,7 +2218,7 @@
               <Button Margin="0,0,6,0" Content="&#xE71A;" ToolTip="Interrupt"
                       Command="{Binding InterruptCommand}"
                       Style="{StaticResource IconButtonStyle}"
-                      Visibility="{Binding IsTurnActive, Converter={StaticResource BoolToVis}}"
+                      Visibility="{Binding IsLocallyInterruptible, Converter={StaticResource BoolToVis}}"
                       AutomationProperties.Name="Interrupt turn" />
               <Button Content="&#xE724;" ToolTip="{Binding SendButtonText}"
                       Command="{Binding SendCommand}"

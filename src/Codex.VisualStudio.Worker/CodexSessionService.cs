@@ -14,7 +14,7 @@ internal sealed class CallbackScope(Action callback) : IDisposable
     public void Dispose() => Interlocked.Exchange(ref release, null)?.Invoke();
 }
 
-public interface ICodexSessionService : IAsyncDisposable
+public partial interface ICodexSessionService : IAsyncDisposable
 {
     AppServerInitializationMetadata? InitializationMetadata { get; }
     string? StatePartitionFingerprint => null;
@@ -102,6 +102,8 @@ public interface ICodexSessionService : IAsyncDisposable
     event Func<ThreadAttachmentUpdatedEvent, CancellationToken, Task>? ThreadAttachmentUpdated;
 
     string? ActiveThreadId { get; }
+
+    string? EffectiveModelId => null;
 
     string? ActiveTurnId { get; }
 
@@ -238,7 +240,7 @@ public sealed record AppServerInitializationMetadata(
     string? PlatformOs,
     string? UserAgent);
 
-public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
+public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDisposable
 {
     private const int MaxHistoryPageTurns = 50;
     private const int MaxHistoryPageItems = 100;
@@ -275,7 +277,7 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
     private readonly IApprovalPolicyEngine approvalPolicy;
     private readonly ISecretRedactor redactor;
     private readonly IPathAccessPolicy pathAccessPolicy;
-    private readonly ILocalPathBoundary localPathBoundary;
+    private readonly LocalPathBoundary localPathBoundary;
     private readonly IProtectedDirectoryPolicy protectedDirectoryPolicy;
     private readonly PendingInteractionRegistry pendingInteractions;
     private readonly ProtectedAuthorizationUrlStore authorizationUrls = new();
@@ -389,6 +391,14 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
 
     public string? ActiveThreadId { get; private set; }
 
+    public string? EffectiveModelId => effectiveThreadModelId;
+
+    internal long ConnectionGeneration => Interlocked.Read(ref connectionGeneration);
+
+    private string? effectiveThreadModelId;
+
+    private bool activeThreadInheritsDefaultModel;
+
     public string? ActiveTurnId { get; private set; }
 
     public string? CodexVersion { get; private set; }
@@ -468,7 +478,14 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
             CancelPending(previous.Generation);
             pendingInteractions.RetireGeneration(previous.Generation);
             authorizationUrls.RetireGeneration(previous.Generation);
+            dailyUseArtifactStore.RetireGeneration(previous.Generation);
             await RetireStreamingBufferAsync().ConfigureAwait(false);
+        }
+        lock (dailyUseStateLock)
+        {
+            threadStatuses.Clear();
+            planDeltaStates.Clear();
+            finalizedPlanTurns.Clear();
         }
         await ResetSkillsBackgroundRefreshAsync().ConfigureAwait(false);
         InvalidateSkillsCache();
@@ -476,6 +493,8 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         EffectiveApprovalState = null;
         EffectiveReasoningEffort = null;
         EffectiveServiceTier = null;
+        effectiveThreadModelId = null;
+        activeThreadInheritsDefaultModel = false;
         InitializationMetadata = null;
         CancelPending(null);
         this.options = options;
@@ -519,7 +538,7 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
             "Kkamegawa.CodexForVisualStudio",
             Guid.NewGuid().ToString("N"));
         streamingBuffer = new StreamingBuffer(
-            (value, token) => EmitForContextAsync(context, value, token),
+            (value, token) => EmitBufferedEventAsync(context, value, token),
             overflowDirectory);
 
         JsonElement initResponse = await connection.SendRequestAsync(
@@ -1261,6 +1280,8 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
             EffectiveReasoningEffort,
             EffectiveServiceTier);
         ActiveThreadId = summary.Id;
+        effectiveThreadModelId = summary.EffectiveModelId ?? ReadEffectiveModelId(result);
+        activeThreadInheritsDefaultModel = effectiveThreadModelId is null;
         return summary;
     }
 
@@ -1449,6 +1470,8 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
             EffectiveReasoningEffort,
             EffectiveServiceTier);
         ActiveThreadId = summary.Id;
+        effectiveThreadModelId = summary.EffectiveModelId ?? ReadEffectiveModelId(result);
+        activeThreadInheritsDefaultModel = false;
         return summary;
     }
 
@@ -1546,6 +1569,8 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         CancellationToken cancellationToken)
     {
         ValidateHistoryId(threadId, nameof(threadId));
+        ConnectionContext context = RequireContext();
+        EnsureCurrent(context);
         int boundedLimit = Math.Clamp(limit, 1, MaxHistoryPageItems);
         object? wireCursor = cursor?.Kind switch
         {
@@ -1564,6 +1589,7 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
             "thread/items/list",
             new { threadId, turnId, cursor = wireCursor, limit = boundedLimit, sortDirection = "desc" },
             cancellationToken).ConfigureAwait(false);
+        EnsureCurrent(context);
         JsonElement data = RequireArray(result, "data");
         var items = new List<ThreadHistoryItem>(Math.Min(data.GetArrayLength(), boundedLimit));
         foreach (JsonElement entry in data.EnumerateArray())
@@ -1590,15 +1616,30 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
                 continue;
             }
 
-            items.Add(new ThreadHistoryItem
+            var historyItem = new ThreadHistoryItem
             {
                 Id = id,
                 TurnId = itemTurnId,
                 Type = itemType,
-                Text = ReadHistoryText(item, itemType),
+                Text = ReadHistoryText(item, itemType) is { } historyText ? redactor.Redact(historyText) : null,
                 StartedAtMs = GetInt64(entry, "startedAtMs"),
                 CompletedAtMs = GetInt64(entry, "completedAtMs"),
-            });
+            };
+            if (itemType == "plan")
+            {
+                MarkPlanFinalized(context.Generation, threadId, itemTurnId, id);
+                historyItem.Plan = new TurnPlanSnapshot
+                {
+                    ThreadId = threadId,
+                    TurnId = itemTurnId,
+                    Steps = Array.Empty<PlanStepInfo>(),
+                    Explanation = historyItem.Text,
+                    IsComplete = true,
+                };
+            }
+
+            historyItem.Parts = ProjectHistoryParts(context, item, itemType, historyItem.Text);
+            items.Add(historyItem);
             if (items.Count == boundedLimit)
             {
                 break;
@@ -1620,10 +1661,13 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
     {
         ValidateHistoryId(threadId, nameof(threadId));
         int boundedLimit = Math.Clamp(limit, 1, MaxAttachmentPageSize);
+        ConnectionContext context = RequireContext();
+        EnsureCurrent(context);
         JsonElement result = await SendReadOnlyAsync(
             "thread/attachment/list",
             new { threadId, cursor, limit = boundedLimit },
             cancellationToken).ConfigureAwait(false);
+        EnsureCurrent(context);
         JsonElement data = RequireArray(result, "data");
         var attachments = new List<ThreadAttachmentMetadata>(Math.Min(data.GetArrayLength(), boundedLimit));
         int rejectedEntryCount = 0;
@@ -1639,24 +1683,21 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
             string? attachmentType = GetBoundedString(attachment, "attachmentType", MaxAttachmentIdentityBytes);
             string? identityKey = GetBoundedString(attachment, "identityKey", MaxAttachmentIdentityBytes);
             long? createdAt = GetInt64(attachment, "createdAt");
-            if (id is null || attachmentType is null || identityKey is null || createdAt is null
-                || !attachment.TryGetProperty("payload", out JsonElement payload))
+            if (id is null || attachmentType is null || identityKey is null || createdAt is null)
             {
                 rejectedEntryCount++;
                 continue;
             }
 
-            int payloadBytes = Encoding.UTF8.GetByteCount(payload.GetRawText());
-            attachments.Add(new ThreadAttachmentMetadata
-            {
-                Id = id,
-                AttachmentType = attachmentType,
-                IdentityKey = identityKey,
-                CreatedAt = createdAt.Value,
-                UnavailableReason = payloadBytes > MaxAttachmentPayloadBytes
-                    ? "Attachment payload exceeds the metadata validation limit."
-                    : "Attachment payload is not interpreted by the metadata-only recovery API.",
-            });
+            ThreadAttachmentMetadata projected = ProjectSavedAttachment(context, attachment);
+            projected.Id = id;
+            projected.AttachmentType = attachmentType;
+            projected.IdentityKey = identityKey;
+            projected.CreatedAt = createdAt.Value;
+            projected.UnavailableReason = projected.IsKnownPayload
+                ? null
+                : "The saved attachment payload is unknown or cannot be safely mapped for this connection.";
+            attachments.Add(projected);
             if (attachments.Count == boundedLimit || attachments.Count == MaxAttachmentsPerThread)
             {
                 break;
@@ -1785,6 +1826,7 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
             EnsureCurrent(context);
         }
 
+        await ValidateTurnInputModelAsync(context, request, cancellationToken).ConfigureAwait(false);
         List<object> input = BuildTurnInput(request);
         var parameters = new Dictionary<string, object?>
         {
@@ -2045,6 +2087,8 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
                 EffectiveServiceTier)
             : null;
         ActiveThreadId = thread?.Id ?? ActiveThreadId;
+        effectiveThreadModelId = thread?.EffectiveModelId ?? ReadEffectiveModelId(call.Result) ?? effectiveThreadModelId;
+        activeThreadInheritsDefaultModel = false;
         ActiveTurnId = null;
         return new ForkThreadResult { Thread = thread };
     }
@@ -2842,10 +2886,11 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
 
     private List<object> BuildTurnInput(StartTurnRequest request)
     {
-        var input = new List<object>
+        var input = new List<object>();
+        if (!string.IsNullOrEmpty(request.Text))
         {
-            new { type = "text", text = request.Text },
-        };
+            input.Add(new { type = "text", text = request.Text });
+        }
 
         if (request.Skill is not null)
         {
@@ -2862,7 +2907,8 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         foreach (AttachmentInfo attachment in request.Attachments)
         {
             bool isImage = string.Equals(attachment.Kind, "image", StringComparison.OrdinalIgnoreCase);
-            bool isMention = string.Equals(attachment.Kind, "mention", StringComparison.OrdinalIgnoreCase);
+            bool isMention = string.Equals(attachment.Kind, "mention", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(attachment.Kind, "file", StringComparison.OrdinalIgnoreCase);
             if (!isImage && !isMention)
             {
                 continue;
@@ -3600,6 +3646,13 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
                 ReadEffectiveTurnSettings(threadSettings, out string? reasoningEffort, out string? serviceTier);
                 EffectiveReasoningEffort = reasoningEffort;
                 EffectiveServiceTier = serviceTier;
+                if (threadSettings.TryGetProperty("model", out JsonElement modelValue))
+                {
+                    effectiveThreadModelId = modelValue.ValueKind == JsonValueKind.String
+                        ? NormalizeModelId(modelValue.GetString())
+                        : null;
+                    activeThreadInheritsDefaultModel = modelValue.ValueKind == JsonValueKind.Null;
+                }
                 if (EffectiveApprovalStateChanged is not null)
                 {
                     await EffectiveApprovalStateChanged(EffectiveApprovalState, cancellationToken).ConfigureAwait(false);
@@ -3682,6 +3735,15 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
             return;
         }
 
+        if (suppressTurnEvent)
+        {
+            return;
+        }
+        if (await TryHandleDailyUseNotificationAsync(context, method, parameters, cancellationToken).ConfigureAwait(false))
+        {
+            return;
+        }
+
         ConversationEventKind kind = MapKind(method);
         if (kind == ConversationEventKind.Unknown)
         {
@@ -3689,10 +3751,14 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
             return;
         }
 
-        if (suppressTurnEvent)
+        if (method == "item/completed"
+            && parameters.TryGetProperty("item", out JsonElement completedPlanItem)
+            && string.Equals(GetString(completedPlanItem, "type"), "plan", StringComparison.Ordinal))
         {
+            await EmitCompletedPlanItemAsync(context, completedPlanItem, threadId, turnId, cancellationToken).ConfigureAwait(false);
             return;
         }
+
         var output = new ConversationEvent
         {
             Kind = kind,
@@ -3701,6 +3767,17 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
             ItemId = itemId,
             PayloadJson = redactor.Redact(parameters.GetRawText()),
         };
+        if (method == "error")
+        {
+            output.ErrorReason = ReadTurnErrorReason(parameters);
+            output.Text = output.ErrorReason switch
+            {
+                "flexUnavailable" => "The selected model's Flex service is currently unavailable. No retry was started.",
+                "tooManyDenials" => "The request was stopped after too many denials. No retry was started.",
+                _ => null,
+            };
+            output.PayloadJson = null;
+        }
         string? delta = GetString(parameters, "delta") ?? GetString(parameters, "text");
         if (delta is not null && streamingBuffer is not null)
         {
@@ -3716,6 +3793,26 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         }
 
         EnsureCurrent(context);
+        if (method == "item/completed"
+            && parameters.TryGetProperty("item", out JsonElement completedItem)
+            && completedItem.ValueKind == JsonValueKind.Object)
+        {
+            await ValidateAndEmitTypedItemAsync(context, output, completedItem, cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
+        if (method == "item/started"
+            && parameters.TryGetProperty("item", out JsonElement startedItem)
+            && startedItem.ValueKind == JsonValueKind.Object)
+        {
+            string? startedType = GetBoundedString(startedItem, "type", 64);
+            output.PayloadJson = null;
+            output.Text = startedType is null ? "An app-server item started." : $"App-server item started: {redactor.Redact(startedType)}.";
+            output.Parts = [new ArtifactPart { Kind = ArtifactPartKind.Fallback, Text = output.Text }];
+            await EmitForContextAsync(context, output, cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
         await EmitAsync(output, cancellationToken).ConfigureAwait(false);
     }
 
@@ -4134,6 +4231,21 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         context.NotifyPendingResolution = false;
         context.Detach();
         context.ApprovalGrants.Clear();
+        dailyUseArtifactStore.RetireOwner(context.StatePartitionFingerprint, context.OwnerGeneration);
+        lock (dailyUseStateLock)
+        {
+            foreach (ThreadStatusKey key in threadStatuses.Keys.Where(key => key.Generation == context.Generation).ToArray())
+            {
+                threadStatuses.Remove(key);
+            }
+
+            foreach (PlanItemKey key in planDeltaStates.Keys.Where(key => key.Generation == context.Generation).ToArray())
+            {
+                planDeltaStates.Remove(key);
+            }
+
+            finalizedPlanTurns.RemoveWhere(key => key.Generation == context.Generation);
+        }
         await RetireStreamingBufferAsync().ConfigureAwait(false);
         CancelPending(context.Generation);
         await ResetSkillsBackgroundRefreshAsync().ConfigureAwait(false);
@@ -4151,6 +4263,8 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         EffectiveApprovalState = null;
         EffectiveReasoningEffort = null;
         EffectiveServiceTier = null;
+        effectiveThreadModelId = null;
+        activeThreadInheritsDefaultModel = false;
         lock (turnStateLock)
         {
             completedTurnIds.Clear();
@@ -4520,6 +4634,8 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
             EffectiveApprovalState = effectiveApprovalState,
             EffectiveReasoningEffort = effectiveReasoningEffort,
             EffectiveServiceTier = effectiveServiceTier,
+            EffectiveModelId = ReadEffectiveModelId(thread),
+            DisabledPluginIds = ReadStringArray(thread, "disabledPluginIds", 128),
         };
     }
 
@@ -4794,6 +4910,10 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         {
             Id = id,
             DisplayName = displayName is null ? null : redactor.Redact(displayName),
+            IsDefault = GetBool(model, "isDefault") == true,
+            IsHidden = GetBool(model, "hidden") == true,
+            InputModalities = ReadModelStringValues(model, "inputModalities", ["text", "image"]),
+            AvailableAccessPrograms = ReadModelAccessPrograms(model),
             DefaultReasoningEffort = NormalizeWireIdentifier(GetString(model, "defaultReasoningEffort")),
             SupportedReasoningEfforts = ReadReasoningEfforts(model),
             SupportsPersonality = GetBool(model, "supportsPersonality") == true,
@@ -5153,10 +5273,46 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
                 ToolNames = tools,
                 ResourceCount = GetArrayLength(server, "resources"),
                 ResourceTemplateCount = GetArrayLength(server, "resourceTemplates"),
+                HttpOrigin = ReadHttpOrigin(server),
+                ServerCapabilities = ReadMcpServerCapabilities(server),
             });
         }
 
         return servers;
+    }
+
+    private string? ReadHttpOrigin(JsonElement server)
+    {
+        string? rawOrigin = GetBoundedString(server, "httpOrigin", 1024);
+        if (rawOrigin is null
+            || !Uri.TryCreate(rawOrigin, UriKind.Absolute, out Uri? origin)
+            || origin.Scheme is not ("http" or "https")
+            || !string.IsNullOrEmpty(origin.UserInfo)
+            || origin.AbsolutePath != "/"
+            || !string.IsNullOrEmpty(origin.Query)
+            || !string.IsNullOrEmpty(origin.Fragment))
+        {
+            return null;
+        }
+
+        return redactor.Redact(origin.GetLeftPart(UriPartial.Authority));
+    }
+
+    private static string[] ReadMcpServerCapabilities(JsonElement server)
+    {
+        if (!server.TryGetProperty("serverCapabilities", out JsonElement capabilities)
+            || capabilities.ValueKind != JsonValueKind.Object)
+        {
+            return Array.Empty<string>();
+        }
+
+        string[] allowed = ["tools", "resources", "prompts", "logging", "completions", "experimental"];
+        return capabilities.EnumerateObject()
+            .Where(property => allowed.Contains(property.Name, StringComparer.Ordinal)
+                && property.Value.ValueKind is JsonValueKind.Object or JsonValueKind.True)
+            .Select(static property => property.Name)
+            .Order(StringComparer.Ordinal)
+            .ToArray();
     }
 
     private RateLimitsResult ReadRateLimitsResult(JsonElement result)
@@ -5235,6 +5391,59 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
         return trimmed.Length <= 128 && trimmed.All(character => !char.IsControl(character))
             ? trimmed
             : null;
+    }
+
+    private static string? ReadEffectiveModelId(JsonElement value)
+    {
+        string? model = NormalizeModelId(
+            GetString(value, "model")
+            ?? GetString(value, "modelId")
+            ?? GetString(value, "effectiveModelId"));
+        if (model is not null)
+        {
+            return model;
+        }
+
+        JsonElement settings = value;
+        if (value.TryGetProperty("thread", out JsonElement thread) && thread.ValueKind == JsonValueKind.Object)
+        {
+            model = NormalizeModelId(GetString(thread, "model") ?? GetString(thread, "modelId") ?? GetString(thread, "effectiveModelId"));
+            if (model is not null)
+            {
+                return model;
+            }
+
+            settings = thread;
+        }
+
+        if ((settings.TryGetProperty("threadSettings", out JsonElement nested)
+                || settings.TryGetProperty("settings", out nested))
+            && nested.ValueKind == JsonValueKind.Object)
+        {
+            settings = nested;
+        }
+
+        return NormalizeModelId(GetString(settings, "model") ?? GetString(settings, "modelId"));
+    }
+
+    private IReadOnlyList<string> ReadStringArray(JsonElement value, string propertyName, int maximumCount)
+    {
+        if (!value.TryGetProperty(propertyName, out JsonElement array) || array.ValueKind != JsonValueKind.Array)
+        {
+            return Array.Empty<string>();
+        }
+
+        var values = new List<string>(Math.Min(array.GetArrayLength(), maximumCount));
+        foreach (JsonElement item in array.EnumerateArray().Take(maximumCount))
+        {
+            string? text = GetBoundedString(item, MaxAttachmentIdentityBytes);
+            if (text is not null && !values.Contains(text, StringComparer.Ordinal))
+            {
+                values.Add(redactor.Redact(text));
+            }
+        }
+
+        return values;
     }
 
     private static string? NormalizeWireIdentifier(string? value)
@@ -5339,7 +5548,7 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
     private static string? ReadHistoryText(JsonElement item, string itemType)
     {
         var text = new StringBuilder();
-        if (itemType == "agentMessage" && GetString(item, "text") is { } agentText)
+        if (itemType is "agentMessage" or "plan" && GetString(item, "text") is { } agentText)
         {
             AppendBoundedHistoryText(text, agentText);
         }
@@ -5360,15 +5569,15 @@ public sealed class CodexSessionService : ICodexSessionService, IAsyncDisposable
             }
         }
 
-        string value = text.ToString();
-        return Encoding.UTF8.GetByteCount(value) <= MaxHistoryTextBytes ? value : null;
+        return text.ToString();
     }
 
     private static void AppendBoundedHistoryText(StringBuilder target, string value)
     {
-        if (Encoding.UTF8.GetByteCount(target.ToString()) + Encoding.UTF8.GetByteCount(value) <= MaxHistoryTextBytes)
+        int remaining = MaxHistoryTextBytes - Encoding.UTF8.GetByteCount(target.ToString());
+        if (remaining > 0)
         {
-            target.Append(value);
+            target.Append(ClipUtf8(value, remaining));
         }
     }
 

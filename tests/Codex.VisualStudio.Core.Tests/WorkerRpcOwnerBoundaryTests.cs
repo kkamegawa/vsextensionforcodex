@@ -579,7 +579,12 @@ public sealed class WorkerRpcOwnerBoundaryTests
             {
                 "thread/start" => JsonSerializer.SerializeToElement(new
                 {
-                    thread = new { id = "thread-a", cwd = workingDirectory },
+                    thread = new { id = "thread-a", cwd = workingDirectory, model = "gpt-5-codex" },
+                }),
+                "model/list" => JsonSerializer.SerializeToElement(new
+                {
+                    data = new[] { new { model = "gpt-5-codex", isDefault = true } },
+                    nextCursor = (string?)null,
                 }),
                 "turn/start" => JsonSerializer.SerializeToElement(new { turn = new { id = "turn-a" } }),
                 "initialize" => JsonSerializer.SerializeToElement(new { userAgent = "codex-cli/0.1.0" }),

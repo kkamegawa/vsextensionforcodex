@@ -13,7 +13,7 @@ Visual Studio拡張機能は、入力の先頭文字が`/`の場合だけCodex�
 
 | 分類 | コマンド | 動作 |
 |---|---|---|
-| App Server操作 | `/compact`, `/feedback`, `/fork`, `/goal`, `/mcp`, `/review` | 専用の型付きWorker RPCを呼び出します。 |
+| App Server操作 | `/compact`, `/feedback`, `/fork`, `/goal`, `/mcp`, `/review`, `/shell` | 専用の型付きWorker RPCを呼び出します。`/shell`は明示的な入力と確認からだけ実行します。 |
 | 次ターン設定 | `/fast`, `/model`, `/permissions`（`/approve`は互換エイリアス）, `/personality`, `/plan`, `/reasoning` | 次の`turn/start`へ渡す型付きフィールドを更新します。ピッカー選択以外は次のターン開始時に消費されます。 |
 | Visual Studio操作 | `/ide-context`, `/init`, `/status` | 上限付きIDEコンテキスト、`AGENTS.md`の安全な生成、ローカル状態表示を行います。 |
 
@@ -137,3 +137,25 @@ skill catalogテストではApp Server項目数0/1/20/21/200/201、全行への�
 stale-to-fresh置換、empty/unsupported/failed/truncated、workspace分離、破損・期限切れ・
 oversize cache、generation race、複数instance、LRU cleanup、skill呼び出し前のlive
 force-reload検証を確認します。
+
+## 明示的なshellコマンド（Issue #155）
+
+対応する形式は `/shell [--timeout-ms N] -- <command>` です。`/shell` は9番目の組み込み候補で、
+skillを除外せず最大9件の組み込みを表示できます。候補の選択はコマンドchipを入れるだけで、
+実行しません。確認画面の明示的な Execute 操作が必要です。parser は `--` より後の各文字を
+そのまま保持し、空コマンド、重複／未知 option、負数／不正値、`int64` 超過を拒否します。
+`--timeout-ms` 省略時は server 既定の1時間、0は即時 timeout、明示的な値なしは無制限です。
+
+Join 済みで現 owner に属する idle thread だけ `/shell` を実行できます。確認画面には接続と
+profile、thread、正確なコマンド（不活性テキスト）、server working directory、timeout、CLI
+0.159.1 の `thread/shellCommand` は常に sandbox 外の full access で実行されることを表示します。
+raw command text はログに書きません。Execute 後、Worker は対象、generation、cwd を再検証し、
+ローカルで `IApprovalPolicyEngine` を評価します。policy 拒否は最終結果です。Full access と
+過去の許可で確認を省略しません。
+
+空の RPC 応答は受付確認であり完了を示しません。RPC 応答期限はコマンド timeout と独立します。
+イベントは実際の thread/turn/item ID を保ち、送信要求と相関すると断定しません。thread あたり
+shell 送信は最大1件保留できます。確定応答またはエラーで解除し、応答 timeout／切断後は
+generation 終了までロックします。新 generation では thread status が idle と示した後だけ送信できます。
+dispatch 前の取消では送信しません。dispatch 後の要求専用 Stop、時間／テキストからの中断推測、
+再送、`command/exec` fallback、ローカル process 起動は行いません。

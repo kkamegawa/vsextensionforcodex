@@ -13,7 +13,7 @@
 - [x] Core／UI 最終件数を記録する：Core Debug は369件成功、0件失敗、5件 skip（計374件）；UI Debug は342件成功、0件失敗、1件 skip（計343件）。
 - [x] ソリューション全体の Debug／Release ビルドを警告0件・エラー0件で完了し、Release VSIX を生成する。
 - [x] Release アセンブリの raw XAML hash とソースを照合し、VSIX SHA-256 を記録する：`BA83A86AFA1988B8FA8A2C387415435F5F727054E0379C3E241ED252AF83AB85`。
-- [ ] Light／Dark／High Contrast、狭幅、キーボード、読み上げ／アクセシビリティ、複数カード、認証状態の Experimental Instance 画面を撮影・確認する。`vswhere` が Visual Studio を検出しなかったため、視覚合格は保留。
+- [ ] Light／Dark／High Contrast、狭幅、キーボード、読み上げ／アクセシビリティ、複数カード、認証状態の Experimental Instance 画面を撮影・確認する。画面証跡が未取得のため、視覚合格は保留。現在の環境には Visual Studio 2026 Enterprise 18.10.3 がインストールされている。
 
 ### 検証結果
 
@@ -23,6 +23,6 @@
 - ソリューション全体の Debug／Release ビルド：各構成で警告0件、エラー0件。Release VSIX を生成。
 - CLI 契約サーフェス確認：合格。0.155.1→0.159.1 安定スキーマ比較：合格。スキーマキャッシュテスト：合格。
 - Release アセンブリの raw XAML SHA-256 はソース XAML と一致。Release VSIX SHA-256：`BA83A86AFA1988B8FA8A2C387415435F5F727054E0379C3E241ED252AF83AB85`。
-- 視覚／アクセシビリティ確認：保留。`vswhere` が Visual Studio を検出せず、Experimental Instance の画面証拠は未記録。
+- 視覚／アクセシビリティ確認：保留。Experimental Instance の画面証拠は未記録。現在の環境には Visual Studio 2026 Enterprise 18.10.3 がインストールされている。
 
 追跡先：[Issue #154](https://github.com/kkamegawa/vsextensionforcodex/issues/154)、[#165](https://github.com/kkamegawa/vsextensionforcodex/issues/165)、[#166](https://github.com/kkamegawa/vsextensionforcodex/issues/166)、[#167](https://github.com/kkamegawa/vsextensionforcodex/issues/167)、[#168](https://github.com/kkamegawa/vsextensionforcodex/issues/168)。

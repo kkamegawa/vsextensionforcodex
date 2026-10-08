@@ -1622,6 +1622,104 @@ public sealed class ViewModelTests
     }
 
     [TestMethod]
+    public async Task ChatViewModel_FinalPlanReplacesProvisionalDeltaAndIgnoresLateDelta()
+    {
+        using var vm = new ChatViewModel(new FakeWorkerBridge(), autoConnect: false);
+
+        await RaiseConversationEventAsync(vm, new ConversationEvent
+        {
+            Kind = ConversationEventKind.PlanDelta,
+            ItemId = "plan-item",
+            TurnId = "plan-turn",
+            PlanDelta = new TurnPlanDeltaEvent
+            {
+                ThreadId = "test-thread",
+                TurnId = "plan-turn",
+                ItemId = "plan-item",
+                Text = "Draft plan",
+            },
+        });
+
+        await RaiseConversationEventAsync(vm, new ConversationEvent
+        {
+            Kind = ConversationEventKind.ItemCompleted,
+            ItemId = "plan-item",
+            TurnId = "plan-turn",
+            Plan = new TurnPlanSnapshot
+            {
+                ThreadId = "test-thread",
+                TurnId = "plan-turn",
+                IsComplete = true,
+                Steps =
+                [
+                    new PlanStepInfo { StepId = "step-1", Text = "Final step", Status = "completed" },
+                ],
+            },
+        });
+
+        await RaiseConversationEventAsync(vm, new ConversationEvent
+        {
+            Kind = ConversationEventKind.PlanDelta,
+            ItemId = "plan-item",
+            TurnId = "plan-turn",
+            PlanDelta = new TurnPlanDeltaEvent
+            {
+                ThreadId = "test-thread",
+                TurnId = "plan-turn",
+                ItemId = "plan-item",
+                Text = "Late provisional text",
+            },
+        });
+
+        ChatItemViewModel plan = vm.Items.Single(item => item.ItemId == "plan-item");
+        Assert.IsTrue(plan.IsPlanComplete);
+        Assert.AreEqual(string.Empty, plan.PlanDeltaText);
+        Assert.AreEqual(1, plan.StructuredPlanSteps.Count);
+        Assert.AreEqual("Final step", plan.StructuredPlanSteps[0].Text);
+        Assert.AreEqual("completed", plan.StructuredPlanSteps[0].StatusText);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_TypedArtifactCompletionCreatesAndReplacesOneItem()
+    {
+        using var vm = new ChatViewModel(new FakeWorkerBridge(), autoConnect: false);
+        foreach (ConversationEventKind kind in new[] { ConversationEventKind.ItemStarted, ConversationEventKind.ItemCompleted })
+        {
+            await RaiseConversationEventAsync(vm, new ConversationEvent
+            {
+                Kind = kind, ItemId = "artifact-item", TurnId = "artifact-turn",
+                Parts = [new ArtifactPart { Kind = ArtifactPartKind.File, DisplayName = "result.txt",
+                    ActionId = "opaque-action", AllowedActions = [ArtifactActionKind.Open, ArtifactActionKind.Reveal] }],
+            });
+        }
+        ChatItemViewModel item = vm.Items.Single(value => value.ItemId == "artifact-item");
+        Assert.AreEqual(1, item.ArtifactParts.Count);
+        Assert.IsTrue(item.ArtifactParts[0].CanOpen);
+        Assert.IsFalse(item.ArtifactParts[0].CanPreview);
+        Assert.IsTrue(item.IsHistoryCompleted);
+    }
+
+    [TestMethod]
+    public void ChatViewModel_KnownSavedAttachmentUsesOwnerBoundFileActions()
+    {
+        using var vm = new ChatViewModel(new FakeWorkerBridge(), autoConnect: false);
+        MethodInfo merge = typeof(ChatViewModel).GetMethod("MergeAttachment", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        merge.Invoke(vm, [new ThreadAttachmentMetadata
+        {
+            Id = "saved-file", AttachmentType = "relaycodex.file.v1", IdentityKey = "opaque-identity",
+            IsKnownPayload = true, CanRemove = true, DisplayName = "result.png", MimeType = "image/png",
+            ActionId = "opaque-preview", AllowedActions = [ArtifactActionKind.Preview, ArtifactActionKind.Open],
+        }]);
+        ThreadAttachmentPresentationViewModel saved = vm.ThreadAttachments.Single();
+        Assert.IsNotNull(saved.FileActions);
+        Assert.IsTrue(saved.FileActions.CanPreview);
+        Assert.IsTrue(saved.FileActions.CanOpen);
+        Assert.IsFalse(saved.FileActions.CanReveal);
+        Assert.IsTrue(saved.CanRemove);
+        Assert.IsFalse(saved.IsRemovalConfirmationOpen);
+    }
+
+    [TestMethod]
     public void ChatItemViewModel_CommandItem_KindFlags()
     {
         var item = new ChatItemViewModel("Command", "output", ConversationEventKind.CommandOutputDelta);
@@ -2311,7 +2409,9 @@ public sealed class ViewModelTests
             typeof(AttachmentChipViewModel), typeof(FileSuggestionPresentationViewModel),
             typeof(FileSuggestionViewModel), typeof(ReasoningEffortOption), typeof(ServiceTierOption),
             typeof(PendingSkillViewModel), typeof(UsagePresentation),
-            typeof(WorkerStatus), typeof(ThreadSummary),
+            typeof(WorkerStatus), typeof(ThreadSummary), typeof(ThreadAttachmentPresentationViewModel),
+            typeof(ShellCommandConfirmationPresentation), typeof(PlanStepPresentationViewModel),
+            typeof(AppServerNoticePresentationViewModel), typeof(ArtifactPartPresentationViewModel),
             typeof(RemoteProfilesPresentationViewModel), typeof(RemoteProfileViewModel),
             typeof(ConnectionHealthPresentationViewModel), typeof(ConnectionTargetSnapshot),
         ];
@@ -4193,7 +4293,7 @@ public sealed class ViewModelTests
         vm.ComposerText = "/";
 
         Assert.IsTrue(vm.SlashCommands.IsSuggestionOpen);
-        Assert.HasCount(8, vm.SlashCommands.Suggestions.Where(static item => item.IsSelectable && !item.IsSkill));
+        Assert.HasCount(9, vm.SlashCommands.Suggestions.Where(static item => item.IsSelectable && !item.IsSkill));
         Assert.IsTrue(vm.SlashCommands.Suggestions.Any(static item => !item.IsSelectable && item.CommandName == "Skills"));
         Assert.AreEqual("/compact", vm.SlashCommands.SelectedSuggestion?.CommandName);
     }
@@ -4592,7 +4692,7 @@ public sealed class ViewModelTests
         Assert.IsTrue(
             suggestionCollectionChanges.Count(static action => action == NotifyCollectionChangedAction.Add) >= 8);
         Assert.IsTrue(vm.SlashCommands.IsSuggestionOpen);
-        Assert.HasCount(8, vm.SlashCommands.Suggestions.Where(static item => item.IsSelectable && !item.IsSkill));
+        Assert.HasCount(9, vm.SlashCommands.Suggestions.Where(static item => item.IsSelectable && !item.IsSkill));
     }
 
     [TestMethod]
@@ -5040,11 +5140,17 @@ public sealed class ViewModelTests
         Assert.IsFalse(vm.IsTurnActive);
         Assert.IsFalse(vm.InterruptCommand.CanExecute);
 
-        // The Interrupt button is shown whenever a turn is active, so it must also be enabled then,
-        // including while the turn waits for an approval.
+        // A turn observed from another client cannot be interrupted.
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Busy, ThreadId = "t", TurnId = "external-turn" });
+        Assert.IsFalse(vm.InterruptCommand.CanExecute);
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready, ThreadId = "t" });
+        vm.ComposerText = "Start an owned turn";
+        await RunCommandAsync(vm.SendCommand);
+        Assert.AreEqual(1, bridge.StartTurnCallCount);
+        // The acknowledged locally started turn remains interruptible while waiting for approval.
         foreach (WorkerConnectionState state in new[] { WorkerConnectionState.Busy, WorkerConnectionState.WaitingForApproval })
         {
-            await bridge.PublishStateAsync(new WorkerStatus { State = state, ThreadId = "t", TurnId = "turn" });
+            await bridge.PublishStateAsync(new WorkerStatus { State = state, ThreadId = "t", TurnId = "turn-1" });
             Assert.IsTrue(vm.IsTurnActive, state.ToString());
             Assert.IsTrue(vm.InterruptCommand.CanExecute, state.ToString());
         }
@@ -5482,9 +5588,11 @@ public sealed class ViewModelTests
 
         public event Func<WorkerNotification<AccountStatus>, Task>? AccountChanged;
 
-        public event Func<WorkerNotification<ConversationEvent>, Task>? ConversationEventReceived { add { } remove { } }
+        public event Func<WorkerNotification<ConversationEvent>, Task>? ConversationEventReceived;
 
         public event Func<WorkerNotification<ThreadAttachmentUpdatedEvent>, Task>? ThreadAttachmentUpdated { add { } remove { } }
+
+        public event Func<WorkerNotification<WindowsSandboxSetupCompletedEvent>, Task>? WindowsSandboxSetupChanged;
 
         public event Func<WorkerNotification<ApprovalRequest>, Task>? ApprovalRequested { add { } remove { } }
 
@@ -5555,6 +5663,40 @@ public sealed class ViewModelTests
         public Func<ListThreadTurnsRequest, CancellationToken, Task<ThreadTurnsPage>>? ListThreadTurnsHandler { get; set; }
 
         public Func<ListThreadAttachmentsRequest, CancellationToken, Task<ThreadAttachmentsPage>>? ListThreadAttachmentsHandler { get; set; }
+
+        public Func<ArtifactActionRequest, CancellationToken, Task<ArtifactActionResult>>? ArtifactActionHandler { get; set; }
+
+        public Func<ShellCommandPrepareRequest, CancellationToken, Task<ShellCommandPrepareResult>>? ShellCommandPrepareHandler { get; set; }
+
+        public Func<ShellCommandExecuteRequest, CancellationToken, Task<ShellCommandExecuteResult>>? ShellCommandExecuteHandler { get; set; }
+
+        public Func<SavedAttachmentAddRequest, CancellationToken, Task<SavedAttachmentMutationResult>>? SavedAttachmentAddHandler { get; set; }
+
+        public Func<SavedAttachmentRemoveRequest, CancellationToken, Task<SavedAttachmentMutationResult>>? SavedAttachmentRemoveHandler { get; set; }
+
+        public Func<WindowsSandboxReadinessRequest, CancellationToken, Task<WindowsSandboxReadinessResult>>? WindowsSandboxReadinessHandler { get; set; }
+
+        public Func<WindowsSandboxSetupStartRequest, CancellationToken, Task<WindowsSandboxSetupStartResult>>? WindowsSandboxSetupStartHandler { get; set; }
+
+        public List<ArtifactActionRequest> ArtifactActionRequests { get; } = [];
+
+        public List<ShellCommandPrepareRequest> ShellCommandPrepareRequests { get; } = [];
+
+        public List<ShellCommandExecuteRequest> ShellCommandExecuteRequests { get; } = [];
+
+        public List<SavedAttachmentAddRequest> SavedAttachmentAddRequests { get; } = [];
+
+        public List<SavedAttachmentRemoveRequest> SavedAttachmentRemoveRequests { get; } = [];
+
+        public List<WindowsSandboxReadinessRequest> WindowsSandboxReadinessRequests { get; } = [];
+
+        public List<WindowsSandboxSetupStartRequest> WindowsSandboxSetupStartRequests { get; } = [];
+
+        public Task PublishConversationEventAsync(ConversationEvent value, WorkerStatus? status = null)
+            => ConversationEventReceived?.Invoke(Notification(value, status ?? currentStatus)) ?? Task.CompletedTask;
+
+        public Task PublishWindowsSandboxSetupChangedAsync(WindowsSandboxSetupCompletedEvent value, WorkerStatus? status = null)
+            => WindowsSandboxSetupChanged?.Invoke(Notification(value, status ?? currentStatus)) ?? Task.CompletedTask;
 
         public Exception? StartThreadException { get; set; }
 
@@ -5665,6 +5807,55 @@ public sealed class ViewModelTests
 
         public Task<ThreadAttachmentsPage> ListThreadAttachmentsAsync(ListThreadAttachmentsRequest request, CancellationToken cancellationToken)
             => ListThreadAttachmentsHandler?.Invoke(request, cancellationToken) ?? Task.FromResult(new ThreadAttachmentsPage());
+
+        public Task<ArtifactActionResult> ResolveArtifactActionAsync(ArtifactActionRequest request, CancellationToken cancellationToken)
+        {
+            ArtifactActionRequests.Add(request);
+            return ArtifactActionHandler?.Invoke(request, cancellationToken)
+                ?? Task.FromResult(new ArtifactActionResult { IsSupported = false, UnavailableReason = "Artifact actions are not configured in this fake." });
+        }
+
+        public Task<ShellCommandPrepareResult> PrepareShellCommandAsync(ShellCommandPrepareRequest request, CancellationToken cancellationToken)
+        {
+            ShellCommandPrepareRequests.Add(request);
+            return ShellCommandPrepareHandler?.Invoke(request, cancellationToken)
+                ?? Task.FromResult(new ShellCommandPrepareResult { IsSupported = false, RejectionReason = "Shell command preparation is not configured in this fake." });
+        }
+
+        public Task<ShellCommandExecuteResult> ExecuteShellCommandAsync(ShellCommandExecuteRequest request, CancellationToken cancellationToken)
+        {
+            ShellCommandExecuteRequests.Add(request);
+            return ShellCommandExecuteHandler?.Invoke(request, cancellationToken)
+                ?? Task.FromResult(new ShellCommandExecuteResult { IsSupported = false, Outcome = ShellCommandOutcome.NotSent });
+        }
+
+        public Task<SavedAttachmentMutationResult> AddSavedAttachmentAsync(SavedAttachmentAddRequest request, CancellationToken cancellationToken)
+        {
+            SavedAttachmentAddRequests.Add(request);
+            return SavedAttachmentAddHandler?.Invoke(request, cancellationToken)
+                ?? Task.FromResult(new SavedAttachmentMutationResult { IsSupported = false, Outcome = AttachmentMutationOutcome.NotSent });
+        }
+
+        public Task<SavedAttachmentMutationResult> RemoveSavedAttachmentAsync(SavedAttachmentRemoveRequest request, CancellationToken cancellationToken)
+        {
+            SavedAttachmentRemoveRequests.Add(request);
+            return SavedAttachmentRemoveHandler?.Invoke(request, cancellationToken)
+                ?? Task.FromResult(new SavedAttachmentMutationResult { IsSupported = false, Outcome = AttachmentMutationOutcome.NotSent });
+        }
+
+        public Task<WindowsSandboxReadinessResult> GetWindowsSandboxReadinessAsync(WindowsSandboxReadinessRequest request, CancellationToken cancellationToken)
+        {
+            WindowsSandboxReadinessRequests.Add(request);
+            return WindowsSandboxReadinessHandler?.Invoke(request, cancellationToken)
+                ?? Task.FromResult(new WindowsSandboxReadinessResult { IsSupported = false });
+        }
+
+        public Task<WindowsSandboxSetupStartResult> StartWindowsSandboxSetupAsync(WindowsSandboxSetupStartRequest request, CancellationToken cancellationToken)
+        {
+            WindowsSandboxSetupStartRequests.Add(request);
+            return WindowsSandboxSetupStartHandler?.Invoke(request, cancellationToken)
+                ?? Task.FromResult(new WindowsSandboxSetupStartResult { IsSupported = false, State = WindowsSandboxSetupState.Unsupported });
+        }
 
         public Task<ListModelsResult> ListModelsAsync(ListModelsRequest request, CancellationToken cancellationToken)
         {

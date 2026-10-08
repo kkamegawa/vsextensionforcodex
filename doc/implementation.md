@@ -87,9 +87,7 @@ Validation on 2026-10-04:
 - The Release VSIX contains the exact Release Extension, Worker, Protocol, and both Contracts
   assemblies. Embedded Chat tool-window XAML matches the source byte-for-byte. The manifest retains
   publisher `kkamegawa`, the existing extension identity, and `Preview=true`.
-- Experimental Instance screenshots were not captured because Visual Studio is not installed in
-  this environment; `vswhere` found only SQL Server Management Studio. Automated UI tests and source
-  inspection do not substitute for visual acceptance.
+- Experimental Instance screenshots were not captured in that validation run. Visual acceptance remains pending; Visual Studio 2026 Enterprise 18.10.3 is installed in the current environment. Automated UI tests and source inspection do not substitute for visual acceptance.
 - Changed files use UTF-8 BOM/CRLF; `git diff --check` passed.
 
 ## Issue #150: App-server protocol contract and transport core
@@ -512,5 +510,58 @@ passed, 18 failed, and 5 skipped; those were interim results and are superseded 
 - Schema-cache tests: passed.
 - Release assembly raw XAML SHA-256 matches the source XAML.
 - Release VSIX SHA-256: `BA83A86AFA1988B8FA8A2C387415435F5F727054E0379C3E241ED252AF83AB85`.
-- Visual Studio availability: `vswhere` found no Visual Studio instances on this host. Experimental Instance screenshots and Light/Dark/High Contrast, narrow-width, keyboard, read-aloud/accessibility, multiple-card, and authentication-state acceptance remain pending; no visual completion is claimed.
+- Visual Studio 2026 Enterprise 18.10.3 is installed in the current environment. Experimental Instance screenshots and Light/Dark/High Contrast, narrow-width, keyboard, read-aloud/accessibility, multiple-card, and authentication-state acceptance remain pending; no visual completion is claimed.
 Tracking: parent [Issue #154](https://github.com/kkamegawa/vsextensionforcodex/issues/154); children [#165](https://github.com/kkamegawa/vsextensionforcodex/issues/165), [#166](https://github.com/kkamegawa/vsextensionforcodex/issues/166), [#167](https://github.com/kkamegawa/vsextensionforcodex/issues/167), and [#168](https://github.com/kkamegawa/vsextensionforcodex/issues/168).
+
+## Issue #155: Daily-use App Server features
+
+Approved [design](daily-use-app-server-design.md) and [package plan](daily-use-app-server-plan.md), with paired Japanese translations. Tracking: [Issue #155](https://github.com/kkamegawa/vsextensionforcodex/issues/155); [Japanese implementation record](implementation-issue155_ja.md). Target CLI 0.159.1 and regression fixtures 0.155.1; baseline commit 69deda1 (PR #169). The implementation advances Worker contract v20 to v21 without changing pinned CLI, SDK, runtime, or package versions.
+
+P0–P5 are implemented and have automated validation. P6 automated integration and package verification is complete; Experimental Instance visual/accessibility acceptance remains pending.
+
+| Package | Result |
+|---|---|
+| P0 | Typed plan/notice/artifact/shell/attachment/sandbox contracts; used-method classification and regression surface verification. |
+| P1 | 75ms plan batching, authoritative completion and history reconciliation, bounded/coalesced notices, catalog fields, and composer/Worker modality admission using the actual effective model. |
+| P2 | Typed mixed MCP/file/image parts in live events and history; opaque owner/generation-scoped actions; action-time mapped/physical containment; bounded fully decoded PNG/JPEG previews and scoped cleanup. |
+| P3 | Existing attachment store reused; relaycodex.file.v1 provenance and normalized server-OS identity; explicit add/remove and Preview/Open/Reveal; unknown payloads read-only; uncertain delivery never retries a mutation. |
+| P4 | Ninth built-in suggestion slot; exact /shell command preservation, independent timeouts, immutable confirmation, policy recheck, pending lock, and truthful acknowledgement/unknown outcomes. Observed external turns cannot enable Stop. |
+| P5 | Local Windows-only readiness/setup, elevated/unelevated mode, active solution root or null, generation/owner completion gating, completion-before-ack handling, and one setup attempt per generation. |
+| P6 | Automated builds/tests/schema/package checks complete; actual off-screen preview rendered and inspected; Experimental visual acceptance pending. |
+
+### Final verification — 2026-10-08
+
+| Check | Result |
+|---|---|
+| Full solution Debug and Release builds | Each: 0 warnings, 0 errors; VSIX produced. |
+| Core Debug and Release | Each: 399 passed, 0 failed, 5 skipped; 404 total. |
+| UI Debug and Release | Each: 370 passed, 0 failed, 1 skipped; 371 total. |
+| Fixed schema comparisons/cache/used-method verification | Passed for 0.159.1 stable/experimental and declared 0.155.1 regression surfaces. |
+| Debug/Release VSIX | Extension/Contracts and Worker/Contracts/Worker/Protocol DLL hashes match corresponding outputs; contract v21 confirmed. |
+| Raw embedded XAML | Hash equals source in both configurations. |
+| Preview rendering | Actual STA PNG/JPEG decode; generated fragment parsed with WPF XamlReader and rendered by RenderTargetBitmap. Output artifacts/issue155/ui-preview.png inspected successfully. |
+| Experimental Instance | Pending; no screenshot or theme/keyboard/accessibility pass is claimed. |
+
+Six tests skip because creating the required filesystem links is unavailable in this Windows test environment. They are existing link-boundary/scaffolding cases; skipped tests are not recorded as passes. New malformed images, size limits, aggregate cache cap, cleanup, payload provenance, shell unknown acknowledgement/pending lock, stale generations, plan completion, and typed result projection tests pass. Earlier integration failures were repaired and are superseded by the final results above.
+
+Release VSIX SHA-256: 0F34622C51C7BD8E3B9063E5567A2E42B52719AB58A86652E095A17AEAAE8F51. Source/raw embedded XAML SHA-256: BA66E0F8945F337A94E12FE64312D13DBFD6DAE49BA7B99401B72B247C128399.
+
+Reproduction in PowerShell 7 (the fixed executable is supplied explicitly for the build; tests run without CODEX_PATH):
+
+~~~powershell
+$env:CODEX_PATH = "<PINNED_CODEX_EXECUTABLE>"
+dotnet build CodexForVisualStudio.slnx -c Release --no-restore
+Remove-Item Env:CODEX_PATH
+dotnet test tests/Codex.VisualStudio.Core.Tests/Codex.VisualStudio.Core.Tests.csproj -c Release --no-build --no-restore
+dotnet test tests/Codex.VisualStudio.Ui.Tests/Codex.VisualStudio.Ui.Tests.csproj -c Release --no-build --no-restore
+~~~
+
+Equivalent Bash commands (UI tests require Windows/WPF):
+
+~~~bash
+CODEX_PATH="<PINNED_CODEX_EXECUTABLE>" dotnet build CodexForVisualStudio.slnx -c Release --no-restore
+dotnet test tests/Codex.VisualStudio.Core.Tests/Codex.VisualStudio.Core.Tests.csproj -c Release --no-build --no-restore
+dotnet test tests/Codex.VisualStudio.Ui.Tests/Codex.VisualStudio.Ui.Tests.csproj -c Release --no-build --no-restore
+~~~
+
+Visual Studio 2026 Enterprise 18.10.3 is installed. Native CUA APIs are disabled, so Experimental Instance Light/Dark/High Contrast, narrow width, keyboard/focus, and accessibility states could not be inspected. The off-screen image is separate evidence and does not satisfy those criteria. Issue #155 remains open; Issue #156 remains the release gate.

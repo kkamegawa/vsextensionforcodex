@@ -2,6 +2,24 @@
 
 `plan.md` のフェーズ分割に対応する詳細タスク。各タスクは独立してレビュー可能な小さなスライスを意図する。
 
+## 2026-10-08: Daily-use App Server features (Issue #155)
+
+Tracking: [Issue #155](https://github.com/kkamegawa/vsextensionforcodex/issues/155), under [Issue #149](https://github.com/kkamegawa/vsextensionforcodex/issues/149). Approved [design](daily-use-app-server-design.md) and [plan](daily-use-app-server-plan.md); [Japanese work record](task-issue155_ja.md).
+
+- [x] Read the approved Wiki and reconcile ADR-016, design section 17, plan section 13, Phase 6, and slash-command specifications.
+- [x] P0: Worker contract v21, pinned 0.159.1 methods/schema classifications, 0.155.1 regression fixtures, typed contracts and saved-payload registry.
+- [x] P1: bounded plan delta/final reconciliation, notices, effective-model modality admission, and additive catalog/status fields.
+- [x] P2: typed live/history results, bounded PNG/JPEG previews, and owner-scoped mapped file actions.
+- [x] P3: explicit saved attachment add/remove, known payload actions, provenance validation, and uncertain outcomes without mutation replay.
+- [x] P4: exact /shell parsing, explicit target/command confirmation, local policy, acknowledgement state, and per-thread pending lock.
+- [x] P5: local Windows sandbox readiness/setup, confirmed mode/solution root, completion ordering, and one attempt per connection generation.
+- [x] P6 automated portion: integration review, Debug/Release builds, full Core/UI suites, schema checks, package hashes, and actual off-screen WPF preview rendering.
+- [ ] P6 visual portion: Experimental Instance screenshots and Light/Dark/High Contrast, narrow-width, keyboard/focus, and accessibility acceptance.
+
+Final automated results: Core Debug/Release each 399 passed, 0 failed, 5 skipped (404 total); UI Debug/Release each 370 passed, 0 failed, 1 skipped (371 total). Both full solution builds report 0 warnings and 0 errors. Debug/Release VSIX DLL hashes match their build outputs, raw embedded XAML matches source, and both packages carry contract v21. See [implementation evidence](implementation.md#issue-155-daily-use-app-server-features).
+
+The WPF preview fragment was parsed and rendered with XamlReader/RenderTargetBitmap; its output image was inspected. This is separate from Experimental Instance acceptance. Visual Studio 2026 Enterprise 18.10.3 is installed, but native CUA APIs are disabled and no Experimental screenshots were obtained. Issue #155 stays open for this evidence; Issue #156 remains the release gate.
+
 ## 2026-10-04: Issue #153 recovery design reconciliation ([Issue #153](https://github.com/kkamegawa/vsextensionforcodex/issues/153))
 
 Approved plan: [English design](connection-history-recovery-design.md) / [Japanese design](connection-history-recovery-design_ja.md). Publication: [English Wiki](https://github.com/kkamegawa/vsextensionforcodex/wiki/connection-history-recovery) / [Japanese Wiki](https://github.com/kkamegawa/vsextensionforcodex/wiki/connection-history-recovery_ja).
@@ -14,7 +32,7 @@ Approved plan: [English design](connection-history-recovery-design.md) / [Japane
 - [x] Implement Worker contract v19, bounded transient recovery, isolated draft review/restore/discard, explicit history selection and Join, paged history/attachment metadata, generation-aware notification merging, and unknown-outcome tracking with zero automatic replay.
 - [x] Verify Release Core tests (343 passed / 5 skipped) and UI tests (335 passed / 1 skipped); Debug and Release solution builds (zero warnings/errors); the 0.159.1 and 0.155.1 stable schema-cache, method-surface, and schema-difference contracts; and Release VSIX DLL hashes, embedded XAML, identity, publisher, and Preview flag.
 - [x] Address [PR #164](https://github.com/kkamegawa/vsextensionforcodex/pull/164) review findings: retire a dead Worker transport before an explicit Connect, skip per-turn history items from another turn, keep a cancelled local connect attempt as cancellation so the coordinator retries it, merge attachment membership by type and identity key, coalesce attachment refreshes into one single-flight scan, and correct the ADR-014 status and design text. Release build has zero warnings; Core 350/350 and UI 338/338 pass.
-- [ ] Verify recovery, history, draft, and attachment presentation in Experimental Instance screenshots. Visual Studio discovery in this environment found only SQL Server Management Studio, so the instance could not be launched.
+- [ ] Verify recovery, history, draft, and attachment presentation in Experimental Instance screenshots. Visual evidence remains pending; Visual Studio 2026 Enterprise 18.10.3 is installed in the current environment.
 
 ## 2026-10-04: Issue #152 reconciliation and follow-up ([Issue #152](https://github.com/kkamegawa/vsextensionforcodex/issues/152))
 
@@ -708,7 +726,7 @@ Implementation record: [implementation.md](implementation.md#secure-remote-app-s
 - [x] Record final Core/UI test totals: Core Debug 369 passed, 0 failed, 5 skipped (374 total); UI Debug 342 passed, 0 failed, 1 skipped (343 total).
 - [x] Verify full solution Debug and Release builds with 0 warnings and 0 errors; emit the Release VSIX.
 - [x] Inspect the Release assembly raw XAML hash against the source XAML and record the VSIX SHA-256: `BA83A86AFA1988B8FA8A2C387415435F5F727054E0379C3E241ED252AF83AB85`.
-- [ ] Complete Experimental Instance screenshots for Light/Dark/High Contrast, narrow width, keyboard, read-aloud/accessibility, multiple cards, and authentication states. Visual acceptance remains pending because `vswhere` found no Visual Studio instance on the host.
+- [ ] Complete Experimental Instance screenshots for Light/Dark/High Contrast, narrow width, keyboard, read-aloud/accessibility, multiple cards, and authentication states. Visual acceptance remains pending; Visual Studio 2026 Enterprise 18.10.3 is installed in the current environment.
 
 ### Validation evidence
 
@@ -718,6 +736,6 @@ Implementation record: [implementation.md](implementation.md#secure-remote-app-s
 - Full solution Debug and Release builds: 0 warnings, 0 errors in each; Release VSIX emitted.
 - CLI contract surface verification: passed; stable schema comparison 0.155.1→0.159.1: passed; schema-cache tests: passed.
 - Release assembly raw XAML SHA-256 matches source XAML. Release VSIX SHA-256: `BA83A86AFA1988B8FA8A2C387415435F5F727054E0379C3E241ED252AF83AB85`.
-- Visual/accessibility acceptance: pending; `vswhere` found no Visual Studio instances and no Experimental Instance screenshots are recorded.
+- Visual/accessibility acceptance: pending; no Experimental Instance screenshots are recorded. Visual Studio 2026 Enterprise 18.10.3 is installed in the current environment.
 
 Tracking: [Issue #154](https://github.com/kkamegawa/vsextensionforcodex/issues/154) and children [#165](https://github.com/kkamegawa/vsextensionforcodex/issues/165), [#166](https://github.com/kkamegawa/vsextensionforcodex/issues/166), [#167](https://github.com/kkamegawa/vsextensionforcodex/issues/167), and [#168](https://github.com/kkamegawa/vsextensionforcodex/issues/168).

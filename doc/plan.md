@@ -283,3 +283,11 @@ The current owner, contract v18, and disk-cache admission rules are defined in
 ## 12. Codex App Server update and remote connection plan (2026-09-13, amended 2026-09-30)
 
 The approved follow-up plan is maintained in [app-server-update-plan.md](app-server-update-plan.md) and its Japanese translation [app-server-update-plan_ja.md](app-server-update-plan_ja.md). The target contract is CLI 0.159.1, with 0.155.1 retained as the standard/experimental schema regression source. The plan covers secure remote transport; path, authentication-principal, and cache isolation; reconnect, history, and stored attachment recovery; questions, approvals, native user verification, MCP authentication recovery; daily-use app-server features; and integrated verification. Phase ADRs are indexed in `doc/adr/ADR-011` through `ADR-016`.
+
+## 13. Issue #155 日常利用の App Server 機能
+
+英語版 section は [plan-section-13.md](plan-section-13.md)、日本語訳は [plan-section-13_ja.md](plan-section-13_ja.md)。承認済みの詳細設計は [daily-use-app-server-design.md](daily-use-app-server-design.md) と [日本語訳](daily-use-app-server-design_ja.md)、実装順序と検証ゲートは [daily-use-app-server-plan.md](daily-use-app-server-plan.md) と [日本語訳](daily-use-app-server-plan_ja.md) に記録する。
+
+- 基準は CLI 0.159.1、回帰比較は 0.155.1。CLI、SDK、runtime、package は更新せず、Worker contract は統合時の次の利用可能版を使う。
+- P0 で contract/schema/DTO/payload registry を整備し、P1 で plan/status/catalog admission、P2 で typed results と mapped actions、P3 で保存済み添付操作、P4 で明示 shell、P5 でローカル Windows sandbox 状態を実装する。P6 で統合 review、全検証、画面証跡を完成させる。
+- 完了条件は詳細設計に定める protocol/owner/path/policy 上限、テスト、warning-free Debug/Release、VSIX integrity、Experimental Instance のテーマ・狭幅・keyboard・accessibility 証跡を含む。証跡が未記録の項目は完了としない。Issue #156 の release gate を維持する。

@@ -492,3 +492,11 @@ operations and presentation.
 
 Implementation and verification tracking is recorded in [Issue #154](https://github.com/kkamegawa/vsextensionforcodex/issues/154) and child issues
 [#165](https://github.com/kkamegawa/vsextensionforcodex/issues/165), [#166](https://github.com/kkamegawa/vsextensionforcodex/issues/166), [#167](https://github.com/kkamegawa/vsextensionforcodex/issues/167), and [#168](https://github.com/kkamegawa/vsextensionforcodex/issues/168).
+
+## 17. Daily-use App Server features
+
+[Daily-use App Server Features](daily-use-app-server-design.md) defines the approved Issue #155 design and its [Japanese translation](daily-use-app-server-design_ja.md). It targets CLI 0.159.1 with 0.155.1 regression fixtures, reuses the mapping/ownership, recovery, and interaction foundations from Issues #152–#154, and leaves CLI, SDK, runtime, and package versions unchanged. The Worker contract takes the next available version at merge time.
+
+The design covers optional experimental plan deltas and bounded status notices; live-catalog input admission; explicit, unsandboxed shell execution behind confirmation and local policy; typed bounded results and action-time mapped file validation; client-owned saved attachment metadata and explicit operations; and local-Windows-only sandbox setup with truthful outcome states. It excludes daemon/worktree lifecycle, Realtime, dynamic tools, ExternalMessage, plugin import/editor, native verification success, and attestation.
+
+Implementation and verification are tracked by [Issue #155](https://github.com/kkamegawa/vsextensionforcodex/issues/155), with the package plan in [daily-use-app-server-plan.md](daily-use-app-server-plan.md). Issue #156 remains the integrated release gate; missing screenshot evidence leaves visual acceptance incomplete.
