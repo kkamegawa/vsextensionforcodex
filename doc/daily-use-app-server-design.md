@@ -26,7 +26,7 @@ Reuse the existing model catalog/default/hidden-default/reasoning/service-tier h
 ## Explicit shell
 
 - The only entry point is `/shell [--timeout-ms N] -- <command>`. Suggestion selection never executes. `/shell` is the ninth built-in; show up to nine built-ins without dropping skills.
-- Preserve the command after `--` exactly. Reject an empty command, duplicate or unknown options, negative, malformed, or over-`int64` timeouts. Omission uses the server default (one hour); zero means immediate timeout; no value means unlimited.
+- Preserve the command after `--` exactly. Reject an empty command, duplicate or unknown options, negative, malformed, or over-`int64` timeouts. Omission uses the server default (one hour); zero means immediate timeout; `--timeout-ms` without a value is rejected.
 - Only a joined, current-owner idle thread is eligible. Confirmation shows connection/profile, thread, exact command as inert text (never raw in logs), server cwd, timeout, and that `thread/shellCommand` always runs unsandboxed with full access in 0.159.1.
 - After Execute, revalidate target, generation, and cwd, then evaluate `IApprovalPolicyEngine` locally. Policy denial cannot be overridden; Full access or old grants never skip confirmation.
 - The empty RPC response is an acknowledgement, not completion; its deadline is independent of execution timeout. Show events using their real thread/turn/item IDs without asserting correlation to the request.

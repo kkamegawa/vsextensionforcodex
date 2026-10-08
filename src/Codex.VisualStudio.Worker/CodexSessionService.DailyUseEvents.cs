@@ -14,6 +14,7 @@ public sealed partial class CodexSessionService
     private const int MaxTrackedPlanItems = 2000;
     private const int MaxModelCatalogValues = 32;
     private const int MaxModelIdentifierLength = 128;
+    private const string UnmappedArtifactReason = "File actions are unavailable because this path is outside the mapped local workspace.";
 
     private readonly object dailyUseStateLock = new();
     private readonly Dictionary<ThreadStatusKey, string> threadStatuses = new();
@@ -841,6 +842,10 @@ public sealed partial class CodexSessionService
                             filePart.ActionId = actionId;
                             filePart.AllowedActions = actions;
                         }
+                        else
+                        {
+                            filePart.Text = $"{filePart.Text} {UnmappedArtifactReason}";
+                        }
                     }
 
                     parts.Add(filePart);
@@ -1030,7 +1035,7 @@ public sealed partial class CodexSessionService
         string displayName = GetServerPathDisplayName(rawPath);
         if (!TryRegisterServerPath(context, serverPath, actions, out string actionId))
         {
-            parts.Add(new ArtifactPart { Kind = kind, DisplayName = redactor.Redact(displayName), Text = "File actions are unavailable for this result." });
+            parts.Add(new ArtifactPart { Kind = kind, DisplayName = redactor.Redact(displayName), Text = UnmappedArtifactReason });
             return;
         }
 
@@ -1059,13 +1064,21 @@ public sealed partial class CodexSessionService
         ServerPath serverPath,
         IReadOnlyCollection<ArtifactActionKind> actions,
         out string actionId)
-        => dailyUseArtifactStore.TryRegister(
-            context.StatePartitionFingerprint,
-            context.OwnerGeneration,
-            context.Generation,
-            serverPath,
-            out actionId,
-            actions.ToArray());
+    {
+        // Presentation-time preflight only: unmapped paths stay visible but read-only.
+        // ResolveArtifactActionAsync still revalidates the mapping and file at action time.
+        actionId = string.Empty;
+        RemotePathMapper? mapper = remotePathMapper ?? CreateLocalArtifactPathMapper(context);
+        return mapper is not null
+            && mapper.TryMapServerToLocal(serverPath, localPathBoundary, out _, out _)
+            && dailyUseArtifactStore.TryRegister(
+                context.StatePartitionFingerprint,
+                context.OwnerGeneration,
+                context.Generation,
+                serverPath,
+                out actionId,
+                actions.ToArray());
+    }
 
     private static bool IsMentionAttachment(string? kind)
         => string.Equals(kind, "mention", StringComparison.OrdinalIgnoreCase)

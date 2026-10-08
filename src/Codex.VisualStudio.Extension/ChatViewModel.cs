@@ -559,6 +559,9 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                     locallyStartedTurnId = null;
                 }
 
+                // The Interrupt button visibility depends on the status turn and thread.
+                OnPropertyChanged(nameof(IsLocallyInterruptible));
+
                 string? currentPartition = value.Target?.StatePartitionFingerprint;
                 long currentOwnerGeneration = value.Target?.OwnerGeneration ?? 0;
                 observedStatePartitionFingerprint = currentPartition;
@@ -1216,6 +1219,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         selectedThread = null;
         locallyStartedTurnId = null;
         OnPropertyChanged(nameof(SelectedThread));
+        OnPropertyChanged(nameof(IsLocallyInterruptible));
         IsThreadJoined = false;
         IsHistoryStale = false;
         HistoryStatusText = string.Empty;
@@ -7801,22 +7805,33 @@ public sealed class ChatItemViewModel : ObservableObject
         }
     }
 
-    internal void SetPlanSnapshot(TurnPlanSnapshot snapshot, SafeMarkdownService markdown, bool wasTruncated = false)
+    internal void SetPlanSnapshot(
+        TurnPlanSnapshot snapshot,
+        SafeMarkdownService markdown,
+        bool wasTruncated = false,
+        string? finalText = null)
     {
-        PlanSteps.Clear();
-        StructuredPlanSteps.Clear();
-        foreach (PlanStepInfo step in snapshot.Steps.Take(200))
+        // A completed plan item carries its authoritative content as text, not steps; keep the
+        // structured steps already shown from turn/plan/updated instead of erasing them.
+        bool keepSteps = snapshot.IsComplete && snapshot.Steps.Count == 0 && StructuredPlanSteps.Count > 0;
+        if (!keepSteps)
         {
-            PlanSteps.Add("• " + markdown.ToSafeText(step.Text).Trim());
-            StructuredPlanSteps.Add(new PlanStepPresentationViewModel(step, markdown));
+            PlanSteps.Clear();
+            StructuredPlanSteps.Clear();
+            foreach (PlanStepInfo step in snapshot.Steps.Take(200))
+            {
+                PlanSteps.Add("• " + markdown.ToSafeText(step.Text).Trim());
+                StructuredPlanSteps.Add(new PlanStepPresentationViewModel(step, markdown));
+            }
+
+            OnPropertyChanged(nameof(HasStructuredPlanSteps));
         }
 
-        OnPropertyChanged(nameof(HasStructuredPlanSteps));
-
-        PlanDeltaText = string.Empty;
-        planDeltaBytes = 0;
+        string? completedText = snapshot.IsComplete ? finalText ?? snapshot.Explanation : null;
+        PlanDeltaText = string.IsNullOrWhiteSpace(completedText) ? string.Empty : markdown.ToSafeText(completedText).Trim();
+        planDeltaBytes = Encoding.UTF8.GetByteCount(PlanDeltaText);
         IsPlanComplete = snapshot.IsComplete;
-        PlanWasTruncated = wasTruncated || snapshot.Steps.Count > 200;
+        PlanWasTruncated = wasTruncated || (!keepSteps && snapshot.Steps.Count > 200);
     }
 
     internal void ReplaceArtifactParts(IReadOnlyList<ArtifactPartPresentationViewModel> parts)

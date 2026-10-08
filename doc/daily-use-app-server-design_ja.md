@@ -26,7 +26,7 @@ CLI 0.159.1 stable を対象とし、0.155.1 の回帰 fixture を用いて、#1
 ## 明示的な shell
 
 - 唯一の入口を `/shell [--timeout-ms N] -- <command>` とする。候補選択では実行しない。`/shell` を9番目の組み込みコマンドとして追加し、skill を除外せず最大9件の組み込み候補を表示する。
-- `--` より後のコマンドを正確に保持する。空コマンド、重複／未知オプション、負数、不正値、`int64` 超過 timeout を拒否する。省略時は server 既定（1時間）、0 は即時 timeout、値なしは無制限。
+- `--` より後のコマンドを正確に保持する。空コマンド、重複／未知オプション、負数、不正値、`int64` 超過 timeout を拒否する。省略時は server 既定（1時間）、0 は即時 timeout、値なしの `--timeout-ms` は拒否する。
 - Join 済みで現 owner に属する idle thread だけを対象にする。確認画面に接続／profile、thread、正確なコマンド（不活性テキストとして表示し、raw 値をログに書かない）、server cwd、timeout、および 0.159.1 の `thread/shellCommand` が常に sandbox 外の full access で動くことを表示する。
 - Execute 後に対象、generation、cwd を再検証し、ローカルで `IApprovalPolicyEngine` を評価する。ポリシー拒否は上書きできない。Full access や過去の許可で確認を省略しない。
 - 空の RPC 応答は受付確認であり完了ではない。RPC 応答期限は実行 timeout と独立させる。イベントは実際の thread/turn/item ID で表示し、要求との相関を断定しない。

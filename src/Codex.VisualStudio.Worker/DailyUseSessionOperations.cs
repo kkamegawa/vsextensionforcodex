@@ -858,6 +858,21 @@ public sealed partial class CodexSessionService
             cwd = localCwd.Value;
         }
 
+        // Sandbox setup changes machine configuration, so it passes the local approval policy
+        // with the confirmed mode and target directory before any attempt is claimed.
+        string setupMode = request.Mode == WindowsSandboxSetupMode.Elevated ? "elevated" : "unelevated";
+        ApprovalPolicyResult setupPolicy = approvalPolicy.EvaluateCommand(
+            $"windowsSandbox/setupStart {setupMode}", cwd ?? options.WorkingDirectory, options.WorkingDirectory, null, null);
+        if (setupPolicy.IsBlocked)
+        {
+            return new WindowsSandboxSetupStartResult
+            {
+                State = WindowsSandboxSetupState.Failed,
+                Started = false,
+                Message = setupPolicy.BlockReason ?? "The local approval policy blocks Windows sandbox setup.",
+            };
+        }
+
         if (cancellationToken.IsCancellationRequested)
         {
             return new WindowsSandboxSetupStartResult { State = WindowsSandboxSetupState.NotObserved, Started = false, Message = "Windows sandbox setup was canceled before dispatch." };
@@ -912,7 +927,7 @@ public sealed partial class CodexSessionService
 
             response = await context.Connection.SendRequestAsync(
                 "windowsSandbox/setupStart",
-                new { mode = request.Mode == WindowsSandboxSetupMode.Elevated ? "elevated" : "unelevated", cwd },
+                new { mode = setupMode, cwd },
                 TimeSpan.FromSeconds(15),
                 cancellationToken).ConfigureAwait(false);
         }
@@ -1132,6 +1147,7 @@ public sealed partial class CodexSessionService
         result.CanRemove = true;
         result.ActionId = registered ? actionId : null;
         result.AllowedActions = registered ? actions : [];
+        result.UnavailableReason = registered ? null : UnmappedArtifactReason;
         return result;
     }
 

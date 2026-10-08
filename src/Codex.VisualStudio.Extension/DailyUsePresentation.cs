@@ -136,6 +136,9 @@ public sealed class ArtifactPartPresentationViewModel : ObservableObject
     public string Text { get; }
 
     [DataMember]
+    public bool HasText => !string.IsNullOrWhiteSpace(Text);
+
+    [DataMember]
     public string DisplayName { get; }
 
     [DataMember]

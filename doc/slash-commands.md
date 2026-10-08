@@ -167,8 +167,8 @@ the inline suggestions can show up to nine built-ins without dropping skills. Se
 suggestion only fills the command chip. Execution requires the explicit Execute action in the
 confirmation flow. The parser preserves every character after `--` and rejects an empty command,
 duplicate or unknown options, negative or malformed values, and timeout values above `int64`.
-Omitting `--timeout-ms` uses the server default of one hour; zero is an immediate timeout; an
-explicit no-value state means unlimited.
+Omitting `--timeout-ms` uses the server default of one hour; zero is an immediate timeout;
+`--timeout-ms` without a value is rejected.
 
 Only a joined, current-owner idle thread can run `/shell`. Confirmation displays the connection and
 profile, thread, exact command as inert text, server working directory, timeout, and the CLI 0.159.1

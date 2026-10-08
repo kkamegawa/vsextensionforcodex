@@ -1694,7 +1694,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             projected.IdentityKey = identityKey;
             projected.CreatedAt = createdAt.Value;
             projected.UnavailableReason = projected.IsKnownPayload
-                ? null
+                ? projected.UnavailableReason
                 : "The saved attachment payload is unknown or cannot be safely mapped for this connection.";
             attachments.Add(projected);
             if (attachments.Count == boundedLimit || attachments.Count == MaxAttachmentsPerThread)

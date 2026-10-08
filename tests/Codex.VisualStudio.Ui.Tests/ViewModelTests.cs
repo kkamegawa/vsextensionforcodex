@@ -1680,6 +1680,43 @@ public sealed class ViewModelTests
     }
 
     [TestMethod]
+    public void ChatItemViewModel_CompletedPlanKeepsStepsAndShowsFinalText()
+    {
+        var markdown = new SafeMarkdownService();
+        var item = new ChatItemViewModel("Plan", string.Empty, ConversationEventKind.PlanUpdated);
+        item.SetPlanSnapshot(new TurnPlanSnapshot
+        {
+            ThreadId = "t", TurnId = "u",
+            Steps = [new PlanStepInfo { StepId = "0", Text = "Step one", Status = "inProgress" }],
+        }, markdown);
+
+        item.SetPlanSnapshot(new TurnPlanSnapshot { ThreadId = "t", TurnId = "u", IsComplete = true }, markdown,
+            finalText: "Final plan text");
+
+        Assert.AreEqual(1, item.StructuredPlanSteps.Count);
+        Assert.AreEqual("Final plan text", item.PlanDeltaText);
+        Assert.IsTrue(item.IsPlanComplete);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_CompletedAgentTextIsNotRepeatedAsArtifactCard()
+    {
+        using var vm = new ChatViewModel(new FakeWorkerBridge(), autoConnect: false);
+        await RaiseConversationEventAsync(vm, new ConversationEvent
+        {
+            Kind = ConversationEventKind.ItemCompleted,
+            ItemId = "agent-item",
+            TurnId = "agent-turn",
+            Text = "final answer",
+            Parts = [new ArtifactPart { Kind = ArtifactPartKind.Text, Text = "final answer" }],
+        });
+
+        ChatItemViewModel item = vm.Items.Single(value => value.ItemId == "agent-item");
+        StringAssert.Contains(item.Text, "final answer");
+        Assert.AreEqual(0, item.ArtifactParts.Count);
+    }
+
+    [TestMethod]
     public async Task ChatViewModel_FallbackCompletionKeepsStreamedReasoningText()
     {
         using var vm = new ChatViewModel(new FakeWorkerBridge(), autoConnect: false);

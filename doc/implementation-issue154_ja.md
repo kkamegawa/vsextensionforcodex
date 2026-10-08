@@ -1,6 +1,6 @@
 ﻿# 実装記録（Issue #154）
 
-## 2026 10 05：質問、権限、MCP 対話
+## 2026-10-05：質問、権限、MCP 対話
 
 Worker 契約 v20 の対話 DTO／owner scope RPC、世代単位の共通 pending registry、独立した質問・権限・承認・MCP カード、検証付き MCP form elicitation、ローカル Gateway OAuth 状態と操作を実装した。Worker は上流要求 ID と wire 値を保持し、旧世代または外部解決済み要求を拒否して、完了を最大一回に制限する。秘密入力と未対応のネイティブ本人確認要求は payload を UI に渡す前に拒否する。Remote Gateway OAuth は状態と案内だけを提供する。添付メタデータ復元は #153、添付操作と表示は #155 の担当である。
 

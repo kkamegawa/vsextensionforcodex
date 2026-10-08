@@ -894,7 +894,9 @@
                 AutomationProperties.Name="Conversation status notices">
           <StackPanel>
             <TextBlock FontWeight="SemiBold" Text="Conversation notices" />
-            <ItemsControl MaxHeight="120" ItemsSource="{Binding AppServerNotices}">
+            <ScrollViewer MaxHeight="120" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"
+                          Focusable="True" AutomationProperties.Name="Conversation notice list">
+            <ItemsControl ItemsSource="{Binding AppServerNotices}">
               <ItemsControl.ItemTemplate>
                 <DataTemplate>
                   <StackPanel Margin="0,3">
@@ -907,6 +909,7 @@
                 </DataTemplate>
               </ItemsControl.ItemTemplate>
             </ItemsControl>
+            </ScrollViewer>
           </StackPanel>
         </Border>
         <Border Margin="0,4,0,0" Padding="8,6" CornerRadius="5" BorderThickness="1"
@@ -924,8 +927,12 @@
               <Run Text="Server working directory: " /><Run Text="{Binding ShellCommandConfirmation.WorkingDirectory}" />
               <Run Text=" · Timeout: " /><Run Text="{Binding ShellCommandConfirmation.Timeout}" />
             </TextBlock>
-            <TextBlock Margin="0,4,0,0" FontFamily="Consolas, Courier New, monospace"
-                       Text="{Binding ShellCommandConfirmation.Command}" TextWrapping="Wrap" />
+            <ScrollViewer Margin="0,4,0,0" MaxHeight="160" VerticalScrollBarVisibility="Auto"
+                          HorizontalScrollBarVisibility="Disabled" Focusable="True"
+                          AutomationProperties.Name="Shell command to confirm">
+              <TextBlock FontFamily="Consolas, Courier New, monospace"
+                         Text="{Binding ShellCommandConfirmation.Command}" TextWrapping="Wrap" />
+            </ScrollViewer>
             <TextBlock Margin="0,4,0,0" Text="{Binding ShellCommandConfirmation.UnsandboxedWarning}"
                        TextWrapping="Wrap" AutomationProperties.LiveSetting="Polite" />
             <WrapPanel Margin="0,5,0,0">

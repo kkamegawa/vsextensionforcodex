@@ -144,7 +144,7 @@ force-reload検証を確認します。
 skillを除外せず最大9件の組み込みを表示できます。候補の選択はコマンドchipを入れるだけで、
 実行しません。確認画面の明示的な Execute 操作が必要です。parser は `--` より後の各文字を
 そのまま保持し、空コマンド、重複／未知 option、負数／不正値、`int64` 超過を拒否します。
-`--timeout-ms` 省略時は server 既定の1時間、0は即時 timeout、明示的な値なしは無制限です。
+`--timeout-ms` 省略時は server 既定の1時間、0は即時 timeout、値なしの `--timeout-ms` は不正として拒否します。
 
 Join 済みで現 owner に属する idle thread だけ `/shell` を実行できます。確認画面には接続と
 profile、thread、正確なコマンド（不活性テキスト）、server working directory、timeout、CLI

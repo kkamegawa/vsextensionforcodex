@@ -179,7 +179,7 @@ public sealed partial class ChatViewModel
 
             if (completedPlan is not null)
             {
-                completedPlan.SetPlanSnapshot(finalPlan, markdown, value.Truncated);
+                completedPlan.SetPlanSnapshot(finalPlan, markdown, value.Truncated, value.Text);
                 if (completedPlan.ItemId is { Length: > 0 } itemId
                     && completedPlan.ThreadId is { Length: > 0 } threadId
                     && completedPlan.TurnId is { Length: > 0 } turnId)
@@ -218,7 +218,12 @@ public sealed partial class ChatViewModel
                     && value.Parts.All(static part => part.Kind == ArtifactPartKind.Fallback);
                 if (!keepStreamedContent)
                 {
-                    var projected = value.Parts.Take(MaximumArtifactParts)
+                    // The transcript already renders value.Text; do not repeat it as a text card.
+                    var projected = value.Parts
+                        .Where(part => !(part.Kind == ArtifactPartKind.Text
+                            && value.Text is not null
+                            && string.Equals(part.Text, value.Text, StringComparison.Ordinal)))
+                        .Take(MaximumArtifactParts)
                         .Select(part => CreateArtifactPartPresentation(part, notification))
                         .ToArray();
                     item.ReplaceArtifactParts(projected);
@@ -347,7 +352,12 @@ public sealed partial class ChatViewModel
                 owner.StatePartitionFingerprint,
                 owner.OwnerGeneration,
                 owner.ConnectionGeneration);
-            ArtifactPartPresentationViewModel[] parts = historyItem.Parts.Take(MaximumArtifactParts)
+            // The history text is already rendered by the item; skip a text card that repeats it.
+            ArtifactPartPresentationViewModel[] parts = historyItem.Parts
+                .Where(part => !(part.Kind == ArtifactPartKind.Text
+                    && historyItem.Text is not null
+                    && string.Equals(part.Text, historyItem.Text, StringComparison.Ordinal)))
+                .Take(MaximumArtifactParts)
                 .Select(part => new ArtifactPartPresentationViewModel(
                     part,
                     markdown,
