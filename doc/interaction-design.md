@@ -39,6 +39,14 @@ For local stdio, advertise `explicitGatewayOauth`. After initialize and before a
 
 For remote WebSocket profiles, expose status and sign-in guidance only. Do not advertise `explicitGatewayOauth` and do not issue login/cancel. The remote server remains responsible for its own authentication operations.
 
+## Authentication status presentation
+
+The Authentication area starts compact, showing the Gateway summary and existing recovery actions. Check status explicitly expands the MCP server details and refreshes authentication status. While expanded, a Hide status button beside Check status collapses the MCP details back to the initial compact layout; Check status remains available to reopen them.
+
+Expansion is serialized presentation state, independent of the retained Gateway/MCP authentication data. Hiding changes only this state; it does not sign out, cancel or dismiss authentication operations, or discard pending action identities. Notifications and responses from reads already in flight update the retained status without reopening hidden details. Owner retirement restores the compact state, and existing owner/generation guards reject stale results. Gateway recovery guidance and actions remain visible in the compact area.
+
+Tracking: [Issue #173](https://github.com/kkamegawa/vsextensionforcodex/issues/173).
+
 ## Native user verification
 
 CLI 0.159.1's native provider is macOS-only and does not include this extension client in its eligibility set. Until upstream supports Windows and this client, do not advertise/forward the capability. Reject a request before projecting challenge content, explain that the path is unsupported, and keep challenge/proof/credential data out of UI, transcript, logs, settings, diagnostics, and exceptions.

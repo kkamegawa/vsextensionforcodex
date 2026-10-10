@@ -1673,7 +1673,8 @@
         <TextBlock Text="{Binding InteractionAuthStatus.StatusText}" TextWrapping="Wrap" />
         <TextBlock Text="{Binding InteractionAuthStatus.OriginDisplay}" FontSize="11" Opacity="0.75"
                    Visibility="{Binding InteractionAuthStatus.HasOpenAuthorizationAction, Converter={StaticResource BoolToVis}}" />
-        <ItemsControl Margin="0,5,0,0" ItemsSource="{Binding InteractionAuthStatus.McpServers}">
+        <ItemsControl Margin="0,5,0,0" ItemsSource="{Binding InteractionAuthStatus.McpServers}"
+                      Visibility="{Binding IsInteractionAuthStatusExpanded, Converter={StaticResource BoolToVis}}">
           <ItemsControl.ItemTemplate>
             <DataTemplate>
               <StackPanel Margin="0,4,0,0">
@@ -1699,6 +1700,9 @@
         <WrapPanel Margin="0,5,0,0">
           <Button Margin="0,0,6,0" Content="Check status" Command="{Binding ReadGatewayOAuthCommand}"
                   Style="{StaticResource RoundButtonStyle}" />
+          <Button Margin="0,0,6,0" Content="Hide status" Command="{Binding HideInteractionAuthStatusCommand}"
+                  Style="{StaticResource RoundButtonStyle}"
+                  Visibility="{Binding IsInteractionAuthStatusExpanded, Converter={StaticResource BoolToVis}}" />
           <Button Margin="0,0,6,0" Content="Sign in to Gateway" Command="{Binding LoginGatewayOAuthCommand}"
                   Style="{StaticResource RoundButtonStyle}"
                   Visibility="{Binding ShowGatewayOAuthLogin, Converter={StaticResource BoolToVis}}" />

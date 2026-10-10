@@ -114,6 +114,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
     private bool isRecovering;
     private bool historyIsStale;
     private bool isHistoryLoading;
+    private bool isInteractionAuthStatusExpanded;
     private bool isThreadJoined;
     private bool canLoadOlderHistory;
     private string historyStatusText = string.Empty;
@@ -231,6 +232,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         UseLocalAppServerCommand = new AsyncCommand(UseLocalAppServerAsync, CanReconnectForProfile);
         CheckProfileHealthCommand = new AsyncCommand(CheckProfileHealthAsync, CanCheckProfileHealth);
         ReadGatewayOAuthCommand = new AsyncCommand(ReadGatewayOAuthAsync, CanReadGatewayOAuth);
+        HideInteractionAuthStatusCommand = new AsyncCommand(HideInteractionAuthStatusAsync, () => IsInteractionAuthStatusExpanded);
         LoginGatewayOAuthCommand = new AsyncCommand(LoginGatewayOAuthAsync, CanLoginGatewayOAuth);
         CancelGatewayOAuthCommand = new AsyncCommand(CancelGatewayOAuthAsync, CanCancelGatewayOAuth);
         OpenGatewayAuthorizationCommand = new AsyncCommand(OpenGatewayAuthorizationAsync, CanOpenGatewayAuthorization);
@@ -400,6 +402,19 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
     public bool HasInteractionAuthStatus => InteractionAuthStatus is not null && !string.IsNullOrWhiteSpace(InteractionAuthStatus.StatusText);
 
     [DataMember]
+    public bool IsInteractionAuthStatusExpanded
+    {
+        get => isInteractionAuthStatusExpanded;
+        private set
+        {
+            if (SetProperty(ref isInteractionAuthStatusExpanded, value))
+            {
+                HideInteractionAuthStatusCommand?.RaiseCanExecuteChanged();
+            }
+        }
+    }
+
+    [DataMember]
     public bool ShowGatewayOAuthLogin => CanLoginGatewayOAuth();
 
     [DataMember]
@@ -407,6 +422,9 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
 
     [DataMember]
     public AsyncCommand ReadGatewayOAuthCommand { get; private set; } = null!;
+
+    [DataMember]
+    public AsyncCommand HideInteractionAuthStatusCommand { get; private set; } = null!;
 
     [DataMember]
     public AsyncCommand LoginGatewayOAuthCommand { get; private set; } = null!;
@@ -1252,6 +1270,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
 
         PendingInteractions.Clear();
         InteractionAuthStatus = null;
+        IsInteractionAuthStatusExpanded = false;
         OnPropertyChanged(nameof(HasInteractionAuthStatus));
         OnPropertyChanged(nameof(ShowGatewayOAuthLogin));
         OnPropertyChanged(nameof(ShowGatewayOAuthCancel));
@@ -6606,6 +6625,14 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
     private async Task ReadGatewayOAuthAsync()
     {
         OwnerSnapshot owner = CaptureOwnerSnapshot();
+        await OnUiAsync(() =>
+        {
+            if (IsCurrentOwner(owner))
+            {
+                IsInteractionAuthStatusExpanded = true;
+            }
+        }).ConfigureAwait(false);
+
         try
         {
             InteractionAuthStatus result = await bridge.ReadGatewayOAuthAsync(
@@ -6642,6 +6669,9 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             }).ConfigureAwait(false);
         }
     }
+
+    private Task HideInteractionAuthStatusAsync()
+        => OnUiAsync(() => IsInteractionAuthStatusExpanded = false);
 
     private Task LoginGatewayOAuthAsync()
         => UpdateGatewayOAuthAsync(owner => bridge.LoginGatewayOAuthAsync(

@@ -39,6 +39,14 @@ owner、接続世代、要求種別、元の JSON-RPC ID をキーとする型�
 
 Remote WebSocket では状態とサインイン案内だけを示します。`explicitGatewayOauth` を宣言せず、login／cancel も送信しません。認証操作は Remote サーバーが管理します。
 
+## 認証ステータスの表示
+
+Authentication 領域は、Gateway の状態概要と既存の回復操作を示すコンパクトな状態で開始します。Check status は MCP サーバーの詳細を明示的に展開して認証状態を更新します。展開中は Check status の隣に Hide status ボタンを表示し、MCP の詳細を初期のコンパクトなレイアウトへ折りたたみます。Check status は引き続き利用でき、詳細を再表示できます。
+
+展開状態は、保持する Gateway／MCP の認証データとは独立した、シリアライズ対象の表示状態です。折りたたみはこの表示状態だけを変更し、サインアウト、認証操作のキャンセルや非表示化、保留中の操作識別子の破棄は行いません。通知や処理中だった照会の応答は、折りたたんだ詳細を開き直さずに保持データを更新します。owner の破棄ではコンパクトな状態へ戻し、既存の owner／接続世代の検証で古い結果を拒否します。Gateway の回復案内と操作はコンパクトな領域でも表示します。
+
+追跡: [Issue #173](https://github.com/kkamegawa/vsextensionforcodex/issues/173)。
+
 ## ネイティブ本人確認
 
 CLI 0.159.1 のネイティブ provider は macOS のみ対応し、この拡張 client は適格対象に含まれません。上流が Windows とこの client に対応するまでは capability を宣言・転送しません。要求は challenge 内容を UI に投影する前に拒否し、未対応理由を示します。challenge／proof／credential を UI、会話、ログ、設定、診断、例外に出しません。

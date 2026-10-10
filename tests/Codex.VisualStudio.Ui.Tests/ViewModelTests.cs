@@ -642,6 +642,19 @@ public sealed class ViewModelTests
             ConnectionGeneration = status?.Target?.Generation ?? 0,
         };
 
+    private static WorkerStatus ReadyOwnerStatus(long ownerGeneration, string statePartitionFingerprint)
+        => new()
+        {
+            State = WorkerConnectionState.Ready,
+            Target = new ConnectionTargetSnapshot
+            {
+                Kind = ConnectionTargetKind.Local,
+                Generation = 1,
+                OwnerGeneration = ownerGeneration,
+                StatePartitionFingerprint = statePartitionFingerprint,
+            },
+        };
+
     private static object CaptureOwnerSnapshot(ChatViewModel viewModel)
         => typeof(ChatViewModel).GetMethod("CaptureOwnerSnapshot", BindingFlags.NonPublic | BindingFlags.Instance)!
             .Invoke(viewModel, null)!;
@@ -922,6 +935,156 @@ public sealed class ViewModelTests
         Assert.IsFalse(vm.CanDismiss);
         Assert.IsFalse(vm.DismissCommand.CanExecute);
         Assert.IsTrue(changedProperties.Contains(nameof(vm.CanDismiss), StringComparer.Ordinal));
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_AuthenticationDetails_CheckHideAndRecheckPreservesPendingActions()
+    {
+        var bridge = new FakeWorkerBridge();
+        using var vm = new ChatViewModel(bridge, autoConnect: false);
+        WorkerStatus owner = ReadyOwnerStatus(1, "auth-owner-1");
+        await bridge.PublishStateAsync(owner);
+
+        bridge.ReadGatewayOAuthHandler = (_, _) => Task.FromResult(new InteractionAuthStatus
+        {
+            IsLocal = true,
+            IsSupported = true,
+            State = InteractionAuthState.Checking,
+            Message = "Gateway check completed.",
+            McpServers =
+            [
+                new McpServerAuthStatus
+                {
+                    ServerName = "docs",
+                    State = InteractionAuthState.ReauthenticationRequired,
+                    Message = "Sign in is required.",
+                    OpenAuthorizationActionId = "auth-action-1",
+                },
+            ],
+        });
+
+        Assert.IsFalse(vm.IsInteractionAuthStatusExpanded, "Authentication details must start collapsed.");
+        await RunCommandAsync(vm.ReadGatewayOAuthCommand);
+
+        Assert.IsTrue(vm.IsInteractionAuthStatusExpanded);
+        Assert.IsNotNull(vm.InteractionAuthStatus);
+        Assert.AreEqual("docs", vm.InteractionAuthStatus!.McpServers.Single().ServerName);
+        Assert.IsTrue(vm.InteractionAuthStatus.McpServers.Single().CanOpenAuthorization);
+
+        await RunCommandAsync(vm.HideInteractionAuthStatusCommand);
+        Assert.IsFalse(vm.IsInteractionAuthStatusExpanded);
+        Assert.IsTrue(vm.ReadGatewayOAuthCommand.CanExecute,
+            "Check status must remain available when the details are hidden.");
+        Assert.IsNotNull(vm.InteractionAuthStatus, "Hiding details must retain the authentication presentation.");
+        Assert.IsTrue(vm.InteractionAuthStatus!.McpServers.Single().CanOpenAuthorization,
+            "Hiding details must preserve pending authorization actions.");
+
+        await RunCommandAsync(vm.ReadGatewayOAuthCommand);
+        Assert.IsTrue(vm.IsInteractionAuthStatusExpanded, "Check status must reopen the MCP details.");
+        Assert.AreEqual(2, bridge.ReadGatewayOAuthCallCount);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_AuthenticationDetails_InFlightReadAndNotificationsDoNotUndoHide()
+    {
+        var bridge = new FakeWorkerBridge();
+        using var vm = new ChatViewModel(bridge, autoConnect: false);
+        WorkerStatus owner = ReadyOwnerStatus(1, "auth-owner-1");
+        await bridge.PublishStateAsync(owner);
+        var readCompletion = new TaskCompletionSource<InteractionAuthStatus>(TaskCreationOptions.RunContinuationsAsynchronously);
+#pragma warning disable VSTHRD003 // The fake intentionally holds this Gateway read until the test hides the details.
+        bridge.ReadGatewayOAuthHandler = (_, _) => readCompletion.Task;
+#pragma warning restore VSTHRD003
+
+        Task read = RunCommandAsync(vm.ReadGatewayOAuthCommand);
+        Assert.IsTrue(vm.IsInteractionAuthStatusExpanded, "An explicit Check status action expands immediately.");
+        await RunCommandAsync(vm.HideInteractionAuthStatusCommand);
+
+        readCompletion.SetResult(new InteractionAuthStatus
+        {
+            IsLocal = true,
+            IsSupported = true,
+            State = InteractionAuthState.Ready,
+            Message = "Read completed after hide.",
+        });
+        await read;
+
+        Assert.IsFalse(vm.IsInteractionAuthStatusExpanded, "A read response must not reopen details hidden while it was pending.");
+        Assert.AreEqual("Read completed after hide.", vm.InteractionAuthStatus?.StatusText);
+
+        await bridge.PublishInteractionAuthStatusAsync(new InteractionAuthStatus
+        {
+            IsLocal = true,
+            IsSupported = true,
+            State = InteractionAuthState.ReauthenticationRequired,
+            Message = "A background notification arrived.",
+            McpServers =
+            [new McpServerAuthStatus { ServerName = "docs", State = InteractionAuthState.ReauthenticationRequired }],
+        });
+
+        Assert.IsFalse(vm.IsInteractionAuthStatusExpanded, "A current-owner notification must not undo Hide status.");
+        Assert.AreEqual("A background notification arrived.", vm.InteractionAuthStatus?.StatusText);
+        Assert.AreEqual("docs", vm.InteractionAuthStatus!.McpServers.Single().ServerName);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_AuthenticationDetails_OwnerResetCompactsAndRejectsStaleRead()
+    {
+        var bridge = new FakeWorkerBridge();
+        using var vm = new ChatViewModel(bridge, autoConnect: false);
+        await bridge.PublishStateAsync(ReadyOwnerStatus(1, "auth-owner-1"));
+        var readCompletion = new TaskCompletionSource<InteractionAuthStatus>(TaskCreationOptions.RunContinuationsAsynchronously);
+#pragma warning disable VSTHRD003 // The fake intentionally holds this Gateway read until the owner changes.
+        bridge.ReadGatewayOAuthHandler = (_, _) => readCompletion.Task;
+#pragma warning restore VSTHRD003
+
+        Task read = RunCommandAsync(vm.ReadGatewayOAuthCommand);
+        Assert.IsTrue(vm.IsInteractionAuthStatusExpanded);
+
+        await bridge.PublishStateAsync(ReadyOwnerStatus(2, "auth-owner-2"));
+        Assert.IsFalse(vm.IsInteractionAuthStatusExpanded, "A new owner restores the compact presentation.");
+        Assert.IsNull(vm.InteractionAuthStatus, "A new owner retires the previous owner's authentication state.");
+
+        readCompletion.SetResult(new InteractionAuthStatus
+        {
+            IsLocal = true,
+            IsSupported = true,
+            State = InteractionAuthState.Ready,
+            Message = "Stale owner response.",
+        });
+        await read;
+
+        Assert.IsFalse(vm.IsInteractionAuthStatusExpanded);
+        Assert.IsNull(vm.InteractionAuthStatus, "A stale read must not restore retired authentication state.");
+    }
+
+    [TestMethod]
+    public void ChatToolWindowXaml_AuthenticationDetails_CanBeHiddenAndReopened()
+    {
+        const string resourceName = "Codex.VisualStudio.Extension.ToolWindows.ChatToolWindowContent.xaml";
+        using Stream? stream = typeof(ChatViewModel).Assembly.GetManifestResourceStream(resourceName);
+        Assert.IsNotNull(stream, $"Embedded resource '{resourceName}' not found.");
+        XDocument doc = XDocument.Load(stream);
+        XNamespace presentation = "http://schemas.microsoft.com/winfx/2006/xaml/presentation";
+
+        XElement details = doc
+            .Descendants(presentation + "ItemsControl")
+            .Single(element => element.Attribute("ItemsSource")?.Value == "{Binding InteractionAuthStatus.McpServers}");
+        Assert.AreEqual("{Binding IsInteractionAuthStatusExpanded, Converter={StaticResource BoolToVis}}", details.Attribute("Visibility")?.Value);
+
+        XElement hideButton = doc
+            .Descendants(presentation + "Button")
+            .Single(element => element.Attribute("Content")?.Value == "Hide status");
+        Assert.AreEqual("{Binding HideInteractionAuthStatusCommand}", hideButton.Attribute("Command")?.Value);
+        Assert.AreEqual("{Binding IsInteractionAuthStatusExpanded, Converter={StaticResource BoolToVis}}", hideButton.Attribute("Visibility")?.Value);
+
+        XElement checkButton = doc.Descendants(presentation + "Button").Single(element =>
+            element.Attribute("Content")?.Value == "Check status"
+            && element.Attribute("Command")?.Value == "{Binding ReadGatewayOAuthCommand}");
+        Assert.AreSame(hideButton.Parent, checkButton.Parent,
+            "Hide and Check status must remain side by side in the compact Authentication controls.");
+        Assert.IsFalse(checkButton.Ancestors().Contains(details),
+            "Check status must stay outside the collapsible MCP details.");
     }
 
     [TestMethod]
@@ -5689,7 +5852,7 @@ public sealed class ViewModelTests
 
         public event Func<WorkerNotification<UnsupportedInteractionNotice>, Task>? UnsupportedInteractionReceived { add { } remove { } }
 
-        public event Func<WorkerNotification<InteractionAuthStatus>, Task>? InteractionAuthStatusChanged { add { } remove { } }
+        public event Func<WorkerNotification<InteractionAuthStatus>, Task>? InteractionAuthStatusChanged;
 
         public event Func<WorkerNotification<ContextCompactionEvent>, Task>? ContextCompacted { add { } remove { } }
 
@@ -5722,6 +5885,10 @@ public sealed class ViewModelTests
         public int RateLimitCallCount { get; private set; }
 
         public AccountStatus AccountStatusResult { get; set; } = new() { State = AccountState.SignedIn };
+
+        public Func<ReadGatewayOAuthRequest, CancellationToken, Task<InteractionAuthStatus>>? ReadGatewayOAuthHandler { get; set; }
+
+        public int ReadGatewayOAuthCallCount { get; private set; }
 
         public RateLimitsResult RateLimitsResult { get; set; } = new();
 
@@ -5799,6 +5966,9 @@ public sealed class ViewModelTests
 
         public Task PublishSkillsChangedAsync(SkillsChangedEvent? value = null)
             => SkillsChanged?.Invoke(Notification(value ?? new SkillsChangedEvent(), currentStatus)) ?? Task.CompletedTask;
+
+        public Task PublishInteractionAuthStatusAsync(InteractionAuthStatus value)
+            => InteractionAuthStatusChanged?.Invoke(Notification(value, currentStatus)) ?? Task.CompletedTask;
 
         public int ConnectCallCount { get; private set; }
 
@@ -6040,7 +6210,10 @@ public sealed class ViewModelTests
             => Task.CompletedTask;
 
         public Task<InteractionAuthStatus> ReadGatewayOAuthAsync(ReadGatewayOAuthRequest request, CancellationToken cancellationToken)
-            => Task.FromResult(new InteractionAuthStatus());
+        {
+            ReadGatewayOAuthCallCount++;
+            return ReadGatewayOAuthHandler?.Invoke(request, cancellationToken) ?? Task.FromResult(new InteractionAuthStatus());
+        }
 
         public Task<InteractionAuthStatus> LoginGatewayOAuthAsync(LoginGatewayOAuthRequest request, CancellationToken cancellationToken)
             => Task.FromResult(new InteractionAuthStatus());

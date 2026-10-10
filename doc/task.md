@@ -739,3 +739,17 @@ Implementation record: [implementation.md](implementation.md#secure-remote-app-s
 - Visual/accessibility acceptance: pending; no Experimental Instance screenshots are recorded. Visual Studio 2026 Enterprise 18.10.3 is installed in the current environment.
 
 Tracking: [Issue #154](https://github.com/kkamegawa/vsextensionforcodex/issues/154) and children [#165](https://github.com/kkamegawa/vsextensionforcodex/issues/165), [#166](https://github.com/kkamegawa/vsextensionforcodex/issues/166), [#167](https://github.com/kkamegawa/vsextensionforcodex/issues/167), and [#168](https://github.com/kkamegawa/vsextensionforcodex/issues/168).
+
+### 2026-10-10: Collapse authentication status details ([Issue #173](https://github.com/kkamegawa/vsextensionforcodex/issues/173))
+
+- [x] Record the requested final presentation in the paired interaction design: retain the compact Gateway summary/recovery actions and Check status; expand MCP details explicitly; add Hide status beside Check status.
+- [x] Add serialized expansion state and a local hide command. Preserve authentication data and pending actions; keep hidden details closed after notifications or in-flight responses; reset expansion on owner retirement.
+- [x] Add four regression tests for hide/recheck, retained actions, asynchronous races, owner reset/stale responses, and embedded XAML bindings. Allow the existing image-preview test's root detection to recognize a Git worktree's `.git` file.
+- [x] Validate the Release solution build (0 warnings, 0 errors), focused tests (4 passed), full UI tests (378 passed, 1 skipped), and full Core tests (402 passed, 5 skipped). Skipped cases require filesystem-link support unavailable in this environment.
+- [x] Verify packaged Extension DLL matches the Release output and embedded raw XAML matches source. Inspect off-screen WPF renders of the actual authentication XAML at 700/380 pixels in Light, Dark, and High Contrast palettes; confirm Check → Hide → Check returns to the same layout. Render evidence is under `artifacts/hide-auth-status/`; the isolated harness supplies theme brushes and presentation data, so it does not establish Experimental Instance integration or live theme switching.
+
+The initial full UI run exposed the pre-existing `.git` directory assumption in the image-preview test. Accepting both a `.git` directory and a worktree `.git` file resolves that test-harness issue; the final UI suite above passes in the dedicated worktree. This bug fix updates the existing design and does not add a feature-plan Wiki page.
+
+The separate goal cancellation defect is tracked in [Issue #174](https://github.com/kkamegawa/vsextensionforcodex/issues/174); its implementation is outside this PR.
+
+Japanese record: [日本語](task-issue173_ja.md).
