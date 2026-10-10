@@ -542,7 +542,7 @@ P0–P5 are implemented and have automated validation. P6 automated integration 
 | Preview rendering | Actual STA PNG/JPEG decode; generated fragment parsed with WPF XamlReader and rendered by RenderTargetBitmap. Output artifacts/issue155/ui-preview.png inspected successfully. |
 | Experimental Instance | Pending; no screenshot or theme/keyboard/accessibility pass is claimed. |
 
-Six tests skip because creating the required filesystem links is unavailable in this Windows test environment. They are existing link-boundary/scaffolding cases; skipped tests are not recorded as passes. New malformed images, size limits, aggregate cache cap, cleanup, payload provenance, shell unknown acknowledgement/pending lock, stale generations, plan completion, and typed result projection tests pass. Earlier integration failures were repaired and are superseded by the final results above.
+Core reported five skips and UI reported one skip. The corresponding TRX files are not retained, so the reasons for these six skips cannot be independently verified; no cause is attributed here. Skipped tests are not recorded as passes. New malformed images, size limits, aggregate cache cap, cleanup, payload provenance, shell unknown acknowledgement/pending lock, stale generations, plan completion, and typed result projection tests pass. Earlier integration failures were repaired and are superseded by the final results above.
 
 Release VSIX SHA-256: 0F34622C51C7BD8E3B9063E5567A2E42B52719AB58A86652E095A17AEAAE8F51. Source/raw embedded XAML SHA-256: BA66E0F8945F337A94E12FE64312D13DBFD6DAE49BA7B99401B72B247C128399.
 
@@ -564,4 +564,12 @@ dotnet test tests/Codex.VisualStudio.Core.Tests/Codex.VisualStudio.Core.Tests.cs
 dotnet test tests/Codex.VisualStudio.Ui.Tests/Codex.VisualStudio.Ui.Tests.csproj -c Release --no-build --no-restore
 ~~~
 
-Visual Studio 2026 Enterprise 18.10.3 is installed. Native CUA APIs are disabled, so Experimental Instance Light/Dark/High Contrast, narrow width, keyboard/focus, and accessibility states could not be inspected. The off-screen image is separate evidence and does not satisfy those criteria. Issue #155 remains open; Issue #156 remains the release gate.
+Visual Studio 2026 Enterprise 18.10.3 is installed. Native CUA APIs are disabled, so Experimental Instance Light/Dark/High Contrast, narrow width, keyboard/focus, and accessibility states could not be inspected. The off-screen image is separate evidence and does not satisfy those criteria. Issue #155 is closed; its unfinished Experimental Instance visual/accessibility acceptance is carried into #156 as Local-required.
+
+## Issue #156: Integrated release validation
+
+Approved [design](release-validation-design.md) and [implementation plan](release-validation-plan.md), with Japanese translations. Tracking: [Issue #156](https://github.com/kkamegawa/vsextensionforcodex/issues/156), under [#149](https://github.com/kkamegawa/vsextensionforcodex/issues/149); [Japanese work record](implementation-issue156_ja.md). Baseline: main at b44e856, Worker contract v21, CLI 0.159.1, and 0.155.1 regression fixtures.
+
+This change synchronizes the design, issue, repository documents, and bilingual Wiki. It does not implement or execute the integrated validation orchestrator, CI/release workflow changes, uncovered tests, External scenarios, or Experimental Instance acceptance. No runtime validation result is claimed here.
+
+PR #170 evidence remains historical: Debug/Release builds reported zero warnings/errors; Core reported 399 passed and 5 skipped; UI reported 370 passed and 1 skipped; schema/cache/method and package/XAML/hash checks were recorded. Those results do not establish readiness for a later candidate. Issue #155 is closed, while its unfinished Experimental Instance visual/accessibility acceptance remains Local-required under #156.
