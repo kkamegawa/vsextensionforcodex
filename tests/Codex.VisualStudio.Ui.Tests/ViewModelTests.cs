@@ -1072,17 +1072,19 @@ public sealed class ViewModelTests
             .Single(element => element.Attribute("ItemsSource")?.Value == "{Binding InteractionAuthStatus.McpServers}");
         Assert.AreEqual("{Binding IsInteractionAuthStatusExpanded, Converter={StaticResource BoolToVis}}", details.Attribute("Visibility")?.Value);
 
-        XElement hideButton = doc
-            .Descendants(presentation + "Button")
-            .Single(element => element.Attribute("Content")?.Value == "Hide status");
-        Assert.AreEqual("{Binding HideInteractionAuthStatusCommand}", hideButton.Attribute("Command")?.Value);
-        Assert.AreEqual("{Binding IsInteractionAuthStatusExpanded, Converter={StaticResource BoolToVis}}", hideButton.Attribute("Visibility")?.Value);
+        XElement detailsToggle = doc
+            .Descendants(presentation + "ToggleButton")
+            .Single(element => element.Attribute("Content")?.Value == "Authentication details");
+        Assert.AreEqual("{Binding ToggleInteractionAuthStatusCommand}", detailsToggle.Attribute("Command")?.Value);
+        Assert.AreEqual("{Binding IsInteractionAuthStatusExpanded, Mode=OneWay}", detailsToggle.Attribute("IsChecked")?.Value);
+        Assert.IsNull(detailsToggle.Attribute("Visibility"), "The details toggle must remain visible when collapsed.");
+        Assert.AreEqual("Show or hide authentication details", detailsToggle.Attribute("AutomationProperties.Name")?.Value);
 
         XElement checkButton = doc.Descendants(presentation + "Button").Single(element =>
             element.Attribute("Content")?.Value == "Check status"
             && element.Attribute("Command")?.Value == "{Binding ReadGatewayOAuthCommand}");
-        Assert.AreSame(hideButton.Parent, checkButton.Parent,
-            "Hide and Check status must remain side by side in the compact Authentication controls.");
+        Assert.AreSame(detailsToggle.Parent, checkButton.Parent,
+            "The stable details toggle and Check status must remain side by side.");
         Assert.IsFalse(checkButton.Ancestors().Contains(details),
             "Check status must stay outside the collapsible MCP details.");
     }
