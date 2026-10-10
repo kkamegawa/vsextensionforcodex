@@ -7,6 +7,8 @@ dependencies:
     - github/awesome-copilot
     - github.com/github/awesome-copilot
     - github/awesome-copilot/agents/api-architect.agent.md
+    - dotnet/skills
+    - github.com/dotnet/skills
   max_depth: 25
   require_pinned_constraint: false
 mcp:
