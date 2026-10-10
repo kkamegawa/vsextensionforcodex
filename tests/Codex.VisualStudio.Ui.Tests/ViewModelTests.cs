@@ -971,13 +971,19 @@ public sealed class ViewModelTests
         Assert.AreEqual("docs", vm.InteractionAuthStatus!.McpServers.Single().ServerName);
         Assert.IsTrue(vm.InteractionAuthStatus.McpServers.Single().CanOpenAuthorization);
 
-        await RunCommandAsync(vm.HideInteractionAuthStatusCommand);
-        Assert.IsFalse(vm.IsInteractionAuthStatusExpanded);
+        // The MCP details toggle writes the expansion state through its two-way binding.
+        vm.IsInteractionAuthStatusExpanded = false;
         Assert.IsTrue(vm.ReadGatewayOAuthCommand.CanExecute,
             "Check status must remain available when the details are hidden.");
         Assert.IsNotNull(vm.InteractionAuthStatus, "Hiding details must retain the authentication presentation.");
         Assert.IsTrue(vm.InteractionAuthStatus!.McpServers.Single().CanOpenAuthorization,
             "Hiding details must preserve pending authorization actions.");
+        Assert.IsTrue(vm.InteractionAuthStatus.HasPendingMcpAuthAction,
+            "The compact area must be able to signal the hidden MCP actions.");
+
+        vm.IsInteractionAuthStatusExpanded = true;
+        Assert.AreEqual(1, bridge.ReadGatewayOAuthCallCount, "Showing details through the toggle must not issue a read.");
+        vm.IsInteractionAuthStatusExpanded = false;
 
         await RunCommandAsync(vm.ReadGatewayOAuthCommand);
         Assert.IsTrue(vm.IsInteractionAuthStatusExpanded, "Check status must reopen the MCP details.");
@@ -998,7 +1004,7 @@ public sealed class ViewModelTests
 
         Task read = RunCommandAsync(vm.ReadGatewayOAuthCommand);
         Assert.IsTrue(vm.IsInteractionAuthStatusExpanded, "An explicit Check status action expands immediately.");
-        await RunCommandAsync(vm.HideInteractionAuthStatusCommand);
+        vm.IsInteractionAuthStatusExpanded = false;
 
         readCompletion.SetResult(new InteractionAuthStatus
         {
@@ -1025,6 +1031,57 @@ public sealed class ViewModelTests
         Assert.IsFalse(vm.IsInteractionAuthStatusExpanded, "A current-owner notification must not undo Hide status.");
         Assert.AreEqual("A background notification arrived.", vm.InteractionAuthStatus?.StatusText);
         Assert.AreEqual("docs", vm.InteractionAuthStatus!.McpServers.Single().ServerName);
+        Assert.IsTrue(vm.InteractionAuthStatus.HasPendingMcpAuthAction,
+            "A notification that needs MCP sign-in must be signalled while the details stay hidden.");
+    }
+
+    [TestMethod]
+    public async Task InteractionAuthPresentation_PendingMcpActionTracksServerUpdates()
+    {
+        var presentation = new InteractionAuthStatusPresentationViewModel(
+            new InteractionAuthStatus
+            {
+                IsLocal = true,
+                IsSupported = true,
+                State = InteractionAuthState.Ready,
+                McpServers = [new McpServerAuthStatus { ServerName = "docs", State = InteractionAuthState.Authenticated }],
+            },
+            new SafeMarkdownService(),
+            _ => Task.CompletedTask,
+            _ => Task.CompletedTask,
+            _ => Task.CompletedTask);
+        var changedProperties = new List<string?>();
+        presentation.PropertyChanged += (_, args) => changedProperties.Add(args.PropertyName);
+        Assert.IsFalse(presentation.HasPendingMcpAuthAction);
+
+        McpServerAuthPresentationViewModel server = presentation.McpServers.Single();
+        server.Update(new McpOAuthLoginStatus
+        {
+            OperationId = "login-operation",
+            ServerName = "docs",
+            State = InteractionAuthState.LoginPending,
+        }, new SafeMarkdownService());
+        Assert.IsTrue(presentation.HasPendingMcpAuthAction, "A per-server login update must refresh the compact signal.");
+        Assert.IsTrue(changedProperties.Contains(nameof(presentation.HasPendingMcpAuthAction), StringComparer.Ordinal));
+
+        await RunCommandAsync(server.DismissCommand);
+        Assert.IsFalse(presentation.HasPendingMcpAuthAction, "Dismissing the last pending action must clear the compact signal.");
+
+        presentation.Update(new InteractionAuthStatus
+        {
+            IsLocal = true,
+            IsSupported = true,
+            State = InteractionAuthState.Ready,
+            McpServers = [new McpServerAuthStatus { ServerName = "docs", State = InteractionAuthState.ReauthenticationRequired }],
+        });
+        Assert.IsTrue(presentation.HasPendingMcpAuthAction);
+
+        presentation.Update(new InteractionAuthStatus { IsLocal = true, IsSupported = true, State = InteractionAuthState.Ready });
+        Assert.IsFalse(presentation.HasPendingMcpAuthAction, "Removing the server must clear the compact signal.");
+        changedProperties.Clear();
+        server.Update(new McpServerAuthStatus { ServerName = "docs", State = InteractionAuthState.ReauthenticationRequired }, new SafeMarkdownService());
+        Assert.IsFalse(presentation.HasPendingMcpAuthAction, "A removed server must no longer drive the compact signal.");
+        Assert.IsFalse(changedProperties.Contains(nameof(presentation.HasPendingMcpAuthAction), StringComparer.Ordinal));
     }
 
     [TestMethod]
@@ -1074,19 +1131,41 @@ public sealed class ViewModelTests
 
         XElement detailsToggle = doc
             .Descendants(presentation + "ToggleButton")
-            .Single(element => element.Attribute("Content")?.Value == "Authentication details");
-        Assert.AreEqual("{Binding ToggleInteractionAuthStatusCommand}", detailsToggle.Attribute("Command")?.Value);
-        Assert.AreEqual("{Binding IsInteractionAuthStatusExpanded, Mode=OneWay}", detailsToggle.Attribute("IsChecked")?.Value);
+            .Single(element => element.Attribute("Content")?.Value == "MCP details");
+        Assert.IsNull(detailsToggle.Attribute("Command"), "The two-way IsChecked binding is the single source of the expansion state.");
+        Assert.AreEqual("{Binding IsInteractionAuthStatusExpanded, Mode=TwoWay}", detailsToggle.Attribute("IsChecked")?.Value);
         Assert.IsNull(detailsToggle.Attribute("Visibility"), "The details toggle must remain visible when collapsed.");
-        Assert.AreEqual("Show or hide authentication details", detailsToggle.Attribute("AutomationProperties.Name")?.Value);
+        Assert.AreEqual("Show or hide MCP server details", detailsToggle.Attribute("AutomationProperties.Name")?.Value);
+        Assert.AreEqual("{StaticResource RoundToggleButtonStyle}", detailsToggle.Attribute("Style")?.Value);
+
+        XNamespace xaml = "http://schemas.microsoft.com/winfx/2006/xaml";
+        XElement toggleStyle = doc
+            .Descendants(presentation + "Style")
+            .Single(element => element.Attribute(xaml + "Key")?.Value == "RoundToggleButtonStyle");
+        Assert.AreEqual("{StaticResource RoundButtonStyle}", toggleStyle.Attribute("BasedOn")?.Value,
+            "The toggle must share the round button template, including its disabled and hover states.");
+
+        XElement pendingHint = doc
+            .Descendants(presentation + "TextBlock")
+            .Single(element => element.Attribute("Text")?.Value?.StartsWith("MCP servers need attention", StringComparison.Ordinal) == true);
+        string[] hintConditions = pendingHint
+            .Descendants(presentation + "Condition")
+            .Select(element => element.Attribute("Binding")?.Value + "=" + element.Attribute("Value")?.Value)
+            .ToArray();
+        Assert.AreEqual(2, hintConditions.Length, "The compact hint must appear only while pending MCP actions are hidden.");
+        CollectionAssert.Contains(hintConditions, "{Binding InteractionAuthStatus.HasPendingMcpAuthAction}=True");
+        CollectionAssert.Contains(hintConditions, "{Binding IsInteractionAuthStatusExpanded}=False");
+        Assert.IsFalse(pendingHint.Ancestors().Contains(details), "The compact hint must stay outside the collapsible details.");
 
         XElement checkButton = doc.Descendants(presentation + "Button").Single(element =>
             element.Attribute("Content")?.Value == "Check status"
             && element.Attribute("Command")?.Value == "{Binding ReadGatewayOAuthCommand}");
         Assert.AreSame(detailsToggle.Parent, checkButton.Parent,
             "The stable details toggle and Check status must remain side by side.");
-        Assert.IsFalse(checkButton.Ancestors().Contains(details),
-            "Check status must stay outside the collapsible MCP details.");
+        Assert.IsFalse(
+            checkButton.Ancestors().Any(element =>
+                element.Attribute("Visibility")?.Value?.Contains("IsInteractionAuthStatusExpanded", StringComparison.Ordinal) == true),
+            "Check status must not be hidden together with the collapsible MCP details.");
     }
 
     [TestMethod]

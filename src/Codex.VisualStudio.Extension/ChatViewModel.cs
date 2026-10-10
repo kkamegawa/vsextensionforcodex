@@ -232,8 +232,6 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         UseLocalAppServerCommand = new AsyncCommand(UseLocalAppServerAsync, CanReconnectForProfile);
         CheckProfileHealthCommand = new AsyncCommand(CheckProfileHealthAsync, CanCheckProfileHealth);
         ReadGatewayOAuthCommand = new AsyncCommand(ReadGatewayOAuthAsync, CanReadGatewayOAuth);
-        HideInteractionAuthStatusCommand = new AsyncCommand(HideInteractionAuthStatusAsync, () => IsInteractionAuthStatusExpanded);
-        ToggleInteractionAuthStatusCommand = new AsyncCommand(ToggleInteractionAuthStatusAsync);
         LoginGatewayOAuthCommand = new AsyncCommand(LoginGatewayOAuthAsync, CanLoginGatewayOAuth);
         CancelGatewayOAuthCommand = new AsyncCommand(CancelGatewayOAuthAsync, CanCancelGatewayOAuth);
         OpenGatewayAuthorizationCommand = new AsyncCommand(OpenGatewayAuthorizationAsync, CanOpenGatewayAuthorization);
@@ -402,17 +400,12 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
     [DataMember]
     public bool HasInteractionAuthStatus => InteractionAuthStatus is not null && !string.IsNullOrWhiteSpace(InteractionAuthStatus.StatusText);
 
+    // Two-way bound to the MCP details toggle so the toggle and the details share one source of truth.
     [DataMember]
     public bool IsInteractionAuthStatusExpanded
     {
         get => isInteractionAuthStatusExpanded;
-        private set
-        {
-            if (SetProperty(ref isInteractionAuthStatusExpanded, value))
-            {
-                HideInteractionAuthStatusCommand?.RaiseCanExecuteChanged();
-            }
-        }
+        set => SetProperty(ref isInteractionAuthStatusExpanded, value);
     }
 
     [DataMember]
@@ -423,12 +416,6 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
 
     [DataMember]
     public AsyncCommand ReadGatewayOAuthCommand { get; private set; } = null!;
-
-    [DataMember]
-    public AsyncCommand HideInteractionAuthStatusCommand { get; private set; } = null!;
-
-    [DataMember]
-    public AsyncCommand ToggleInteractionAuthStatusCommand { get; private set; } = null!;
 
     [DataMember]
     public AsyncCommand LoginGatewayOAuthCommand { get; private set; } = null!;
@@ -6673,12 +6660,6 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             }).ConfigureAwait(false);
         }
     }
-
-    private Task HideInteractionAuthStatusAsync()
-        => OnUiAsync(() => IsInteractionAuthStatusExpanded = false);
-
-    private Task ToggleInteractionAuthStatusAsync()
-        => OnUiAsync(() => IsInteractionAuthStatusExpanded = !IsInteractionAuthStatusExpanded);
 
     private Task LoginGatewayOAuthAsync()
         => UpdateGatewayOAuthAsync(owner => bridge.LoginGatewayOAuthAsync(
