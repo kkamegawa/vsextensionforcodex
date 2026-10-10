@@ -120,11 +120,13 @@ public sealed class InteractionValidationTests
     [TestMethod]
     public void McpFormParser_RefusesVerificationAndExtensionSchemasWithoutProjectingPayload()
     {
-        using JsonDocument verification = JsonDocument.Parse("{\"mode\":\"openai/userVerification\",\"challenge\":\"secret-marker\"}");
+        using JsonDocument verification = JsonDocument.Parse("{\"mode\":\"openai/userVerification\",\"challenge\":\"secret-challenge-marker\",\"proof\":\"secret-proof-marker\"}");
         Assert.IsFalse(McpElicitationFormParser.TryParse(verification.RootElement, "s:x", () => "id", out McpElicitationForm? form, out McpElicitationParseRefusal refusal));
         Assert.IsNull(form);
         Assert.AreEqual(UnsupportedInteractionKind.UserVerification, refusal.UnsupportedKind);
-        Assert.IsFalse(refusal.SafeReason.Contains("secret-marker", StringComparison.Ordinal));
+        string refusalOutput = JsonSerializer.Serialize(new { form, refusal });
+        Assert.IsFalse(refusalOutput.Contains("secret-challenge-marker", StringComparison.Ordinal));
+        Assert.IsFalse(refusalOutput.Contains("secret-proof-marker", StringComparison.Ordinal));
 
         using JsonDocument extension = JsonDocument.Parse("{\"mode\":\"openai/form\",\"secret\":\"secret-marker\"}");
         Assert.IsFalse(McpElicitationFormParser.TryParse(extension.RootElement, "s:x", () => "id", out _, out McpElicitationParseRefusal extensionRefusal));

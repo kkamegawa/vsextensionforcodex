@@ -13,6 +13,72 @@ namespace Codex.VisualStudio.Core.Tests;
 public sealed class WorkerRpcOwnerBoundaryTests
 {
     [TestMethod]
+    public async Task SimultaneousWorkerInstancesInOneWorkspaceKeepMutationsAndNotificationsPartitioned()
+    {
+        string workspace = Path.Combine(Path.GetTempPath(), $"worker-owner-shared-workspace-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(workspace);
+        try
+        {
+            var connectionA = new RecordingConnection(workspace);
+            var connectionB = new RecordingConnection(workspace);
+            var sessionA = new CodexSessionService(new ApprovalPolicyEngine(new PathAccessPolicy()), new SecretRedactor());
+            var sessionB = new CodexSessionService(new ApprovalPolicyEngine(new PathAccessPolicy()), new SecretRedactor());
+            await using var workerA = new WorkerRpcService(new SecretRedactor(), new SequenceProcessHost(connectionA), sessionA);
+            await using var workerB = new WorkerRpcService(new SecretRedactor(), new SequenceProcessHost(connectionB), sessionB);
+            await using var clientA = new RpcClientChannel(workerA);
+            await using var clientB = new RpcClientChannel(workerB);
+
+            WorkerStatus statusA = await workerA.ConnectAsync(Options(workspace), CancellationToken.None);
+            WorkerStatus statusB = await workerB.ConnectAsync(Options(workspace), CancellationToken.None);
+            ConnectionTargetSnapshot targetA = statusA.Target!;
+            ConnectionTargetSnapshot targetB = statusB.Target!;
+            await clientA.WaitForReadyNotificationAsync(targetA).WaitAsync(TimeSpan.FromSeconds(5));
+            await clientB.WaitForReadyNotificationAsync(targetB).WaitAsync(TimeSpan.FromSeconds(5));
+
+            Assert.AreNotEqual(targetA.StatePartitionFingerprint, targetB.StatePartitionFingerprint);
+
+            ThreadSummary threadA = await workerA.StartThreadAsync(Request<StartThreadRequest>(targetA), CancellationToken.None);
+            ThreadSummary threadB = await workerB.StartThreadAsync(Request<StartThreadRequest>(targetB), CancellationToken.None);
+            await workerA.StartTurnAsync(new StartTurnRequest
+            {
+                ThreadId = threadA.Id,
+                Text = "instance A turn marker",
+                StatePartitionFingerprint = targetA.StatePartitionFingerprint,
+                OwnerGeneration = targetA.OwnerGeneration,
+                ConnectionGeneration = targetA.Generation,
+            }, CancellationToken.None);
+            await workerB.StartTurnAsync(new StartTurnRequest
+            {
+                ThreadId = threadB.Id,
+                Text = "instance B turn marker",
+                StatePartitionFingerprint = targetB.StatePartitionFingerprint,
+                OwnerGeneration = targetB.OwnerGeneration,
+                ConnectionGeneration = targetB.Generation,
+            }, CancellationToken.None);
+
+            AssertMutationRequests(connectionA, threadA.Id, "instance A turn marker");
+            AssertMutationRequests(connectionB, threadB.Id, "instance B turn marker");
+
+            await connectionA.EmitNotificationAsync(
+                "account/rateLimits/updated",
+                new { rateLimits = new { primary = new { usedPercent = 10 } } });
+            await clientA.WaitForRateLimitsAsync(targetA.OwnerGeneration).WaitAsync(TimeSpan.FromSeconds(5));
+            WorkerNotification<RateLimitsResult> notificationA = clientA.RateLimitNotifications.Single();
+            Assert.AreEqual(targetA.StatePartitionFingerprint, notificationA.StatePartitionFingerprint);
+            Assert.AreEqual(targetA.OwnerGeneration, notificationA.OwnerGeneration);
+            Assert.AreEqual(0, clientB.RateLimitNotifications.Count,
+                "A notification from instance A must not be published through instance B's client channel.");
+        }
+        finally
+        {
+            if (Directory.Exists(workspace))
+            {
+                Directory.Delete(workspace, recursive: true);
+            }
+        }
+    }
+
+    [TestMethod]
     public async Task DelayedTurnStartResponseCannotCompleteAcrossOwnerInvalidation()
     {
         string testRoot = Path.Combine(Path.GetTempPath(), $"worker-owner-boundary-{Guid.NewGuid():N}");
@@ -303,6 +369,16 @@ public sealed class WorkerRpcOwnerBoundaryTests
         ExtensionVersion = "test",
     };
 
+    private static void AssertMutationRequests(RecordingConnection connection, string threadId, string turnMarker)
+    {
+        (string Method, JsonElement Parameters)[] mutations = connection.Requests
+            .Where(request => request.Method is "thread/start" or "turn/start")
+            .ToArray();
+        CollectionAssert.AreEqual(new[] { "thread/start", "turn/start" }, mutations.Select(request => request.Method).ToArray());
+        Assert.AreEqual(threadId, mutations[1].Parameters.GetProperty("threadId").GetString());
+        StringAssert.Contains(mutations[1].Parameters.GetRawText(), turnMarker);
+    }
+
     private sealed class RpcClientChannel : IAsyncDisposable
     {
         private readonly JsonRpc workerRpc;
@@ -335,6 +411,8 @@ public sealed class WorkerRpcOwnerBoundaryTests
             => observer.WaitForReadyNotificationAsync(target);
 
         public IReadOnlyCollection<long> RateLimitOwnerGenerations => observer.RateLimitOwnerGenerations;
+
+        public IReadOnlyCollection<WorkerNotification<RateLimitsResult>> RateLimitNotifications => observer.RateLimitNotifications;
 
         public async Task<WorkerNotification<WorkerStatus>> WaitForAsync(Func<WorkerNotification<WorkerStatus>, bool> predicate)
         {
@@ -369,6 +447,7 @@ public sealed class WorkerRpcOwnerBoundaryTests
         {
             private readonly ConcurrentQueue<WorkerNotification<WorkerStatus>> notifications = new();
             private readonly ConcurrentQueue<long> rateLimitOwnerGenerations = new();
+            private readonly ConcurrentQueue<WorkerNotification<RateLimitsResult>> rateLimitNotifications = new();
             private readonly ConcurrentDictionary<(string Partition, long Generation), TaskCompletionSource<WorkerNotification<WorkerStatus>>> readyNotifications = new();
             private readonly TaskCompletionSource<WorkerNotification<WorkerStatus>> busyNotification =
                 new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -379,12 +458,15 @@ public sealed class WorkerRpcOwnerBoundaryTests
 
             public IReadOnlyCollection<long> RateLimitOwnerGenerations => rateLimitOwnerGenerations.ToArray();
 
+            public IReadOnlyCollection<WorkerNotification<RateLimitsResult>> RateLimitNotifications => rateLimitNotifications.ToArray();
+
             [JsonRpcMethod("observer/rateLimitsChanged", UseSingleObjectParameterDeserialization = true)]
             public void OnRateLimitsChanged(RateLimitsChangedArgs args)
             {
                 if (args.Notification is { } notification)
                 {
                     rateLimitOwnerGenerations.Enqueue(notification.OwnerGeneration);
+                    rateLimitNotifications.Enqueue(notification);
                 }
             }
 
@@ -518,6 +600,7 @@ public sealed class WorkerRpcOwnerBoundaryTests
     private sealed class RecordingConnection(string workingDirectory) : IJsonRpcConnection
     {
         private readonly ConcurrentQueue<string> methods = new();
+        private readonly ConcurrentQueue<(string Method, JsonElement Parameters)> requests = new();
         private readonly TaskCompletionSource turnStartSeen = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private readonly TaskCompletionSource releaseTurnStart = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -551,11 +634,16 @@ public sealed class WorkerRpcOwnerBoundaryTests
 
         public int MethodCount(string method) => methods.Count(item => string.Equals(item, method, StringComparison.Ordinal));
 
+        public IReadOnlyCollection<(string Method, JsonElement Parameters)> Requests => requests.ToArray();
+
         public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
 
         public async Task<JsonElement> SendRequestAsync(string method, object? parameters, TimeSpan timeout, CancellationToken cancellationToken)
         {
             methods.Enqueue(method);
+            requests.Enqueue((method, parameters is null
+                ? JsonDocument.Parse("{}").RootElement.Clone()
+                : JsonSerializer.SerializeToElement(parameters)));
             if (method == "turn/start" && DelayTurnStart)
             {
                 turnStartSeen.TrySetResult();
