@@ -1,4 +1,5 @@
 ﻿using System.Collections.ObjectModel;
+using System.ComponentModel;
 using System.Globalization;
 using System.Net.Mail;
 using System.Runtime.Serialization;
@@ -786,6 +787,7 @@ public sealed class InteractionAuthStatusPresentationViewModel : ObservableObjec
     private string statusText = string.Empty;
     private string originDisplay = string.Empty;
     private bool hasOpenAuthorizationAction;
+    private bool hasPendingMcpAuthAction;
 
     [DataMember]
     public bool IsLocal { get => isLocal; private set => SetProperty(ref isLocal, value); }
@@ -805,6 +807,10 @@ public sealed class InteractionAuthStatusPresentationViewModel : ObservableObjec
     [DataMember]
     public bool HasOpenAuthorizationAction { get => hasOpenAuthorizationAction; private set => SetProperty(ref hasOpenAuthorizationAction, value); }
 
+    // Lets the compact (collapsed) presentation signal that MCP actions are waiting in the details.
+    [DataMember]
+    public bool HasPendingMcpAuthAction { get => hasPendingMcpAuthAction; private set => SetProperty(ref hasPendingMcpAuthAction, value); }
+
     [DataMember]
     public ObservableCollection<McpServerAuthPresentationViewModel> McpServers { get; }
 
@@ -823,7 +829,9 @@ public sealed class InteractionAuthStatusPresentationViewModel : ObservableObjec
             McpServerAuthPresentationViewModel? existing = McpServers.FirstOrDefault(item => item.MatchesServer(server.ServerName));
             if (existing is null)
             {
-                McpServers.Add(new McpServerAuthPresentationViewModel(server, markdown, startMcpLogin, dismissMcpLogin, openAuthorization));
+                var added = new McpServerAuthPresentationViewModel(server, markdown, startMcpLogin, dismissMcpLogin, openAuthorization);
+                added.PropertyChanged += OnMcpServerPropertyChanged;
+                McpServers.Add(added);
             }
             else
             {
@@ -835,10 +843,26 @@ public sealed class InteractionAuthStatusPresentationViewModel : ObservableObjec
         {
             if (!status.McpServers.Any(server => McpServers[index].MatchesServer(server.ServerName)))
             {
+                McpServers[index].PropertyChanged -= OnMcpServerPropertyChanged;
                 McpServers.RemoveAt(index);
             }
         }
+
+        RefreshPendingMcpAuthAction();
     }
+
+    private void OnMcpServerPropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName is nameof(McpServerAuthPresentationViewModel.CanStartLogin)
+            or nameof(McpServerAuthPresentationViewModel.CanDismiss)
+            or nameof(McpServerAuthPresentationViewModel.CanOpenAuthorization))
+        {
+            RefreshPendingMcpAuthAction();
+        }
+    }
+
+    private void RefreshPendingMcpAuthAction()
+        => HasPendingMcpAuthAction = McpServers.Any(server => server.HasPendingAction);
 
     public Task OpenAuthorizationAsync(Func<string, Task> open)
         => openAuthorizationActionId is { Length: > 0 } actionId ? open(actionId) : Task.CompletedTask;
@@ -899,6 +923,8 @@ public sealed class McpServerAuthPresentationViewModel : ObservableObject
 
     [DataMember]
     public bool CanOpenAuthorization => authorizationActionId is not null;
+
+    internal bool HasPendingAction => CanStartLogin || CanDismiss || CanOpenAuthorization;
 
     [DataMember]
     public AsyncCommand LoginCommand { get; }

@@ -739,3 +739,19 @@ Implementation record: [implementation.md](implementation.md#secure-remote-app-s
 - Visual/accessibility acceptance: pending; no Experimental Instance screenshots are recorded. Visual Studio 2026 Enterprise 18.10.3 is installed in the current environment.
 
 Tracking: [Issue #154](https://github.com/kkamegawa/vsextensionforcodex/issues/154) and children [#165](https://github.com/kkamegawa/vsextensionforcodex/issues/165), [#166](https://github.com/kkamegawa/vsextensionforcodex/issues/166), [#167](https://github.com/kkamegawa/vsextensionforcodex/issues/167), and [#168](https://github.com/kkamegawa/vsextensionforcodex/issues/168).
+
+### 2026-10-10: Collapse authentication status details ([Issue #173](https://github.com/kkamegawa/vsextensionforcodex/issues/173))
+
+- [x] Record the requested final presentation in the paired interaction design: retain the compact Gateway summary/recovery actions and Check status; expand MCP details explicitly; add a persistent MCP details toggle beside Check status. The toggle remains visible in both states and preserves keyboard focus when collapsing.
+- [x] Add serialized expansion state and a persistent MCP details toggle. Preserve authentication data and pending actions; keep collapsed details closed after notifications or in-flight responses; reset expansion on owner retirement. The stable toggle remains visible and retains keyboard focus while its checked state reflects expansion.
+- [x] Add four regression tests for hide/recheck, retained actions, asynchronous races, owner reset/stale responses, and embedded XAML bindings. Allow the existing image-preview test's root detection to recognize a Git worktree's `.git` file.
+- [x] Validate the Release solution build (0 warnings, 0 errors), focused tests (4 passed), full UI tests (378 passed, 1 skipped), and full Core tests (402 passed, 5 skipped). Skipped cases require filesystem-link support unavailable in this environment.
+- [x] Verify packaged Extension DLL matches the Release output and embedded raw XAML matches source. The renders under `artifacts/hide-auth-status/` cover the earlier Hide status iteration only, not the final toggle.
+- [x] Address the PR #175 review: label the toggle MCP details and bind its checked state two-way to the expansion state (removing the unbound Hide command and the toggle command); share `RoundButtonStyle` (now `ButtonBase`) with the toggle so disabled and hover states stay consistent; show a compact hint while collapsed details hide pending MCP sign-in, authorization, or dismiss actions; remove the one-off `.gitattributes` rule; strengthen the regression tests (five tests, including pending-action tracking).
+- [x] Re-validate after the review: Release solution build (0 warnings, 0 errors), full UI tests (380 passed, 0 skipped), and full Core tests (407 passed on rerun; the first run reported one failure that did not reproduce and was not identified). Inspect off-screen WPF renders of the final authentication XAML at 700/380 pixels in Light, Dark, and High Contrast palettes for collapsed-with-pending, expanded, and collapsed-clear states. Render evidence is under `artifacts/issue173-mcp-details/`; the isolated harness supplies theme brushes, the inherited foreground, and presentation data, so it does not establish Experimental Instance integration or live theme switching.
+
+The initial full UI run exposed the pre-existing `.git` directory assumption in the image-preview test. Accepting both a `.git` directory and a worktree `.git` file resolves that test-harness issue; the final UI suite above passes in the dedicated worktree. This bug fix updates the existing design and does not add a feature-plan Wiki page.
+
+The separate goal cancellation defect is tracked in [Issue #174](https://github.com/kkamegawa/vsextensionforcodex/issues/174); its implementation is outside this PR.
+
+Japanese record: [日本語](task-issue173_ja.md).

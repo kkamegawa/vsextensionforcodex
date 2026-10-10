@@ -296,7 +296,8 @@ public sealed class ArtifactPreviewCacheTests
         while (current is not null)
         {
             if (File.Exists(Path.Combine(current.FullName, "AGENTS.md"))
-                && Directory.Exists(Path.Combine(current.FullName, ".git")))
+                && (Directory.Exists(Path.Combine(current.FullName, ".git"))
+                    || File.Exists(Path.Combine(current.FullName, ".git"))))
             {
                 return current.FullName;
             }

@@ -114,6 +114,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
     private bool isRecovering;
     private bool historyIsStale;
     private bool isHistoryLoading;
+    private bool isInteractionAuthStatusExpanded;
     private bool isThreadJoined;
     private bool canLoadOlderHistory;
     private string historyStatusText = string.Empty;
@@ -398,6 +399,14 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
 
     [DataMember]
     public bool HasInteractionAuthStatus => InteractionAuthStatus is not null && !string.IsNullOrWhiteSpace(InteractionAuthStatus.StatusText);
+
+    // Two-way bound to the MCP details toggle so the toggle and the details share one source of truth.
+    [DataMember]
+    public bool IsInteractionAuthStatusExpanded
+    {
+        get => isInteractionAuthStatusExpanded;
+        set => SetProperty(ref isInteractionAuthStatusExpanded, value);
+    }
 
     [DataMember]
     public bool ShowGatewayOAuthLogin => CanLoginGatewayOAuth();
@@ -1252,6 +1261,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
 
         PendingInteractions.Clear();
         InteractionAuthStatus = null;
+        IsInteractionAuthStatusExpanded = false;
         OnPropertyChanged(nameof(HasInteractionAuthStatus));
         OnPropertyChanged(nameof(ShowGatewayOAuthLogin));
         OnPropertyChanged(nameof(ShowGatewayOAuthCancel));
@@ -6606,6 +6616,14 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
     private async Task ReadGatewayOAuthAsync()
     {
         OwnerSnapshot owner = CaptureOwnerSnapshot();
+        await OnUiAsync(() =>
+        {
+            if (IsCurrentOwner(owner))
+            {
+                IsInteractionAuthStatusExpanded = true;
+            }
+        }).ConfigureAwait(false);
+
         try
         {
             InteractionAuthStatus result = await bridge.ReadGatewayOAuthAsync(
