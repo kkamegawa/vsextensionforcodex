@@ -168,6 +168,13 @@ public partial interface ICodexSessionService : IAsyncDisposable
 
     Task<ThreadGoalResult> GetThreadGoalAsync(string threadId, CancellationToken cancellationToken);
 
+    Task<StopThreadGoalResult> StopThreadGoalAsync(StopThreadGoalRequest request, CancellationToken cancellationToken)
+        => Task.FromResult(new StopThreadGoalResult
+        {
+            IsSupported = false,
+            UnavailableReason = "Stopping thread goals is not supported by this session."
+        });
+
     Task<ThreadGoalResult> SetThreadGoalAsync(SetThreadGoalRequest request, CancellationToken cancellationToken);
 
     Task<ThreadGoalResult> ClearThreadGoalAsync(string threadId, CancellationToken cancellationToken);
@@ -2098,7 +2105,8 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             "thread/goal/get",
             new { threadId },
             TimeSpan.FromSeconds(15),
-            cancellationToken).ConfigureAwait(false);
+            cancellationToken,
+            allowUncredentialed: true).ConfigureAwait(false);
         if (!call.IsSupported)
         {
             return Unsupported<ThreadGoalResult>("Thread goals are not supported by this app-server.");
@@ -4153,10 +4161,11 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         string method,
         object parameters,
         TimeSpan timeout,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool allowUncredentialed = false)
     {
         ConnectionContext context = RequireContext();
-        if (method != "account/read")
+        if (method != "account/read" && !allowUncredentialed)
         {
             EnsureCredentialReady(context);
         }

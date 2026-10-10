@@ -2702,7 +2702,8 @@ public sealed class ViewModelTests
             composer!.Attribute("AcceptsReturn")?.Value,
             "Composer TextBox must keep AcceptsReturn=\"True\" so plain Enter inserts a newline.");
 
-        // Ctrl+Enter (scoped to the composer via TextBox.InputBindings) invokes SendCommand.
+        // Ctrl+Enter (scoped to the composer via TextBox.InputBindings) invokes SendKeyCommand,
+        // which only sends and never triggers the Goal Stop primary action.
         // Attribute values are matched case-sensitively (XAML is case-sensitive).
         XElement? keyBinding = composer
             .Element(presentation + "TextBox.InputBindings")?
@@ -2710,9 +2711,9 @@ public sealed class ViewModelTests
             .SingleOrDefault(kb => kb.Attribute("Key")?.Value == "Return" && kb.Attribute("Modifiers")?.Value == "Control");
         Assert.IsNotNull(keyBinding, "Composer TextBox.InputBindings must contain a Ctrl+Enter (Key=Return, Modifiers=Control) KeyBinding.");
         Assert.AreEqual(
-            "{Binding SendCommand}",
+            "{Binding SendKeyCommand}",
             keyBinding!.Attribute("Command")?.Value,
-            "The Ctrl+Enter KeyBinding must invoke SendCommand.");
+            "The Ctrl+Enter KeyBinding must invoke SendKeyCommand.");
     }
 
     // Remote UI replicates only [DataMember] properties of [DataContract] types into the
@@ -5483,6 +5484,552 @@ public sealed class ViewModelTests
     }
 
     [TestMethod]
+    public async Task ChatViewModel_ActiveGoalUsesPrimaryStopAndWaitsForExactTurnCompletion()
+    {
+        var stopResult = new TaskCompletionSource<StopThreadGoalResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var bridge = new FakeWorkerBridge
+        {
+            CurrentThreadGoal = ActiveGoal("goal-thread"),
+#pragma warning disable VSTHRD003 // The test owns this completion source and releases it after publishing completion.
+            StopThreadGoalHandler = (_, _) => stopResult.Task,
+#pragma warning restore VSTHRD003
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        var thread = new ThreadSummary { Id = "goal-thread" };
+        vm.Threads.Add(thread);
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready, ThreadId = thread.Id });
+        vm.SelectedThread = thread;
+        await RunCommandAsync(vm.JoinThreadCommand);
+        await bridge.PublishStateAsync(new WorkerStatus
+        {
+            State = WorkerConnectionState.Busy,
+            ThreadId = thread.Id,
+            TurnId = "external-turn",
+        });
+        vm.ComposerText = "keep this draft while stopping";
+
+        Assert.AreEqual("Stop", vm.SendButtonText);
+        Assert.IsTrue(vm.SendCommand.CanExecute);
+        Assert.IsFalse(vm.InterruptCommand.CanExecute, "Goal stop replaces the duplicate Interrupt control, including external turns.");
+        Task stopTask = RunCommandAsync(vm.SendCommand);
+
+        Assert.AreEqual(1, bridge.StopThreadGoalRequests.Count);
+        Assert.IsTrue(vm.IsGoalStopPending);
+        Assert.AreEqual("Stopping", vm.SendButtonText);
+        Assert.IsFalse(vm.SendCommand.CanExecute);
+        Assert.AreEqual("keep this draft while stopping", vm.ComposerText);
+
+        await bridge.PublishThreadGoalChangedAsync(new ThreadGoalEvent
+        {
+            ThreadId = thread.Id,
+            TurnId = "external-turn",
+            Goal = new ThreadGoalInfo { ThreadId = thread.Id, Objective = "ship safely", Status = ThreadGoalStatus.Paused },
+        });
+        Assert.IsTrue(vm.IsGoalStopPending, "A paused-goal notification does not imply the active turn has finished.");
+
+        await bridge.PublishConversationEventAsync(new ConversationEvent
+        {
+            Kind = ConversationEventKind.TurnCompleted,
+            ThreadId = thread.Id,
+            TurnId = "external-turn",
+        });
+        Assert.IsTrue(vm.IsGoalStopPending, "Completion is remembered, but Stop remains pending until its RPC result arrives.");
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready, ThreadId = thread.Id });
+
+        StopThreadGoalRequest request = bridge.StopThreadGoalRequests.Single();
+        stopResult.SetResult(new StopThreadGoalResult
+        {
+            StatePartitionFingerprint = request.StatePartitionFingerprint,
+            OwnerGeneration = request.OwnerGeneration,
+            ConnectionGeneration = request.ConnectionGeneration,
+            Goal = new ThreadGoalInfo { ThreadId = thread.Id, Objective = "ship safely", Status = ThreadGoalStatus.Paused },
+            PauseOutcome = GoalStopStepOutcome.Succeeded,
+            InterruptOutcome = GoalStopStepOutcome.Succeeded,
+            TurnId = "external-turn",
+        });
+        await stopTask;
+
+        Assert.IsFalse(vm.IsGoalStopPending);
+        Assert.AreEqual("Send", vm.SendButtonText);
+        Assert.AreEqual("keep this draft while stopping", vm.ComposerText);
+        Assert.AreEqual(0, bridge.StartTurnCallCount);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_ActiveGoalCanBeStoppedBetweenTurns()
+    {
+        var bridge = new FakeWorkerBridge { CurrentThreadGoal = ActiveGoal("between-turns") };
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        var thread = new ThreadSummary { Id = "between-turns" };
+        vm.Threads.Add(thread);
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready, ThreadId = thread.Id });
+        vm.SelectedThread = thread;
+        await RunCommandAsync(vm.JoinThreadCommand);
+
+        Assert.IsNull(vm.Status.TurnId);
+        Assert.AreEqual("Stop", vm.SendButtonText);
+        Assert.IsTrue(vm.SendCommand.CanExecute, "An active goal remains stoppable during the gap between turns.");
+        await RunCommandAsync(vm.SendCommand);
+
+        Assert.AreEqual(1, bridge.StopThreadGoalRequests.Count);
+        Assert.AreEqual(0, bridge.StartTurnCallCount);
+        Assert.IsFalse(vm.IsGoalStopPending);
+        Assert.AreEqual("Send", vm.SendButtonText);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_StopGoalUsesWorkerTurnIdWhenStatusHasNotObservedItYet()
+    {
+        var bridge = new FakeWorkerBridge { CurrentThreadGoal = ActiveGoal("new-turn-id") };
+        var resultGate = new TaskCompletionSource<StopThreadGoalResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+#pragma warning disable VSTHRD003 // The test owns this completion source and releases it after verifying the target turn.
+        bridge.StopThreadGoalHandler = (_, _) => resultGate.Task;
+#pragma warning restore VSTHRD003
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        var thread = new ThreadSummary { Id = "new-turn-id" };
+        vm.Threads.Add(thread);
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready, ThreadId = thread.Id });
+        vm.SelectedThread = thread;
+        await RunCommandAsync(vm.JoinThreadCommand);
+
+        Task stopTask = RunCommandAsync(vm.SendCommand);
+        StopThreadGoalRequest request = bridge.StopThreadGoalRequests.Single();
+        resultGate.SetResult(new StopThreadGoalResult
+        {
+            StatePartitionFingerprint = request.StatePartitionFingerprint,
+            OwnerGeneration = request.OwnerGeneration,
+            ConnectionGeneration = request.ConnectionGeneration,
+            Goal = new ThreadGoalInfo { ThreadId = thread.Id, Objective = "goal", Status = ThreadGoalStatus.Paused },
+            PauseOutcome = GoalStopStepOutcome.Succeeded,
+            InterruptOutcome = GoalStopStepOutcome.Succeeded,
+            TurnId = "turn-arrived-before-status",
+        });
+        await stopTask;
+
+        Assert.IsTrue(vm.IsGoalStopPending, "A null/old UI turn snapshot cannot override the Worker’s target turn id.");
+        Assert.AreEqual("Stopping", vm.SendButtonText);
+        await bridge.PublishConversationEventAsync(new ConversationEvent
+        {
+            Kind = ConversationEventKind.TurnCompleted,
+            ThreadId = thread.Id,
+            TurnId = "turn-arrived-before-status",
+        });
+        Assert.IsFalse(vm.IsGoalStopPending);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_StaleGoalReadCannotOverwriteNewerGoalNotification()
+    {
+        var read = new TaskCompletionSource<ThreadGoalResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+#pragma warning disable VSTHRD003 // The test owns this read and releases it after publishing a newer goal notification.
+        var bridge = new FakeWorkerBridge { GetThreadGoalHandler = (_, _) => read.Task };
+#pragma warning restore VSTHRD003
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        var thread = new ThreadSummary { Id = "goal-revision" };
+        vm.Threads.Add(thread);
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready, ThreadId = thread.Id });
+        vm.SelectedThread = thread;
+        await bridge.PublishThreadGoalChangedAsync(new ThreadGoalEvent
+        {
+            ThreadId = thread.Id,
+            Goal = new ThreadGoalInfo { ThreadId = thread.Id, Objective = "newer state", Status = ThreadGoalStatus.Paused },
+        });
+        read.SetResult(new ThreadGoalResult
+        {
+            Goal = new ThreadGoalInfo { ThreadId = thread.Id, Objective = "stale state", Status = ThreadGoalStatus.Active },
+        });
+        await Task.Delay(20);
+
+        Assert.IsFalse(vm.IsGoalStopMode);
+        Assert.AreEqual("newer state", vm.SelectedThreadGoal?.Objective);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_UnknownGoalStopReconcilesBeforeAllowingExplicitRetry()
+    {
+        var bridge = new FakeWorkerBridge
+        {
+            CurrentThreadGoal = ActiveGoal("unknown-stop"),
+            StopThreadGoalHandler = (_, _) => Task.FromResult(new StopThreadGoalResult
+            {
+                IsSupported = true,
+                PauseOutcome = GoalStopStepOutcome.OutcomeUnknown,
+                InterruptOutcome = GoalStopStepOutcome.OutcomeUnknown,
+                Message = "result uncertain",
+            }),
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        var thread = new ThreadSummary { Id = "unknown-stop" };
+        vm.Threads.Add(thread);
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready, ThreadId = thread.Id });
+        vm.SelectedThread = thread;
+        await RunCommandAsync(vm.JoinThreadCommand);
+
+        await RunCommandAsync(vm.SendCommand);
+
+        Assert.AreEqual(1, bridge.StopThreadGoalRequests.Count, "An unknown outcome is reconciled with a read and never auto-retried.");
+        Assert.AreEqual("Retry Stop", vm.SendButtonText);
+        Assert.IsTrue(vm.SendCommand.CanExecute);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_UnknownPausedGoalWithActiveTurnOffersExplicitRetry()
+    {
+        const string threadId = "unknown-paused-running";
+        var bridge = new FakeWorkerBridge
+        {
+            CurrentThreadGoal = ActiveGoal(threadId),
+        };
+        bridge.StopThreadGoalHandler = (_, _) =>
+        {
+            bridge.CurrentThreadGoal = new ThreadGoalInfo
+            {
+                ThreadId = threadId,
+                Objective = "finish the task",
+                Status = ThreadGoalStatus.Paused,
+            };
+            return Task.FromResult(new StopThreadGoalResult
+            {
+                IsSupported = true,
+                PauseOutcome = GoalStopStepOutcome.Succeeded,
+                InterruptOutcome = GoalStopStepOutcome.OutcomeUnknown,
+                TurnId = "still-running",
+            });
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        var thread = new ThreadSummary { Id = threadId };
+        vm.Threads.Add(thread);
+        await bridge.PublishStateAsync(new WorkerStatus
+        {
+            State = WorkerConnectionState.Busy,
+            ThreadId = threadId,
+            TurnId = "still-running",
+        });
+        vm.SelectedThread = thread;
+        await RunCommandAsync(vm.JoinThreadCommand);
+
+        await RunCommandAsync(vm.SendCommand);
+
+        Assert.AreEqual("Paused", vm.SelectedThreadGoal?.Status.ToString());
+        Assert.AreEqual("Retry Stop", vm.SendButtonText);
+        Assert.IsTrue(vm.SendCommand.CanExecute);
+        Assert.AreEqual(1, bridge.StopThreadGoalRequests.Count, "The unknown interrupt is never retried automatically.");
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_UnknownStopWithClearedGoalAndActiveTurnOffersExplicitRetry()
+    {
+        const string threadId = "unknown-cleared-running";
+        var bridge = new FakeWorkerBridge { CurrentThreadGoal = ActiveGoal(threadId) };
+        bridge.StopThreadGoalHandler = (_, _) =>
+        {
+            bridge.CurrentThreadGoal = null;
+            return Task.FromResult(new StopThreadGoalResult
+            {
+                IsSupported = true,
+                PauseOutcome = GoalStopStepOutcome.OutcomeUnknown,
+                InterruptOutcome = GoalStopStepOutcome.OutcomeUnknown,
+                TurnId = "still-running",
+            });
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        var thread = new ThreadSummary { Id = threadId };
+        vm.Threads.Add(thread);
+        await bridge.PublishStateAsync(new WorkerStatus
+        {
+            State = WorkerConnectionState.Busy,
+            ThreadId = threadId,
+            TurnId = "still-running",
+        });
+        vm.SelectedThread = thread;
+        await RunCommandAsync(vm.JoinThreadCommand);
+
+        await RunCommandAsync(vm.SendCommand);
+
+        Assert.IsNull(vm.SelectedThreadGoal);
+        Assert.AreEqual("Retry Stop", vm.SendButtonText);
+        Assert.IsTrue(vm.SendCommand.CanExecute, "A missing goal must not hide the explicit Stop retry while its thread still runs.");
+    }
+
+    [TestMethod]
+    public void ChatToolWindowXaml_PrimaryGoalStopHasAccessibleNameAndStatusRegion()
+    {
+        const string resourceName = "Codex.VisualStudio.Extension.ToolWindows.ChatToolWindowContent.xaml";
+        using Stream? stream = typeof(ChatViewModel).Assembly.GetManifestResourceStream(resourceName);
+        Assert.IsNotNull(stream, $"Embedded resource '{resourceName}' not found.");
+        XDocument doc = XDocument.Load(stream);
+        XNamespace presentation = "http://schemas.microsoft.com/winfx/2006/xaml/presentation";
+        XElement? primary = doc.Descendants(presentation + "Button")
+            .SingleOrDefault(button => button.Attribute("Command")?.Value == "{Binding SendCommand}");
+
+        Assert.IsNotNull(primary);
+        Assert.AreEqual("{Binding SendButtonText}", primary!.Attribute("AutomationProperties.Name")?.Value);
+        Assert.AreEqual("{Binding SendButtonGlyph}", primary.Attribute("Content")?.Value);
+        Assert.AreEqual("{Binding PrimaryActionHelpText}", primary.Attribute("AutomationProperties.HelpText")?.Value);
+        Assert.IsTrue(doc.Descendants(presentation + "TextBlock")
+            .Any(text => text.Attribute("Text")?.Value == "{Binding GoalStopStatusText}"
+                && text.Attribute("AutomationProperties.LiveSetting")?.Value == "Assertive"));
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_CtrlEnterNeverTriggersGoalStop()
+    {
+        var bridge = new FakeWorkerBridge { CurrentThreadGoal = ActiveGoal("keyboard-goal") };
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        var thread = new ThreadSummary { Id = "keyboard-goal" };
+        vm.Threads.Add(thread);
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready, ThreadId = thread.Id });
+        vm.SelectedThread = thread;
+        await RunCommandAsync(vm.JoinThreadCommand);
+        vm.ComposerText = "a draft typed while the goal runs";
+
+        Assert.AreEqual("Stop", vm.SendButtonText);
+        Assert.IsTrue(vm.SendCommand.CanExecute);
+        Assert.IsFalse(vm.SendKeyCommand.CanExecute, "The Send shortcut must not become a Stop shortcut.");
+        await RunCommandAsync(vm.SendKeyCommand);
+
+        Assert.AreEqual(0, bridge.StopThreadGoalRequests.Count);
+        Assert.AreEqual(0, bridge.StartTurnCallCount);
+        Assert.AreEqual("a draft typed while the goal runs", vm.ComposerText);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_PrimaryActionVisibilityFollowsSlashCommandSelection()
+    {
+        using var vm = new ChatViewModel(new FakeWorkerBridge(), autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        var changed = new List<string?>();
+        vm.PropertyChanged += (_, e) => changed.Add(e.PropertyName);
+        vm.SlashCommands.ShowSuggestions(
+        [
+            new SlashCommandSuggestionDescriptor("/status", "Show status"),
+        ]);
+
+        vm.SlashCommands.AcceptSuggestionCommand.Execute(null);
+        await WaitForAsync(() => vm.SlashCommands.HasActiveCommand);
+
+        Assert.IsFalse(vm.IsPrimaryActionVisible);
+        Assert.IsTrue(vm.ShowSlashExecuteButton);
+        CollectionAssert.Contains(changed, nameof(ChatViewModel.IsPrimaryActionVisible));
+        CollectionAssert.Contains(changed, nameof(ChatViewModel.ShowSlashExecuteButton));
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_FailedStopReadCanBeCheckedAgainUntilResolved()
+    {
+        const string threadId = "unknown-read-fails";
+        var bridge = new FakeWorkerBridge
+        {
+            CurrentThreadGoal = ActiveGoal(threadId),
+            StopThreadGoalHandler = (_, _) => throw new TimeoutException("worker timed out"),
+        };
+        using ChatViewModel vm = await CreateJoinedGoalViewModelAsync(bridge, threadId);
+        bridge.GetThreadGoalHandler = (_, _) => throw new InvalidOperationException("read failed");
+
+        await RunCommandAsync(vm.SendCommand);
+
+        Assert.AreEqual("Check Stop Status", vm.SendButtonText);
+        Assert.IsTrue(vm.SendCommand.CanExecute, "A failed verification read can be retried explicitly.");
+        Assert.IsFalse(vm.IsGoalStopPending);
+
+        bridge.GetThreadGoalHandler = null;
+        bridge.CurrentThreadGoal = new ThreadGoalInfo { ThreadId = threadId, Objective = "finish the task", Status = ThreadGoalStatus.Paused };
+        await RunCommandAsync(vm.SendCommand);
+
+        Assert.AreEqual(1, bridge.StopThreadGoalRequests.Count, "Checking the status never sends another stop.");
+        Assert.AreEqual("Send", vm.SendButtonText);
+        Assert.AreEqual("Goal stopped.", vm.GoalStopStatusText);
+    }
+
+    [TestMethod]
+    [DataRow(ThreadGoalStatus.Complete)]
+    [DataRow(ThreadGoalStatus.Blocked)]
+    [DataRow(ThreadGoalStatus.BudgetLimited)]
+    [DataRow(null)]
+    public async Task ChatViewModel_UnknownStopWithEndedGoalRestoresSend(ThreadGoalStatus? endedStatus)
+    {
+        const string threadId = "unknown-ended";
+        var bridge = new FakeWorkerBridge { CurrentThreadGoal = ActiveGoal(threadId) };
+        bridge.StopThreadGoalHandler = (_, _) =>
+        {
+            bridge.CurrentThreadGoal = endedStatus is { } status
+                ? new ThreadGoalInfo { ThreadId = threadId, Objective = "finish the task", Status = status }
+                : null;
+            return Task.FromException<StopThreadGoalResult>(new TimeoutException("worker timed out"));
+        };
+        using ChatViewModel vm = await CreateJoinedGoalViewModelAsync(bridge, threadId);
+
+        await RunCommandAsync(vm.SendCommand);
+
+        Assert.IsFalse(vm.IsGoalStopPending);
+        Assert.AreEqual("Send", vm.SendButtonText);
+        vm.ComposerText = "next message";
+        Assert.IsTrue(vm.SendCommand.CanExecute);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_StopCompletionNotifiesEveryComposerProperty()
+    {
+        const string threadId = "completion-notify";
+        var bridge = new FakeWorkerBridge { CurrentThreadGoal = ActiveGoal(threadId) };
+        using ChatViewModel vm = await CreateJoinedGoalViewModelAsync(bridge, threadId, turnId: "goal-turn");
+        await RunCommandAsync(vm.SendCommand);
+        Assert.IsTrue(vm.IsGoalStopPending);
+        var changed = new List<string?>();
+        vm.PropertyChanged += (_, e) => changed.Add(e.PropertyName);
+
+        await bridge.PublishConversationEventAsync(new ConversationEvent
+        {
+            Kind = ConversationEventKind.TurnCompleted,
+            ThreadId = threadId,
+            TurnId = "goal-turn",
+        });
+
+        Assert.IsFalse(vm.IsGoalStopPending);
+        foreach (string name in new[]
+        {
+            nameof(ChatViewModel.IsGoalStopPending),
+            nameof(ChatViewModel.GoalStopStatusText),
+            nameof(ChatViewModel.SendButtonText),
+            nameof(ChatViewModel.SendButtonGlyph),
+            nameof(ChatViewModel.PrimaryActionHelpText),
+            nameof(ChatViewModel.IsPrimaryActionVisible),
+        })
+        {
+            CollectionAssert.Contains(changed, name);
+        }
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_UnsupportedStopRestoresOrdinaryComposer()
+    {
+        const string threadId = "unsupported-stop";
+        var bridge = new FakeWorkerBridge
+        {
+            CurrentThreadGoal = ActiveGoal(threadId),
+            StopThreadGoalHandler = (_, _) => Task.FromResult(new StopThreadGoalResult
+            {
+                IsSupported = false,
+                UnavailableReason = "Thread goals are not supported by this app-server.",
+            }),
+        };
+        using ChatViewModel vm = await CreateJoinedGoalViewModelAsync(bridge, threadId);
+
+        await RunCommandAsync(vm.SendCommand);
+
+        Assert.IsFalse(vm.IsGoalStopMode);
+        Assert.AreEqual("Send", vm.SendButtonText);
+        Assert.IsTrue(vm.HasGoalStopStatus);
+        vm.ComposerText = "continue without goals";
+        Assert.IsTrue(vm.SendCommand.CanExecute);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_RetryClearsWhenTheTurnEndsAndTheGoalIsPaused()
+    {
+        const string threadId = "retry-clears";
+        var bridge = new FakeWorkerBridge { CurrentThreadGoal = ActiveGoal(threadId) };
+        bridge.StopThreadGoalHandler = (request, _) => Task.FromResult(new StopThreadGoalResult
+        {
+            StatePartitionFingerprint = request.StatePartitionFingerprint,
+            OwnerGeneration = request.OwnerGeneration,
+            ConnectionGeneration = request.ConnectionGeneration,
+            Goal = new ThreadGoalInfo { ThreadId = threadId, Objective = "finish the task", Status = ThreadGoalStatus.Paused },
+            PauseOutcome = GoalStopStepOutcome.Succeeded,
+            InterruptOutcome = GoalStopStepOutcome.Failed,
+            TurnId = "goal-turn",
+            Message = "The app-server rejected the current turn interrupt.",
+        });
+        using ChatViewModel vm = await CreateJoinedGoalViewModelAsync(bridge, threadId, turnId: "goal-turn");
+
+        await RunCommandAsync(vm.SendCommand);
+        Assert.AreEqual("Retry Stop", vm.SendButtonText);
+        Assert.AreEqual(ThreadGoalStatus.Paused, vm.SelectedThreadGoal?.Status, "A successful pause is retained when the interrupt fails.");
+
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready, ThreadId = threadId });
+
+        Assert.AreEqual("Send", vm.SendButtonText);
+        Assert.AreEqual(1, bridge.StopThreadGoalRequests.Count);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_StaleStopResultCannotApplyAfterReturningToTheThread()
+    {
+        const string threadId = "stale-return";
+        var stopResult = new TaskCompletionSource<StopThreadGoalResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+#pragma warning disable VSTHRD003 // The test owns this completion source and releases it after switching threads.
+        var bridge = new FakeWorkerBridge
+        {
+            CurrentThreadGoal = ActiveGoal(threadId),
+            StopThreadGoalHandler = (_, _) => stopResult.Task,
+        };
+#pragma warning restore VSTHRD003
+        using ChatViewModel vm = await CreateJoinedGoalViewModelAsync(bridge, threadId);
+        var other = new ThreadSummary { Id = "other-thread" };
+        vm.Threads.Add(other);
+        ThreadSummary original = vm.SelectedThread!;
+
+        Task stopTask = RunCommandAsync(vm.SendCommand);
+        vm.SelectedThread = other;
+        vm.SelectedThread = original;
+        await RunCommandAsync(vm.JoinThreadCommand);
+        StopThreadGoalRequest request = bridge.StopThreadGoalRequests.Single();
+        stopResult.SetResult(new StopThreadGoalResult
+        {
+            StatePartitionFingerprint = request.StatePartitionFingerprint,
+            OwnerGeneration = request.OwnerGeneration,
+            ConnectionGeneration = request.ConnectionGeneration,
+            PauseOutcome = GoalStopStepOutcome.Failed,
+            InterruptOutcome = GoalStopStepOutcome.NotRequired,
+        });
+        await stopTask;
+
+        Assert.AreEqual("Stop", vm.SendButtonText, "The earlier operation's failure does not apply to the fresh projection.");
+        Assert.IsFalse(vm.HasGoalStopStatus);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_ActiveGoalStillAllowsSlashCommandsAndResumeClearsStopMessage()
+    {
+        const string threadId = "slash-during-goal";
+        var bridge = new FakeWorkerBridge { CurrentThreadGoal = ActiveGoal(threadId) };
+        using ChatViewModel vm = await CreateJoinedGoalViewModelAsync(bridge, threadId);
+        vm.SlashCommands.ShowSuggestions([new SlashCommandSuggestionDescriptor("/goal", "Manage the goal")]);
+        vm.SlashCommands.AcceptSuggestionCommand.Execute(null);
+        await WaitForAsync(() => vm.SlashCommands.HasActiveCommand);
+
+        Assert.IsTrue(vm.ShowSlashExecuteButton, "An active goal does not block slash commands such as /goal pause.");
+        Assert.IsFalse(vm.IsPrimaryActionVisible);
+        await RunCommandAsync(vm.SlashCommands.ClearCommandCommand);
+        await WaitForAsync(() => !vm.SlashCommands.HasActiveCommand);
+
+        await RunCommandAsync(vm.SendCommand);
+        Assert.AreEqual("Goal stopped.", vm.GoalStopStatusText);
+        await bridge.PublishThreadGoalChangedAsync(new ThreadGoalEvent { ThreadId = threadId, Goal = ActiveGoal(threadId) });
+
+        Assert.AreEqual("Stop", vm.SendButtonText);
+        Assert.IsFalse(vm.HasGoalStopStatus, "Resuming the goal clears the previous stop message.");
+    }
+
+    private static async Task<ChatViewModel> CreateJoinedGoalViewModelAsync(FakeWorkerBridge bridge, string threadId, string? turnId = null)
+    {
+        var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        var thread = new ThreadSummary { Id = threadId };
+        vm.Threads.Add(thread);
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready, ThreadId = threadId });
+        vm.SelectedThread = thread;
+        await RunCommandAsync(vm.JoinThreadCommand);
+        if (turnId is not null)
+        {
+            await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Busy, ThreadId = threadId, TurnId = turnId });
+        }
+
+        return vm;
+    }
+
+    private static ThreadGoalInfo ActiveGoal(string threadId)
+        => new() { ThreadId = threadId, Objective = "finish the task", Status = ThreadGoalStatus.Active };
+
+    [TestMethod]
     public void ChatViewModel_ConnectionTargetFlyout_IsExclusiveWithUsageAndHistory()
     {
         using var vm = new ChatViewModel(new FakeWorkerBridge(), autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
@@ -5939,7 +6486,7 @@ public sealed class ViewModelTests
 
         public event Func<WorkerNotification<ReviewModeEvent>, Task>? ReviewModeChanged { add { } remove { } }
 
-        public event Func<WorkerNotification<ThreadGoalEvent>, Task>? ThreadGoalChanged { add { } remove { } }
+        public event Func<WorkerNotification<ThreadGoalEvent>, Task>? ThreadGoalChanged;
 
         public event Func<WorkerNotification<RateLimitsResult>, Task>? RateLimitsChanged;
 
@@ -5958,6 +6505,14 @@ public sealed class ViewModelTests
         public StartTurnRequest? LastStartTurnRequest { get; private set; }
 
         public int StartTurnCallCount { get; private set; }
+
+        public ThreadGoalInfo? CurrentThreadGoal { get; set; }
+
+        public Func<ThreadGoalRequest, CancellationToken, Task<ThreadGoalResult>>? GetThreadGoalHandler { get; set; }
+
+        public Func<StopThreadGoalRequest, CancellationToken, Task<StopThreadGoalResult>>? StopThreadGoalHandler { get; set; }
+
+        public List<StopThreadGoalRequest> StopThreadGoalRequests { get; } = [];
 
         public SteerTurnRequest? LastSteerTurnRequest { get; private set; }
 
@@ -6019,6 +6574,9 @@ public sealed class ViewModelTests
 
         public Task PublishConversationEventAsync(ConversationEvent value, WorkerStatus? status = null)
             => ConversationEventReceived?.Invoke(Notification(value, status ?? currentStatus)) ?? Task.CompletedTask;
+
+        public Task PublishThreadGoalChangedAsync(ThreadGoalEvent value)
+            => ThreadGoalChanged?.Invoke(Notification(value, currentStatus)) ?? Task.CompletedTask;
 
         public Task PublishWindowsSandboxSetupChangedAsync(WindowsSandboxSetupCompletedEvent value, WorkerStatus? status = null)
             => WindowsSandboxSetupChanged?.Invoke(Notification(value, status ?? currentStatus)) ?? Task.CompletedTask;
@@ -6244,21 +6802,53 @@ public sealed class ViewModelTests
             => Task.FromResult(new ForkThreadResult { Thread = new ThreadSummary { Id = "thread-fork" } });
 
         public Task<ThreadGoalResult> GetThreadGoalAsync(ThreadGoalRequest request, CancellationToken cancellationToken)
-            => Task.FromResult(new ThreadGoalResult());
+            => GetThreadGoalHandler?.Invoke(request, cancellationToken)
+                ?? Task.FromResult(new ThreadGoalResult { Goal = CurrentThreadGoal });
 
         public Task<ThreadGoalResult> SetThreadGoalAsync(SetThreadGoalRequest request, CancellationToken cancellationToken)
-            => Task.FromResult(new ThreadGoalResult
+        {
+            CurrentThreadGoal = new ThreadGoalInfo
             {
-                Goal = new ThreadGoalInfo
-                {
-                    ThreadId = request.ThreadId,
-                    Objective = request.Objective ?? string.Empty,
-                    Status = request.Status ?? ThreadGoalStatus.Active,
-                },
-            });
+                ThreadId = request.ThreadId,
+                Objective = request.Objective ?? string.Empty,
+                Status = request.Status ?? ThreadGoalStatus.Active,
+            };
+            return Task.FromResult(new ThreadGoalResult { Goal = CurrentThreadGoal });
+        }
 
         public Task<ThreadGoalResult> ClearThreadGoalAsync(ThreadGoalRequest request, CancellationToken cancellationToken)
-            => Task.FromResult(new ThreadGoalResult { Cleared = true });
+        {
+            CurrentThreadGoal = null;
+            return Task.FromResult(new ThreadGoalResult { Cleared = true });
+        }
+
+        public Task<StopThreadGoalResult> StopThreadGoalAsync(StopThreadGoalRequest request, CancellationToken cancellationToken)
+        {
+            StopThreadGoalRequests.Add(request);
+            if (StopThreadGoalHandler is not null)
+            {
+                return StopThreadGoalHandler(request, cancellationToken);
+            }
+
+            CurrentThreadGoal = CurrentThreadGoal is null
+                ? null
+                : new ThreadGoalInfo
+                {
+                    ThreadId = CurrentThreadGoal.ThreadId,
+                    Objective = CurrentThreadGoal.Objective,
+                    Status = ThreadGoalStatus.Paused,
+                };
+            return Task.FromResult(new StopThreadGoalResult
+            {
+                StatePartitionFingerprint = request.StatePartitionFingerprint,
+                OwnerGeneration = request.OwnerGeneration,
+                ConnectionGeneration = request.ConnectionGeneration,
+                Goal = CurrentThreadGoal,
+                PauseOutcome = GoalStopStepOutcome.Succeeded,
+                InterruptOutcome = currentStatus.TurnId is null ? GoalStopStepOutcome.NotRequired : GoalStopStepOutcome.Succeeded,
+                TurnId = currentStatus.TurnId,
+            });
+        }
 
         public Task<McpServerListResult> ListMcpServersAsync(ListMcpServersRequest request, CancellationToken cancellationToken)
             => Task.FromResult(new McpServerListResult());

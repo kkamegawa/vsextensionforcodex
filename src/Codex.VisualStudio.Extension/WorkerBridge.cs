@@ -123,6 +123,13 @@ internal interface IWorkerBridge : IAsyncDisposable
 
     Task<ThreadGoalResult> ClearThreadGoalAsync(ThreadGoalRequest request, CancellationToken cancellationToken);
 
+    Task<StopThreadGoalResult> StopThreadGoalAsync(StopThreadGoalRequest request, CancellationToken cancellationToken)
+        => Task.FromResult(new StopThreadGoalResult
+        {
+            IsSupported = false,
+            UnavailableReason = "Stopping goals is not available through this bridge.",
+        });
+
     Task<McpServerListResult> ListMcpServersAsync(ListMcpServersRequest request, CancellationToken cancellationToken);
 
     Task<ListSkillsResult> ListSkillsAsync(ListSkillsRequest request, CancellationToken cancellationToken);
@@ -460,6 +467,12 @@ public sealed class WorkerBridge : IWorkerBridge, ICodexWorkerObserver
     public Task<ThreadGoalResult> ClearThreadGoalAsync(ThreadGoalRequest request, CancellationToken cancellationToken)
         => RequireRpc().InvokeWithCancellationAsync<ThreadGoalResult>(
             "worker/thread/goal/clear",
+            new object[] { request },
+            cancellationToken);
+
+    public Task<StopThreadGoalResult> StopThreadGoalAsync(StopThreadGoalRequest request, CancellationToken cancellationToken)
+        => RequireRpc().InvokeWithCancellationAsync<StopThreadGoalResult>(
+            "worker/thread/goal/stop",
             new object[] { request },
             cancellationToken);
 

@@ -200,6 +200,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         RefreshHistoryCommand = new AsyncCommand(RefreshSelectedHistoryAsync, () => SelectedThread is not null && historyIsStale && !isHistoryLoading && Status.State == WorkerConnectionState.Ready);
         RefreshAttachmentsCommand = new AsyncCommand(RefreshAttachmentsAsync, () => SelectedThread is not null && Status.State == WorkerConnectionState.Ready);
         SendCommand = new AsyncCommand(SendAsync, CanSend);
+        SendKeyCommand = new AsyncCommand(() => IsGoalPrimaryMode ? Task.CompletedTask : SendAsync(), () => !IsGoalPrimaryMode && CanSend());
         InterruptCommand = new AsyncCommand(InterruptAsync, CanInterruptSelectedThread);
         AccountCommand = new AsyncCommand(ExecuteAccountActionAsync, CanExecuteAccountAction);
         ToggleHistoryCommand = new AsyncCommand(() =>
@@ -262,6 +263,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         CancelApprovalModeCommand = new AsyncCommand(CancelApprovalModeAsync, () => HasApprovalModeConfirmation);
         InitializeDailyUseCommands();
         SlashCommands.Configure(OnSlashSuggestionAcceptedAsync, ExecuteSlashSubmissionAsync, OnSlashCommandClearedAsync);
+        SlashCommands.PropertyChanged += OnSlashCommandsPropertyChanged;
         FileSuggestions.Configure(OnFileSuggestionAcceptedAsync);
 
         // Suggestion chips for the empty state. Selecting one populates the composer; the
@@ -586,7 +588,15 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                     ClearOwnerScopedState();
                 }
 
+                if (previousGeneration != value.Target?.Generation
+                    || previousOwnerGeneration != currentOwnerGeneration
+                    || !string.Equals(previousPartition, currentPartition, StringComparison.Ordinal))
+                {
+                    ResetGoalProjection();
+                }
+
                 UpdateUsageConnectionLifecycle(value.State);
+                OnGoalStatusChanged(value);
 
                 // A new connection generation makes any outstanding health result stale.
                 if (previousGeneration != value.Target?.Generation)
@@ -604,6 +614,8 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                 OnPropertyChanged(nameof(IsDegraded));
                 OnPropertyChanged(nameof(IsTurnActive));
                 OnPropertyChanged(nameof(SendButtonText));
+                OnPropertyChanged(nameof(SendButtonGlyph));
+                OnPropertyChanged(nameof(PrimaryActionHelpText));
                 OnPropertyChanged(nameof(StatusDetailText));
                 OnPropertyChanged(nameof(ConnectionTargetLabel));
                 OnPropertyChanged(nameof(StatusStateText));
@@ -1229,6 +1241,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         locallyStartedTurnId = null;
         OnPropertyChanged(nameof(SelectedThread));
         OnPropertyChanged(nameof(IsLocallyInterruptible));
+        ResetGoalProjection();
         IsThreadJoined = false;
         IsHistoryStale = false;
         HistoryStatusText = string.Empty;
@@ -1314,6 +1327,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                 OnPropertyChanged(nameof(EffectiveApprovalModeText));
                 OnPropertyChanged(nameof(IsHistoryOnly));
                 OnPropertyChanged(nameof(HasHistoryNotice));
+                OnGoalThreadChanged(value?.Id);
                 if (value is not null)
                 {
                     IsThreadJoined = false;
@@ -1720,7 +1734,19 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
     public bool IsTurnActive => Status.TurnId is not null;
 
     [DataMember]
-    public string SendButtonText => IsTurnActive ? "Steer" : "Send";
+    public string SendButtonText => IsGoalPrimaryMode
+        ? GoalPrimaryActionText
+        : IsTurnActive ? "Steer" : "Send";
+
+    [DataMember]
+    public string SendButtonGlyph => IsGoalPrimaryMode ? "\uE71A" : "\uE724";
+
+    [DataMember]
+    public string PrimaryActionHelpText => IsGoalPrimaryMode
+        ? GoalPrimaryActionHelpText
+        : IsTurnActive
+            ? "Send a message to steer the active turn."
+            : "Send a message to the conversation.";
 
     public AsyncCommand ConnectCommand { get; }
 
@@ -1825,6 +1851,11 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
 
     [DataMember]
     public AsyncCommand SendCommand { get; }
+
+    // Ctrl+Enter only sends. It never triggers Goal Stop, so a keyboard send cannot stop work
+    // and cannot bypass the composer lock while a Goal is active or stopping.
+    [DataMember]
+    public AsyncCommand SendKeyCommand { get; }
 
     [DataMember]
     public AsyncCommand InterruptCommand { get; }
@@ -2581,6 +2612,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
 
             Threads.Insert(0, thread);
             selectedThread = thread;
+            OnGoalThreadChanged(thread.Id);
             IsThreadJoined = true;
             OnPropertyChanged(nameof(SelectedThread));
             OnPropertyChanged(nameof(IsHistoryOnly));
@@ -2636,6 +2668,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                 thread.EffectiveServiceTier = resumed.EffectiveServiceTier;
             }
             IsThreadJoined = true;
+            _ = LoadSelectedThreadGoalAsync(thread.Id);
             OnPropertyChanged(nameof(EffectiveApprovalModeText));
             HistoryStatusText = "Conversation joined. Sending and turn controls are enabled.";
         }).ConfigureAwait(false);
@@ -3406,6 +3439,12 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
 
     private async Task SendAsync()
     {
+        if (IsGoalPrimaryMode)
+        {
+            await StopThreadGoalAsync().ConfigureAwait(false);
+            return;
+        }
+
         OwnerSnapshot owner = CaptureOwnerSnapshot();
         // Typing a normal message supersedes a still-pending prose-detected choice card (the user
         // chose to answer in their own words instead of picking an option).
@@ -4813,6 +4852,12 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
 
     private async Task<bool> ScheduleOrExecuteSlashCommandAsync(SlashCommandInvocation invocation)
     {
+        if (IsGoalStopUnresolvedFor(SelectedThread?.Id))
+        {
+            await ShowSlashFailureAsync("Wait for the goal stop to finish before running commands in this conversation.").ConfigureAwait(false);
+            return false;
+        }
+
         if (invocation.Definition.Id == SlashCommandId.Shell && Status.TurnId is not null)
         {
             await ShowSlashFailureAsync("Wait for the active turn to finish before preparing a shell command.").ConfigureAwait(false);
@@ -4904,9 +4949,12 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
     private async Task<bool> ExecuteSlashCommandAsync(
         SlashCommandInvocation invocation,
         string? targetThreadId,
-        OwnerSnapshot? expectedOwner = null)
+        OwnerSnapshot? expectedOwner = null,
+        long? expectedGoalStopFenceVersion = null)
     {
-        if (expectedOwner is { } owner && !IsCurrentOwner(owner))
+        if (IsGoalStopUnresolvedFor(targetThreadId)
+            || expectedGoalStopFenceVersion is { } expectedFence && expectedFence != CaptureGoalStopFenceVersion()
+            || expectedOwner is { } owner && !IsCurrentOwner(owner))
         {
             return false;
         }
@@ -5062,7 +5110,14 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
 
     private async Task<bool> ExecuteGoalAsync(string threadId, string arguments)
     {
+        long fenceVersion = CaptureGoalStopFenceVersion();
+        return await ExecuteGoalCoreAsync(threadId, arguments, fenceVersion).ConfigureAwait(false);
+    }
+
+    private async Task<bool> ExecuteGoalCoreAsync(string threadId, string arguments, long fenceVersion)
+    {
         OwnerSnapshot owner = CaptureOwnerSnapshot();
+        long projectionRevision = Volatile.Read(ref goalProjectionRevision);
         if (!SlashCommandArgumentParser.TryParseGoal(arguments, out GoalCommandArguments? goalArguments, out string? error)
             || goalArguments is null)
         {
@@ -5077,18 +5132,21 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                 result = await bridge.GetThreadGoalAsync(StampOwner(new ThreadGoalRequest { ThreadId = threadId }, owner), lifetime.Token).ConfigureAwait(false);
                 break;
             case GoalCommandOperation.Clear:
-                result = await bridge.ClearThreadGoalAsync(StampOwner(new ThreadGoalRequest { ThreadId = threadId }, owner), lifetime.Token).ConfigureAwait(false);
+                result = await RunGoalMutationAsync(fenceVersion, () => bridge.ClearThreadGoalAsync(
+                    StampOwner(new ThreadGoalRequest { ThreadId = threadId }, owner), lifetime.Token)).ConfigureAwait(false)
+                    ?? throw new OperationCanceledException("The goal operation was fenced by a Stop request.");
                 break;
             case GoalCommandOperation.Set:
             case GoalCommandOperation.Edit:
-                result = await bridge.SetThreadGoalAsync(
+                result = await RunGoalMutationAsync(fenceVersion, () => bridge.SetThreadGoalAsync(
                     StampOwner(new SetThreadGoalRequest
                     {
                         ThreadId = threadId,
                         Objective = goalArguments.Objective,
                         Status = ThreadGoalStatus.Active,
                     }, owner),
-                    lifetime.Token).ConfigureAwait(false);
+                    lifetime.Token)).ConfigureAwait(false)
+                    ?? throw new OperationCanceledException("The goal operation was fenced by a Stop request.");
                 break;
             case GoalCommandOperation.Pause:
             case GoalCommandOperation.Resume:
@@ -5108,7 +5166,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                     return false;
                 }
 
-                result = await bridge.SetThreadGoalAsync(
+                result = await RunGoalMutationAsync(fenceVersion, () => bridge.SetThreadGoalAsync(
                     StampOwner(new SetThreadGoalRequest
                     {
                         ThreadId = threadId,
@@ -5118,7 +5176,8 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                             ? ThreadGoalStatus.Paused
                             : ThreadGoalStatus.Active,
                     }, owner),
-                    lifetime.Token).ConfigureAwait(false);
+                    lifetime.Token)).ConfigureAwait(false)
+                    ?? throw new OperationCanceledException("The goal operation was fenced by a Stop request.");
                 break;
             default:
                 return false;
@@ -5134,6 +5193,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             return false;
         }
 
+        await OnUiAsync(() => ApplyGoalCommandResult(owner, threadId, projectionRevision, result.Cleared ? null : result.Goal)).ConfigureAwait(false);
         await ShowSlashStatusAsync(FormatGoal(result)).ConfigureAwait(false);
         return true;
     }
@@ -5544,7 +5604,9 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
     private async Task DrainSlashQueuesAsync(params string?[] threadIds)
     {
         OwnerSnapshot owner = CaptureOwnerSnapshot();
+        long goalFenceVersion = CaptureGoalStopFenceVersion();
         if ((SelectedThread is not null && !IsThreadJoined)
+            || IsGoalStopUnresolved
             || Status.TurnId is not null
             || Interlocked.CompareExchange(ref drainingSlashQueue, 1, 0) != 0)
         {
@@ -5578,12 +5640,14 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                 // thread instead of leaving thread-optional commands (e.g. /status) contextless.
                 string? executionThreadId = queueKey ?? SelectedThread?.Id;
                 while (IsCurrentOwner(owner)
+                    && goalFenceVersion == CaptureGoalStopFenceVersion()
+                    && !IsGoalStopUnresolved
                     && (SelectedThread is null || IsThreadJoined)
                     && Status.TurnId is null
                     && slashCommandCoordinator.TryDequeue(queueKey, out SlashCommandInvocation? invocation)
                     && invocation is not null)
                 {
-                    bool succeeded = await ExecuteSlashCommandAsync(invocation, executionThreadId, owner).ConfigureAwait(false);
+                    bool succeeded = await ExecuteSlashCommandAsync(invocation, executionThreadId, owner, goalFenceVersion).ConfigureAwait(false);
                     if (succeeded && invocation.StartsTurn)
                     {
                         return;
@@ -5850,7 +5914,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
 
     private async Task InterruptAsync()
     {
-        if (!CanInterruptSelectedThread() || Status.ThreadId is null || Status.TurnId is null)
+        if (IsGoalPrimaryMode || !CanInterruptSelectedThread() || Status.ThreadId is null || Status.TurnId is null)
         {
             return;
         }
@@ -5867,6 +5931,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
     {
         WorkerStatus value = notification.Value;
         bool applied = false;
+        bool reconnected = false;
         await OnUiAsync(() =>
         {
             if (!CanApplyStatusNotification(notification))
@@ -5876,6 +5941,8 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
 
             WorkerStatus previousStatus = Status;
             WorkerConnectionState previous = previousStatus.State;
+            reconnected = value.State == WorkerConnectionState.Ready
+                && previous is not (WorkerConnectionState.Ready or WorkerConnectionState.Busy or WorkerConnectionState.WaitingForApproval);
             Status = value;
             ReadGatewayOAuthCommand.RaiseCanExecuteChanged();
             LoginGatewayOAuthCommand.RaiseCanExecuteChanged();
@@ -5945,6 +6012,17 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                 }
             }
         }).ConfigureAwait(false);
+
+        // Only a reconnect refreshes the goal read-only; turn boundaries are covered by goal
+        // notifications. No stop or other goal mutation is ever replayed.
+        if (applied
+            && reconnected
+            && IsNotificationCurrent(notification)
+            && SelectedThread is not null
+            && IsThreadJoined)
+        {
+            _ = LoadSelectedThreadGoalAsync(SelectedThread.Id);
+        }
 
         if (applied
             && IsNotificationCurrent(notification)
@@ -6040,7 +6118,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         });
     }
 
-    private Task OnThreadGoalChangedAsync(WorkerNotification<ThreadGoalEvent> notification)
+    private async Task OnThreadGoalChangedAsync(WorkerNotification<ThreadGoalEvent> notification)
     {
         ThreadGoalEvent value = notification.Value;
         var result = new ThreadGoalResult
@@ -6048,7 +6126,8 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             Goal = value.Goal,
             Cleared = value.IsCleared,
         };
-        return OnUiAsync(() =>
+        await ApplyThreadGoalNotificationAsync(notification, result).ConfigureAwait(false);
+        await OnUiAsync(() =>
         {
             if (IsNotificationCurrent(notification))
             {
@@ -6056,7 +6135,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                 SlashCommands.ShowStatus(safeMessage);
                 Items.Add(new ChatItemViewModel("Status", safeMessage, ConversationEventKind.ItemCompleted));
             }
-        });
+        }).ConfigureAwait(false);
     }
 
     private Task OnRateLimitsChangedAsync(WorkerNotification<RateLimitsResult> notification)
@@ -6113,6 +6192,11 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             else if (SelectedThread is null || !string.Equals(SelectedThread.Id, value.ThreadId, StringComparison.Ordinal))
             {
                 return;
+            }
+
+            if (isTurnCompleted)
+            {
+                OnGoalConversationCompleted(value);
             }
 
             if (isHistoryLoading && !string.IsNullOrWhiteSpace(value.ThreadId))
@@ -7281,7 +7365,9 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
     // Restart. Disconnected is also gated on connecting == 0: if ConnectWithDirectoryAsync has
     // already started (and will reject a second attempt), disable Send until that attempt settles.
     private bool CanSend()
-        => (!string.IsNullOrWhiteSpace(ComposerText) || (Status.TurnId is null && (HasPendingAttachments || HasPendingSkill)))
+        => IsGoalPrimaryMode
+            ? CanStopThreadGoal()
+            : (!string.IsNullOrWhiteSpace(ComposerText) || (Status.TurnId is null && (HasPendingAttachments || HasPendingSkill)))
         && !IsRecovering
         && (SelectedThread is null || IsThreadJoined)
         && !HasComposerAdmissionReason
@@ -7291,7 +7377,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             || (Status.State is WorkerConnectionState.Disconnected && Volatile.Read(ref connecting) == 0));
 
     private bool CanInterruptSelectedThread()
-        => !IsRecovering && IsThreadJoined && SelectedThread is not null
+        => !IsGoalPrimaryMode && !IsRecovering && IsThreadJoined && SelectedThread is not null
             && Status.TurnId is not null
             && string.Equals(Status.TurnId, locallyStartedTurnId, StringComparison.Ordinal)
             && string.Equals(SelectedThread.Id, Status.ThreadId, StringComparison.Ordinal);
@@ -7303,6 +7389,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         NewThreadCommand.RaiseCanExecuteChanged();
         LoadMoreCommand.RaiseCanExecuteChanged();
         SendCommand.RaiseCanExecuteChanged();
+        SendKeyCommand.RaiseCanExecuteChanged();
         InterruptCommand.RaiseCanExecuteChanged();
         AccountCommand.RaiseCanExecuteChanged();
         ToggleUsageCommand.RaiseCanExecuteChanged();

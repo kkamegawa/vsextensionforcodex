@@ -136,7 +136,7 @@ public sealed partial class ChatViewModel
         && Status.State == WorkerConnectionState.Ready;
 
     [DataMember]
-    public bool IsLocallyInterruptible => CanInterruptSelectedThread();
+    public bool IsLocallyInterruptible => !IsGoalPrimaryMode && CanInterruptSelectedThread();
 
     private void InitializeDailyUseCommands()
     {

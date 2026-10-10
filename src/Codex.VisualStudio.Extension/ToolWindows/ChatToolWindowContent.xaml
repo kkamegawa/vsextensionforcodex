@@ -2037,7 +2037,7 @@
                      Enter/Tab accept, and Escape closes. When the list is closed those commands
                      are null, so plain Enter keeps inserting a newline. -->
                 <TextBox.InputBindings>
-                  <KeyBinding Key="Return" Modifiers="Control" Command="{Binding SendCommand}" />
+                  <KeyBinding Key="Return" Modifiers="Control" Command="{Binding SendKeyCommand}" />
                   <KeyBinding Key="Up" Command="{Binding SlashCommands.MovePreviousKeyCommand}" />
                   <KeyBinding Key="Down" Command="{Binding SlashCommands.MoveNextKeyCommand}" />
                   <KeyBinding Key="Return" Command="{Binding SlashCommands.AcceptSuggestionKeyCommand}" />
@@ -2170,6 +2170,11 @@
                      Visibility="{Binding SlashCommands.HasStatusAnnouncement, Converter={StaticResource BoolToVis}}"
                      AutomationProperties.Name="Slash command status"
                      AutomationProperties.LiveSetting="Polite" />
+            <TextBlock Margin="12,2,12,4" FontSize="11" Opacity="0.9"
+                       Text="{Binding GoalStopStatusText}" TextWrapping="Wrap"
+                       Visibility="{Binding HasGoalStopStatus, Converter={StaticResource BoolToVis}}"
+                       AutomationProperties.Name="Goal stop status"
+                       AutomationProperties.LiveSetting="Assertive" />
           </StackPanel>
 
           <Border Grid.Row="4"
@@ -2264,15 +2269,16 @@
                       Style="{StaticResource IconButtonStyle}"
                       Visibility="{Binding IsLocallyInterruptible, Converter={StaticResource BoolToVis}}"
                       AutomationProperties.Name="Interrupt turn" />
-              <Button Content="&#xE724;" ToolTip="{Binding SendButtonText}"
+              <Button Content="{Binding SendButtonGlyph}" ToolTip="{Binding SendButtonText}"
                       Command="{Binding SendCommand}"
                       Style="{StaticResource SendIconButtonStyle}"
-                      Visibility="{Binding SlashCommands.HasNoActiveCommand, Converter={StaticResource BoolToVis}}"
-                      AutomationProperties.Name="{Binding SendButtonText}" />
+                      Visibility="{Binding IsPrimaryActionVisible, Converter={StaticResource BoolToVis}}"
+                      AutomationProperties.Name="{Binding SendButtonText}"
+                      AutomationProperties.HelpText="{Binding PrimaryActionHelpText}" />
               <Button Content="&#xE724;" ToolTip="Run slash command"
                       Command="{Binding SlashCommands.ExecuteCommand}"
                       Style="{StaticResource SendIconButtonStyle}"
-                      Visibility="{Binding SlashCommands.HasActiveCommand, Converter={StaticResource BoolToVis}}"
+                      Visibility="{Binding ShowSlashExecuteButton, Converter={StaticResource BoolToVis}}"
                       AutomationProperties.Name="Run slash command" />
             </StackPanel>
           </Grid>

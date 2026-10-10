@@ -5,7 +5,15 @@ namespace Codex.VisualStudio.Contracts;
 
 public static class ContractVersions
 {
-    public const int Current = 21;
+    public const int Current = 22;
+}
+
+public enum GoalStopStepOutcome
+{
+    NotRequired,
+    Succeeded,
+    Failed,
+    OutcomeUnknown,
 }
 
 public enum WorkerRecoveryFailureKind
@@ -857,6 +865,36 @@ public sealed class ThreadGoalResult : AppServerOperationResult
     public bool Cleared { get; set; }
 }
 
+public sealed class StopThreadGoalRequest : OwnerScopedRequest
+{
+    public string ThreadId { get; set; } = string.Empty;
+}
+
+[DataContract]
+public sealed class StopThreadGoalResult : WorkerGenerationResult
+{
+    [DataMember]
+    public ThreadGoalInfo? Goal { get; set; }
+
+    [DataMember]
+    public GoalStopStepOutcome PauseOutcome { get; set; } = GoalStopStepOutcome.NotRequired;
+
+    [DataMember]
+    public GoalStopStepOutcome InterruptOutcome { get; set; } = GoalStopStepOutcome.NotRequired;
+
+    [DataMember]
+    public string? TurnId { get; set; }
+
+    [DataMember]
+    public bool IsSupported { get; set; } = true;
+
+    [DataMember]
+    public string? UnavailableReason { get; set; }
+
+    [DataMember]
+    public string? Message { get; set; }
+}
+
 public sealed class McpServerStatusInfo
 {
     public string Name { get; set; } = string.Empty;
@@ -1367,6 +1405,9 @@ public interface ICodexWorkerClient
 
     [JsonRpcMethod("worker/thread/goal/clear")]
     Task<ThreadGoalResult> ClearThreadGoalAsync(ThreadGoalRequest request, CancellationToken cancellationToken);
+
+    [JsonRpcMethod("worker/thread/goal/stop")]
+    Task<StopThreadGoalResult> StopThreadGoalAsync(StopThreadGoalRequest request, CancellationToken cancellationToken);
 
     [JsonRpcMethod("worker/mcp/list")]
     Task<McpServerListResult> ListMcpServersAsync(ListMcpServersRequest request, CancellationToken cancellationToken);
