@@ -608,6 +608,19 @@ public sealed partial class ChatViewModel
 
     private long CaptureGoalStopFenceVersion() => Volatile.Read(ref goalStopFenceVersion);
 
+    // Completes synchronously when the fence still holds, so the caller's side effect follows
+    // the check without an intervening await.
+    private async Task<bool> EnsureGoalStopFenceAsync(long fenceVersion, string threadId)
+    {
+        if (fenceVersion == CaptureGoalStopFenceVersion() && !IsGoalStopUnresolvedFor(threadId))
+        {
+            return true;
+        }
+
+        await ShowSlashFailureAsync("The command was canceled because the goal is stopping.").ConfigureAwait(false);
+        return false;
+    }
+
     private bool IsGoalStopUnresolvedFor(string? threadId)
         => IsGoalStopUnresolved
             && (threadId is null || string.Equals(threadId, goalStopThreadId, StringComparison.Ordinal));

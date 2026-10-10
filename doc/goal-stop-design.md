@@ -83,4 +83,4 @@ Run Core and UI suites, warning-free Debug and Release builds, the pinned 0.159.
 
 ## Evidence
 
-- Codex App Server — “Manage a thread goal” (`<APP_SERVER_REFERENCE_URL>`; checked 2026-10-11): defines `thread/goal/set`, `thread/goal/get`, Goal update notifications, and that omitting the objective while changing status preserves usage history. This supports status-only pause and read/update synchronization; the explicit Stop ordering and UI behavior are this repository's approved design.
+- Codex App Server — “Manage a thread goal” (`<APP_SERVER_REFERENCE_URL>`; checked 2026-10-11; repository documents keep URLs as placeholders, and the public link is in the References section of the [Wiki plan](https://github.com/kkamegawa/vsextensionforcodex/wiki/goal-stop)): defines `thread/goal/set`, `thread/goal/get`, Goal update notifications, and that omitting the objective while changing status preserves usage history. This supports status-only pause and read/update synchronization; the explicit Stop ordering and UI behavior are this repository's approved design.

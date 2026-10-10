@@ -3776,6 +3776,50 @@ public sealed class CodexSessionServiceTests
         Assert.IsFalse(connection.Requests.Any(request => request.Method == "turn/interrupt"));
     }
 
+    [TestMethod]
+    public async Task GoalStopAfterTimedOutTurnStartReportsUnknownUntilTheTurnIsObserved()
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method switch
+            {
+                "thread/resume" => JsonSerializer.SerializeToElement(new { thread = new { id = "goal-thread", preview = "goal" } }),
+                "turn/start" => throw new TaskCanceledException("request timed out"),
+                "thread/goal/get" => GoalResponse("active"),
+                "thread/goal/set" => GoalResponse("paused"),
+                _ => JsonSerializer.SerializeToElement(new { }),
+            },
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+        await service.ResumeThreadAsync("goal-thread", CancellationToken.None);
+        await Assert.ThrowsExactlyAsync<TurnStartOutcomeUnknownException>(() => service.StartTurnAsync(
+            new StartTurnRequest { ThreadId = "goal-thread", Text = "hello" },
+            CancellationToken.None));
+
+        StopThreadGoalResult beforeStarted = await service.StopThreadGoalAsync(
+            new StopThreadGoalRequest { ThreadId = "goal-thread" },
+            CancellationToken.None);
+
+        Assert.AreEqual(GoalStopStepOutcome.OutcomeUnknown, beforeStarted.InterruptOutcome, "A timed-out start may have created a server turn.");
+        Assert.IsFalse(connection.Requests.Any(request => request.Method == "turn/interrupt"));
+
+        await connection.EmitNotificationAsync("turn/started", new { threadId = "goal-thread", turn = new { id = "late-turn" } });
+        StopThreadGoalResult afterStarted = await service.StopThreadGoalAsync(
+            new StopThreadGoalRequest { ThreadId = "goal-thread" },
+            CancellationToken.None);
+
+        Assert.AreEqual(GoalStopStepOutcome.Succeeded, afterStarted.InterruptOutcome);
+        Assert.AreEqual("late-turn", afterStarted.TurnId);
+
+        await connection.EmitNotificationAsync("turn/completed", new { threadId = "goal-thread", turn = new { id = "late-turn" } });
+        StopThreadGoalResult afterCompleted = await service.StopThreadGoalAsync(
+            new StopThreadGoalRequest { ThreadId = "goal-thread" },
+            CancellationToken.None);
+
+        Assert.AreEqual(GoalStopStepOutcome.NotRequired, afterCompleted.InterruptOutcome);
+    }
+
     private static async Task<(StopThreadGoalResult Result, RecordingConnection Connection)> RunGoalStopScenarioAsync(
         Func<string, JsonElement?> respond,
         bool startTurn = true)

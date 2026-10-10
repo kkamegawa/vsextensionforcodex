@@ -83,4 +83,4 @@ Core/UI テスト、警告ゼロの Debug/Release ビルド、固定 0.159.1 契
 
 ## 根拠
 
-- Codex App Server — “Manage a thread goal” (`<APP_SERVER_REFERENCE_URL>`、2026-10-11 確認): `thread/goal/set`、`thread/goal/get`、Goal 更新通知を定義している。status 更新時に objective を省略すると使用履歴を維持する。これは status のみの pause と状態同期の根拠であり、Stop 順序と UI 動作は本リポジトリで承認された設計である。
+- Codex App Server — “Manage a thread goal” (`<APP_SERVER_REFERENCE_URL>`、2026-10-11 確認。リポジトリ文書では URL をプレースホルダにしており、公開リンクは [Wiki の計画](https://github.com/kkamegawa/vsextensionforcodex/wiki/goal-stop_ja) の参考資料に記載): `thread/goal/set`、`thread/goal/get`、Goal 更新通知を定義している。status 更新時に objective を省略すると使用履歴を維持する。これは status のみの pause と状態同期の根拠であり、Stop 順序と UI 動作は本リポジトリで承認された設計である。

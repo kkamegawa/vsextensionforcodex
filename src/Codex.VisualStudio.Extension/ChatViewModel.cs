@@ -4959,20 +4959,23 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             return false;
         }
 
+        // Commands that await before their side effect recheck this fence immediately before
+        // dispatch, so a Stop that begins during the await still prevents the work.
+        long dispatchFence = expectedGoalStopFenceVersion ?? CaptureGoalStopFenceVersion();
         try
         {
             return invocation.Definition.Id switch
             {
-                SlashCommandId.Compact => await ExecuteCompactAsync(targetThreadId!).ConfigureAwait(false),
+                SlashCommandId.Compact => await ExecuteCompactAsync(targetThreadId!, dispatchFence).ConfigureAwait(false),
                 SlashCommandId.Feedback => await ExecuteFeedbackAsync(invocation.Arguments, targetThreadId).ConfigureAwait(false),
                 SlashCommandId.Fork => await ExecuteForkAsync(targetThreadId!).ConfigureAwait(false),
-                SlashCommandId.Goal => await ExecuteGoalAsync(targetThreadId!, invocation.Arguments).ConfigureAwait(false),
+                SlashCommandId.Goal => await ExecuteGoalCoreAsync(targetThreadId!, invocation.Arguments, dispatchFence).ConfigureAwait(false),
                 SlashCommandId.Mcp => await ExecuteMcpAsync(targetThreadId).ConfigureAwait(false),
-                SlashCommandId.Review => await ExecuteReviewAsync(targetThreadId!, invocation.Arguments).ConfigureAwait(false),
+                SlashCommandId.Review => await ExecuteReviewAsync(targetThreadId!, invocation.Arguments, dispatchFence).ConfigureAwait(false),
                 SlashCommandId.Fast => await ExecuteFastAsync(targetThreadId!).ConfigureAwait(false),
                 SlashCommandId.Model => await ExecuteModelAsync(invocation.Arguments).ConfigureAwait(false),
                 SlashCommandId.Personality => await ExecutePersonalityAsync(invocation.Arguments).ConfigureAwait(false),
-                SlashCommandId.Plan => await ExecutePlanAsync(targetThreadId!, invocation.Arguments).ConfigureAwait(false),
+                SlashCommandId.Plan => await ExecutePlanAsync(targetThreadId!, invocation.Arguments, dispatchFence).ConfigureAwait(false),
                 SlashCommandId.Reasoning => await ExecuteReasoningAsync(targetThreadId!, invocation.Arguments).ConfigureAwait(false),
                 SlashCommandId.IdeContext => await ExecuteIdeContextAsync().ConfigureAwait(false),
                 SlashCommandId.Init => await ExecuteInitAsync().ConfigureAwait(false),
@@ -4995,9 +4998,14 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         }
     }
 
-    private async Task<bool> ExecuteCompactAsync(string threadId)
+    private async Task<bool> ExecuteCompactAsync(string threadId, long goalStopFence)
     {
         OwnerSnapshot owner = CaptureOwnerSnapshot();
+        if (!await EnsureGoalStopFenceAsync(goalStopFence, threadId).ConfigureAwait(false))
+        {
+            return false;
+        }
+
         CompactThreadResult result = await bridge.CompactThreadAsync(
             StampOwner(new CompactThreadRequest { ThreadId = threadId }, owner),
             lifetime.Token).ConfigureAwait(false);
@@ -5108,12 +5116,6 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         return true;
     }
 
-    private async Task<bool> ExecuteGoalAsync(string threadId, string arguments)
-    {
-        long fenceVersion = CaptureGoalStopFenceVersion();
-        return await ExecuteGoalCoreAsync(threadId, arguments, fenceVersion).ConfigureAwait(false);
-    }
-
     private async Task<bool> ExecuteGoalCoreAsync(string threadId, string arguments, long fenceVersion)
     {
         OwnerSnapshot owner = CaptureOwnerSnapshot();
@@ -5222,13 +5224,18 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         return true;
     }
 
-    private async Task<bool> ExecuteReviewAsync(string threadId, string arguments)
+    private async Task<bool> ExecuteReviewAsync(string threadId, string arguments, long goalStopFence)
     {
         OwnerSnapshot owner = CaptureOwnerSnapshot();
         if (!SlashCommandArgumentParser.TryParseReview(arguments, out ReviewCommandArguments? reviewArguments, out string? error)
             || reviewArguments is null)
         {
             await ShowSlashFailureAsync(error ?? "The review target is invalid.").ConfigureAwait(false);
+            return false;
+        }
+
+        if (!await EnsureGoalStopFenceAsync(goalStopFence, threadId).ConfigureAwait(false))
+        {
             return false;
         }
 
@@ -5321,7 +5328,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         return true;
     }
 
-    private async Task<bool> ExecutePlanAsync(string threadId, string arguments)
+    private async Task<bool> ExecutePlanAsync(string threadId, string arguments, long goalStopFence)
     {
         OwnerSnapshot owner = CaptureOwnerSnapshot();
         string prompt = arguments.Trim();
@@ -5340,7 +5347,8 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             }
         }).ConfigureAwait(false);
         StartTurnRequest request = await CreateStartTurnRequestAsync(threadId, prompt, forcePlanMode: true).ConfigureAwait(false);
-        if (!IsCurrentOwner(owner))
+        if (!IsCurrentOwner(owner)
+            || !await EnsureGoalStopFenceAsync(goalStopFence, threadId).ConfigureAwait(false))
         {
             return false;
         }

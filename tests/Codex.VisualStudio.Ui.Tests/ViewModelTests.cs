@@ -5791,6 +5791,29 @@ public sealed class ViewModelTests
         Assert.AreEqual(0, bridge.StopThreadGoalRequests.Count);
         Assert.AreEqual(0, bridge.StartTurnCallCount);
         Assert.AreEqual("a draft typed while the goal runs", vm.ComposerText);
+
+        // Remote UI does not poll command state: each Goal-mode transition must raise the
+        // shortcut's CanExecute notification.
+        int notifications = 0;
+        vm.SendKeyCommand.PropertyChanged += (_, e) =>
+        {
+            if (e.PropertyName == nameof(AsyncCommand.CanExecute))
+            {
+                notifications++;
+            }
+        };
+        await bridge.PublishThreadGoalChangedAsync(new ThreadGoalEvent
+        {
+            ThreadId = thread.Id,
+            Goal = new ThreadGoalInfo { ThreadId = thread.Id, Objective = "finish the task", Status = ThreadGoalStatus.Paused },
+        });
+        Assert.IsTrue(vm.SendKeyCommand.CanExecute);
+        Assert.IsTrue(notifications > 0, "Leaving Goal mode must notify the shortcut's CanExecute.");
+
+        notifications = 0;
+        await bridge.PublishThreadGoalChangedAsync(new ThreadGoalEvent { ThreadId = thread.Id, Goal = ActiveGoal(thread.Id) });
+        Assert.IsFalse(vm.SendKeyCommand.CanExecute);
+        Assert.IsTrue(notifications > 0, "Entering Goal mode must notify the shortcut's CanExecute.");
     }
 
     [TestMethod]
@@ -6008,6 +6031,30 @@ public sealed class ViewModelTests
 
         Assert.AreEqual("Stop", vm.SendButtonText);
         Assert.IsFalse(vm.HasGoalStopStatus, "Resuming the goal clears the previous stop message.");
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_PlanRechecksTheGoalStopFenceImmediatelyBeforeStartingTheTurn()
+    {
+        const string threadId = "plan-fence";
+        var bridge = new FakeWorkerBridge();
+        using ChatViewModel vm = await CreateJoinedGoalViewModelAsync(bridge, threadId);
+        MethodInfo executePlan = typeof(ChatViewModel).GetMethod("ExecutePlanAsync", BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("Could not find ExecutePlanAsync.");
+        FieldInfo fence = typeof(ChatViewModel).GetField("goalStopFenceVersion", BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("Could not find goalStopFenceVersion.");
+        long captured = (long)fence.GetValue(vm)!;
+
+        // A Stop that starts while /plan awaits its request advances the fence.
+        fence.SetValue(vm, captured + 1);
+        bool staleStarted = await (Task<bool>)executePlan.Invoke(vm, [threadId, "plan the change", captured])!;
+
+        Assert.IsFalse(staleStarted);
+        Assert.AreEqual(0, bridge.StartTurnCallCount, "A dequeued /plan never starts a turn after a Stop began.");
+
+        bool currentStarted = await (Task<bool>)executePlan.Invoke(vm, [threadId, "plan the change", captured + 1])!;
+        Assert.IsTrue(currentStarted);
+        Assert.AreEqual(1, bridge.StartTurnCallCount);
     }
 
     private static async Task<ChatViewModel> CreateJoinedGoalViewModelAsync(FakeWorkerBridge bridge, string threadId, string? turnId = null)

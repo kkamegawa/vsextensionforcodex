@@ -143,15 +143,17 @@ public sealed partial class CodexSessionService
             bool sameThread = string.Equals(ActiveThreadId, request.ThreadId, StringComparison.Ordinal);
             turnId = sameThread ? ActiveTurnId : null;
             turnStarting = turnId is null
-                && string.Equals(pendingTurnThreadId, request.ThreadId, StringComparison.Ordinal);
+                && (string.Equals(pendingTurnThreadId, request.ThreadId, StringComparison.Ordinal)
+                    || string.Equals(unconfirmedTurnThreadId, request.ThreadId, StringComparison.Ordinal));
         }
 
         if (turnId is null)
         {
             if (turnStarting)
             {
-                // A turn/start is in flight without a server turn id yet. It cannot be targeted
-                // now; report the stage as unknown so the caller re-reads state before any retry.
+                // A turn/start is in flight, or timed out without a definitive start, and has no
+                // server turn id yet. It cannot be targeted now; report the stage as unknown so the
+                // caller re-reads state before any explicit retry.
                 result.InterruptOutcome = GoalStopStepOutcome.OutcomeUnknown;
                 result.Message = AppendGoalStopMessage(result.Message, "A turn was starting and could not be interrupted yet.");
                 return result;
