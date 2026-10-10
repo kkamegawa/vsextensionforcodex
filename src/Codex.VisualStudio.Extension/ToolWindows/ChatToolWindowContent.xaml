@@ -230,6 +230,64 @@
         </Setter>
       </Style>
 
+      <Style x:Key="RoundToggleButtonStyle" TargetType="ToggleButton">
+        <Setter Property="Background" Value="{DynamicResource {x:Static colors:EnvironmentColors.SystemButtonFaceBrushKey}}" />
+        <Setter Property="Foreground" Value="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowTextBrushKey}}" />
+        <Setter Property="BorderBrush" Value="{DynamicResource {x:Static colors:EnvironmentColors.SystemButtonFaceBrushKey}}" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="Padding" Value="14,6" />
+        <Setter Property="Cursor" Value="Hand" />
+        <Setter Property="Template">
+          <Setter.Value>
+            <ControlTemplate TargetType="ToggleButton">
+              <Border x:Name="Bd"
+                      Background="{TemplateBinding Background}"
+                      BorderBrush="{TemplateBinding BorderBrush}"
+                      BorderThickness="{TemplateBinding BorderThickness}"
+                      CornerRadius="14"
+                      Padding="{TemplateBinding Padding}"
+                      SnapsToDevicePixels="True">
+                <Grid>
+                  <ContentPresenter HorizontalAlignment="Center"
+                                    VerticalAlignment="Center"
+                                    TextElement.Foreground="{TemplateBinding Foreground}"
+                                    RecognizesAccessKey="True" />
+                  <Border x:Name="KeyboardFocusBorder"
+                          BorderBrush="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowTextBrushKey}}"
+                          BorderThickness="1"
+                          CornerRadius="13"
+                          IsHitTestVisible="False"
+                          Visibility="Collapsed" />
+                </Grid>
+              </Border>
+              <ControlTemplate.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                  <Setter TargetName="Bd" Property="Background"
+                          Value="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowButtonHoverActiveBrushKey}}" />
+                  <Setter Property="Foreground"
+                          Value="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowButtonHoverActiveGlyphBrushKey}}" />
+                </Trigger>
+                <Trigger Property="IsPressed" Value="True">
+                  <Setter TargetName="Bd" Property="Background"
+                          Value="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowButtonDownBrushKey}}" />
+                  <Setter Property="Foreground"
+                          Value="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowButtonDownActiveGlyphBrushKey}}" />
+                </Trigger>
+                <Trigger Property="IsChecked" Value="True">
+                  <Setter TargetName="Bd" Property="Background"
+                          Value="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowButtonDownBrushKey}}" />
+                  <Setter Property="Foreground"
+                          Value="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowButtonDownActiveGlyphBrushKey}}" />
+                </Trigger>
+                <Trigger Property="IsKeyboardFocused" Value="True">
+                  <Setter TargetName="KeyboardFocusBorder" Property="Visibility" Value="Visible" />
+                </Trigger>
+              </ControlTemplate.Triggers>
+            </ControlTemplate>
+          </Setter.Value>
+        </Setter>
+      </Style>
+
       <!-- ── Small secondary button (Load more) ── -->
       <Style x:Key="SmallRoundButtonStyle" TargetType="Button" BasedOn="{StaticResource RoundButtonStyle}">
         <Setter Property="Padding" Value="10,3" />
@@ -1700,9 +1758,11 @@
         <WrapPanel Margin="0,5,0,0">
           <Button Margin="0,0,6,0" Content="Check status" Command="{Binding ReadGatewayOAuthCommand}"
                   Style="{StaticResource RoundButtonStyle}" />
-          <Button Margin="0,0,6,0" Content="Hide status" Command="{Binding HideInteractionAuthStatusCommand}"
-                  Style="{StaticResource RoundButtonStyle}"
-                  Visibility="{Binding IsInteractionAuthStatusExpanded, Converter={StaticResource BoolToVis}}" />
+          <ToggleButton Margin="0,0,6,0" Content="Authentication details"
+                        Command="{Binding ToggleInteractionAuthStatusCommand}"
+                        IsChecked="{Binding IsInteractionAuthStatusExpanded, Mode=OneWay}"
+                        Style="{StaticResource RoundToggleButtonStyle}"
+                        AutomationProperties.Name="Show or hide authentication details" />
           <Button Margin="0,0,6,0" Content="Sign in to Gateway" Command="{Binding LoginGatewayOAuthCommand}"
                   Style="{StaticResource RoundButtonStyle}"
                   Visibility="{Binding ShowGatewayOAuthLogin, Converter={StaticResource BoolToVis}}" />

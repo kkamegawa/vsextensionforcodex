@@ -233,6 +233,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         CheckProfileHealthCommand = new AsyncCommand(CheckProfileHealthAsync, CanCheckProfileHealth);
         ReadGatewayOAuthCommand = new AsyncCommand(ReadGatewayOAuthAsync, CanReadGatewayOAuth);
         HideInteractionAuthStatusCommand = new AsyncCommand(HideInteractionAuthStatusAsync, () => IsInteractionAuthStatusExpanded);
+        ToggleInteractionAuthStatusCommand = new AsyncCommand(ToggleInteractionAuthStatusAsync);
         LoginGatewayOAuthCommand = new AsyncCommand(LoginGatewayOAuthAsync, CanLoginGatewayOAuth);
         CancelGatewayOAuthCommand = new AsyncCommand(CancelGatewayOAuthAsync, CanCancelGatewayOAuth);
         OpenGatewayAuthorizationCommand = new AsyncCommand(OpenGatewayAuthorizationAsync, CanOpenGatewayAuthorization);
@@ -425,6 +426,9 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
 
     [DataMember]
     public AsyncCommand HideInteractionAuthStatusCommand { get; private set; } = null!;
+
+    [DataMember]
+    public AsyncCommand ToggleInteractionAuthStatusCommand { get; private set; } = null!;
 
     [DataMember]
     public AsyncCommand LoginGatewayOAuthCommand { get; private set; } = null!;
@@ -6672,6 +6676,9 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
 
     private Task HideInteractionAuthStatusAsync()
         => OnUiAsync(() => IsInteractionAuthStatusExpanded = false);
+
+    private Task ToggleInteractionAuthStatusAsync()
+        => OnUiAsync(() => IsInteractionAuthStatusExpanded = !IsInteractionAuthStatusExpanded);
 
     private Task LoginGatewayOAuthAsync()
         => UpdateGatewayOAuthAsync(owner => bridge.LoginGatewayOAuthAsync(

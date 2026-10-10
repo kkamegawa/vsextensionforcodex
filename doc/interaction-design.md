@@ -41,7 +41,7 @@ For remote WebSocket profiles, expose status and sign-in guidance only. Do not a
 
 ## Authentication status presentation
 
-The Authentication area starts compact, showing the Gateway summary and existing recovery actions. Check status explicitly expands the MCP server details and refreshes authentication status. While expanded, a Hide status button beside Check status collapses the MCP details back to the initial compact layout; Check status remains available to reopen them.
+The Authentication area starts compact, showing the Gateway summary and existing recovery actions. Check status explicitly expands the MCP server details and refreshes authentication status. A persistent MCP details toggle beside Check status controls whether those details are expanded. The toggle remains visible in both states, and its checked state reflects the expansion state so collapsing details never removes keyboard focus from the control; Check status remains available to refresh and expand the details.
 
 Expansion is serialized presentation state, independent of the retained Gateway/MCP authentication data. Hiding changes only this state; it does not sign out, cancel or dismiss authentication operations, or discard pending action identities. Notifications and responses from reads already in flight update the retained status without reopening hidden details. Owner retirement restores the compact state, and existing owner/generation guards reject stale results. Gateway recovery guidance and actions remain visible in the compact area.
 
