@@ -14,7 +14,7 @@ public sealed class DailyUseContractTests
         var options = new WorkerOptions();
         using JsonDocument payload = JsonDocument.Parse(JsonSerializer.Serialize(options));
 
-        Assert.AreEqual(21, payload.RootElement.GetProperty(nameof(WorkerOptions.ContractVersion)).GetInt32());
+        Assert.AreEqual(ContractVersions.Current, payload.RootElement.GetProperty(nameof(WorkerOptions.ContractVersion)).GetInt32());
     }
 
     [TestMethod]

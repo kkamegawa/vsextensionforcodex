@@ -227,7 +227,7 @@ public sealed class SlashCommandPresentationTests
         AssertKeyBinding(bindings, "Return", null, "{Binding SlashCommands.AcceptSuggestionKeyCommand}");
         AssertKeyBinding(bindings, "Tab", null, "{Binding SlashCommands.AcceptSuggestionKeyCommand}");
         AssertKeyBinding(bindings, "Escape", null, "{Binding SlashCommands.DismissSuggestionsKeyCommand}");
-        AssertKeyBinding(bindings, "Return", "Control", "{Binding SendCommand}");
+        AssertKeyBinding(bindings, "Return", "Control", "{Binding SendKeyCommand}");
         Assert.AreEqual("True", composer.Attribute("AcceptsReturn")?.Value);
     }
 

@@ -1,7 +1,9 @@
 ﻿using System.Diagnostics;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Codex.AppServer.Protocol;
 using Codex.VisualStudio.Contracts;
+using Codex.VisualStudio.Worker;
 
 namespace Codex.VisualStudio.Core.Tests;
 
@@ -12,6 +14,78 @@ public sealed class FakeAppServerIntegrationTests
     {
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
     };
+
+    [TestMethod]
+    [DataRow("Issue174GoalStop", true)]
+    [DataRow("Issue174GoalGap", false)]
+    public async Task GoalStopPausesBeforeInterruptingAnAutonomousTurnAndPreventsContinuation(string scenario, bool expectTurn)
+    {
+        await using FakeAppServerProcess server = await FakeAppServerProcess.StartAsync(scenario);
+        await using JsonLineRpcConnection connection = await server.ConnectAsync();
+        await using var service = new CodexSessionService(new ApprovalPolicyEngine(new PathAccessPolicy()), new SecretRedactor());
+        var started = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var completed = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+        service.ConversationEventReceived += (value, _) =>
+        {
+            if (value.Kind == ConversationEventKind.TurnStarted && value.TurnId is { } startedTurnId)
+            {
+                started.TrySetResult(startedTurnId);
+            }
+            if (value.Kind == ConversationEventKind.TurnCompleted && value.TurnId is { } completedTurnId)
+            {
+                completed.TrySetResult(completedTurnId);
+            }
+            return Task.CompletedTask;
+        };
+        await service.InitializeAsync(connection, new WorkerOptions
+        {
+            WorkingDirectory = Environment.CurrentDirectory,
+            ExtensionVersion = "goal-stop-integration-test",
+        }, CancellationToken.None);
+        ThreadSummary thread = await service.StartThreadAsync(CancellationToken.None);
+        ThreadGoalResult goal = await service.SetThreadGoalAsync(new SetThreadGoalRequest
+        {
+            ThreadId = thread.Id,
+            Objective = "Keep working until explicitly stopped.",
+            TokenBudget = 30_000,
+            Status = ThreadGoalStatus.Active,
+        }, CancellationToken.None);
+        string? autonomousTurnId = expectTurn
+            ? await started.Task.WaitAsync(TimeSpan.FromSeconds(10))
+            : null;
+
+        StopThreadGoalResult stopped = await service.StopThreadGoalAsync(new StopThreadGoalRequest { ThreadId = thread.Id }, CancellationToken.None);
+
+        Assert.AreEqual(GoalStopStepOutcome.Succeeded, stopped.PauseOutcome);
+        Assert.AreEqual(expectTurn ? GoalStopStepOutcome.Succeeded : GoalStopStepOutcome.NotRequired, stopped.InterruptOutcome);
+        Assert.AreEqual(autonomousTurnId, stopped.TurnId);
+        Assert.AreEqual(ThreadGoalStatus.Paused, stopped.Goal?.Status);
+        Assert.AreEqual(goal.Goal?.Objective, stopped.Goal?.Objective);
+        Assert.AreEqual(goal.Goal?.TokenBudget, stopped.Goal?.TokenBudget);
+        Assert.AreEqual(goal.Goal?.TokensUsed, stopped.Goal?.TokensUsed);
+        Assert.AreEqual(goal.Goal?.TimeUsedSeconds, stopped.Goal?.TimeUsedSeconds);
+        if (expectTurn)
+        {
+            Assert.AreEqual(autonomousTurnId, await completed.Task.WaitAsync(TimeSpan.FromSeconds(10)));
+        }
+
+        JsonElement state = await connection.SendRequestAsync("fake/goal/state", new { }, TimeSpan.FromSeconds(10), CancellationToken.None);
+        JsonElement[] mutations = state.GetProperty("requests").EnumerateArray().ToArray();
+        Assert.AreEqual(expectTurn ? 3 : 2, mutations.Length);
+        Assert.AreEqual("thread/goal/set", mutations[1].GetProperty("method").GetString());
+        JsonElement pause = mutations[1].GetProperty("parameters");
+        CollectionAssert.AreEquivalent(new[] { "threadId", "status" }, pause.EnumerateObject().Select(property => property.Name).ToArray());
+        Assert.AreEqual("paused", pause.GetProperty("status").GetString());
+        if (expectTurn)
+        {
+            Assert.AreEqual("turn/interrupt", mutations[2].GetProperty("method").GetString());
+            Assert.AreEqual(autonomousTurnId, mutations[2].GetProperty("parameters").GetProperty("turnId").GetString());
+        }
+        Assert.AreEqual(0, state.GetProperty("activeTurns").GetInt32());
+        JsonElement continuation = await connection.SendRequestAsync("fake/goal/continue", new { threadId = thread.Id }, TimeSpan.FromSeconds(10), CancellationToken.None);
+        Assert.IsFalse(continuation.GetProperty("started").GetBoolean());
+        Assert.IsFalse(state.GetProperty("methods").EnumerateArray().Any(method => method.GetString() == "turn/start"));
+    }
 
     [TestMethod]
     public async Task FakeEmitsAuthoritativePlanAfterDeltasAndCanCompleteWithoutDeltas()
@@ -367,6 +441,13 @@ public sealed class FakeAppServerIntegrationTests
 
         public Task SendAsync<T>(T request)
             => process.StandardInput.WriteLineAsync(JsonSerializer.Serialize(request, WireJsonOptions));
+
+        public async Task<JsonLineRpcConnection> ConnectAsync()
+        {
+            var connection = new JsonLineRpcConnection(process.StandardOutput.BaseStream, process.StandardInput.BaseStream);
+            await connection.StartAsync(CancellationToken.None);
+            return connection;
+        }
 
         public async Task<JsonDocument> ReadAsync(CancellationToken cancellationToken = default)
         {

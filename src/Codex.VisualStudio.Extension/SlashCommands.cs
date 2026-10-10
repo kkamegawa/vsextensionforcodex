@@ -570,6 +570,30 @@ internal sealed class SlashCommandCoordinator
         }
     }
 
+    // Goal commands are thread-scoped, but a session-queued one would run against the selected
+    // thread at drain time. Any goal mutation queued before a Stop must not restart the goal.
+    public IReadOnlyList<SlashCommandInvocation> CancelSessionGoalCommands()
+    {
+        lock (gate)
+        {
+            if (!queues.TryGetValue(SessionQueueKey, out List<SlashCommandInvocation>? queue))
+            {
+                return [];
+            }
+
+            SlashCommandInvocation[] canceled = queue
+                .Where(static invocation => invocation.Definition.Id == SlashCommandId.Goal)
+                .ToArray();
+            queue.RemoveAll(static invocation => invocation.Definition.Id == SlashCommandId.Goal);
+            if (queue.Count == 0)
+            {
+                queues.Remove(SessionQueueKey);
+            }
+
+            return new ReadOnlyCollection<SlashCommandInvocation>(canceled);
+        }
+    }
+
     public IReadOnlyList<SlashCommandInvocation> CancelAll()
     {
         lock (gate)

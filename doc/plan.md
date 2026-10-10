@@ -291,3 +291,11 @@ The approved follow-up plan is maintained in [app-server-update-plan.md](app-ser
 - 基準は CLI 0.159.1、回帰比較は 0.155.1。CLI、SDK、runtime、package は更新せず、Worker contract は統合時の次の利用可能版を使う。
 - P0 で contract/schema/DTO/payload registry を整備し、P1 で plan/status/catalog admission、P2 で typed results と mapped actions、P3 で保存済み添付操作、P4 で明示 shell、P5 でローカル Windows sandbox 状態を実装する。P6 で統合 review、全検証、画面証跡を完成させる。
 - 完了条件は詳細設計に定める protocol/owner/path/policy 上限、テスト、warning-free Debug/Release、VSIX integrity、Experimental Instance のテーマ・狭幅・keyboard・accessibility 証跡を含む。証跡が未記録の項目は完了としない。Issue #156 の release gate を維持する。
+
+### Issue #174 — Goal Stop
+
+The detailed design is in [English](goal-stop-design.md) and [Japanese](goal-stop-design_ja.md); the implementation plan is in [English](goal-stop-plan.md) and [Japanese](goal-stop-plan_ja.md).
+
+- An Active Goal keeps the composer primary action at Stop between turns and during automatic continuation. Stop attempts a status-only pause, then interrupts the latest running turn for the same thread even if pausing failed or is uncertain; the explicit Stop requires no second confirmation. If no turn runs, return the pause outcome without interrupting. Preserve objective, budget, and usage.
+- Scope Goal state and the stop operation to owner, connection generation, and selected thread. Cancel undispatched work for that thread, block queued commands before send, keep unsent composer input, and never replay a mutation after reconnect. Report pause and interrupt outcomes separately.
+- Advance the Worker contract from v21 to the next unused version. Validate Goal state synchronization, partial/unknown outcomes, queue races, ordinary Send/Steer/interrupt regressions, pinned 0.159.1 and 0.155.1 contract checks, warning-free Debug/Release builds, VSIX integrity, and Experimental Instance visual/accessibility evidence.

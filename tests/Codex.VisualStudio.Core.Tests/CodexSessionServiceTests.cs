@@ -3534,6 +3534,328 @@ public sealed class CodexSessionServiceTests
         }
     }
 
+    [TestMethod]
+    public async Task GoalStopUsesCapturedConnectionAndDoesNotInterruptReplacementOwner()
+    {
+        var oldConnection = new RecordingConnection();
+        var replacementConnection = new RecordingConnection();
+        var pauseEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releasePause = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        oldConnection.AsyncHandler = async (method, _, _) =>
+        {
+            if (method == "thread/resume")
+            {
+                return JsonSerializer.SerializeToElement(new { thread = new { id = "goal-thread", preview = "goal" } });
+            }
+ 
+            if (method == "thread/goal/get")
+            {
+                return JsonSerializer.SerializeToElement(new
+                {
+                    goal = new { threadId = "goal-thread", objective = "Keep working", status = "active", tokenBudget = 500L, tokensUsed = 12L },
+                });
+            }
+
+            if (method == "thread/goal/set")
+            {
+                pauseEntered.TrySetResult();
+                await releasePause.Task;
+                return JsonSerializer.SerializeToElement(new
+                {
+                    goal = new { threadId = "goal-thread", objective = "Keep working", status = "paused", tokenBudget = 500L, tokensUsed = 12L },
+                });
+            }
+
+            return JsonSerializer.SerializeToElement(new { });
+        };
+
+        await using var service = CreateService();
+        await service.InitializeAsync(oldConnection, Options(), CancellationToken.None);
+        await service.ResumeThreadAsync("goal-thread", CancellationToken.None);
+        await oldConnection.EmitNotificationAsync("turn/started", new { threadId = "goal-thread", turn = new { id = "autonomous-turn" } });
+
+        Task<StopThreadGoalResult> stop = service.StopThreadGoalAsync(
+            new StopThreadGoalRequest { ThreadId = "goal-thread" },
+            CancellationToken.None);
+        Task<StopThreadGoalResult>? duplicate = null;
+        try
+        {
+            await pauseEntered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            duplicate = service.StopThreadGoalAsync(
+                new StopThreadGoalRequest { ThreadId = "goal-thread" },
+                CancellationToken.None);
+            Assert.IsFalse(duplicate.IsCompleted, "An overlapping stop waits instead of reporting a failure it never had.");
+            Assert.AreEqual(1, oldConnection.Requests.Count(request => request.Method == "thread/goal/get"));
+            Assert.AreEqual(1, oldConnection.Requests.Count(request => request.Method == "thread/goal/set"));
+            await service.InitializeAsync(replacementConnection, Options(), CancellationToken.None);
+        }
+        finally
+        {
+            releasePause.TrySetResult();
+        }
+
+        await Assert.ThrowsExactlyAsync<JsonRpcConnectionClosedException>(() => stop);
+
+        // The queued duplicate is stale once the owner is replaced; it never reaches the new connection.
+        await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => duplicate!);
+        Assert.IsFalse(oldConnection.Requests.Any(request => request.Method == "turn/interrupt"));
+        Assert.IsFalse(replacementConnection.Requests.Any(request =>
+            request.Method is "thread/goal/get" or "thread/goal/set" or "turn/interrupt"));
+    }
+
+    [TestMethod]
+    public async Task GoalStopCanReadPausedGoalWhenGatewayCredentialIsRequired()
+    {
+        var connection = new RecordingConnection
+        {
+            GatewayOAuthReadResponse = JsonSerializer.SerializeToElement(new
+            {
+                providerId = "test-provider",
+                providerName = "Test provider",
+                required = false,
+                status = (string?)null,
+            }),
+            Handler = (method, _) => method switch
+            {
+                "thread/resume" => JsonSerializer.SerializeToElement(new { thread = new { id = "goal-thread", preview = "goal" } }),
+                "thread/goal/get" => JsonSerializer.SerializeToElement(new
+                {
+                    goal = new { threadId = "goal-thread", objective = "Keep working", status = "paused", tokenBudget = 500L, tokensUsed = 12L },
+                }),
+                _ => JsonSerializer.SerializeToElement(new { }),
+            },
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+        await service.ResumeThreadAsync("goal-thread", CancellationToken.None);
+        connection.GatewayOAuthReadResponse = JsonSerializer.SerializeToElement(new
+        {
+            providerId = "test-provider",
+            providerName = "Test provider",
+            required = true,
+            status = "notReady",
+        });
+        await service.ReadGatewayOAuthAsync(CancellationToken.None);
+        await connection.EmitNotificationAsync("turn/started", new { threadId = "goal-thread", turn = new { id = "paused-goal-turn" } });
+
+        StopThreadGoalResult result = await service.StopThreadGoalAsync(
+            new StopThreadGoalRequest { ThreadId = "goal-thread" },
+            CancellationToken.None);
+
+        Assert.IsTrue(service.GatewayOAuthRequired);
+        Assert.IsTrue(result.IsSupported);
+        Assert.AreEqual(ThreadGoalStatus.Paused, result.Goal?.Status);
+        Assert.AreEqual(1, connection.Requests.Count(request => request.Method == "thread/goal/get"));
+        Assert.AreEqual(GoalStopStepOutcome.NotRequired, result.PauseOutcome);
+        Assert.IsFalse(connection.Requests.Any(request => request.Method == "thread/goal/set"));
+
+        // A retry after a successful pause still interrupts the same-thread turn.
+        Assert.AreEqual(GoalStopStepOutcome.Succeeded, result.InterruptOutcome);
+        Assert.AreEqual("paused-goal-turn", result.TurnId);
+    }
+
+    [TestMethod]
+    public async Task GoalStopSendsStatusOnlyPauseBeforeInterruptingTheLatestTurn()
+    {
+        (StopThreadGoalResult result, RecordingConnection connection) = await RunGoalStopScenarioAsync(
+            method => method == "thread/goal/set" ? GoalResponse("paused") : null);
+
+        Assert.AreEqual(GoalStopStepOutcome.Succeeded, result.PauseOutcome);
+        Assert.AreEqual(GoalStopStepOutcome.Succeeded, result.InterruptOutcome);
+        Assert.AreEqual("goal-turn", result.TurnId);
+        CollectionAssert.AreEqual(
+            new[] { "thread/goal/get", "thread/goal/set", "turn/interrupt" },
+            GoalStopMethods(connection));
+        JsonElement pause = ParametersFor(connection, "thread/goal/set");
+        Assert.AreEqual("paused", pause.GetProperty("status").GetString());
+        Assert.IsFalse(pause.TryGetProperty("objective", out _), "A status-only pause preserves the objective.");
+        Assert.IsFalse(pause.TryGetProperty("tokenBudget", out _), "A status-only pause preserves the budget.");
+    }
+
+    [TestMethod]
+    public async Task GoalStopStillInterruptsWhenPauseTimesOut()
+    {
+        (StopThreadGoalResult result, RecordingConnection connection) = await RunGoalStopScenarioAsync(
+            method => method == "thread/goal/set" ? throw new TaskCanceledException("request timed out") : null);
+
+        Assert.AreEqual(GoalStopStepOutcome.OutcomeUnknown, result.PauseOutcome);
+        Assert.AreEqual(GoalStopStepOutcome.Succeeded, result.InterruptOutcome);
+        Assert.AreEqual(1, connection.Requests.Count(request => request.Method == "thread/goal/set"), "A timed-out pause is never retried automatically.");
+    }
+
+    [TestMethod]
+    public async Task GoalStopStillInterruptsWhenPauseIsRejected()
+    {
+        (StopThreadGoalResult result, _) = await RunGoalStopScenarioAsync(
+            method => method == "thread/goal/set" ? throw new JsonRpcRemoteException(-32000, "rejected") : null);
+
+        Assert.AreEqual(GoalStopStepOutcome.Failed, result.PauseOutcome);
+        Assert.AreEqual(GoalStopStepOutcome.Succeeded, result.InterruptOutcome);
+        Assert.AreEqual(ThreadGoalStatus.Active, result.Goal?.Status, "A failed pause is never reported as Paused.");
+    }
+
+    [TestMethod]
+    public async Task GoalStopWithUnsupportedPauseStillInterruptsAndStaysSupported()
+    {
+        (StopThreadGoalResult result, _) = await RunGoalStopScenarioAsync(
+            method => method == "thread/goal/set" ? throw new JsonRpcRemoteException(-32601, "Method not found") : null);
+
+        Assert.IsTrue(result.IsSupported, "Unsupported means nothing was attempted; the interrupt was.");
+        Assert.AreEqual(GoalStopStepOutcome.Failed, result.PauseOutcome);
+        Assert.AreEqual(GoalStopStepOutcome.Succeeded, result.InterruptOutcome);
+    }
+
+    [TestMethod]
+    public async Task GoalStopKeepsPauseWhenInterruptIsRejected()
+    {
+        (StopThreadGoalResult result, _) = await RunGoalStopScenarioAsync(method => method switch
+        {
+            "thread/goal/set" => GoalResponse("paused"),
+            "turn/interrupt" => throw new JsonRpcRemoteException(-32000, "rejected"),
+            _ => null,
+        });
+
+        Assert.AreEqual(GoalStopStepOutcome.Succeeded, result.PauseOutcome);
+        Assert.AreEqual(GoalStopStepOutcome.Failed, result.InterruptOutcome);
+        Assert.AreEqual(ThreadGoalStatus.Paused, result.Goal?.Status);
+    }
+
+    [TestMethod]
+    public async Task GoalStopReportsInterruptTimeoutAsUnknown()
+    {
+        (StopThreadGoalResult result, RecordingConnection connection) = await RunGoalStopScenarioAsync(method => method switch
+        {
+            "thread/goal/set" => GoalResponse("paused"),
+            "turn/interrupt" => throw new TaskCanceledException("request timed out"),
+            _ => null,
+        });
+
+        Assert.AreEqual(GoalStopStepOutcome.Succeeded, result.PauseOutcome);
+        Assert.AreEqual(GoalStopStepOutcome.OutcomeUnknown, result.InterruptOutcome);
+        Assert.AreEqual(1, connection.Requests.Count(request => request.Method == "turn/interrupt"));
+    }
+
+    [TestMethod]
+    public async Task GoalStopAttemptsPauseAndInterruptWhenGoalReadFails()
+    {
+        (StopThreadGoalResult result, RecordingConnection connection) = await RunGoalStopScenarioAsync(method => method switch
+        {
+            "thread/goal/get" => throw new JsonRpcRemoteException(-32000, "read failed"),
+            "thread/goal/set" => GoalResponse("paused"),
+            _ => null,
+        });
+
+        Assert.AreEqual(GoalStopStepOutcome.Succeeded, result.PauseOutcome);
+        Assert.AreEqual(GoalStopStepOutcome.Succeeded, result.InterruptOutcome);
+        CollectionAssert.AreEqual(
+            new[] { "thread/goal/get", "thread/goal/set", "turn/interrupt" },
+            GoalStopMethods(connection));
+    }
+
+    [TestMethod]
+    public async Task GoalStopInterruptsTheTurnWhenTheGoalAlreadyCompleted()
+    {
+        (StopThreadGoalResult result, RecordingConnection connection) = await RunGoalStopScenarioAsync(
+            method => method == "thread/goal/get" ? GoalResponse("complete") : null);
+
+        Assert.AreEqual(GoalStopStepOutcome.NotRequired, result.PauseOutcome);
+        Assert.AreEqual(GoalStopStepOutcome.Succeeded, result.InterruptOutcome);
+        Assert.IsFalse(connection.Requests.Any(request => request.Method == "thread/goal/set"));
+    }
+
+    [TestMethod]
+    public async Task GoalStopBetweenTurnsPausesWithoutInterrupting()
+    {
+        (StopThreadGoalResult result, RecordingConnection connection) = await RunGoalStopScenarioAsync(
+            method => method == "thread/goal/set" ? GoalResponse("paused") : null,
+            startTurn: false);
+
+        Assert.AreEqual(GoalStopStepOutcome.Succeeded, result.PauseOutcome);
+        Assert.AreEqual(GoalStopStepOutcome.NotRequired, result.InterruptOutcome);
+        Assert.IsNull(result.TurnId);
+        Assert.IsFalse(connection.Requests.Any(request => request.Method == "turn/interrupt"));
+    }
+
+    [TestMethod]
+    public async Task GoalStopAfterTimedOutTurnStartReportsUnknownUntilTheTurnIsObserved()
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method switch
+            {
+                "thread/resume" => JsonSerializer.SerializeToElement(new { thread = new { id = "goal-thread", preview = "goal" } }),
+                "turn/start" => throw new TaskCanceledException("request timed out"),
+                "thread/goal/get" => GoalResponse("active"),
+                "thread/goal/set" => GoalResponse("paused"),
+                _ => JsonSerializer.SerializeToElement(new { }),
+            },
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+        await service.ResumeThreadAsync("goal-thread", CancellationToken.None);
+        await Assert.ThrowsExactlyAsync<TurnStartOutcomeUnknownException>(() => service.StartTurnAsync(
+            new StartTurnRequest { ThreadId = "goal-thread", Text = "hello" },
+            CancellationToken.None));
+
+        StopThreadGoalResult beforeStarted = await service.StopThreadGoalAsync(
+            new StopThreadGoalRequest { ThreadId = "goal-thread" },
+            CancellationToken.None);
+
+        Assert.AreEqual(GoalStopStepOutcome.OutcomeUnknown, beforeStarted.InterruptOutcome, "A timed-out start may have created a server turn.");
+        Assert.IsFalse(connection.Requests.Any(request => request.Method == "turn/interrupt"));
+
+        await connection.EmitNotificationAsync("turn/started", new { threadId = "goal-thread", turn = new { id = "late-turn" } });
+        StopThreadGoalResult afterStarted = await service.StopThreadGoalAsync(
+            new StopThreadGoalRequest { ThreadId = "goal-thread" },
+            CancellationToken.None);
+
+        Assert.AreEqual(GoalStopStepOutcome.Succeeded, afterStarted.InterruptOutcome);
+        Assert.AreEqual("late-turn", afterStarted.TurnId);
+
+        await connection.EmitNotificationAsync("turn/completed", new { threadId = "goal-thread", turn = new { id = "late-turn" } });
+        StopThreadGoalResult afterCompleted = await service.StopThreadGoalAsync(
+            new StopThreadGoalRequest { ThreadId = "goal-thread" },
+            CancellationToken.None);
+
+        Assert.AreEqual(GoalStopStepOutcome.NotRequired, afterCompleted.InterruptOutcome);
+    }
+
+    private static async Task<(StopThreadGoalResult Result, RecordingConnection Connection)> RunGoalStopScenarioAsync(
+        Func<string, JsonElement?> respond,
+        bool startTurn = true)
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "thread/resume"
+                ? JsonSerializer.SerializeToElement(new { thread = new { id = "goal-thread", preview = "goal" } })
+                : respond(method) ?? (method == "thread/goal/get" ? GoalResponse("active") : JsonSerializer.SerializeToElement(new { })),
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+        await service.ResumeThreadAsync("goal-thread", CancellationToken.None);
+        if (startTurn)
+        {
+            await connection.EmitNotificationAsync("turn/started", new { threadId = "goal-thread", turn = new { id = "goal-turn" } });
+        }
+
+        StopThreadGoalResult result = await service.StopThreadGoalAsync(
+            new StopThreadGoalRequest { ThreadId = "goal-thread" },
+            CancellationToken.None);
+        return (result, connection);
+    }
+
+    private static JsonElement GoalResponse(string status)
+        => JsonSerializer.SerializeToElement(new
+        {
+            goal = new { threadId = "goal-thread", objective = "Keep working", status, tokenBudget = 500L, tokensUsed = 12L },
+        });
+
+    private static string[] GoalStopMethods(RecordingConnection connection)
+        => connection.Requests
+            .Select(request => request.Method)
+            .Where(method => method is "thread/goal/get" or "thread/goal/set" or "turn/interrupt")
+            .ToArray();
+
     private sealed class RecordingConnection : IJsonRpcConnection
     {
         public event Func<JsonRpcMessage, CancellationToken, Task>? NotificationReceived;

@@ -565,3 +565,13 @@ dotnet test tests/Codex.VisualStudio.Ui.Tests/Codex.VisualStudio.Ui.Tests.csproj
 ~~~
 
 Visual Studio 2026 Enterprise 18.10.3 is installed. Native CUA APIs are disabled, so Experimental Instance Light/Dark/High Contrast, narrow width, keyboard/focus, and accessibility states could not be inspected. The off-screen image is separate evidence and does not satisfy those criteria. Issue #155 remains open; Issue #156 remains the release gate.
+
+## Issue #174: Goal Stop
+
+Design: [goal-stop-design.md](goal-stop-design.md). Contract v22 adds `worker/thread/goal/stop`.
+
+- Worker (`CodexSessionService.GoalStop.cs`): `thread/goal/get` → status-only `thread/goal/set` (`status: "paused"`; objective and budget omitted) → `turn/interrupt` for the latest same-thread turn snapshotted after the pause attempt. The pause is attempted when the goal is Active or the read failed; the interrupt is attempted in every case where a turn runs. Timeouts are `OutcomeUnknown`, error responses are `Failed`, and closed connections or scope changes propagate as stale. `IsSupported = false` only when nothing was attempted. A session gate serializes overlapping stops.
+- Extension (`ChatViewModelGoal.cs`): a lock-guarded phase machine (None / Stopping / AwaitingTurn / Unknown / Retry) with an operation identity that invalidates earlier results; Goal snapshots from command results, notifications, and reads with projection revisions; a primary action whose text, glyph, help text, and enabled state derive from the phase; and a send-only `SendKeyCommand` for Ctrl+Enter.
+- Queue barrier: Stop cancels the thread queue and session-queued `/goal` commands, and advances a fence checked before each dequeued command and goal mutation.
+
+Validation (2026-10-11): Debug and Release builds 0 warnings; Core 415 passed / 5 skipped; UI 399 passed / 1 skipped; schema comparison and contract-surface checks passed; VSIX DLLs and embedded XAML match the build output and source. Release VSIX SHA-256: `8F2FB7C6013815448D8C327D8F8EC508DF3DB097EA0A1DB5A18EA3BFDEB617C8`. Experimental Instance visual and accessibility acceptance is pending: desktop automation was unavailable, and no screenshot is claimed.

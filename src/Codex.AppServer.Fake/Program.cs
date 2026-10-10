@@ -11,6 +11,9 @@ var savedAttachments = new List<Dictionary<string, object?>>();
 var interactionResponses = new ConcurrentQueue<object>();
 var interactionMethods = new ConcurrentDictionary<string, string>(StringComparer.Ordinal);
 var clientMethods = new ConcurrentQueue<string>();
+var goals = new Dictionary<string, Dictionary<string, object?>>(StringComparer.Ordinal);
+var goalTurns = new Dictionary<string, string>(StringComparer.Ordinal);
+var goalRequests = new List<object>();
 var outputGate = new SemaphoreSlim(1, 1);
 JsonElement? initializeParams = null;
 bool signedIn = false;
@@ -193,6 +196,11 @@ while (await Console.In.ReadLineAsync().ConfigureAwait(false) is { } line)
         "turn/start" => StartTurn(root),
         "turn/steer" => new { turnId = root.GetProperty("params").GetProperty("expectedTurnId").GetString() },
         "turn/interrupt" => new { },
+        "thread/goal/get" => GetGoal(root.GetProperty("params")),
+        "thread/goal/set" => SetGoal(root.GetProperty("params")),
+        "thread/goal/clear" => ClearGoal(root.GetProperty("params")),
+        "fake/goal/state" => new { methods = clientMethods.ToArray(), requests = goalRequests.ToArray(), activeTurns = goalTurns.Count },
+        "fake/goal/continue" => new { started = IsGoalActive(root.GetProperty("params").GetProperty("threadId").GetString() ?? string.Empty) },
         "account/read" => new
         {
             account = signedIn ? new { type = "chatgpt", planType = "plus" } : null,
@@ -233,6 +241,36 @@ while (await Console.In.ReadLineAsync().ConfigureAwait(false) is { } line)
     }
 
     await WriteAsync(new { id = JsonSerializer.Deserialize<object>(id.GetRawText()), result }).ConfigureAwait(false);
+    if (method is "thread/goal/set" or "thread/goal/clear")
+    {
+        string goalThreadId = root.GetProperty("params").GetProperty("threadId").GetString() ?? string.Empty;
+        await WriteAsync(method == "thread/goal/clear"
+            ? new { method = "thread/goal/cleared", @params = (object)new { threadId = goalThreadId } }
+            : new { method = "thread/goal/updated", @params = (object)new { threadId = goalThreadId, goal = goals[goalThreadId] } }).ConfigureAwait(false);
+        if (IsGoalActive(goalThreadId) && IsScenario("Issue174GoalStop"))
+        {
+            await StartGoalTurnAsync(goalThreadId).ConfigureAwait(false);
+        }
+    }
+    if (method == "fake/goal/continue"
+        && JsonSerializer.SerializeToElement(result).GetProperty("started").GetBoolean())
+    {
+        await StartGoalTurnAsync(root.GetProperty("params").GetProperty("threadId").GetString() ?? string.Empty).ConfigureAwait(false);
+    }
+    if (method == "turn/interrupt" && IsScenario("Issue174GoalStop"))
+    {
+        JsonElement interrupt = root.GetProperty("params");
+        string interruptThreadId = interrupt.GetProperty("threadId").GetString() ?? string.Empty;
+        string interruptTurnId = interrupt.GetProperty("turnId").GetString() ?? string.Empty;
+        goalRequests.Add(new { method, parameters = interrupt.Clone() });
+        if (goalTurns.TryGetValue(interruptThreadId, out string? currentGoalTurn)
+            && string.Equals(interruptTurnId, currentGoalTurn, StringComparison.Ordinal))
+        {
+            goalTurns.Remove(interruptThreadId);
+            await WriteAsync(new { method = "turn/completed", @params = new { threadId = interruptThreadId, turn = new { id = interruptTurnId, status = "interrupted" } } }).ConfigureAwait(false);
+            await WriteAsync(new { method = "thread/status/changed", @params = new { threadId = interruptThreadId, status = new { type = "idle" } } }).ConfigureAwait(false);
+        }
+    }
     if (method == "initialize" && IsScenario("Issue155SandboxStaleCompletion"))
     {
         await WriteAsync(new { method = "windowsSandbox/setupCompleted", @params = new { mode = "elevated", success = true, error = (string?)null } }).ConfigureAwait(false);
@@ -266,6 +304,62 @@ return;
 bool IsScenario(string name)
     => scenario.Split([',', ';', '+'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
         .Contains(name, StringComparer.Ordinal);
+
+bool IsGoalActive(string threadId)
+    => goals.TryGetValue(threadId, out Dictionary<string, object?>? goal)
+        && Equals(goal["status"], "active");
+
+object GetGoal(JsonElement parameters)
+    => new { goal = goals.GetValueOrDefault(parameters.GetProperty("threadId").GetString() ?? string.Empty) };
+
+object SetGoal(JsonElement parameters)
+{
+    string threadId = parameters.GetProperty("threadId").GetString() ?? string.Empty;
+    goalRequests.Add(new { method = "thread/goal/set", parameters = parameters.Clone() });
+    if (!goals.TryGetValue(threadId, out Dictionary<string, object?>? goal))
+    {
+        goal = new Dictionary<string, object?>(StringComparer.Ordinal)
+        {
+            ["threadId"] = threadId,
+            ["objective"] = GetOptionalString(parameters, "objective") ?? "Fake goal",
+            ["status"] = "active",
+            ["tokenBudget"] = 20_000L,
+            ["tokensUsed"] = 123L,
+            ["timeUsedSeconds"] = 4L,
+            ["createdAt"] = 1_800_000_000_000L,
+            ["updatedAt"] = 1_800_000_000_001L,
+        };
+        goals.Add(threadId, goal);
+    }
+    if (GetOptionalString(parameters, "objective") is { } objective)
+    {
+        goal["objective"] = objective;
+    }
+    if (GetOptionalString(parameters, "status") is { } goalStatus)
+    {
+        goal["status"] = goalStatus;
+    }
+    if (parameters.TryGetProperty("tokenBudget", out JsonElement budget) && budget.ValueKind == JsonValueKind.Number)
+    {
+        goal["tokenBudget"] = budget.GetInt64();
+    }
+    return new { goal };
+}
+
+object ClearGoal(JsonElement parameters)
+    => new { cleared = goals.Remove(parameters.GetProperty("threadId").GetString() ?? string.Empty) };
+
+async Task StartGoalTurnAsync(string threadId)
+{
+    if (goalTurns.ContainsKey(threadId))
+    {
+        return;
+    }
+    string turnId = $"fake-goal-turn-{nextTurn++}";
+    goalTurns.Add(threadId, turnId);
+    await WriteAsync(new { method = "turn/started", @params = new { threadId, turn = new { id = turnId, status = "inProgress", items = Array.Empty<object>() } } }).ConfigureAwait(false);
+    await WriteAsync(new { method = "thread/status/changed", @params = new { threadId, status = new { type = "active", activeFlags = Array.Empty<string>() } } }).ConfigureAwait(false);
+}
 
 object AddAttachment(JsonElement parameters)
 {
