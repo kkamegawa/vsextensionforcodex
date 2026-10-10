@@ -10,6 +10,8 @@ Tracking: [Issue #156](https://github.com/kkamegawa/vsextensionforcodex/issues/1
 - [x] Define Local-required and External scenario classes, result states, explicit External blocked acceptance, retry/skip treatment, sanitized artifacts, Windows requirements, and native-verification refusal checks.
 - [x] Carry unfinished Issue #155 Experimental Instance visual/accessibility acceptance into #156 despite #155 being closed.
 - [x] Synchronize the bilingual design, plan, umbrella documentation, Issue #156, and Wiki indexes. This records design/documentation only; no validation script, CI workflow, or missing test was implemented or run.
+- [x] Address PR #171 review: normalize the six added Markdown files to UTF-8 BOM/CRLF, reconcile Japanese Issue #155 status records with its current closed state, and mark the unverified PR #170 skip reasons as unknown. Tracking: [PR #171](https://github.com/kkamegawa/vsextensionforcodex/pull/171).
+
 ## 2026-10-08: Daily-use App Server features (Issue #155)
 
 Tracking: [Issue #155](https://github.com/kkamegawa/vsextensionforcodex/issues/155), under [Issue #149](https://github.com/kkamegawa/vsextensionforcodex/issues/149). Approved [design](daily-use-app-server-design.md) and [plan](daily-use-app-server-plan.md); [Japanese work record](task-issue155_ja.md).

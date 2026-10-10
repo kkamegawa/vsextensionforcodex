@@ -542,7 +542,7 @@ P0–P5 are implemented and have automated validation. P6 automated integration 
 | Preview rendering | Actual STA PNG/JPEG decode; generated fragment parsed with WPF XamlReader and rendered by RenderTargetBitmap. Output artifacts/issue155/ui-preview.png inspected successfully. |
 | Experimental Instance | Pending; no screenshot or theme/keyboard/accessibility pass is claimed. |
 
-Six tests skip because creating the required filesystem links is unavailable in this Windows test environment. They are existing link-boundary/scaffolding cases; skipped tests are not recorded as passes. New malformed images, size limits, aggregate cache cap, cleanup, payload provenance, shell unknown acknowledgement/pending lock, stale generations, plan completion, and typed result projection tests pass. Earlier integration failures were repaired and are superseded by the final results above.
+Core reported five skips and UI reported one skip. The corresponding TRX files are not retained, so the reasons for these six skips cannot be independently verified; no cause is attributed here. Skipped tests are not recorded as passes. New malformed images, size limits, aggregate cache cap, cleanup, payload provenance, shell unknown acknowledgement/pending lock, stale generations, plan completion, and typed result projection tests pass. Earlier integration failures were repaired and are superseded by the final results above.
 
 Release VSIX SHA-256: 0F34622C51C7BD8E3B9063E5567A2E42B52719AB58A86652E095A17AEAAE8F51. Source/raw embedded XAML SHA-256: BA66E0F8945F337A94E12FE64312D13DBFD6DAE49BA7B99401B72B247C128399.
 
