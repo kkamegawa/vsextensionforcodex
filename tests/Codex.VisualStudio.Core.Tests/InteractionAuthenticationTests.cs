@@ -273,9 +273,10 @@ public sealed class InteractionAuthenticationTests
     }
 
     [TestMethod]
-    [DataRow("login-1", InteractionAuthState.Authenticated)]
-    [DataRow("login-0", InteractionAuthState.LoginPending)]
-    public async Task McpCompletionBeforeLoginResponse_IsAppliedOnlyForTheSameLoginId(string notifiedLoginId, InteractionAuthState expected)
+    [DataRow("login-1", "login-1", InteractionAuthState.Authenticated)]
+    [DataRow("login-0", "login-1", InteractionAuthState.LoginPending)]
+    [DataRow("login-0", null, InteractionAuthState.Authenticated)]
+    public async Task McpCompletionBeforeLoginResponse_IsAppliedOnlyForTheSameLoginId(string notifiedLoginId, string? responseLoginId, InteractionAuthState expected)
     {
         var connection = new RecordingConnection();
         var loginStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -291,7 +292,7 @@ public sealed class InteractionAuthenticationTests
             CancellationToken.None);
         await loginStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
         await connection.EmitNotificationAsync("mcpServer/oauthLogin/completed", new { name = "example-mcp", success = true, loginId = notifiedLoginId });
-        finishLogin.TrySetResult(JsonSerializer.SerializeToElement(new { authorizationUrl = "https://login.example.test/authorize", loginId = "login-1" }));
+        finishLogin.TrySetResult(JsonSerializer.SerializeToElement(new { authorizationUrl = "https://login.example.test/authorize", loginId = responseLoginId }));
         McpOAuthLoginStatus loginStatus = await loginTask.WaitAsync(TimeSpan.FromSeconds(2));
 
         Assert.AreEqual(expected, loginStatus.State);

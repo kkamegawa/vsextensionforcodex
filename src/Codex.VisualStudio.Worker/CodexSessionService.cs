@@ -839,10 +839,10 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         if (operation.EarlyCompletion is { } early)
         {
             // The completion notification overtook the response. Apply it only when it belongs to
-            // this attempt; a completion for any other loginId is stale and is dropped.
+            // this attempt; a completion for any other loginId is stale and is dropped. A response
+            // without loginId falls back to server-name matching, as for a late notification.
             operation.EarlyCompletion = null;
-            if (operation.LoginId is not null
-                && string.Equals(operation.LoginId, early.LoginId, StringComparison.Ordinal)
+            if ((operation.LoginId is null || string.Equals(operation.LoginId, early.LoginId, StringComparison.Ordinal))
                 && context.McpOAuthOperations.ContainsKey(operation.OperationId))
             {
                 await ApplyMcpOAuthCompletionAsync(context, serverName, early.Succeeded, cancellationToken).ConfigureAwait(false);
