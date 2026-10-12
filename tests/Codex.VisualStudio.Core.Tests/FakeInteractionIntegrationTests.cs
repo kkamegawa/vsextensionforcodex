@@ -234,9 +234,20 @@ public sealed class FakeInteractionIntegrationTests
                 new { },
                 Timeout,
                 CancellationToken.None);
+            JsonElement clientCapabilities = finalState.GetProperty("initializeParams").GetProperty("capabilities");
+            Assert.IsFalse(clientCapabilities.TryGetProperty("userVerification", out _));
+            Assert.IsFalse(clientCapabilities.TryGetProperty("nativeUserVerification", out _));
+
             JsonElement[] responses = finalState.GetProperty("responses").EnumerateArray().ToArray();
             Assert.AreEqual(9, responses.Length);
             Assert.AreEqual(0, finalState.GetProperty("pendingResponses").GetInt32());
+            JsonElement verificationResponse = responses.Single(response =>
+                response.GetProperty("method").GetString() == "mcpServer/elicitation/request"
+                && response.GetProperty("id").GetInt32() == 18);
+            Assert.AreEqual("cancel", verificationResponse.GetProperty("result").GetProperty("action").GetString());
+            string diagnostics = JsonSerializer.Serialize(finalState);
+            Assert.IsFalse(diagnostics.Contains("fake-secret-challenge", StringComparison.Ordinal));
+            Assert.IsFalse(diagnostics.Contains("fake-secret-proof", StringComparison.Ordinal));
             Assert.AreEqual(1, finalState.GetProperty("methods").EnumerateArray().Count(method =>
                 method.GetString() == "mcpServer/oauth/login"));
             Assert.IsFalse(finalState.GetProperty("methods").EnumerateArray().Any(method =>
