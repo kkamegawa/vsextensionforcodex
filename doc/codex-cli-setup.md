@@ -2,7 +2,7 @@
 
 [日本語](codex-cli-setup_ja.md) · [README](../README.md)
 
-This guide covers the extension's current implementation and its pinned Codex CLI **0.159.1** contract. Start with local mode. The **Connection target** flyout selects where App Server runs; it does not install Codex or choose a CLI executable. When it says **Connected to: Local** and **No remote profiles**, a remote profile is unnecessary for normal use.
+This guide covers the extension's current implementation and its pinned Codex CLI **0.162.1** contract. Start with local mode. The **Connection target** flyout selects where App Server runs; it does not install Codex or choose a CLI executable. When it says **Connected to: Local** and **No remote profiles**, a remote profile is unnecessary for normal use.
 
 ## Contents
 
@@ -36,7 +36,7 @@ The extension provides no remote installation, server lifecycle management or fi
 
 Requirements: Windows x64 or Arm64; Visual Studio 2022 **17.14+** or Visual Studio 2026; an account/provider usable by Codex; and the extension VSIX.
 
-1. Follow the official `rust-v0.159.1` release link in [README Requirements](../README.md#requirements).
+1. Follow the official `rust-v0.162.1` release link in [README Requirements](../README.md#requirements).
 2. Download `codex-package-x86_64-pc-windows-msvc.tar.gz` for x64 or `codex-package-aarch64-pc-windows-msvc.tar.gz` for Arm64.
 3. Use the complete package. Keep its directory layout, including `bin\codex.exe`, `bin\codex-code-mode-host.exe` and `codex-resources\`. A standalone executable can initialize successfully while tool calls fail with `failed to spawn code-mode host`.
 4. Compare the package SHA-256 with the digest for that exact asset on the release page. The standalone executable hash in `app-server-contract.json` is for a different asset.
@@ -50,7 +50,7 @@ $actualHash = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash
 if ($expectedHash -notmatch '^[0-9a-fA-F]{64}$' -or $actualHash -ine $expectedHash) {
     throw 'Package SHA-256 mismatch.'
 }
-$codexInstall = Join-Path $env:LOCALAPPDATA 'OpenAI\Codex\0.159.1'
+$codexInstall = Join-Path $env:LOCALAPPDATA 'OpenAI\Codex\0.162.1'
 New-Item -ItemType Directory -Force -Path $codexInstall | Out-Null
 tar -xzf $archive -C $codexInstall
 if ($LASTEXITCODE -ne 0) { throw 'Package extraction failed.' }
@@ -62,8 +62,8 @@ if (-not (Test-Path -LiteralPath (Join-Path $codexInstall 'bin\codex-code-mode-h
     throw 'The complete CLI package is required.'
 }
 $version = & $codexExe --version
-if ($LASTEXITCODE -ne 0 -or $version.Trim() -ne 'codex-cli 0.159.1') {
-    throw 'Expected codex-cli 0.159.1.'
+if ($LASTEXITCODE -ne 0 -or $version.Trim() -ne 'codex-cli 0.162.1') {
+    throw 'Expected codex-cli 0.162.1.'
 }
 $env:CODEX_PATH = $codexExe
 [Environment]::SetEnvironmentVariable('CODEX_PATH', $codexExe, 'User')
@@ -178,7 +178,7 @@ Agent permission choices are **Ask for approval**, **Approve on my behalf**, **F
 
 **Experimental API** is off by default and applies on the next initialization/reconnect. Enable it only for supported features that need experimental APIs; it is not a CLI installation or authentication setting. The explicit `/shell` command runs unsandboxed with full access even in CLI 0.159.1; read its confirmation and the [command guide](slash-commands.md) before using it.
 
-For local Windows sandbox setup, use **Check readiness** and **Start setup** when offered. These are local-only operations; they do not configure a remote host.
+The **Windows sandbox** panel selects the local app-server backend: **Follow Codex configuration**, **Prefer MXC** or **Require MXC**. The choice applies the next time the local app-server starts. **Check sandbox status** shows the effective configuration and managed policy, and **Start setup** runs the legacy elevated/unelevated setup; MXC needs no setup. These are local-only operations; they do not configure a remote host. See the [README FAQ](../README.md#faq) for what each backend setting does.
 
 ## 6. Read the Connection target flyout
 
@@ -203,7 +203,7 @@ The Preview notice in the supplied screen includes a warning about unavailable p
 
 The server operator must prepare these items **before** filling in the Visual Studio profile:
 
-1. CLI 0.159.1 with its complete platform package and working tool helpers.
+1. CLI 0.162.1 with its complete platform package and working tool helpers.
 2. Provider authentication for the server process user; verify `login status` on that host.
 3. The same working tree, accessible through the server root. Keep contents synchronized through your existing workspace/storage process.
 4. A high-entropy bearer token and an authenticated WebSocket listener.
@@ -221,8 +221,8 @@ On a **Windows server, PowerShell 7**, create a private parent directory first a
 ~~~powershell
 $serverCodex = (Resolve-Path -LiteralPath (Read-Host 'Server codex.exe path')).Path
 $serverVersion = & $serverCodex --version
-if ($LASTEXITCODE -ne 0 -or $serverVersion.Trim() -ne 'codex-cli 0.159.1') {
-    throw 'Expected codex-cli 0.159.1 on the server.'
+if ($LASTEXITCODE -ne 0 -or $serverVersion.Trim() -ne 'codex-cli 0.162.1') {
+    throw 'Expected codex-cli 0.162.1 on the server.'
 }
 & $serverCodex login status
 if ($LASTEXITCODE -ne 0) { throw 'Sign in as the server process user first.' }
@@ -247,12 +247,12 @@ $listenUri = Read-Host 'App Server ws listener URI'
 
 Keep the token file private using your normal access-control process. This foreground command runs until you stop it.
 
-On a **macOS/Linux server, bash**, first install the complete 0.159.1 package for that host using its official release assets. OpenSSL is needed for this token-generation example:
+On a **macOS/Linux server, bash**, first install the complete 0.162.1 package for that host using its official release assets. OpenSSL is needed for this token-generation example:
 
 ~~~bash
 read -r -p 'Server codex executable path: ' server_codex
 server_version=$("$server_codex" --version) || exit 1
-[ "$server_version" = "codex-cli 0.159.1" ] || { printf 'Expected codex-cli 0.159.1.\n' >&2; exit 1; }
+[ "$server_version" = "codex-cli 0.162.1" ] || { printf 'Expected codex-cli 0.162.1.\n' >&2; exit 1; }
 "$server_codex" login status || exit 1
 read -r -p 'New absolute local token-file path: ' server_token_file
 case "$server_token_file" in /*) ;; *) printf 'Use an absolute path.\n' >&2; exit 1 ;; esac
@@ -343,4 +343,4 @@ The local CLI child forwards a fixed environment allowlist including `PATH`, `PA
 - [Pinned contract](../app-server-contract.json): `targetVersion` and regression baseline.
 - Official OpenAI documentation topics: **Codex CLI**, **Authentication**, **Config basics**, **Codex App Server**. Deployment-specific endpoints in this guide are placeholders; replace them with operator-provided values. Scripts prompt for actual values.
 
-This guide was checked against source, CLI 0.159.1 `app-server --help` and official guidance. The 2026-10-12 same-PC loopback test initially found a product bug: credential loading changed the owner partition without advancing its generation, leaving the UI at **Connecting / Checking account**. The repaired source advances that owner generation and publishes the finalized Connecting before initialization events. Retesting the SDK-deployed extension 0.2.1.0 with the complete 0.159.1 Windows package and an existing ChatGPT login passed UI health checks, Local-to-Remote connection (**Ready / Signed in**), a real model response, a read of the test workspace marker, and manual reconnect after correcting a rejected bearer token. The externally managed server stayed running throughout. A separate fresh IDE launch with the remote profile already selected rendered **Ready / Signed in**, CLI 0.159.1 and **Connected to: Loopback test**, with the Worker connected to the external listener and no local CLI child. This test did not cover a different computer, TLS, cross-OS mapping, attachments, server-side token rotation, or a fresh provider login.
+This guide was checked against source, CLI 0.159.1 `app-server --help` and official guidance. The 2026-10-12 same-PC loopback test initially found a product bug: credential loading changed the owner partition without advancing its generation, leaving the UI at **Connecting / Checking account**. The repaired source advances that owner generation and publishes the finalized Connecting before initialization events. Retesting the SDK-deployed extension 0.2.1.0 with the complete 0.159.1 Windows package and an existing ChatGPT login passed UI health checks, Local-to-Remote connection (**Ready / Signed in**), a real model response, a read of the test workspace marker, and manual reconnect after correcting a rejected bearer token. The externally managed server stayed running throughout. A separate fresh IDE launch with the remote profile already selected rendered **Ready / Signed in**, CLI 0.159.1 and **Connected to: Loopback test**, with the Worker connected to the external listener and no local CLI child. This test did not cover a different computer, TLS, cross-OS mapping, attachments, server-side token rotation, or a fresh provider login. For the 0.162.1 contract, `codex app-server --help` was confirmed identical to 0.159.1, and the official 0.162.1 Windows x64 executable completed `initialize`. The loopback, TLS and remote scenarios above were not repeated with 0.162.1.
