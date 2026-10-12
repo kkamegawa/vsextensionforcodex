@@ -779,3 +779,36 @@ Japanese record: [日本語](task-issue173_ja.md).
 - [ ] Experimental Instance acceptance (Light, Dark, High Contrast, narrow width, keyboard/focus, UI Automation, and screenshots of Active Goal, stopping, stopped, and reconnected states). Not performed: desktop automation was unavailable in this session. These criteria remain incomplete.
 
 Japanese record: [日本語](task-issue174_ja.md).
+
+### 2026-10-12: Codex CLI setup and usage documentation
+
+- [x] Follow the maintainer-approved documentation plan; reuse [App Server update tracking / Issue #149](#2026-09-13-codex-app-server-update-and-remote-connection-approved-plan). Prepare bilingual Wiki plan pages and Home rows under `artifacts/codex-cli-docs/wiki`; publication was explicitly declined, so these remain unpublished local drafts.
+- [x] Add [English](codex-cli-setup.md) and [Japanese](codex-cli-setup_ja.md) guides covering the complete pinned Windows package, executable resolution/CODEX_PATH, login and Codex home, configuration ownership, first local turn, permissions, every Connection target field, authenticated server startup on Windows/macOS/Linux, token handling, root mapping, recovery and diagnosis.
+- [x] Add README navigation in both languages; use the configured executable for setup verification/login, and reconcile the remote recovery summary with current implementation.
+- [x] Review connection/profile claims against source; clarify selection persistence, newly disabled profiles, active-profile deletion and reconnect eligibility. Verify the pinned 0.159.1 CLI public help supports the documented listener/auth flags.
+- [x] Validate five PowerShell snippets with the PowerShell parser, one bash snippet with bash -n and the TOML example with tomllib; do not execute installation/login/listener examples. Verify identical language-pair code blocks and matching heading/table structures, all local guide links and contents anchors, UTF-8 BOM/CRLF and whitespace. Wiki route/category/date validation passes.
+- [x] Run git diff --check. No application code or packages changed; application builds, live provider authentication, real remote TLS and Experimental Instance acceptance were not run for this documentation change. Validation summary: `artifacts/codex-cli-docs/validation.json`.
+
+Japanese record: [日本語](task-codex-cli-setup_ja.md).
+
+### 2026-10-12: Codex CLI remote setup live validation
+
+- [x] Run the requested same-PC remote test through the Visual Studio Experimental Instance UI, following the setup guide and reusing the App Server / Issue #149 tracking above. Verify the complete official 0.159.1 Windows package SHA-256 and existing ChatGPT login; run a separately managed loopback WebSocket server with a temporary capability token and isolated test workspace.
+- [x] Confirm UI health probes return HTTP 200; directly verify missing and invalid tokens return HTTP 401, while the valid token completes WebSocket upgrade and initialize. Worker diagnostics confirm authenticated initialize and account lookup reach Ready.
+- [x] Reproduce an acceptance failure both on Local-to-Remote switch and fresh IDE startup: UI stays Connecting / Checking account and Send and reconnect remain disabled. The owner fingerprint changes after token loading at the same owner generation; the UI rejects the Ready snapshot. No chat, path-mapping or reconnect success is claimed.
+- [x] Preserve screenshots, sanitized diagnostic excerpts and probe results in `artifacts/codex-cli-docs/remote-test`. Update both guides with the measured limitation. No application source changes, new provider login, cross-machine/TLS tests, or Wiki publication. Restore the original extension settings and workspace, stop the test server and remove both temporary token files.
+
+Japanese record: [日本語](task-codex-cli-setup_ja.md).
+
+### 2026-10-12: Repair remote startup owner finalization
+
+- [x] Implement the approved repair for the remote acceptance failure; reuse [Issue #152](https://github.com/kkamegawa/vsextensionforcodex/issues/152). Keep the bilingual approved plan as local drafts in `artifacts/codex-cli-docs/remote-fix`; do not publish Wiki pages.
+- [x] Document the final startup lifecycle in both path/state isolation designs. After authenticated handshake, atomically finalize session/target/history and advance owner generation only when the credential-bound partition changes. Preserve connection generation and strict UI owner validation. Publish finalized Connecting before initialization/account notifications; stamp failures with the appropriate provisional or finalized owner.
+- [x] Add Worker regressions for ordered status/account stamps, stale provisional requests, handshake failure, and initialization failure, plus a UI regression for Ready/account acceptance and retired/same-generation foreign-owner rejection. Focused Worker: 48 passed. Release Core: 419 passed / 5 skipped; UI: 401 passed / 1 skipped (existing environment-dependent link tests).
+- [x] Debug/Release solution builds: 0 warnings / 0 errors. Validate both 0.159.1 schema caches and stable/experimental contract surfaces against 0.155.1. Release VSIX Worker and deployed Worker hashes match build output; raw XAML is embedded. UTF-8 BOM/CRLF and whitespace checks pass.
+- [x] Actual Experimental Instance: SDK-managed F5 Release deployment, saved enabled profile, root probes Healthy HTTP 200, Local→Remote Ready/Signed in, exact model response, tool read of the test marker, invalid bearer Degraded, corrected bearer + explicit Reconnect Ready/Signed in. Server process remains the same. Screenshots and text evidence: `artifacts/codex-cli-docs/remote-fix`.
+- [x] Fresh IDE startup rendered acceptance (retested 2026-10-12 after the earlier capture failure): with the saved enabled profile pre-selected, a new Canary Experimental Instance rendered Ready, Codex 0.159.1, Signed in and Connected to: Loopback test. The Worker held the only TCP connection to the external loopback listener and spawned no local CLI child. The deployed Worker DLL hash matched the Release output. Evidence and cleanup (settings restored byte-for-byte, test IDE/server stopped, temporary tokens removed) are in `artifacts/codex-cli-docs/remote-fresh`. Composer input was not exercised because the IDE is granted click-only computer-use access. Record the residual recovery banner after successful reconnect separately from the fixed Connecting failure.
+
+Japanese record: [日本語](task-codex-cli-setup_ja.md#2026-10-12-リモート起動時の所有者確定を修正).
+
+- [x] Cleanup: stop the owned test IDE/server, restore settings byte-for-byte, and remove both temporary token files. Retain local evidence and the source-development IDE for review.

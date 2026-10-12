@@ -175,7 +175,7 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
             connectingMessage ?? (remote ? "Connecting to remote codex app-server..." : "Starting codex app-server..."),
             cancellationToken).ConfigureAwait(false);
         return remote
-            ? await ConnectRemoteCoreAsync(options, generation, cancellationToken).ConfigureAwait(false)
+            ? await ConnectRemoteCoreAsync(options, generation, connectingMessage, cancellationToken).ConfigureAwait(false)
             : await ConnectLocalCoreAsync(options, cancellationToken).ConfigureAwait(false);
     }
 
@@ -239,6 +239,7 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
     private async Task<WorkerStatus> ConnectRemoteCoreAsync(
         WorkerOptions options,
         long generation,
+        string? connectingMessage,
         CancellationToken cancellationToken)
     {
         using var overall = new CancellationTokenSource(limits.Overall, timeProvider);
@@ -265,8 +266,19 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
                 new RemoteConnectionRequest(options.RemoteEndpoint!, options.RemoteTokenFilePath),
                 startup.Token).ConfigureAwait(false);
             IJsonRpcConnection connection = processHost.Connection!;
-            BeginSessionOwnerPartition(options, processHost.CredentialFingerprint);
+            bool ownerPartitionChanged = FinalizeRemoteOwnerPartition(options, processHost.CredentialFingerprint);
             ObserveRemoteConnection(connection);
+
+            if (ownerPartitionChanged)
+            {
+                // The first Connecting notification uses the provisional, pre-authentication
+                // owner. Publish the credential-aware owner before Initialize can emit any
+                // account or session notifications so the client can accept the new generation.
+                await SetStatusAsync(
+                    WorkerConnectionState.Connecting,
+                    connectingMessage ?? "Connecting to remote codex app-server...",
+                    startup.Token).ConfigureAwait(false);
+            }
 
             WorkerDiagnostics.Write("worker initializing remote codex app-server");
             stageFailure = RemoteConnectionFailure.InitializeFailed;
@@ -372,6 +384,41 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
                 ?? ConnectionStatePartition.Create(options, workerInstanceId, target.OwnerGeneration, credentialFingerprint);
             target.OwnerGeneration = Math.Max(target.OwnerGeneration, session.OwnerGeneration);
             SaveTargetSnapshotLocked();
+        }
+    }
+
+    private bool FinalizeRemoteOwnerPartition(WorkerOptions options, string? credentialFingerprint)
+    {
+        lock (targetGate)
+        {
+            string candidatePartition = ConnectionStatePartition.Create(
+                options,
+                workerInstanceId,
+                target.OwnerGeneration,
+                credentialFingerprint);
+            bool changed = !string.Equals(
+                target.StatePartitionFingerprint,
+                candidatePartition,
+                StringComparison.Ordinal);
+            long finalizedOwnerGeneration = target.OwnerGeneration;
+            if (changed)
+            {
+                finalizedOwnerGeneration = Math.Max(
+                    Math.Max(Interlocked.Read(ref ownerGeneration), target.OwnerGeneration),
+                    session.OwnerGeneration) + 1;
+            }
+
+            session.BeginOwnerPartition(
+                options,
+                workerInstanceId,
+                finalizedOwnerGeneration,
+                credentialFingerprint);
+            target.StatePartitionFingerprint = session.StatePartitionFingerprint
+                ?? ConnectionStatePartition.Create(options, workerInstanceId, finalizedOwnerGeneration, credentialFingerprint);
+            target.OwnerGeneration = Math.Max(finalizedOwnerGeneration, session.OwnerGeneration);
+            Interlocked.Exchange(ref ownerGeneration, target.OwnerGeneration);
+            SaveTargetSnapshotLocked();
+            return changed;
         }
     }
 
