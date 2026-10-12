@@ -286,7 +286,7 @@ public sealed partial class ChatViewModel
             Items.Add(item);
         }
 
-        item.AppendPlanDelta(delta.Text, MaximumPlanTextBytes);
+        item.AppendPlanDelta(delta.Text, MaximumPlanTextBytes, markdown);
     }
 
     private void ApplyDailyUsePlanSnapshot(

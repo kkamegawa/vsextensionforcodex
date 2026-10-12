@@ -860,7 +860,7 @@ public sealed class CodexSessionServiceTests
                 : JsonSerializer.SerializeToElement(new { }),
         };
         await using var service = CreateService();
-        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+        await service.InitializeAsync(connection, Options(experimentalApi: true), CancellationToken.None);
 
         await service.StartTurnAsync(
             new StartTurnRequest
@@ -919,6 +919,63 @@ public sealed class CodexSessionServiceTests
         File.Delete(activeDocument);
         File.Delete(referencedDocument);
     }
+
+    [TestMethod]
+    [DataRow(true, true)]
+    [DataRow(false, false)]
+    public async Task StartTurnSendsDefaultCollaborationModeOnlyOnExperimentalConnections(bool experimentalApi, bool expectField)
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "turn/start"
+                ? JsonSerializer.SerializeToElement(new { turn = new { id = "turn-1" } })
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(experimentalApi: experimentalApi), CancellationToken.None);
+
+        await service.StartTurnAsync(DefaultModeTurn("default"), CancellationToken.None);
+
+        RecordedRequest request = connection.Requests.Single(item => item.Method == "turn/start");
+        JsonElement parameters = JsonSerializer.SerializeToElement(request.Parameters, WireJsonOptions);
+        Assert.AreEqual(expectField, parameters.TryGetProperty("collaborationMode", out JsonElement mode));
+        if (expectField)
+        {
+            Assert.AreEqual("default", mode.GetProperty("mode").GetString());
+        }
+    }
+
+    [TestMethod]
+    public async Task StartTurnRejectsPlanModeWithoutExperimentalApiBeforeDispatch()
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => JsonSerializer.SerializeToElement(new { }),
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        InvalidOperationException error = await Assert.ThrowsExactlyAsync<InvalidOperationException>(
+            () => service.StartTurnAsync(DefaultModeTurn("plan"), CancellationToken.None));
+
+        StringAssert.Contains(error.Message, "Experimental API");
+        Assert.IsFalse(connection.Requests.Any(item => item.Method == "turn/start"));
+    }
+
+    private static StartTurnRequest DefaultModeTurn(string mode) => new()
+    {
+        ThreadId = "thread-1",
+        Text = "hello",
+        Model = "gpt-5",
+        ApprovalPolicy = "never",
+        ApprovalsReviewer = "user",
+        SandboxMode = "readOnly",
+        CollaborationMode = new CollaborationModeInfo
+        {
+            Mode = mode,
+            Model = "gpt-5",
+        },
+    };
 
     [TestMethod]
     public async Task StartTurnValidatesSkillIdentityAndSendsOnlyStructuredSkillFields()

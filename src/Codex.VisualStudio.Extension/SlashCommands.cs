@@ -70,7 +70,7 @@ internal sealed class SlashCommandCatalog
         new(SlashCommandId.Fast, "fast", "Use the fast service tier for the next turn.", SlashCommandArgumentKind.None, true, true, false),
         new(SlashCommandId.Model, "model", "Select the model for the next turn.", SlashCommandArgumentKind.Model, true, true, false),
         new(SlashCommandId.Personality, "personality", "Select the personality for the next turn.", SlashCommandArgumentKind.Personality, true, true, false),
-        new(SlashCommandId.Plan, "plan", "Use Plan mode for the next turn.", SlashCommandArgumentKind.OptionalText, true, true, false),
+        new(SlashCommandId.Plan, "plan", "Enable Plan mode until unchecked in the composer.", SlashCommandArgumentKind.OptionalText, true, true, false),
         new(SlashCommandId.Reasoning, "reasoning", "Select the reasoning effort for the next turn.", SlashCommandArgumentKind.ReasoningEffort, true, true, false),
         new(SlashCommandId.IdeContext, "ide-context", "Toggle IDE context for future turns.", SlashCommandArgumentKind.None, true, true, false),
         new(SlashCommandId.Init, "init", "Create an AGENTS.md file in the workspace root.", SlashCommandArgumentKind.None, true, false, false),

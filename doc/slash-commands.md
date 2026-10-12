@@ -14,7 +14,8 @@ The implementation is tracked by GitHub Issue #46 and its four sub-issues.
 | Category | Commands | Behavior |
 |---|---|---|
 | App Server operations | `/compact`, `/feedback`, `/fork`, `/goal`, `/mcp`, `/review`, `/shell` | Invoke dedicated typed Worker RPC methods. `/shell` executes only through explicit invocation and confirmation. |
-| Next-turn settings | `/fast`, `/model`, `/permissions` (`/approve` alias), `/personality`, `/plan`, `/reasoning` | Update typed fields used by the next `turn/start`. Except for picker selections, these settings are consumed by the next started turn. |
+| Next-turn settings | `/fast`, `/model`, `/permissions` (`/approve` alias), `/personality`, `/reasoning` | Update typed fields used by the next `turn/start`. Except for picker selections, these settings are consumed by the next started turn. |
+| Conversation mode | `/plan` | Enable persistent Plan mode, shared with the composer checkbox, until explicitly unchecked. |
 | Visual Studio operations | `/ide-context`, `/init`, `/status` | Toggle bounded editor context, safely create `AGENTS.md`, or show local session state. |
 
 The following commands remain hidden because the app-server or the current
@@ -35,8 +36,17 @@ disables the Codex sandbox and normal approval prompts, so operations may run wi
 extension approval request. Returning from a turn override to `custom` requires a new
 thread; omission or `null` is not treated as a reset.
 
-`/plan` without arguments selects Plan mode for the next turn. With arguments,
-it immediately starts a Plan-mode turn using the supplied prompt.
+`/plan` without arguments enables Plan mode. With arguments, it also immediately
+starts a Plan-mode turn using the supplied prompt. The composer **Plan mode**
+checkbox reflects this conversation's selection and stays checked across completed,
+interrupted and failed turns. Uncheck it to use default collaboration mode on the
+next turn; an already running turn is unchanged. Conversation switching restores
+each conversation's selection within the current owner. Plan mode requires
+**Experimental API**: without it the checkbox is disabled and `/plan` reports how to
+enable it, because the app-server rejects `collaborationMode` on other connections.
+The proposed plan is shown as a Markdown "Proposed plan" entry, and when the Plan turn
+completes an **Implement this plan?** card offers to switch to default mode and start
+implementing. See the approved [design and plan](interaction-theme-plan.md).
 
 ## Routing and queueing
 

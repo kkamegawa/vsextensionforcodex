@@ -236,14 +236,16 @@ public sealed class ViewModelTests
     [TestMethod]
     public async Task ChatViewModel_OwnerChangeQuarantinesDraftAndRestoreRequiresJoinedThread()
     {
-        var bridge = new FakeWorkerBridge();
-        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        var bridge = new FakeWorkerBridge { ExperimentalApi = true };
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: ExperimentalSettingsStore());
         await bridge.PublishStateAsync(OwnerStatus("owner-a", 1, 4));
         vm.ComposerText = "unsubmitted prompt";
+        vm.PlanModeEnabled = true;
 
         await bridge.PublishStateAsync(OwnerStatus("owner-b", 2, 5));
 
         Assert.AreEqual(string.Empty, vm.ComposerText);
+        Assert.IsFalse(vm.PlanModeEnabled, "An owner change must clear the active mode before any draft is explicitly restored.");
         Assert.IsNotNull(vm.QuarantinedDraft);
         Assert.IsFalse(vm.RestoreQuarantinedDraftCommand.CanExecute);
 
@@ -258,8 +260,30 @@ public sealed class ViewModelTests
         await RunCommandAsync(vm.RestoreQuarantinedDraftCommand);
 
         Assert.AreEqual("unsubmitted prompt", vm.ComposerText);
+        Assert.IsTrue(vm.PlanModeEnabled, "Explicitly restoring the quarantined draft also restores its composer mode.");
         Assert.IsNull(vm.QuarantinedDraft);
         StringAssert.Contains(vm.RecoveryStatusText, "settings were unavailable");
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_QuarantinedDraftRestoresDefaultPlanMode()
+    {
+        var bridge = new FakeWorkerBridge { ExperimentalApi = true };
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: ExperimentalSettingsStore());
+        await bridge.PublishStateAsync(OwnerStatus("owner-a", 1, 4));
+        vm.ComposerText = "draft with default mode";
+
+        await bridge.PublishStateAsync(OwnerStatus("owner-b", 2, 5));
+        vm.PlanModeEnabled = true;
+
+        var thread = new ThreadSummary { Id = "new-owner-thread" };
+        vm.Threads.Add(thread);
+        vm.SelectedThread = thread;
+        await WaitForAsync(() => vm.HistoryStatusText.Contains("history", StringComparison.OrdinalIgnoreCase));
+        await RunCommandAsync(vm.JoinThreadCommand);
+        await RunCommandAsync(vm.RestoreQuarantinedDraftCommand);
+
+        Assert.IsFalse(vm.PlanModeEnabled, "A restored default-mode draft must replace the target composer's current mode.");
     }
 
     [TestMethod]
@@ -1989,14 +2013,15 @@ public sealed class ViewModelTests
     [TestMethod]
     public void ChatItemViewModel_AppendPlanDeltaClipsAtUtf8LimitWithoutSplittingSurrogates()
     {
+        var markdown = new SafeMarkdownService();
         var item = new ChatItemViewModel("Plan", string.Empty, ConversationEventKind.PlanUpdated);
-        item.AppendPlanDelta("ab", 5);
-        item.AppendPlanDelta("😀c", 5);
+        item.AppendPlanDelta("ab", 5, markdown);
+        item.AppendPlanDelta("😀c", 5, markdown);
 
         Assert.AreEqual("ab", item.PlanDeltaText);
         Assert.IsTrue(item.PlanWasTruncated);
 
-        item.AppendPlanDelta("é", 5);
+        item.AppendPlanDelta("é", 5, markdown);
         Assert.AreEqual("abé", item.PlanDeltaText);
     }
 
@@ -3080,9 +3105,10 @@ public sealed class ViewModelTests
     [TestMethod]
     public async Task ChatViewModel_PersistentReasoningUsesCanonicalValueForDefaultAndPlanTurns()
     {
-        var store = new MemorySettingsStore(new ExtensionSettings { ReasoningEffortId = "HIGH" });
+        var store = new MemorySettingsStore(new ExtensionSettings { ExperimentalApiEnabled = true, ReasoningEffortId = "HIGH" });
         var bridge = new FakeWorkerBridge
         {
+            ExperimentalApi = true,
             ModelListResult = new ListModelsResult
             {
                 Models = [ModelWithReasoning("gpt-5", "high")],
@@ -3174,9 +3200,10 @@ public sealed class ViewModelTests
     [TestMethod]
     public async Task ChatViewModel_PersistentServiceTierUsesCanonicalValueForNormalAndPlanTurns()
     {
-        var store = new MemorySettingsStore(new ExtensionSettings { ServiceTierId = "FAST" });
+        var store = new MemorySettingsStore(new ExtensionSettings { ExperimentalApiEnabled = true, ServiceTierId = "FAST" });
         var bridge = new FakeWorkerBridge
         {
+            ExperimentalApi = true,
             ModelListResult = new ListModelsResult
             {
                 Models = [new ModelInfo { Id = "gpt-5", ServiceTiers = [new ServiceTierInfo { Id = "fast" }] }],
@@ -3574,10 +3601,10 @@ public sealed class ViewModelTests
     }
 
     [TestMethod]
-    public async Task ChatViewModel_PlanWithPrompt_StartsPlanModeTurn()
+    public async Task ChatViewModel_PlanWithPrompt_StaysEnabledForFollowingTurns()
     {
-        var bridge = new FakeWorkerBridge();
-        using var vm = new ChatViewModel(bridge, autoConnect: false)
+        var bridge = new FakeWorkerBridge { ExperimentalApi = true };
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: ExperimentalSettingsStore())
         {
             SelectedThread = new ThreadSummary { Id = "thread-1" },
             SelectedModel = "gpt-5",
@@ -3595,13 +3622,16 @@ public sealed class ViewModelTests
         Assert.AreEqual("design the change", bridge.LastStartTurnRequest!.Text);
         Assert.IsNotNull(bridge.LastStartTurnRequest.CollaborationMode);
         Assert.AreEqual("plan", bridge.LastStartTurnRequest.CollaborationMode!.Mode);
+        Assert.IsTrue(vm.PlanModeEnabled);
+        await SendMessageAsync(vm, "continue planning", clearComposer: false);
+        Assert.AreEqual("plan", bridge.LastStartTurnRequest!.CollaborationMode!.Mode);
     }
 
     [TestMethod]
-    public async Task ChatViewModel_PlanWithoutPrompt_AppliesOnlyToNextSuccessfulTurn()
+    public async Task ChatViewModel_PlanWithoutPrompt_StaysEnabledUntilExplicitlyDisabled()
     {
-        var bridge = new FakeWorkerBridge();
-        using var vm = new ChatViewModel(bridge, autoConnect: false)
+        var bridge = new FakeWorkerBridge { ExperimentalApi = true };
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: ExperimentalSettingsStore())
         {
             SelectedThread = new ThreadSummary { Id = "thread-1" },
             ComposerText = "/plan",
@@ -3618,11 +3648,155 @@ public sealed class ViewModelTests
         Assert.IsNotNull(bridge.LastStartTurnRequest);
         Assert.IsNotNull(bridge.LastStartTurnRequest!.CollaborationMode);
         Assert.AreEqual("plan", bridge.LastStartTurnRequest.CollaborationMode!.Mode);
+        Assert.IsTrue(vm.PlanModeEnabled);
 
         await SendMessageAsync(vm, "second", clearComposer: false);
 
         Assert.IsNotNull(bridge.LastStartTurnRequest);
-        Assert.IsNull(bridge.LastStartTurnRequest!.CollaborationMode);
+        Assert.AreEqual("plan", bridge.LastStartTurnRequest!.CollaborationMode!.Mode);
+
+        vm.PlanModeEnabled = false;
+        await SendMessageAsync(vm, "third", clearComposer: false);
+
+        Assert.AreEqual("default", bridge.LastStartTurnRequest!.CollaborationMode!.Mode);
+        await SendMessageAsync(vm, "fourth", clearComposer: false);
+        Assert.AreEqual("default", bridge.LastStartTurnRequest!.CollaborationMode!.Mode);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_PlanMode_IsolatedBySelectedThread()
+    {
+        var bridge = new FakeWorkerBridge { ExperimentalApi = true };
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: ExperimentalSettingsStore())
+        {
+            SelectedThread = new ThreadSummary { Id = "thread-plan" },
+        };
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready });
+
+        vm.PlanModeEnabled = true;
+        vm.SelectedThread = new ThreadSummary { Id = "thread-default" };
+        Assert.IsFalse(vm.PlanModeEnabled);
+
+        vm.PlanModeEnabled = false;
+        vm.SelectedThread = new ThreadSummary { Id = "thread-plan" };
+        Assert.IsTrue(vm.PlanModeEnabled);
+
+        vm.SelectedThread = new ThreadSummary { Id = "thread-default" };
+        Assert.IsFalse(vm.PlanModeEnabled);
+    }
+
+    [TestMethod]
+    [DataRow(true)]
+    [DataRow(false)]
+    public async Task ChatViewModel_TransientRecoveryRestoresPlanModeOnlyAfterReconnecting(bool reconnected)
+    {
+        var bridge = new FakeWorkerBridge { ExperimentalApi = true };
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: ExperimentalSettingsStore());
+        await bridge.PublishStateAsync(OwnerStatus("owner-a", 1, 4));
+        vm.SelectedThread = new ThreadSummary { Id = "thread-plan" };
+        vm.PlanModeEnabled = true;
+        vm.SelectedThread = new ThreadSummary { Id = "thread-default" };
+        Assert.IsFalse(vm.PlanModeEnabled);
+
+        // Mirrors HandleConnectionLostAsync, then the replacement Worker reports a new owner
+        // partition (every attempt gets one), which clears owner-scoped state.
+        InvokePrivate(vm, "CapturePlanModeForRecovery");
+        await bridge.PublishStateAsync(OwnerStatus("owner-a-recovered", 2, 5));
+        Assert.IsFalse(vm.PlanModeEnabled);
+        await InvokeFinishRecoveryAsync(vm, reconnected ? ConnectionRecoveryOutcome.Reconnected : ConnectionRecoveryOutcome.Stopped);
+
+        vm.SelectedThread = new ThreadSummary { Id = "thread-plan" };
+        Assert.AreEqual(
+            reconnected,
+            vm.PlanModeEnabled,
+            "Plan selections survive a recovery that reconnects to the validated target, and only that.");
+        vm.SelectedThread = new ThreadSummary { Id = "thread-default" };
+        Assert.IsFalse(vm.PlanModeEnabled);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_QueuedPlanForOtherThreadDoesNotChangeSelectedThreadMode()
+    {
+        const string threadA = "thread-plan-queue";
+        const string threadB = "thread-current";
+        var bridge = new FakeWorkerBridge { ExperimentalApi = true };
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: ExperimentalSettingsStore())
+        {
+            SelectedThread = new ThreadSummary { Id = threadB },
+        };
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready, ThreadId = threadB });
+        await RunCommandAsync(vm.JoinThreadCommand);
+
+        // A queued invocation keeps its original target even if the user changes selection
+        // before the queue reaches it.
+        bool started = await InvokeExecutePlanAsync(vm, threadA, "plan the queued change");
+
+        Assert.IsTrue(started);
+        Assert.AreEqual(threadA, bridge.LastStartTurnRequest!.ThreadId);
+        Assert.AreEqual("plan", bridge.LastStartTurnRequest.CollaborationMode!.Mode);
+        Assert.IsFalse(vm.PlanModeEnabled, "The selected thread B composer must not inherit thread A's queued Plan mode.");
+
+        vm.SelectedThread = new ThreadSummary { Id = threadA };
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready, ThreadId = threadA });
+        await RunCommandAsync(vm.JoinThreadCommand);
+        await SendMessageAsync(vm, "continue A", clearComposer: false);
+        Assert.AreEqual("plan", bridge.LastStartTurnRequest!.CollaborationMode!.Mode);
+
+        vm.SelectedThread = new ThreadSummary { Id = threadB };
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready, ThreadId = threadB });
+        await RunCommandAsync(vm.JoinThreadCommand);
+        await SendMessageAsync(vm, "continue B", clearComposer: false);
+        Assert.AreEqual("default", bridge.LastStartTurnRequest!.CollaborationMode!.Mode);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_PlanMode_ToggleDuringStartAppliesToNextTurnOnly()
+    {
+        var bridge = new FakeWorkerBridge { ExperimentalApi = true };
+        var startEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseStart = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+        bridge.StartTurnHandler = async (_, _) =>
+        {
+            startEntered.TrySetResult();
+            await WaitForAsync(() => releaseStart.Task.IsCompleted);
+            return "turn-1";
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: ExperimentalSettingsStore())
+        {
+            SelectedThread = new ThreadSummary { Id = "thread-1" },
+            PlanModeEnabled = true,
+        };
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready, ThreadId = "thread-1" });
+
+        Task firstSend = SendMessageAsync(vm, "first", clearComposer: false);
+        await WaitForAsync(() => startEntered.Task.IsCompleted);
+        Assert.AreEqual("plan", bridge.LastStartTurnRequest!.CollaborationMode!.Mode);
+        vm.PlanModeEnabled = false;
+        releaseStart.SetResult("turn-1");
+        await firstSend;
+
+        bridge.StartTurnHandler = null;
+        await SendMessageAsync(vm, "second", clearComposer: false);
+        Assert.AreEqual("default", bridge.LastStartTurnRequest!.CollaborationMode!.Mode);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_PlanMode_RemainsEnabledWhenTurnStartFails()
+    {
+        var bridge = new FakeWorkerBridge { StartTurnException = new InvalidOperationException("simulated failure"), ExperimentalApi = true };
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: ExperimentalSettingsStore())
+        {
+            SelectedThread = new ThreadSummary { Id = "thread-1" },
+        };
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready, ThreadId = "thread-1" });
+        vm.PlanModeEnabled = true;
+
+        await SendMessageAsync(vm, "fails", clearComposer: false);
+        Assert.IsTrue(vm.PlanModeEnabled);
+
+        bridge.StartTurnException = null;
+        await SendMessageAsync(vm, "retries after review", clearComposer: false);
+        Assert.AreEqual("plan", bridge.LastStartTurnRequest!.CollaborationMode!.Mode);
     }
 
     [TestMethod]
@@ -4101,10 +4275,369 @@ public sealed class ViewModelTests
     }
 
     [TestMethod]
-    public async Task ChatViewModel_PlanWithPrompt_ClearsPendingPlanMode()
+    public async Task ChatViewModel_PlanModeUnavailableWithoutExperimentalApi()
     {
         var bridge = new FakeWorkerBridge();
-        using var vm = new ChatViewModel(bridge, autoConnect: false)
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()))
+        {
+            SelectedThread = new ThreadSummary { Id = "thread-1" },
+        };
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready, ThreadId = "thread-1" });
+
+        vm.PlanModeEnabled = true;
+        Assert.IsFalse(vm.IsPlanModeAvailable);
+        Assert.IsFalse(vm.PlanModeEnabled, "Plan mode cannot be active without the experimental collaborationMode field.");
+        StringAssert.Contains(vm.PlanModeHelpText, "Experimental API");
+
+        bool started = await InvokeExecutePlanAsync(vm, "thread-1", "plan the change");
+        Assert.IsFalse(started);
+        Assert.IsNull(bridge.LastStartTurnRequest, "/plan must not start a turn the app-server would reject.");
+
+        await SendMessageAsync(vm, "ordinary turn", clearComposer: false);
+        Assert.IsNotNull(bridge.LastStartTurnRequest);
+        Assert.IsNull(bridge.LastStartTurnRequest!.CollaborationMode, "A non-experimental connection must omit collaborationMode.");
+
+        vm.ExperimentalApiEnabled = true;
+        Assert.IsFalse(vm.IsPlanModeAvailable, "The saved setting applies only after reconnecting.");
+        StringAssert.Contains(vm.PlanModeHelpText, "after reconnecting");
+
+        bridge.ExperimentalApi = true;
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready, ThreadId = "thread-1" });
+        Assert.IsTrue(vm.IsPlanModeAvailable);
+        Assert.IsTrue(vm.PlanModeEnabled, "The stored selection reappears once the connection supports Plan mode.");
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_ExperimentalConnectionKeepsExplicitDefaultAfterSettingIsTurnedOff()
+    {
+        var bridge = new FakeWorkerBridge { ExperimentalApi = true };
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: ExperimentalSettingsStore())
+        {
+            SelectedThread = new ThreadSummary { Id = "thread-1" },
+        };
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready, ThreadId = "thread-1" });
+        vm.PlanModeEnabled = true;
+        await SendMessageAsync(vm, "plan first", clearComposer: false);
+        Assert.AreEqual("plan", bridge.LastStartTurnRequest!.CollaborationMode!.Mode);
+
+        // The setting changes only the next connect; the live connection still negotiated
+        // experimentalApi, so Plan stays usable and disabling it must still send default.
+        vm.ExperimentalApiEnabled = false;
+        Assert.IsTrue(vm.IsPlanModeAvailable);
+        vm.PlanModeEnabled = false;
+        await SendMessageAsync(vm, "implement now", clearComposer: false);
+
+        Assert.AreEqual("default", bridge.LastStartTurnRequest!.CollaborationMode!.Mode);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_MissingModelWithRequiredCollaborationModeKeepsComposerAndSendsNothing()
+    {
+        var bridge = new FakeWorkerBridge { ExperimentalApi = true };
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: ExperimentalSettingsStore())
+        {
+            SelectedThread = new ThreadSummary { Id = "thread-1" },
+        };
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready, ThreadId = "thread-1" });
+        await RunCommandAsync(vm.JoinThreadCommand);
+        // A failed or empty model catalog leaves no selection; the picker setter ignores a null
+        // write-back while a valid entry is selected, so clear the backing field directly.
+        typeof(ChatViewModel).GetField("selectedModel", BindingFlags.NonPublic | BindingFlags.Instance)!.SetValue(vm, null);
+        vm.ComposerText = "keep this draft";
+
+        await SendMessageAsync(vm, "keep this draft", clearComposer: true);
+
+        Assert.AreEqual(0, bridge.StartTurnCallCount);
+        Assert.IsFalse(vm.Items.Any(item => item.Role == "You"), "No optimistic user row may be left behind.");
+        Assert.IsTrue(vm.Items.Any(item => item.Text.Contains("Select a model", StringComparison.Ordinal)));
+        Assert.AreEqual("keep this draft", vm.ComposerText);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_PlanModeAloneDoesNotQuarantineADraft()
+    {
+        var bridge = new FakeWorkerBridge { ExperimentalApi = true };
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: ExperimentalSettingsStore());
+        await bridge.PublishStateAsync(OwnerStatus("owner-a", 1, 4));
+        vm.PlanModeEnabled = true;
+
+        await bridge.PublishStateAsync(OwnerStatus("owner-b", 2, 5));
+
+        Assert.IsNull(vm.QuarantinedDraft, "A setting with an empty composer is not draft content.");
+        Assert.IsFalse(vm.PlanModeEnabled);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_NewThreadTakesOverThreadlessPlanSelection()
+    {
+        var bridge = new FakeWorkerBridge { ExperimentalApi = true };
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: ExperimentalSettingsStore());
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready });
+        vm.PlanModeEnabled = true;
+
+        await SendMessageAsync(vm, "start planning", clearComposer: false);
+
+        Assert.IsNotNull(vm.SelectedThread);
+        Assert.AreEqual("plan", bridge.LastStartTurnRequest!.CollaborationMode!.Mode);
+        vm.PlanModeEnabled = false;
+        InvokePrivate(vm, "CapturePlanModeForRecovery");
+        await bridge.PublishStateAsync(OwnerStatus("owner-recovered", 2, 5));
+        await InvokeFinishRecoveryAsync(vm, ConnectionRecoveryOutcome.Reconnected);
+        Assert.IsNull(vm.SelectedThread);
+        Assert.IsFalse(vm.PlanModeEnabled, "The threadless selection moved to the created conversation and must not reappear.");
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_ThreadlessPlanCommandEnablesTheThreadlessComposer()
+    {
+        var bridge = new FakeWorkerBridge { ExperimentalApi = true };
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: ExperimentalSettingsStore());
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready });
+
+        bool succeeded = await InvokeExecutePlanAsync(vm, null, string.Empty);
+
+        Assert.IsTrue(succeeded);
+        Assert.IsTrue(vm.PlanModeEnabled, "Argumentless /plan without a conversation must check the threadless composer.");
+        await SendMessageAsync(vm, "start planning", clearComposer: false);
+        Assert.AreEqual("plan", bridge.LastStartTurnRequest!.CollaborationMode!.Mode);
+        Assert.IsTrue(vm.PlanModeEnabled, "The selection moves to the created conversation.");
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_ImplementationOfferUsesTheModeTheTurnStartedWith()
+    {
+        var bridge = new FakeWorkerBridge();
+        using ChatViewModel vm = await CreatePlanThreadAsync(bridge);
+
+        // Unchecking while the Plan turn runs affects only later turns.
+        vm.PlanModeEnabled = false;
+        await CompletePlanTurnAsync(vm, "- Step");
+
+        Assert.IsNotNull(vm.ActiveUserInput, "The completed turn was a Plan turn, so it still offers implementation.");
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_ProposedPlanRendersAsMarkdownAndOffersImplementation()
+    {
+        var bridge = new FakeWorkerBridge();
+        using ChatViewModel vm = await CreatePlanThreadAsync(bridge);
+
+        await RaiseConversationEventAsync(vm, new ConversationEvent
+        {
+            Kind = ConversationEventKind.PlanDelta,
+            ThreadId = "thread-1",
+            TurnId = "turn-1",
+            ItemId = "turn-1-plan",
+            PlanDelta = new TurnPlanDeltaEvent { ThreadId = "thread-1", TurnId = "turn-1", ItemId = "turn-1-plan", Text = "## Plan\n\n- Add" },
+        });
+        ChatItemViewModel plan = vm.Items.Single(item => item.ItemId == "turn-1-plan");
+        Assert.IsTrue(plan.IsProposedPlan);
+        Assert.IsTrue(plan.UsesBlockRendering);
+        Assert.IsFalse(plan.ShowPlanDeltaText, "Markdown blocks replace the raw provisional text.");
+        Assert.AreEqual("Proposed plan", plan.DisplayRole);
+        Assert.IsTrue(plan.Blocks.Count >= 2);
+
+        await CompletePlanTurnAsync(vm, "## Plan\n\n- Add the file\n- Link it from README");
+        Assert.IsTrue(plan.IsPlanComplete);
+        Assert.IsTrue(plan.IsProposedPlan);
+
+        UserInputViewModel offer = vm.ActiveUserInput!;
+        Assert.IsNotNull(offer);
+        Assert.AreEqual("Implement this plan?", offer.Questions[0].Header);
+        Assert.AreEqual("Yes, implement this plan", offer.Questions[0].Options[0].DisplayLabel);
+        Assert.AreEqual("No, stay in Plan mode", offer.Questions[0].Options[1].DisplayLabel);
+
+        offer.Questions[0].Options[0].IsSelected = true;
+        await RunCommandAsync(offer.SubmitCommand);
+        await WaitForAsync(() => bridge.LastStartTurnRequest?.Text == ChatViewModel.ImplementPlanPrompt);
+
+        Assert.AreEqual("default", bridge.LastStartTurnRequest!.CollaborationMode!.Mode);
+        Assert.IsFalse(vm.PlanModeEnabled);
+        Assert.IsNull(vm.ActiveUserInput);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_ImplementationOfferWaitsForTurnCompletion()
+    {
+        var bridge = new FakeWorkerBridge();
+        using ChatViewModel vm = await CreatePlanThreadAsync(bridge);
+
+        await RaiseConversationEventAsync(vm, CompletedPlanItem("- Step"));
+
+        Assert.IsNull(vm.ActiveUserInput);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_StayInPlanModeDismissesOfferWithoutStartingATurn()
+    {
+        var bridge = new FakeWorkerBridge();
+        using ChatViewModel vm = await CreatePlanThreadAsync(bridge);
+        await CompletePlanTurnAsync(vm, "- Step");
+        UserInputViewModel offer = vm.ActiveUserInput!;
+        int startedTurns = bridge.StartTurnCallCount;
+
+        offer.Questions[0].Options[1].IsSelected = true;
+        await RunCommandAsync(offer.SubmitCommand);
+
+        Assert.AreEqual(startedTurns, bridge.StartTurnCallCount);
+        Assert.IsTrue(vm.PlanModeEnabled);
+        Assert.IsNull(vm.ActiveUserInput);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_ImplementationOfferExpiresWhenTheConversationChanges()
+    {
+        var bridge = new FakeWorkerBridge();
+        using ChatViewModel vm = await CreatePlanThreadAsync(bridge);
+        await CompletePlanTurnAsync(vm, "- Step");
+        Assert.IsNotNull(vm.ActiveUserInput);
+
+        vm.SelectedThread = new ThreadSummary { Id = "thread-2" };
+
+        Assert.IsNull(vm.ActiveUserInput);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_DefaultModeTurnDoesNotOfferImplementation()
+    {
+        var bridge = new FakeWorkerBridge();
+        using ChatViewModel vm = await CreatePlanThreadAsync(bridge, planTurn: false);
+
+        await CompletePlanTurnAsync(vm, "- Step");
+
+        Assert.IsNull(vm.ActiveUserInput);
+    }
+
+    [TestMethod]
+    public async Task UserInputViewModel_AnswersQuestionsOneAtATimeAndSubmitsAllTogether()
+    {
+        IReadOnlyDictionary<string, UserInputAnswer>? submitted = null;
+        var request = new UserInputRequest
+        {
+            RequestId = "request-1",
+            IsBlocking = true,
+            Questions =
+            [
+                new UserInputQuestion
+                {
+                    Id = "spec",
+                    Header = "echo spec",
+                    Question = "Which format?",
+                    IsOther = true,
+                    Options = [new UserInputOption { OptionId = "raw", Label = "Raw body" }, new UserInputOption { OptionId = "json", Label = "JSON only" }],
+                },
+                new UserInputQuestion { Id = "name", Header = "Name", Question = "Project name?" },
+                new UserInputQuestion
+                {
+                    Id = "license",
+                    Header = "License",
+                    Question = "Which license?",
+                    Options = [new UserInputOption { OptionId = "mit", Label = "MIT" }, new UserInputOption { OptionId = "other", Label = "Other" }],
+                },
+            ],
+        };
+        var input = new UserInputViewModel(
+            request,
+            (_, answers, _) =>
+            {
+                submitted = answers;
+                return Task.CompletedTask;
+            },
+            new SafeMarkdownService());
+
+        Assert.IsTrue(input.IsMultiStep);
+        Assert.AreEqual("Question 1 of 3", input.StepText);
+        Assert.AreEqual(1, input.CurrentQuestions.Count);
+        Assert.AreSame(input.Questions[0], input.CurrentQuestions[0]);
+        Assert.IsFalse(input.IsLastStep);
+        Assert.IsNull(input.ValidationText, "Intermediate steps do not report unanswered later questions.");
+        Assert.IsFalse(input.BackCommand.CanExecute);
+        Assert.IsFalse(input.NextCommand.CanExecute, "A blocking request needs an answer before moving on.");
+
+        input.Questions[0].IsOtherSelected = true;
+        input.Questions[0].OtherText = "Echo as text";
+        Assert.IsTrue(input.NextCommand.CanExecute);
+        await RunCommandAsync(input.NextCommand);
+        Assert.AreEqual("Question 2 of 3", input.StepText);
+        Assert.AreSame(input.Questions[1], input.CurrentQuestions[0]);
+        Assert.IsTrue(input.BackCommand.CanExecute);
+
+        await RunCommandAsync(input.BackCommand);
+        Assert.AreEqual("Question 1 of 3", input.StepText);
+        Assert.AreEqual("Echo as text", input.Questions[0].OtherText, "Answers survive navigation.");
+        await RunCommandAsync(input.NextCommand);
+
+        input.Questions[1].FreeText = "echo-api";
+        await RunCommandAsync(input.NextCommand);
+        Assert.IsTrue(input.IsLastStep);
+        Assert.IsFalse(input.ShowNext);
+        Assert.IsFalse(input.SubmitCommand.CanExecute);
+
+        input.Questions[2].Options[0].IsSelected = true;
+        await RunCommandAsync(input.SubmitCommand);
+
+        Assert.IsNotNull(submitted);
+        Assert.AreEqual(3, submitted!.Count);
+        Assert.AreEqual(UserInputAnswerKind.Other, submitted["spec"].Kind);
+        Assert.AreEqual("echo-api", submitted["name"].Text);
+        Assert.AreEqual("mit", submitted["license"].OptionIds.Single());
+    }
+
+    [TestMethod]
+    public void UserInputViewModel_SingleQuestionShowsSubmitWithoutStepper()
+    {
+        var input = new UserInputViewModel(
+            new UserInputRequest
+            {
+                RequestId = "request-1",
+                IsBlocking = true,
+                Questions = [new UserInputQuestion { Id = "q", Header = "Q", Question = "Answer?" }],
+            },
+            (_, _, _) => Task.CompletedTask,
+            new SafeMarkdownService());
+
+        Assert.IsFalse(input.IsMultiStep);
+        Assert.IsTrue(input.IsLastStep);
+        Assert.IsFalse(input.ShowNext);
+        Assert.AreEqual("Answer each question before submitting.", input.ValidationText);
+    }
+
+    // Starts turn-1 in the requested mode, as the offer depends on the mode the turn started with.
+    private static async Task<ChatViewModel> CreatePlanThreadAsync(FakeWorkerBridge bridge, bool planTurn = true)
+    {
+        bridge.ExperimentalApi = true;
+        var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: ExperimentalSettingsStore())
+        {
+            SelectedThread = new ThreadSummary { Id = "thread-1" },
+        };
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready, ThreadId = "thread-1" });
+        await RunCommandAsync(vm.JoinThreadCommand);
+        vm.PlanModeEnabled = planTurn;
+        await SendMessageAsync(vm, "plan the change", clearComposer: false);
+        return vm;
+    }
+
+    private static ConversationEvent CompletedPlanItem(string text) => new()
+    {
+        Kind = ConversationEventKind.ItemCompleted,
+        ThreadId = "thread-1",
+        TurnId = "turn-1",
+        ItemId = "turn-1-plan",
+        Text = text,
+        Plan = new TurnPlanSnapshot { ThreadId = "thread-1", TurnId = "turn-1", IsComplete = true },
+    };
+
+    private static async Task CompletePlanTurnAsync(ChatViewModel vm, string text)
+    {
+        await RaiseConversationEventAsync(vm, CompletedPlanItem(text));
+        await RaiseConversationEventAsync(vm, new ConversationEvent { Kind = ConversationEventKind.TurnCompleted, ThreadId = "thread-1", TurnId = "turn-1" });
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_PlanWithPrompt_LeavesPlanModeEnabled()
+    {
+        var bridge = new FakeWorkerBridge { ExperimentalApi = true };
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: ExperimentalSettingsStore())
         {
             SelectedThread = new ThreadSummary { Id = "thread-1" },
         };
@@ -4120,7 +4653,8 @@ public sealed class ViewModelTests
 
         await SendMessageAsync(vm, "after the plan turn", clearComposer: false);
 
-        Assert.IsNull(bridge.LastStartTurnRequest!.CollaborationMode);
+        Assert.AreEqual("plan", bridge.LastStartTurnRequest!.CollaborationMode!.Mode);
+        Assert.IsTrue(vm.PlanModeEnabled);
     }
 
     [TestMethod]
@@ -5077,6 +5611,27 @@ public sealed class ViewModelTests
             ?? throw new InvalidOperationException("Could not find SendAsync.");
 
         await (Task)method.Invoke(viewModel, null)!;
+    }
+
+    private static void InvokePrivate(ChatViewModel viewModel, string methodName)
+        => (typeof(ChatViewModel).GetMethod(methodName, BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException($"Could not find {methodName}.")).Invoke(viewModel, null);
+
+    private static Task InvokeFinishRecoveryAsync(ChatViewModel viewModel, ConnectionRecoveryOutcome outcome)
+    {
+        MethodInfo method = typeof(ChatViewModel).GetMethod("FinishRecoveryAsync", BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("Could not find FinishRecoveryAsync.");
+        return (Task)method.Invoke(viewModel, [new ConnectionRecoveryResult(outcome, 1, WorkerRecoveryFailureKind.None)])!;
+    }
+
+    private static async Task<bool> InvokeExecutePlanAsync(ChatViewModel viewModel, string? threadId, string prompt)
+    {
+        MethodInfo method = typeof(ChatViewModel).GetMethod("ExecutePlanAsync", BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("Could not find ExecutePlanAsync.");
+        FieldInfo fence = typeof(ChatViewModel).GetField("goalStopFenceVersion", BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("Could not find goalStopFenceVersion.");
+        Task<bool> execution = (Task<bool>)method.Invoke(viewModel, [threadId, prompt, (long)fence.GetValue(viewModel)!])!;
+        return await execution.ConfigureAwait(false);
     }
 
     private static async Task EnsureExplicitJoinAsync(ChatViewModel viewModel)
@@ -6086,7 +6641,7 @@ public sealed class ViewModelTests
     public async Task ChatViewModel_PlanRechecksTheGoalStopFenceImmediatelyBeforeStartingTheTurn()
     {
         const string threadId = "plan-fence";
-        var bridge = new FakeWorkerBridge();
+        var bridge = new FakeWorkerBridge { ExperimentalApi = true };
         using ChatViewModel vm = await CreateJoinedGoalViewModelAsync(bridge, threadId);
         MethodInfo executePlan = typeof(ChatViewModel).GetMethod("ExecutePlanAsync", BindingFlags.NonPublic | BindingFlags.Instance)
             ?? throw new InvalidOperationException("Could not find ExecutePlanAsync.");
@@ -6672,6 +7227,10 @@ public sealed class ViewModelTests
                 .ToArray(),
         };
 
+    // Plan mode needs Experimental API; tests that use it must not depend on the machine's settings file.
+    private static MemorySettingsStore ExperimentalSettingsStore()
+        => new(new ExtensionSettings { ExperimentalApiEnabled = true });
+
     private sealed class MemorySettingsStore : IExtensionSettingsStore
     {
         public MemorySettingsStore(ExtensionSettings settings)
@@ -6829,8 +7388,17 @@ public sealed class ViewModelTests
 
         public Exception? StartTurnException { get; set; }
 
+        // Stamps published statuses as a connection that negotiated experimentalApi.
+        public bool ExperimentalApi { get; set; }
+
         public Task PublishStateAsync(WorkerStatus status)
         {
+            if (ExperimentalApi)
+            {
+                status.Target ??= new ConnectionTargetSnapshot();
+                status.Target.ExperimentalApi = true;
+            }
+
             currentStatus = status;
             return StateChanged?.Invoke(Notification(status, status)) ?? Task.CompletedTask;
         }
@@ -7015,10 +7583,17 @@ public sealed class ViewModelTests
         {
             StartTurnCallCount++;
             LastStartTurnRequest = request;
+            if (StartTurnHandler is not null)
+            {
+                return StartTurnHandler(request, cancellationToken);
+            }
+
             return StartTurnException is null
                 ? Task.FromResult("turn-1")
                 : Task.FromException<string>(StartTurnException);
         }
+
+        public Func<StartTurnRequest, CancellationToken, Task<string>>? StartTurnHandler { get; set; }
 
         public Task<string> SteerTurnAsync(SteerTurnRequest request, CancellationToken cancellationToken)
         {

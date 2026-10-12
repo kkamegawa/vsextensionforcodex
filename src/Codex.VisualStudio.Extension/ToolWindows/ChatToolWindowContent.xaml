@@ -25,6 +25,18 @@
            composer styles remain explicit and continue to provide their transparent surface. -->
       <Style TargetType="TextBox" BasedOn="{StaticResource {x:Static styles:VsResourceKeys.TextBoxStyleKey}}" />
 
+      <!-- Choice controls use Visual Studio templates for their glyph states and keyboard focus.
+           Remote UI DataTemplates do not reliably inherit the root text style, so the interaction
+           card also supplies its own semantic foreground. -->
+      <Style TargetType="RadioButton"
+             BasedOn="{StaticResource {x:Static styles:VsResourceKeys.ThemedDialogRadioButtonStyleKey}}">
+        <Setter Property="Foreground" Value="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowTextBrushKey}}" />
+      </Style>
+      <Style TargetType="CheckBox"
+             BasedOn="{StaticResource {x:Static styles:VsResourceKeys.CheckBoxStyleKey}}">
+        <Setter Property="Foreground" Value="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowTextBrushKey}}" />
+      </Style>
+
       <Style TargetType="TextBlock">
         <Setter Property="Foreground" Value="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowTextBrushKey}}" />
         <Setter Property="TextOptions.TextFormattingMode" Value="Display" />
@@ -42,6 +54,8 @@
            Dark, Light/Blue, High Contrast, and live theme changes use paired state colors. -->
       <Style x:Key="CommandOutputExpanderStyle" TargetType="Expander">
         <Setter Property="Visibility" Value="Collapsed" />
+        <Setter Property="Foreground"
+                Value="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowTextBrushKey}}" />
         <Setter Property="BorderBrush"
                 Value="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBorderBrushKey}}" />
         <Setter Property="BorderThickness" Value="1" />
@@ -69,6 +83,11 @@
                                 ContentTemplate="{TemplateBinding HeaderTemplate}"
                                 ContentTemplateSelector="{TemplateBinding HeaderTemplateSelector}"
                                 IsChecked="{Binding IsExpanded, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}">
+                    <ToggleButton.Style>
+                      <Style TargetType="ToggleButton">
+                        <Setter Property="Foreground" Value="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowTextBrushKey}}" />
+                      </Style>
+                    </ToggleButton.Style>
                     <ToggleButton.Template>
                       <ControlTemplate TargetType="ToggleButton">
                         <Border x:Name="HeaderBackground"
@@ -452,6 +471,7 @@
       <Style x:Key="MessageRowStyle" TargetType="ListBoxItem">
         <Setter Property="HorizontalContentAlignment" Value="Stretch" />
         <Setter Property="Background" Value="Transparent" />
+        <Setter Property="Foreground" Value="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowTextBrushKey}}" />
         <Setter Property="Template">
           <Setter.Value>
             <ControlTemplate TargetType="ListBoxItem">
@@ -1021,7 +1041,7 @@
                        boundary, and keep full opacity for High Contrast themes. -->
                   <TextBlock FontWeight="SemiBold"
                              Foreground="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowTextBrushKey}}"
-                             Text="{Binding Role}" />
+                             Text="{Binding DisplayRole}" />
 
                   <Border Margin="0,6,0,0"
                           Padding="6,4"
@@ -1059,7 +1079,7 @@
                     </Button.Style>
                   </Button>
 
-                  <!-- Structured agent/reasoning content. Prose wraps in the panel; code blocks scroll horizontally. -->
+                  <!-- Structured agent/reasoning/proposed-plan content. Prose wraps in the panel; code blocks scroll horizontally. -->
                   <ItemsControl Margin="0,4,0,0"
                                 HorizontalAlignment="Stretch"
                                 ItemsSource="{Binding Blocks}"
@@ -1365,7 +1385,7 @@
                   </ItemsControl>
 
                   <TextBlock Margin="0,4,0,0" Text="{Binding PlanDeltaText}" TextWrapping="Wrap"
-                             Visibility="{Binding HasPlanDeltaText, Converter={StaticResource BoolToVis}}"
+                             Visibility="{Binding ShowPlanDeltaText, Converter={StaticResource BoolToVis}}"
                              AutomationProperties.Name="Provisional plan update" />
                   <TextBlock Margin="0,3,0,0" FontSize="11"
                              Text="Plan preview was truncated by the display size limit."
@@ -1479,7 +1499,8 @@
       </Grid>
 
       <!-- Pending interaction cards share a bounded, virtualized surface. Every request stays
-           independently actionable while the composer and transcript remain available. -->
+           independently actionable while the composer and transcript remain available. Pixel
+           scrolling keeps a card taller than the surface reachable down to its actions. -->
       <ListBox Grid.Row="2"
                Margin="10,0,10,10"
                Padding="0"
@@ -1488,6 +1509,7 @@
                BorderThickness="0"
                ItemsSource="{Binding PendingInteractions}"
                ScrollViewer.CanContentScroll="True"
+               VirtualizingPanel.ScrollUnit="Pixel"
                ScrollViewer.VerticalScrollBarVisibility="Auto"
                ScrollViewer.HorizontalScrollBarVisibility="Disabled"
                VirtualizingPanel.IsVirtualizing="True"
@@ -1503,6 +1525,7 @@
           <DataTemplate>
             <Border Padding="12" CornerRadius="8"
                     Background="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBackgroundBrushKey}}"
+                    TextElement.Foreground="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowTextBrushKey}}"
                     BorderThickness="1"
                     BorderBrush="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBorderBrushKey}}">
               <StackPanel>
@@ -1550,12 +1573,16 @@
 
                 <StackPanel Visibility="{Binding IsQuestion, Converter={StaticResource BoolToVis}}">
                   <TextBlock FontSize="11" Opacity="0.75" Text="Waiting for your response" />
-                  <ItemsControl ItemsSource="{Binding UserInput.Questions}">
+                  <TextBlock Margin="0,4,0,0" FontWeight="SemiBold" Text="{Binding UserInput.StepText}"
+                             Visibility="{Binding UserInput.IsMultiStep, Converter={StaticResource BoolToVis}}"
+                             AutomationProperties.LiveSetting="Polite" />
+                  <ItemsControl ItemsSource="{Binding UserInput.CurrentQuestions}">
                     <ItemsControl.ItemTemplate>
                       <DataTemplate>
                         <StackPanel Margin="0,8,0,0">
                           <TextBlock FontWeight="Bold" Text="{Binding Header}" TextWrapping="Wrap" />
-                          <TextBlock Margin="0,2,0,0" Text="{Binding Question}" TextWrapping="Wrap" />
+                          <TextBlock Margin="0,2,0,0" Text="{Binding Question}" TextWrapping="Wrap"
+                                     Visibility="{Binding HasQuestion, Converter={StaticResource BoolToVis}}" />
                           <TextBox Margin="0,5,0,0" MinHeight="50" TextWrapping="Wrap" AcceptsReturn="True"
                                    Text="{Binding FreeText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
                                    Visibility="{Binding IsFreeText, Converter={StaticResource BoolToVis}}" />
@@ -1582,9 +1609,16 @@
                   </ItemsControl>
                   <TextBlock Margin="0,6,0,0" Text="{Binding UserInput.ValidationText}" TextWrapping="Wrap" />
                   <WrapPanel Margin="0,8,0,0">
-                    <Button Margin="0,0,6,0" Content="Submit" Command="{Binding UserInput.SubmitCommand}"
-                            Style="{StaticResource RoundButtonStyle}" />
-                    <Button Content="Cancel" Command="{Binding UserInput.CancelCommand}"
+                    <Button Margin="0,0,6,6" Content="Back" Command="{Binding UserInput.BackCommand}"
+                            Style="{StaticResource RoundButtonStyle}"
+                            Visibility="{Binding UserInput.IsMultiStep, Converter={StaticResource BoolToVis}}" />
+                    <Button Margin="0,0,6,6" Content="Next" Command="{Binding UserInput.NextCommand}"
+                            Style="{StaticResource RoundButtonStyle}"
+                            Visibility="{Binding UserInput.ShowNext, Converter={StaticResource BoolToVis}}" />
+                    <Button Margin="0,0,6,6" Content="Submit" Command="{Binding UserInput.SubmitCommand}"
+                            Style="{StaticResource RoundButtonStyle}"
+                            Visibility="{Binding UserInput.IsLastStep, Converter={StaticResource BoolToVis}}" />
+                    <Button Margin="0,0,0,6" Content="Cancel" Command="{Binding UserInput.CancelCommand}"
                             Style="{StaticResource RoundButtonStyle}" />
                   </WrapPanel>
                 </StackPanel>
@@ -2259,8 +2293,17 @@
               <CheckBox Margin="8,0,0,0" VerticalAlignment="Center"
                         Content="Experimental API"
                         ToolTip="Enable codex experimental APIs for structured prompts after reconnect; natural-language confirmation cards are detected locally."
-                        Foreground="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowTextBrushKey}}"
-                        IsChecked="{Binding ExperimentalApiEnabled, Mode=TwoWay}" />
+                        IsChecked="{Binding ExperimentalApiEnabled, Mode=TwoWay}"
+                        AutomationProperties.Name="Experimental API"
+                        AutomationProperties.HelpText="Enables Codex experimental APIs for structured prompts after reconnect." />
+              <CheckBox Margin="8,0,0,0" VerticalAlignment="Center"
+                        Content="Plan mode"
+                        IsChecked="{Binding PlanModeEnabled, Mode=TwoWay}"
+                        IsEnabled="{Binding IsPlanModeAvailable}"
+                        ToolTip="{Binding PlanModeHelpText}"
+                        ToolTipService.ShowOnDisabled="True"
+                        AutomationProperties.Name="Plan mode"
+                        AutomationProperties.HelpText="{Binding PlanModeHelpText}" />
             </WrapPanel>
 
             <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">

@@ -14,7 +14,8 @@ Visual Studio拡張機能は、入力の先頭文字が`/`の場合だけCodex�
 | 分類 | コマンド | 動作 |
 |---|---|---|
 | App Server操作 | `/compact`, `/feedback`, `/fork`, `/goal`, `/mcp`, `/review`, `/shell` | 専用の型付きWorker RPCを呼び出します。`/shell`は明示的な入力と確認からだけ実行します。 |
-| 次ターン設定 | `/fast`, `/model`, `/permissions`（`/approve`は互換エイリアス）, `/personality`, `/plan`, `/reasoning` | 次の`turn/start`へ渡す型付きフィールドを更新します。ピッカー選択以外は次のターン開始時に消費されます。 |
+| 次ターン設定 | `/fast`, `/model`, `/permissions`（`/approve`は互換エイリアス）, `/personality`, `/reasoning` | 次の`turn/start`へ渡す型付きフィールドを更新します。ピッカー選択以外は次のターン開始時に消費されます。 |
+| 会話モード | `/plan` | 入力欄のチェックと連動してPlanモードを有効にし、明示的にチェックを外すまで継続します。 |
 | Visual Studio操作 | `/ide-context`, `/init`, `/status` | 上限付きIDEコンテキスト、`AGENTS.md`の安全な生成、ローカル状態表示を行います。 |
 
 公式の意味を現在のApp Serverまたは単一スレッドUIで維持できない
@@ -33,8 +34,16 @@ Full accessはCodex sandboxと通常の承認promptを無効化し、拡張へ�
 処理が実行される可能性があるため確認が必須です。turn overrideから`custom`へ戻す場合は
 新規threadを開始し、値の省略や`null`をresetとして扱いません。
 
-引数なしの`/plan`は次ターンをPlanモードにします。引数がある場合は、その
-内容をプロンプトとしてPlanモードのターンを開始します。
+引数なしの`/plan`はPlanモードを有効にします。引数がある場合は、その内容を
+プロンプトとしてPlanモードのターンも開始します。入力欄の **Plan mode** チェックは
+現在の会話の選択状態を表示し、ターン完了・中断・失敗後も維持します。チェックを
+外すと次のターンから通常モードになり、実行中のターンは変更しません。同じ所有者で
+会話を切り替えると、それぞれの会話の選択状態を復元します。Planモードには
+**Experimental API** が必要です。app-serverは他の接続では`collaborationMode`を拒否
+するため、無効時はチェックを無効化し、`/plan`は有効化の方法を表示します。提案計画は
+Markdownの「Proposed plan」として表示し、Planターン完了時には **Implement this plan?**
+カードで通常モードへ切り替えて実装を開始するかを確認します。承認済みの
+[設計・計画](interaction-theme-plan_ja.md)を参照してください。
 
 ## ルーティングとキュー
 

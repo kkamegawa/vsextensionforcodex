@@ -5,7 +5,7 @@ namespace Codex.VisualStudio.Contracts;
 
 public static class ContractVersions
 {
-    public const int Current = 22;
+    public const int Current = 23;
 }
 
 public enum GoalStopStepOutcome

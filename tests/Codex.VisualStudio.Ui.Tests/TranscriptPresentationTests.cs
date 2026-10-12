@@ -24,7 +24,7 @@ public sealed class TranscriptPresentationTests
         XDocument document = LoadXaml();
         XElement author = document
             .Descendants(Presentation + "TextBlock")
-            .Single(element => element.Attribute("Text")?.Value == "{Binding Role}");
+            .Single(element => element.Attribute("Text")?.Value == "{Binding DisplayRole}");
 
         AssertDynamicThemeKey(author, "Foreground", ToolWindowTextBrushKey);
         Assert.IsNull(
