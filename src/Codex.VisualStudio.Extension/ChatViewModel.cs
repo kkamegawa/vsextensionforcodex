@@ -51,6 +51,9 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
     private readonly ConnectionHealthPresentationViewModel connectionHealth;
     private RemoteProfileViewModel? observedHealthProfile;
     private readonly Dictionary<string, InteractionCardViewModel> interactionCards = new(StringComparer.Ordinal);
+    private const string ImplementPlanRequestPrefix = "implement-plan:";
+    private const string ImplementPlanOptionId = "implement";
+    internal const string ImplementPlanPrompt = "Implement the plan.";
     private readonly Dictionary<string, StringBuilder> agentRawText = new(StringComparer.Ordinal);
     private readonly Dictionary<string, StringBuilder> itemRawText = new(StringComparer.Ordinal);
     private static readonly Regex HeaderWhitespace = new(@"\s+", RegexOptions.Compiled | RegexOptions.CultureInvariant);
@@ -89,7 +92,8 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
     private readonly Dictionary<string, PendingReasoningOverride> pendingReasoningByThread = new(StringComparer.Ordinal);
     private readonly Dictionary<string, string?> reasoningRestoreByThread = new(StringComparer.Ordinal);
     private string? nextPersonality;
-    private string? nextCollaborationMode;
+    private bool unassignedPlanModeEnabled;
+    private readonly HashSet<string> planModeThreads = new(StringComparer.Ordinal);
     private string selectedServiceTierId = ServiceTierCatalog.DefaultId;
     private readonly Dictionary<string, PendingServiceTierOverride> pendingServiceTierByThread = new(StringComparer.Ordinal);
     private readonly Dictionary<string, string?> serviceTierRestoreByThread = new(StringComparer.Ordinal);
@@ -450,6 +454,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             settings.ExperimentalApiEnabled = value;
             settingsStore.Save(settings);
             OnPropertyChanged();
+            OnPropertyChanged(nameof(PlanModeHelpText));
         }
     }
 
@@ -637,6 +642,9 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                 OnPropertyChanged(nameof(StatusAutomationHelpText));
                 OnPropertyChanged(nameof(EffectiveApprovalModeText));
                 OnPropertyChanged(nameof(IsUsageAvailable));
+                OnPropertyChanged(nameof(IsPlanModeAvailable));
+                OnPropertyChanged(nameof(PlanModeHelpText));
+                OnPropertyChanged(nameof(PlanModeEnabled));
                 OnDailyUseStatusChanged(previousGeneration, value);
             }
         }
@@ -777,7 +785,9 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             }
             inFlightMutations.Clear();
 
-            ClearOwnerScopedState();
+            // A reconnect can replace the worker bridge without changing its owner. Keep
+            // each conversation's Plan selection until a status update proves the owner changed.
+            ClearOwnerScopedState(preservePlanMode: true);
             if (uncertainOperations.Length > 0)
             {
                 Items.Add(new ChatItemViewModel(
@@ -814,7 +824,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
 
     private bool HasDraftContent()
         => ComposerText.Length > 0 || HasPendingAttachments || HasPendingSkill
-            || nextPersonality is not null || nextCollaborationMode is not null || inFlightMutations.Count > 0
+            || nextPersonality is not null || inFlightMutations.Count > 0
             || Items.Any(static item => item.IsDeliveryUnknown);
 
     private RecoveryDraftViewModel CaptureRecoveryDraft()
@@ -831,7 +841,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             selectedReasoningEffortId,
             selectedServiceTierId,
             nextPersonality,
-            nextCollaborationMode,
+            PlanModeEnabled,
             skillCopy,
             uncertain,
             RestoreQuarantinedDraftCommand,
@@ -1111,17 +1121,12 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                 }
             }
 
-            if (draft.CollaborationMode is not null)
+            if (draft.PlanModeEnabled && !IsPlanModeAvailable)
             {
-                if (string.Equals(draft.CollaborationMode, "plan", StringComparison.Ordinal))
-                {
-                    nextCollaborationMode = draft.CollaborationMode;
-                }
-                else
-                {
-                    settingsRestoreFailed = true;
-                }
+                settingsRestoreFailed = true;
             }
+
+            PlanModeEnabled = draft.PlanModeEnabled;
             if (draft.Skill is { } skill
                 && skillsSnapshot?.Skills.FirstOrDefault(candidate =>
                     string.Equals(candidate.Name, skill.Name, StringComparison.Ordinal)
@@ -1259,7 +1264,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         long OwnerGeneration,
         long ConnectionGeneration);
 
-    private void ClearOwnerScopedState()
+    private void ClearOwnerScopedState(bool preservePlanMode = false)
     {
         slashCommandCoordinator.CancelAll();
         CancelFileSuggestionRefresh();
@@ -1283,13 +1288,18 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         pendingServiceTierByThread.Clear();
         serviceTierRestoreByThread.Clear();
         nextPersonality = null;
-        nextCollaborationMode = null;
+        if (!preservePlanMode)
+        {
+            planModeThreads.Clear();
+            unassignedPlanModeEnabled = false;
+        }
         initialized = false;
         nextCursor = null;
 
         selectedThread = null;
         locallyStartedTurnId = null;
         OnPropertyChanged(nameof(SelectedThread));
+        OnPropertyChanged(nameof(PlanModeEnabled));
         OnPropertyChanged(nameof(IsLocallyInterruptible));
         ResetGoalProjection();
         IsThreadJoined = false;
@@ -1373,6 +1383,8 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         {
             if (SetProperty(ref selectedThread, value))
             {
+                OnPropertyChanged(nameof(PlanModeEnabled));
+                RemovePlanImplementationOffers();
                 OnDailyUseThreadChanged(value?.Id);
                 OnPropertyChanged(nameof(EffectiveApprovalModeText));
                 OnPropertyChanged(nameof(IsHistoryOnly));
@@ -1433,6 +1445,65 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             // through SetComposerText, which DOES notify so the TextBox reflects the new value.
             OnPropertyChanged(nameof(IsComposerEmpty));
             RaiseCommandStates();
+        }
+    }
+
+    // Plan mode needs the experimental turn/start.collaborationMode field, which the app-server
+    // rejects unless the current connection negotiated experimentalApi. The saved setting only
+    // applies on the next connect, so availability follows the connection, not the setting.
+    [DataMember]
+    public bool IsPlanModeAvailable => Status.Target?.ExperimentalApi == true;
+
+    [DataMember]
+    public string PlanModeHelpText => IsPlanModeAvailable
+        ? "Keep planning mode active until you turn it off."
+        : settings.ExperimentalApiEnabled
+            ? "Plan mode becomes available after reconnecting with Experimental API."
+            : "Plan mode requires Experimental API. Enable it and reconnect.";
+
+    // Plan selection belongs to its conversation: only enabled conversations are stored, and the
+    // threadless composer has its own flag until a conversation is created from it.
+    [DataMember]
+    public bool PlanModeEnabled
+    {
+        get => GetPlanModeForThread(selectedThread?.Id);
+        set
+        {
+            if (selectedThread is null)
+            {
+                SetUnassignedPlanMode(value);
+            }
+            else
+            {
+                SetPlanModeForThread(selectedThread.Id, value);
+            }
+        }
+    }
+
+    private bool GetPlanModeForThread(string? threadId)
+        => IsPlanModeAvailable
+            && (threadId is null ? unassignedPlanModeEnabled : planModeThreads.Contains(threadId));
+
+    private void SetPlanModeForThread(string threadId, bool enabled)
+    {
+        bool changed = enabled ? planModeThreads.Add(threadId) : planModeThreads.Remove(threadId);
+        if (changed && string.Equals(selectedThread?.Id, threadId, StringComparison.Ordinal))
+        {
+            OnPropertyChanged(nameof(PlanModeEnabled));
+        }
+    }
+
+    private void SetUnassignedPlanMode(bool enabled)
+    {
+        if (unassignedPlanModeEnabled == enabled)
+        {
+            return;
+        }
+
+        unassignedPlanModeEnabled = enabled;
+        if (selectedThread is null)
+        {
+            OnPropertyChanged(nameof(PlanModeEnabled));
         }
     }
 
@@ -2661,7 +2732,15 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             }
 
             Threads.Insert(0, thread);
+            // The threadless Plan selection moves to the conversation created from it.
+            if (selectedThread is null && unassignedPlanModeEnabled)
+            {
+                planModeThreads.Add(thread.Id);
+                unassignedPlanModeEnabled = false;
+            }
+
             selectedThread = thread;
+            OnPropertyChanged(nameof(PlanModeEnabled));
             OnGoalThreadChanged(thread.Id);
             IsThreadJoined = true;
             OnPropertyChanged(nameof(SelectedThread));
@@ -3594,6 +3673,12 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
 
         if (Status.TurnId is null)
         {
+            if (GetCollaborationModeBlocker(targetThreadId, forcePlanMode: false) is { } blocker)
+            {
+                await ShowSlashFailureAsync($"The message was not sent. {blocker}").ConfigureAwait(false);
+                return;
+            }
+
             string displayText = string.IsNullOrWhiteSpace(text)
                 ? HasPendingSkill
                     ? $"Invoked skill: {PendingSkills[0].DisplayName}."
@@ -3823,6 +3908,11 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         string text,
         bool forcePlanMode)
     {
+        bool isPlanModeEnabled = forcePlanMode || GetPlanModeForThread(threadId);
+        string? model = SelectedModel;
+        // Callers check GetCollaborationModeBlocker first, so a required mode always has a model
+        // and Plan mode is only requested on a connection that negotiated experimentalApi.
+        bool sendCollaborationMode = IsPlanModeAvailable && !string.IsNullOrWhiteSpace(model);
         AttachmentInfo[] attachments = PendingAttachments
             .Select(attachment => new AttachmentInfo
             {
@@ -3836,14 +3926,13 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                 AsyncCommand.CurrentClientContext,
                 lifetime.Token).ConfigureAwait(false)
             : null;
-        string? collaborationMode = forcePlanMode ? "plan" : nextCollaborationMode;
         TurnSettingResolution reasoning = ResolveReasoningSetting(threadId);
         TurnSettingResolution serviceTier = ResolveServiceTierSetting(threadId);
         return StampOwner(new StartTurnRequest
         {
             ThreadId = threadId,
             Text = text,
-            Model = SelectedModel,
+            Model = model,
             ApprovalPolicy = GetTurnApprovalPolicy(),
             ApprovalsReviewer = GetTurnApprovalsReviewer(),
             SandboxMode = GetTurnSandboxMode(),
@@ -3853,18 +3942,33 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             Personality = nextPersonality,
             HasServiceTier = serviceTier.HasValue,
             ServiceTier = serviceTier.Value,
-            CollaborationMode = collaborationMode is null
-                ? null
-                : new CollaborationModeInfo
+            CollaborationMode = sendCollaborationMode
+                ? new CollaborationModeInfo
                 {
-                    Mode = collaborationMode,
-                    Model = SelectedModel ?? string.Empty,
+                    Mode = isPlanModeEnabled ? "plan" : "default",
+                    Model = model!,
                     ReasoningEffort = reasoning.Value,
-                },
+                }
+                : null,
             IdeContext = ideContext,
             Attachments = attachments,
             Skill = PendingSkills.FirstOrDefault()?.Invocation,
         });
+    }
+
+    // A connection that negotiated experimentalApi sends an explicit collaboration mode on every
+    // turn so disabling Plan mode reliably returns to default; that mode carries a required model.
+    private string? GetCollaborationModeBlocker(string threadId, bool forcePlanMode)
+    {
+        bool isPlanModeEnabled = forcePlanMode || GetPlanModeForThread(threadId);
+        if (isPlanModeEnabled && !IsPlanModeAvailable)
+        {
+            return PlanModeHelpText;
+        }
+
+        return IsPlanModeAvailable && string.IsNullOrWhiteSpace(SelectedModel)
+            ? "Select a model before starting a turn. The collaboration mode requires one."
+            : null;
     }
 
     // Next-turn settings apply to exactly one started turn. Compare against the request so a
@@ -3902,15 +4006,6 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             && string.Equals(restore, request.ServiceTier, StringComparison.Ordinal))
         {
             serviceTierRestoreByThread.Remove(request.ThreadId);
-        }
-
-        if (request.CollaborationMode is not null
-            && string.Equals(
-                nextCollaborationMode,
-                request.CollaborationMode.Mode,
-                StringComparison.Ordinal))
-        {
-            nextCollaborationMode = null;
         }
     }
 
@@ -5394,10 +5489,32 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
     {
         OwnerSnapshot owner = CaptureOwnerSnapshot();
         string prompt = arguments.Trim();
+        string? blocker = prompt.Length > 0
+            ? GetCollaborationModeBlocker(threadId, forcePlanMode: true)
+            : IsPlanModeAvailable ? null : PlanModeHelpText;
+        if (blocker is not null)
+        {
+            await ShowSlashFailureAsync(blocker).ConfigureAwait(false);
+            return false;
+        }
+
+        bool enabled = false;
+        await OnUiAsync(() =>
+        {
+            if (IsCurrentOwner(owner))
+            {
+                SetPlanModeForThread(threadId, true);
+                enabled = true;
+            }
+        }).ConfigureAwait(false);
+        if (!enabled)
+        {
+            return false;
+        }
+
         if (prompt.Length == 0)
         {
-            nextCollaborationMode = "plan";
-            await ShowSlashStatusAsync("Plan mode will be used for the next turn.").ConfigureAwait(false);
+            await ShowSlashStatusAsync("Plan mode is enabled until you turn it off in the composer.").ConfigureAwait(false);
             return true;
         }
 
@@ -5548,7 +5665,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             $"Effective service tier: {effectiveServiceTier}",
             $"Pending service-tier override: {pendingServiceTier}",
             $"Next-turn service tier: {nextServiceTierText}",
-            $"Collaboration mode: {nextCollaborationMode ?? "default"}",
+            $"Collaboration mode: {(GetPlanModeForThread(threadId) ? "plan" : "default")}",
             $"Desired permissions: {DesiredApprovalModeText}",
             $"Effective permissions: {EffectiveApprovalModeText}",
             $"Next-turn approval policy: {GetTurnApprovalPolicy() ?? "(config.toml)"}",
@@ -6330,12 +6447,14 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                     agentRawText.Clear();
                     itemRawText.Clear();
                     lastAgentRawKey = null;
+                    RemovePlanImplementationOffers();
                     break;
                 case ConversationEventKind.AgentMessageDelta when !string.IsNullOrEmpty(value.Text):
                     AppendAgentRaw(GetAgentRawKey(value), value.Text);
                     break;
                 case ConversationEventKind.TurnCompleted:
                     TryDetectChoicePrompt(NotificationOwner(notification));
+                    TryOfferPlanImplementation(value, NotificationOwner(notification));
                     itemRawText.Clear();
                     break;
             }
@@ -7153,6 +7272,95 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         }
     }
 
+    // Codex parity: a completed Plan-mode turn that produced a proposed plan offers to implement
+    // it. The offer is local (no server request) and expires with its conversation or turn.
+    private void TryOfferPlanImplementation(ConversationEvent value, OwnerSnapshot owner)
+    {
+        string? threadId = value.ThreadId;
+        if (threadId is null
+            || !string.Equals(selectedThread?.Id, threadId, StringComparison.Ordinal)
+            || !GetPlanModeForThread(threadId)
+            || !Items.Any(item => item.IsProposedPlan
+                && item.IsPlanComplete
+                && string.Equals(item.ThreadId, threadId, StringComparison.Ordinal)
+                && (value.TurnId is null || string.Equals(item.TurnId, value.TurnId, StringComparison.Ordinal))))
+        {
+            return;
+        }
+
+        var request = new UserInputRequest
+        {
+            RequestId = ImplementPlanRequestPrefix + (value.TurnId ?? Guid.NewGuid().ToString("N")),
+            ThreadId = threadId,
+            TurnId = value.TurnId ?? string.Empty,
+            IsBlocking = true,
+            Questions =
+            [
+                new UserInputQuestion
+                {
+                    Id = "implement-plan",
+                    Header = "Implement this plan?",
+                    Options =
+                    [
+                        new UserInputOption
+                        {
+                            OptionId = ImplementPlanOptionId,
+                            Label = "Yes, implement this plan",
+                            Description = "Switch to Default mode and start coding.",
+                        },
+                        new UserInputOption
+                        {
+                            OptionId = "stay",
+                            Label = "No, stay in Plan mode",
+                            Description = "Continue planning with the model.",
+                        },
+                    ],
+                },
+            ],
+        };
+        EnqueueUserInput(new UserInputViewModel(
+            request,
+            (requestId, answers, action) => ResolvePlanImplementationAsync(requestId, threadId, answers, action, owner),
+            markdown) { IsSynthetic = true });
+    }
+
+    private async Task ResolvePlanImplementationAsync(
+        string requestId,
+        string threadId,
+        IReadOnlyDictionary<string, UserInputAnswer> answers,
+        UserInputAction action,
+        OwnerSnapshot owner)
+    {
+        bool implement = action == UserInputAction.Submit
+            && answers.Values.Any(answer => answer.OptionIds.Contains(ImplementPlanOptionId, StringComparer.Ordinal));
+        bool start = false;
+        await OnUiAsync(() =>
+        {
+            RemoveUserInput(requestId);
+            if (implement
+                && IsCurrentOwner(owner)
+                && string.Equals(selectedThread?.Id, threadId, StringComparison.Ordinal))
+            {
+                SetPlanModeForThread(threadId, false);
+                start = true;
+            }
+        }).ConfigureAwait(false);
+        if (start)
+        {
+            await SendMessageAsync(ImplementPlanPrompt, clearComposer: false, expectedOwner: owner).ConfigureAwait(false);
+        }
+    }
+
+    private void RemovePlanImplementationOffers()
+    {
+        foreach (string requestId in interactionCards.Keys
+            .Where(static id => id.StartsWith(ImplementPlanRequestPrefix, StringComparison.Ordinal))
+            .ToArray())
+        {
+            RemoveUserInput(requestId);
+        }
+    }
+
     private static string GetAgentRawKey(ConversationEvent value)
         => value.ItemId ?? value.TurnId ?? "global-agent-message";
 
@@ -7583,6 +7791,7 @@ public sealed class ChatItemViewModel : ObservableObject
     private int planDeltaBytes;
     private bool isPlanComplete;
     private bool planWasTruncated;
+    private bool isProposedPlan;
 
     public ChatItemViewModel(string role, string text, ConversationEventKind kind)
     {
@@ -7608,6 +7817,9 @@ public sealed class ChatItemViewModel : ObservableObject
 
     [DataMember]
     public string Role { get; }
+
+    [DataMember]
+    public string DisplayRole => IsProposedPlan ? "Proposed plan" : Role;
 
     public ConversationEventKind Kind { get; }
 
@@ -7777,7 +7989,25 @@ public sealed class ChatItemViewModel : ObservableObject
     public bool IsPlanItem => Kind == ConversationEventKind.PlanUpdated;
 
     [DataMember]
-    public bool UsesBlockRendering => Kind is ConversationEventKind.AgentMessageDelta or ConversationEventKind.ReasoningSummaryDelta;
+    public bool UsesBlockRendering => Kind is ConversationEventKind.AgentMessageDelta or ConversationEventKind.ReasoningSummaryDelta
+        || IsProposedPlan;
+
+    // A plan item's proposed plan is Markdown, rendered like an agent message. Structured
+    // turn/plan/updated steps keep their own step list.
+    [DataMember]
+    public bool IsProposedPlan
+    {
+        get => isProposedPlan;
+        private set
+        {
+            if (SetProperty(ref isProposedPlan, value))
+            {
+                OnPropertyChanged(nameof(UsesBlockRendering));
+                OnPropertyChanged(nameof(DisplayRole));
+                OnPropertyChanged(nameof(ShowPlanDeltaText));
+            }
+        }
+    }
 
     [DataMember]
     public ObservableCollection<ChatBlockViewModel> Blocks { get; } = [];
@@ -7800,12 +8030,16 @@ public sealed class ChatItemViewModel : ObservableObject
             if (SetProperty(ref planDeltaText, value))
             {
                 OnPropertyChanged(nameof(HasPlanDeltaText));
+                OnPropertyChanged(nameof(ShowPlanDeltaText));
             }
         }
     }
 
     [DataMember]
     public bool HasPlanDeltaText => !string.IsNullOrEmpty(PlanDeltaText);
+
+    [DataMember]
+    public bool ShowPlanDeltaText => HasPlanDeltaText && !IsProposedPlan;
 
     [DataMember]
     public bool PlanWasTruncated
@@ -7946,7 +8180,7 @@ public sealed class ChatItemViewModel : ObservableObject
             PlanSteps.Add("• " + step);
     }
 
-    internal void AppendPlanDelta(string text, int maximumUtf8Bytes)
+    internal void AppendPlanDelta(string text, int maximumUtf8Bytes, SafeMarkdownService markdown)
     {
         if (isPlanComplete || string.IsNullOrEmpty(text))
         {
@@ -7982,6 +8216,8 @@ public sealed class ChatItemViewModel : ObservableObject
         {
             planDeltaBytes += appendBytes;
             PlanDeltaText = string.Concat(PlanDeltaText, text.AsSpan(0, appendLength));
+            IsProposedPlan = true;
+            UpdateBlocks(markdown.ToBlocks(PlanDeltaText));
         }
     }
 
@@ -8010,6 +8246,9 @@ public sealed class ChatItemViewModel : ObservableObject
         string? completedText = snapshot.IsComplete ? finalText ?? snapshot.Explanation : null;
         PlanDeltaText = string.IsNullOrWhiteSpace(completedText) ? string.Empty : markdown.ToSafeText(completedText).Trim();
         planDeltaBytes = Encoding.UTF8.GetByteCount(PlanDeltaText);
+        // A completed plan item (live or from history) carries only its proposed plan text.
+        IsProposedPlan = HasPlanDeltaText && !HasStructuredPlanSteps;
+        UpdateBlocks(IsProposedPlan ? markdown.ToBlocks(completedText!) : []);
         IsPlanComplete = snapshot.IsComplete;
         PlanWasTruncated = wasTruncated || (!keepSteps && snapshot.Steps.Count > 200);
     }
@@ -8417,6 +8656,7 @@ public sealed class UserInputViewModel : ObservableObject
     private bool isResolved;
     private int resolving;
     private string? validationText;
+    private int currentIndex;
 
     public UserInputViewModel(
         UserInputRequest request,
@@ -8436,8 +8676,11 @@ public sealed class UserInputViewModel : ObservableObject
                 option.PropertyChanged += OnQuestionChanged;
             }
         }
+        CurrentQuestions = Questions.Count == 0 ? [] : [Questions[0]];
         SubmitCommand = new AsyncCommand(SubmitOnceAsync, () => CanSubmit);
         CancelCommand = new AsyncCommand(CancelOnceAsync, () => !IsResolved);
+        BackCommand = new AsyncCommand(() => MoveToAsync(currentIndex - 1), () => !IsResolved && currentIndex > 0);
+        NextCommand = new AsyncCommand(() => MoveToAsync(currentIndex + 1), () => CanGoNext);
     }
 
     public string RequestId { get; }
@@ -8452,6 +8695,26 @@ public sealed class UserInputViewModel : ObservableObject
     [DataMember]
     public ObservableCollection<UserInputQuestionViewModel> Questions { get; }
 
+    // Questions are answered one at a time; only the current one is rendered so a long request
+    // never pushes its actions out of the bounded card surface. All answers still go back in a
+    // single response, as the protocol requires.
+    [DataMember]
+    public ObservableCollection<UserInputQuestionViewModel> CurrentQuestions { get; }
+
+    [DataMember]
+    public bool IsMultiStep => Questions.Count > 1;
+
+    [DataMember]
+    public string StepText => $"Question {currentIndex + 1} of {Questions.Count}";
+
+    [DataMember]
+    public bool IsLastStep => currentIndex >= Questions.Count - 1;
+
+    [DataMember]
+    public bool ShowNext => !IsLastStep;
+
+    public int CurrentIndex => currentIndex;
+
     [DataMember]
     public AsyncCommand SubmitCommand { get; }
 
@@ -8459,9 +8722,17 @@ public sealed class UserInputViewModel : ObservableObject
     public AsyncCommand CancelCommand { get; }
 
     [DataMember]
+    public AsyncCommand BackCommand { get; }
+
+    [DataMember]
+    public AsyncCommand NextCommand { get; }
+
+    public bool CanGoNext => !IsResolved && !IsLastStep && (!IsBlocking || Questions[currentIndex].CreateAnswer() is not null);
+
+    [DataMember]
     public string? ValidationText
     {
-        get => validationText ?? (IsBlocking && !CanSubmit ? "Answer each question before submitting." : null);
+        get => validationText ?? (IsBlocking && IsLastStep && !CanSubmit ? "Answer each question before submitting." : null);
         private set => SetProperty(ref validationText, value);
     }
 
@@ -8473,8 +8744,7 @@ public sealed class UserInputViewModel : ObservableObject
         {
             if (SetProperty(ref isResolved, value))
             {
-                SubmitCommand.RaiseCanExecuteChanged();
-                CancelCommand.RaiseCanExecuteChanged();
+                RaiseStepCommandStates();
             }
         }
     }
@@ -8522,9 +8792,41 @@ public sealed class UserInputViewModel : ObservableObject
         await resolver(RequestId, new Dictionary<string, UserInputAnswer>(StringComparer.Ordinal), UserInputAction.Cancel).ConfigureAwait(false);
     }
 
-    private void OnQuestionChanged(object? sender, PropertyChangedEventArgs args)
+    private Task MoveToAsync(int index)
+    {
+        if (IsResolved || index < 0 || index >= Questions.Count || index == currentIndex)
+        {
+            return Task.CompletedTask;
+        }
+
+        if (index > currentIndex && !CanGoNext)
+        {
+            ValidationText = "Answer this question before continuing.";
+            return Task.CompletedTask;
+        }
+
+        currentIndex = index;
+        CurrentQuestions[0] = Questions[index];
+        validationText = null;
+        OnPropertyChanged(nameof(ValidationText));
+        OnPropertyChanged(nameof(StepText));
+        OnPropertyChanged(nameof(IsLastStep));
+        OnPropertyChanged(nameof(ShowNext));
+        RaiseStepCommandStates();
+        return Task.CompletedTask;
+    }
+
+    private void RaiseStepCommandStates()
     {
         SubmitCommand.RaiseCanExecuteChanged();
+        CancelCommand.RaiseCanExecuteChanged();
+        BackCommand.RaiseCanExecuteChanged();
+        NextCommand.RaiseCanExecuteChanged();
+    }
+
+    private void OnQuestionChanged(object? sender, PropertyChangedEventArgs args)
+    {
+        RaiseStepCommandStates();
         OnPropertyChanged(nameof(CanSubmit));
         OnPropertyChanged(nameof(ValidationText));
     }
@@ -8555,6 +8857,9 @@ public sealed class UserInputQuestionViewModel : ObservableObject
 
     [DataMember]
     public string Question { get; }
+
+    [DataMember]
+    public bool HasQuestion => Question.Length > 0;
 
     [DataMember]
     public bool IsOther { get; }
@@ -8708,7 +9013,7 @@ public sealed class RecoveryDraftViewModel
         string? reasoningEffort,
         string? serviceTier,
         string? personality,
-        string? collaborationMode,
+        bool planModeEnabled,
         SkillInvocationInfo? skill,
         bool hasUncertainDelivery,
         AsyncCommand restoreCommand,
@@ -8720,13 +9025,13 @@ public sealed class RecoveryDraftViewModel
         TextPreview = safeText.Length > 512 ? string.Concat(safeText.AsSpan(0, 512), "…") : safeText;
         AttachmentSummary = attachmentNames.Length == 0 ? "No file attachments" : string.Join(", ", attachmentNames.Select(markdown.ToSafeText));
         string? skillSummary = skill is null ? null : $"Skill: {skill.Name} ({skill.Scope})";
-        SettingsSummary = markdown.ToSafeText(string.Join(" · ", new[] { model, reasoningEffort, serviceTier, personality, collaborationMode, skillSummary }.Where(static value => !string.IsNullOrWhiteSpace(value))));
+        SettingsSummary = markdown.ToSafeText(string.Join(" · ", new[] { model, reasoningEffort, serviceTier, personality, planModeEnabled ? "Plan mode" : null, skillSummary }.Where(static value => !string.IsNullOrWhiteSpace(value))));
         this.attachmentPaths = attachmentPaths;
         Model = model;
         ReasoningEffort = reasoningEffort;
         ServiceTier = serviceTier;
         Personality = personality;
-        CollaborationMode = collaborationMode;
+        PlanModeEnabled = planModeEnabled;
         Skill = skill;
         HasUncertainDelivery = hasUncertainDelivery;
         RestoreCommand = restoreCommand;
@@ -8763,7 +9068,7 @@ public sealed class RecoveryDraftViewModel
 
     internal string? Personality { get; }
 
-    internal string? CollaborationMode { get; }
+    internal bool PlanModeEnabled { get; }
 
     internal SkillInvocationInfo? Skill { get; }
 }

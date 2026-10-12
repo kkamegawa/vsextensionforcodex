@@ -1864,7 +1864,17 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             parameters["serviceTier"] = request.ServiceTier;
         }
 
-        if (request.CollaborationMode is not null)
+        // turn/start.collaborationMode is experimental: the app-server rejects it unless the
+        // connection negotiated experimentalApi. Default mode needs no override there.
+        if (request.CollaborationMode is not null && !options.ExperimentalApi)
+        {
+            if (!string.Equals(request.CollaborationMode.Mode, "default", StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException(
+                    "Plan mode requires the experimental app-server API. Enable Experimental API and reconnect.");
+            }
+        }
+        else if (request.CollaborationMode is not null)
         {
             var collaborationSettings = new Dictionary<string, object?>
             {

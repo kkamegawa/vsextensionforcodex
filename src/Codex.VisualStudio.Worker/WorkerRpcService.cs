@@ -157,6 +157,7 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
                 Generation = generation,
                 StatePartitionFingerprint = statePartitionFingerprint,
                 OwnerGeneration = nextOwnerGeneration,
+                ExperimentalApi = options.ExperimentalApi,
             }
             : new ConnectionTargetSnapshot
             {
@@ -164,6 +165,7 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
                 Generation = generation,
                 StatePartitionFingerprint = statePartitionFingerprint,
                 OwnerGeneration = nextOwnerGeneration,
+                ExperimentalApi = options.ExperimentalApi,
             };
         lock (targetGate)
         {

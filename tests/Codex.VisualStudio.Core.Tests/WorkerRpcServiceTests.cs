@@ -941,6 +941,23 @@ public sealed class WorkerRpcServiceTests
     }
 
     [TestMethod]
+    public async Task TargetSnapshotReportsTheExperimentalApiNegotiatedForEachConnection()
+    {
+        var host = new FakeProcessHost(new StubConnection());
+        var session = new CodexSessionService(new ApprovalPolicyEngine(new PathAccessPolicy()), new SecretRedactor());
+        await using var worker = new WorkerRpcService(new SecretRedactor(), host, session);
+
+        WorkerOptions experimental = Options();
+        experimental.ExperimentalApi = true;
+        WorkerStatus withExperimental = await worker.ConnectAsync(experimental, CancellationToken.None);
+        WorkerStatus withoutExperimental = await worker.ConnectAsync(Options(), CancellationToken.None);
+
+        Assert.IsTrue(withExperimental.Target!.ExperimentalApi);
+        Assert.IsFalse(withoutExperimental.Target!.ExperimentalApi);
+        Assert.IsTrue(withExperimental.Target.Clone().ExperimentalApi);
+    }
+
+    [TestMethod]
     public async Task StatusCarriesTargetSnapshotAndReportsAPidOnlyForAnOwnedLocalProcess()
     {
         var host = new FakeProcessHost(new StubConnection());

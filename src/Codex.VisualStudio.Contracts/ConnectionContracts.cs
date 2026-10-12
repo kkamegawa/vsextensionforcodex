@@ -100,6 +100,11 @@ public sealed class ConnectionTargetSnapshot
     [DataMember]
     public long OwnerGeneration { get; set; }
 
+    // Whether this connection negotiated the experimental app-server API. Features that send
+    // experimental fields (Plan mode's collaborationMode) depend on it, not on saved settings.
+    [DataMember]
+    public bool ExperimentalApi { get; set; }
+
     public ConnectionTargetSnapshot Clone() => new()
     {
         Kind = Kind,
@@ -108,6 +113,7 @@ public sealed class ConnectionTargetSnapshot
         Generation = Generation,
         StatePartitionFingerprint = StatePartitionFingerprint,
         OwnerGeneration = OwnerGeneration,
+        ExperimentalApi = ExperimentalApi,
     };
 }
 
