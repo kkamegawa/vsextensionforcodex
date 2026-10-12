@@ -16,8 +16,8 @@ Worker 契約を v20 から v21 に更新しました。CLI は0.159.1を固定�
 | 画像表示 | STAでPNG/JPEGをデコードし、実XamlFragmentをWPFで描画して画像確認 |
 | Experimental Instance | 未取得・未完了 |
 
-6件のスキップは、このWindows環境で必要なファイルシステムリンクを作成できない既存のパス境界・ソリューション作成テストです。合格には含めません。
+Core では5件、UI では1件のスキップが記録されました。対応する TRX は保存されていないため、6件の理由を独立して確認できず、原因は断定しません。スキップを合格として扱いません。
 
 Release VSIX SHA-256: 0F34622C51C7BD8E3B9063E5567A2E42B52719AB58A86652E095A17AEAAE8F51。ソース／埋め込み XAML SHA-256: BA66E0F8945F337A94E12FE64312D13DBFD6DAE49BA7B99401B72B247C128399。再現コマンドは英語正本の PowerShell 7／Bash 例を参照してください。
 
-Visual Studio 2026 Enterprise 18.10.3 は存在します。ネイティブ CUA API が無効のため、Experimental Instance の Light／Dark／High Contrast、狭幅、キーボード・フォーカス、アクセシビリティの画面受け入れは未完了です。artifacts/issue155/ui-preview.png のオフスクリーン画像は別の証跡です。Issue #155 は open のまま、#156 をリリースゲートとします。
+Visual Studio 2026 Enterprise 18.10.3 は存在します。ネイティブ CUA API が無効のため、Experimental Instance の Light／Dark／High Contrast、狭幅、キーボード・フォーカス、アクセシビリティの画面受け入れは未完了です。artifacts/issue155/ui-preview.png のオフスクリーン画像は別の証跡です。この記録を作成した時点では Issue #155 は open でした。現在 Issue #155 は close 済みで、未完了の受け入れは #156 のリリースゲートに引き継いでいます。

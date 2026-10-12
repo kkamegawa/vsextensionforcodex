@@ -500,3 +500,9 @@ Implementation and verification tracking is recorded in [Issue #154](https://git
 The design covers optional experimental plan deltas and bounded status notices; live-catalog input admission; explicit, unsandboxed shell execution behind confirmation and local policy; typed bounded results and action-time mapped file validation; client-owned saved attachment metadata and explicit operations; and local-Windows-only sandbox setup with truthful outcome states. It excludes daemon/worktree lifecycle, Realtime, dynamic tools, ExternalMessage, plugin import/editor, native verification success, and attestation.
 
 Implementation and verification are tracked by [Issue #155](https://github.com/kkamegawa/vsextensionforcodex/issues/155), with the package plan in [daily-use-app-server-plan.md](daily-use-app-server-plan.md). Issue #156 remains the integrated release gate; missing screenshot evidence leaves visual acceptance incomplete.
+
+## 18. Integrated release validation
+
+[Integrated Release Validation](release-validation-design.md) defines the approved Issue #156 evidence classes and release-readiness rules, with a [Japanese translation](release-validation-design_ja.md) and a corresponding [implementation plan](release-validation-plan.md) ([日本語](release-validation-plan_ja.md)). It keeps Local-required Windows acceptance separate from External authenticated scenarios, preserves PR #170 as historical evidence, and carries the unfinished Issue #155 Experimental Instance acceptance into #156. This is a documentation/design update; the orchestrator, CI/release changes, and missing tests remain follow-up implementation.
+
+日本語補足：[統合リリース検証設計](release-validation-design_ja.md)と[実装計画](release-validation-plan_ja.md)に、Issue #156 の検証区分と準備完了条件を記載する。Local-required の Windows 受入と External の実認証シナリオを分け、PR #170 を履歴証跡として保持し、Issue #155 の未完了な Experimental Instance 受入を #156 に引き継ぐ。統合 script、CI／Release 変更、不足 test は後続実装とする。
