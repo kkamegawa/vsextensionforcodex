@@ -168,6 +168,13 @@ public partial interface ICodexSessionService : IAsyncDisposable
 
     Task<ThreadGoalResult> GetThreadGoalAsync(string threadId, CancellationToken cancellationToken);
 
+    Task<StopThreadGoalResult> StopThreadGoalAsync(StopThreadGoalRequest request, CancellationToken cancellationToken)
+        => Task.FromResult(new StopThreadGoalResult
+        {
+            IsSupported = false,
+            UnavailableReason = "Stopping thread goals is not supported by this session."
+        });
+
     Task<ThreadGoalResult> SetThreadGoalAsync(SetThreadGoalRequest request, CancellationToken cancellationToken);
 
     Task<ThreadGoalResult> ClearThreadGoalAsync(string threadId, CancellationToken cancellationToken);
@@ -287,6 +294,10 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
     // Thread whose turn/start request is in flight. Its turn notifications can arrive before the
     // response updates ActiveThreadId, so they must not be treated as another thread's events.
     private string? pendingTurnThreadId;
+    // A turn/start whose outcome is unknown (for example a timeout) may still have started a
+    // server turn whose turn/started notification has not arrived. Kept until a definitive
+    // turn/started or turn/completed for that thread, so Goal Stop never reports "no turn".
+    private string? unconfirmedTurnThreadId;
     // Stop requests keyed by turn, used only to log how long a turn took to end after the request.
     private readonly Dictionary<TurnKey, long> interruptRequestedAt = new();
     private long connectionGeneration;
@@ -529,6 +540,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             completedTurnIds.Clear();
             interruptRequestedAt.Clear();
             pendingTurnThreadId = null;
+            unconfirmedTurnThreadId = null;
             ActiveThreadId = null;
             ActiveTurnId = null;
         }
@@ -1902,6 +1914,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
                 }
 
                 ActiveThreadId = request.ThreadId;
+                ClearUnconfirmedTurnLocked(request.ThreadId);
                 // A completion notification may legally race the response to turn/start.
                 // Never resurrect a turn that the server has already completed.
                 if (startedTurnId is not null && !completedTurnIds.Contains(new TurnKey(context.Generation, request.ThreadId, startedTurnId)))
@@ -1916,6 +1929,14 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         }
         catch (Exception ex)
         {
+            lock (turnStateLock)
+            {
+                if (IsCurrent(context) && ActiveTurnId is null)
+                {
+                    unconfirmedTurnThreadId = request.ThreadId;
+                }
+            }
+
             throw new TurnStartOutcomeUnknownException(ex);
         }
         finally
@@ -2098,7 +2119,8 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             "thread/goal/get",
             new { threadId },
             TimeSpan.FromSeconds(15),
-            cancellationToken).ConfigureAwait(false);
+            cancellationToken,
+            allowUncredentialed: true).ConfigureAwait(false);
         if (!call.IsSupported)
         {
             return Unsupported<ThreadGoalResult>("Thread goals are not supported by this app-server.");
@@ -3521,6 +3543,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
                 {
                     ActiveTurnId = startedTurnId;
                     turnId = startedTurnId;
+                    ClearUnconfirmedTurnLocked(threadId);
                 }
                 else
                 {
@@ -3550,6 +3573,11 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
                     && (completedId is null || string.Equals(ActiveTurnId, completedId, StringComparison.Ordinal)))
                 {
                     ActiveTurnId = null;
+                }
+
+                if (!otherThread)
+                {
+                    ClearUnconfirmedTurnLocked(threadId);
                 }
             }
 
@@ -4072,9 +4100,18 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
     // tracked yet, or when it names the active thread or the thread whose turn/start is in flight.
     private bool IsTrackedTurnThreadLocked(string? threadId)
         => threadId is null
-            || (ActiveThreadId is null && pendingTurnThreadId is null)
+            || (ActiveThreadId is null && pendingTurnThreadId is null && unconfirmedTurnThreadId is null)
             || string.Equals(ActiveThreadId, threadId, StringComparison.Ordinal)
-            || string.Equals(pendingTurnThreadId, threadId, StringComparison.Ordinal);
+            || string.Equals(pendingTurnThreadId, threadId, StringComparison.Ordinal)
+            || string.Equals(unconfirmedTurnThreadId, threadId, StringComparison.Ordinal);
+
+    private void ClearUnconfirmedTurnLocked(string? threadId)
+    {
+        if (threadId is null || string.Equals(unconfirmedTurnThreadId, threadId, StringComparison.Ordinal))
+        {
+            unconfirmedTurnThreadId = null;
+        }
+    }
 
     private async Task<JsonElement> SendAsync(string method, object parameters, CancellationToken cancellationToken)
     {
@@ -4153,10 +4190,11 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         string method,
         object parameters,
         TimeSpan timeout,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool allowUncredentialed = false)
     {
         ConnectionContext context = RequireContext();
-        if (method != "account/read")
+        if (method != "account/read" && !allowUncredentialed)
         {
             EnsureCredentialReady(context);
         }
@@ -4272,6 +4310,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             completedTurnIds.Clear();
             interruptRequestedAt.Clear();
             pendingTurnThreadId = null;
+            unconfirmedTurnThreadId = null;
             ActiveThreadId = null;
             ActiveTurnId = null;
         }

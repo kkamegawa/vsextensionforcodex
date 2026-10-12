@@ -1244,6 +1244,14 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
     public Task<ThreadGoalResult> ClearThreadGoalAsync(ThreadGoalRequest request, CancellationToken cancellationToken)
         => ExecuteOwnerScopedAsync(request, () => session.ClearThreadGoalAsync(request.ThreadId, cancellationToken), cancellationToken);
 
+    public Task<StopThreadGoalResult> StopThreadGoalAsync(
+        StopThreadGoalRequest request,
+        CancellationToken cancellationToken)
+        => ExecuteOwnerScopedGenerationAsync(
+            request,
+            () => session.StopThreadGoalAsync(request, cancellationToken),
+            cancellationToken);
+
     public Task<McpServerListResult> ListMcpServersAsync(ListMcpServersRequest request, CancellationToken cancellationToken)
         => ExecuteOwnerScopedAsync(request, () => session.ListMcpServersAsync(request.ThreadId, cancellationToken), cancellationToken);
 

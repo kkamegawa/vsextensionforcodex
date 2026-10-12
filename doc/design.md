@@ -413,6 +413,16 @@ request to the completion. Pending stop timestamps are keyed by connection gener
 turn, and are cleared on reinitialization so a lost completion cannot accumulate state. The lines
 contain only server-assigned thread/turn identifiers and timings.
 
+### Goal Stop — Issue #174
+
+An Active Goal exposes Stop as the composer primary action, including between turns and during automatic continuation. A user Stop attempts a status-only Goal pause first; after that attempt, the same explicit action authorizes interrupting the latest running turn for the same thread without another confirmation. Best-effort interruption continues if pausing failed or has an unknown outcome. Goal state and both operations remain scoped to owner, connection generation, and thread. A successful pause is retained if interruption fails; a failed pause is never presented as Paused. Ordinary no-Goal interruption keeps its existing local-start restriction. The full contract, queue barrier, failure handling, and UI rules are in the [English design](goal-stop-design.md) and [Japanese translation](goal-stop-design_ja.md).
+
+Decision history:
+
+| Date | Previous decision | Current decision | Reason and approval evidence |
+|---|---|---|---|
+| 2026-10-11 | Goal state did not control the composer; only the ordinary Extension-started-turn interrupt action was available. | An Active Goal exposes an explicit Stop that attempts status-only pause, then interrupts the latest same-thread running turn even when pause fails or is uncertain. | Issue #174 adds Goal control while preserving the ordinary interrupt restriction; the user approved its implementation plan in this conversation on 2026-10-11. |
+
 ## 14. Path mapping and connection state isolation
 
 [Path mapping and connection state isolation](path-state-isolation-design.md) and its
