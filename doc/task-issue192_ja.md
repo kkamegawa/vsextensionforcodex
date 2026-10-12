@@ -36,5 +36,6 @@ TRXとビルド・パッケージ証跡は`artifacts/issue192`に保存した。
 - 提案計画（実際の Plan モード出力として確認した `item/plan/delta` と完了した `plan` 項目）を「Proposed plan」の Markdown ブロックとして表示する。Plan ターン完了後は「Implement this plan?」カードで、default モードへ切り替えて「Implement the plan.」を送るか、Plan モードを維持するかを選べる。会話変更や次のターンで失効する。
 - 保留中の質問は1問ずつ回答する（「Question n of N」、Back／Next、最後の質問で Submit、全回答を一括送信）。保留カードはピクセル単位でスクロールし、高いカードでも操作ボタンへ到達できる。
 - Plan の利用可否と送信モードは、保存済み設定ではなく現在の接続が交渉した capability（`ConnectionTargetSnapshot.ExperimentalApi`、契約バージョン 23）に従う。再接続前の設定変更では Plan は有効にならず、実験的接続での明示的な `default` 送信も止まらない。
-- Plan モードを使うテストは、端末の設定ファイルに依存せず Experimental API を明示する。Release Core 424成功／5スキップ、Release UI 433成功／1スキップ、Debug／Release ビルドは警告0・エラー0。
+- レビュー対応: 会話未選択時の引数なし `/plan` は会話未選択の選択を有効にする。実装確認カードは完了したターンの開始時のモードで判定する。再接続の試行ごとに所有者区画が変わるため、Plan の選択は接続断時に退避し、一時的な復旧で再接続できた場合のみ復元する。
+- Plan モードを使うテストは、端末の設定ファイルに依存せず Experimental API を明示する。Release Core 424成功／5スキップ、Release UI 436成功／1スキップ、Debug／Release ビルドは警告0・エラー0。
 - 本番テンプレートへ実際の ViewModel をバインドした WPF 描画（Dark／Light）で、質問の1問目と3問目、Submit までスクロールした高いカード、実装確認カード、実プローブ文の提案計画を確認し、全検査に合格、画像を目視確認した。証跡は `artifacts/issue192/live-render/output`。Visual Studio はクリック操作のみ許可され Experimental Instance でプロンプトを入力できなかったため、VS 本体テンプレートでの表示は未確認とする。

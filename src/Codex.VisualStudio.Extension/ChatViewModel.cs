@@ -52,6 +52,8 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
     private RemoteProfileViewModel? observedHealthProfile;
     private readonly Dictionary<string, InteractionCardViewModel> interactionCards = new(StringComparer.Ordinal);
     private const string ImplementPlanRequestPrefix = "implement-plan:";
+    // Turns this owner started in Plan mode; a completion consumes its entry.
+    private readonly HashSet<string> planModeTurnIds = new(StringComparer.Ordinal);
     private const string ImplementPlanOptionId = "implement";
     internal const string ImplementPlanPrompt = "Implement the plan.";
     private readonly Dictionary<string, StringBuilder> agentRawText = new(StringComparer.Ordinal);
@@ -93,6 +95,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
     private readonly Dictionary<string, string?> reasoningRestoreByThread = new(StringComparer.Ordinal);
     private string? nextPersonality;
     private bool unassignedPlanModeEnabled;
+    private RecoveryPlanModeSnapshot? recoveryPlanMode;
     private readonly HashSet<string> planModeThreads = new(StringComparer.Ordinal);
     private string selectedServiceTierId = ServiceTierCatalog.DefaultId;
     private readonly Dictionary<string, PendingServiceTierOverride> pendingServiceTierByThread = new(StringComparer.Ordinal);
@@ -785,9 +788,11 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             }
             inFlightMutations.Clear();
 
-            // A reconnect can replace the worker bridge without changing its owner. Keep
-            // each conversation's Plan selection until a status update proves the owner changed.
-            ClearOwnerScopedState(preservePlanMode: true);
+            // Every reconnect attempt gets a new owner partition, so the recovered status clears
+            // owner-scoped state again. Keep the Plan selections aside and restore them only if
+            // this recovery reconnects to the validated same target.
+            CapturePlanModeForRecovery();
+            ClearOwnerScopedState();
             if (uncertainOperations.Length > 0)
             {
                 Items.Add(new ChatItemViewModel(
@@ -968,9 +973,12 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         await OnUiAsync(() =>
         {
             IsRecovering = false;
+            RecoveryPlanModeSnapshot? preservedPlanMode = recoveryPlanMode;
+            recoveryPlanMode = null;
             switch (result.Outcome)
             {
                 case ConnectionRecoveryOutcome.Reconnected:
+                    RestoreRecoveredPlanMode(preservedPlanMode);
                     RecoveryStatusText = "Connection restored. Choose a conversation to inspect its history, then Join explicitly before sending.";
                     break;
                 case ConnectionRecoveryOutcome.Cancelled:
@@ -985,6 +993,23 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             RaiseCommandStates();
         }).ConfigureAwait(false);
     }
+
+    private void CapturePlanModeForRecovery()
+        => recoveryPlanMode = new RecoveryPlanModeSnapshot(planModeThreads.ToArray(), unassignedPlanModeEnabled);
+
+    private void RestoreRecoveredPlanMode(RecoveryPlanModeSnapshot? snapshot)
+    {
+        if (snapshot is null)
+        {
+            return;
+        }
+
+        planModeThreads.UnionWith(snapshot.ThreadIds);
+        unassignedPlanModeEnabled |= snapshot.UnassignedEnabled;
+        OnPropertyChanged(nameof(PlanModeEnabled));
+    }
+
+    private sealed record RecoveryPlanModeSnapshot(string[] ThreadIds, bool UnassignedEnabled);
 
     private async Task SynchronizeRecoveredThreadListAsync(CancellationToken cancellationToken)
     {
@@ -1264,7 +1289,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         long OwnerGeneration,
         long ConnectionGeneration);
 
-    private void ClearOwnerScopedState(bool preservePlanMode = false)
+    private void ClearOwnerScopedState()
     {
         slashCommandCoordinator.CancelAll();
         CancelFileSuggestionRefresh();
@@ -1288,11 +1313,9 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         pendingServiceTierByThread.Clear();
         serviceTierRestoreByThread.Clear();
         nextPersonality = null;
-        if (!preservePlanMode)
-        {
-            planModeThreads.Clear();
-            unassignedPlanModeEnabled = false;
-        }
+        planModeThreads.Clear();
+        unassignedPlanModeEnabled = false;
+        planModeTurnIds.Clear();
         initialized = false;
         nextCursor = null;
 
@@ -3722,6 +3745,11 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                 string startedTurnId = await bridge.StartTurnAsync(request, lifetime.Token).ConfigureAwait(false);
                 await OnUiAsync(() =>
                 {
+                    if (IsCurrentOwner(owner))
+                    {
+                        RecordStartedTurnMode(request, startedTurnId);
+                    }
+
                     if (IsCurrentOwner(owner) && SelectedThread?.Id == targetThreadId)
                     {
                         locallyStartedTurnId = startedTurnId;
@@ -5120,7 +5148,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                 SlashCommandId.Fast => await ExecuteFastAsync(targetThreadId!).ConfigureAwait(false),
                 SlashCommandId.Model => await ExecuteModelAsync(invocation.Arguments).ConfigureAwait(false),
                 SlashCommandId.Personality => await ExecutePersonalityAsync(invocation.Arguments).ConfigureAwait(false),
-                SlashCommandId.Plan => await ExecutePlanAsync(targetThreadId!, invocation.Arguments, dispatchFence).ConfigureAwait(false),
+                SlashCommandId.Plan => await ExecutePlanAsync(targetThreadId, invocation.Arguments, dispatchFence).ConfigureAwait(false),
                 SlashCommandId.Reasoning => await ExecuteReasoningAsync(targetThreadId!, invocation.Arguments).ConfigureAwait(false),
                 SlashCommandId.IdeContext => await ExecuteIdeContextAsync().ConfigureAwait(false),
                 SlashCommandId.Init => await ExecuteInitAsync().ConfigureAwait(false),
@@ -5485,11 +5513,13 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         return true;
     }
 
-    private async Task<bool> ExecutePlanAsync(string threadId, string arguments, long goalStopFence)
+    // Argumentless /plan needs no conversation: a null target enables the threadless composer,
+    // whose selection moves to the conversation created from it. /plan <prompt> always has one.
+    private async Task<bool> ExecutePlanAsync(string? threadId, string arguments, long goalStopFence)
     {
         OwnerSnapshot owner = CaptureOwnerSnapshot();
         string prompt = arguments.Trim();
-        string? blocker = prompt.Length > 0
+        string? blocker = prompt.Length > 0 && threadId is not null
             ? GetCollaborationModeBlocker(threadId, forcePlanMode: true)
             : IsPlanModeAvailable ? null : PlanModeHelpText;
         if (blocker is not null)
@@ -5503,7 +5533,15 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         {
             if (IsCurrentOwner(owner))
             {
-                SetPlanModeForThread(threadId, true);
+                if (threadId is null)
+                {
+                    SetUnassignedPlanMode(true);
+                }
+                else
+                {
+                    SetPlanModeForThread(threadId, true);
+                }
+
                 enabled = true;
             }
         }).ConfigureAwait(false);
@@ -5512,7 +5550,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             return false;
         }
 
-        if (prompt.Length == 0)
+        if (prompt.Length == 0 || threadId is null)
         {
             await ShowSlashStatusAsync("Plan mode is enabled until you turn it off in the composer.").ConfigureAwait(false);
             return true;
@@ -5533,7 +5571,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         }
 
         StampOwner(request, owner);
-        await bridge.StartTurnAsync(request, lifetime.Token).ConfigureAwait(false);
+        string planTurnId = await bridge.StartTurnAsync(request, lifetime.Token).ConfigureAwait(false);
         await OnUiAsync(() =>
         {
             if (!IsCurrentOwner(owner))
@@ -5541,6 +5579,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                 return;
             }
 
+            RecordStartedTurnMode(request, planTurnId);
             ClearSentAttachments(request.Attachments);
             ConsumeNextTurnSettings(request);
         }).ConfigureAwait(false);
@@ -7276,23 +7315,26 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
     // it. The offer is local (no server request) and expires with its conversation or turn.
     private void TryOfferPlanImplementation(ConversationEvent value, OwnerSnapshot owner)
     {
+        // Eligibility comes from the mode the completed turn was started with: unchecking Plan
+        // while the turn runs affects only later turns.
         string? threadId = value.ThreadId;
         if (threadId is null
+            || value.TurnId is null
+            || !planModeTurnIds.Remove(value.TurnId)
             || !string.Equals(selectedThread?.Id, threadId, StringComparison.Ordinal)
-            || !GetPlanModeForThread(threadId)
             || !Items.Any(item => item.IsProposedPlan
                 && item.IsPlanComplete
                 && string.Equals(item.ThreadId, threadId, StringComparison.Ordinal)
-                && (value.TurnId is null || string.Equals(item.TurnId, value.TurnId, StringComparison.Ordinal))))
+                && string.Equals(item.TurnId, value.TurnId, StringComparison.Ordinal)))
         {
             return;
         }
 
         var request = new UserInputRequest
         {
-            RequestId = ImplementPlanRequestPrefix + (value.TurnId ?? Guid.NewGuid().ToString("N")),
+            RequestId = ImplementPlanRequestPrefix + value.TurnId,
             ThreadId = threadId,
-            TurnId = value.TurnId ?? string.Empty,
+            TurnId = value.TurnId,
             IsBlocking = true,
             Questions =
             [
@@ -7348,6 +7390,15 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         if (start)
         {
             await SendMessageAsync(ImplementPlanPrompt, clearComposer: false, expectedOwner: owner).ConfigureAwait(false);
+        }
+    }
+
+    private void RecordStartedTurnMode(StartTurnRequest request, string turnId)
+    {
+        if (string.Equals(request.CollaborationMode?.Mode, "plan", StringComparison.Ordinal)
+            && !string.IsNullOrEmpty(turnId))
+        {
+            planModeTurnIds.Add(turnId);
         }
     }
 
