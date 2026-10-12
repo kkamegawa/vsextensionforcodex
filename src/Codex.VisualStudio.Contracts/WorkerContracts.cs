@@ -168,6 +168,13 @@ public enum ReviewModeChangeKind
     Exited,
 }
 
+// A local restart starts a new app-server process, so it applies the currently saved backend
+// instead of the one cached from the previous connect.
+public sealed class LocalRestartRequest
+{
+    public WindowsSandboxBackendPreference WindowsSandboxBackend { get; set; }
+}
+
 public sealed class WorkerOptions
 {
     public int ContractVersion { get; set; } = ContractVersions.Current;
@@ -1313,7 +1320,7 @@ public interface ICodexWorkerClient
 
     // Restarts the Worker-owned local app-server process. Refused for a remote target.
     [JsonRpcMethod("worker/restart")]
-    Task<WorkerStatus> RestartAsync(CancellationToken cancellationToken);
+    Task<WorkerStatus> RestartAsync(LocalRestartRequest request, CancellationToken cancellationToken);
 
     // Closes and reopens only the Worker-owned remote socket. Never stops the external server.
     [JsonRpcMethod("worker/reconnect")]

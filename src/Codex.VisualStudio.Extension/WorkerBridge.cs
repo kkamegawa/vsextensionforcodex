@@ -56,7 +56,7 @@ internal interface IWorkerBridge : IAsyncDisposable
 
     Task<WorkerStatus> ConnectAsync(string workingDirectory, bool experimentalApi, CancellationToken cancellationToken);
 
-    Task<WorkerStatus> RestartAsync(CancellationToken cancellationToken);
+    Task<WorkerStatus> RestartAsync(LocalRestartRequest request, CancellationToken cancellationToken);
 
     Task<WorkerStatus> ReconnectAsync(RemoteReconnectRequest request, CancellationToken cancellationToken);
 
@@ -271,8 +271,8 @@ public sealed class WorkerBridge : IWorkerBridge, ICodexWorkerObserver
         return result;
     }
 
-    public Task<WorkerStatus> RestartAsync(CancellationToken cancellationToken)
-        => RequireRpc().InvokeWithCancellationAsync<WorkerStatus>("worker/restart", Array.Empty<object>(), cancellationToken);
+    public Task<WorkerStatus> RestartAsync(LocalRestartRequest request, CancellationToken cancellationToken)
+        => RequireRpc().InvokeWithCancellationAsync<WorkerStatus>("worker/restart", new object[] { request }, cancellationToken);
 
     public Task<WorkerStatus> ReconnectAsync(RemoteReconnectRequest request, CancellationToken cancellationToken)
         => RequireRpc().InvokeWithCancellationAsync<WorkerStatus>("worker/reconnect", new object[] { request }, cancellationToken);

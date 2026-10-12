@@ -2443,7 +2443,11 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                 $"Canceled {canceled.Count} queued slash commands because the worker is restarting.").ConfigureAwait(false);
         }
 
-        WorkerStatus result = await bridge.RestartAsync(lifetime.Token).ConfigureAwait(false);
+        WindowsSandboxBackendOption sandboxBackend = WindowsSandboxBackendCatalog.Find(settings.WindowsSandboxBackendId);
+        await OnUiAsync(() => SetConnectedSandboxBackend(sandboxBackend.Id)).ConfigureAwait(false);
+        WorkerStatus result = await bridge.RestartAsync(
+            new LocalRestartRequest { WindowsSandboxBackend = sandboxBackend.Preference },
+            lifetime.Token).ConfigureAwait(false);
         bool applied = false;
         await OnUiAsync(() =>
         {

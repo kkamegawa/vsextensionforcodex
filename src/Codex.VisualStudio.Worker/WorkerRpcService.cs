@@ -611,12 +611,13 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
         }
     }
 
-    public async Task<WorkerStatus> RestartAsync(CancellationToken cancellationToken)
+    public async Task<WorkerStatus> RestartAsync(LocalRestartRequest request, CancellationToken cancellationToken)
     {
+        ArgumentNullException.ThrowIfNull(request);
         await connectionTransitionGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            return await RestartCoreAsync(cancellationToken).ConfigureAwait(false);
+            return await RestartCoreAsync(request.WindowsSandboxBackend, cancellationToken).ConfigureAwait(false);
         }
         finally
         {
@@ -624,7 +625,9 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
         }
     }
 
-    private async Task<WorkerStatus> RestartCoreAsync(CancellationToken cancellationToken)
+    private async Task<WorkerStatus> RestartCoreAsync(
+        WindowsSandboxBackendPreference? sandboxBackend,
+        CancellationToken cancellationToken)
     {
         if (options is null)
         {
@@ -642,6 +645,11 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
         ObserveRemoteConnection(null);
         DetachProcessObservers();
         await processHost.StopAsync(cancellationToken).ConfigureAwait(false);
+        if (sandboxBackend is { } backend)
+        {
+            options.WindowsSandboxBackend = backend;
+        }
+
         return await ConnectCoreAsync(options, cancellationToken).ConfigureAwait(false);
     }
 

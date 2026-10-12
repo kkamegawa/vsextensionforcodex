@@ -834,14 +834,23 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         }
 
         EnsureCurrent(context);
-        operation.LoginId = TryReadMcpOAuthLoginId(result, out string? loginId) ? loginId : null;
-        operation.ResponseReceived = true;
-        if (operation.EarlyCompletion is { } early)
+        McpOAuthEarlyCompletion? early;
+        lock (operation.Gate)
+        {
+            // The notification handler runs on another task. Publishing the response state and
+            // taking a stored early completion happen under the same gate, so a completion is
+            // either stored before this point and taken here, or matched by the handler afterwards.
+            operation.LoginId = TryReadMcpOAuthLoginId(result, out string? loginId) ? loginId : null;
+            operation.ResponseReceived = true;
+            early = operation.EarlyCompletion;
+            operation.EarlyCompletion = null;
+        }
+
+        if (early is not null)
         {
             // The completion notification overtook the response. Apply it only when it belongs to
             // this attempt; a completion for any other loginId is stale and is dropped. A response
             // without loginId falls back to server-name matching, as for a late notification.
-            operation.EarlyCompletion = null;
             if ((operation.LoginId is null || string.Equals(operation.LoginId, early.LoginId, StringComparison.Ordinal))
                 && context.McpOAuthOperations.ContainsKey(operation.OperationId))
             {
@@ -3953,8 +3962,16 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
                 return;
             }
 
-            if (context.McpOAuthOperationsByServer.TryGetValue(rawName, out string? operationId)
-                && context.McpOAuthOperations.TryGetValue(operationId, out McpOAuthOperation? active))
+            if (!context.McpOAuthOperationsByServer.TryGetValue(rawName, out string? operationId)
+                || !context.McpOAuthOperations.TryGetValue(operationId, out McpOAuthOperation? active))
+            {
+                // An identified completion with no active attempt is delayed or duplicated; it
+                // must not overwrite the server's current authentication state.
+                return;
+            }
+
+            bool stale;
+            lock (active.Gate)
             {
                 if (!active.ResponseReceived)
                 {
@@ -3962,11 +3979,13 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
                     return;
                 }
 
-                if (active.LoginId is not null && !string.Equals(active.LoginId, loginId, StringComparison.Ordinal))
-                {
-                    // A completion for an older or foreign attempt must not finish the current one.
-                    return;
-                }
+                stale = active.LoginId is not null && !string.Equals(active.LoginId, loginId, StringComparison.Ordinal);
+            }
+
+            if (stale)
+            {
+                // A completion for an older or foreign attempt must not finish the current one.
+                return;
             }
         }
 
@@ -5967,6 +5986,10 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         public bool ResponseReceived { get; set; }
 
         public McpOAuthEarlyCompletion? EarlyCompletion { get; set; }
+
+        // Guards LoginId, ResponseReceived and EarlyCompletion between the login response and
+        // the completion notification, which are processed on different tasks.
+        public object Gate { get; } = new();
     }
 
     private sealed record McpOAuthEarlyCompletion(string LoginId, bool Succeeded);

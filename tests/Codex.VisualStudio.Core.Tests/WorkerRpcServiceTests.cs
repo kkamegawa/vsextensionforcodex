@@ -858,6 +858,24 @@ public sealed class WorkerRpcServiceTests
     }
 
     [TestMethod]
+    public async Task LocalRestartStartsWithTheRequestedSandboxBackend()
+    {
+        var connection = new StubConnection();
+        var host = new FakeProcessHost(connection);
+        var session = new CodexSessionService(new ApprovalPolicyEngine(new PathAccessPolicy()), new SecretRedactor());
+        await using var worker = new WorkerRpcService(new SecretRedactor(), host, session);
+        WorkerOptions options = Options();
+        options.WindowsSandboxBackend = WindowsSandboxBackendPreference.RequireMxc;
+        await worker.ConnectAsync(options, CancellationToken.None);
+
+        await worker.RestartAsync(new LocalRestartRequest { WindowsSandboxBackend = WindowsSandboxBackendPreference.FollowCodexConfig }, CancellationToken.None);
+
+        CollectionAssert.AreEqual(
+            new[] { WindowsSandboxBackendPreference.RequireMxc, WindowsSandboxBackendPreference.FollowCodexConfig },
+            host.LocalSandboxBackends);
+    }
+
+    [TestMethod]
     public async Task RemoteRestartIsRejectedBeforeAnythingIsStoppedOrSent()
     {
         var connection = new StubConnection();
@@ -868,7 +886,7 @@ public sealed class WorkerRpcServiceTests
         int sent = connection.Methods.Count;
 
         LocalRpcException ex = await Assert.ThrowsExactlyAsync<LocalRpcException>(
-            () => worker.RestartAsync(CancellationToken.None));
+            () => worker.RestartAsync(new LocalRestartRequest(), CancellationToken.None));
 
         Assert.AreEqual(WorkerErrorCodes.ConnectionOperationRejected, ex.ErrorCode);
         Assert.AreEqual(nameof(ConnectionOperationRejectionReason.LocalProcessRequired), ex.ErrorData);
@@ -1684,8 +1702,13 @@ public sealed class WorkerRpcServiceTests
 
         public Func<CancellationToken, Task>? OnStartLocal { get; set; }
 
+        public List<WindowsSandboxBackendPreference> LocalSandboxBackends { get; } = [];
+
         public Task StartAsync(string codexPath, string workingDirectory, WindowsSandboxBackendPreference sandboxBackend, CancellationToken cancellationToken)
-            => OnStartLocal?.Invoke(cancellationToken) ?? Task.CompletedTask;
+        {
+            LocalSandboxBackends.Add(sandboxBackend);
+            return OnStartLocal?.Invoke(cancellationToken) ?? Task.CompletedTask;
+        }
 
         public Task StartRemoteAsync(RemoteConnectionRequest request, CancellationToken cancellationToken)
         {

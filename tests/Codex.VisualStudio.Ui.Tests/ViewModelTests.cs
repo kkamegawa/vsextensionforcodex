@@ -6881,17 +6881,21 @@ public sealed class ViewModelTests
     public async Task ChatViewModel_LocalRestart_UsesTheRestartOperation()
     {
         var bridge = new FakeWorkerBridge();
-        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings { WindowsSandboxBackendId = "follow" }));
         await bridge.PublishStateAsync(new WorkerStatus
         {
             State = WorkerConnectionState.Degraded,
             Target = new ConnectionTargetSnapshot { Kind = ConnectionTargetKind.Local, Generation = 1 },
         });
 
+        vm.SelectedWindowsSandboxBackendId = "preferMxc";
         await RunCommandAsync(vm.RestartCommand);
 
         Assert.AreEqual(1, bridge.RestartCallCount);
         Assert.AreEqual(0, bridge.ReconnectRequests.Count);
+        Assert.AreEqual(WindowsSandboxBackendPreference.PreferMxc, bridge.LastRestartRequest?.WindowsSandboxBackend,
+            "A local restart applies the saved backend, not the one cached from the failed start.");
+        Assert.IsFalse(vm.HasWindowsSandboxBackendPending);
     }
 
     [TestMethod]
@@ -7498,9 +7502,12 @@ public sealed class ViewModelTests
 
         public int RestartCallCount { get; private set; }
 
-        public Task<WorkerStatus> RestartAsync(CancellationToken cancellationToken)
+        public LocalRestartRequest? LastRestartRequest { get; private set; }
+
+        public Task<WorkerStatus> RestartAsync(LocalRestartRequest request, CancellationToken cancellationToken)
         {
             RestartCallCount++;
+            LastRestartRequest = request;
             return Task.FromResult(new WorkerStatus { State = WorkerConnectionState.Ready });
         }
 

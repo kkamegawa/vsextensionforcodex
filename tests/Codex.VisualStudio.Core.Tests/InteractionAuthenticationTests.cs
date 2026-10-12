@@ -258,6 +258,65 @@ public sealed class InteractionAuthenticationTests
     }
 
     [TestMethod]
+    public async Task McpCompletionWithLoginIdAfterTheAttemptCompleted_DoesNotOverwriteStatus()
+    {
+        (RecordingConnection connection, CodexSessionService service, ConcurrentQueue<InteractionAuthStatus> statuses) =
+            await StartMcpLoginWithLoginIdAsync("login-1");
+        await using (service)
+        {
+            await connection.EmitNotificationAsync("mcpServer/oauthLogin/completed", new { name = "example-mcp", success = true, loginId = "login-1" });
+            Assert.AreEqual(InteractionAuthState.Authenticated, LastMcpStatus(statuses).State);
+            int before = statuses.Count;
+
+            await connection.EmitNotificationAsync("mcpServer/oauthLogin/completed", new { name = "example-mcp", success = false, loginId = "login-1" });
+
+            Assert.AreEqual(before, statuses.Count, "A duplicate completion is dropped.");
+            Assert.AreEqual(InteractionAuthState.Authenticated, LastMcpStatus(statuses).State);
+        }
+    }
+
+    [TestMethod]
+    public async Task McpCompletionRacingTheLoginResponse_AlwaysCompletesTheAttempt()
+    {
+        for (int attempt = 0; attempt < 100; attempt++)
+        {
+            var connection = new RecordingConnection();
+            var loginStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var finishLogin = new TaskCompletionSource<JsonElement>(TaskCreationOptions.RunContinuationsAsynchronously);
+            connection.AsyncHandler = (method, _, _) => method == "mcpServer/oauth/login"
+                ? StartPendingLoginAsync()
+                : Task.FromResult(JsonSerializer.SerializeToElement(new { }));
+            await using var service = CreateService(_ => { });
+            var statuses = new ConcurrentQueue<InteractionAuthStatus>();
+            service.InteractionAuthStatusChanged += (status, _) =>
+            {
+                statuses.Enqueue(status);
+                return Task.CompletedTask;
+            };
+            await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+            Task<McpOAuthLoginStatus> loginTask = service.StartMcpOAuthLoginAsync(
+                new StartMcpOAuthLoginRequest { ServerName = "example-mcp" },
+                CancellationToken.None);
+            await loginStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            Task notification = Task.Run(() => connection.EmitNotificationAsync(
+                "mcpServer/oauthLogin/completed",
+                new { name = "example-mcp", success = true, loginId = "login-1" }));
+            Task response = Task.Run(() => finishLogin.TrySetResult(JsonSerializer.SerializeToElement(
+                new { authorizationUrl = "https://login.example.test/authorize", loginId = "login-1" })));
+            await Task.WhenAll(notification, response, loginTask).WaitAsync(TimeSpan.FromSeconds(5));
+
+            Assert.AreEqual(InteractionAuthState.Authenticated, LastMcpStatus(statuses).State, $"attempt {attempt}");
+
+            Task<JsonElement> StartPendingLoginAsync()
+            {
+                loginStarted.TrySetResult();
+                return finishLogin.Task;
+            }
+        }
+    }
+
+    [TestMethod]
     public async Task McpCompletionWithInvalidLoginId_IsIgnored()
     {
         (RecordingConnection connection, CodexSessionService service, ConcurrentQueue<InteractionAuthStatus> statuses) =
