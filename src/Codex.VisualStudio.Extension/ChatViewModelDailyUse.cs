@@ -23,6 +23,7 @@ public sealed partial class ChatViewModel
     private string? noticeThreadId;
     private ShellCommandConfirmationSnapshot? shellCommandSnapshot;
     private OwnerSnapshot? shellCommandOwner;
+    private long shellCommandGoalStopFence;
     private ShellCommandConfirmationPresentation? shellCommandConfirmation;
     private string shellCommandStatusText = string.Empty;
     private string windowsSandboxStatusText = "Readiness has not been checked.";
@@ -521,7 +522,7 @@ public sealed partial class ChatViewModel
         artifactPreviewCache.Dispose();
     }
 
-    private async Task<bool> PrepareShellCommandAsync(string arguments, string threadId)
+    private async Task<bool> PrepareShellCommandAsync(string arguments, string threadId, long goalStopFence)
     {
         OwnerSnapshot owner = CaptureOwnerSnapshot();
         if (Status.TurnId is not null || !IsThreadJoined || !string.Equals(threadId, SelectedThread?.Id ?? Status.ThreadId, StringComparison.Ordinal))
@@ -544,6 +545,11 @@ public sealed partial class ChatViewModel
             ShellCommandConfirmation = null;
             ShellCommandStatusText = "Checking the command target and policy…";
         }).ConfigureAwait(false);
+        if (!await EnsureGoalStopFenceAsync(goalStopFence, threadId).ConfigureAwait(false))
+        {
+            await OnUiAsync(() => ShellCommandStatusText = string.Empty).ConfigureAwait(false);
+            return false;
+        }
 
         ShellCommandPrepareResult result = await bridge.PrepareShellCommandAsync(
             StampOwner(new ShellCommandPrepareRequest
@@ -577,8 +583,16 @@ public sealed partial class ChatViewModel
             return false;
         }
 
+        // The confirmation stays bound to the Stop barrier it was prepared under.
+        if (!await EnsureGoalStopFenceAsync(goalStopFence, threadId).ConfigureAwait(false))
+        {
+            await OnUiAsync(() => ShellCommandStatusText = string.Empty).ConfigureAwait(false);
+            return false;
+        }
+
         shellCommandSnapshot = snapshot;
         shellCommandOwner = owner;
+        shellCommandGoalStopFence = goalStopFence;
         await OnUiAsync(() =>
         {
             ShellCommandConfirmation = new ShellCommandConfirmationPresentation(snapshot, markdown);
@@ -592,6 +606,8 @@ public sealed partial class ChatViewModel
         ShellCommandConfirmationSnapshot? snapshot = shellCommandSnapshot;
         OwnerSnapshot? owner = shellCommandOwner;
         if (snapshot is null || owner is null || !IsCurrentOwner(owner.Value)
+            || shellCommandGoalStopFence != CaptureGoalStopFenceVersion()
+            || IsGoalStopUnresolvedFor(snapshot.ThreadId)
             || Status.TurnId is not null
             || !IsThreadJoined
             || !string.Equals(SelectedThread?.Id ?? Status.ThreadId, snapshot.ThreadId, StringComparison.Ordinal))

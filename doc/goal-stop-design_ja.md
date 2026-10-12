@@ -55,13 +55,13 @@ Extension は Stop を受け付けた時点で owner、接続世代、thread、a
 
 捕捉した thread について Worker が現在の Goal 状態を読む。Active の場合、または読み取りに失敗した場合は `status: "paused"` だけを指定して `thread/goal/set` を試みる。objective と budget を省略して既存 Goal と使用履歴を保持する。pause 試行後、同じ thread の最新実行中 turn を特定し、ユーザーが明示的に Stop を指示しているため、追加確認なしで `turn/interrupt` を送る。pause が失敗または結果不明でも、可能な限り同じ thread の turn を中断する。実行中 turn がなければ interrupt は送らず、pause 結果を返す。その thread の `turn/start` が server の turn ID なしで処理中の場合、interrupt 段階を結果不明として返す。自動継続 turn や、クリック後に終了・削除された Goal の turn も対象とし、誰が turn を開始したかで対象を推測しない。
 
-重なった Stop 要求は直列に処理し、後の要求は先の結果を観測する（失敗とは報告しない）。要求の timeout は結果不明とし、App Server のエラー応答だけを確定失敗とする。pause メソッドが未対応の場合は pause 段階の失敗として扱い、interrupt は試行する。何も試行しなかった場合だけ未対応として返す。
+重なった Stop 要求は直列に処理し、後の要求は先の結果を観測する（失敗とは報告しない）。待機中の要求は検証時点の接続に結び付けたままにし、待機中に所有者が置き換わった場合は、新しい所有者が同じ thread に再参加していても古い要求として失敗させる。要求の timeout は結果不明とし、App Server のエラー応答だけを確定失敗とする。pause メソッドが未対応の場合は pause 段階の失敗として扱い、interrupt は試行する。何も試行しなかった場合だけ未対応として返す。
 
 pause と interrupt の結果は独立して扱う。interrupt に失敗しても成功した pause は維持する。pause が失敗しても interrupt を試し、pause 成功を表示せず部分的な結果を報告する。再度の Stop はユーザーの新しい明示操作を要求する。interrupt の受付応答と turn 完了を区別し、対象 `turn/completed` を待つ。pause 試行後に捕捉済み thread の最新実行中 turn を取得して対象とし、別 thread へ中断を転送しない。
 
 ## キュー、失敗、再接続
 
-- Stop はその thread の未送信 command を取り消す。取り出し済み command も送信直前に stop barrier を確認し、キュー済み Resume やユーザー command を Stop 開始後に送信させない。composer のテキストと添付は保持する。
+- Stop はその thread の未送信 command を取り消す。取り出し済み command も送信直前に stop barrier を確認し、キュー済み Resume やユーザー command を Stop 開始後に送信させない。確認を待ってから送信するものを含め、App Server に送信するすべての slash command に適用する。準備済みの `/shell` 確認は準備時点の barrier に結び付け、Stop 開始後は準備し直す必要がある。composer のテキストと添付は保持する。
 - 二重クリックは一つの処理に集約する。他 thread の command は変更しない。
 - pause 失敗、interrupt 失敗、結果不明を区別する。pause の成否にかかわらず pause 試行後に同じ thread の interrupt を試す。pause 成功後に interrupt が失敗しても Paused を維持し、pause 失敗後に interrupt が成功した場合は Paused と誤表示せず部分的な結果を示す。timeout/切断後に変更要求を自動再試行しない。
 - 結果不明の場合、可能なら読み取り専用で状態を確認し、未確定段階を表示する。変更要求の再試行にはユーザーの明示操作を要求する。

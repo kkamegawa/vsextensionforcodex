@@ -610,7 +610,7 @@ public sealed partial class ChatViewModel
 
     // Completes synchronously when the fence still holds, so the caller's side effect follows
     // the check without an intervening await.
-    private async Task<bool> EnsureGoalStopFenceAsync(long fenceVersion, string threadId)
+    private async Task<bool> EnsureGoalStopFenceAsync(long fenceVersion, string? threadId)
     {
         if (fenceVersion == CaptureGoalStopFenceVersion() && !IsGoalStopUnresolvedFor(threadId))
         {
