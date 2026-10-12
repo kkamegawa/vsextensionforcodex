@@ -6267,6 +6267,34 @@ public sealed class ViewModelTests
     }
 
     [TestMethod]
+    public async Task ChatViewModel_RetiredBridgeConnectionLoss_DoesNotPublishFailureBanner()
+    {
+        var bridge = new FakeWorkerBridge();
+        var retired = new FakeWorkerBridge();
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready });
+
+        MethodInfo method = typeof(ChatViewModel).GetMethod("HandleConnectionLostAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
+        await (Task)method.Invoke(vm, [retired, WorkerRecoveryFailureKind.AuthenticationRejected])!;
+
+        Assert.AreEqual(string.Empty, vm.RecoveryStatusText);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_RecoveryEndingAfterNewerReady_DoesNotPublishFailureBanner()
+    {
+        var bridge = new FakeWorkerBridge();
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready });
+
+        MethodInfo method = typeof(ChatViewModel).GetMethod("FinishRecoveryAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
+        await (Task)method.Invoke(vm, [new ConnectionRecoveryResult(ConnectionRecoveryOutcome.Stopped, 5, WorkerRecoveryFailureKind.AuthenticationRejected)])!;
+
+        Assert.AreEqual(string.Empty, vm.RecoveryStatusText);
+        Assert.IsFalse(vm.IsRecovering);
+    }
+
+    [TestMethod]
     public async Task ChatViewModel_Ready_KeepsNonConnectionRecoveryNotices()
     {
         var bridge = new FakeWorkerBridge

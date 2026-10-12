@@ -112,6 +112,10 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
     private RecoveryDraftViewModel? quarantinedDraft;
     private string recoveryStatusText = string.Empty;
     private bool recoveryStatusIsConnectionFailure;
+
+    // Status callbacks are not serialized, so publishing and clearing a connection-failure banner
+    // decide against the current bridge and status under one gate.
+    private readonly object connectionFailureBannerGate = new();
     private bool isRecovering;
     private bool historyIsStale;
     private bool isHistoryLoading;
@@ -602,9 +606,9 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                 OnGoalStatusChanged(value);
 
                 // Callers apply only current-owner status, so Ready resolves a connection-failure banner.
-                if (value.State == WorkerConnectionState.Ready && recoveryStatusIsConnectionFailure)
+                if (value.State == WorkerConnectionState.Ready)
                 {
-                    RecoveryStatusText = string.Empty;
+                    ClearConnectionFailureStatus();
                 }
 
                 // A new connection generation makes any outstanding health result stale.
@@ -739,7 +743,8 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
     {
         if (!ConnectionRecoveryCoordinator.IsTransient(failureKind) || lifetime.IsCancellationRequested)
         {
-            await OnUiAsync(() => ShowConnectionFailureStatus(failureKind)).ConfigureAwait(false);
+            // A replacement bridge may already be connected when this loss is reported.
+            await OnUiAsync(() => TryShowConnectionFailureStatus(failureKind, () => ReferenceEquals(source, bridge))).ConfigureAwait(false);
             return;
         }
 
@@ -962,7 +967,8 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                     RecoveryStatusText = string.Empty;
                     break;
                 default:
-                    ShowConnectionFailureStatus(result.LastFailureKind);
+                    // An explicit connection may have succeeded while the episode was ending.
+                    TryShowConnectionFailureStatus(result.LastFailureKind, () => !IsLiveConnectionState(Status.State));
                     break;
             }
 
@@ -1002,11 +1008,33 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         RaiseCommandStates();
     }
 
-    private void ShowConnectionFailureStatus(WorkerRecoveryFailureKind failureKind)
+    private void TryShowConnectionFailureStatus(WorkerRecoveryFailureKind failureKind, Func<bool> isStillCurrent)
     {
-        RecoveryStatusText = GetRecoveryFailureText(failureKind);
-        recoveryStatusIsConnectionFailure = true;
+        lock (connectionFailureBannerGate)
+        {
+            if (!isStillCurrent())
+            {
+                return;
+            }
+
+            RecoveryStatusText = GetRecoveryFailureText(failureKind);
+            recoveryStatusIsConnectionFailure = true;
+        }
     }
+
+    private void ClearConnectionFailureStatus()
+    {
+        lock (connectionFailureBannerGate)
+        {
+            if (recoveryStatusIsConnectionFailure)
+            {
+                RecoveryStatusText = string.Empty;
+            }
+        }
+    }
+
+    private static bool IsLiveConnectionState(WorkerConnectionState state)
+        => state is WorkerConnectionState.Ready or WorkerConnectionState.Busy or WorkerConnectionState.WaitingForApproval;
 
     private static string GetRecoveryFailureText(WorkerRecoveryFailureKind failureKind) => failureKind switch
     {
@@ -6072,14 +6100,12 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             }
             else
             {
-                await OnUiAsync(() =>
-                {
-                    // A newer Ready may have been applied while this continuation was queued.
-                    if (IsNotificationCurrent(notification) && Status.State == WorkerConnectionState.Degraded)
-                    {
-                        ShowConnectionFailureStatus(value.RecoveryFailureKind);
-                    }
-                }).ConfigureAwait(false);
+                // A newer Ready may have been applied concurrently; the gate orders the decision against it.
+                await OnUiAsync(() => TryShowConnectionFailureStatus(
+                    value.RecoveryFailureKind,
+                    () => ReferenceEquals(source, bridge)
+                        && IsNotificationCurrent(notification)
+                        && Status.State == WorkerConnectionState.Degraded)).ConfigureAwait(false);
             }
         }
     }
