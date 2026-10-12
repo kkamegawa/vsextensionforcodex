@@ -19,12 +19,16 @@ public sealed partial class CodexSessionService
             throw new ArgumentException("A thread id is required.", nameof(request));
         }
 
+        // Bind the stop to the connection that was current when the caller validated the request.
+        // A queued stop must not adopt a replacement owner that rejoins the same thread meanwhile.
+        ConnectionContext context = RequireContext();
+        EnsureGoalStopScope(context, request.ThreadId);
+
         // Overlapping explicit stops run one after another. The later one observes the earlier
         // outcome (for example an already paused goal) instead of reporting a failure it never had.
         await goalStopGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            ConnectionContext context = RequireContext();
             EnsureGoalStopScope(context, request.ThreadId);
             return await StopThreadGoalCoreAsync(context, request, cancellationToken).ConfigureAwait(false);
         }

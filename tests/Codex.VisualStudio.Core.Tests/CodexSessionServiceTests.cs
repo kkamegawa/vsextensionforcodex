@@ -3538,7 +3538,12 @@ public sealed class CodexSessionServiceTests
     public async Task GoalStopUsesCapturedConnectionAndDoesNotInterruptReplacementOwner()
     {
         var oldConnection = new RecordingConnection();
-        var replacementConnection = new RecordingConnection();
+        var replacementConnection = new RecordingConnection
+        {
+            AsyncHandler = (method, _, _) => Task.FromResult(method == "thread/resume"
+                ? JsonSerializer.SerializeToElement(new { thread = new { id = "goal-thread", preview = "goal" } })
+                : JsonSerializer.SerializeToElement(new { })),
+        };
         var pauseEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var releasePause = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         oldConnection.AsyncHandler = async (method, _, _) =>
@@ -3588,6 +3593,10 @@ public sealed class CodexSessionServiceTests
             Assert.AreEqual(1, oldConnection.Requests.Count(request => request.Method == "thread/goal/get"));
             Assert.AreEqual(1, oldConnection.Requests.Count(request => request.Method == "thread/goal/set"));
             await service.InitializeAsync(replacementConnection, Options(), CancellationToken.None);
+
+            // The replacement owner rejoins the same thread while the duplicate is still queued.
+            await service.ResumeThreadAsync("goal-thread", CancellationToken.None);
+            await replacementConnection.EmitNotificationAsync("turn/started", new { threadId = "goal-thread", turn = new { id = "replacement-turn" } });
         }
         finally
         {
@@ -3596,8 +3605,8 @@ public sealed class CodexSessionServiceTests
 
         await Assert.ThrowsExactlyAsync<JsonRpcConnectionClosedException>(() => stop);
 
-        // The queued duplicate is stale once the owner is replaced; it never reaches the new connection.
-        await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => duplicate!);
+        // The queued duplicate stays bound to the replaced owner; it never reaches the new connection.
+        await Assert.ThrowsExactlyAsync<JsonRpcConnectionClosedException>(() => duplicate!);
         Assert.IsFalse(oldConnection.Requests.Any(request => request.Method == "turn/interrupt"));
         Assert.IsFalse(replacementConnection.Requests.Any(request =>
             request.Method is "thread/goal/get" or "thread/goal/set" or "turn/interrupt"));

@@ -5017,10 +5017,10 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             return invocation.Definition.Id switch
             {
                 SlashCommandId.Compact => await ExecuteCompactAsync(targetThreadId!, dispatchFence).ConfigureAwait(false),
-                SlashCommandId.Feedback => await ExecuteFeedbackAsync(invocation.Arguments, targetThreadId).ConfigureAwait(false),
-                SlashCommandId.Fork => await ExecuteForkAsync(targetThreadId!).ConfigureAwait(false),
+                SlashCommandId.Feedback => await ExecuteFeedbackAsync(invocation.Arguments, targetThreadId, dispatchFence).ConfigureAwait(false),
+                SlashCommandId.Fork => await ExecuteForkAsync(targetThreadId!, dispatchFence).ConfigureAwait(false),
                 SlashCommandId.Goal => await ExecuteGoalCoreAsync(targetThreadId!, invocation.Arguments, dispatchFence).ConfigureAwait(false),
-                SlashCommandId.Mcp => await ExecuteMcpAsync(targetThreadId).ConfigureAwait(false),
+                SlashCommandId.Mcp => await ExecuteMcpAsync(targetThreadId, dispatchFence).ConfigureAwait(false),
                 SlashCommandId.Review => await ExecuteReviewAsync(targetThreadId!, invocation.Arguments, dispatchFence).ConfigureAwait(false),
                 SlashCommandId.Fast => await ExecuteFastAsync(targetThreadId!).ConfigureAwait(false),
                 SlashCommandId.Model => await ExecuteModelAsync(invocation.Arguments).ConfigureAwait(false),
@@ -5031,7 +5031,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                 SlashCommandId.Init => await ExecuteInitAsync().ConfigureAwait(false),
                 SlashCommandId.Status => await ExecuteStatusAsync(targetThreadId).ConfigureAwait(false),
                 SlashCommandId.Permissions => await ExecutePermissionsAsync(invocation.Arguments).ConfigureAwait(false),
-                SlashCommandId.Shell => await PrepareShellCommandAsync(invocation.Arguments, targetThreadId!).ConfigureAwait(false),
+                SlashCommandId.Shell => await PrepareShellCommandAsync(invocation.Arguments, targetThreadId!, dispatchFence).ConfigureAwait(false),
                 _ => false,
             };
         }
@@ -5067,7 +5067,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         return await HandleOperationResultAsync(SlashCommandId.Compact, result, "Context compaction started.").ConfigureAwait(false);
     }
 
-    private async Task<bool> ExecuteFeedbackAsync(string arguments, string? threadId)
+    private async Task<bool> ExecuteFeedbackAsync(string arguments, string? threadId, long goalStopFence)
     {
         OwnerSnapshot owner = CaptureOwnerSnapshot();
         string reason = arguments.Trim();
@@ -5083,7 +5083,9 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             return false;
         }
 
-        if (!IsCurrentOwner(owner))
+        // The confirmation prompt awaits the user, so a Stop may have begun meanwhile.
+        if (!IsCurrentOwner(owner)
+            || !await EnsureGoalStopFenceAsync(goalStopFence, threadId).ConfigureAwait(false))
         {
             return false;
         }
@@ -5128,9 +5130,14 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         return choice == FeedbackSubmissionChoice.Send;
     }
 
-    private async Task<bool> ExecuteForkAsync(string threadId)
+    private async Task<bool> ExecuteForkAsync(string threadId, long goalStopFence)
     {
         OwnerSnapshot owner = CaptureOwnerSnapshot();
+        if (!await EnsureGoalStopFenceAsync(goalStopFence, threadId).ConfigureAwait(false))
+        {
+            return false;
+        }
+
         ForkThreadResult result = await bridge.ForkThreadAsync(
             StampOwner(new ForkThreadRequest { ThreadId = threadId }, owner),
             lifetime.Token).ConfigureAwait(false);
@@ -5250,9 +5257,14 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         return true;
     }
 
-    private async Task<bool> ExecuteMcpAsync(string? threadId)
+    private async Task<bool> ExecuteMcpAsync(string? threadId, long goalStopFence)
     {
         OwnerSnapshot owner = CaptureOwnerSnapshot();
+        if (!await EnsureGoalStopFenceAsync(goalStopFence, threadId).ConfigureAwait(false))
+        {
+            return false;
+        }
+
         McpServerListResult result = await bridge.ListMcpServersAsync(StampOwner(new ListMcpServersRequest { ThreadId = threadId }, owner), lifetime.Token).ConfigureAwait(false);
         if (!IsCurrentOwner(owner))
         {
