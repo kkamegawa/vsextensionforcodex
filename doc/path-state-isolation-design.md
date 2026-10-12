@@ -47,6 +47,10 @@ A bearer-token digest distinguishes explicit handshakes, including token rotatio
 
 Account change and logout retire the old owner's pending work and state. An unsolicited account notification is verified by reading the account again; only a changed account identity is a boundary. Remote owner changes invalidate the previous socket before accepting new-owner activity. Retiring a socket never stops the external server and never replays a mutation.
 
+### Startup owner finalization
+
+The initial Connecting status uses a provisional owner before the remote handshake reads its credential. After the handshake succeeds, the Worker finalizes the credential-bound partition. If that partition changes, it advances the owner generation monotonically while preserving the connection generation, and updates the session, target, generation counter, and owner history together under the target lock. It publishes Connecting with the finalized owner before initialization can emit account or other owner-bound events. Ready and any subsequent failure use this same finalized owner. A handshake failure retains the provisional owner. An unchanged partition does not advance the owner generation. The UI continues to reject different partitions at the same owner generation and events from retired owners.
+
 ### Account change lifecycle
 
 | Trigger | Owner handling | Resulting connection |

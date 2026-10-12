@@ -977,6 +977,110 @@ public sealed class WorkerRpcServiceTests
     }
 
     [TestMethod]
+    public async Task RemoteOwnerPartitionIsFinalizedBeforeInitializationNotifications()
+    {
+        var connection = new StubConnection();
+        string? hostCredentialFingerprint = null;
+        var host = new FakeProcessHost(connection)
+        {
+            OnStartRemote = (_, _) =>
+            {
+                // The remote transport learns the credential identity only after its handshake.
+                hostCredentialFingerprint = "remote-credential-fingerprint";
+                return Task.CompletedTask;
+            },
+        };
+        host.GetCredentialFingerprint = () => hostCredentialFingerprint;
+        var session = new CodexSessionService(new ApprovalPolicyEngine(new PathAccessPolicy()), new SecretRedactor());
+        await using var worker = new WorkerRpcService(new SecretRedactor(), host, session);
+        await using var client = new ClientChannel(worker);
+
+        WorkerStatus ready = await worker.ConnectAsync(RemoteOptions(), CancellationToken.None);
+        await client.ReadySeen.WaitAsync(TimeSpan.FromSeconds(5));
+
+        WorkerStatus[] statuses = client.StateChanges;
+        WorkerStatus[] connecting = statuses.Where(static status => status.State == WorkerConnectionState.Connecting).ToArray();
+        Assert.IsTrue(connecting.Length >= 2, "The authenticated owner must be published as Connecting before initialization.");
+        WorkerStatus provisional = connecting[0];
+        WorkerStatus finalized = connecting[^1];
+        Assert.IsTrue(finalized.Target!.OwnerGeneration > provisional.Target!.OwnerGeneration);
+        Assert.AreNotEqual(provisional.Target.StatePartitionFingerprint, finalized.Target.StatePartitionFingerprint);
+        Assert.AreEqual(finalized.Target.OwnerGeneration, ready.Target!.OwnerGeneration);
+        Assert.AreEqual(finalized.Target.StatePartitionFingerprint, ready.Target.StatePartitionFingerprint);
+        Assert.AreEqual(provisional.Target.Generation, finalized.Target.Generation);
+        Assert.AreEqual(finalized.Target.Generation, ready.Target.Generation);
+
+        WorkerNotification<AccountStatus> account = await client.AccountChangedSeen.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.AreEqual(ready.Target.OwnerGeneration, account.OwnerGeneration);
+        Assert.AreEqual(ready.Target.StatePartitionFingerprint, account.StatePartitionFingerprint);
+
+        int callsBefore = connection.Methods.Count;
+        await Assert.ThrowsExactlyAsync<LocalRpcException>(async () => await worker.ListModelsAsync(
+            new ListModelsRequest
+            {
+                StatePartitionFingerprint = provisional.Target.StatePartitionFingerprint,
+                OwnerGeneration = provisional.Target.OwnerGeneration,
+                ConnectionGeneration = provisional.Target.Generation,
+            },
+            CancellationToken.None));
+        Assert.AreEqual(callsBefore, connection.Methods.Count, "A request stamped with the provisional owner must be rejected before reaching the app-server.");
+    }
+
+    [TestMethod]
+    public async Task RemoteHandshakeFailureKeepsTheProvisionalOwnerPartition()
+    {
+        var host = new FakeProcessHost(new StubConnection())
+        {
+            OnStartRemote = (_, _) => Task.FromException(new IOException("remote handshake failed")),
+        };
+        var session = new CodexSessionService(new ApprovalPolicyEngine(new PathAccessPolicy()), new SecretRedactor());
+        await using var worker = new WorkerRpcService(new SecretRedactor(), host, session);
+        await using var client = new ClientChannel(worker);
+
+        await worker.ConnectAsync(RemoteOptions(), CancellationToken.None);
+        WorkerStatus degraded = await WaitForStatusAsync(worker, WorkerConnectionState.Degraded);
+        await client.DegradedSeen.WaitAsync(TimeSpan.FromSeconds(5));
+
+        WorkerStatus connecting = client.StateChanges.First(static status => status.State == WorkerConnectionState.Connecting);
+        Assert.AreEqual(connecting.Target!.OwnerGeneration, degraded.Target!.OwnerGeneration);
+        Assert.AreEqual(connecting.Target.StatePartitionFingerprint, degraded.Target.StatePartitionFingerprint);
+    }
+
+    [TestMethod]
+    public async Task RemoteInitializationFailureKeepsTheFinalizedOwnerPartition()
+    {
+        var connection = new StubConnection
+        {
+            AsyncHandler = (method, _, _) => method == "initialize"
+                ? Task.FromException<JsonElement>(new IOException("initialization failed"))
+                : Task.FromResult(JsonSerializer.SerializeToElement(new { })),
+        };
+        string? hostCredentialFingerprint = null;
+        var host = new FakeProcessHost(connection)
+        {
+            OnStartRemote = (_, _) =>
+            {
+                hostCredentialFingerprint = "remote-credential-fingerprint";
+                return Task.CompletedTask;
+            },
+        };
+        host.GetCredentialFingerprint = () => hostCredentialFingerprint;
+        var session = new CodexSessionService(new ApprovalPolicyEngine(new PathAccessPolicy()), new SecretRedactor());
+        await using var worker = new WorkerRpcService(new SecretRedactor(), host, session);
+        await using var client = new ClientChannel(worker);
+
+        await worker.ConnectAsync(RemoteOptions(), CancellationToken.None);
+        WorkerStatus degraded = await WaitForStatusAsync(worker, WorkerConnectionState.Degraded);
+        await client.DegradedSeen.WaitAsync(TimeSpan.FromSeconds(5));
+
+        WorkerStatus[] connecting = client.StateChanges.Where(static status => status.State == WorkerConnectionState.Connecting).ToArray();
+        Assert.IsTrue(connecting.Length >= 2);
+        Assert.IsTrue(connecting[^1].Target!.OwnerGeneration > connecting[0].Target!.OwnerGeneration);
+        Assert.AreEqual(connecting[^1].Target!.OwnerGeneration, degraded.Target!.OwnerGeneration);
+        Assert.AreEqual(connecting[^1].Target!.StatePartitionFingerprint, degraded.Target.StatePartitionFingerprint);
+    }
+
+    [TestMethod]
     public async Task RemoteStartupOverallDeadlineRetiresTheCandidateAsTimeout()
     {
         var host = new FakeProcessHost(new StubConnection())
@@ -1402,6 +1506,14 @@ public sealed class WorkerRpcServiceTests
 
         public Task<WorkerStatus> EffectiveStateSeen => observer.EffectiveStateSeen;
 
+        public Task<WorkerStatus> ReadySeen => observer.ReadySeen;
+
+        public Task<WorkerStatus> DegradedSeen => observer.DegradedSeen;
+
+        public Task<WorkerNotification<AccountStatus>> AccountChangedSeen => observer.AccountChangedSeen;
+
+        public WorkerStatus[] StateChanges => observer.StateChanges;
+
         public ValueTask DisposeAsync()
         {
             workerRpc.Dispose();
@@ -1411,26 +1523,81 @@ public sealed class WorkerRpcServiceTests
 
         private sealed class Observer
         {
+            private readonly object gate = new();
+            private readonly List<WorkerStatus> stateChanges = [];
             private readonly TaskCompletionSource<WorkerStatus> turnIdSeen =
                 new(TaskCreationOptions.RunContinuationsAsynchronously);
             private readonly TaskCompletionSource<WorkerStatus> effectiveStateSeen =
+                new(TaskCreationOptions.RunContinuationsAsynchronously);
+            private readonly TaskCompletionSource<WorkerStatus> readySeen =
+                new(TaskCreationOptions.RunContinuationsAsynchronously);
+            private readonly TaskCompletionSource<WorkerStatus> degradedSeen =
+                new(TaskCreationOptions.RunContinuationsAsynchronously);
+            private readonly TaskCompletionSource<WorkerNotification<AccountStatus>> accountChangedSeen =
                 new(TaskCreationOptions.RunContinuationsAsynchronously);
 
             public Task<WorkerStatus> TurnIdSeen => turnIdSeen.Task;
 
             public Task<WorkerStatus> EffectiveStateSeen => effectiveStateSeen.Task;
 
+            public Task<WorkerStatus> ReadySeen => readySeen.Task;
+
+            public Task<WorkerStatus> DegradedSeen => degradedSeen.Task;
+
+            public Task<WorkerNotification<AccountStatus>> AccountChangedSeen => accountChangedSeen.Task;
+
+            public WorkerStatus[] StateChanges
+            {
+                get
+                {
+                    lock (gate)
+                    {
+                        return [.. stateChanges];
+                    }
+                }
+            }
+
             [JsonRpcMethod("observer/stateChanged", UseSingleObjectParameterDeserialization = true)]
             public void OnStateChanged(StateChangedArgs args)
             {
-                if (args.Notification?.Value?.TurnId is not null)
+                WorkerStatus? value = args.Notification?.Value;
+                if (value is null)
                 {
-                    turnIdSeen.TrySetResult(args.Notification.Value);
+                    return;
                 }
 
-                if (args.Notification?.Value?.EffectiveApprovalState is not null)
+                lock (gate)
                 {
-                    effectiveStateSeen.TrySetResult(args.Notification.Value);
+                    stateChanges.Add(value);
+                }
+
+                if (value.State == WorkerConnectionState.Ready)
+                {
+                    readySeen.TrySetResult(value);
+                }
+
+                if (value.State == WorkerConnectionState.Degraded)
+                {
+                    degradedSeen.TrySetResult(value);
+                }
+
+                if (value.TurnId is not null)
+                {
+                    turnIdSeen.TrySetResult(value);
+                }
+
+                if (value.EffectiveApprovalState is not null)
+                {
+                    effectiveStateSeen.TrySetResult(value);
+                }
+            }
+
+            [JsonRpcMethod("observer/accountChanged", UseSingleObjectParameterDeserialization = true)]
+            public void OnAccountChanged(AccountChangedArgs args)
+            {
+                if (args.Notification is not null)
+                {
+                    accountChangedSeen.TrySetResult(args.Notification);
                 }
             }
         }
@@ -1439,6 +1606,12 @@ public sealed class WorkerRpcServiceTests
         {
             [JsonPropertyName("notification")]
             public WorkerNotification<WorkerStatus>? Notification { get; set; }
+        }
+
+        private sealed class AccountChangedArgs
+        {
+            [JsonPropertyName("notification")]
+            public WorkerNotification<AccountStatus>? Notification { get; set; }
         }
     }
 
@@ -1475,6 +1648,10 @@ public sealed class WorkerRpcServiceTests
         public int? ProcessId => 4242;
 
         public IJsonRpcConnection? Connection => connection;
+
+        public string? CredentialFingerprint => GetCredentialFingerprint?.Invoke();
+
+        public Func<string?>? GetCredentialFingerprint { get; set; }
 
         public int RemoteStarts { get; private set; }
 

@@ -5291,6 +5291,55 @@ public sealed class ViewModelTests
     }
 
     [TestMethod]
+    public async Task ChatViewModel_RemoteCredentialFinalization_AcceptsReadyAndRejectsRetiredOwner()
+    {
+        var bridge = new FakeWorkerBridge();
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(SettingsWith(SavedRemoteProfile())));
+        SetWorkingDirectory(vm, Path.GetTempPath());
+        WorkerStatus RemoteStatus(WorkerConnectionState state, string partition, long ownerGeneration)
+            => new()
+            {
+                State = state,
+                Target = new ConnectionTargetSnapshot
+                {
+                    Kind = ConnectionTargetKind.Remote,
+                    DisplayName = "Build box",
+                    Generation = 1,
+                    OwnerGeneration = ownerGeneration,
+                    StatePartitionFingerprint = partition,
+                },
+            };
+        WorkerStatus provisional = RemoteStatus(WorkerConnectionState.Connecting, "provisional", 1);
+        WorkerStatus finalized = RemoteStatus(WorkerConnectionState.Connecting, "credential-bound", 2);
+        WorkerStatus ready = RemoteStatus(WorkerConnectionState.Ready, "credential-bound", 2);
+        bridge.ConnectHandler = async () =>
+        {
+            await bridge.PublishStateAsync(provisional);
+            await bridge.PublishStateAsync(finalized);
+            await bridge.PublishAccountAsync(new AccountStatus { State = AccountState.SignedIn });
+            Assert.AreEqual(AccountState.SignedIn, vm.Account.State, "Account events must be accepted before Ready.");
+            await bridge.PublishStateAsync(ready);
+            return ready;
+        };
+
+        await RunCommandAsync(vm.ApplyRemoteProfileCommand);
+
+        Assert.AreEqual(WorkerConnectionState.Ready, vm.Status.State);
+        Assert.AreEqual(2L, vm.Status.Target?.OwnerGeneration);
+        Assert.AreEqual(1L, vm.Status.Target?.Generation);
+        Assert.AreEqual("Build box", vm.ConnectionTargetText);
+        Assert.AreEqual("Connected with remote profile 'Build box'.", vm.RemoteProfiles.StatusText);
+        Assert.IsTrue(vm.UseLocalAppServerCommand.CanExecute);
+        await bridge.PublishAccountAsync(new AccountStatus { State = AccountState.SignedOut }, provisional);
+        await bridge.PublishStateAsync(provisional);
+        Assert.AreEqual(WorkerConnectionState.Ready, vm.Status.State);
+        Assert.AreEqual(AccountState.SignedIn, vm.Account.State);
+        await bridge.PublishStateAsync(RemoteStatus(WorkerConnectionState.Degraded, "different-credential", 2));
+        Assert.AreEqual(WorkerConnectionState.Ready, vm.Status.State, "A different partition at the same generation remains invalid.");
+        Assert.AreEqual("credential-bound", vm.Status.Target?.StatePartitionFingerprint);
+    }
+
+    [TestMethod]
     public async Task ChatViewModel_ConnectionTargetLabel_SaysConnectedOnlyForLiveStates()
     {
         var bridge = new FakeWorkerBridge();
@@ -6644,8 +6693,8 @@ public sealed class ViewModelTests
             return StateChanged?.Invoke(Notification(status, status)) ?? Task.CompletedTask;
         }
 
-        public Task PublishAccountAsync(AccountStatus status)
-            => AccountChanged?.Invoke(Notification(status, currentStatus)) ?? Task.CompletedTask;
+        public Task PublishAccountAsync(AccountStatus status, WorkerStatus? owner = null)
+            => AccountChanged?.Invoke(Notification(status, owner ?? currentStatus)) ?? Task.CompletedTask;
 
         public Task PublishRateLimitsAsync(RateLimitsResult result)
             => RateLimitsChanged?.Invoke(Notification(result, currentStatus)) ?? Task.CompletedTask;
