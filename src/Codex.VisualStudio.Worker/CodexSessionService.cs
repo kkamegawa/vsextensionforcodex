@@ -5185,10 +5185,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
                         errors.Add(new SkillLoadError
                         {
                             Cwd = cwd,
-                            // Same rooted-path validation as SkillInfo.Path (NormalizeSkillPath),
-                            // not just length/control-character sanitization, so a malformed or
-                            // relative error path is dropped rather than forwarded over the
-                            // contract as if it were a real absolute path.
+                            // Same opaque-identifier validation as SkillInfo.Path (NormalizeSkillPath).
                             Path = NormalizeSkillPath(GetString(error, "path")),
                             Message = message,
                         });
@@ -5354,15 +5351,14 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
     {
         if (string.IsNullOrEmpty(value)
             || value.Length > MaxSkillPathLength
-            || value.Any(char.IsControl)
-            || !ServerPath.TryCreate(value, out _))
+            || value.Any(char.IsControl))
         {
             return null;
         }
 
-        // No File.Exists / workspace-containment check: this path is the app-server's own
-        // skills/list output, not user input, and scope: "user"/"system"/"admin" skills routinely
-        // live outside the workspace (or are directories). Only structural validity is enforced.
+        // 0.162.1 types this as LegacyAppPathString, which need not be an absolute host path. The
+        // value is only an app-server catalog identifier: it is echoed back unchanged in skill turn
+        // input and compared ordinally, and the extension never opens it as a local file.
         return value;
     }
 
