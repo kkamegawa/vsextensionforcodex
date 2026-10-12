@@ -34,6 +34,15 @@
 - Worker の通知順序・世代・アカウント通知・旧要求の拒否・認証／初期化失敗の回帰を追加し、対象48件が成功しました。UI では Ready とアカウントの受理、旧所有者と同世代の異なるパーティションの拒否を追加しました。Release 全体は Core 419件成功／5件スキップ、UI 401件成功／1件スキップです。スキップは既存の環境依存リンク検証です。
 - Debug／Release ビルドは警告・エラーともゼロ。0.159.1 の両スキーマキャッシュと stable／experimental 契約面の 0.155.1 回帰比較、VSIX／配置済み Worker のハッシュ一致、raw XAML 埋め込み、UTF-8 BOM／CRLF、空白検査が成功しました。
 - SDK 標準 F5 の Release 配置で実画面を検証しました。保存済み有効プロファイル、両ヘルスルート HTTP 200、Local→Remote の Ready／Signed in、指定文字列のモデル応答、ツールによる試験マーカー読取、不正トークンの Degraded、正しいトークンに戻した後の明示的 Reconnect による Ready／Signed in が成功しました。外部サーバーは同じプロセスのままでした。画面証跡は `artifacts/codex-cli-docs/remote-fix` に保存しました。
-- リモート選択済みの新規 IDE 起動は、当初は画面操作ツールが `foreground window did not report a process id` で失敗しましたが、同日に再試験しました。保存済みの有効プロファイルを選択した状態で Canary Experimental Instance を新規起動し、Ready、Codex 0.159.1、Signed in、Connected to: Loopback test の表示を確認しました。Worker が外部ループバックリスナーに接続し、ローカル CLI 子プロセスは起動していません。配置済み Worker のハッシュは Release 出力と一致しました。IDE はクリックのみの操作権限のため、入力欄からの送信は再試験していません。証跡と後片付け結果（設定のバイト単位復元、テスト IDE／サーバー停止、一時トークン削除）は `artifacts/codex-cli-docs/remote-fresh` に保存しました。再接続成功後に認証失敗時の補助バナーが残る点は、今回の Connecting 不具合とは分けて記録しました。
+- リモート選択済みの新規 IDE 起動は、当初は画面操作ツールが `foreground window did not report a process id` で失敗しましたが、同日に再試験しました。保存済みの有効プロファイルを選択した状態で Canary Experimental Instance を新規起動し、Ready、Codex 0.159.1、Signed in、Connected to: Loopback test の表示を確認しました。Worker が外部ループバックリスナーに接続し、ローカル CLI 子プロセスは起動していません。配置済み Worker のハッシュは Release 出力と一致しました。IDE はクリックのみの操作権限のため、入力欄からの送信は再試験していません。証跡と後片付け結果（設定のバイト単位復元、テスト IDE／サーバー停止、一時トークン削除）は `artifacts/codex-cli-docs/remote-fresh` に保存しました。再接続成功後に認証失敗時の補助バナーが残る点は、別途修正しました（次節）。
 
 - 後片付けとして、今回起動したテスト IDE とサーバーを停止し、元の拡張設定をバイト単位で復元して一時トークン2ファイルを削除しました。ローカルの検証証跡と、レビュー用にソースを開いた開発 IDE は保持しました。
+
+## 2026-10-12: 接続成功時に接続失敗バナーを消去
+
+- 承認済み計画に従い [Issue #177](https://github.com/kkamegawa/vsextensionforcodex/issues/177) を作成しました。Wiki は公開していません。
+- 先に日英の接続・履歴復旧設計へ、接続失敗バナーの所有規則を追加しました。
+- `ChatViewModel` は、復旧バナーの文言が接続失敗（終端的な Degraded、一時的でない接続喪失、失敗した復旧エピソード）に由来するかを記録します。現行所有者・現行世代として検証済みの Ready を適用したときに、そのバナーだけを消去します。ほかの通知は記録を置き換えて残ります。キュー待ちの失敗バナーは、先に新しい Ready が適用されていれば表示しません。
+- 回帰テストを追加しました。手動再接続で Ready になると認証拒否バナーが消えること（修正前は失敗）、古い世代の Ready では残ること、配信結果不明の通知は Busy→Ready 後も残ることを確認します。
+- Debug／Release ビルドは警告・エラーともゼロ。Release の UI 404件成功／1件スキップ、Core 419件成功／5件スキップです（スキップは既存の環境依存）。
+- 再ビルドした Extension DLL を Canary Experimental Instance に配置し（ハッシュ一致）、一致しないクライアントトークンで新規起動して Degraded と「Reconnection requires sign-in or updated credentials.」の表示を確認しました。トークンファイルを修正して Reconnect すると Ready／Signed in になり、バナーが消えました。証跡と後片付け結果（設定のバイト単位復元、テスト IDE／サーバー停止、トークン削除）は `artifacts/codex-cli-docs/remote-banner` に保存しました。

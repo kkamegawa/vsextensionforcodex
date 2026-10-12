@@ -6220,6 +6220,13 @@ public sealed class ViewModelTests
         },
     };
 
+    private static WorkerStatus AuthenticationRejectedStatus(RemoteConnectionProfile profile, long generation)
+    {
+        WorkerStatus status = RemoteStatus(profile, WorkerConnectionState.Degraded, generation);
+        status.RecoveryFailureKind = WorkerRecoveryFailureKind.AuthenticationRejected;
+        return status;
+    }
+
     private static ExtensionSettings SettingsWith(RemoteConnectionProfile profile) => new()
     {
         RemoteProfiles = [profile],
@@ -6281,6 +6288,86 @@ public sealed class ViewModelTests
         Assert.AreEqual("Build box", request.ProfileName);
         Assert.AreEqual(profile.ComputeFingerprint(), request.Fingerprint);
         Assert.AreEqual(9, request.ExpectedGeneration);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_RemoteReconnect_ClearsConnectionFailureBannerWhenReady()
+    {
+        var bridge = new FakeWorkerBridge();
+        RemoteConnectionProfile profile = SavedRemoteProfile();
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(SettingsWith(profile)));
+        await bridge.PublishStateAsync(AuthenticationRejectedStatus(profile, generation: 9));
+        Assert.AreEqual("Reconnection requires sign-in or updated credentials.", vm.RecoveryStatusText);
+
+        bridge.ReconnectStatus = RemoteStatus(profile, WorkerConnectionState.Ready, generation: 10);
+        await RunCommandAsync(vm.RestartCommand);
+
+        Assert.AreEqual(WorkerConnectionState.Ready, vm.Status.State);
+        Assert.AreEqual(string.Empty, vm.RecoveryStatusText);
+        Assert.IsFalse(vm.HasRecoveryStatus);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_StaleReady_KeepsConnectionFailureBanner()
+    {
+        var bridge = new FakeWorkerBridge();
+        RemoteConnectionProfile profile = SavedRemoteProfile();
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(SettingsWith(profile)));
+        await bridge.PublishStateAsync(AuthenticationRejectedStatus(profile, generation: 9));
+
+        await bridge.PublishStateAsync(RemoteStatus(profile, WorkerConnectionState.Ready, generation: 8));
+
+        Assert.AreEqual(WorkerConnectionState.Degraded, vm.Status.State);
+        Assert.AreEqual("Reconnection requires sign-in or updated credentials.", vm.RecoveryStatusText);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_RetiredBridgeConnectionLoss_DoesNotPublishFailureBanner()
+    {
+        var bridge = new FakeWorkerBridge();
+        var retired = new FakeWorkerBridge();
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready });
+
+        MethodInfo method = typeof(ChatViewModel).GetMethod("HandleConnectionLostAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
+        await (Task)method.Invoke(vm, [retired, WorkerRecoveryFailureKind.AuthenticationRejected])!;
+
+        Assert.AreEqual(string.Empty, vm.RecoveryStatusText);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_RecoveryEndingAfterNewerReady_DoesNotPublishFailureBanner()
+    {
+        var bridge = new FakeWorkerBridge();
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready });
+
+        MethodInfo method = typeof(ChatViewModel).GetMethod("FinishRecoveryAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
+        await (Task)method.Invoke(vm, [new ConnectionRecoveryResult(ConnectionRecoveryOutcome.Stopped, 5, WorkerRecoveryFailureKind.AuthenticationRejected)])!;
+
+        Assert.AreEqual(string.Empty, vm.RecoveryStatusText);
+        Assert.IsFalse(vm.IsRecovering);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_Ready_KeepsNonConnectionRecoveryNotices()
+    {
+        var bridge = new FakeWorkerBridge
+        {
+            StartThreadException = new StreamJsonRpc.RemoteInvocationException(
+                "The Worker rejected the connection operation.",
+                WorkerErrorCodes.ConnectionOperationRejected,
+                errorData: "StaleGeneration"),
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready });
+        await RunCommandAsync(vm.NewThreadCommand);
+        StringAssert.Contains(vm.RecoveryStatusText, "outcome is unknown");
+
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Busy });
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready });
+
+        StringAssert.Contains(vm.RecoveryStatusText, "outcome is unknown");
     }
 
     [TestMethod]
@@ -6787,11 +6874,13 @@ public sealed class ViewModelTests
 
         public Exception? ReconnectException { get; set; }
 
+        public WorkerStatus? ReconnectStatus { get; set; }
+
         public Task<WorkerStatus> ReconnectAsync(RemoteReconnectRequest request, CancellationToken cancellationToken)
         {
             ReconnectRequests.Add(request);
             return ReconnectException is null
-                ? Task.FromResult(new WorkerStatus { State = WorkerConnectionState.Ready })
+                ? Task.FromResult(ReconnectStatus ?? new WorkerStatus { State = WorkerConnectionState.Ready })
                 : Task.FromException<WorkerStatus>(ReconnectException);
         }
 

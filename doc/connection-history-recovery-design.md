@@ -41,6 +41,8 @@ Before recovery RPCs, call EnsureWorkerStarted outside the state gate. If the pr
 
 Authentication failure, logout/login or account-owner change, token-file/profile/endpoint/root change, disabled/deleted profile, unsaved profile edits, user cancellation, or any stale snapshot stops automatic attempts. Show the appropriate explicit sign-in, profile-apply, reconnect, or conversation-selection action. Do not reinterpret these conditions as transient network failures.
 
+The recovery banner records whether its current text describes a connection failure (a terminal Degraded status, a non-transient connection loss, or an episode that ended without reconnecting). Only that connection-failure text is cleared when a status notification for the current bridge, connection generation and owner reaches Ready, whether the connection came from an explicit Connect/Reconnect, a target switch or automatic recovery. Any other banner text, such as unknown delivery outcomes, quarantined or restored drafts, stale history synchronization or the Connection restored guidance, replaces that record and stays until its own workflow resolves it. A stale or foreign-owner Ready never clears the banner. Status callbacks are not serialized, so the decision to publish a failure banner and the Ready-time clear are made under one gate against the current bridge and status: a failure reported by a retired bridge, a Degraded notification overtaken by a newer Ready, or a recovery episode that ends after a newer live connection never publishes the banner.
+
 ### Episode states
 
 Expose these distinct user-visible states:
