@@ -74,8 +74,9 @@ public sealed class FakeAppServerIntegrationTests
         Assert.AreEqual(expectTurn ? 3 : 2, mutations.Length);
         Assert.AreEqual("thread/goal/set", mutations[1].GetProperty("method").GetString());
         JsonElement pause = mutations[1].GetProperty("parameters");
-        CollectionAssert.AreEquivalent(new[] { "threadId", "status" }, pause.EnumerateObject().Select(property => property.Name).ToArray());
+        CollectionAssert.AreEquivalent(new[] { "threadId", "status", "origin" }, pause.EnumerateObject().Select(property => property.Name).ToArray());
         Assert.AreEqual("paused", pause.GetProperty("status").GetString());
+        Assert.AreEqual("user", pause.GetProperty("origin").GetString());
         if (expectTurn)
         {
             Assert.AreEqual("turn/interrupt", mutations[2].GetProperty("method").GetString());

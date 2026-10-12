@@ -54,7 +54,7 @@ while (await Console.In.ReadLineAsync().ConfigureAwait(false) is { } line)
     {
         "initialize" => new
         {
-            userAgent = IsScenario("Issue155Regression01551") ? "codex-cli/0.155.1" : "codex-cli/0.159.1",
+            userAgent = IsScenario("Regression01591") ? "codex-cli/0.159.1" : "codex-cli/0.162.1",
             codexHome = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".codex"),
             platformFamily = OperatingSystem.IsWindows() ? "windows" : "unix",
             platformOs = OperatingSystem.IsWindows() ? "windows" : OperatingSystem.IsMacOS() ? "macos" : "linux",
@@ -215,7 +215,7 @@ while (await Console.In.ReadLineAsync().ConfigureAwait(false) is { } line)
         },
         "account/gatewayOAuth/login" => new { },
         "account/gatewayOAuth/cancel" => new { },
-        "mcpServer/oauth/login" when scenario == "interaction" => new { authorizationUrl = "https://example.com/mcp-auth?state=fake" },
+        "mcpServer/oauth/login" when scenario == "interaction" => new { authorizationUrl = "https://example.com/mcp-auth?state=fake", loginId = "fake-login-1" },
         "fake/interactions/start" when scenario == "interaction" => new { started = true },
         "fake/interactions/state" when scenario == "interaction" => new { responses = interactionResponses.ToArray(), pendingResponses = interactionMethods.Count, methods = clientMethods.ToArray(), initializeParams },
         "account/login/start" => StartLogin(),
@@ -225,7 +225,7 @@ while (await Console.In.ReadLineAsync().ConfigureAwait(false) is { } line)
     };
     if (method == "mcpServer/oauth/login" && scenario == "interaction")
     {
-        await WriteAsync(new { method = "mcpServer/oauthLogin/completed", @params = new { name = "docs", threadId = "fake-thread-1", success = true } }).ConfigureAwait(false);
+        await WriteAsync(new { method = "mcpServer/oauthLogin/completed", @params = new { name = "docs", threadId = "fake-thread-1", success = true, loginId = "fake-login-1" } }).ConfigureAwait(false);
         await WriteAsync(new { method = "mcpServer/startupStatus/updated", @params = new { name = "docs", status = "failed", failureReason = "reauthenticationRequired" } }).ConfigureAwait(false);
     }
 

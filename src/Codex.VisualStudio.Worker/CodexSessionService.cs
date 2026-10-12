@@ -833,6 +833,22 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         }
 
         EnsureCurrent(context);
+        operation.LoginId = TryReadMcpOAuthLoginId(result, out string? loginId) ? loginId : null;
+        operation.ResponseReceived = true;
+        if (operation.EarlyCompletion is { } early)
+        {
+            // The completion notification overtook the response. Apply it only when it belongs to
+            // this attempt; a completion for any other loginId is stale and is dropped.
+            operation.EarlyCompletion = null;
+            if (operation.LoginId is not null
+                && string.Equals(operation.LoginId, early.LoginId, StringComparison.Ordinal)
+                && context.McpOAuthOperations.ContainsKey(operation.OperationId))
+            {
+                await ApplyMcpOAuthCompletionAsync(context, serverName, early.Succeeded, cancellationToken).ConfigureAwait(false);
+                return GetMcpOAuthLoginStatus(context, operation);
+            }
+        }
+
         if (!context.McpOAuthOperations.TryGetValue(operation.OperationId, out McpOAuthOperation? current)
             || current.Completed || current.RequestCanceled)
         {
@@ -2123,6 +2139,10 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         return new ForkThreadResult { Thread = thread };
     }
 
+    // Every goal mutation the extension sends comes from an explicit user action. 0.162.1 treats a
+    // missing origin as "no user authorization", and older servers ignore the unknown field.
+    private const string UserGoalMutationOrigin = "user";
+
     public async Task<ThreadGoalResult> GetThreadGoalAsync(string threadId, CancellationToken cancellationToken)
     {
         OperationCallResult call = await TrySendOperationAsync(
@@ -2152,6 +2172,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
                 objective = request.Objective,
                 status = request.Status.HasValue ? ToWireGoalStatus(request.Status.Value) : null,
                 tokenBudget = request.TokenBudget,
+                origin = UserGoalMutationOrigin,
             },
             TimeSpan.FromSeconds(30),
             cancellationToken).ConfigureAwait(false);
@@ -2167,7 +2188,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
     {
         OperationCallResult call = await TrySendOperationAsync(
             "thread/goal/clear",
-            new { threadId },
+            new { threadId, origin = UserGoalMutationOrigin },
             TimeSpan.FromSeconds(30),
             cancellationToken).ConfigureAwait(false);
         if (!call.IsSupported)
@@ -3923,6 +3944,40 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         }
 
         bool succeeded = GetBoolean(parameters, "success") == true;
+        if (parameters.TryGetProperty("loginId", out JsonElement loginIdElement)
+            && loginIdElement.ValueKind != JsonValueKind.Null)
+        {
+            if (!TryReadMcpOAuthLoginId(parameters, out string? loginId) || loginId is null)
+            {
+                return;
+            }
+
+            if (context.McpOAuthOperationsByServer.TryGetValue(rawName, out string? operationId)
+                && context.McpOAuthOperations.TryGetValue(operationId, out McpOAuthOperation? active))
+            {
+                if (!active.ResponseReceived)
+                {
+                    active.EarlyCompletion = new McpOAuthEarlyCompletion(loginId, succeeded);
+                    return;
+                }
+
+                if (active.LoginId is not null && !string.Equals(active.LoginId, loginId, StringComparison.Ordinal))
+                {
+                    // A completion for an older or foreign attempt must not finish the current one.
+                    return;
+                }
+            }
+        }
+
+        await ApplyMcpOAuthCompletionAsync(context, rawName, succeeded, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task ApplyMcpOAuthCompletionAsync(
+        ConnectionContext context,
+        string rawName,
+        bool succeeded,
+        CancellationToken cancellationToken)
+    {
         MarkMcpOAuthOperationsCompleted(context, rawName);
         string serverName = redactor.Redact(rawName) ?? string.Empty;
         var status = new McpServerAuthStatus
@@ -3988,6 +4043,30 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         }
 
         await EmitInteractionAuthStatusAsync(context, cancellationToken).ConfigureAwait(false);
+    }
+
+    // loginId is an opaque attempt identifier added in 0.162.1; older servers omit it.
+    private static bool TryReadMcpOAuthLoginId(JsonElement element, out string? loginId)
+    {
+        loginId = null;
+        if (!element.TryGetProperty("loginId", out JsonElement value) || value.ValueKind == JsonValueKind.Null)
+        {
+            return true;
+        }
+
+        if (value.ValueKind != JsonValueKind.String)
+        {
+            return false;
+        }
+
+        string text = value.GetString() ?? string.Empty;
+        if (text.Length is 0 or > 256 || text.Any(char.IsControl))
+        {
+            return false;
+        }
+
+        loginId = text;
+        return true;
     }
 
     private void MarkMcpOAuthOperationsCompleted(ConnectionContext context, string serverName)
@@ -5885,7 +5964,15 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         public bool RequestCanceled { get; set; }
 
         public bool NotificationObserved { get; set; }
+
+        public string? LoginId { get; set; }
+
+        public bool ResponseReceived { get; set; }
+
+        public McpOAuthEarlyCompletion? EarlyCompletion { get; set; }
     }
+
+    private sealed record McpOAuthEarlyCompletion(string LoginId, bool Succeeded);
 
     private sealed record UserInputProjection(
         UserInputRequest Request,

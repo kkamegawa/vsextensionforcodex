@@ -2093,6 +2093,8 @@ public sealed class CodexSessionServiceTests
         JsonElement goalParameters = ParametersFor(connection, "thread/goal/set");
         Assert.AreEqual("active", goalParameters.GetProperty("status").GetString());
         Assert.AreEqual(1000L, goalParameters.GetProperty("tokenBudget").GetInt64());
+        Assert.AreEqual("user", goalParameters.GetProperty("origin").GetString(), "User goal edits carry explicit user provenance.");
+        Assert.AreEqual("user", ParametersFor(connection, "thread/goal/clear").GetProperty("origin").GetString());
         JsonElement mcpParameters = ParametersFor(connection, "mcpServerStatus/list");
         Assert.AreEqual("toolsAndAuthOnly", mcpParameters.GetProperty("detail").GetString());
         JsonElement feedbackParameters = ParametersFor(connection, "feedback/upload");
@@ -3735,6 +3737,7 @@ public sealed class CodexSessionServiceTests
         JsonElement pause = ParametersFor(connection, "thread/goal/set");
         Assert.AreEqual("paused", pause.GetProperty("status").GetString());
         Assert.IsFalse(pause.TryGetProperty("objective", out _), "A status-only pause preserves the objective.");
+        Assert.AreEqual("user", pause.GetProperty("origin").GetString(), "Goal Stop is an explicit user action.");
         Assert.IsFalse(pause.TryGetProperty("tokenBudget", out _), "A status-only pause preserves the budget.");
     }
 
