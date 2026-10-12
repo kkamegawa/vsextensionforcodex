@@ -1,0 +1,6 @@
+doc/implementation-issue156_ja.md -text whitespace=cr-at-eol
+doc/release-validation-design.md -text whitespace=cr-at-eol
+doc/release-validation-design_ja.md -text whitespace=cr-at-eol
+doc/release-validation-plan.md -text whitespace=cr-at-eol
+doc/release-validation-plan_ja.md -text whitespace=cr-at-eol
+doc/task-issue156_ja.md -text whitespace=cr-at-eol
