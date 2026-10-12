@@ -17,6 +17,8 @@ The extension is an out-of-process `Microsoft.VisualStudio.Extensibility` extens
 
 ## Setup
 
+See the detailed [Codex CLI setup and usage guide](doc/codex-cli-setup.md) for installation, authentication, configuration files, every Connection target field, remote server preparation, connection and diagnosis.
+
 1. Download the Windows package for your machine from the [Codex 0.159.1 release](https://github.com/openai/codex/releases/tag/rust-v0.159.1) and extract it into a local directory: `codex-package-x86_64-pc-windows-msvc.tar.gz` on x64, `codex-package-aarch64-pc-windows-msvc.tar.gz` on Arm64. The script below picks the right one. Use the package, not the standalone `codex-*.exe`: Codex runs tools through helper programs (`bin\codex-code-mode-host.exe`, `codex-resources\codex-command-runner.exe`, and the Windows sandbox setup) that must sit next to `codex.exe`, and a standalone executable fails every tool call with "failed to spawn code-mode host". winget is not required, and the winget package can lag behind the pinned release. 0.159.1 is the app-server contract this extension is verified against, so pin that release rather than `latest`.
 
    ```powershell
@@ -36,13 +38,16 @@ The extension is an out-of-process `Microsoft.VisualStudio.Extensibility` extens
 2. Restart Visual Studio and confirm that the executable reports 0.159.1:
 
    ```powershell
-   codex --version
+   $codexExe = [Environment]::GetEnvironmentVariable('CODEX_PATH', 'User')
+   & $codexExe --version
    ```
 
 3. Sign in once from a terminal. Visual Studio never sees the credentials:
 
    ```powershell
-   codex login
+   $codexExe = [Environment]::GetEnvironmentVariable('CODEX_PATH', 'User')
+   & $codexExe login
+   & $codexExe login status
    ```
 
 4. Download `Codex.VisualStudio.Extension.vsix` from the latest GitHub release of this repository and double-click it to install, or install it from **Extensions > Manage Extensions**.
@@ -55,7 +60,7 @@ The extension is an out-of-process `Microsoft.VisualStudio.Extensibility` extens
 
 By default Codex runs on a local `codex app-server` child process. To run turns on an app-server that is already running on another machine instead:
 
-> **Preview.** The upstream WebSocket transport is experimental. You start and manage the remote app-server yourself; the extension owns only its own connection to it. Root health checks and bounded retry of a fixed set of read-only requests after a server-overload response are available. Account, profile, root, and connection changes clear the previous owner's selected state and caches. After you sign in or sign out, the extension connects a new session automatically. After any other account change or a connection loss, reconnect manually; automatic reconnect and history recovery are tracked separately.
+> **Preview.** The upstream WebSocket transport is experimental. You start and manage the remote app-server yourself; the extension owns only its own connection to it. Root health checks and bounded retry of a fixed set of read-only requests after a server-overload response are available. Account, profile, root, and connection changes clear the previous owner's selected state and caches. After you sign in or sign out, the extension connects a new session automatically. Transient connection loss can trigger bounded automatic reconnect and history recovery. Authentication, certificate, profile, and owner changes stop automatic recovery; resolve the cause and reconnect explicitly.
 
 1. Start the app-server with its WebSocket listener on the remote machine and save its bearer token to a file on this computer. The extension never starts, updates, or synchronizes the remote side.
 2. Make sure both machines see the same working tree, for example `C:\src\repo` locally and `/home/<user>/src/repo` on the server.

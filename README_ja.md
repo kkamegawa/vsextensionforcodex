@@ -18,6 +18,8 @@
 
 ## セットアップ
 
+詳しい手順は [Codex CLI の設定・利用ガイド](doc/codex-cli-setup_ja.md)を参照してください。CLI の導入・認証・設定ファイル、Connection target の全項目、リモートサーバーの準備、接続と診断を説明しています。
+
 1. [Codex 0.159.1 リリース](https://github.com/openai/codex/releases/tag/rust-v0.159.1) から、使用しているマシンに合った Windows パッケージをダウンロードしてローカルディレクトリへ展開します。x64 では `codex-package-x86_64-pc-windows-msvc.tar.gz`、Arm64 では `codex-package-aarch64-pc-windows-msvc.tar.gz` です。下のスクリプトは自動で適切なほうを選びます。単体の `codex-*.exe` ではなく、必ずパッケージを使ってください。Codex はツールを補助プログラム（`bin\codex-code-mode-host.exe`、`codex-resources\codex-command-runner.exe`、Windows サンドボックスのセットアップ）経由で実行します。これらは `codex.exe` と同じ場所に置く必要があり、単体の exe ではすべてのツール呼び出しが "failed to spawn code-mode host" で失敗します。winget は不要です。winget のパッケージは固定リリースより遅れることがあります。0.159.1 は本拡張が検証している app-server 契約なので、`latest` ではなくこのリリースを固定して使用してください。
 
    ```powershell
@@ -37,13 +39,16 @@
 2. Visual Studio を再起動し、実行ファイルが 0.159.1 を報告することを確認します。
 
    ```powershell
-   codex --version
+   $codexExe = [Environment]::GetEnvironmentVariable('CODEX_PATH', 'User')
+   & $codexExe --version
    ```
 
 3. ターミナルから一度サインインします。Visual Studio 側が資格情報に触れることはありません。
 
    ```powershell
-   codex login
+   $codexExe = [Environment]::GetEnvironmentVariable('CODEX_PATH', 'User')
+   & $codexExe login
+   & $codexExe login status
    ```
 
 4. 本リポジトリの最新リリースから `Codex.VisualStudio.Extension.vsix` をダウンロードし、
@@ -58,7 +63,7 @@
 
 既定では Codex はローカルの `codex app-server` 子プロセスで動作します。別のマシンで起動済みの app-server でターンを実行するには、次の手順を行います。
 
-> **Preview 機能です。** 上流の WebSocket 転送は実験的機能です。リモート app-server の起動と管理は利用者が行い、拡張機能が管理するのは自身の接続だけです。ルートのヘルスチェックと、サーバー過負荷応答に対する特定の読み取り専用リクエストの上限付きリトライは利用できます。アカウント、プロファイル、作業ルート、接続を変更すると、以前の所有者の選択状態とキャッシュを消去します。サインインまたはサインアウトの後は、拡張機能が新しいセッションに自動で接続します。それ以外のアカウント変更や接続断の後は手動で再接続してください。自動再接続と履歴復旧は別の Issue で追跡します。
+> **Preview 機能です。** 上流の WebSocket 転送は実験的機能です。リモート app-server の起動と管理は利用者が行い、拡張機能が管理するのは自身の接続だけです。ルートのヘルスチェックと、サーバー過負荷応答に対する特定の読み取り専用リクエストの上限付きリトライは利用できます。アカウント、プロファイル、作業ルート、接続を変更すると、以前の所有者の選択状態とキャッシュを消去します。サインインまたはサインアウトの後は、拡張機能が新しいセッションに自動で接続します。一時的な接続断では、上限付きの自動再接続と履歴復旧を試みます。認証・証明書・プロファイル・所有者の変更では自動復旧を停止するため、原因を解決して明示的に再接続してください。
 
 1. リモートマシンで WebSocket リスナーを有効にして app-server を起動し、bearer トークンをこのコンピューター上のファイルに保存します。拡張機能はリモート側の起動・更新・ファイル同期を行いません。
 2. 両方のマシンが同じ作業ツリーを参照できるようにします。例: ローカルは `C:\src\repo`、サーバーは `/home/<user>/src/repo`。
