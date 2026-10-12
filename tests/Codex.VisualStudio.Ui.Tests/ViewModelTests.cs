@@ -6106,6 +6106,61 @@ public sealed class ViewModelTests
         Assert.AreEqual(1, bridge.StartTurnCallCount);
     }
 
+    [TestMethod]
+    public async Task ChatViewModel_ForkRechecksTheGoalStopFenceBeforeDispatch()
+    {
+        const string threadId = "fork-fence";
+        var bridge = new FakeWorkerBridge();
+        using ChatViewModel vm = await CreateJoinedGoalViewModelAsync(bridge, threadId);
+        MethodInfo executeFork = typeof(ChatViewModel).GetMethod("ExecuteForkAsync", BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("Could not find ExecuteForkAsync.");
+        FieldInfo fence = GoalStopFenceField();
+        long captured = (long)fence.GetValue(vm)!;
+        fence.SetValue(vm, captured + 1);
+
+        bool forked = await (Task<bool>)executeFork.Invoke(vm, [threadId, captured])!;
+
+        Assert.IsFalse(forked);
+        Assert.AreEqual(0, bridge.ForkThreadRequests.Count, "A dequeued /fork never dispatches after a Stop began.");
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_ShellPreparationStoppedMidwayNeverOffersConfirmation()
+    {
+        const string threadId = "shell-fence";
+        var bridge = new FakeWorkerBridge();
+        using ChatViewModel vm = await CreateJoinedGoalViewModelAsync(bridge, threadId);
+        MethodInfo prepareShell = typeof(ChatViewModel).GetMethod("PrepareShellCommandAsync", BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("Could not find PrepareShellCommandAsync.");
+        FieldInfo fence = GoalStopFenceField();
+        long captured = (long)fence.GetValue(vm)!;
+
+        bool staleQueued = await (Task<bool>)prepareShell.Invoke(vm, ["-- echo hi", threadId, captured - 1])!;
+        Assert.IsFalse(staleQueued);
+        Assert.AreEqual(0, bridge.ShellCommandPrepareRequests.Count, "A dequeued /shell is not prepared after a Stop began.");
+
+        // A Stop that begins while the preparation request is in flight discards its confirmation.
+        bridge.ShellCommandPrepareHandler = (request, _) =>
+        {
+            fence.SetValue(vm, captured + 1);
+            return Task.FromResult(new ShellCommandPrepareResult
+            {
+                IsSupported = true,
+                IsEligible = true,
+                Confirmation = new ShellCommandConfirmationSnapshot { ConfirmationId = "c1", ThreadId = threadId, Command = request.Command },
+            });
+        };
+        bool prepared = await (Task<bool>)prepareShell.Invoke(vm, ["-- echo hi", threadId, captured])!;
+
+        Assert.IsFalse(prepared);
+        Assert.IsNull(vm.ShellCommandConfirmation);
+        Assert.AreEqual(1, bridge.ShellCommandPrepareRequests.Count);
+    }
+
+    private static FieldInfo GoalStopFenceField()
+        => typeof(ChatViewModel).GetField("goalStopFenceVersion", BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("Could not find goalStopFenceVersion.");
+
     private static async Task<ChatViewModel> CreateJoinedGoalViewModelAsync(FakeWorkerBridge bridge, string threadId, string? turnId = null)
     {
         var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
@@ -6894,8 +6949,13 @@ public sealed class ViewModelTests
             return Task.FromResult(new StartReviewResult { TurnId = "turn-review" });
         }
 
+        public List<ForkThreadRequest> ForkThreadRequests { get; } = [];
+
         public Task<ForkThreadResult> ForkThreadAsync(ForkThreadRequest request, CancellationToken cancellationToken)
-            => Task.FromResult(new ForkThreadResult { Thread = new ThreadSummary { Id = "thread-fork" } });
+        {
+            ForkThreadRequests.Add(request);
+            return Task.FromResult(new ForkThreadResult { Thread = new ThreadSummary { Id = "thread-fork" } });
+        }
 
         public Task<ThreadGoalResult> GetThreadGoalAsync(ThreadGoalRequest request, CancellationToken cancellationToken)
             => GetThreadGoalHandler?.Invoke(request, cancellationToken)
