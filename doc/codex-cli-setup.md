@@ -228,6 +228,9 @@ if ($LASTEXITCODE -ne 0 -or $serverVersion.Trim() -ne 'codex-cli 0.159.1') {
 if ($LASTEXITCODE -ne 0) { throw 'Sign in as the server process user first.' }
 $serverTokenFile = Read-Host 'New absolute local token-file path'
 if (-not [IO.Path]::IsPathFullyQualified($serverTokenFile)) { throw 'Use an absolute path.' }
+if (-not (Test-Path -LiteralPath (Split-Path -Parent $serverTokenFile) -PathType Container)) {
+    throw 'Create the private parent directory first.'
+}
 if (Test-Path -LiteralPath $serverTokenFile) { throw 'Choose a new file; do not overwrite a token.' }
 $serverToken = [Convert]::ToHexString([Security.Cryptography.RandomNumberGenerator]::GetBytes(32))
 $tokenStream = [IO.File]::Open($serverTokenFile, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write)
@@ -253,6 +256,7 @@ server_version=$("$server_codex" --version) || exit 1
 "$server_codex" login status || exit 1
 read -r -p 'New absolute local token-file path: ' server_token_file
 case "$server_token_file" in /*) ;; *) printf 'Use an absolute path.\n' >&2; exit 1 ;; esac
+[ -d "$(dirname "$server_token_file")" ] || { printf 'Create the private parent directory first.\n' >&2; exit 1; }
 (umask 077; set -o noclobber; openssl rand -hex 32 > "$server_token_file") || exit 1
 read -r -p 'App Server ws listener URI: ' listen_uri
 "$server_codex" app-server --listen "$listen_uri" \

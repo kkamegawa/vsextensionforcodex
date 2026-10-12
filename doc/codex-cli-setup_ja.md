@@ -36,7 +36,7 @@
 
 必要なものは、Windows x64 または Arm64、Visual Studio 2022 **17.14 以降**または Visual Studio 2026、Codex で利用できるアカウント／プロバイダー、拡張機能の VSIX です。
 
-1. [README の必要環境](../README_ja.md)にある公式 `rust-v0.159.1` リリースへのリンクを開きます。
+1. [README の必要環境](../README_ja.md#動作要件)にある公式 `rust-v0.159.1` リリースへのリンクを開きます。
 2. x64 なら `codex-package-x86_64-pc-windows-msvc.tar.gz`、Arm64 なら `codex-package-aarch64-pc-windows-msvc.tar.gz` をダウンロードします。
 3. 完全パッケージを使用し、`bin\codex.exe`、`bin\codex-code-mode-host.exe`、`codex-resources\` を含む配置を維持します。単体の実行ファイルでは初期接続できても、ツール実行が `failed to spawn code-mode host` で失敗することがあります。
 4. そのパッケージの SHA-256 を、リリースページにある同じアセットのダイジェストと照合します。`app-server-contract.json` の単体実行ファイルのハッシュは別アセットの値です。
@@ -228,6 +228,9 @@ if ($LASTEXITCODE -ne 0 -or $serverVersion.Trim() -ne 'codex-cli 0.159.1') {
 if ($LASTEXITCODE -ne 0) { throw 'Sign in as the server process user first.' }
 $serverTokenFile = Read-Host 'New absolute local token-file path'
 if (-not [IO.Path]::IsPathFullyQualified($serverTokenFile)) { throw 'Use an absolute path.' }
+if (-not (Test-Path -LiteralPath (Split-Path -Parent $serverTokenFile) -PathType Container)) {
+    throw 'Create the private parent directory first.'
+}
 if (Test-Path -LiteralPath $serverTokenFile) { throw 'Choose a new file; do not overwrite a token.' }
 $serverToken = [Convert]::ToHexString([Security.Cryptography.RandomNumberGenerator]::GetBytes(32))
 $tokenStream = [IO.File]::Open($serverTokenFile, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write)
@@ -253,6 +256,7 @@ server_version=$("$server_codex" --version) || exit 1
 "$server_codex" login status || exit 1
 read -r -p 'New absolute local token-file path: ' server_token_file
 case "$server_token_file" in /*) ;; *) printf 'Use an absolute path.\n' >&2; exit 1 ;; esac
+[ -d "$(dirname "$server_token_file")" ] || { printf 'Create the private parent directory first.\n' >&2; exit 1; }
 (umask 077; set -o noclobber; openssl rand -hex 32 > "$server_token_file") || exit 1
 read -r -p 'App Server ws listener URI: ' listen_uri
 "$server_codex" app-server --listen "$listen_uri" \
