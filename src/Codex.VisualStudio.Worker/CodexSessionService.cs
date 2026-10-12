@@ -840,7 +840,10 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             // The notification handler runs on another task. Publishing the response state and
             // taking a stored early completion happen under the same gate, so a completion is
             // either stored before this point and taken here, or matched by the handler afterwards.
-            operation.LoginId = TryReadMcpOAuthLoginId(result, out string? loginId) ? loginId : null;
+            // An invalid loginId is kept distinct from an absent one: only a server that omits the
+            // ID gets the server-name fallback.
+            operation.LoginIdInvalid = !TryReadMcpOAuthLoginId(result, out string? loginId);
+            operation.LoginId = loginId;
             operation.ResponseReceived = true;
             early = operation.EarlyCompletion;
             operation.EarlyCompletion = null;
@@ -851,7 +854,8 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             // The completion notification overtook the response. Apply it only when it belongs to
             // this attempt; a completion for any other loginId is stale and is dropped. A response
             // without loginId falls back to server-name matching, as for a late notification.
-            if ((operation.LoginId is null || string.Equals(operation.LoginId, early.LoginId, StringComparison.Ordinal))
+            if (!operation.LoginIdInvalid
+                && (operation.LoginId is null || string.Equals(operation.LoginId, early.LoginId, StringComparison.Ordinal))
                 && context.McpOAuthOperations.ContainsKey(operation.OperationId))
             {
                 await ApplyMcpOAuthCompletionAsync(context, serverName, early.Succeeded, cancellationToken).ConfigureAwait(false);
@@ -3979,7 +3983,8 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
                     return;
                 }
 
-                stale = active.LoginId is not null && !string.Equals(active.LoginId, loginId, StringComparison.Ordinal);
+                stale = active.LoginIdInvalid
+                    || (active.LoginId is not null && !string.Equals(active.LoginId, loginId, StringComparison.Ordinal));
             }
 
             if (stale)
@@ -5986,6 +5991,8 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         public bool ResponseReceived { get; set; }
 
         public McpOAuthEarlyCompletion? EarlyCompletion { get; set; }
+
+        public bool LoginIdInvalid { get; set; }
 
         // Guards LoginId, ResponseReceived and EarlyCompletion between the login response and
         // the completion notification, which are processed on different tasks.

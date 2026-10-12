@@ -2997,6 +2997,37 @@ public sealed class CodexSessionServiceTests
     }
 
     [TestMethod]
+    [DataRow("{\"requirements\":null}", true)]
+    [DataRow("{}", false)]
+    [DataRow("{\"requirements\":[]}", false)]
+    public async Task WindowsSandboxRequirementsAreKnownOnlyForAnObjectOrExplicitNull(string response, bool known)
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method switch
+            {
+                "initialize" => JsonSerializer.SerializeToElement(new { platformFamily = "windows", platformOs = "windows-11" }),
+                "windowsSandbox/readiness" => JsonSerializer.SerializeToElement(new { status = "ready" }),
+                "configRequirements/read" => JsonDocument.Parse(response).RootElement.Clone(),
+                _ => JsonSerializer.SerializeToElement(new { }),
+            },
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        WindowsSandboxReadinessResult result = await service.GetWindowsSandboxReadinessAsync(new WindowsSandboxReadinessRequest
+        {
+            StatePartitionFingerprint = service.StatePartitionFingerprint,
+            OwnerGeneration = service.OwnerGeneration,
+            ConnectionGeneration = service.ConnectionGeneration,
+        }, CancellationToken.None);
+
+        Assert.AreEqual(known, result.RequirementsKnown);
+        Assert.IsNull(result.AllowedImplementations);
+        StringAssert.Contains(result.BackendNotice, known ? "Managed policy allows MXC." : "Managed policy could not be read.");
+    }
+
+    [TestMethod]
     public async Task WindowsSandboxReadinessReportsUnknownWhenConfigReadsAreUnsupported()
     {
         var connection = new RecordingConnection

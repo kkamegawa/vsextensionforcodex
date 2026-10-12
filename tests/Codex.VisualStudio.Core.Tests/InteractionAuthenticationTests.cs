@@ -317,6 +317,28 @@ public sealed class InteractionAuthenticationTests
     }
 
     [TestMethod]
+    public async Task McpLoginResponseWithInvalidLoginId_DoesNotFallBackToServerName()
+    {
+        var connection = new RecordingConnection();
+        connection.AsyncHandler = (method, _, _) => method == "mcpServer/oauth/login"
+            ? Task.FromResult(JsonSerializer.SerializeToElement(new { authorizationUrl = "https://login.example.test/authorize", loginId = 42 }))
+            : Task.FromResult(JsonSerializer.SerializeToElement(new { }));
+        await using var service = CreateService(_ => { });
+        var statuses = new ConcurrentQueue<InteractionAuthStatus>();
+        service.InteractionAuthStatusChanged += (status, _) =>
+        {
+            statuses.Enqueue(status);
+            return Task.CompletedTask;
+        };
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+        await service.StartMcpOAuthLoginAsync(new StartMcpOAuthLoginRequest { ServerName = "example-mcp" }, CancellationToken.None);
+
+        await connection.EmitNotificationAsync("mcpServer/oauthLogin/completed", new { name = "example-mcp", success = true, loginId = "other-attempt" });
+
+        Assert.AreEqual(InteractionAuthState.LoginPending, LastMcpStatus(statuses).State);
+    }
+
+    [TestMethod]
     public async Task McpCompletionWithInvalidLoginId_IsIgnored()
     {
         (RecordingConnection connection, CodexSessionService service, ConcurrentQueue<InteractionAuthStatus> statuses) =

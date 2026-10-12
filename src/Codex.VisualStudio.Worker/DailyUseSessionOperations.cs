@@ -868,9 +868,15 @@ public sealed partial class CodexSessionService
                 null,
                 TimeSpan.FromSeconds(10),
                 cancellationToken).ConfigureAwait(false);
-            result.RequirementsKnown = true;
-            if (requirements.TryGetProperty("requirements", out JsonElement policy) && policy.ValueKind == JsonValueKind.Object)
+            // "requirements": null means no managed requirements are configured; any other shape
+            // (missing or not an object) leaves the policy unknown.
+            if (requirements.TryGetProperty("requirements", out JsonElement policy) && policy.ValueKind == JsonValueKind.Null)
             {
+                result.RequirementsKnown = true;
+            }
+            else if (policy.ValueKind == JsonValueKind.Object)
+            {
+                result.RequirementsKnown = true;
                 if (policy.TryGetProperty("allowedWindowsSandboxImplementations", out JsonElement allowed)
                     && allowed.ValueKind == JsonValueKind.Array)
                 {

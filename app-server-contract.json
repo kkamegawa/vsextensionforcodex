@@ -118,6 +118,8 @@
         "thread/shellCommand",
         "windowsSandbox/readiness",
         "windowsSandbox/setupStart",
+        "config/read",
+        "configRequirements/read",
         "model/list",
         "permissionProfile/list",
         "turn/start",

@@ -858,6 +858,29 @@ public sealed class WorkerRpcServiceTests
     }
 
     [TestMethod]
+    [DataRow(WindowsSandboxBackendPreference.RequireMxc, true)]
+    [DataRow(WindowsSandboxBackendPreference.FollowCodexConfig, false)]
+    public async Task InitializeFailureNamesTheBackendOnlyForRequireMxc(WindowsSandboxBackendPreference backend, bool expectHint)
+    {
+        var connection = new StubConnection
+        {
+            Handler = method => method == "initialize"
+                ? throw new InvalidOperationException("codex app-server failed.")
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        var host = new FakeProcessHost(connection);
+        var session = new CodexSessionService(new ApprovalPolicyEngine(new PathAccessPolicy()), new SecretRedactor());
+        await using var worker = new WorkerRpcService(new SecretRedactor(), host, session);
+        WorkerOptions options = Options();
+        options.WindowsSandboxBackend = backend;
+
+        WorkerStatus status = await worker.ConnectAsync(options, CancellationToken.None);
+
+        Assert.AreEqual(WorkerConnectionState.Degraded, status.State);
+        Assert.AreEqual(expectHint, status.Message.Contains("Require MXC", StringComparison.Ordinal), status.Message);
+    }
+
+    [TestMethod]
     public async Task LocalRestartStartsWithTheRequestedSandboxBackend()
     {
         var connection = new StubConnection();

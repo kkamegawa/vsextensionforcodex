@@ -190,6 +190,9 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
 
     private async Task<WorkerStatus> ConnectLocalCoreAsync(WorkerOptions options, CancellationToken cancellationToken)
     {
+        // A managed-policy rejection of the backend stops Codex while it loads its configuration,
+        // so only failures before initialize completes can be caused by the backend override.
+        bool initialized = false;
         try
         {
             WorkerDiagnostics.Write("worker starting codex app-server");
@@ -198,6 +201,7 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
             BeginSessionOwnerPartition(options, processHost.CredentialFingerprint);
             WorkerDiagnostics.Write("worker initializing codex app-server");
             await session.InitializeAsync(processHost.Connection!, options, cancellationToken).ConfigureAwait(false);
+            initialized = true;
             WorkerDiagnostics.Write("worker reading account status");
             ConnectionTargetSnapshot accountReadTarget = SnapshotTarget();
             AccountStatus initialAccountStatus = await session.GetAccountStatusAsync(cancellationToken).ConfigureAwait(false);
@@ -237,7 +241,7 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
                 CancellationToken.None).ConfigureAwait(false);
             return await SetStatusAsync(
                 WorkerConnectionState.Degraded,
-                redactor.Redact(AppendSandboxBackendStartupHint(ex.Message, options.WindowsSandboxBackend)),
+                redactor.Redact(initialized ? ex.Message : AppendSandboxBackendStartupHint(ex.Message, options.WindowsSandboxBackend)),
                 cancellationToken,
                 ClassifyRecoveryFailure(ex)).ConfigureAwait(false);
         }
