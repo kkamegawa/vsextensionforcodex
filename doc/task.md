@@ -2,6 +2,16 @@
 
 `plan.md` のフェーズ分割に対応する詳細タスク。各タスクは独立してレビュー可能な小さなスライスを意図する。
 
+## 2026-10-09: Integrated release validation design and documentation (Issue #156)
+
+Tracking: [Issue #156](https://github.com/kkamegawa/vsextensionforcodex/issues/156), under [Issue #149](https://github.com/kkamegawa/vsextensionforcodex/issues/149). Approved [design](release-validation-design.md) and [implementation plan](release-validation-plan.md); [Japanese work record](task-issue156_ja.md).
+
+- [x] Reconcile the release-validation scope with main at b44e856, Worker contract v21, CLI 0.159.1, regression fixtures 0.155.1, existing implementation, and PR #170 evidence.
+- [x] Define Local-required and External scenario classes, result states, explicit External blocked acceptance, retry/skip treatment, sanitized artifacts, Windows requirements, and native-verification refusal checks.
+- [x] Carry unfinished Issue #155 Experimental Instance visual/accessibility acceptance into #156 despite #155 being closed.
+- [x] Synchronize the bilingual design, plan, umbrella documentation, Issue #156, and Wiki indexes. This records design/documentation only; no validation script, CI workflow, or missing test was implemented or run.
+- [x] Address PR #171 review: normalize the six added Markdown files to UTF-8 BOM/CRLF, reconcile Japanese Issue #155 status records with its current closed state, and mark the unverified PR #170 skip reasons as unknown. Tracking: [PR #171](https://github.com/kkamegawa/vsextensionforcodex/pull/171).
+
 ## 2026-10-08: Daily-use App Server features (Issue #155)
 
 Tracking: [Issue #155](https://github.com/kkamegawa/vsextensionforcodex/issues/155), under [Issue #149](https://github.com/kkamegawa/vsextensionforcodex/issues/149). Approved [design](daily-use-app-server-design.md) and [plan](daily-use-app-server-plan.md); [Japanese work record](task-issue155_ja.md).
@@ -18,7 +28,7 @@ Tracking: [Issue #155](https://github.com/kkamegawa/vsextensionforcodex/issues/1
 
 Final automated results: Core Debug/Release each 399 passed, 0 failed, 5 skipped (404 total); UI Debug/Release each 370 passed, 0 failed, 1 skipped (371 total). Both full solution builds report 0 warnings and 0 errors. Debug/Release VSIX DLL hashes match their build outputs, raw embedded XAML matches source, and both packages carry contract v21. See [implementation evidence](implementation.md#issue-155-daily-use-app-server-features).
 
-The WPF preview fragment was parsed and rendered with XamlReader/RenderTargetBitmap; its output image was inspected. This is separate from Experimental Instance acceptance. Visual Studio 2026 Enterprise 18.10.3 is installed, but native CUA APIs are disabled and no Experimental screenshots were obtained. Issue #155 stays open for this evidence; Issue #156 remains the release gate.
+The WPF preview fragment was parsed and rendered with XamlReader/RenderTargetBitmap; its output image was inspected. This is separate from Experimental Instance acceptance. Visual Studio 2026 Enterprise 18.10.3 is installed, but native CUA APIs are disabled and no Experimental screenshots were obtained. Issue #155 closed after PR #170; the outstanding Experimental Instance visual/accessibility evidence is carried into #156 as Local-required.
 
 ## 2026-10-04: Issue #153 recovery design reconciliation ([Issue #153](https://github.com/kkamegawa/vsextensionforcodex/issues/153))
 
@@ -68,7 +78,7 @@ Evidence: [English verification record](path-state-isolation-verification.md) / 
 - [ ] Phase 4: retain in-memory drafts, reconnect and page history plus stored attachments, merge notifications, and prevent uncertain message/approval/attachment mutation replay.
 - [ ] Phase 5: raise the Worker contract for questions, permissions, native user verification, MCP forms/authentication and OAuth revocation recovery with safe secret/proof handling.
 - [ ] Phase 6: add plan/status/artifact and stored attachment rendering, model catalog capabilities, explicit `thread/shellCommand`, and local sandbox setup status.
-- [ ] Phase 7: run 0.154.0-to-0.155.1 contract-diff, race, auth-owner switch, transport, path, stored attachment, verification/MCP reauthentication, UI accessibility, build, VSIX, and Experimental Instance validation.
+- [ ] Phase 7 / Issue #156: validate the 0.155.1 regression baseline against CLI 0.159.1, with Worker contract v21; separate Local-required and External scenarios and apply the approved retry, skip, evidence, and release-readiness rules.
 - [x] Tracking: parent Issue and seven linked child Issues; English/Japanese Wiki plan and Home indexes. The detailed Issue #150 plan was pushed to the bilingual Wiki on 2026-09-22.
 
 ## 2026-09-23: PR #157 review fixes ([PR #157](https://github.com/kkamegawa/vsextensionforcodex/pull/157), [Issue #150](https://github.com/kkamegawa/vsextensionforcodex/issues/150), [Issue #151](https://github.com/kkamegawa/vsextensionforcodex/issues/151), [Issue #152](https://github.com/kkamegawa/vsextensionforcodex/issues/152))
@@ -739,3 +749,19 @@ Implementation record: [implementation.md](implementation.md#secure-remote-app-s
 - Visual/accessibility acceptance: pending; no Experimental Instance screenshots are recorded. Visual Studio 2026 Enterprise 18.10.3 is installed in the current environment.
 
 Tracking: [Issue #154](https://github.com/kkamegawa/vsextensionforcodex/issues/154) and children [#165](https://github.com/kkamegawa/vsextensionforcodex/issues/165), [#166](https://github.com/kkamegawa/vsextensionforcodex/issues/166), [#167](https://github.com/kkamegawa/vsextensionforcodex/issues/167), and [#168](https://github.com/kkamegawa/vsextensionforcodex/issues/168).
+
+### 2026-10-10: Collapse authentication status details ([Issue #173](https://github.com/kkamegawa/vsextensionforcodex/issues/173))
+
+- [x] Record the requested final presentation in the paired interaction design: retain the compact Gateway summary/recovery actions and Check status; expand MCP details explicitly; add a persistent MCP details toggle beside Check status. The toggle remains visible in both states and preserves keyboard focus when collapsing.
+- [x] Add serialized expansion state and a persistent MCP details toggle. Preserve authentication data and pending actions; keep collapsed details closed after notifications or in-flight responses; reset expansion on owner retirement. The stable toggle remains visible and retains keyboard focus while its checked state reflects expansion.
+- [x] Add four regression tests for hide/recheck, retained actions, asynchronous races, owner reset/stale responses, and embedded XAML bindings. Allow the existing image-preview test's root detection to recognize a Git worktree's `.git` file.
+- [x] Validate the Release solution build (0 warnings, 0 errors), focused tests (4 passed), full UI tests (378 passed, 1 skipped), and full Core tests (402 passed, 5 skipped). Skipped cases require filesystem-link support unavailable in this environment.
+- [x] Verify packaged Extension DLL matches the Release output and embedded raw XAML matches source. The renders under `artifacts/hide-auth-status/` cover the earlier Hide status iteration only, not the final toggle.
+- [x] Address the PR #175 review: label the toggle MCP details and bind its checked state two-way to the expansion state (removing the unbound Hide command and the toggle command); share `RoundButtonStyle` (now `ButtonBase`) with the toggle so disabled and hover states stay consistent; show a compact hint while collapsed details hide pending MCP sign-in, authorization, or dismiss actions; remove the one-off `.gitattributes` rule; strengthen the regression tests (five tests, including pending-action tracking).
+- [x] Re-validate after the review: Release solution build (0 warnings, 0 errors), full UI tests (380 passed, 0 skipped), and full Core tests (407 passed on rerun; the first run reported one failure that did not reproduce and was not identified). Inspect off-screen WPF renders of the final authentication XAML at 700/380 pixels in Light, Dark, and High Contrast palettes for collapsed-with-pending, expanded, and collapsed-clear states. Render evidence is under `artifacts/issue173-mcp-details/`; the isolated harness supplies theme brushes, the inherited foreground, and presentation data, so it does not establish Experimental Instance integration or live theme switching.
+
+The initial full UI run exposed the pre-existing `.git` directory assumption in the image-preview test. Accepting both a `.git` directory and a worktree `.git` file resolves that test-harness issue; the final UI suite above passes in the dedicated worktree. This bug fix updates the existing design and does not add a feature-plan Wiki page.
+
+The separate goal cancellation defect is tracked in [Issue #174](https://github.com/kkamegawa/vsextensionforcodex/issues/174); its implementation is outside this PR.
+
+Japanese record: [日本語](task-issue173_ja.md).

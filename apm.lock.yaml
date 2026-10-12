@@ -1,7 +1,14 @@
 lockfile_version: '1'
-generated_at: '2026-10-04T07:51:15.206673+00:00'
+generated_at: '2026-10-10T10:43:21.607532+00:00'
 apm_version: 0.33.0
 dependencies:
+- repo_url: dotnet/skills
+  name: b7b5400a22d3356b
+  host: github.com
+  resolved_commit: 1d40f95ed0f2cdedfa4c9b2614b7c2035a4323cb
+  version: 1d40f95
+  package_type: apm_package
+  content_hash: sha256:f771684f1bafa1778f5236a96405e11c9d55c316f18792811b946ae400c7a690
 - repo_url: github/awesome-copilot
   name: awesome-copilot-api-architect
   host: github.com
