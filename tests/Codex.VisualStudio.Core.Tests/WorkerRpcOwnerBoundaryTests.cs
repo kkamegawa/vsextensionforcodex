@@ -545,7 +545,7 @@ public sealed class WorkerRpcOwnerBoundaryTests
 
         public IJsonRpcConnection? Connection => connection;
 
-        public Task StartAsync(string codexPath, string workingDirectory, CancellationToken cancellationToken)
+        public Task StartAsync(string codexPath, string workingDirectory, WindowsSandboxBackendPreference sandboxBackend, CancellationToken cancellationToken)
         {
             connection = string.Equals(workingDirectory, ownerA.WorkingDirectory, StringComparison.Ordinal)
                 ? ownerA
@@ -579,7 +579,7 @@ public sealed class WorkerRpcOwnerBoundaryTests
 
         public IJsonRpcConnection? Connection => connection;
 
-        public Task StartAsync(string codexPath, string workingDirectory, CancellationToken cancellationToken)
+        public Task StartAsync(string codexPath, string workingDirectory, WindowsSandboxBackendPreference sandboxBackend, CancellationToken cancellationToken)
         {
             connection = connections[next++];
             return Task.CompletedTask;

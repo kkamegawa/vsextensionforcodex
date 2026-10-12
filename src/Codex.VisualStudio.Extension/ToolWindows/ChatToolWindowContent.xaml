@@ -981,23 +981,47 @@
         <Border Margin="0,4,0,0" Padding="8,6" CornerRadius="5" BorderThickness="1"
                 BorderBrush="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBorderBrushKey}}"
                 Background="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBackgroundBrushKey}}"
-                Visibility="{Binding ShowWindowsSandboxSetup, Converter={StaticResource BoolToVis}}">
+                Visibility="{Binding ShowWindowsSandboxPanel, Converter={StaticResource BoolToVis}}">
           <StackPanel>
-            <TextBlock FontWeight="SemiBold" Text="Windows sandbox setup" />
-            <TextBlock Margin="0,2,0,0" Text="{Binding WindowsSandboxSolutionRootText}" TextWrapping="Wrap" />
-            <TextBlock Margin="0,2,0,0" Text="{Binding WindowsSandboxStatusText}" TextWrapping="Wrap"
-                       AutomationProperties.LiveSetting="Polite" />
-            <ProgressBar Height="4" Margin="0,4,0,0" IsIndeterminate="True"
-                         Visibility="{Binding IsWindowsSandboxSetupInProgress, Converter={StaticResource BoolToVis}}" />
+            <TextBlock FontWeight="SemiBold" Text="Windows sandbox" />
             <WrapPanel Margin="0,4,0,0">
-              <Button Content="Check readiness" Command="{Binding CheckWindowsSandboxReadinessCommand}"
-                      Style="{StaticResource SmallRoundButtonStyle}" />
-              <ComboBox Margin="6,0,0,0" Width="130" ItemsSource="{Binding WindowsSandboxSetupModes}"
-                        SelectedItem="{Binding SelectedWindowsSandboxMode, Mode=TwoWay}"
-                        AutomationProperties.Name="Windows sandbox setup mode" />
-              <Button Margin="6,0,0,0" Content="Start setup" Command="{Binding StartWindowsSandboxSetupCommand}"
-                      Style="{StaticResource SmallRoundButtonStyle}" />
+              <TextBlock VerticalAlignment="Center" Text="Local app-server backend:" />
+              <ComboBox Margin="6,0,0,0" MinWidth="180" VerticalAlignment="Center"
+                        ItemsSource="{Binding WindowsSandboxBackends}"
+                        DisplayMemberPath="DisplayText"
+                        SelectedValuePath="Id"
+                        SelectedValue="{Binding SelectedWindowsSandboxBackendId, Mode=TwoWay}"
+                        ToolTip="{Binding WindowsSandboxBackendHelpText}"
+                        AutomationProperties.Name="Local app-server Windows sandbox backend"
+                        AutomationProperties.HelpText="{Binding WindowsSandboxBackendHelpText}" />
             </WrapPanel>
+            <TextBlock Margin="0,2,0,0" Text="{Binding WindowsSandboxBackendHelpText}" TextWrapping="Wrap" />
+            <TextBlock Margin="0,2,0,0" Text="{Binding WindowsSandboxBackendPendingText}" TextWrapping="Wrap"
+                       FontWeight="SemiBold"
+                       Visibility="{Binding HasWindowsSandboxBackendPending, Converter={StaticResource BoolToVis}}"
+                       AutomationProperties.LiveSetting="Polite" />
+            <StackPanel Visibility="{Binding ShowWindowsSandboxSetup, Converter={StaticResource BoolToVis}}">
+              <TextBlock Margin="0,4,0,0" Text="{Binding WindowsSandboxBackendStatusText}" TextWrapping="Wrap"
+                         AutomationProperties.LiveSetting="Polite" />
+              <Button Margin="0,4,0,0" HorizontalAlignment="Left" Content="Check sandbox status"
+                      Command="{Binding CheckWindowsSandboxReadinessCommand}"
+                      Style="{StaticResource SmallRoundButtonStyle}"
+                      AutomationProperties.HelpText="Reads readiness, the effective Codex configuration, and managed policy." />
+              <TextBlock Margin="0,6,0,0" FontWeight="SemiBold" TextWrapping="Wrap"
+                         Text="Legacy setup (elevated / unelevated; MXC needs none)" />
+              <TextBlock Margin="0,2,0,0" Text="{Binding WindowsSandboxSolutionRootText}" TextWrapping="Wrap" />
+              <TextBlock Margin="0,2,0,0" Text="{Binding WindowsSandboxStatusText}" TextWrapping="Wrap"
+                         AutomationProperties.LiveSetting="Polite" />
+              <ProgressBar Height="4" Margin="0,4,0,0" IsIndeterminate="True"
+                           Visibility="{Binding IsWindowsSandboxSetupInProgress, Converter={StaticResource BoolToVis}}" />
+              <WrapPanel Margin="0,4,0,0">
+                <ComboBox Width="130" ItemsSource="{Binding WindowsSandboxSetupModes}"
+                          SelectedItem="{Binding SelectedWindowsSandboxMode, Mode=TwoWay}"
+                          AutomationProperties.Name="Windows sandbox setup mode" />
+                <Button Margin="6,0,0,0" Content="Start setup" Command="{Binding StartWindowsSandboxSetupCommand}"
+                        Style="{StaticResource SmallRoundButtonStyle}" />
+              </WrapPanel>
+            </StackPanel>
           </StackPanel>
         </Border>
       </StackPanel>

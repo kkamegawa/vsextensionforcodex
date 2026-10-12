@@ -297,6 +297,39 @@ public sealed class WindowsSandboxReadinessResult : AppServerOperationResult
     public bool IsWindows { get; set; }
 
     public bool IsLocalStdio { get; set; }
+
+    // The backend preference this local app-server was started with.
+    public WindowsSandboxBackendPreference AppliedBackendPreference { get; set; }
+
+    // config/read: effective windows.sandbox ("elevated", "unelevated", "mxc") and
+    // features.prefer_mxc. Null means not configured or not readable; see ConfigKnown.
+    public bool ConfigKnown { get; set; }
+
+    public string? ConfiguredImplementation { get; set; }
+
+    public bool? PreferMxcFeature { get; set; }
+
+    // configRequirements/read: managed policy. A null list means the policy does not restrict the
+    // implementation; see RequirementsKnown for whether the policy could be read at all.
+    public bool RequirementsKnown { get; set; }
+
+    public List<string>? AllowedImplementations { get; set; }
+
+    public bool? AllowLocalBinding { get; set; }
+
+    // Plain-text diagnosis derived from the values above. It never claims which backend actually
+    // ran a command: readiness alone does not prove that.
+    public string? BackendNotice { get; set; }
+}
+
+// Local Windows sandbox backend selection. PreferMxc passes features.prefer_mxc=true, which Codex
+// applies only when MXC is eligible under managed policy. RequireMxc passes windows.sandbox=mxc,
+// which Codex rejects at startup when managed policy disallows MXC. Neither relaxes any policy.
+public enum WindowsSandboxBackendPreference
+{
+    FollowCodexConfig,
+    PreferMxc,
+    RequireMxc,
 }
 
 public enum WindowsSandboxSetupState

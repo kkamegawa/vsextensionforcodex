@@ -226,6 +226,191 @@ public sealed class InteractionAuthenticationTests
     }
 
     [TestMethod]
+    public async Task McpCompletionWithMatchingLoginId_CompletesTheAttempt()
+    {
+        (RecordingConnection connection, CodexSessionService service, ConcurrentQueue<InteractionAuthStatus> statuses) =
+            await StartMcpLoginWithLoginIdAsync("login-1");
+        await using (service)
+        {
+            await connection.EmitNotificationAsync("mcpServer/oauthLogin/completed", new { name = "example-mcp", success = true, loginId = "login-1" });
+
+            McpServerAuthStatus status = LastMcpStatus(statuses);
+            Assert.AreEqual(InteractionAuthState.Authenticated, status.State);
+            Assert.IsNull(status.OpenAuthorizationActionId);
+        }
+    }
+
+    [TestMethod]
+    public async Task McpCompletionWithStaleLoginId_DoesNotCompleteTheCurrentAttempt()
+    {
+        (RecordingConnection connection, CodexSessionService service, ConcurrentQueue<InteractionAuthStatus> statuses) =
+            await StartMcpLoginWithLoginIdAsync("login-2");
+        await using (service)
+        {
+            int before = statuses.Count;
+            await connection.EmitNotificationAsync("mcpServer/oauthLogin/completed", new { name = "example-mcp", success = false, loginId = "login-1" });
+
+            Assert.AreEqual(before, statuses.Count, "A stale completion must not publish a new state.");
+            McpServerAuthStatus status = LastMcpStatus(statuses);
+            Assert.AreEqual(InteractionAuthState.LoginPending, status.State);
+            Assert.IsNotNull(status.OpenAuthorizationActionId, "The current attempt keeps its authorization link.");
+        }
+    }
+
+    [TestMethod]
+    public async Task McpCompletionWithLoginIdAfterTheAttemptCompleted_DoesNotOverwriteStatus()
+    {
+        (RecordingConnection connection, CodexSessionService service, ConcurrentQueue<InteractionAuthStatus> statuses) =
+            await StartMcpLoginWithLoginIdAsync("login-1");
+        await using (service)
+        {
+            await connection.EmitNotificationAsync("mcpServer/oauthLogin/completed", new { name = "example-mcp", success = true, loginId = "login-1" });
+            Assert.AreEqual(InteractionAuthState.Authenticated, LastMcpStatus(statuses).State);
+            int before = statuses.Count;
+
+            await connection.EmitNotificationAsync("mcpServer/oauthLogin/completed", new { name = "example-mcp", success = false, loginId = "login-1" });
+
+            Assert.AreEqual(before, statuses.Count, "A duplicate completion is dropped.");
+            Assert.AreEqual(InteractionAuthState.Authenticated, LastMcpStatus(statuses).State);
+        }
+    }
+
+    [TestMethod]
+    public async Task McpCompletionRacingTheLoginResponse_AlwaysCompletesTheAttempt()
+    {
+        for (int attempt = 0; attempt < 100; attempt++)
+        {
+            var connection = new RecordingConnection();
+            var loginStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var finishLogin = new TaskCompletionSource<JsonElement>(TaskCreationOptions.RunContinuationsAsynchronously);
+            connection.AsyncHandler = (method, _, _) => method == "mcpServer/oauth/login"
+                ? StartPendingLoginAsync()
+                : Task.FromResult(JsonSerializer.SerializeToElement(new { }));
+            await using var service = CreateService(_ => { });
+            var statuses = new ConcurrentQueue<InteractionAuthStatus>();
+            service.InteractionAuthStatusChanged += (status, _) =>
+            {
+                statuses.Enqueue(status);
+                return Task.CompletedTask;
+            };
+            await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+            Task<McpOAuthLoginStatus> loginTask = service.StartMcpOAuthLoginAsync(
+                new StartMcpOAuthLoginRequest { ServerName = "example-mcp" },
+                CancellationToken.None);
+            await loginStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            Task notification = Task.Run(() => connection.EmitNotificationAsync(
+                "mcpServer/oauthLogin/completed",
+                new { name = "example-mcp", success = true, loginId = "login-1" }));
+            Task response = Task.Run(() => finishLogin.TrySetResult(JsonSerializer.SerializeToElement(
+                new { authorizationUrl = "https://login.example.test/authorize", loginId = "login-1" })));
+            await Task.WhenAll(notification, response, loginTask).WaitAsync(TimeSpan.FromSeconds(5));
+
+            Assert.AreEqual(InteractionAuthState.Authenticated, LastMcpStatus(statuses).State, $"attempt {attempt}");
+
+            Task<JsonElement> StartPendingLoginAsync()
+            {
+                loginStarted.TrySetResult();
+                return finishLogin.Task;
+            }
+        }
+    }
+
+    [TestMethod]
+    public async Task McpLoginResponseWithInvalidLoginId_DoesNotFallBackToServerName()
+    {
+        var connection = new RecordingConnection();
+        connection.AsyncHandler = (method, _, _) => method == "mcpServer/oauth/login"
+            ? Task.FromResult(JsonSerializer.SerializeToElement(new { authorizationUrl = "https://login.example.test/authorize", loginId = 42 }))
+            : Task.FromResult(JsonSerializer.SerializeToElement(new { }));
+        await using var service = CreateService(_ => { });
+        var statuses = new ConcurrentQueue<InteractionAuthStatus>();
+        service.InteractionAuthStatusChanged += (status, _) =>
+        {
+            statuses.Enqueue(status);
+            return Task.CompletedTask;
+        };
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+        await service.StartMcpOAuthLoginAsync(new StartMcpOAuthLoginRequest { ServerName = "example-mcp" }, CancellationToken.None);
+
+        await connection.EmitNotificationAsync("mcpServer/oauthLogin/completed", new { name = "example-mcp", success = true, loginId = "other-attempt" });
+
+        Assert.AreEqual(InteractionAuthState.LoginPending, LastMcpStatus(statuses).State);
+    }
+
+    [TestMethod]
+    public async Task McpCompletionWithInvalidLoginId_IsIgnored()
+    {
+        (RecordingConnection connection, CodexSessionService service, ConcurrentQueue<InteractionAuthStatus> statuses) =
+            await StartMcpLoginWithLoginIdAsync("login-1");
+        await using (service)
+        {
+            int before = statuses.Count;
+            await connection.EmitNotificationAsync("mcpServer/oauthLogin/completed", new { name = "example-mcp", success = true, loginId = 42 });
+
+            Assert.AreEqual(before, statuses.Count);
+            Assert.AreEqual(InteractionAuthState.LoginPending, LastMcpStatus(statuses).State);
+        }
+    }
+
+    [TestMethod]
+    [DataRow("login-1", "login-1", InteractionAuthState.Authenticated)]
+    [DataRow("login-0", "login-1", InteractionAuthState.LoginPending)]
+    [DataRow("login-0", null, InteractionAuthState.Authenticated)]
+    public async Task McpCompletionBeforeLoginResponse_IsAppliedOnlyForTheSameLoginId(string notifiedLoginId, string? responseLoginId, InteractionAuthState expected)
+    {
+        var connection = new RecordingConnection();
+        var loginStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var finishLogin = new TaskCompletionSource<JsonElement>(TaskCreationOptions.RunContinuationsAsynchronously);
+        connection.AsyncHandler = (method, _, _) => method == "mcpServer/oauth/login"
+            ? StartPendingLoginAsync()
+            : Task.FromResult(JsonSerializer.SerializeToElement(new { }));
+        await using var service = CreateService(_ => { });
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        Task<McpOAuthLoginStatus> loginTask = service.StartMcpOAuthLoginAsync(
+            new StartMcpOAuthLoginRequest { ServerName = "example-mcp", ThreadId = "thread-1" },
+            CancellationToken.None);
+        await loginStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await connection.EmitNotificationAsync("mcpServer/oauthLogin/completed", new { name = "example-mcp", success = true, loginId = notifiedLoginId });
+        finishLogin.TrySetResult(JsonSerializer.SerializeToElement(new { authorizationUrl = "https://login.example.test/authorize", loginId = responseLoginId }));
+        McpOAuthLoginStatus loginStatus = await loginTask.WaitAsync(TimeSpan.FromSeconds(2));
+
+        Assert.AreEqual(expected, loginStatus.State);
+        Assert.AreEqual(expected == InteractionAuthState.LoginPending, loginStatus.OpenAuthorizationActionId is not null);
+
+        Task<JsonElement> StartPendingLoginAsync()
+        {
+            loginStarted.TrySetResult();
+            return finishLogin.Task;
+        }
+    }
+
+    private static async Task<(RecordingConnection Connection, CodexSessionService Service, ConcurrentQueue<InteractionAuthStatus> Statuses)> StartMcpLoginWithLoginIdAsync(string loginId)
+    {
+        var connection = new RecordingConnection();
+        connection.AsyncHandler = (method, _, _) => method == "mcpServer/oauth/login"
+            ? Task.FromResult(JsonSerializer.SerializeToElement(new { authorizationUrl = "https://login.example.test/authorize", loginId }))
+            : Task.FromResult(JsonSerializer.SerializeToElement(new { }));
+        CodexSessionService service = CreateService(_ => { });
+        var statuses = new ConcurrentQueue<InteractionAuthStatus>();
+        service.InteractionAuthStatusChanged += (status, _) =>
+        {
+            statuses.Enqueue(status);
+            return Task.CompletedTask;
+        };
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+        McpOAuthLoginStatus started = await service.StartMcpOAuthLoginAsync(
+            new StartMcpOAuthLoginRequest { ServerName = "example-mcp" },
+            CancellationToken.None);
+        Assert.AreEqual(InteractionAuthState.LoginPending, started.State);
+        return (connection, service, statuses);
+    }
+
+    private static McpServerAuthStatus LastMcpStatus(ConcurrentQueue<InteractionAuthStatus> statuses) =>
+        statuses.Last().McpServers.Single(server => server.ServerName == "example-mcp");
+
+    [TestMethod]
     public async Task AuthorizationUrlIsOpenedOnlyByExplicitActionAndDismissRevokesMcpLink()
     {
         var connection = new RecordingConnection();

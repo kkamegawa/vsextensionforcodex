@@ -1,7 +1,7 @@
 ﻿param(
     [Parameter(Mandatory = $true)][string]$SchemaDirectory,
     [string]$ManifestPath = 'app-server-contract.json',
-    [string]$RegressionSchemaDirectory = 'schemas/0.155.1/stable'
+    [string]$RegressionSchemaDirectory = 'schemas/0.159.1/stable'
 )
 
 $ErrorActionPreference = 'Stop'

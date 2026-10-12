@@ -5,7 +5,7 @@ namespace Codex.VisualStudio.Contracts;
 
 public static class ContractVersions
 {
-    public const int Current = 23;
+    public const int Current = 24;
 }
 
 public enum GoalStopStepOutcome
@@ -168,6 +168,13 @@ public enum ReviewModeChangeKind
     Exited,
 }
 
+// A local restart starts a new app-server process, so it applies the currently saved backend
+// instead of the one cached from the previous connect.
+public sealed class LocalRestartRequest
+{
+    public WindowsSandboxBackendPreference WindowsSandboxBackend { get; set; }
+}
+
 public sealed class WorkerOptions
 {
     public int ContractVersion { get; set; } = ContractVersions.Current;
@@ -179,6 +186,10 @@ public sealed class WorkerOptions
     public string ExtensionVersion { get; set; } = "0.1.0";
 
     public bool ExperimentalApi { get; set; }
+
+    // Applied only when the Worker starts a local stdio app-server. Remote servers keep their own
+    // configuration and are never reconfigured from this side.
+    public WindowsSandboxBackendPreference WindowsSandboxBackend { get; set; }
 
     // Remote profiles contain endpoint and token-file metadata only. The token value is read by
     // the Worker and is never sent across the Visual Studio Remote UI boundary.
@@ -1309,7 +1320,7 @@ public interface ICodexWorkerClient
 
     // Restarts the Worker-owned local app-server process. Refused for a remote target.
     [JsonRpcMethod("worker/restart")]
-    Task<WorkerStatus> RestartAsync(CancellationToken cancellationToken);
+    Task<WorkerStatus> RestartAsync(LocalRestartRequest request, CancellationToken cancellationToken);
 
     // Closes and reopens only the Worker-owned remote socket. Never stops the external server.
     [JsonRpcMethod("worker/reconnect")]

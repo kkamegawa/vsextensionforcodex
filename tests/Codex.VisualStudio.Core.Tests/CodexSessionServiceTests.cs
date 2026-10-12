@@ -277,6 +277,72 @@ public sealed class CodexSessionServiceTests
     }
 
     [TestMethod]
+    public async Task HistoryKeepsPartialCommentaryAndFinalAnswersOnceInOrder()
+    {
+        // 0.162.1 adds MessagePhase.partial_answer: each phase is a separate agentMessage item with
+        // its own text, so every item is shown exactly once and none of them ends the turn.
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method switch
+            {
+                "thread/turns/list" => JsonSerializer.SerializeToElement(new
+                {
+                    data = new[] { new { id = "turn-2", status = "completed", startedAt = 10L, completedAt = 20L, rootTurnId = "turn-1", parentTurnId = "turn-1" } },
+                    nextCursor = (string?)null,
+                }),
+                "thread/items/list" => JsonSerializer.SerializeToElement(new
+                {
+                    data = new[]
+                    {
+                        new { turnId = "turn-2", item = new { id = "fragment", type = "agentMessage", text = "The first result is ready.", phase = "partial_answer" } },
+                        new { turnId = "turn-2", item = new { id = "progress", type = "agentMessage", text = "Checking the remaining result.", phase = "commentary" } },
+                        new { turnId = "turn-2", item = new { id = "answer", type = "agentMessage", text = "The second result is ready.", phase = "final_answer" } },
+                    },
+                    nextCursor = (string?)null,
+                }),
+                _ => JsonSerializer.SerializeToElement(new { }),
+            },
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        ThreadTurnsPage turns = await service.ListThreadTurnsAsync("thread-1", null, 50, CancellationToken.None);
+        ThreadItemsPage items = await service.ListThreadItemsAsync("thread-1", "turn-2", null, 50, CancellationToken.None);
+
+        Assert.AreEqual("turn-2", turns.Turns.Single().Id, "Turn lineage fields are read-compatible.");
+        CollectionAssert.AreEqual(new[] { "fragment", "progress", "answer" }, items.Items.Select(item => item.Id).ToArray());
+        CollectionAssert.AreEqual(
+            new[] { "The first result is ready.", "Checking the remaining result.", "The second result is ready." },
+            items.Items.Select(item => item.Text).ToArray());
+    }
+
+    [TestMethod]
+    public async Task LivePartialAnswerIsShownWithoutCompletingTheTurn()
+    {
+        var connection = new RecordingConnection();
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+        var events = new List<ConversationEvent>();
+        service.ConversationEventReceived += (value, _) =>
+        {
+            events.Add(value);
+            return Task.CompletedTask;
+        };
+
+        await connection.EmitNotificationAsync("item/completed", new
+        {
+            threadId = "thread-1",
+            turnId = "turn-1",
+            item = new { id = "fragment", type = "agentMessage", text = "The first result is ready.", phase = "partial_answer" },
+        });
+
+        await Task.Delay(TimeSpan.FromMilliseconds(120));
+        ConversationEvent partial = events.Single(value => value.Kind == ConversationEventKind.ItemCompleted);
+        Assert.AreEqual("The first result is ready.", partial.Text);
+        Assert.IsFalse(events.Any(value => value.Kind == ConversationEventKind.TurnCompleted), "Only turn/completed ends a turn.");
+    }
+
+    [TestMethod]
     public async Task ListThreadItemsSkipsEntriesFromAnotherTurn()
     {
         var connection = new RecordingConnection
@@ -1559,7 +1625,7 @@ public sealed class CodexSessionServiceTests
     }
 
     [TestMethod]
-    public async Task ListSkills_DropsSkillsWithNonRootedPath()
+    public async Task ListSkills_KeepsLegacyAppPathStringsAsOpaqueIdentifiers()
     {
         var connection = new RecordingConnection
         {
@@ -1576,6 +1642,8 @@ public sealed class CodexSessionServiceTests
                             {
                                 new { name = "relative", description = "d", enabled = true, path = "relative/path", scope = "repo" },
                                 new { name = "rooted", description = "d", enabled = true, path = "/repo/.codex/skills/rooted/SKILL.md", scope = "repo" },
+                                new { name = "control", description = "d", enabled = true, path = "badpath", scope = "repo" },
+                                new { name = "empty", description = "d", enabled = true, path = "", scope = "repo" },
                             },
                         },
                     },
@@ -1587,16 +1655,18 @@ public sealed class CodexSessionServiceTests
 
         ListSkillsResult result = await service.ListSkillsAsync(forceReload: false, CancellationToken.None);
 
-        Assert.AreEqual(1, result.Skills.Count);
-        Assert.AreEqual("rooted", result.Skills[0].Name);
+        // 0.162.1 types skill paths as LegacyAppPathString: a non-absolute value is a valid catalog
+        // identifier and is kept verbatim, while empty or control-character values are still dropped.
+        CollectionAssert.AreEqual(new[] { "relative", "rooted" }, result.Skills.Select(skill => skill.Name).ToArray());
+        CollectionAssert.AreEqual(
+            new[] { "relative/path", "/repo/.codex/skills/rooted/SKILL.md" },
+            result.Skills.Select(skill => skill.Path).ToArray());
     }
 
     [TestMethod]
-    public async Task ListSkills_NormalizesErrorPathToNullWhenNotRooted()
+    public async Task ListSkills_NormalizesErrorPathLikeSkillPath()
     {
-        // SkillLoadError.Path must go through the same rooted-path validation as SkillInfo.Path
-        // (NormalizeSkillPath), not just length/control-character sanitization -- a relative or
-        // malformed path must not be forwarded over the contract as if it were absolute.
+        // SkillLoadError.Path uses the same opaque-identifier validation as SkillInfo.Path.
         var connection = new RecordingConnection
         {
             Handler = (method, _) => method == "skills/list"
@@ -1611,6 +1681,7 @@ public sealed class CodexSessionServiceTests
                             {
                                 new { message = "relative path error", path = "relative/SKILL.md" },
                                 new { message = "rooted path error", path = "/repo/.codex/skills/broken/SKILL.md" },
+                                new { message = "control path error", path = "badSKILL.md" },
                             },
                             skills = Array.Empty<object>(),
                         },
@@ -1623,9 +1694,10 @@ public sealed class CodexSessionServiceTests
 
         ListSkillsResult result = await service.ListSkillsAsync(forceReload: false, CancellationToken.None);
 
-        Assert.HasCount(2, result.Errors);
-        Assert.IsNull(result.Errors[0].Path);
+        Assert.HasCount(3, result.Errors);
+        Assert.AreEqual("relative/SKILL.md", result.Errors[0].Path);
         Assert.AreEqual("/repo/.codex/skills/broken/SKILL.md", result.Errors[1].Path);
+        Assert.IsNull(result.Errors[2].Path);
     }
 
     [TestMethod]
@@ -2093,6 +2165,8 @@ public sealed class CodexSessionServiceTests
         JsonElement goalParameters = ParametersFor(connection, "thread/goal/set");
         Assert.AreEqual("active", goalParameters.GetProperty("status").GetString());
         Assert.AreEqual(1000L, goalParameters.GetProperty("tokenBudget").GetInt64());
+        Assert.AreEqual("user", goalParameters.GetProperty("origin").GetString(), "User goal edits carry explicit user provenance.");
+        Assert.AreEqual("user", ParametersFor(connection, "thread/goal/clear").GetProperty("origin").GetString());
         JsonElement mcpParameters = ParametersFor(connection, "mcpServerStatus/list");
         Assert.AreEqual("toolsAndAuthOnly", mcpParameters.GetProperty("detail").GetString());
         JsonElement feedbackParameters = ParametersFor(connection, "feedback/upload");
@@ -2866,6 +2940,131 @@ public sealed class CodexSessionServiceTests
 
         Assert.AreEqual(-32601, exception.Code);
         Assert.AreEqual(0, requests);
+    }
+
+    [TestMethod]
+    [DataRow(WindowsSandboxBackendPreference.RequireMxc, "\"Require MXC\" conflicts with managed policy")]
+    [DataRow(WindowsSandboxBackendPreference.PreferMxc, "\"Prefer MXC\" is not eligible under this policy")]
+    public async Task WindowsSandboxReadinessReportsConfigurationAndPolicyWithoutClaimingTheActiveBackend(
+        WindowsSandboxBackendPreference backend,
+        string expectedNotice)
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method switch
+            {
+                "initialize" => JsonSerializer.SerializeToElement(new { platformFamily = "windows", platformOs = "windows-11" }),
+                "windowsSandbox/readiness" => JsonSerializer.SerializeToElement(new { status = "ready" }),
+                "config/read" => JsonSerializer.SerializeToElement(new
+                {
+                    config = new { windows = new { sandbox = "mxc" }, features = new { prefer_mxc = true } },
+                    origins = new { },
+                }),
+                "configRequirements/read" => JsonSerializer.SerializeToElement(new
+                {
+                    requirements = new
+                    {
+                        allowedWindowsSandboxImplementations = new[] { "elevated", "unelevated", "future-backend" },
+                        network = new { allowLocalBinding = false },
+                    },
+                    supportsIndependentSpeedModes = true,
+                }),
+                _ => JsonSerializer.SerializeToElement(new { }),
+            },
+        };
+        await using var service = CreateService();
+        WorkerOptions options = Options();
+        options.WindowsSandboxBackend = backend;
+        await service.InitializeAsync(connection, options, CancellationToken.None);
+
+        WindowsSandboxReadinessResult result = await service.GetWindowsSandboxReadinessAsync(new WindowsSandboxReadinessRequest
+        {
+            StatePartitionFingerprint = service.StatePartitionFingerprint,
+            OwnerGeneration = service.OwnerGeneration,
+            ConnectionGeneration = service.ConnectionGeneration,
+        }, CancellationToken.None);
+
+        Assert.AreEqual("ready", result.Status);
+        Assert.AreEqual(backend, result.AppliedBackendPreference);
+        Assert.IsTrue(result.ConfigKnown);
+        Assert.AreEqual("mxc", result.ConfiguredImplementation);
+        Assert.IsTrue(result.PreferMxcFeature);
+        Assert.IsTrue(result.RequirementsKnown);
+        CollectionAssert.AreEqual(new[] { "elevated", "unelevated" }, result.AllowedImplementations, "Unknown implementations are dropped.");
+        Assert.IsFalse(result.AllowLocalBinding);
+        StringAssert.Contains(result.BackendNotice, expectedNotice);
+        StringAssert.Contains(result.BackendNotice, "Readiness does not prove which backend runs each command.");
+    }
+
+    [TestMethod]
+    [DataRow("{\"requirements\":null}", true)]
+    [DataRow("{}", false)]
+    [DataRow("{\"requirements\":[]}", false)]
+    public async Task WindowsSandboxRequirementsAreKnownOnlyForAnObjectOrExplicitNull(string response, bool known)
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method switch
+            {
+                "initialize" => JsonSerializer.SerializeToElement(new { platformFamily = "windows", platformOs = "windows-11" }),
+                "windowsSandbox/readiness" => JsonSerializer.SerializeToElement(new { status = "ready" }),
+                "configRequirements/read" => JsonDocument.Parse(response).RootElement.Clone(),
+                _ => JsonSerializer.SerializeToElement(new { }),
+            },
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        WindowsSandboxReadinessResult result = await service.GetWindowsSandboxReadinessAsync(new WindowsSandboxReadinessRequest
+        {
+            StatePartitionFingerprint = service.StatePartitionFingerprint,
+            OwnerGeneration = service.OwnerGeneration,
+            ConnectionGeneration = service.ConnectionGeneration,
+        }, CancellationToken.None);
+
+        Assert.AreEqual(known, result.RequirementsKnown);
+        Assert.IsNull(result.AllowedImplementations);
+        StringAssert.Contains(result.BackendNotice, known ? "Managed policy allows MXC." : "Managed policy could not be read.");
+    }
+
+    [TestMethod]
+    public async Task WindowsSandboxReadinessReportsUnknownWhenConfigReadsAreUnsupported()
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method switch
+            {
+                "initialize" => JsonSerializer.SerializeToElement(new { platformFamily = "windows", platformOs = "windows-11" }),
+                "windowsSandbox/readiness" => JsonSerializer.SerializeToElement(new { status = "notConfigured" }),
+                "config/read" or "configRequirements/read" => throw new JsonRpcRemoteException(-32601, "Method not found"),
+                _ => JsonSerializer.SerializeToElement(new { }),
+            },
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        WindowsSandboxReadinessResult result = await service.GetWindowsSandboxReadinessAsync(new WindowsSandboxReadinessRequest
+        {
+            StatePartitionFingerprint = service.StatePartitionFingerprint,
+            OwnerGeneration = service.OwnerGeneration,
+            ConnectionGeneration = service.ConnectionGeneration,
+        }, CancellationToken.None);
+
+        Assert.AreEqual("notConfigured", result.Status);
+        Assert.IsFalse(result.ConfigKnown);
+        Assert.IsFalse(result.RequirementsKnown);
+        Assert.IsNull(result.AllowedImplementations);
+        StringAssert.Contains(result.BackendNotice, "could not be read");
+    }
+
+    [TestMethod]
+    public void RequireMxcStartupFailureNamesTheExtensionSetting()
+    {
+        string message = WorkerRpcService.AppendSandboxBackendStartupHint("codex app-server exited.", WindowsSandboxBackendPreference.RequireMxc);
+
+        StringAssert.StartsWith(message, "codex app-server exited.");
+        StringAssert.Contains(message, "Follow Codex configuration");
+        Assert.AreEqual("boom", WorkerRpcService.AppendSandboxBackendStartupHint("boom", WindowsSandboxBackendPreference.PreferMxc));
     }
 
     [TestMethod]
@@ -3735,6 +3934,7 @@ public sealed class CodexSessionServiceTests
         JsonElement pause = ParametersFor(connection, "thread/goal/set");
         Assert.AreEqual("paused", pause.GetProperty("status").GetString());
         Assert.IsFalse(pause.TryGetProperty("objective", out _), "A status-only pause preserves the objective.");
+        Assert.AreEqual("user", pause.GetProperty("origin").GetString(), "Goal Stop is an explicit user action.");
         Assert.IsFalse(pause.TryGetProperty("tokenBudget", out _), "A status-only pause preserves the budget.");
     }
 

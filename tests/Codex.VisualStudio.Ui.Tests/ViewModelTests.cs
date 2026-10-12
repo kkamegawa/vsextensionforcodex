@@ -102,6 +102,72 @@ public sealed class ViewModelTests
         }
     }
 
+    private static readonly string[] ExpectedWindowsSandboxBackendIds = ["follow", "preferMxc", "requireMxc"];
+
+    [TestMethod]
+    public void WindowsSandboxBackendSelection_PersistsStableIdAndReportsPendingRestart()
+    {
+        var bridge = new FakeWorkerBridge();
+        var store = new MemorySettingsStore(new ExtensionSettings());
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: store);
+        CollectionAssert.AreEqual(ExpectedWindowsSandboxBackendIds, vm.WindowsSandboxBackends.Select(option => option.Id).ToArray());
+        Assert.AreEqual("follow", vm.SelectedWindowsSandboxBackendId);
+        Assert.IsFalse(vm.HasWindowsSandboxBackendPending, "Nothing is pending before a local start.");
+
+        MethodInfo setConnected = typeof(ChatViewModel).GetMethod("SetConnectedSandboxBackend", BindingFlags.NonPublic | BindingFlags.Instance)!;
+        setConnected.Invoke(vm, ["follow"]);
+        vm.SelectedWindowsSandboxBackendId = "requireMxc";
+
+        Assert.AreEqual("requireMxc", store.Settings.WindowsSandboxBackendId);
+        StringAssert.Contains(vm.WindowsSandboxBackendHelpText, "Applies the next time the local app-server starts.");
+        Assert.IsTrue(vm.HasWindowsSandboxBackendPending);
+        StringAssert.Contains(vm.WindowsSandboxBackendPendingText, "\"Follow Codex configuration\"");
+
+        vm.SelectedWindowsSandboxBackendId = "unknown-backend";
+        Assert.AreEqual("requireMxc", store.Settings.WindowsSandboxBackendId, "Unknown IDs are ignored.");
+
+        setConnected.Invoke(vm, [null]);
+        Assert.IsFalse(vm.HasWindowsSandboxBackendPending, "Remote connections never apply the local backend.");
+    }
+
+    [TestMethod]
+    public async Task WindowsSandboxStatus_ShowsWorkerDiagnosisAndSetupReadiness()
+    {
+        var bridge = new FakeWorkerBridge
+        {
+            WindowsSandboxReadinessHandler = (_, _) => Task.FromResult(new WindowsSandboxReadinessResult
+            {
+                IsWindows = true,
+                IsLocalStdio = true,
+                Status = "ready",
+                AppliedBackendPreference = WindowsSandboxBackendPreference.PreferMxc,
+                BackendNotice = "Managed policy allows MXC.",
+            }),
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        await bridge.PublishStateAsync(OwnerStatus("owner-a", 1, 4));
+        Assert.IsTrue(vm.ShowWindowsSandboxPanel);
+
+        MethodInfo check = typeof(ChatViewModel).GetMethod("CheckWindowsSandboxReadinessAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
+        await (Task)check.Invoke(vm, null)!;
+
+        Assert.AreEqual("Managed policy allows MXC.", vm.WindowsSandboxBackendStatusText);
+        Assert.AreEqual("Setup readiness: ready", vm.WindowsSandboxStatusText);
+    }
+
+    [TestMethod]
+    public async Task WindowsSandboxPanel_StaysAvailableAfterAFailedLocalStart()
+    {
+        var bridge = new FakeWorkerBridge();
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        WorkerStatus degraded = OwnerStatus("owner-a", 1, 4);
+        degraded.State = WorkerConnectionState.Degraded;
+        await bridge.PublishStateAsync(degraded);
+
+        Assert.IsTrue(vm.ShowWindowsSandboxPanel, "The backend can be changed after \"Require MXC\" prevented startup.");
+        Assert.IsFalse(vm.ShowWindowsSandboxSetup, "Legacy setup needs a ready connection.");
+    }
+
     [TestMethod]
     public async Task ChatViewModel_DiscardsThreadPageCompletedForPreviousOwner()
     {
@@ -6815,17 +6881,21 @@ public sealed class ViewModelTests
     public async Task ChatViewModel_LocalRestart_UsesTheRestartOperation()
     {
         var bridge = new FakeWorkerBridge();
-        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings { WindowsSandboxBackendId = "follow" }));
         await bridge.PublishStateAsync(new WorkerStatus
         {
             State = WorkerConnectionState.Degraded,
             Target = new ConnectionTargetSnapshot { Kind = ConnectionTargetKind.Local, Generation = 1 },
         });
 
+        vm.SelectedWindowsSandboxBackendId = "preferMxc";
         await RunCommandAsync(vm.RestartCommand);
 
         Assert.AreEqual(1, bridge.RestartCallCount);
         Assert.AreEqual(0, bridge.ReconnectRequests.Count);
+        Assert.AreEqual(WindowsSandboxBackendPreference.PreferMxc, bridge.LastRestartRequest?.WindowsSandboxBackend,
+            "A local restart applies the saved backend, not the one cached from the failed start.");
+        Assert.IsFalse(vm.HasWindowsSandboxBackendPending);
     }
 
     [TestMethod]
@@ -7432,9 +7502,12 @@ public sealed class ViewModelTests
 
         public int RestartCallCount { get; private set; }
 
-        public Task<WorkerStatus> RestartAsync(CancellationToken cancellationToken)
+        public LocalRestartRequest? LastRestartRequest { get; private set; }
+
+        public Task<WorkerStatus> RestartAsync(LocalRestartRequest request, CancellationToken cancellationToken)
         {
             RestartCallCount++;
+            LastRestartRequest = request;
             return Task.FromResult(new WorkerStatus { State = WorkerConnectionState.Ready });
         }
 

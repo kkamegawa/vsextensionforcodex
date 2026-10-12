@@ -531,6 +531,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             StatePartitionFingerprint,
             OwnerGeneration,
             string.IsNullOrWhiteSpace(options.RemoteEndpoint));
+        context.SandboxBackend = context.IsLocal ? options.WindowsSandboxBackend : WindowsSandboxBackendPreference.FollowCodexConfig;
         connectionContext = context;
         connection.NotificationReceived += context.NotificationHandler;
         connection.RequestReceived += context.RequestHandler;
@@ -833,6 +834,35 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         }
 
         EnsureCurrent(context);
+        McpOAuthEarlyCompletion? early;
+        lock (operation.Gate)
+        {
+            // The notification handler runs on another task. Publishing the response state and
+            // taking a stored early completion happen under the same gate, so a completion is
+            // either stored before this point and taken here, or matched by the handler afterwards.
+            // An invalid loginId is kept distinct from an absent one: only a server that omits the
+            // ID gets the server-name fallback.
+            operation.LoginIdInvalid = !TryReadMcpOAuthLoginId(result, out string? loginId);
+            operation.LoginId = loginId;
+            operation.ResponseReceived = true;
+            early = operation.EarlyCompletion;
+            operation.EarlyCompletion = null;
+        }
+
+        if (early is not null)
+        {
+            // The completion notification overtook the response. Apply it only when it belongs to
+            // this attempt; a completion for any other loginId is stale and is dropped. A response
+            // without loginId falls back to server-name matching, as for a late notification.
+            if (!operation.LoginIdInvalid
+                && (operation.LoginId is null || string.Equals(operation.LoginId, early.LoginId, StringComparison.Ordinal))
+                && context.McpOAuthOperations.ContainsKey(operation.OperationId))
+            {
+                await ApplyMcpOAuthCompletionAsync(context, serverName, early.Succeeded, cancellationToken).ConfigureAwait(false);
+                return GetMcpOAuthLoginStatus(context, operation);
+            }
+        }
+
         if (!context.McpOAuthOperations.TryGetValue(operation.OperationId, out McpOAuthOperation? current)
             || current.Completed || current.RequestCanceled)
         {
@@ -2123,6 +2153,10 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         return new ForkThreadResult { Thread = thread };
     }
 
+    // Every goal mutation the extension sends comes from an explicit user action. 0.162.1 treats a
+    // missing origin as "no user authorization", and older servers ignore the unknown field.
+    private const string UserGoalMutationOrigin = "user";
+
     public async Task<ThreadGoalResult> GetThreadGoalAsync(string threadId, CancellationToken cancellationToken)
     {
         OperationCallResult call = await TrySendOperationAsync(
@@ -2152,6 +2186,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
                 objective = request.Objective,
                 status = request.Status.HasValue ? ToWireGoalStatus(request.Status.Value) : null,
                 tokenBudget = request.TokenBudget,
+                origin = UserGoalMutationOrigin,
             },
             TimeSpan.FromSeconds(30),
             cancellationToken).ConfigureAwait(false);
@@ -2167,7 +2202,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
     {
         OperationCallResult call = await TrySendOperationAsync(
             "thread/goal/clear",
-            new { threadId },
+            new { threadId, origin = UserGoalMutationOrigin },
             TimeSpan.FromSeconds(30),
             cancellationToken).ConfigureAwait(false);
         if (!call.IsSupported)
@@ -3923,6 +3958,51 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         }
 
         bool succeeded = GetBoolean(parameters, "success") == true;
+        if (parameters.TryGetProperty("loginId", out JsonElement loginIdElement)
+            && loginIdElement.ValueKind != JsonValueKind.Null)
+        {
+            if (!TryReadMcpOAuthLoginId(parameters, out string? loginId) || loginId is null)
+            {
+                return;
+            }
+
+            if (!context.McpOAuthOperationsByServer.TryGetValue(rawName, out string? operationId)
+                || !context.McpOAuthOperations.TryGetValue(operationId, out McpOAuthOperation? active))
+            {
+                // An identified completion with no active attempt is delayed or duplicated; it
+                // must not overwrite the server's current authentication state.
+                return;
+            }
+
+            bool stale;
+            lock (active.Gate)
+            {
+                if (!active.ResponseReceived)
+                {
+                    active.EarlyCompletion = new McpOAuthEarlyCompletion(loginId, succeeded);
+                    return;
+                }
+
+                stale = active.LoginIdInvalid
+                    || (active.LoginId is not null && !string.Equals(active.LoginId, loginId, StringComparison.Ordinal));
+            }
+
+            if (stale)
+            {
+                // A completion for an older or foreign attempt must not finish the current one.
+                return;
+            }
+        }
+
+        await ApplyMcpOAuthCompletionAsync(context, rawName, succeeded, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task ApplyMcpOAuthCompletionAsync(
+        ConnectionContext context,
+        string rawName,
+        bool succeeded,
+        CancellationToken cancellationToken)
+    {
         MarkMcpOAuthOperationsCompleted(context, rawName);
         string serverName = redactor.Redact(rawName) ?? string.Empty;
         var status = new McpServerAuthStatus
@@ -3988,6 +4068,30 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         }
 
         await EmitInteractionAuthStatusAsync(context, cancellationToken).ConfigureAwait(false);
+    }
+
+    // loginId is an opaque attempt identifier added in 0.162.1; older servers omit it.
+    private static bool TryReadMcpOAuthLoginId(JsonElement element, out string? loginId)
+    {
+        loginId = null;
+        if (!element.TryGetProperty("loginId", out JsonElement value) || value.ValueKind == JsonValueKind.Null)
+        {
+            return true;
+        }
+
+        if (value.ValueKind != JsonValueKind.String)
+        {
+            return false;
+        }
+
+        string text = value.GetString() ?? string.Empty;
+        if (text.Length is 0 or > 256 || text.Any(char.IsControl))
+        {
+            return false;
+        }
+
+        loginId = text;
+        return true;
     }
 
     private void MarkMcpOAuthOperationsCompleted(ConnectionContext context, string serverName)
@@ -5106,10 +5210,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
                         errors.Add(new SkillLoadError
                         {
                             Cwd = cwd,
-                            // Same rooted-path validation as SkillInfo.Path (NormalizeSkillPath),
-                            // not just length/control-character sanitization, so a malformed or
-                            // relative error path is dropped rather than forwarded over the
-                            // contract as if it were a real absolute path.
+                            // Same opaque-identifier validation as SkillInfo.Path (NormalizeSkillPath).
                             Path = NormalizeSkillPath(GetString(error, "path")),
                             Message = message,
                         });
@@ -5275,15 +5376,14 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
     {
         if (string.IsNullOrEmpty(value)
             || value.Length > MaxSkillPathLength
-            || value.Any(char.IsControl)
-            || !ServerPath.TryCreate(value, out _))
+            || value.Any(char.IsControl))
         {
             return null;
         }
 
-        // No File.Exists / workspace-containment check: this path is the app-server's own
-        // skills/list output, not user input, and scope: "user"/"system"/"admin" skills routinely
-        // live outside the workspace (or are directories). Only structural validity is enforced.
+        // 0.162.1 types this as LegacyAppPathString, which need not be an absolute host path. The
+        // value is only an app-server catalog identifier: it is echoed back unchanged in skill turn
+        // input and compared ordinally, and the extension never opens it as a local file.
         return value;
     }
 
@@ -5885,7 +5985,21 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         public bool RequestCanceled { get; set; }
 
         public bool NotificationObserved { get; set; }
+
+        public string? LoginId { get; set; }
+
+        public bool ResponseReceived { get; set; }
+
+        public McpOAuthEarlyCompletion? EarlyCompletion { get; set; }
+
+        public bool LoginIdInvalid { get; set; }
+
+        // Guards LoginId, ResponseReceived and EarlyCompletion between the login response and
+        // the completion notification, which are processed on different tasks.
+        public object Gate { get; } = new();
     }
+
+    private sealed record McpOAuthEarlyCompletion(string LoginId, bool Succeeded);
 
     private sealed record UserInputProjection(
         UserInputRequest Request,
@@ -5917,6 +6031,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         }
 
         public IJsonRpcConnection Connection { get; }
+        public WindowsSandboxBackendPreference SandboxBackend { get; set; }
         public long Generation { get; }
         public string? StatePartitionFingerprint { get; }
         public long OwnerGeneration { get; }

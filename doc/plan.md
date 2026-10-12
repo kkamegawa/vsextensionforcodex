@@ -299,3 +299,12 @@ The detailed design is in [English](goal-stop-design.md) and [Japanese](goal-sto
 - An Active Goal keeps the composer primary action at Stop between turns and during automatic continuation. Stop attempts a status-only pause, then interrupts the latest running turn for the same thread even if pausing failed or is uncertain; the explicit Stop requires no second confirmation. If no turn runs, return the pause outcome without interrupting. Preserve objective, budget, and usage.
 - Scope Goal state and the stop operation to owner, connection generation, and selected thread. Cancel undispatched work for that thread, block queued commands before send, keep unsent composer input, and never replay a mutation after reconnect. Report pause and interrupt outcomes separately.
 - Advance the Worker contract from v21 to the next unused version. Validate Goal state synchronization, partial/unknown outcomes, queue races, ordinary Send/Steer/interrupt regressions, pinned 0.159.1 and 0.155.1 contract checks, warning-free Debug/Release builds, VSIX integrity, and Experimental Instance visual/accessibility evidence.
+
+### Issue #198 — Codex App Server 0.162.1 and MXC backend selection
+
+The approved design and plan are in [English](app-server-0-162-1-plan.md) and [Japanese](app-server-0-162-1-plan_ja.md); the decision is [ADR-018](adr/ADR-018-app-server-0-162-1.md).
+
+- Target CLI 0.162.1 with 0.159.1 as the regression fixture; add `config/read` and `configRequirements/read` to the used methods; advance the Worker contract to v24.
+- Send `origin: "user"` on every goal mutation, match MCP OAuth completion by `loginId`, treat skill paths as opaque identifiers, and read partial answers, lineage and unknown error variants without contract changes.
+- Add Follow Codex configuration / Prefer MXC / Require MXC for local stdio launches only, with diagnosis from readiness, effective configuration and managed policy.
+- Validate schema and contract scripts, smoke against both CLI versions, warning-free Debug/Release builds, Core/UI tests, VSIX integrity, off-screen renders, real Windows MXC acceptance and Experimental Instance visual/accessibility evidence.

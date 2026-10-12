@@ -20,7 +20,11 @@ public interface ICodexProcessHost : IAsyncDisposable
 
     IJsonRpcConnection? Connection { get; }
 
-    Task StartAsync(string codexPath, string workingDirectory, CancellationToken cancellationToken);
+    Task StartAsync(
+        string codexPath,
+        string workingDirectory,
+        WindowsSandboxBackendPreference sandboxBackend,
+        CancellationToken cancellationToken);
 
     Task StartRemoteAsync(RemoteConnectionRequest request, CancellationToken cancellationToken)
         => throw new NotSupportedException("This process host does not support remote connections.");
@@ -134,17 +138,21 @@ public sealed class CodexProcessHost : ICodexProcessHost
 
     public IJsonRpcConnection? Connection { get; private set; }
 
-    public async Task StartAsync(string codexPath, string workingDirectory, CancellationToken cancellationToken)
+    public async Task StartAsync(
+        string codexPath,
+        string workingDirectory,
+        WindowsSandboxBackendPreference sandboxBackend,
+        CancellationToken cancellationToken)
     {
         await StopAsync(cancellationToken).ConfigureAwait(false);
         CredentialFingerprint = null;
         string resolvedCodexPath = CodexExecutableResolver.Resolve(codexPath);
 
-        ProcessStartInfo startInfo = CreateStartInfo(resolvedCodexPath, workingDirectory);
+        ProcessStartInfo startInfo = CreateStartInfo(resolvedCodexPath, workingDirectory, sandboxBackend);
         PopulateChildEnvironment(startInfo.Environment);
 
         var startedProcess = new Process { StartInfo = startInfo };
-        WorkerDiagnostics.Write("codex app-server process start requested");
+        WorkerDiagnostics.Write($"codex app-server process start requested sandboxBackend={sandboxBackend}");
         try
         {
             if (!startedProcess.Start())
@@ -349,8 +357,22 @@ public sealed class CodexProcessHost : ICodexProcessHost
         }
     }
 
-    internal static ProcessStartInfo CreateStartInfo(string resolvedCodexPath, string workingDirectory)
+    // Fixed, allow-listed config overrides. Bare values parse as TOML strings, so no quoting is
+    // needed on either the direct or the cmd.exe launch path.
+    internal static IReadOnlyList<string> GetSandboxBackendArguments(WindowsSandboxBackendPreference sandboxBackend)
+        => sandboxBackend switch
+        {
+            WindowsSandboxBackendPreference.PreferMxc => ["-c", "features.prefer_mxc=true"],
+            WindowsSandboxBackendPreference.RequireMxc => ["-c", "windows.sandbox=mxc"],
+            _ => [],
+        };
+
+    internal static ProcessStartInfo CreateStartInfo(
+        string resolvedCodexPath,
+        string workingDirectory,
+        WindowsSandboxBackendPreference sandboxBackend = WindowsSandboxBackendPreference.FollowCodexConfig)
     {
+        IReadOnlyList<string> sandboxArguments = GetSandboxBackendArguments(sandboxBackend);
         bool isCommandScript = IsCommandScript(resolvedCodexPath);
         string effectiveWorkingDirectory = Directory.Exists(workingDirectory)
             ? workingDirectory
@@ -372,7 +394,8 @@ public sealed class CodexProcessHost : ICodexProcessHost
             startInfo.ArgumentList.Add("/d");
             startInfo.ArgumentList.Add("/s");
             startInfo.ArgumentList.Add("/c");
-            startInfo.ArgumentList.Add($"\"\"{resolvedCodexPath}\" app-server\"");
+            string overrides = sandboxArguments.Count == 0 ? string.Empty : " " + string.Join(' ', sandboxArguments);
+            startInfo.ArgumentList.Add($"\"\"{resolvedCodexPath}\" app-server{overrides}\"");
 
             // For script launchers (cmd/bat), force cmd.exe to run without creating
             // a visible console window. codex.exe direct launch keeps inherited hidden
@@ -384,6 +407,10 @@ public sealed class CodexProcessHost : ICodexProcessHost
         {
             startInfo.FileName = resolvedCodexPath;
             startInfo.ArgumentList.Add("app-server");
+            foreach (string argument in sandboxArguments)
+            {
+                startInfo.ArgumentList.Add(argument);
+            }
 
             // CREATE_NO_WINDOW leaves codex without any console, so when it spawns cmd.exe
             // to run shell commands, Windows allocates a new visible console window for each

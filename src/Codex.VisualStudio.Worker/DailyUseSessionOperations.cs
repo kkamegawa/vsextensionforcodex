@@ -814,12 +814,128 @@ public sealed partial class CodexSessionService
         {
             return new WindowsSandboxReadinessResult { IsSupported = false, UnavailableReason = "The app-server returned an unknown Windows sandbox readiness state.", IsWindows = true, IsLocalStdio = true };
         }
-        return new WindowsSandboxReadinessResult
+        var result = new WindowsSandboxReadinessResult
         {
             IsWindows = true,
             IsLocalStdio = true,
             Status = readiness,
+            AppliedBackendPreference = context.SandboxBackend,
         };
+        await ReadWindowsSandboxBackendDiagnosticsAsync(context, result, cancellationToken).ConfigureAwait(false);
+        EnsureCurrent(context);
+        ValidateDailyUseOwner(request, context);
+        result.BackendNotice = DescribeWindowsSandboxBackend(result);
+        return result;
+    }
+
+    // Reads the effective configuration and managed policy that decide the local backend. Either
+    // read may fail or be unsupported; the result then reports the value as unknown, never guessed.
+    private static async Task ReadWindowsSandboxBackendDiagnosticsAsync(
+        ConnectionContext context,
+        WindowsSandboxReadinessResult result,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            JsonElement config = await context.Connection.SendRequestAsync(
+                "config/read",
+                new { includeLayers = false },
+                TimeSpan.FromSeconds(10),
+                cancellationToken).ConfigureAwait(false);
+            if (config.TryGetProperty("config", out JsonElement values) && values.ValueKind == JsonValueKind.Object)
+            {
+                result.ConfigKnown = true;
+                result.ConfiguredImplementation = values.TryGetProperty("windows", out JsonElement windows)
+                    && windows.ValueKind == JsonValueKind.Object
+                        ? NormalizeWindowsSandboxImplementation(GetString(windows, "sandbox"))
+                        : null;
+                result.PreferMxcFeature = values.TryGetProperty("features", out JsonElement features)
+                    && features.ValueKind == JsonValueKind.Object
+                        ? GetBool(features, "prefer_mxc")
+                        : null;
+            }
+        }
+        catch (Exception ex) when (ex is JsonRpcRemoteException or TimeoutException or InvalidDataException
+            || (ex is OperationCanceledException && !cancellationToken.IsCancellationRequested))
+        {
+            WorkerDiagnostics.Write("config/read failed source=windows-sandbox-diagnostics", ex);
+        }
+
+        try
+        {
+            JsonElement requirements = await context.Connection.SendRequestAsync(
+                "configRequirements/read",
+                null,
+                TimeSpan.FromSeconds(10),
+                cancellationToken).ConfigureAwait(false);
+            // "requirements": null means no managed requirements are configured; any other shape
+            // (missing or not an object) leaves the policy unknown.
+            if (requirements.TryGetProperty("requirements", out JsonElement policy) && policy.ValueKind == JsonValueKind.Null)
+            {
+                result.RequirementsKnown = true;
+            }
+            else if (policy.ValueKind == JsonValueKind.Object)
+            {
+                result.RequirementsKnown = true;
+                if (policy.TryGetProperty("allowedWindowsSandboxImplementations", out JsonElement allowed)
+                    && allowed.ValueKind == JsonValueKind.Array)
+                {
+                    result.AllowedImplementations = allowed.EnumerateArray()
+                        .Take(8)
+                        .Select(value => value.ValueKind == JsonValueKind.String ? NormalizeWindowsSandboxImplementation(value.GetString()) : null)
+                        .OfType<string>()
+                        .Distinct(StringComparer.Ordinal)
+                        .ToList();
+                }
+
+                result.AllowLocalBinding = policy.TryGetProperty("network", out JsonElement network)
+                    && network.ValueKind == JsonValueKind.Object
+                        ? GetBool(network, "allowLocalBinding")
+                        : null;
+            }
+        }
+        catch (Exception ex) when (ex is JsonRpcRemoteException or TimeoutException or InvalidDataException
+            || (ex is OperationCanceledException && !cancellationToken.IsCancellationRequested))
+        {
+            WorkerDiagnostics.Write("configRequirements/read failed source=windows-sandbox-diagnostics", ex);
+        }
+    }
+
+    private static string? NormalizeWindowsSandboxImplementation(string? value)
+        => value is "elevated" or "unelevated" or "mxc" ? value : null;
+
+    // Mirrors Codex 0.162.1 selection: an explicit mxc mode must be allowed by managed policy, and
+    // prefer_mxc is applied only when policy allows MXC and does not set allowLocalBinding=false.
+    internal static string DescribeWindowsSandboxBackend(WindowsSandboxReadinessResult result)
+    {
+        bool? policyAllowsMxc = !result.RequirementsKnown
+            ? null
+            : result.AllowedImplementations is null || result.AllowedImplementations.Contains("mxc");
+        bool localBindingDenied = result.AllowLocalBinding == false;
+        string observed = !result.ConfigKnown
+            ? "The effective Codex configuration could not be read."
+            : result.ConfiguredImplementation is null
+                ? "Codex configuration does not set windows.sandbox."
+                : $"Codex configuration sets windows.sandbox to {result.ConfiguredImplementation}.";
+        string policy = policyAllowsMxc switch
+        {
+            null => "Managed policy could not be read.",
+            true when localBindingDenied => "Managed policy allows MXC but sets allowLocalBinding=false.",
+            true => "Managed policy allows MXC.",
+            false => "Managed policy does not allow MXC.",
+        };
+        string eligibility = result.AppliedBackendPreference switch
+        {
+            WindowsSandboxBackendPreference.RequireMxc when policyAllowsMxc == false =>
+                "\"Require MXC\" conflicts with managed policy; choose \"Follow Codex configuration\" and connect again.",
+            WindowsSandboxBackendPreference.PreferMxc when policyAllowsMxc == false || localBindingDenied =>
+                "\"Prefer MXC\" is not eligible under this policy, so Codex keeps its configured backend.",
+            WindowsSandboxBackendPreference.PreferMxc when result.PreferMxcFeature != true && result.ConfigKnown =>
+                "\"Prefer MXC\" was not observed in the effective configuration.",
+            _ => string.Empty,
+        };
+        return string.Join(' ', new[] { observed, policy, eligibility, "Readiness does not prove which backend runs each command." }
+            .Where(static part => part.Length > 0));
     }
 
     public async Task<WindowsSandboxSetupStartResult> StartWindowsSandboxSetupAsync(

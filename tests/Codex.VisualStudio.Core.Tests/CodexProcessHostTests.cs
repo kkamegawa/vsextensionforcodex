@@ -1,4 +1,5 @@
 ﻿using System.Diagnostics;
+using Codex.VisualStudio.Contracts;
 using Codex.VisualStudio.Worker;
 
 namespace Codex.VisualStudio.Core.Tests;
@@ -29,7 +30,7 @@ public sealed class CodexProcessHostTests
         bool threw = false;
         try
         {
-            await host.StartAsync(missing, Path.GetTempPath(), CancellationToken.None);
+            await host.StartAsync(missing, Path.GetTempPath(), WindowsSandboxBackendPreference.FollowCodexConfig, CancellationToken.None);
         }
         catch (System.ComponentModel.Win32Exception)
         {
@@ -169,5 +170,33 @@ public sealed class CodexProcessHostTests
         Assert.AreEqual(executablePath, info.FileName);
         CollectionAssert.AreEqual(new[] { "app-server" }, info.ArgumentList.ToArray());
         Assert.IsFalse(info.CreateNoWindow);
+    }
+
+    [TestMethod]
+    [DataRow(WindowsSandboxBackendPreference.PreferMxc, "features.prefer_mxc=true")]
+    [DataRow(WindowsSandboxBackendPreference.RequireMxc, "windows.sandbox=mxc")]
+    public void CreateStartInfoPassesSandboxBackendOverrideToExecutable(WindowsSandboxBackendPreference backend, string expected)
+    {
+        ProcessStartInfo info = CodexProcessHost.CreateStartInfo(@"C:	ools\codex.exe", Path.GetTempPath(), backend);
+
+        CollectionAssert.AreEqual(new[] { "app-server", "-c", expected }, info.ArgumentList.ToArray());
+    }
+
+    [TestMethod]
+    [DataRow(WindowsSandboxBackendPreference.PreferMxc, "features.prefer_mxc=true")]
+    [DataRow(WindowsSandboxBackendPreference.RequireMxc, "windows.sandbox=mxc")]
+    public void CreateStartInfoPassesSandboxBackendOverrideThroughCmdWithoutQuotes(WindowsSandboxBackendPreference backend, string expected)
+    {
+        string wrapperPath = @"C:	ools\codex.cmd";
+
+        ProcessStartInfo info = CodexProcessHost.CreateStartInfo(wrapperPath, Path.GetTempPath(), backend);
+
+        Assert.AreEqual($"\"\"{wrapperPath}\" app-server -c {expected}\"", info.ArgumentList[3]);
+    }
+
+    [TestMethod]
+    public void FollowCodexConfigPassesNoOverride()
+    {
+        Assert.AreEqual(0, CodexProcessHost.GetSandboxBackendArguments(WindowsSandboxBackendPreference.FollowCodexConfig).Count);
     }
 }

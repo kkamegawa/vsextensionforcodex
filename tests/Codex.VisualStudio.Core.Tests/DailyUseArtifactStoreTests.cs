@@ -70,6 +70,23 @@ public sealed class DailyUseArtifactStoreTests
     }
 
     [TestMethod]
+    public void TurnErrorReasonToleratesUnknownCodexErrorInfoVariants()
+    {
+        // 0.162.1 lets CodexErrorInfo carry unknown strings and objects (for example reviewTarget).
+        // They are read without failing and never become a retry or approval reason.
+        foreach (string json in new[]
+        {
+            "{\"error\":{\"codexErrorInfo\":\"somethingNew\"}}",
+            "{\"error\":{\"codexErrorInfo\":{\"somethingNew\":{\"detail\":1}}}}",
+            "{\"error\":{\"codexErrorInfo\":{\"reviewTarget\":{\"type\":\"baseBranch\"}}}}",
+        })
+        {
+            using var document = System.Text.Json.JsonDocument.Parse(json);
+            Assert.IsNull(CodexSessionService.ReadTurnErrorReason(document.RootElement), json);
+        }
+    }
+
+    [TestMethod]
     public void InlinePreviewActionIsOwnerBoundAndPreviewOnly()
     {
         byte[] png = CreatePng(1, 1);

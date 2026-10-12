@@ -87,7 +87,7 @@ public sealed partial class CodexSessionService
                     context,
                     "thread/goal/set",
                     request.ThreadId,
-                    new { threadId = request.ThreadId, status = "paused" },
+                    new { threadId = request.ThreadId, status = "paused", origin = UserGoalMutationOrigin },
                     TimeSpan.FromSeconds(30),
                     readOnly: false,
                     cancellationToken).ConfigureAwait(false);

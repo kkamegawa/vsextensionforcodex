@@ -24,6 +24,10 @@ public sealed class ExtensionSettings
     // Stable app-server service-tier ID. An empty value means inherit config.toml.
     public string ServiceTierId { get; set; } = ServiceTierCatalog.DefaultId;
 
+    // Stable Windows sandbox backend ID for the local app-server. Applied at the next local start;
+    // unknown values fall back to following the Codex configuration.
+    public string WindowsSandboxBackendId { get; set; } = WindowsSandboxBackendCatalog.FollowId;
+
     // Remote app-server profiles contain connection metadata only. The bearer token itself is
     // read by the Worker from TokenFilePath and is never persisted in extension settings.
     public List<RemoteConnectionProfile> RemoteProfiles { get; set; } = [];

@@ -290,7 +290,6 @@ internal sealed class FileSkillCatalogStore : ISkillCatalogStore
         return !string.IsNullOrEmpty(value)
             && value.Length <= MaximumPathLength
             && value.All(character => !char.IsControl(character))
-            && ServerPath.TryCreate(value, out _)
                 ? value
                 : null;
     }

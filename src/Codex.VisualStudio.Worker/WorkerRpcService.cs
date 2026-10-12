@@ -181,16 +181,27 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
             : await ConnectLocalCoreAsync(options, cancellationToken).ConfigureAwait(false);
     }
 
+    // Codex refuses to load an explicit windows.sandbox=mxc that managed policy disallows, so the
+    // local app-server stops before initialize. Name the extension setting that caused it.
+    internal static string AppendSandboxBackendStartupHint(string message, WindowsSandboxBackendPreference sandboxBackend)
+        => sandboxBackend == WindowsSandboxBackendPreference.RequireMxc
+            ? $"{message} The local app-server was started with the Windows sandbox backend set to \"Require MXC\". If managed policy does not allow MXC, Codex does not start; choose \"Follow Codex configuration\" in the Windows sandbox settings and connect again."
+            : message;
+
     private async Task<WorkerStatus> ConnectLocalCoreAsync(WorkerOptions options, CancellationToken cancellationToken)
     {
+        // A managed-policy rejection of the backend stops Codex while it loads its configuration,
+        // so only failures before initialize completes can be caused by the backend override.
+        bool initialized = false;
         try
         {
             WorkerDiagnostics.Write("worker starting codex app-server");
             AttachProcessObservers(SnapshotTarget());
-            await processHost.StartAsync(options.CodexPath, options.WorkingDirectory, cancellationToken).ConfigureAwait(false);
+            await processHost.StartAsync(options.CodexPath, options.WorkingDirectory, options.WindowsSandboxBackend, cancellationToken).ConfigureAwait(false);
             BeginSessionOwnerPartition(options, processHost.CredentialFingerprint);
             WorkerDiagnostics.Write("worker initializing codex app-server");
             await session.InitializeAsync(processHost.Connection!, options, cancellationToken).ConfigureAwait(false);
+            initialized = true;
             WorkerDiagnostics.Write("worker reading account status");
             ConnectionTargetSnapshot accountReadTarget = SnapshotTarget();
             AccountStatus initialAccountStatus = await session.GetAccountStatusAsync(cancellationToken).ConfigureAwait(false);
@@ -230,7 +241,7 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
                 CancellationToken.None).ConfigureAwait(false);
             return await SetStatusAsync(
                 WorkerConnectionState.Degraded,
-                redactor.Redact(ex.Message),
+                redactor.Redact(initialized ? ex.Message : AppendSandboxBackendStartupHint(ex.Message, options.WindowsSandboxBackend)),
                 cancellationToken,
                 ClassifyRecoveryFailure(ex)).ConfigureAwait(false);
         }
@@ -604,12 +615,13 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
         }
     }
 
-    public async Task<WorkerStatus> RestartAsync(CancellationToken cancellationToken)
+    public async Task<WorkerStatus> RestartAsync(LocalRestartRequest request, CancellationToken cancellationToken)
     {
+        ArgumentNullException.ThrowIfNull(request);
         await connectionTransitionGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            return await RestartCoreAsync(cancellationToken).ConfigureAwait(false);
+            return await RestartCoreAsync(request.WindowsSandboxBackend, cancellationToken).ConfigureAwait(false);
         }
         finally
         {
@@ -617,7 +629,9 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
         }
     }
 
-    private async Task<WorkerStatus> RestartCoreAsync(CancellationToken cancellationToken)
+    private async Task<WorkerStatus> RestartCoreAsync(
+        WindowsSandboxBackendPreference? sandboxBackend,
+        CancellationToken cancellationToken)
     {
         if (options is null)
         {
@@ -635,6 +649,11 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
         ObserveRemoteConnection(null);
         DetachProcessObservers();
         await processHost.StopAsync(cancellationToken).ConfigureAwait(false);
+        if (sandboxBackend is { } backend)
+        {
+            options.WindowsSandboxBackend = backend;
+        }
+
         return await ConnectCoreAsync(options, cancellationToken).ConfigureAwait(false);
     }
 

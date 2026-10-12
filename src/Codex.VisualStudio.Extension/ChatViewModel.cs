@@ -2223,7 +2223,14 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         // Capture the target under the gate so the label names the profile the bridge
         // dispatches, even when a queued selection/save completed while we waited.
         string? targetProfileName = remoteProfiles.AppliedProfileName;
-        await OnUiAsync(() => SetConnectedProfileName(targetProfileName)).ConfigureAwait(false);
+        string? targetSandboxBackendId = targetProfileName is null
+            ? WindowsSandboxBackendCatalog.Find(settings.WindowsSandboxBackendId).Id
+            : null;
+        await OnUiAsync(() =>
+        {
+            SetConnectedProfileName(targetProfileName);
+            SetConnectedSandboxBackend(targetSandboxBackendId);
+        }).ConfigureAwait(false);
         WorkerStatus result;
         try
         {
@@ -2436,7 +2443,11 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                 $"Canceled {canceled.Count} queued slash commands because the worker is restarting.").ConfigureAwait(false);
         }
 
-        WorkerStatus result = await bridge.RestartAsync(lifetime.Token).ConfigureAwait(false);
+        WindowsSandboxBackendOption sandboxBackend = WindowsSandboxBackendCatalog.Find(settings.WindowsSandboxBackendId);
+        await OnUiAsync(() => SetConnectedSandboxBackend(sandboxBackend.Id)).ConfigureAwait(false);
+        WorkerStatus result = await bridge.RestartAsync(
+            new LocalRestartRequest { WindowsSandboxBackend = sandboxBackend.Preference },
+            lifetime.Token).ConfigureAwait(false);
         bool applied = false;
         await OnUiAsync(() =>
         {
