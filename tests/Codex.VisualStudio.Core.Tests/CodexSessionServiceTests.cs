@@ -2943,6 +2943,100 @@ public sealed class CodexSessionServiceTests
     }
 
     [TestMethod]
+    [DataRow(WindowsSandboxBackendPreference.RequireMxc, "\"Require MXC\" conflicts with managed policy")]
+    [DataRow(WindowsSandboxBackendPreference.PreferMxc, "\"Prefer MXC\" is not eligible under this policy")]
+    public async Task WindowsSandboxReadinessReportsConfigurationAndPolicyWithoutClaimingTheActiveBackend(
+        WindowsSandboxBackendPreference backend,
+        string expectedNotice)
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method switch
+            {
+                "initialize" => JsonSerializer.SerializeToElement(new { platformFamily = "windows", platformOs = "windows-11" }),
+                "windowsSandbox/readiness" => JsonSerializer.SerializeToElement(new { status = "ready" }),
+                "config/read" => JsonSerializer.SerializeToElement(new
+                {
+                    config = new { windows = new { sandbox = "mxc" }, features = new { prefer_mxc = true } },
+                    origins = new { },
+                }),
+                "configRequirements/read" => JsonSerializer.SerializeToElement(new
+                {
+                    requirements = new
+                    {
+                        allowedWindowsSandboxImplementations = new[] { "elevated", "unelevated", "future-backend" },
+                        network = new { allowLocalBinding = false },
+                    },
+                    supportsIndependentSpeedModes = true,
+                }),
+                _ => JsonSerializer.SerializeToElement(new { }),
+            },
+        };
+        await using var service = CreateService();
+        WorkerOptions options = Options();
+        options.WindowsSandboxBackend = backend;
+        await service.InitializeAsync(connection, options, CancellationToken.None);
+
+        WindowsSandboxReadinessResult result = await service.GetWindowsSandboxReadinessAsync(new WindowsSandboxReadinessRequest
+        {
+            StatePartitionFingerprint = service.StatePartitionFingerprint,
+            OwnerGeneration = service.OwnerGeneration,
+            ConnectionGeneration = service.ConnectionGeneration,
+        }, CancellationToken.None);
+
+        Assert.AreEqual("ready", result.Status);
+        Assert.AreEqual(backend, result.AppliedBackendPreference);
+        Assert.IsTrue(result.ConfigKnown);
+        Assert.AreEqual("mxc", result.ConfiguredImplementation);
+        Assert.IsTrue(result.PreferMxcFeature);
+        Assert.IsTrue(result.RequirementsKnown);
+        CollectionAssert.AreEqual(new[] { "elevated", "unelevated" }, result.AllowedImplementations, "Unknown implementations are dropped.");
+        Assert.IsFalse(result.AllowLocalBinding);
+        StringAssert.Contains(result.BackendNotice, expectedNotice);
+        StringAssert.Contains(result.BackendNotice, "Readiness does not prove which backend runs each command.");
+    }
+
+    [TestMethod]
+    public async Task WindowsSandboxReadinessReportsUnknownWhenConfigReadsAreUnsupported()
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method switch
+            {
+                "initialize" => JsonSerializer.SerializeToElement(new { platformFamily = "windows", platformOs = "windows-11" }),
+                "windowsSandbox/readiness" => JsonSerializer.SerializeToElement(new { status = "notConfigured" }),
+                "config/read" or "configRequirements/read" => throw new JsonRpcRemoteException(-32601, "Method not found"),
+                _ => JsonSerializer.SerializeToElement(new { }),
+            },
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        WindowsSandboxReadinessResult result = await service.GetWindowsSandboxReadinessAsync(new WindowsSandboxReadinessRequest
+        {
+            StatePartitionFingerprint = service.StatePartitionFingerprint,
+            OwnerGeneration = service.OwnerGeneration,
+            ConnectionGeneration = service.ConnectionGeneration,
+        }, CancellationToken.None);
+
+        Assert.AreEqual("notConfigured", result.Status);
+        Assert.IsFalse(result.ConfigKnown);
+        Assert.IsFalse(result.RequirementsKnown);
+        Assert.IsNull(result.AllowedImplementations);
+        StringAssert.Contains(result.BackendNotice, "could not be read");
+    }
+
+    [TestMethod]
+    public void RequireMxcStartupFailureNamesTheExtensionSetting()
+    {
+        string message = WorkerRpcService.AppendSandboxBackendStartupHint("codex app-server exited.", WindowsSandboxBackendPreference.RequireMxc);
+
+        StringAssert.StartsWith(message, "codex app-server exited.");
+        StringAssert.Contains(message, "Follow Codex configuration");
+        Assert.AreEqual("boom", WorkerRpcService.AppendSandboxBackendStartupHint("boom", WindowsSandboxBackendPreference.PreferMxc));
+    }
+
+    [TestMethod]
     public async Task InitializePreservesMetadataAndClearsItBeforeReinitialize()
     {
         var connection = new RecordingConnection

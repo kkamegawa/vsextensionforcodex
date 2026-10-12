@@ -34,6 +34,11 @@ public sealed partial class ChatViewModel
     private long? windowsSandboxSetupGeneration;
     private string? windowsSandboxSetupSolutionRoot;
     private bool windowsSandboxSetupInProgress;
+    private string? connectedSandboxBackendId;
+    private string windowsSandboxBackendStatusText = DefaultWindowsSandboxBackendStatusText;
+
+    private const string DefaultWindowsSandboxBackendStatusText =
+        "Check readiness to read the effective Codex configuration and managed policy.";
 
     [DataMember]
     public ObservableCollection<AppServerNoticePresentationViewModel> AppServerNotices => appServerNotices;
@@ -135,6 +140,69 @@ public sealed partial class ChatViewModel
     [DataMember]
     public bool ShowWindowsSandboxSetup => connectedProfileName is null
         && Status.State == WorkerConnectionState.Ready;
+
+    // The backend picker also stays available after a failed local start, because "Require MXC"
+    // can itself be the reason the local app-server did not start.
+    [DataMember]
+    public bool ShowWindowsSandboxPanel => connectedProfileName is null
+        && Status.State is WorkerConnectionState.Ready or WorkerConnectionState.Degraded;
+
+    [DataMember]
+    public ObservableCollection<WindowsSandboxBackendOption> WindowsSandboxBackends { get; } =
+        WindowsSandboxBackendCatalog.CreateCollection();
+
+    [DataMember]
+    public string SelectedWindowsSandboxBackendId
+    {
+        get => WindowsSandboxBackendCatalog.Find(settings.WindowsSandboxBackendId).Id;
+        set
+        {
+            WindowsSandboxBackendOption option = WindowsSandboxBackendCatalog.Find(value);
+            if (string.Equals(SelectedWindowsSandboxBackendId, option.Id, StringComparison.Ordinal)
+                || !string.Equals(option.Id, value, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            settings.WindowsSandboxBackendId = option.Id;
+            settingsStore.Save(settings);
+            OnPropertyChanged();
+            NotifyWindowsSandboxBackendChanged();
+        }
+    }
+
+    [DataMember]
+    public string WindowsSandboxBackendHelpText
+        => $"{WindowsSandboxBackendCatalog.Find(settings.WindowsSandboxBackendId).Description} Applies the next time the local app-server starts.";
+
+    [DataMember]
+    public bool HasWindowsSandboxBackendPending => connectedSandboxBackendId is not null
+        && !string.Equals(connectedSandboxBackendId, SelectedWindowsSandboxBackendId, StringComparison.Ordinal);
+
+    [DataMember]
+    public string WindowsSandboxBackendPendingText => HasWindowsSandboxBackendPending
+        ? $"The current local app-server was started with \"{WindowsSandboxBackendCatalog.Find(connectedSandboxBackendId).DisplayText}\". Connect again to apply the new backend."
+        : string.Empty;
+
+    [DataMember]
+    public string WindowsSandboxBackendStatusText
+    {
+        get => windowsSandboxBackendStatusText;
+        private set => SetProperty(ref windowsSandboxBackendStatusText, markdown.ToSafeText(value).Trim());
+    }
+
+    private void SetConnectedSandboxBackend(string? backendId)
+    {
+        connectedSandboxBackendId = backendId;
+        NotifyWindowsSandboxBackendChanged();
+    }
+
+    private void NotifyWindowsSandboxBackendChanged()
+    {
+        OnPropertyChanged(nameof(WindowsSandboxBackendHelpText));
+        OnPropertyChanged(nameof(HasWindowsSandboxBackendPending));
+        OnPropertyChanged(nameof(WindowsSandboxBackendPendingText));
+    }
 
     [DataMember]
     public bool IsLocallyInterruptible => !IsGoalPrimaryMode && CanInterruptSelectedThread();
@@ -499,6 +567,7 @@ public sealed partial class ChatViewModel
     private void OnDailyUseStatusChanged(long? previousGeneration, WorkerStatus value)
     {
         OnPropertyChanged(nameof(ShowWindowsSandboxSetup));
+        OnPropertyChanged(nameof(ShowWindowsSandboxPanel));
         CheckWindowsSandboxReadinessCommand?.RaiseCanExecuteChanged();
         if (previousGeneration != value.Target?.Generation)
         {
@@ -508,6 +577,7 @@ public sealed partial class ChatViewModel
             windowsSandboxSetupGeneration = null;
             windowsSandboxSetupState = WindowsSandboxSetupState.NotObserved;
             windowsSandboxSetupSolutionRoot = null;
+            WindowsSandboxBackendStatusText = DefaultWindowsSandboxBackendStatusText;
             OnPropertyChanged(nameof(WindowsSandboxSolutionRootText));
             IsWindowsSandboxSetupInProgress = false;
             WindowsSandboxStatusText = "Readiness has not been checked for this connection.";
@@ -890,7 +960,10 @@ public sealed partial class ChatViewModel
                 ? "The initialized server is not Windows."
                 : !result.IsLocalStdio
                     ? "Sandbox setup is available only for a local app-server connection."
-                    : markdown.ToSafeText(result.Status).Trim();
+                    : $"Setup readiness: {markdown.ToSafeText(result.Status).Trim()}";
+            WindowsSandboxBackendStatusText = result is { IsWindows: true, IsLocalStdio: true, BackendNotice: { Length: > 0 } notice }
+                ? notice
+                : DefaultWindowsSandboxBackendStatusText;
             StartWindowsSandboxSetupCommand.RaiseCanExecuteChanged();
         }).ConfigureAwait(false);
     }

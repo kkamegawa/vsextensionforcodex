@@ -181,13 +181,20 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
             : await ConnectLocalCoreAsync(options, cancellationToken).ConfigureAwait(false);
     }
 
+    // Codex refuses to load an explicit windows.sandbox=mxc that managed policy disallows, so the
+    // local app-server stops before initialize. Name the extension setting that caused it.
+    internal static string AppendSandboxBackendStartupHint(string message, WindowsSandboxBackendPreference sandboxBackend)
+        => sandboxBackend == WindowsSandboxBackendPreference.RequireMxc
+            ? $"{message} The local app-server was started with the Windows sandbox backend set to \"Require MXC\". If managed policy does not allow MXC, Codex does not start; choose \"Follow Codex configuration\" in the Windows sandbox settings and connect again."
+            : message;
+
     private async Task<WorkerStatus> ConnectLocalCoreAsync(WorkerOptions options, CancellationToken cancellationToken)
     {
         try
         {
             WorkerDiagnostics.Write("worker starting codex app-server");
             AttachProcessObservers(SnapshotTarget());
-            await processHost.StartAsync(options.CodexPath, options.WorkingDirectory, cancellationToken).ConfigureAwait(false);
+            await processHost.StartAsync(options.CodexPath, options.WorkingDirectory, options.WindowsSandboxBackend, cancellationToken).ConfigureAwait(false);
             BeginSessionOwnerPartition(options, processHost.CredentialFingerprint);
             WorkerDiagnostics.Write("worker initializing codex app-server");
             await session.InitializeAsync(processHost.Connection!, options, cancellationToken).ConfigureAwait(false);
@@ -230,7 +237,7 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
                 CancellationToken.None).ConfigureAwait(false);
             return await SetStatusAsync(
                 WorkerConnectionState.Degraded,
-                redactor.Redact(ex.Message),
+                redactor.Redact(AppendSandboxBackendStartupHint(ex.Message, options.WindowsSandboxBackend)),
                 cancellationToken,
                 ClassifyRecoveryFailure(ex)).ConfigureAwait(false);
         }

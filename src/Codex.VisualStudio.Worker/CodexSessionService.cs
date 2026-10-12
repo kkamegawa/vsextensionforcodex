@@ -531,6 +531,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             StatePartitionFingerprint,
             OwnerGeneration,
             string.IsNullOrWhiteSpace(options.RemoteEndpoint));
+        context.SandboxBackend = context.IsLocal ? options.WindowsSandboxBackend : WindowsSandboxBackendPreference.FollowCodexConfig;
         connectionContext = context;
         connection.NotificationReceived += context.NotificationHandler;
         connection.RequestReceived += context.RequestHandler;
@@ -6000,6 +6001,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         }
 
         public IJsonRpcConnection Connection { get; }
+        public WindowsSandboxBackendPreference SandboxBackend { get; set; }
         public long Generation { get; }
         public string? StatePartitionFingerprint { get; }
         public long OwnerGeneration { get; }

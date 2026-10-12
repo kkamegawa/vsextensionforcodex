@@ -1684,7 +1684,7 @@ public sealed class WorkerRpcServiceTests
 
         public Func<CancellationToken, Task>? OnStartLocal { get; set; }
 
-        public Task StartAsync(string codexPath, string workingDirectory, CancellationToken cancellationToken)
+        public Task StartAsync(string codexPath, string workingDirectory, WindowsSandboxBackendPreference sandboxBackend, CancellationToken cancellationToken)
             => OnStartLocal?.Invoke(cancellationToken) ?? Task.CompletedTask;
 
         public Task StartRemoteAsync(RemoteConnectionRequest request, CancellationToken cancellationToken)

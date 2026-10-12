@@ -255,6 +255,9 @@ public sealed class WorkerBridge : IWorkerBridge, ICodexWorkerObserver
                     WorkingDirectory = workingDirectory,
                     ExtensionVersion = "0.1.0",
                     ExperimentalApi = experimentalApi,
+                    WindowsSandboxBackend = remote is null
+                        ? WindowsSandboxBackendCatalog.Find(settings.WindowsSandboxBackendId).Preference
+                        : WindowsSandboxBackendPreference.FollowCodexConfig,
                     RemoteEndpoint = remote?.Endpoint,
                     RemoteTokenFilePath = remote?.TokenFilePath,
                     LocalRoot = remote?.LocalRoot,
