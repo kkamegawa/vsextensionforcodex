@@ -153,7 +153,7 @@ public sealed partial class ChatViewModel
         OnPropertyChanged(nameof(SendButtonText));
         OnPropertyChanged(nameof(SendButtonGlyph));
         OnPropertyChanged(nameof(PrimaryActionHelpText));
-        OnPropertyChanged(nameof(IsLocallyInterruptible));
+        NotifyInterruptibilityChanged();
         RaiseCommandStates();
     }
 

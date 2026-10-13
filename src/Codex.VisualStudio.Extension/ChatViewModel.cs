@@ -52,18 +52,25 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
     private RemoteProfileViewModel? observedHealthProfile;
     private readonly Dictionary<string, InteractionCardViewModel> interactionCards = new(StringComparer.Ordinal);
     private const string ImplementPlanRequestPrefix = "implement-plan:";
+    private const int MaximumTrackedLocalTurns = 32;
+    private const int MaximumCompletedLocalTurns = 256;
+    private const int MaximumPendingLocalTurnStarts = 16;
+    private const int MaximumPendingCompletedTurnIds = 16;
+    // Earlier messages scanned for a choice prompt when the turn's last message holds none.
+    private const int MaximumEarlierAgentMessages = 16;
     // Turns this owner started in Plan mode; a completion consumes its entry.
     private readonly HashSet<string> planModeTurnIds = new(StringComparer.Ordinal);
     private const string ImplementPlanOptionId = "implement";
     internal const string ImplementPlanPrompt = "Implement the plan.";
-    private readonly Dictionary<string, StringBuilder> agentRawText = new(StringComparer.Ordinal);
+    // The turn's agent messages in arrival order, bounded so a long turn cannot grow memory unbounded.
+    private readonly BoundedOrderedMap<string, StringBuilder> agentRawText = new(MaximumEarlierAgentMessages + 1, StringComparer.Ordinal);
     private readonly Dictionary<string, StringBuilder> itemRawText = new(StringComparer.Ordinal);
     private static readonly Regex HeaderWhitespace = new(@"\s+", RegexOptions.Compiled | RegexOptions.CultureInvariant);
     private InteractionAuthStatus? interactionAuthStatus;
     private string? lastAgentRawKey;
     private int disposed;
     private int connecting;
-    private string? locallyStartedTurnId;
+    private InterruptibilityDiagnostic? lastInterruptibilityDiagnostic;
     private WorkerStatus status = new() { State = WorkerConnectionState.Disconnected, Message = "Open Codex to connect." };
     private ThreadSummary? selectedThread;
     private string composerText = string.Empty;
@@ -103,6 +110,9 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
     private ListModelsResult modelCatalog = new();
     private RateLimitsResult? latestRateLimits;
     private readonly HashSet<SlashCommandId> unavailableSlashCommands = [];
+    private readonly BoundedOrderedSet<LocalTurnKey> locallyStartedTurns = new(MaximumTrackedLocalTurns);
+    private readonly BoundedOrderedSet<LocalTurnKey> completedLocalTurns = new(MaximumCompletedLocalTurns);
+    private readonly BoundedOrderedMap<Guid, PendingLocalTurnStart> pendingLocalTurnStarts = new(MaximumPendingLocalTurnStarts);
     private int drainingSlashQueue;
     private CancellationTokenSource? fileSuggestionRefresh;
     private ListSkillsResult? skillsSnapshot;
@@ -484,6 +494,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             if (SetProperty(ref isRecovering, value))
             {
                 OnPropertyChanged(nameof(HasRecoveryStatus));
+                NotifyInterruptibilityChanged();
                 RaiseCommandStates();
             }
         }
@@ -580,16 +591,9 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             long previousOwnerGeneration = observedOwnerGeneration;
             if (SetProperty(ref status, value))
             {
-                if (value.TurnId is null || !string.Equals(value.TurnId, locallyStartedTurnId, StringComparison.Ordinal))
-                {
-                    locallyStartedTurnId = null;
-                }
-
-                // The Interrupt button visibility depends on the status turn and thread.
-                OnPropertyChanged(nameof(IsLocallyInterruptible));
-
                 string? currentPartition = value.Target?.StatePartitionFingerprint;
                 long currentOwnerGeneration = value.Target?.OwnerGeneration ?? 0;
+                long currentGeneration = value.Target?.Generation ?? 0;
                 observedStatePartitionFingerprint = currentPartition;
                 observedOwnerGeneration = currentOwnerGeneration;
                 if (!string.Equals(previousPartition, currentPartition, StringComparison.Ordinal)
@@ -602,16 +606,28 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
 
                     ClearOwnerScopedState();
                 }
+                else if ((previousGeneration ?? 0) != currentGeneration
+                    || value.State is WorkerConnectionState.Disconnected or WorkerConnectionState.Degraded)
+                {
+                    ClearLocalTurnTracking();
+                }
 
+                // Goal presentation changes notify interruptibility, so a reset already re-evaluated it.
+                bool goalProjectionReset = false;
                 if (previousGeneration != value.Target?.Generation
                     || previousOwnerGeneration != currentOwnerGeneration
                     || !string.Equals(previousPartition, currentPartition, StringComparison.Ordinal))
                 {
                     ResetGoalProjection();
+                    goalProjectionReset = true;
                 }
 
                 UpdateUsageConnectionLifecycle(value.State);
                 OnGoalStatusChanged(value);
+                if (!goalProjectionReset)
+                {
+                    NotifyInterruptibilityChanged();
+                }
 
                 // Callers apply only current-owner status, so Ready resolves a connection-failure banner.
                 if (value.State == WorkerConnectionState.Ready)
@@ -1289,6 +1305,219 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         long OwnerGeneration,
         long ConnectionGeneration);
 
+    private readonly record struct LocalTurnKey(OwnerSnapshot Owner, string ThreadId, string TurnId);
+
+    private readonly record struct InterruptibilityDiagnostic(
+        WorkerConnectionState State,
+        bool Joined,
+        bool Recovering,
+        bool Goal,
+        bool ThreadMatches,
+        bool HasTurn,
+        bool LocalStartKnown,
+        bool Eligible);
+
+    private sealed class PendingLocalTurnStart(OwnerSnapshot owner, string threadId)
+    {
+        public OwnerSnapshot Owner { get; } = owner;
+
+        public string ThreadId { get; } = threadId;
+
+        public HashSet<string> CompletedTurnIds { get; } = new(StringComparer.Ordinal);
+
+        public bool CompletedTurnTrackingOverflowed { get; set; }
+
+        // The first turn the app-server reported as started on this thread while the start was pending.
+        public string? ObservedStartedTurnId { get; set; }
+
+        // The start response was lost after dispatch; the next turn/started on this thread identifies the turn.
+        public bool AwaitingStartAfterUnknownOutcome { get; set; }
+    }
+
+    private void BeginLocalTurnStart(Guid operationId, OwnerSnapshot owner, string threadId)
+    {
+        if (!IsCurrentOwner(owner) || string.IsNullOrWhiteSpace(threadId))
+        {
+            return;
+        }
+
+        // A newer local start supersedes a lost start on the same thread, so a later turn is never
+        // attributed to it.
+        Guid[] superseded = pendingLocalTurnStarts.Entries
+            .Where(entry => entry.Value.AwaitingStartAfterUnknownOutcome
+                && entry.Value.Owner == owner
+                && string.Equals(entry.Value.ThreadId, threadId, StringComparison.Ordinal))
+            .Select(static entry => entry.Key)
+            .ToArray();
+        foreach (Guid supersededOperationId in superseded)
+        {
+            pendingLocalTurnStarts.Remove(supersededOperationId);
+        }
+
+        pendingLocalTurnStarts.TryAdd(operationId, new PendingLocalTurnStart(owner, threadId));
+    }
+
+    private void AcknowledgeLocalTurnStart(Guid operationId, OwnerSnapshot owner, string threadId, string turnId)
+    {
+        if (!pendingLocalTurnStarts.Remove(operationId, out PendingLocalTurnStart? pending)
+            || pending is null
+            || !IsCurrentOwner(owner)
+            || pending.Owner != owner
+            || !string.Equals(pending.ThreadId, threadId, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        AdoptLocalTurn(pending, turnId);
+    }
+
+    private void AdoptLocalTurn(PendingLocalTurnStart pending, string turnId)
+    {
+        if (string.IsNullOrWhiteSpace(turnId)
+            || pending.CompletedTurnTrackingOverflowed
+            || pending.CompletedTurnIds.Contains(turnId))
+        {
+            return;
+        }
+
+        var key = new LocalTurnKey(pending.Owner, pending.ThreadId, turnId);
+        if (completedLocalTurns.Contains(key))
+        {
+            return;
+        }
+
+        locallyStartedTurns.Add(key);
+        NotifyInterruptibilityChanged();
+    }
+
+    // A start whose response was lost keeps its pending entry so the turn/started notification can
+    // identify the turn: one already observed during the request, or otherwise the next one.
+    private void MarkLocalTurnStartOutcomeUnknown(Guid operationId)
+    {
+        if (!pendingLocalTurnStarts.Remove(operationId, out PendingLocalTurnStart? pending)
+            || pending is null
+            || !IsCurrentOwner(pending.Owner))
+        {
+            return;
+        }
+
+        if (pending.ObservedStartedTurnId is { } observedTurnId)
+        {
+            AdoptLocalTurn(pending, observedTurnId);
+            return;
+        }
+
+        pending.AwaitingStartAfterUnknownOutcome = true;
+        pendingLocalTurnStarts.TryAdd(operationId, pending);
+    }
+
+    private void CompletePendingLocalTurnStart(Guid operationId)
+    {
+        if (pendingLocalTurnStarts.Remove(operationId, out PendingLocalTurnStart? pending)
+            && pending is { AwaitingStartAfterUnknownOutcome: true })
+        {
+            pendingLocalTurnStarts.TryAdd(operationId, pending);
+        }
+    }
+
+    private void ObserveStartedTurn(OwnerSnapshot owner, ConversationEvent value)
+    {
+        if (string.IsNullOrWhiteSpace(value.ThreadId) || string.IsNullOrWhiteSpace(value.TurnId))
+        {
+            return;
+        }
+
+        foreach (KeyValuePair<Guid, PendingLocalTurnStart> entry in pendingLocalTurnStarts.Entries)
+        {
+            PendingLocalTurnStart pending = entry.Value;
+            if (pending.Owner != owner || !string.Equals(pending.ThreadId, value.ThreadId, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            if (pending.AwaitingStartAfterUnknownOutcome)
+            {
+                pendingLocalTurnStarts.Remove(entry.Key);
+                AdoptLocalTurn(pending, value.TurnId);
+                return;
+            }
+
+            pending.ObservedStartedTurnId ??= value.TurnId;
+        }
+    }
+
+    private void RetireCompletedLocalTurn(OwnerSnapshot owner, ConversationEvent value)
+    {
+        if (string.IsNullOrWhiteSpace(value.ThreadId) || string.IsNullOrWhiteSpace(value.TurnId))
+        {
+            return;
+        }
+
+        var key = new LocalTurnKey(owner, value.ThreadId, value.TurnId);
+        bool removed = locallyStartedTurns.Remove(key);
+        completedLocalTurns.Add(key);
+
+        foreach (PendingLocalTurnStart pending in pendingLocalTurnStarts.Entries.Select(static entry => entry.Value))
+        {
+            if (pending.Owner != owner || !string.Equals(pending.ThreadId, value.ThreadId, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            if (pending.CompletedTurnIds.Add(value.TurnId)
+                && pending.CompletedTurnIds.Count > MaximumPendingCompletedTurnIds)
+            {
+                pending.CompletedTurnTrackingOverflowed = true;
+                pending.CompletedTurnIds.Clear();
+            }
+        }
+
+        if (removed)
+        {
+            NotifyInterruptibilityChanged();
+        }
+    }
+
+    private void ClearLocalTurnTracking()
+    {
+        locallyStartedTurns.Clear();
+        completedLocalTurns.Clear();
+        pendingLocalTurnStarts.Clear();
+    }
+
+    private bool IsStatusTurnLocallyStarted()
+        => !string.IsNullOrWhiteSpace(Status.ThreadId)
+            && !string.IsNullOrWhiteSpace(Status.TurnId)
+            && locallyStartedTurns.Contains(new LocalTurnKey(
+                CaptureOwnerSnapshot(),
+                Status.ThreadId,
+                Status.TurnId));
+
+    private void NotifyInterruptibilityChanged()
+    {
+        OnPropertyChanged(nameof(IsLocallyInterruptible));
+        InterruptCommand.RaiseCanExecuteChanged();
+
+        var diagnostic = new InterruptibilityDiagnostic(
+            Status.State,
+            IsThreadJoined,
+            IsRecovering,
+            IsGoalPrimaryMode,
+            SelectedThread is not null && string.Equals(SelectedThread.Id, Status.ThreadId, StringComparison.Ordinal),
+            !string.IsNullOrWhiteSpace(Status.TurnId),
+            IsStatusTurnLocallyStarted(),
+            CanInterruptSelectedThread());
+        if (lastInterruptibilityDiagnostic == diagnostic)
+        {
+            return;
+        }
+
+        lastInterruptibilityDiagnostic = diagnostic;
+        _ = ExtensionDiagnostics.WriteOutputAsync(
+            outputChannel,
+            $"[INTERRUPT] state={diagnostic.State} joined={diagnostic.Joined} recovering={diagnostic.Recovering} goal={diagnostic.Goal} threadMatches={diagnostic.ThreadMatches} hasTurn={diagnostic.HasTurn} localStartKnown={diagnostic.LocalStartKnown} eligible={diagnostic.Eligible}");
+    }
+
     private void ClearOwnerScopedState()
     {
         slashCommandCoordinator.CancelAll();
@@ -1320,10 +1549,10 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         nextCursor = null;
 
         selectedThread = null;
-        locallyStartedTurnId = null;
+        ClearLocalTurnTracking();
         OnPropertyChanged(nameof(SelectedThread));
         OnPropertyChanged(nameof(PlanModeEnabled));
-        OnPropertyChanged(nameof(IsLocallyInterruptible));
+        // The Goal reset below also re-evaluates interruptibility for the cleared selection.
         ResetGoalProjection();
         IsThreadJoined = false;
         IsHistoryStale = false;
@@ -1413,6 +1642,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                 OnPropertyChanged(nameof(IsHistoryOnly));
                 OnPropertyChanged(nameof(HasHistoryNotice));
                 OnGoalThreadChanged(value?.Id);
+                NotifyInterruptibilityChanged();
                 if (value is not null)
                 {
                     IsThreadJoined = false;
@@ -1924,6 +2154,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             if (SetProperty(ref isThreadJoined, value))
             {
                 OnPropertyChanged(nameof(IsHistoryOnly));
+                NotifyInterruptibilityChanged();
                 RaiseCommandStates();
             }
         }
@@ -3752,6 +3983,8 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                     {
                         inFlightMutations[operationId] = optimisticItem;
                     }
+
+                    BeginLocalTurnStart(operationId, owner, targetThreadId);
                 }).ConfigureAwait(false);
                 string startedTurnId = await bridge.StartTurnAsync(request, lifetime.Token).ConfigureAwait(false);
                 await OnUiAsync(() =>
@@ -3761,12 +3994,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                         RecordStartedTurnMode(request, startedTurnId);
                     }
 
-                    if (IsCurrentOwner(owner) && SelectedThread?.Id == targetThreadId)
-                    {
-                        locallyStartedTurnId = startedTurnId;
-                        OnPropertyChanged(nameof(IsLocallyInterruptible));
-                        InterruptCommand.RaiseCanExecuteChanged();
-                    }
+                    AcknowledgeLocalTurnStart(operationId, owner, targetThreadId, startedTurnId);
 
                     if (IsCurrentOwner(owner)
                         && SelectedThread?.Id == targetThreadId
@@ -3855,6 +4083,10 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                 await ShowStartTurnOutcomeUnknownAsync(operationId, owner, ex).ConfigureAwait(false);
                 return;
             }
+            finally
+            {
+                await OnUiAsync(() => CompletePendingLocalTurnStart(operationId)).ConfigureAwait(false);
+            }
 
             await OnUiAsync(() =>
             {
@@ -3927,6 +4159,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                 item.MarkDeliveryUnknown();
             }
 
+            MarkLocalTurnStartOutcomeUnknown(operationId);
             if (IsCurrentOwner(owner))
             {
                 RecoveryStatusText = "Message delivery outcome is unknown. The request was not retried.";
@@ -5582,18 +5815,36 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         }
 
         StampOwner(request, owner);
-        string planTurnId = await bridge.StartTurnAsync(request, lifetime.Token).ConfigureAwait(false);
-        await OnUiAsync(() =>
+        Guid operationId = Guid.NewGuid();
+        await OnUiAsync(() => BeginLocalTurnStart(operationId, owner, threadId)).ConfigureAwait(false);
+        try
         {
-            if (!IsCurrentOwner(owner))
+            string planTurnId = await bridge.StartTurnAsync(request, lifetime.Token).ConfigureAwait(false);
+            await OnUiAsync(() =>
             {
-                return;
-            }
+                if (!IsCurrentOwner(owner))
+                {
+                    return;
+                }
 
-            RecordStartedTurnMode(request, planTurnId);
-            ClearSentAttachments(request.Attachments);
-            ConsumeNextTurnSettings(request);
-        }).ConfigureAwait(false);
+                RecordStartedTurnMode(request, planTurnId);
+                AcknowledgeLocalTurnStart(operationId, owner, threadId, planTurnId);
+                ClearSentAttachments(request.Attachments);
+                ConsumeNextTurnSettings(request);
+            }).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException
+            && ex is not StreamJsonRpc.RemoteInvocationException { ErrorCode: WorkerErrorCodes.ConnectionOperationRejected or WorkerErrorCodes.PreDispatchRejected })
+        {
+            // Same as a composer send: a request that may have been dispatched keeps its pending start
+            // so the turn/started notification can identify the turn.
+            await OnUiAsync(() => MarkLocalTurnStartOutcomeUnknown(operationId)).ConfigureAwait(false);
+            throw;
+        }
+        finally
+        {
+            await OnUiAsync(() => CompletePendingLocalTurnStart(operationId)).ConfigureAwait(false);
+        }
         return true;
     }
 
@@ -6416,6 +6667,15 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             if (!IsNotificationCurrent(notification))
             {
                 return;
+            }
+
+            if (isTurnCompleted)
+            {
+                RetireCompletedLocalTurn(NotificationOwner(notification), value);
+            }
+            else if (value.Kind == ConversationEventKind.TurnStarted)
+            {
+                ObserveStartedTurn(NotificationOwner(notification), value);
             }
 
             if (string.IsNullOrWhiteSpace(value.ThreadId))
@@ -7257,6 +7517,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
     // Prose-detected choice: there is no pending server request, so the picked option is sent as the
     // next turn (it also shows in the transcript as the user's message), then the card is removed.
     private async Task ResolveSyntheticUserInputAsync(
+        UserInputRequest request,
         string requestId,
         IReadOnlyDictionary<string, UserInputAnswer> answers,
         UserInputAction action,
@@ -7267,7 +7528,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             return;
         }
 
-        string? choice = answers.Values.SelectMany(answer => answer.OptionIds).FirstOrDefault();
+        string? choice = FormatSyntheticAnswers(request, answers);
         await OnUiAsync(() =>
         {
             if (IsCurrentOwner(owner))
@@ -7281,16 +7542,52 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         }
     }
 
+    // A single prose question echoes the chosen option as the reply. Several questions reply with each
+    // answered question followed by its answer, in the order codex asked them.
+    private static string? FormatSyntheticAnswers(UserInputRequest request, IReadOnlyDictionary<string, UserInputAnswer> answers)
+    {
+        if (request.Questions.Count <= 1)
+        {
+            return answers.Values.SelectMany(answer => answer.OptionIds).FirstOrDefault();
+        }
+
+        var reply = new StringBuilder();
+        foreach (UserInputQuestion question in request.Questions)
+        {
+            if (!answers.TryGetValue(question.Id, out UserInputAnswer? answer))
+            {
+                continue;
+            }
+
+            string text = answer.Kind == UserInputAnswerKind.SelectedOptions
+                ? string.Join(", ", answer.OptionIds)
+                : answer.Text ?? string.Empty;
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                continue;
+            }
+
+            if (reply.Length > 0)
+            {
+                reply.Append("\n\n");
+            }
+
+            reply.Append(question.Question).Append('\n').Append("- ").Append(text.Trim());
+        }
+
+        return reply.Length == 0 ? null : reply.ToString();
+    }
+
     // Accumulate the raw (pre-markdown-stripping) agent text per item so a completed message can be
     // inspected for a choice prompt. This is local-only; the experimental flag controls only server
     // request_user_input capability negotiation.
     private void AppendAgentRaw(string key, string rawChunk)
     {
         lastAgentRawKey = key;
-        if (!agentRawText.TryGetValue(key, out StringBuilder? builder))
+        if (!agentRawText.TryGetValue(key, out StringBuilder? builder) || builder is null)
         {
             builder = new StringBuilder();
-            agentRawText[key] = builder;
+            agentRawText.TryAdd(key, builder);
         }
 
         // Choice prompts are small; cap accumulation so a long message can't grow memory unbounded.
@@ -7300,8 +7597,10 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         }
     }
 
-    // On turn completion (codex is now waiting for the user), promote a detected choice prompt in the
-    // last agent message into the same single-card selection UI.
+    // On turn completion (codex is now waiting for the user), promote a detected choice prompt into the
+    // same selection card. The last agent message is checked first; codex often follows its question
+    // with status messages ("waiting for your answer"), so earlier messages of the turn are then checked
+    // from newest to oldest, accepting only questions that carry their own option lists.
     private void TryDetectChoicePrompt(OwnerSnapshot owner)
     {
         if (lastAgentRawKey is null)
@@ -7309,15 +7608,23 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             return;
         }
 
-        agentRawText.TryGetValue(lastAgentRawKey, out StringBuilder? builder);
+        string lastKey = lastAgentRawKey;
+        string[] earlierMessages = agentRawText.Entries
+            .Where(entry => !string.Equals(entry.Key, lastKey, StringComparison.Ordinal))
+            .Select(static entry => entry.Value.ToString())
+            .Reverse()
+            .ToArray();
+        agentRawText.TryGetValue(lastKey, out StringBuilder? builder);
         string raw = builder?.ToString() ?? string.Empty;
         agentRawText.Clear();
         lastAgentRawKey = null;
-        if (ChoicePromptParser.TryParse(raw, out UserInputRequest synthesized))
+        UserInputRequest synthesized = new();
+        if (ChoicePromptParser.TryParse(raw, out synthesized)
+            || earlierMessages.Any(message => ChoicePromptParser.TryParseOptionQuestions(message, out synthesized)))
         {
             EnqueueUserInput(new UserInputViewModel(
                 synthesized,
-                (requestId, answers, action) => ResolveSyntheticUserInputAsync(requestId, answers, action, owner),
+                (requestId, answers, action) => ResolveSyntheticUserInputAsync(synthesized, requestId, answers, action, owner),
                 markdown) { IsSynthetic = true });
         }
     }
@@ -7722,10 +8029,21 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             || (Status.State is WorkerConnectionState.Disconnected && Volatile.Read(ref connecting) == 0));
 
     private bool CanInterruptSelectedThread()
-        => !IsGoalPrimaryMode && !IsRecovering && IsThreadJoined && SelectedThread is not null
-            && Status.TurnId is not null
-            && string.Equals(Status.TurnId, locallyStartedTurnId, StringComparison.Ordinal)
-            && string.Equals(SelectedThread.Id, Status.ThreadId, StringComparison.Ordinal);
+    {
+        if (IsGoalPrimaryMode
+            || IsRecovering
+            || !IsThreadJoined
+            || SelectedThread is null
+            || Status.State is not (WorkerConnectionState.Busy or WorkerConnectionState.WaitingForApproval)
+            || string.IsNullOrWhiteSpace(Status.ThreadId)
+            || string.IsNullOrWhiteSpace(Status.TurnId)
+            || !string.Equals(SelectedThread.Id, Status.ThreadId, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        return IsStatusTurnLocallyStarted();
+    }
 
     private void RaiseCommandStates()
     {
