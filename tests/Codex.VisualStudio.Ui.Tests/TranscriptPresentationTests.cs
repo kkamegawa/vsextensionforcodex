@@ -17,6 +17,88 @@ public sealed class TranscriptPresentationTests
     private const string ToolWindowTextBrushKey = "ToolWindowTextBrushKey";
     private static readonly XNamespace Presentation = "http://schemas.microsoft.com/winfx/2006/xaml/presentation";
     private static readonly XNamespace X = "http://schemas.microsoft.com/winfx/2006/xaml";
+    private static readonly XNamespace Vs = "http://schemas.microsoft.com/visualstudio/extensibility/2022/xaml";
+    private static readonly string[] ScrollMetricBindingPaths = ["VerticalOffset", "ScrollableHeight"];
+
+    [TestMethod]
+    public void Xaml_TranscriptScrollEventsSendSerializableMetricsToTheViewModel()
+    {
+        XDocument document = LoadXaml();
+        XElement transcript = document
+            .Descendants(Presentation + "ListBox")
+            .Single(element => element.Attribute("ItemsSource")?.Value == "{Binding TranscriptDisplayItems}");
+
+        Assert.AreEqual(
+            "{Binding TranscriptScrollTarget, Mode=TwoWay}",
+            transcript.Attribute("SelectedItem")?.Value);
+        Assert.AreEqual("True", transcript.Attribute("VirtualizingPanel.IsVirtualizing")?.Value);
+        Assert.AreEqual("Recycling", transcript.Attribute("VirtualizingPanel.VirtualizationMode")?.Value);
+
+        XElement scrollViewer = transcript
+            .Descendants(Presentation + "ScrollViewer")
+            .Single(element => element.Attribute(X + "Name")?.Value == "TranscriptScrollViewer");
+        XElement eventHandler = scrollViewer
+            .Element(Vs + "ExtensibilityUICommands.EventHandlers")!
+            .Element(Vs + "EventHandlerCollection")!
+            .Element(Vs + "EventHandler")!;
+
+        Assert.AreEqual("ScrollChanged", eventHandler.Attribute("Event")?.Value);
+        Assert.AreEqual("{x:Type ScrollViewer}", eventHandler.Attribute("EventDefiningType")?.Value);
+        Assert.AreEqual(
+            "{Binding DataContext.TranscriptScrollChangedCommand, ElementName=TranscriptScrollViewer}",
+            eventHandler.Attribute("Command")?.Value);
+        XElement metrics = eventHandler
+            .Element(Vs + "EventHandler.CommandParameter")!
+            .Element(Presentation + "MultiBinding")!;
+        Assert.AreEqual("{}{0:R}|{1:R}", metrics.Attribute("StringFormat")?.Value);
+        Assert.AreEqual("en-US", metrics.Attribute("ConverterCulture")?.Value);
+        CollectionAssert.AreEqual(
+            ScrollMetricBindingPaths,
+            metrics.Elements(Presentation + "Binding").Select(element => element.Attribute("Path")?.Value).ToArray());
+        Assert.IsTrue(metrics.Elements(Presentation + "Binding")
+            .All(element => element.Attribute("ElementName")?.Value == "TranscriptScrollViewer"));
+    }
+
+    [TestMethod]
+    public void Xaml_TranscriptAnchorStaysInvisibleAndLatestActionIsAccessible()
+    {
+        XDocument document = LoadXaml();
+        XElement latestButton = document
+            .Descendants(Presentation + "Button")
+            .Single(element => element.Attribute("Command")?.Value == "{Binding TranscriptFollowLatestCommand}");
+
+        Assert.AreEqual("Latest", latestButton.Attribute("Content")?.Value);
+        Assert.AreEqual(
+            "{Binding ShowTranscriptFollowLatestButton, Converter={StaticResource BoolToVis}}",
+            latestButton.Attribute("Visibility")?.Value);
+        Assert.AreEqual("Scroll to latest response", latestButton.Attributes()
+            .Single(attribute => attribute.Name.LocalName == "AutomationProperties.Name").Value);
+        Assert.AreEqual(
+            "Return to the latest response and resume automatic scrolling",
+            latestButton.Attributes().Single(attribute => attribute.Name.LocalName == "AutomationProperties.HelpText").Value);
+
+        XElement anchorTrigger = document
+            .Descendants(Presentation + "DataTrigger")
+            .Single(element => element.Attribute("Binding")?.Value == "{Binding IsTranscriptScrollAnchor}"
+                && element.Elements(Presentation + "Setter").Any(setter => setter.Attribute("Property")?.Value == "Height"));
+        Assert.AreEqual("1", anchorTrigger.Elements(Presentation + "Setter")
+            .Single(element => element.Attribute("Property")?.Value == "Height")
+            .Attribute("Value")?.Value);
+        XElement transcriptRowStyle = document
+            .Descendants(Presentation + "Style")
+            .Single(element => element.Attribute(X + "Key")?.Value == "TranscriptMessageRowStyle");
+        XElement anchorRowTrigger = transcriptRowStyle
+            .Descendants(Presentation + "DataTrigger")
+            .Single(element => element.Attribute("Binding")?.Value == "{Binding IsTranscriptScrollAnchor}");
+        foreach (string property in new[] { "Focusable", "IsTabStop" })
+        {
+            Assert.AreEqual("False", anchorRowTrigger.Elements(Presentation + "Setter")
+                .Single(setter => setter.Attribute("Property")?.Value == property)
+                .Attribute("Value")?.Value);
+        }
+        Assert.IsFalse(anchorRowTrigger.Elements(Presentation + "Setter")
+            .Any(setter => setter.Attribute("Property")?.Value == "AutomationProperties.AccessibilityView"));
+    }
 
     [TestMethod]
     public void Xaml_TranscriptAuthorUsesPairedVsThemeColorsAtFullOpacity()

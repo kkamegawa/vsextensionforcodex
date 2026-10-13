@@ -149,6 +149,12 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
     private readonly ObservableCollection<ThreadAttachmentPresentationViewModel> threadAttachments = [];
     private readonly ObservableCollection<ThreadTurnSummary> threadTurns = [];
     private string threadAttachmentsStatusText = string.Empty;
+    private ChatItemViewModel transcriptScrollAnchor;
+    private ChatItemViewModel? transcriptScrollTarget;
+    private bool isFollowingLatest = true;
+    private bool hasTranscriptScrollMetrics;
+    private double lastTranscriptVerticalOffset;
+    private double lastTranscriptScrollableHeight;
 
     private sealed record UnifiedSlashSuggestionSnapshot(
         List<SlashCommandSuggestionDescriptor> Suggestions,
@@ -193,6 +199,15 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         connectionHealth = new ConnectionHealthPresentationViewModel(markdown);
         connectedProfileName = remoteProfiles.AppliedProfileName;
         slashCommandParser = new SlashCommandParser(slashCommandCatalog);
+        transcriptScrollAnchor = new ChatItemViewModel(
+            "Transcript anchor",
+            string.Empty,
+            ConversationEventKind.ItemCompleted,
+            isTranscriptScrollAnchor: true);
+        TranscriptDisplayItems.Add(transcriptScrollAnchor);
+        transcriptScrollTarget = transcriptScrollAnchor;
+        TranscriptFollowLatestCommand = new AsyncCommand(ResumeTranscriptFollowingAsync, () => !IsFollowingLatest);
+        TranscriptScrollChangedCommand = new AsyncCommand(HandleTranscriptScrollChangedAsync);
         SubscribeBridge(bridge);
         // The welcome/empty state is driven by IsThreadEmpty; keep it in sync with every
         // mutation of Items (Add/Clear from any call site) via a single subscription.
@@ -372,6 +387,47 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
 
     [DataMember]
     public ObservableCollection<ChatItemViewModel> Items { get; } = new();
+
+    // The rendered transcript includes a non-conversation sentinel after the chronological items.
+    // Replacing the selected sentinel when the scroll extent grows asks WPF to bring the tail into view again.
+    [DataMember]
+    public ObservableCollection<ChatItemViewModel> TranscriptDisplayItems { get; } = new();
+
+    [DataMember]
+    public ChatItemViewModel? TranscriptScrollTarget
+    {
+        get => transcriptScrollTarget;
+        set
+        {
+            ChatItemViewModel? target = IsFollowingLatest && !ReferenceEquals(value, transcriptScrollAnchor)
+                ? transcriptScrollAnchor
+                : value;
+            SetProperty(ref transcriptScrollTarget, target);
+        }
+    }
+
+    [DataMember]
+    public bool IsFollowingLatest
+    {
+        get => isFollowingLatest;
+        private set
+        {
+            if (SetProperty(ref isFollowingLatest, value))
+            {
+                OnPropertyChanged(nameof(ShowTranscriptFollowLatestButton));
+                TranscriptFollowLatestCommand.RaiseCanExecuteChanged();
+            }
+        }
+    }
+
+    [DataMember]
+    public bool ShowTranscriptFollowLatestButton => !IsFollowingLatest;
+
+    [DataMember]
+    public AsyncCommand TranscriptFollowLatestCommand { get; }
+
+    [DataMember]
+    public AsyncCommand TranscriptScrollChangedCommand { get; }
 
     // Every outstanding interaction remains independently actionable while the composer and
     // transcript continue to work. The XAML hosts this collection in a bounded virtualized list.
@@ -3120,6 +3176,8 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
 
     private void OnItemsCollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
     {
+        SynchronizeTranscriptDisplayItems(e);
+
         if (e.Action == NotifyCollectionChangedAction.Reset)
         {
             historyBytes = 0;
@@ -3145,11 +3203,172 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         OnPropertyChanged(nameof(IsThreadEmpty));
     }
 
+    private void SynchronizeTranscriptDisplayItems(NotifyCollectionChangedEventArgs e)
+    {
+        if (e.Action == NotifyCollectionChangedAction.Reset)
+        {
+            TranscriptScrollTarget = null;
+            TranscriptDisplayItems.Clear();
+            foreach (ChatItemViewModel item in Items)
+            {
+                TranscriptDisplayItems.Add(item);
+            }
+
+            TranscriptDisplayItems.Add(transcriptScrollAnchor);
+            hasTranscriptScrollMetrics = false;
+            IsFollowingLatest = true;
+            TranscriptScrollTarget = transcriptScrollAnchor;
+            return;
+        }
+
+        switch (e.Action)
+        {
+            case NotifyCollectionChangedAction.Add when e.NewItems is not null && e.NewStartingIndex >= 0:
+                for (int index = 0; index < e.NewItems.Count; index++)
+                {
+                    TranscriptDisplayItems.Insert(e.NewStartingIndex + index, (ChatItemViewModel)e.NewItems[index]!);
+                }
+
+                break;
+
+            case NotifyCollectionChangedAction.Remove when e.OldItems is not null && e.OldStartingIndex >= 0:
+                for (int index = 0; index < e.OldItems.Count; index++)
+                {
+                    TranscriptDisplayItems.RemoveAt(e.OldStartingIndex);
+                }
+
+                break;
+
+            case NotifyCollectionChangedAction.Replace when e.NewItems is not null && e.NewStartingIndex >= 0:
+                for (int index = 0; index < e.NewItems.Count; index++)
+                {
+                    TranscriptDisplayItems[e.NewStartingIndex + index] = (ChatItemViewModel)e.NewItems[index]!;
+                }
+
+                break;
+
+            case NotifyCollectionChangedAction.Move when e.OldItems?.Count == 1
+                && e.OldStartingIndex >= 0
+                && e.NewStartingIndex >= 0:
+                TranscriptDisplayItems.Move(e.OldStartingIndex, e.NewStartingIndex);
+                break;
+
+            default:
+                RebuildTranscriptDisplayItems();
+                break;
+        }
+
+        if (TranscriptDisplayItems.Count == 0 || !ReferenceEquals(TranscriptDisplayItems[^1], transcriptScrollAnchor))
+        {
+            TranscriptDisplayItems.Remove(transcriptScrollAnchor);
+            TranscriptDisplayItems.Add(transcriptScrollAnchor);
+        }
+
+        if (IsFollowingLatest && TranscriptScrollTarget is null)
+        {
+            TranscriptScrollTarget = transcriptScrollAnchor;
+        }
+    }
+
+    private void RebuildTranscriptDisplayItems()
+    {
+        TranscriptScrollTarget = null;
+        TranscriptDisplayItems.Clear();
+        foreach (ChatItemViewModel item in Items)
+        {
+            TranscriptDisplayItems.Add(item);
+        }
+
+        TranscriptDisplayItems.Add(transcriptScrollAnchor);
+        if (IsFollowingLatest)
+        {
+            TranscriptScrollTarget = transcriptScrollAnchor;
+        }
+    }
+
+    private Task ResumeTranscriptFollowingAsync()
+    {
+        IsFollowingLatest = true;
+        TranscriptScrollTarget = transcriptScrollAnchor;
+        return Task.CompletedTask;
+    }
+
+    private Task HandleTranscriptScrollChangedAsync(object? parameter)
+    {
+        if (parameter is not string metrics)
+        {
+            return Task.CompletedTask;
+        }
+
+        int separator = metrics.IndexOf('|');
+        if (separator <= 0
+            || !double.TryParse(metrics.AsSpan(0, separator), NumberStyles.Float, CultureInfo.InvariantCulture, out double verticalOffset)
+            || !double.TryParse(metrics.AsSpan(separator + 1), NumberStyles.Float, CultureInfo.InvariantCulture, out double scrollableHeight)
+            || !double.IsFinite(verticalOffset)
+            || !double.IsFinite(scrollableHeight)
+            || verticalOffset < 0
+            || scrollableHeight < 0)
+        {
+            return Task.CompletedTask;
+        }
+
+        const double scrollTolerance = 1.0;
+        bool atBottom = scrollableHeight - verticalOffset <= scrollTolerance;
+        bool movedUp = hasTranscriptScrollMetrics && verticalOffset < lastTranscriptVerticalOffset;
+        bool movedDown = hasTranscriptScrollMetrics && verticalOffset > lastTranscriptVerticalOffset + scrollTolerance;
+        bool scrollableHeightIncreased = hasTranscriptScrollMetrics
+            && scrollableHeight > lastTranscriptScrollableHeight;
+
+        lastTranscriptVerticalOffset = verticalOffset;
+        lastTranscriptScrollableHeight = scrollableHeight;
+        hasTranscriptScrollMetrics = true;
+
+        if (IsFollowingLatest && movedUp && !atBottom)
+        {
+            IsFollowingLatest = false;
+            TranscriptScrollTarget = null;
+        }
+        else if (IsFollowingLatest && scrollableHeightIncreased)
+        {
+            RefreshTranscriptScrollAnchor();
+        }
+        else if (!IsFollowingLatest && movedDown && atBottom)
+        {
+            IsFollowingLatest = true;
+            TranscriptScrollTarget = transcriptScrollAnchor;
+        }
+
+        return Task.CompletedTask;
+    }
+
     private void SetTranscriptText(ChatItemViewModel item, string text)
     {
         historyBytes -= Encoding.UTF8.GetByteCount(item.Text);
         item.Text = text;
         historyBytes += Encoding.UTF8.GetByteCount(text);
+    }
+
+    private void RefreshTranscriptScrollAnchor()
+    {
+        ChatItemViewModel previousAnchor = transcriptScrollAnchor;
+        var refreshedAnchor = new ChatItemViewModel(
+            "Transcript anchor",
+            string.Empty,
+            ConversationEventKind.ItemCompleted,
+            isTranscriptScrollAnchor: true);
+        int anchorIndex = TranscriptDisplayItems.IndexOf(previousAnchor);
+
+        transcriptScrollAnchor = refreshedAnchor;
+        if (anchorIndex >= 0)
+        {
+            TranscriptDisplayItems[anchorIndex] = refreshedAnchor;
+        }
+        else
+        {
+            TranscriptDisplayItems.Add(refreshedAnchor);
+        }
+
+        TranscriptScrollTarget = refreshedAnchor;
     }
 
     private void ResetSelectedHistoryState(ThreadSummary thread)
@@ -7855,10 +8074,11 @@ public sealed class ChatItemViewModel : ObservableObject
     private bool planWasTruncated;
     private bool isProposedPlan;
 
-    public ChatItemViewModel(string role, string text, ConversationEventKind kind)
+    public ChatItemViewModel(string role, string text, ConversationEventKind kind, bool isTranscriptScrollAnchor = false)
     {
         Role = role;
         Kind = kind;
+        IsTranscriptScrollAnchor = isTranscriptScrollAnchor;
         isCollapsed = kind == ConversationEventKind.ReasoningSummaryDelta;
         if (kind == ConversationEventKind.CommandOutputDelta)
         {
@@ -7882,6 +8102,9 @@ public sealed class ChatItemViewModel : ObservableObject
 
     [DataMember]
     public string DisplayRole => IsProposedPlan ? "Proposed plan" : Role;
+
+    [DataMember]
+    public bool IsTranscriptScrollAnchor { get; private set; }
 
     public ConversationEventKind Kind { get; }
 
@@ -9228,11 +9451,17 @@ public sealed class AsyncCommand : ICommand, VSUI.IAsyncCommand, INotifyProperty
     private static readonly PropertyChangedEventArgs CanExecuteChangedArgs = new(nameof(CanExecute));
     private static readonly AsyncLocal<Microsoft.VisualStudio.Extensibility.IClientContext?> ActiveClientContext = new();
 
-    private readonly Func<Task> execute;
+    private readonly Func<object?, Task> execute;
     private readonly Func<bool>? canExecute;
     private int running;
 
     public AsyncCommand(Func<Task> execute, Func<bool>? canExecute = null)
+    {
+        this.execute = _ => execute();
+        this.canExecute = canExecute;
+    }
+
+    public AsyncCommand(Func<object?, Task> execute, Func<bool>? canExecute = null)
     {
         this.execute = execute;
         this.canExecute = canExecute;
@@ -9264,7 +9493,7 @@ public sealed class AsyncCommand : ICommand, VSUI.IAsyncCommand, INotifyProperty
         RaiseCanExecuteChanged();
         try
         {
-            await execute().ConfigureAwait(true);
+            await execute(parameter).ConfigureAwait(true);
         }
         catch (Exception ex)
         {
@@ -9289,7 +9518,7 @@ public sealed class AsyncCommand : ICommand, VSUI.IAsyncCommand, INotifyProperty
         ActiveClientContext.Value = clientContext;
         try
         {
-            await execute().ConfigureAwait(false);
+            await execute(parameter).ConfigureAwait(false);
         }
         catch (Exception ex)
         {

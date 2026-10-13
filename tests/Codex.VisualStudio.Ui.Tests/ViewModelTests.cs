@@ -39,6 +39,106 @@ public sealed class ViewModelTests
     private static readonly string[] ExpectedModeChoiceIds = ["mode-id"];
 
     [TestMethod]
+    public void TranscriptDisplayItems_MirrorConversationAndKeepAnchorSeparate()
+    {
+        using var vm = new ChatViewModel(
+            new FakeWorkerBridge(),
+            autoConnect: false,
+            settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        ChatItemViewModel anchor = vm.TranscriptDisplayItems.Single();
+        var first = new ChatItemViewModel("You", "First", ConversationEventKind.ItemCompleted);
+        var second = new ChatItemViewModel("Codex", "Second", ConversationEventKind.ItemCompleted);
+        var older = new ChatItemViewModel("You", "Older", ConversationEventKind.ItemCompleted);
+
+        vm.Items.Add(first);
+        vm.Items.Add(second);
+        vm.Items.Insert(0, older);
+
+        CollectionAssert.AreEqual(new[] { older, first, second, anchor }, vm.TranscriptDisplayItems.ToArray());
+        Assert.AreEqual(3, vm.Items.Count, "The sentinel must never enter conversation history.");
+        Assert.IsTrue(anchor.IsTranscriptScrollAnchor);
+        Assert.AreSame(anchor, vm.TranscriptScrollTarget);
+
+        vm.TranscriptScrollTarget = first;
+        Assert.AreSame(anchor, vm.TranscriptScrollTarget, "Selecting a conversation row must not dislodge the active follow target.");
+
+        vm.Items.Clear();
+
+        Assert.AreEqual(1, vm.TranscriptDisplayItems.Count);
+        Assert.AreSame(anchor, vm.TranscriptDisplayItems[0]);
+        Assert.IsTrue(vm.IsFollowingLatest);
+        Assert.AreSame(anchor, vm.TranscriptScrollTarget);
+    }
+
+    [TestMethod]
+    public void TranscriptAutoFollow_PausesOnUpwardScrollAndResumesAtBottom()
+    {
+        using var vm = new ChatViewModel(
+            new FakeWorkerBridge(),
+            autoConnect: false,
+            settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        ChatItemViewModel anchor = vm.TranscriptDisplayItems.Single();
+
+        vm.TranscriptScrollChangedCommand.Execute("100|600");
+        vm.TranscriptScrollChangedCommand.Execute("80|600");
+
+        Assert.IsFalse(vm.IsFollowingLatest);
+        Assert.IsTrue(vm.ShowTranscriptFollowLatestButton);
+        Assert.IsNull(vm.TranscriptScrollTarget);
+
+        vm.TranscriptScrollChangedCommand.Execute("80|900");
+        Assert.IsFalse(vm.IsFollowingLatest, "Response growth must not move a paused viewport.");
+        Assert.IsNull(vm.TranscriptScrollTarget, "Paused response growth must not change the selected tail target.");
+
+        vm.TranscriptScrollChangedCommand.Execute("900|900");
+
+        Assert.IsTrue(vm.IsFollowingLatest);
+        Assert.IsFalse(vm.ShowTranscriptFollowLatestButton);
+        Assert.AreSame(anchor, vm.TranscriptScrollTarget);
+
+        vm.TranscriptScrollChangedCommand.Execute("100|900");
+        vm.TranscriptScrollChangedCommand.Execute("80|900");
+        vm.TranscriptFollowLatestCommand.Execute(null);
+
+        Assert.IsTrue(vm.IsFollowingLatest);
+        Assert.AreSame(anchor, vm.TranscriptScrollTarget);
+    }
+
+    [TestMethod]
+    public void TranscriptAutoFollow_RefreshesTailTargetWhenContentExtentGrows()
+    {
+        using var vm = new ChatViewModel(
+            new FakeWorkerBridge(),
+            autoConnect: false,
+            settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        ChatItemViewModel initialAnchor = vm.TranscriptScrollTarget!;
+
+        vm.TranscriptScrollChangedCommand.Execute("900|900");
+        vm.TranscriptScrollChangedCommand.Execute("900|900.5");
+
+        Assert.IsTrue(vm.IsFollowingLatest);
+        Assert.IsFalse(ReferenceEquals(initialAnchor, vm.TranscriptScrollTarget),
+            "A growing scroll extent must reselect a fresh tail anchor so the virtualized ListBox can bring it into view again.");
+        Assert.AreSame(vm.TranscriptScrollTarget, vm.TranscriptDisplayItems[^1]);
+    }
+
+    [TestMethod]
+    public void TranscriptAutoFollow_PausesOnCumulativeFractionalUpwardScroll()
+    {
+        using var vm = new ChatViewModel(
+            new FakeWorkerBridge(),
+            autoConnect: false,
+            settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+
+        vm.TranscriptScrollChangedCommand.Execute("100.8|600");
+        vm.TranscriptScrollChangedCommand.Execute("100.2|600");
+
+        Assert.IsFalse(vm.IsFollowingLatest);
+        Assert.IsTrue(vm.ShowTranscriptFollowLatestButton);
+        Assert.IsNull(vm.TranscriptScrollTarget);
+    }
+
+    [TestMethod]
     public async Task ChatViewModel_OwnerChangeClearsOwnerScopedPresentationState()
     {
         string directory = Path.Combine(Path.GetTempPath(), $"codex owner {Guid.NewGuid():N}");
@@ -2749,11 +2849,17 @@ public sealed class ViewModelTests
             .Select(method => $"AutomationProperties.{method.Name[3..]}")
             .ToHashSet(StringComparer.Ordinal);
 
-        string[] unsupportedProperties = doc
+        XNamespace presentation = "http://schemas.microsoft.com/winfx/2006/xaml/presentation";
+        IEnumerable<string> automationPropertyReferences = doc
             .Descendants()
             .Attributes()
             .Select(attribute => attribute.Name.LocalName)
             .Where(name => name.StartsWith("AutomationProperties.", StringComparison.Ordinal))
+            .Concat(doc.Descendants(presentation + "Setter")
+                .Select(setter => setter.Attribute("Property")?.Value)
+                .OfType<string>()
+                .Where(name => name.StartsWith("AutomationProperties.", StringComparison.Ordinal)));
+        string[] unsupportedProperties = automationPropertyReferences
             .Where(name => !supportedProperties.Contains(name))
             .Distinct(StringComparer.Ordinal)
             .OrderBy(name => name, StringComparer.Ordinal)

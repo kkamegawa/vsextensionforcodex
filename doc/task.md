@@ -847,3 +847,16 @@ Tracking: [#195](https://github.com/kkamegawa/vsextensionforcodex/issues/195), [
 - [x] Review follow-up: argumentless `/plan` without a conversation enables the threadless selection; the implementation offer uses the mode the completed turn was started with; Plan selections are set aside on connection loss and restored only when transient recovery reconnects, because every attempt receives a new owner partition.
 - [x] Tests that use Plan mode now set Experimental API explicitly instead of depending on the machine's settings file. Release Core 424 passed / 5 skipped; Release UI 436 passed / 1 skipped; Debug and Release builds 0 warnings / 0 errors.
 - [x] Live WPF rendering binds the real view models to the production templates (Dark/Light): question steps 1 and 3, a tall card scrolled to Submit, the implementation offer and the proposed plan from the real probe text; all assertions passed and images were inspected. Evidence: `artifacts/issue192/live-render/output`. VS host templates remain unverified: Visual Studio could only be granted click-level control, so typing a prompt in the Experimental Instance was not possible.
+
+### 2026-10-13: Transcript auto-follow (Issue #205)
+
+Approved [bilingual plan](https://github.com/kkamegawa/vsextensionforcodex/wiki/transcript-auto-follow) ([Japanese](https://github.com/kkamegawa/vsextensionforcodex/wiki/transcript-auto-follow_ja)); tracking: [#205](https://github.com/kkamegawa/vsextensionforcodex/issues/205), [#206](https://github.com/kkamegawa/vsextensionforcodex/issues/206), [#207](https://github.com/kkamegawa/vsextensionforcodex/issues/207), [#208](https://github.com/kkamegawa/vsextensionforcodex/issues/208).
+
+- [x] Keep conversation history chronological and separate from the display-only tail anchor; follow streaming output at the bottom, pause on upward scroll, and resume at the bottom or with the accessible Latest action.
+- [x] Add ViewModel and embedded-XAML regression tests for anchor synchronization, pause/resume, virtualization, event metrics, and accessibility.
+- [x] Refresh the selected tail anchor whenever the scrollable extent grows, and pause on fractional upward movement so streaming growth can be followed without overriding reader scrolling.
+- [x] Release solution build: 0 warnings / 0 errors. Full tests: UI 443 passed / 1 skipped; Core 451 passed / 5 skipped; 0 failed.
+- [x] Remove the WPF-incompatible AutomationProperties.AccessibilityView setter; keep the tail anchor non-focusable and non-tab-stop, and validate attached-property setters against WPF's supported API.
+- [x] The corrected transcript trigger parses with WPF XamlReader; F5 deployment loaded the Codex tool window in the Visual Studio 2026 Experimental Instance without the frame-construction exception. Release UI tests: 443 passed / 1 skipped; Release solution build: 0 warnings / 0 errors.
+- [x] Harden the Remote UI scroll event with an explicit ScrollViewer event type and ElementName bindings; the Release UI-test project build passed and all 10 transcript-focused tests passed.
+- [ ] Experimental Instance acceptance remains incomplete: the latest user-provided screenshot still shows no automatic scrolling and no visible Latest action. Whether this is a Remote UI rendering limitation or an event-delivery defect has not been established.

@@ -319,6 +319,7 @@ Validation on 2026-10-02:
 - Result-only transcript lines after approval and choice resolution ("Accepted — <target>", "Selected — <option>"), sanitized through SafeMarkdownService
 - Local prose prompt detection for natural-language numbered choices and yes/no confirmation questions, independent of the experimental API toggle
 - Pixel-based transcript scrolling (VirtualizingPanel.ScrollUnit=Pixel) to avoid variable-height item jumps
+- ChatGPT-style transcript auto-follow: follow the latest item while the reader is at the bottom; upward scrolling pauses and preserves position; returning to the bottom or using the accessible Latest action resumes follow. A presentation-only anchor stays outside conversation history.
 - VSIX packaging with PkgDef, WPF package dependencies, .NET 8 worker, and worker dependencies
 - Model-aware Reasoning and Speed pickers with sanitized catalog content, stable persisted IDs, hidden-default capability metadata, and Remote UI accessibility bindings
 - Contract version 13 turn-setting presence flags for omit/null/value semantics, plus effective reasoning and service-tier propagation
