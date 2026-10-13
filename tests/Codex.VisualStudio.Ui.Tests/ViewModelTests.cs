@@ -267,7 +267,7 @@ public sealed class ViewModelTests
         {
             ["choice"] = new() { Kind = UserInputAnswerKind.SelectedOptions, OptionIds = ["old-owner-id"] },
         };
-        await (Task)resolve.Invoke(vm, ["synthetic-old", answers, UserInputAction.Submit, oldOwner])!;
+        await (Task)resolve.Invoke(vm, [new UserInputRequest(), "synthetic-old", answers, UserInputAction.Submit, oldOwner])!;
 
         Assert.IsNull(bridge.LastStartTurnRequest);
         Assert.IsFalse(vm.HasActiveUserInput);
@@ -1438,6 +1438,184 @@ public sealed class ViewModelTests
     {
         Assert.IsFalse(ChoicePromptParser.TryParse(text, out _));
     }
+
+    [TestMethod]
+    public void ChoicePromptParser_DetectsSeveralBulletedQuestions()
+    {
+        string text = string.Join('\n',
+            "「黒」はどちらのイメージですか？（赤・青も明るい画面のアクセント色として選べます。）",
+            "",
+            "- 黒を基調にしたダークテーマ",
+            "- 黒はアクセント色、背景は明るいまま",
+            "",
+            "選択したテーマは次回アクセス時にも維持しますか？",
+            "",
+            "- ブラウザーに保存して次回も維持（おすすめ）",
+            "- 画面を開いている間だけ適用",
+            "",
+            "テーマ切替UIはどこに置きますか？",
+            "",
+            "- 全ページ共通のナビゲーション（おすすめ）",
+            "- ホーム画面だけ");
+
+        bool ok = ChoicePromptParser.TryParse(text, out UserInputRequest request);
+
+        Assert.IsTrue(ok);
+        Assert.AreEqual(3, request.Questions.Count);
+        Assert.AreEqual("「黒」はどちらのイメージですか？（赤・青も明るい画面のアクセント色として選べます。）", request.Questions[0].Question);
+        Assert.AreEqual("黒はアクセント色、背景は明るいまま", request.Questions[0].Options[1].Label);
+        Assert.AreEqual("選択したテーマは次回アクセス時にも維持しますか？", request.Questions[1].Question);
+        Assert.AreEqual(2, request.Questions[1].Options.Count);
+        Assert.AreEqual("全ページ共通のナビゲーション（おすすめ）", request.Questions[2].Options[0].Label);
+        CollectionAssert.AllItemsAreUnique(request.Questions.Select(static question => question.Id).ToArray());
+    }
+
+    [TestMethod]
+    public void ChoicePromptParser_DetectsNumberedQuestionsWithNestedOptions()
+    {
+        string text = string.Join('\n',
+            "Before I start, please decide:",
+            "1. **Which database should I use?**",
+            "   - PostgreSQL",
+            "   - SQLite",
+            "2. Should the API require authentication?",
+            "   1) Yes, with OAuth",
+            "   2) No",
+            "   3) Later");
+
+        bool ok = ChoicePromptParser.TryParse(text, out UserInputRequest request);
+
+        Assert.IsTrue(ok);
+        Assert.AreEqual(2, request.Questions.Count);
+        Assert.AreEqual("Which database should I use?", request.Questions[0].Question);
+        Assert.AreEqual("SQLite", request.Questions[0].Options[1].Label);
+        Assert.AreEqual(3, request.Questions[1].Options.Count);
+    }
+
+    [TestMethod]
+    public void ChoicePromptParser_IgnoresQuestionsWithoutTwoOptions()
+    {
+        string text = string.Join('\n',
+            "Which color do you prefer?",
+            "- Red",
+            "- Blue",
+            "Anything else to add?",
+            "",
+            "Which layout?",
+            "- Grid");
+
+        bool ok = ChoicePromptParser.TryParse(text, out UserInputRequest request);
+
+        Assert.IsTrue(ok);
+        Assert.AreEqual(1, request.Questions.Count);
+        Assert.AreEqual("choice", request.Questions[0].Id);
+        Assert.AreEqual("Which color do you prefer?", request.Questions[0].Question);
+    }
+
+    [TestMethod]
+    [DataRow("仕様を決めるため、次の3点を確認中です。\n\n- 黒は、画面全体を暗くするテーマか、明るい画面のアクセント色か\n- 選択をブラウザーに保存するか\n\n回答をもとに実装計画をまとめます。", DisplayName = "bullets after a statement")]
+    [DataRow("Why did the build fail?\nThe test runner exited early.\n- Missing SDK\n- Wrong path", DisplayName = "prose between the question and the bullets")]
+    public void ChoicePromptParser_RejectsBulletsNotDirectlyUnderAQuestion(string text)
+    {
+        Assert.IsFalse(ChoicePromptParser.TryParse(text, out _));
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_MultiQuestionProsePrompt_SendsEachAnswerInOneReply()
+    {
+        var bridge = new FakeWorkerBridge();
+        var sentTexts = new List<string>();
+        bridge.StartTurnHandler = (request, _) =>
+        {
+            sentTexts.Add(request.Text);
+            return Task.FromResult($"multi-question-turn-{sentTexts.Count}");
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()))
+        {
+            SelectedThread = new ThreadSummary { Id = "thread-multi-question" },
+        };
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready, ThreadId = "thread-multi-question" });
+        await RunCommandAsync(vm.JoinThreadCommand);
+
+        await bridge.PublishConversationEventAsync(new ConversationEvent
+        {
+            Kind = ConversationEventKind.AgentMessageDelta,
+            ThreadId = "thread-multi-question",
+            TurnId = "agent-turn",
+            ItemId = "agent-questions",
+            Text = "Which theme?\n- Dark\n- Light\n\nWhere should the switch go?\n- Navigation bar\n- Home page only",
+        });
+        await bridge.PublishConversationEventAsync(new ConversationEvent
+        {
+            Kind = ConversationEventKind.TurnCompleted,
+            ThreadId = "thread-multi-question",
+            TurnId = "agent-turn",
+        });
+
+        UserInputViewModel card = vm.ActiveUserInput ?? throw new AssertFailedException("A multi-question card should be shown.");
+        Assert.IsTrue(card.IsSynthetic);
+        Assert.IsTrue(card.IsMultiStep);
+        card.Questions[0].Options[0].IsSelected = true;
+        card.Questions[1].Options[1].IsSelected = true;
+        await RunCommandAsync(card.SubmitCommand);
+
+        Assert.AreEqual(1, sentTexts.Count);
+        Assert.AreEqual("Which theme?\n- Dark\n\nWhere should the switch go?\n- Home page only", sentTexts[0]);
+        Assert.IsFalse(vm.HasActiveUserInput);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_ProseQuestionsInEarlierTurnMessage_ShowCardWhenTurnEndsWithStatusText()
+    {
+        using var vm = new ChatViewModel(new FakeWorkerBridge(), autoConnect: false);
+
+        await RaiseConversationEventAsync(vm, new ConversationEvent { Kind = ConversationEventKind.TurnStarted });
+        await RaiseAgentMessageAsync(vm, "agent-questions", "「黒」はどちらのイメージですか？（補足）\n\n- ダークテーマ\n- アクセント色\n\nテーマ切替UIはどこに置きますか？\n\n- 全ページ共通\n- ホーム画面だけ");
+        await RaiseAgentMessageAsync(vm, "agent-status", "選択UIの場所と黒テーマの意味について回答を待っています。");
+        await RaiseAgentMessageAsync(vm, "agent-final", "仕様を決めるため、次の2点を確認中です。\n\n- 黒の意味\n- 切替UIの場所\n\n回答をもとに実装計画をまとめます。");
+        await RaiseConversationEventAsync(vm, new ConversationEvent { Kind = ConversationEventKind.TurnCompleted });
+
+        UserInputViewModel card = vm.ActiveUserInput ?? throw new AssertFailedException("The earlier question message should produce a card.");
+        Assert.IsTrue(card.IsSynthetic);
+        Assert.AreEqual(2, card.Questions.Count);
+        Assert.AreEqual("テーマ切替UIはどこに置きますか？", card.Questions[1].Question);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_LastMessageChoiceWinsOverEarlierProseQuestions()
+    {
+        using var vm = new ChatViewModel(new FakeWorkerBridge(), autoConnect: false);
+
+        await RaiseConversationEventAsync(vm, new ConversationEvent { Kind = ConversationEventKind.TurnStarted });
+        await RaiseAgentMessageAsync(vm, "agent-early", "Which database?\n- PostgreSQL\n- SQLite");
+        await RaiseAgentMessageAsync(vm, "agent-last", "Which deployment target?\n1. Azure\n2. On-premises\n3. Both");
+        await RaiseConversationEventAsync(vm, new ConversationEvent { Kind = ConversationEventKind.TurnCompleted });
+
+        Assert.IsNotNull(vm.ActiveUserInput);
+        Assert.AreEqual(1, vm.ActiveUserInput!.Questions.Count);
+        Assert.AreEqual("Which deployment target?", vm.ActiveUserInput.Questions[0].Question);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_EarlierConfirmationQuestionWithoutOptions_DoesNotShowCard()
+    {
+        using var vm = new ChatViewModel(new FakeWorkerBridge(), autoConnect: false);
+
+        await RaiseConversationEventAsync(vm, new ConversationEvent { Kind = ConversationEventKind.TurnStarted });
+        await RaiseAgentMessageAsync(vm, "agent-early", "MIT ライセンスで進めてよいですか？");
+        await RaiseAgentMessageAsync(vm, "agent-last", "MIT ライセンスで作成しました。");
+        await RaiseConversationEventAsync(vm, new ConversationEvent { Kind = ConversationEventKind.TurnCompleted });
+
+        Assert.IsFalse(vm.HasActiveUserInput, "A settled confirmation question in an earlier message must not produce a card.");
+    }
+
+    private static Task RaiseAgentMessageAsync(ChatViewModel vm, string itemId, string text)
+        => RaiseConversationEventAsync(vm, new ConversationEvent
+        {
+            Kind = ConversationEventKind.AgentMessageDelta,
+            ItemId = itemId,
+            Text = text,
+        });
 
     [TestMethod]
     public async Task ChatViewModel_ProseConfirmationPrompt_ShowsCardWithoutExperimentalApi()
@@ -6408,6 +6586,112 @@ public sealed class ViewModelTests
         });
 
         Assert.IsFalse(vm.InterruptCommand.CanExecute, "A late StartTurn acknowledgement must not resurrect a turn already completed.");
+    }
+
+    [TestMethod]
+    [DataRow(false, DisplayName = "turn/started after the lost response")]
+    [DataRow(true, DisplayName = "turn/started before the lost response")]
+    public async Task ChatViewModel_InterruptOwnership_UnknownStartOutcomeAdoptsTheStartedTurn(bool startedBeforeFailure)
+    {
+        var bridge = new FakeWorkerBridge();
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()))
+        {
+            SelectedThread = new ThreadSummary { Id = "thread-unknown-start" },
+        };
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready, ThreadId = "thread-unknown-start" });
+        await RunCommandAsync(vm.JoinThreadCommand);
+        var turnStarted = new ConversationEvent
+        {
+            Kind = ConversationEventKind.TurnStarted,
+            ThreadId = "thread-unknown-start",
+            TurnId = "turn-with-lost-response",
+        };
+        bridge.StartTurnHandler = async (_, _) =>
+        {
+            if (startedBeforeFailure)
+            {
+                await bridge.PublishConversationEventAsync(turnStarted);
+            }
+
+            throw new InvalidOperationException("The start response was lost after dispatch.");
+        };
+
+        await SendMessageAsync(vm, "start with a lost response", clearComposer: false);
+        if (!startedBeforeFailure)
+        {
+            await bridge.PublishConversationEventAsync(turnStarted);
+        }
+
+        await bridge.PublishStateAsync(new WorkerStatus
+        {
+            State = WorkerConnectionState.Busy,
+            ThreadId = "thread-unknown-start",
+            TurnId = "turn-with-lost-response",
+        });
+        Assert.IsTrue(vm.InterruptCommand.CanExecute, "The turn identified by turn/started belongs to the lost local start.");
+
+        await bridge.PublishConversationEventAsync(new ConversationEvent
+        {
+            Kind = ConversationEventKind.TurnCompleted,
+            ThreadId = "thread-unknown-start",
+            TurnId = "turn-with-lost-response",
+        });
+        Assert.IsFalse(vm.InterruptCommand.CanExecute);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_InterruptOwnership_NewerLocalStartSupersedesAnUnknownStartOutcome()
+    {
+        var bridge = new FakeWorkerBridge();
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()))
+        {
+            SelectedThread = new ThreadSummary { Id = "thread-superseded-start" },
+        };
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready, ThreadId = "thread-superseded-start" });
+        await RunCommandAsync(vm.JoinThreadCommand);
+        bridge.StartTurnHandler = (_, _) => throw new InvalidOperationException("The start response was lost after dispatch.");
+        await SendMessageAsync(vm, "start with a lost response", clearComposer: false);
+
+        bridge.StartTurnHandler = (_, _) => Task.FromResult("acknowledged-turn");
+        await SendMessageAsync(vm, "start again", clearComposer: false);
+        await bridge.PublishConversationEventAsync(new ConversationEvent
+        {
+            Kind = ConversationEventKind.TurnCompleted,
+            ThreadId = "thread-superseded-start",
+            TurnId = "acknowledged-turn",
+        });
+
+        await bridge.PublishConversationEventAsync(new ConversationEvent
+        {
+            Kind = ConversationEventKind.TurnStarted,
+            ThreadId = "thread-superseded-start",
+            TurnId = "external-turn",
+        });
+        await bridge.PublishStateAsync(new WorkerStatus
+        {
+            State = WorkerConnectionState.Busy,
+            ThreadId = "thread-superseded-start",
+            TurnId = "external-turn",
+        });
+        Assert.IsFalse(vm.InterruptCommand.CanExecute, "A later turn must not be attributed to a superseded lost start.");
+    }
+
+    [TestMethod]
+    public void BoundedOrderedMap_EvictsOldestLiveEntryAfterOutOfOrderRemoval()
+    {
+        var map = new BoundedOrderedMap<string, int>(2, StringComparer.Ordinal);
+        Assert.IsTrue(map.TryAdd("a", 1));
+        Assert.IsTrue(map.TryAdd("b", 2));
+        Assert.IsFalse(map.TryAdd("a", 3), "An existing key is left unchanged.");
+        Assert.IsTrue(map.Remove("a", out int removed));
+        Assert.AreEqual(1, removed);
+
+        Assert.IsTrue(map.TryAdd("c", 3));
+        Assert.IsTrue(map.TryAdd("d", 4));
+
+        Assert.AreEqual(2, map.Count);
+        Assert.IsFalse(map.ContainsKey("b"), "The oldest live entry is evicted first.");
+        Assert.AreEqual("c,d", string.Join(",", map.Entries.Select(static entry => entry.Key)));
     }
 
     [TestMethod]

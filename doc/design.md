@@ -423,6 +423,16 @@ Decision history:
 |---|---|---|---|
 | 2026-10-11 | Goal state did not control the composer; only the ordinary Extension-started-turn interrupt action was available. | An Active Goal exposes an explicit Stop that attempts status-only pause, then interrupts the latest same-thread running turn even when pause fails or is uncertain. | Issue #174 adds Goal control while preserving the ordinary interrupt restriction; the user approved its implementation plan in this conversation on 2026-10-11. |
 
+### Ordinary Interrupt eligibility — Issue #210
+
+Without an Active Goal, Interrupt is offered only for the selected, joined thread's current turn when the status is Busy or WaitingForApproval and the Extension holds local-start proof for that exact owner, connection generation, thread, and turn. Proof comes from the StartTurn response of a composer send, a question-answer follow-up, or a direct `/plan <prompt>`. When the response is lost after dispatch (delivery outcome unknown), the `turn/started` notification on the same owner, connection generation, and thread identifies the turn: one observed while the request was pending, otherwise the next one. A newer local start on that thread supersedes the lost start, so a later turn is never attributed to it. Proof survives temporary idle or different-turn statuses and question waits, is retired by that turn's completion (a completion that precedes the proof prevents it), and is cleared on owner or connection changes, Disconnected, and Degraded. Active, completed, and pending records are bounded. Turns started by other clients remain ineligible. Eligibility changes are pushed to Remote UI, and a diagnostic line records only the connection state and eligibility booleans when they change.
+
+Decision history:
+
+| Date | Previous decision | Current decision | Reason and approval evidence |
+|---|---|---|---|
+| 2026-10-14 | A start whose response was lost after dispatch never received local-start proof, so its turn could not be interrupted. | The `turn/started` notification on the same owner, connection generation, and thread adopts the lost start's turn until a newer local start supersedes it. | Code review of Issue #210 found the user could not stop a turn they had just sent; the user chose this adoption rule in this conversation on 2026-10-14, accepting the small risk of attributing a concurrently started external turn. |
+
 ## 14. Path mapping and connection state isolation
 
 [Path mapping and connection state isolation](path-state-isolation-design.md) and its
