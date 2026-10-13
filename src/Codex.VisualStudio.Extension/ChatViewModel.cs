@@ -52,6 +52,10 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
     private RemoteProfileViewModel? observedHealthProfile;
     private readonly Dictionary<string, InteractionCardViewModel> interactionCards = new(StringComparer.Ordinal);
     private const string ImplementPlanRequestPrefix = "implement-plan:";
+    private const int MaximumTrackedLocalTurns = 32;
+    private const int MaximumCompletedLocalTurns = 256;
+    private const int MaximumPendingLocalTurnStarts = 16;
+    private const int MaximumPendingCompletedTurnIds = 16;
     // Turns this owner started in Plan mode; a completion consumes its entry.
     private readonly HashSet<string> planModeTurnIds = new(StringComparer.Ordinal);
     private const string ImplementPlanOptionId = "implement";
@@ -63,7 +67,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
     private string? lastAgentRawKey;
     private int disposed;
     private int connecting;
-    private string? locallyStartedTurnId;
+    private string? lastInterruptibilityDiagnostic;
     private WorkerStatus status = new() { State = WorkerConnectionState.Disconnected, Message = "Open Codex to connect." };
     private ThreadSummary? selectedThread;
     private string composerText = string.Empty;
@@ -103,6 +107,12 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
     private ListModelsResult modelCatalog = new();
     private RateLimitsResult? latestRateLimits;
     private readonly HashSet<SlashCommandId> unavailableSlashCommands = [];
+    private readonly HashSet<LocalTurnKey> locallyStartedTurns = [];
+    private readonly Queue<LocalTurnKey> locallyStartedTurnOrder = [];
+    private readonly HashSet<LocalTurnKey> completedLocalTurns = [];
+    private readonly Queue<LocalTurnKey> completedLocalTurnOrder = [];
+    private readonly Dictionary<Guid, PendingLocalTurnStart> pendingLocalTurnStarts = [];
+    private readonly Queue<Guid> pendingLocalTurnStartOrder = [];
     private int drainingSlashQueue;
     private CancellationTokenSource? fileSuggestionRefresh;
     private ListSkillsResult? skillsSnapshot;
@@ -484,6 +494,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             if (SetProperty(ref isRecovering, value))
             {
                 OnPropertyChanged(nameof(HasRecoveryStatus));
+                NotifyInterruptibilityChanged();
                 RaiseCommandStates();
             }
         }
@@ -580,16 +591,9 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             long previousOwnerGeneration = observedOwnerGeneration;
             if (SetProperty(ref status, value))
             {
-                if (value.TurnId is null || !string.Equals(value.TurnId, locallyStartedTurnId, StringComparison.Ordinal))
-                {
-                    locallyStartedTurnId = null;
-                }
-
-                // The Interrupt button visibility depends on the status turn and thread.
-                OnPropertyChanged(nameof(IsLocallyInterruptible));
-
                 string? currentPartition = value.Target?.StatePartitionFingerprint;
                 long currentOwnerGeneration = value.Target?.OwnerGeneration ?? 0;
+                long currentGeneration = value.Target?.Generation ?? 0;
                 observedStatePartitionFingerprint = currentPartition;
                 observedOwnerGeneration = currentOwnerGeneration;
                 if (!string.Equals(previousPartition, currentPartition, StringComparison.Ordinal)
@@ -602,6 +606,13 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
 
                     ClearOwnerScopedState();
                 }
+                else if ((previousGeneration ?? 0) != currentGeneration
+                    || value.State is WorkerConnectionState.Disconnected or WorkerConnectionState.Degraded)
+                {
+                    ClearLocalTurnTracking();
+                }
+
+                NotifyInterruptibilityChanged();
 
                 if (previousGeneration != value.Target?.Generation
                     || previousOwnerGeneration != currentOwnerGeneration
@@ -1289,6 +1300,170 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         long OwnerGeneration,
         long ConnectionGeneration);
 
+    private readonly record struct LocalTurnKey(OwnerSnapshot Owner, string ThreadId, string TurnId);
+
+    private sealed class PendingLocalTurnStart(OwnerSnapshot owner, string threadId)
+    {
+        public OwnerSnapshot Owner { get; } = owner;
+
+        public string ThreadId { get; } = threadId;
+
+        public HashSet<string> CompletedTurnIds { get; } = new(StringComparer.Ordinal);
+
+        public bool CompletedTurnTrackingOverflowed { get; set; }
+    }
+
+    private void BeginLocalTurnStart(Guid operationId, OwnerSnapshot owner, string threadId)
+    {
+        if (!IsCurrentOwner(owner) || string.IsNullOrWhiteSpace(threadId))
+        {
+            return;
+        }
+
+        pendingLocalTurnStarts[operationId] = new PendingLocalTurnStart(owner, threadId);
+        pendingLocalTurnStartOrder.Enqueue(operationId);
+        if (pendingLocalTurnStartOrder.Count > MaximumPendingLocalTurnStarts * 2)
+        {
+            Guid[] currentOperations = pendingLocalTurnStartOrder
+                .Where(pendingLocalTurnStarts.ContainsKey)
+                .ToArray();
+            pendingLocalTurnStartOrder.Clear();
+            foreach (Guid currentOperation in currentOperations)
+            {
+                pendingLocalTurnStartOrder.Enqueue(currentOperation);
+            }
+        }
+
+        while (pendingLocalTurnStarts.Count > MaximumPendingLocalTurnStarts
+            && pendingLocalTurnStartOrder.TryDequeue(out Guid oldestOperationId))
+        {
+            pendingLocalTurnStarts.Remove(oldestOperationId);
+        }
+    }
+
+    private void AcknowledgeLocalTurnStart(Guid operationId, OwnerSnapshot owner, string threadId, string turnId)
+    {
+        if (!pendingLocalTurnStarts.Remove(operationId, out PendingLocalTurnStart? pending)
+            || pending is null
+            || !IsCurrentOwner(owner)
+            || pending.Owner != owner
+            || !string.Equals(pending.ThreadId, threadId, StringComparison.Ordinal)
+            || string.IsNullOrWhiteSpace(turnId))
+        {
+            return;
+        }
+
+        var key = new LocalTurnKey(owner, threadId, turnId);
+        if (pending.CompletedTurnTrackingOverflowed
+            || pending.CompletedTurnIds.Contains(turnId)
+            || completedLocalTurns.Contains(key))
+        {
+            return;
+        }
+
+        if (locallyStartedTurns.Add(key))
+        {
+            locallyStartedTurnOrder.Enqueue(key);
+            while (locallyStartedTurns.Count > MaximumTrackedLocalTurns
+                && locallyStartedTurnOrder.TryDequeue(out LocalTurnKey oldestKey))
+            {
+                locallyStartedTurns.Remove(oldestKey);
+            }
+
+            if (locallyStartedTurnOrder.Count > MaximumTrackedLocalTurns * 2)
+            {
+                LocalTurnKey[] currentTurns = locallyStartedTurnOrder
+                    .Where(locallyStartedTurns.Contains)
+                    .ToArray();
+                locallyStartedTurnOrder.Clear();
+                foreach (LocalTurnKey currentTurn in currentTurns)
+                {
+                    locallyStartedTurnOrder.Enqueue(currentTurn);
+                }
+            }
+        }
+
+        NotifyInterruptibilityChanged();
+    }
+
+    private void CompletePendingLocalTurnStart(Guid operationId)
+        => pendingLocalTurnStarts.Remove(operationId);
+
+    private void RetireCompletedLocalTurn(OwnerSnapshot owner, ConversationEvent value)
+    {
+        if (string.IsNullOrWhiteSpace(value.ThreadId) || string.IsNullOrWhiteSpace(value.TurnId))
+        {
+            return;
+        }
+
+        var key = new LocalTurnKey(owner, value.ThreadId, value.TurnId);
+        bool removed = locallyStartedTurns.Remove(key);
+        if (completedLocalTurns.Add(key))
+        {
+            completedLocalTurnOrder.Enqueue(key);
+            while (completedLocalTurns.Count > MaximumCompletedLocalTurns
+                && completedLocalTurnOrder.TryDequeue(out LocalTurnKey oldestKey))
+            {
+                completedLocalTurns.Remove(oldestKey);
+            }
+        }
+
+        foreach (PendingLocalTurnStart pending in pendingLocalTurnStarts.Values)
+        {
+            if (pending.Owner != owner || !string.Equals(pending.ThreadId, value.ThreadId, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            if (pending.CompletedTurnIds.Add(value.TurnId))
+            {
+                if (pending.CompletedTurnIds.Count > MaximumPendingCompletedTurnIds)
+                {
+                    pending.CompletedTurnTrackingOverflowed = true;
+                    pending.CompletedTurnIds.Clear();
+                }
+            }
+        }
+
+        if (removed)
+        {
+            NotifyInterruptibilityChanged();
+        }
+    }
+
+    private void ClearLocalTurnTracking()
+    {
+        locallyStartedTurns.Clear();
+        locallyStartedTurnOrder.Clear();
+        completedLocalTurns.Clear();
+        completedLocalTurnOrder.Clear();
+        pendingLocalTurnStarts.Clear();
+        pendingLocalTurnStartOrder.Clear();
+    }
+
+    private void NotifyInterruptibilityChanged()
+    {
+        OnPropertyChanged(nameof(IsLocallyInterruptible));
+        InterruptCommand.RaiseCanExecuteChanged();
+
+        bool hasTurn = !string.IsNullOrWhiteSpace(Status.TurnId);
+        bool threadMatches = SelectedThread is not null
+            && string.Equals(SelectedThread.Id, Status.ThreadId, StringComparison.Ordinal);
+        bool localStartKnown = hasTurn
+            && !string.IsNullOrWhiteSpace(Status.ThreadId)
+            && locallyStartedTurns.Contains(new LocalTurnKey(
+                CaptureOwnerSnapshot(),
+                Status.ThreadId,
+                Status.TurnId!));
+        bool eligible = CanInterruptSelectedThread();
+        string diagnostic = $"[INTERRUPT] state={Status.State} joined={IsThreadJoined} recovering={IsRecovering} goal={IsGoalPrimaryMode} threadMatches={threadMatches} hasTurn={hasTurn} localStartKnown={localStartKnown} eligible={eligible}";
+        if (!string.Equals(lastInterruptibilityDiagnostic, diagnostic, StringComparison.Ordinal))
+        {
+            lastInterruptibilityDiagnostic = diagnostic;
+            _ = ExtensionDiagnostics.WriteOutputAsync(outputChannel, diagnostic);
+        }
+    }
+
     private void ClearOwnerScopedState()
     {
         slashCommandCoordinator.CancelAll();
@@ -1320,10 +1495,10 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         nextCursor = null;
 
         selectedThread = null;
-        locallyStartedTurnId = null;
+        ClearLocalTurnTracking();
         OnPropertyChanged(nameof(SelectedThread));
         OnPropertyChanged(nameof(PlanModeEnabled));
-        OnPropertyChanged(nameof(IsLocallyInterruptible));
+        NotifyInterruptibilityChanged();
         ResetGoalProjection();
         IsThreadJoined = false;
         IsHistoryStale = false;
@@ -1413,6 +1588,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                 OnPropertyChanged(nameof(IsHistoryOnly));
                 OnPropertyChanged(nameof(HasHistoryNotice));
                 OnGoalThreadChanged(value?.Id);
+                NotifyInterruptibilityChanged();
                 if (value is not null)
                 {
                     IsThreadJoined = false;
@@ -1924,6 +2100,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             if (SetProperty(ref isThreadJoined, value))
             {
                 OnPropertyChanged(nameof(IsHistoryOnly));
+                NotifyInterruptibilityChanged();
                 RaiseCommandStates();
             }
         }
@@ -3752,6 +3929,8 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                     {
                         inFlightMutations[operationId] = optimisticItem;
                     }
+
+                    BeginLocalTurnStart(operationId, owner, targetThreadId);
                 }).ConfigureAwait(false);
                 string startedTurnId = await bridge.StartTurnAsync(request, lifetime.Token).ConfigureAwait(false);
                 await OnUiAsync(() =>
@@ -3761,12 +3940,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                         RecordStartedTurnMode(request, startedTurnId);
                     }
 
-                    if (IsCurrentOwner(owner) && SelectedThread?.Id == targetThreadId)
-                    {
-                        locallyStartedTurnId = startedTurnId;
-                        OnPropertyChanged(nameof(IsLocallyInterruptible));
-                        InterruptCommand.RaiseCanExecuteChanged();
-                    }
+                    AcknowledgeLocalTurnStart(operationId, owner, targetThreadId, startedTurnId);
 
                     if (IsCurrentOwner(owner)
                         && SelectedThread?.Id == targetThreadId
@@ -3854,6 +4028,10 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             {
                 await ShowStartTurnOutcomeUnknownAsync(operationId, owner, ex).ConfigureAwait(false);
                 return;
+            }
+            finally
+            {
+                await OnUiAsync(() => CompletePendingLocalTurnStart(operationId)).ConfigureAwait(false);
             }
 
             await OnUiAsync(() =>
@@ -5582,18 +5760,28 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         }
 
         StampOwner(request, owner);
-        string planTurnId = await bridge.StartTurnAsync(request, lifetime.Token).ConfigureAwait(false);
-        await OnUiAsync(() =>
+        Guid operationId = Guid.NewGuid();
+        await OnUiAsync(() => BeginLocalTurnStart(operationId, owner, threadId)).ConfigureAwait(false);
+        try
         {
-            if (!IsCurrentOwner(owner))
+            string planTurnId = await bridge.StartTurnAsync(request, lifetime.Token).ConfigureAwait(false);
+            await OnUiAsync(() =>
             {
-                return;
-            }
+                if (!IsCurrentOwner(owner))
+                {
+                    return;
+                }
 
-            RecordStartedTurnMode(request, planTurnId);
-            ClearSentAttachments(request.Attachments);
-            ConsumeNextTurnSettings(request);
-        }).ConfigureAwait(false);
+                RecordStartedTurnMode(request, planTurnId);
+                AcknowledgeLocalTurnStart(operationId, owner, threadId, planTurnId);
+                ClearSentAttachments(request.Attachments);
+                ConsumeNextTurnSettings(request);
+            }).ConfigureAwait(false);
+        }
+        finally
+        {
+            await OnUiAsync(() => CompletePendingLocalTurnStart(operationId)).ConfigureAwait(false);
+        }
         return true;
     }
 
@@ -6416,6 +6604,11 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             if (!IsNotificationCurrent(notification))
             {
                 return;
+            }
+
+            if (isTurnCompleted)
+            {
+                RetireCompletedLocalTurn(NotificationOwner(notification), value);
             }
 
             if (string.IsNullOrWhiteSpace(value.ThreadId))
@@ -7722,10 +7915,24 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             || (Status.State is WorkerConnectionState.Disconnected && Volatile.Read(ref connecting) == 0));
 
     private bool CanInterruptSelectedThread()
-        => !IsGoalPrimaryMode && !IsRecovering && IsThreadJoined && SelectedThread is not null
-            && Status.TurnId is not null
-            && string.Equals(Status.TurnId, locallyStartedTurnId, StringComparison.Ordinal)
-            && string.Equals(SelectedThread.Id, Status.ThreadId, StringComparison.Ordinal);
+    {
+        if (IsGoalPrimaryMode
+            || IsRecovering
+            || !IsThreadJoined
+            || SelectedThread is null
+            || Status.State is not (WorkerConnectionState.Busy or WorkerConnectionState.WaitingForApproval)
+            || string.IsNullOrWhiteSpace(Status.ThreadId)
+            || string.IsNullOrWhiteSpace(Status.TurnId)
+            || !string.Equals(SelectedThread.Id, Status.ThreadId, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        return locallyStartedTurns.Contains(new LocalTurnKey(
+            CaptureOwnerSnapshot(),
+            Status.ThreadId,
+            Status.TurnId));
+    }
 
     private void RaiseCommandStates()
     {

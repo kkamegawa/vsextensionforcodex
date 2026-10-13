@@ -4523,6 +4523,142 @@ public sealed class ViewModelTests
     }
 
     [TestMethod]
+    public async Task ChatViewModel_PlanImplementationAndStructuredQuestionKeepCurrentTurnInterruptible()
+    {
+        var bridge = new FakeWorkerBridge();
+        int startNumber = 0;
+        bridge.StartTurnHandler = (_, _) => Task.FromResult(
+            Interlocked.Increment(ref startNumber) == 1 ? "plan-turn" : "implementation-turn");
+        using ChatViewModel vm = await CreatePlanThreadAsync(bridge);
+
+        await CompletePlanTurnAsync(vm, "- Step", "plan-turn");
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready, ThreadId = "thread-1" });
+        UserInputViewModel implementOffer = vm.ActiveUserInput!;
+        implementOffer.Questions[0].Options[0].IsSelected = true;
+        await RunCommandAsync(implementOffer.SubmitCommand);
+        await WaitForAsync(() => bridge.LastStartTurnRequest?.Text == ChatViewModel.ImplementPlanPrompt);
+
+        await bridge.PublishStateAsync(new WorkerStatus
+        {
+            State = WorkerConnectionState.Busy,
+            ThreadId = "thread-1",
+            TurnId = "implementation-turn",
+        });
+        Assert.IsTrue(vm.InterruptCommand.CanExecute, "The implementation turn is locally started and active.");
+
+        var request = new UserInputRequest
+        {
+            RequestId = "implementation-question",
+            ThreadId = "thread-1",
+            TurnId = "implementation-turn",
+            IsBlocking = true,
+            Questions =
+            [
+                new UserInputQuestion
+                {
+                    Id = "continue",
+                    Header = "Next step",
+                    Question = "Continue?",
+                    Options = [new UserInputOption { OptionId = "yes", Label = "Yes" }],
+                },
+            ],
+        };
+        MethodInfo requested = typeof(ChatViewModel).GetMethod(
+            "OnUserInputRequestedAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
+        await (Task)requested.Invoke(vm, [Notification(request, vm.Status)])!;
+        UserInputViewModel question = vm.ActiveUserInput!;
+        question.Questions[0].Options[0].IsSelected = true;
+        await RunCommandAsync(question.SubmitCommand);
+
+        Assert.IsTrue(vm.InterruptCommand.CanExecute, "Resolving a structured question does not replace the active implementation turn.");
+        Assert.AreEqual(2, bridge.StartTurnCallCount, "Resolving structured input must not start another turn.");
+
+        await RunCommandAsync(vm.InterruptCommand);
+        Assert.IsNotNull(bridge.LastInterruptTurnRequest, "The Interrupt command should dispatch a request.");
+        InterruptTurnRequest interrupt = bridge.LastInterruptTurnRequest!;
+        Assert.AreEqual("thread-1", interrupt.ThreadId);
+        Assert.AreEqual("implementation-turn", interrupt.TurnId);
+        Assert.AreEqual(vm.Status.Target?.StatePartitionFingerprint, interrupt.StatePartitionFingerprint);
+        Assert.AreEqual(vm.Status.Target?.OwnerGeneration ?? 0, interrupt.OwnerGeneration);
+        Assert.AreEqual(vm.Status.Target?.Generation ?? 0, interrupt.ConnectionGeneration);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_SyntheticQuestionAnswerStartsAnInterruptibleFollowUpTurn()
+    {
+        var bridge = new FakeWorkerBridge();
+        int turnNumber = 0;
+        bridge.StartTurnHandler = (_, _) => Task.FromResult($"synthetic-turn-{Interlocked.Increment(ref turnNumber)}");
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()))
+        {
+            SelectedThread = new ThreadSummary { Id = "thread-synthetic" },
+        };
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready, ThreadId = "thread-synthetic" });
+        await RunCommandAsync(vm.JoinThreadCommand);
+        await SendMessageAsync(vm, "start implementation", clearComposer: false);
+        await bridge.PublishStateAsync(new WorkerStatus
+        {
+            State = WorkerConnectionState.Busy,
+            ThreadId = "thread-synthetic",
+            TurnId = "synthetic-turn-1",
+        });
+
+        await bridge.PublishConversationEventAsync(new ConversationEvent
+        {
+            Kind = ConversationEventKind.AgentMessageDelta,
+            ThreadId = "thread-synthetic",
+            TurnId = "synthetic-turn-1",
+            ItemId = "agent-question",
+            Text = "Do you want me to continue with the implementation?\n1. Yes\n2. No",
+        });
+        await bridge.PublishConversationEventAsync(new ConversationEvent
+        {
+            Kind = ConversationEventKind.TurnCompleted,
+            ThreadId = "thread-synthetic",
+            TurnId = "synthetic-turn-1",
+        });
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready, ThreadId = "thread-synthetic" });
+        Assert.IsNotNull(vm.ActiveUserInput);
+        Assert.IsFalse(vm.InterruptCommand.CanExecute, "The prose question is shown after the first turn has completed.");
+
+        UserInputViewModel question = vm.ActiveUserInput!;
+        question.Questions[0].Options[0].IsSelected = true;
+        await RunCommandAsync(question.SubmitCommand);
+        Assert.AreEqual(2, bridge.StartTurnCallCount);
+        await bridge.PublishStateAsync(new WorkerStatus
+        {
+            State = WorkerConnectionState.Busy,
+            ThreadId = "thread-synthetic",
+            TurnId = "synthetic-turn-2",
+        });
+
+        Assert.IsTrue(vm.InterruptCommand.CanExecute, "The answer starts a new locally acknowledged turn that can be interrupted.");
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_DirectPlanPromptStartsAnInterruptibleLocalTurn()
+    {
+        var bridge = new FakeWorkerBridge { ExperimentalApi = true };
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: ExperimentalSettingsStore())
+        {
+            SelectedThread = new ThreadSummary { Id = "thread-direct-plan" },
+        };
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready, ThreadId = "thread-direct-plan" });
+        await RunCommandAsync(vm.JoinThreadCommand);
+        bridge.StartTurnHandler = (_, _) => Task.FromResult("direct-plan-turn");
+
+        Assert.IsTrue(await InvokeExecutePlanAsync(vm, "thread-direct-plan", "design the change"));
+        await bridge.PublishStateAsync(new WorkerStatus
+        {
+            State = WorkerConnectionState.Busy,
+            ThreadId = "thread-direct-plan",
+            TurnId = "direct-plan-turn",
+        });
+
+        Assert.IsTrue(vm.InterruptCommand.CanExecute, "A direct /plan prompt starts a local turn and should be interruptible.");
+    }
+
+    [TestMethod]
     public async Task ChatViewModel_ImplementationOfferWaitsForTurnCompletion()
     {
         var bridge = new FakeWorkerBridge();
@@ -4683,20 +4819,20 @@ public sealed class ViewModelTests
         return vm;
     }
 
-    private static ConversationEvent CompletedPlanItem(string text) => new()
+    private static ConversationEvent CompletedPlanItem(string text, string turnId = "turn-1") => new()
     {
         Kind = ConversationEventKind.ItemCompleted,
         ThreadId = "thread-1",
-        TurnId = "turn-1",
-        ItemId = "turn-1-plan",
+        TurnId = turnId,
+        ItemId = $"{turnId}-plan",
         Text = text,
-        Plan = new TurnPlanSnapshot { ThreadId = "thread-1", TurnId = "turn-1", IsComplete = true },
+        Plan = new TurnPlanSnapshot { ThreadId = "thread-1", TurnId = turnId, IsComplete = true },
     };
 
-    private static async Task CompletePlanTurnAsync(ChatViewModel vm, string text)
+    private static async Task CompletePlanTurnAsync(ChatViewModel vm, string text, string turnId = "turn-1")
     {
-        await RaiseConversationEventAsync(vm, CompletedPlanItem(text));
-        await RaiseConversationEventAsync(vm, new ConversationEvent { Kind = ConversationEventKind.TurnCompleted, ThreadId = "thread-1", TurnId = "turn-1" });
+        await RaiseConversationEventAsync(vm, CompletedPlanItem(text, turnId));
+        await RaiseConversationEventAsync(vm, new ConversationEvent { Kind = ConversationEventKind.TurnCompleted, ThreadId = "thread-1", TurnId = turnId });
     }
 
     [TestMethod]
@@ -6151,6 +6287,164 @@ public sealed class ViewModelTests
         Assert.IsFalse(vm.InterruptCommand.CanExecute);
         Assert.IsTrue(raised >= 4, $"InterruptCommand raised CanExecute {raised} time(s).");
         Assert.IsTrue(accountRaised >= 4, $"AccountCommand raised CanExecute {accountRaised} time(s).");
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_InterruptOwnershipSurvivesTransientStatusAndRetiresOnExactCompletion()
+    {
+        var bridge = new FakeWorkerBridge();
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()))
+        {
+            SelectedThread = new ThreadSummary { Id = "thread-interrupt" },
+        };
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready, ThreadId = "thread-interrupt" });
+        await RunCommandAsync(vm.JoinThreadCommand);
+        bridge.StartTurnHandler = (_, _) => Task.FromResult("locally-started-turn");
+
+        await SendMessageAsync(vm, "start implementation", clearComposer: false);
+        await bridge.PublishStateAsync(new WorkerStatus
+        {
+            State = WorkerConnectionState.Busy,
+            ThreadId = "thread-interrupt",
+            TurnId = "locally-started-turn",
+        });
+        Assert.IsTrue(vm.InterruptCommand.CanExecute);
+
+        // A delayed prior-turn status must not erase ownership of the acknowledged active turn.
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready, ThreadId = "thread-interrupt" });
+        Assert.IsFalse(vm.InterruptCommand.CanExecute, "An idle status has no interruptible current turn.");
+        await bridge.PublishStateAsync(new WorkerStatus
+        {
+            State = WorkerConnectionState.Busy,
+            ThreadId = "thread-interrupt",
+            TurnId = "locally-started-turn",
+        });
+        Assert.IsTrue(vm.InterruptCommand.CanExecute, "The local-start marker should survive a transient null TurnId.");
+
+        // A stale status for another turn also cannot erase the acknowledged marker.
+        await bridge.PublishStateAsync(new WorkerStatus
+        {
+            State = WorkerConnectionState.Busy,
+            ThreadId = "thread-interrupt",
+            TurnId = "stale-turn",
+        });
+        Assert.IsFalse(vm.InterruptCommand.CanExecute, "A different current turn must remain ineligible.");
+        await bridge.PublishStateAsync(new WorkerStatus
+        {
+            State = WorkerConnectionState.Busy,
+            ThreadId = "thread-interrupt",
+            TurnId = "locally-started-turn",
+        });
+        Assert.IsTrue(vm.InterruptCommand.CanExecute, "A later current status for the acknowledged turn should recover eligibility.");
+
+        await bridge.PublishConversationEventAsync(new ConversationEvent
+        {
+            Kind = ConversationEventKind.TurnCompleted,
+            ThreadId = "thread-interrupt",
+            TurnId = "locally-started-turn",
+        });
+        Assert.IsFalse(vm.InterruptCommand.CanExecute, "Completion of the exact local turn retires its interrupt ownership.");
+    }
+
+    [TestMethod]
+    [DataRow(WorkerConnectionState.Disconnected)]
+    [DataRow(WorkerConnectionState.Degraded)]
+    public async Task ChatViewModel_InterruptOwnership_IsClearedAtConnectionBoundary(WorkerConnectionState boundaryState)
+    {
+        var bridge = new FakeWorkerBridge();
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        WorkerStatus ready = OwnerStatus("interrupt-boundary-owner", 3, 7);
+        ready.ThreadId = "thread-interrupt-boundary";
+        await bridge.PublishStateAsync(ready);
+        vm.SelectedThread = new ThreadSummary { Id = "thread-interrupt-boundary" };
+        await RunCommandAsync(vm.JoinThreadCommand);
+        bridge.StartTurnHandler = (_, _) => Task.FromResult("boundary-local-turn");
+
+        await SendMessageAsync(vm, "start turn before connection boundary", clearComposer: false);
+        WorkerStatus busy = OwnerStatus("interrupt-boundary-owner", 3, 7);
+        busy.State = WorkerConnectionState.Busy;
+        busy.ThreadId = "thread-interrupt-boundary";
+        busy.TurnId = "boundary-local-turn";
+        await bridge.PublishStateAsync(busy);
+        Assert.IsTrue(vm.InterruptCommand.CanExecute);
+
+        WorkerStatus boundary = OwnerStatus("interrupt-boundary-owner", 3, 7);
+        boundary.State = boundaryState;
+        boundary.ThreadId = "thread-interrupt-boundary";
+        await bridge.PublishStateAsync(boundary);
+        Assert.IsFalse(vm.InterruptCommand.CanExecute, $"{boundaryState} must clear interrupt ownership.");
+
+        await bridge.PublishStateAsync(busy);
+        Assert.IsFalse(vm.InterruptCommand.CanExecute, "A stale Busy status must not restore ownership after a connection boundary.");
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_InterruptOwnership_CompletionBeforeStartAcknowledgementStaysRetired()
+    {
+        var bridge = new FakeWorkerBridge();
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()))
+        {
+            SelectedThread = new ThreadSummary { Id = "thread-completion-race" },
+        };
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready, ThreadId = "thread-completion-race" });
+        await RunCommandAsync(vm.JoinThreadCommand);
+        bridge.StartTurnHandler = async (_, _) =>
+        {
+            await bridge.PublishConversationEventAsync(new ConversationEvent
+            {
+                Kind = ConversationEventKind.TurnCompleted,
+                ThreadId = "thread-completion-race",
+                TurnId = "completed-before-ack",
+            });
+            return "completed-before-ack";
+        };
+
+        await SendMessageAsync(vm, "start and complete quickly", clearComposer: false);
+        await bridge.PublishStateAsync(new WorkerStatus
+        {
+            State = WorkerConnectionState.Busy,
+            ThreadId = "thread-completion-race",
+            TurnId = "completed-before-ack",
+        });
+
+        Assert.IsFalse(vm.InterruptCommand.CanExecute, "A late StartTurn acknowledgement must not resurrect a turn already completed.");
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_InterruptOwnership_DoesNotCrossThreadOrOwnerChanges()
+    {
+        var bridge = new FakeWorkerBridge();
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        WorkerStatus ownerAReady = OwnerStatus("interrupt-owner-a", 1, 1);
+        ownerAReady.ThreadId = "thread-owner-a";
+        await bridge.PublishStateAsync(ownerAReady);
+        vm.SelectedThread = new ThreadSummary { Id = "thread-owner-a" };
+        await RunCommandAsync(vm.JoinThreadCommand);
+        bridge.StartTurnHandler = (_, _) => Task.FromResult("owner-a-turn");
+
+        await SendMessageAsync(vm, "start owned turn", clearComposer: false);
+        WorkerStatus ownerABusy = OwnerStatus("interrupt-owner-a", 1, 1);
+        ownerABusy.State = WorkerConnectionState.Busy;
+        ownerABusy.ThreadId = "thread-owner-a";
+        ownerABusy.TurnId = "owner-a-turn";
+        await bridge.PublishStateAsync(ownerABusy);
+        Assert.IsTrue(vm.InterruptCommand.CanExecute);
+
+        vm.SelectedThread = new ThreadSummary { Id = "thread-owner-b" };
+        WorkerStatus wrongThread = OwnerStatus("interrupt-owner-a", 1, 1);
+        wrongThread.State = WorkerConnectionState.Busy;
+        wrongThread.ThreadId = "thread-owner-b";
+        wrongThread.TurnId = "owner-a-turn";
+        await bridge.PublishStateAsync(wrongThread);
+        Assert.IsFalse(vm.InterruptCommand.CanExecute, "A selected/status thread switch must not expose the old turn's interrupt.");
+
+        await bridge.PublishStateAsync(OwnerStatus("interrupt-owner-b", 2, 2));
+        WorkerStatus staleOwnerTurn = OwnerStatus("interrupt-owner-b", 2, 2);
+        staleOwnerTurn.State = WorkerConnectionState.Busy;
+        staleOwnerTurn.ThreadId = "thread-owner-b";
+        staleOwnerTurn.TurnId = "owner-a-turn";
+        await bridge.PublishStateAsync(staleOwnerTurn);
+        Assert.IsFalse(vm.InterruptCommand.CanExecute, "An acknowledged turn from a previous owner cannot become interruptible in a new owner.");
     }
 
     [TestMethod]
@@ -7674,8 +7968,13 @@ public sealed class ViewModelTests
             return Task.FromResult(request.ExpectedTurnId);
         }
 
+        public InterruptTurnRequest? LastInterruptTurnRequest { get; private set; }
+
         public Task InterruptTurnAsync(InterruptTurnRequest request, CancellationToken cancellationToken)
-            => Task.CompletedTask;
+        {
+            LastInterruptTurnRequest = request;
+            return Task.CompletedTask;
+        }
 
         public Task<CompactThreadResult> CompactThreadAsync(CompactThreadRequest request, CancellationToken cancellationToken)
             => Task.FromResult(new CompactThreadResult());
