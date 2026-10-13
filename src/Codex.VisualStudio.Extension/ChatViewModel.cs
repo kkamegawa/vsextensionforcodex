@@ -56,13 +56,14 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
     private const int MaximumCompletedLocalTurns = 256;
     private const int MaximumPendingLocalTurnStarts = 16;
     private const int MaximumPendingCompletedTurnIds = 16;
-    private const int MaximumTrackedAgentMessages = 16;
+    // Earlier messages scanned for a choice prompt when the turn's last message holds none.
+    private const int MaximumEarlierAgentMessages = 16;
     // Turns this owner started in Plan mode; a completion consumes its entry.
     private readonly HashSet<string> planModeTurnIds = new(StringComparer.Ordinal);
     private const string ImplementPlanOptionId = "implement";
     internal const string ImplementPlanPrompt = "Implement the plan.";
     // The turn's agent messages in arrival order, bounded so a long turn cannot grow memory unbounded.
-    private readonly BoundedOrderedMap<string, StringBuilder> agentRawText = new(MaximumTrackedAgentMessages, StringComparer.Ordinal);
+    private readonly BoundedOrderedMap<string, StringBuilder> agentRawText = new(MaximumEarlierAgentMessages + 1, StringComparer.Ordinal);
     private readonly Dictionary<string, StringBuilder> itemRawText = new(StringComparer.Ordinal);
     private static readonly Regex HeaderWhitespace = new(@"\s+", RegexOptions.Compiled | RegexOptions.CultureInvariant);
     private InteractionAuthStatus? interactionAuthStatus;
@@ -5831,6 +5832,14 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                 ClearSentAttachments(request.Attachments);
                 ConsumeNextTurnSettings(request);
             }).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException
+            && ex is not StreamJsonRpc.RemoteInvocationException { ErrorCode: WorkerErrorCodes.ConnectionOperationRejected or WorkerErrorCodes.PreDispatchRejected })
+        {
+            // Same as a composer send: a request that may have been dispatched keeps its pending start
+            // so the turn/started notification can identify the turn.
+            await OnUiAsync(() => MarkLocalTurnStartOutcomeUnknown(operationId)).ConfigureAwait(false);
+            throw;
         }
         finally
         {

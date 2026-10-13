@@ -1618,6 +1618,34 @@ public sealed class ViewModelTests
         });
 
     [TestMethod]
+    public void ChoicePromptParser_OptionQuestionsOnly_RejectsLooseNumberedListAfterQuestion()
+    {
+        string text = "Why did the build fail?\nThe runner stopped early. I checked:\n1. The SDK version\n2. The output path";
+
+        Assert.IsTrue(ChoicePromptParser.TryParse(text, out _), "The last message keeps the loose numbered-list fallback.");
+        Assert.IsFalse(ChoicePromptParser.TryParseOptionQuestions(text, out _), "Earlier messages require options directly under the question.");
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_ProseQuestionsSixteenMessagesBeforeTheLast_StillShowCard()
+    {
+        using var vm = new ChatViewModel(new FakeWorkerBridge(), autoConnect: false);
+
+        await RaiseConversationEventAsync(vm, new ConversationEvent { Kind = ConversationEventKind.TurnStarted });
+        await RaiseAgentMessageAsync(vm, "agent-question", "Which database?\n- PostgreSQL\n- SQLite");
+        for (int i = 0; i < 15; i++)
+        {
+            await RaiseAgentMessageAsync(vm, $"agent-status-{i}", "Still waiting for your answer.");
+        }
+
+        await RaiseAgentMessageAsync(vm, "agent-final", "I will continue after your answer.");
+        await RaiseConversationEventAsync(vm, new ConversationEvent { Kind = ConversationEventKind.TurnCompleted });
+
+        Assert.IsNotNull(vm.ActiveUserInput, "The question is the sixteenth message before the last one.");
+        Assert.AreEqual("Which database?", vm.ActiveUserInput!.Questions[0].Question);
+    }
+
+    [TestMethod]
     public async Task ChatViewModel_ProseConfirmationPrompt_ShowsCardWithoutExperimentalApi()
     {
         using var vm = new ChatViewModel(new FakeWorkerBridge(), autoConnect: false);
@@ -4834,6 +4862,35 @@ public sealed class ViewModelTests
         });
 
         Assert.IsTrue(vm.InterruptCommand.CanExecute, "A direct /plan prompt starts a local turn and should be interruptible.");
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_DirectPlanPromptWithLostStartResponseAdoptsTheStartedTurn()
+    {
+        var bridge = new FakeWorkerBridge { ExperimentalApi = true };
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: ExperimentalSettingsStore())
+        {
+            SelectedThread = new ThreadSummary { Id = "thread-direct-plan-lost" },
+        };
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready, ThreadId = "thread-direct-plan-lost" });
+        await RunCommandAsync(vm.JoinThreadCommand);
+        bridge.StartTurnHandler = (_, _) => throw new InvalidOperationException("The start response was lost after dispatch.");
+
+        await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => InvokeExecutePlanAsync(vm, "thread-direct-plan-lost", "design the change"));
+        await bridge.PublishConversationEventAsync(new ConversationEvent
+        {
+            Kind = ConversationEventKind.TurnStarted,
+            ThreadId = "thread-direct-plan-lost",
+            TurnId = "direct-plan-lost-turn",
+        });
+        await bridge.PublishStateAsync(new WorkerStatus
+        {
+            State = WorkerConnectionState.Busy,
+            ThreadId = "thread-direct-plan-lost",
+            TurnId = "direct-plan-lost-turn",
+        });
+
+        Assert.IsTrue(vm.InterruptCommand.CanExecute, "A direct /plan start with a lost response is identified by turn/started.");
     }
 
     [TestMethod]

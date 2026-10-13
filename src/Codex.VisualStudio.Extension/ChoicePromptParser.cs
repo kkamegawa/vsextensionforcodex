@@ -18,9 +18,9 @@ public static partial class ChoicePromptParser
     public static bool TryParse(string? rawText, out UserInputRequest request)
         => TryParse(rawText, optionListsOnly: false, out request);
 
-    // Recognizes only questions that come with their own option lists. Earlier messages of a turn are
-    // scanned this way: a bare confirmation question there has usually been settled by the time the
-    // turn ends, while explicit options still describe the choice codex is waiting on.
+    // Recognizes only questions directly followed by their own option lists. Earlier messages of a turn
+    // are scanned this way: a bare confirmation question or a loose numbered list there has usually been
+    // settled by the time the turn ends, while explicit options still describe the choice codex awaits.
     public static bool TryParseOptionQuestions(string? rawText, out UserInputRequest request)
         => TryParse(rawText, optionListsOnly: true, out request);
 
@@ -51,6 +51,11 @@ public static partial class ChoicePromptParser
             return true;
         }
 
+        if (optionListsOnly)
+        {
+            return false;
+        }
+
         string? question = FindQuestionLine(lines);
         if (question is null)
         {
@@ -79,7 +84,7 @@ public static partial class ChoicePromptParser
             return true;
         }
 
-        if (!optionListsOnly && options.Count == 0 && ConfirmationQuestion().IsMatch(question))
+        if (options.Count == 0 && ConfirmationQuestion().IsMatch(question))
         {
             request = CreateRequest(question,
             [
