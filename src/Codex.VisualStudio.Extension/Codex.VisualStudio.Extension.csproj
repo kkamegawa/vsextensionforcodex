@@ -41,6 +41,9 @@
     </PackageReference>
     <PackageReference Include="StreamJsonRpc" />
     <PackageReference Include="Markdig" />
+    <PackageReference Include="System.IO.Pipelines" />
+    <PackageReference Include="System.Text.Encodings.Web" />
+    <PackageReference Include="System.Text.Json" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="../Codex.VisualStudio.Contracts/Codex.VisualStudio.Contracts.csproj" />

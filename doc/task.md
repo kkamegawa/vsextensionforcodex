@@ -868,3 +868,28 @@ Tracking: [Issue #210](https://github.com/kkamegawa/vsextensionforcodex/issues/2
 - [x] PR review follow-up: a direct `/plan <prompt>` start whose response is lost after dispatch now keeps its pending start for `turn/started` adoption, like a composer send; earlier-message scanning retains 16 messages besides the last one; earlier messages accept only questions directly followed by options (the loose numbered-list fallback stays limited to the last message). Added three cases. Release UI 463 passed / 1 skipped, Core 451 passed / 5 skipped; 0 warnings, 0 errors.
 
 Detailed record: [English](task-stop-after-plan-questions.md) · [日本語](task-stop-after-plan-questions_ja.md).
+### 2026-10-16: Dependency security updates with preserved major versions
+
+Tracking: [#212](https://github.com/kkamegawa/vsextensionforcodex/issues/212). Japanese record: [日本語](task-dependency-updates_ja.md).
+
+- [x] Use the existing `chore/2026-10-pkgupdate` branch and do not publish Wiki pages. All .NET target frameworks and the SDK selection remain unchanged.
+- [x] Fix vulnerable MessagePack 2.5.302 (GHSA-qhrr-8q5h-9q3h) with an explicit Contracts reference centrally pinned to 2.5.307; MessagePack.Annotations also resolves to 2.5.307.
+- [x] Complete the approved follow-up maintenance for direct and transitive packages: 57 additional package IDs / 116 project-package pairs updated. Enable central transitive pinning and use project-conditioned versions in `Directory.Packages.props`. Retain already-current dependencies, including Memory 4.6.3 and Unsafe 6.1.2, when newer parent packages lower their minimum dependencies.
+- [x] Preserve the per-project 8/9/10 series: Contracts keeps Json 8.0.6, Encodings.Web/Pipelines 8.0.0; Extension uses 9.0.21 for all three; Core/UI tests use 10.0.13. The full graph comparison confirms no unapproved package-major or target-framework changes.
+- [x] Representative updates: Test SDK 18.11.0, MSTest 4.5.1, Testing Platform 2.5.1, Drawing.Common 8.0.32, DependencyInjection/Composition/Immutable 9.0.21 where the existing graph uses 9.x, DependencyModel 10.0.13, Nerdbank.MessagePack 1.4.82, Nerdbank.Streams 2.14.405, PolyType 1.4.1, and Newtonsoft.Json 13.0.4.
+- [x] Apply the explicitly approved exceptions: Threading family 17.x to 18.12.1 for Nerdbank.Streams; test-only DiagnosticSource 5.x to non-deprecated 8.0.1 (Contracts remains 8.0.1, Extension remains 9.0.21); deprecated metadata-only NETCore.Platforms 5.0.0 to 5.0.4. The owner approved safe versions published more than 365 days ago and specifically approved the NETCore.Platforms deprecation exception.
+
+The latest public, compatible version is used under the existing-runtime constraints. Three higher version numbers are intentionally excluded:
+
+| Package | Selected | Excluded candidate and reason |
+| --- | --- | --- |
+| Microsoft.NET.StringTools | 18.4.0, retained | Every stable 18.6.3 or newer release requires .NET 10/11 support and emits an unsupported-framework warning on .NET 8. No warning suppression or retargeting was added. |
+| Microsoft.VisualStudio.Utilities | 17.13.40008 | 17.14.40264 requires Drawing.Common 9.x; the existing 8.x series must remain. |
+| Microsoft.VisualStudio.SDK.Analyzers | 17.7.113 | Higher 17.7.120/122 releases are unlisted. |
+
+- [x] Validate selected versions with the `nuget-validate` skill and current NuGet metadata: listed, no known vulnerabilities, and non-deprecated except the explicitly approved NETCore.Platforms 5.0.4. Correct the local scratch validator's listing lookup to use `catalogEntry.listed`; this prevents selecting unlisted Analyzer builds. Newly introduced test-only Mono.Cecil 0.11.6 also passed metadata checks and is the latest stable 0.x version. All nine projects have zero known vulnerable direct or transitive dependencies. Evidence: `artifacts/minor-checked-*.json`, `minor-update-nuget-versions.json`, `minor-update-completion-audit.json`, and `minor-packages-vulnerable.json`.
+- [x] Debug and Release full-solution builds: 0 warnings, 0 errors. Evidence: `artifacts/minor-build-debug.log` and `artifacts/minor-build-release.log`.
+- [x] Debug and Release tests each executed with Core 451 passed / 5 skipped / 0 failed and UI 463 passed / 1 skipped / 0 failed. Both underlying `dotnet test` processes exited 0.
+- [ ] Strict all-tests release acceptance remains blocked by the six existing symbolic-link cases per configuration: the environment lacks the required privilege. `Invoke-TestSuitesWithEvidence.ps1` correctly exited 1 and recorded `blocked`. Evidence: `artifacts/minor-update-debug/test-results.json`, `artifacts/minor-update-release/test-results.json`, their TRX files and sanitized logs.
+- [x] Release VSIX inspection passed: Worker payload hashes, embedded Remote UI XAML, and all 39 root DLL hashes match the build outputs. Evidence: `artifacts/minor-update-vsix.json` and `artifacts/minor-update-root-payload.json`. SDK host-shared suppression remains intact: Extension has no direct Threading/Nerdbank.Streams assembly reference; Worker ships Threading 18.12.1 (assembly 18.7.0.0) beside the matching Streams DLL and dependency manifest. No new Visual Studio Experimental Instance or minimum-version VS2022 host acceptance is claimed.
+- [x] The open-PR inspection found no Dependabot PR requiring closure. No UI layout or behavior implementation was changed.
