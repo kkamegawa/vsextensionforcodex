@@ -1388,6 +1388,47 @@ public sealed class ViewModelTests
     }
 
     [TestMethod]
+    public void ChoicePromptParser_DetectsEmphasizedTerminalConfirmationQuestion()
+    {
+        string text = string.Join('\n',
+            "依存制約が変わっていないことを再確認しました。更新済みの変更は保持し、ゴールを回答待ち（blocked）にしました。",
+            string.Empty,
+            "残りの最新版化には対象フレームワークの変更が必要です。ご提示のAGENTS.mdの範囲外変更の確認ルールに従い、**.NET 11 RC2への移行を進めてよいですか？**");
+
+        bool ok = ChoicePromptParser.TryParse(text, out UserInputRequest request);
+
+        Assert.IsTrue(ok);
+        Assert.AreEqual(1, request.Questions.Count);
+        Assert.AreEqual("残りの最新版化には対象フレームワークの変更が必要です。ご提示のAGENTS.mdの範囲外変更の確認ルールに従い、.NET 11 RC2への移行を進めてよいですか？", request.Questions[0].Question);
+        Assert.AreEqual("Yes", request.Questions[0].Options[0].Label);
+        Assert.AreEqual("No", request.Questions[0].Options[1].Label);
+    }
+
+    [TestMethod]
+    [DataRow("**Do you want me to continue?**", "Do you want me to continue?")]
+    [DataRow("*Do you want me to continue?*", "Do you want me to continue?")]
+    [DataRow("__Do you want me to continue?__", "Do you want me to continue?")]
+    [DataRow("**この変更を進めてよいですか？**", "この変更を進めてよいですか？")]
+    [DataRow("__この変更を進めてよいですか？__", "この変更を進めてよいですか？")]
+    public void ChoicePromptParser_NormalizesEmphasisBeforeTerminalQuestionDetection(string rawQuestion, string expectedQuestion)
+    {
+        bool ok = ChoicePromptParser.TryParse(rawQuestion, out UserInputRequest request);
+
+        Assert.IsTrue(ok);
+        Assert.AreEqual(expectedQuestion, request.Questions[0].Question);
+        Assert.AreEqual(2, request.Questions[0].Options.Count);
+    }
+
+    [TestMethod]
+    public void ChoicePromptParser_BareConfirmationInsideCodeFence_DoesNotTriggerConfirmationCard()
+    {
+        // Cleaning inline Markdown must not make a fenced code example match the confirmation fallback.
+        string text = "```markdown\n**Do you want me to continue?**\n```";
+
+        Assert.IsFalse(ChoicePromptParser.TryParse(text, out _));
+    }
+
+    [TestMethod]
     public void ChoicePromptParser_ProceedMentionOutsideQuestionLine_DoesNotTriggerConfirmationCard()
     {
         // "proceed" appears in an earlier sentence, but the actual question is open-ended (not
@@ -1669,6 +1710,74 @@ public sealed class ViewModelTests
         Assert.AreEqual(2, vm.ActiveUserInput.Questions[0].Options.Count);
         Assert.AreEqual("Yes", vm.ActiveUserInput.Questions[0].Options[0].DisplayLabel);
         Assert.AreEqual("No", vm.ActiveUserInput.Questions[0].Options[1].DisplayLabel);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_GoalBlockedMarkdownConfirmation_ShowsOneCardAndSendsOnlyAfterSubmit()
+    {
+        using GoalConfirmationFixture fixture = await CreateGoalConfirmationFixtureAsync();
+
+        await fixture.PublishFinalQuestionAsync();
+        Assert.IsFalse(fixture.ViewModel.HasActiveUserInput, "A Goal confirmation must wait until the turn completion event.");
+        Assert.AreEqual(0, fixture.StartTurnCallCount, "Rendering the question must not submit an answer automatically.");
+
+        await fixture.CompleteTurnAsync();
+
+        Assert.IsNotNull(fixture.Card);
+        Assert.IsTrue(fixture.Card!.IsSynthetic);
+        Assert.AreEqual(1, fixture.ViewModel.PendingInteractions.Count(card => card.UserInput is not null));
+        Assert.AreEqual("残りの最新版化には対象フレームワークの変更が必要です。ご提示のAGENTS.mdの範囲外変更の確認ルールに従い、.NET 11 RC2への移行を進めてよいですか？", fixture.Card.Questions[0].Question);
+        Assert.AreEqual(2, fixture.Card.Questions[0].Options.Count);
+        Assert.AreEqual("Yes", fixture.Card.Questions[0].Options[0].DisplayLabel);
+        Assert.AreEqual("No", fixture.Card.Questions[0].Options[1].DisplayLabel);
+        Assert.AreEqual(0, fixture.StartTurnCallCount, "Displaying the card must not send a response.");
+
+        fixture.SelectYes();
+        Assert.AreEqual(0, fixture.StartTurnCallCount, "Selecting an option alone must not send a response.");
+
+        await fixture.SubmitAsync();
+
+        Assert.AreEqual(1, fixture.StartTurnCallCount);
+        Assert.AreEqual("Yes", fixture.LastStartTurnRequest!.Text);
+        Assert.IsFalse(fixture.ViewModel.HasActiveUserInput);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_GoalConfirmationFromPreviousOwner_CannotSubmitAfterOwnerChanges()
+    {
+        using GoalConfirmationFixture fixture = await CreateGoalConfirmationFixtureAsync();
+        await fixture.PublishFinalQuestionAsync();
+        await fixture.CompleteTurnAsync();
+        Assert.IsNotNull(fixture.Card);
+        fixture.SelectYes();
+
+        await fixture.ChangeOwnerAsync();
+        await fixture.SubmitAsync();
+
+        Assert.AreEqual(0, fixture.StartTurnCallCount, "A card created by a previous owner must not send a response.");
+    }
+
+    // Shared with the visual regression harness so it can capture the same Goal flow before
+    // TurnCompleted, after the card appears, and after the user explicitly submits Yes.
+    private static async Task<GoalConfirmationFixture> CreateGoalConfirmationFixtureAsync()
+    {
+        const string threadId = "thread-goal-confirmation";
+        var bridge = new FakeWorkerBridge { CurrentThreadGoal = ActiveGoal(threadId) };
+        var viewModel = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        var thread = new ThreadSummary { Id = threadId };
+        viewModel.Threads.Add(thread);
+        WorkerStatus ready = OwnerStatus("goal-confirmation-owner", 1, 1);
+        ready.ThreadId = threadId;
+        await bridge.PublishStateAsync(ready);
+        viewModel.SelectedThread = thread;
+        await RunCommandAsync(viewModel.JoinThreadCommand);
+        await bridge.PublishThreadGoalChangedAsync(new ThreadGoalEvent
+        {
+            ThreadId = threadId,
+            Goal = ActiveGoal(threadId),
+        });
+
+        return new GoalConfirmationFixture(bridge, viewModel, threadId, "goal-confirmation-turn");
     }
 
     [TestMethod]
@@ -7948,6 +8057,97 @@ public sealed class ViewModelTests
         public ExtensionSettings Load() => Settings;
 
         public void Save(ExtensionSettings settings) => Settings = settings;
+    }
+
+    private sealed class GoalConfirmationFixture : IDisposable
+    {
+        private UserInputViewModel? displayedCard;
+
+        public GoalConfirmationFixture(FakeWorkerBridge bridge, ChatViewModel viewModel, string threadId, string turnId)
+        {
+            Bridge = bridge;
+            ViewModel = viewModel;
+            ThreadId = threadId;
+            TurnId = turnId;
+        }
+
+        public FakeWorkerBridge Bridge { get; }
+
+        public ChatViewModel ViewModel { get; }
+
+        public string ThreadId { get; }
+
+        public string TurnId { get; }
+
+        public UserInputViewModel? Card => displayedCard ?? ViewModel.ActiveUserInput;
+
+        public int StartTurnCallCount => Bridge.StartTurnCallCount;
+
+        public StartTurnRequest? LastStartTurnRequest => Bridge.LastStartTurnRequest;
+
+        public async Task PublishFinalQuestionAsync()
+        {
+            await Bridge.PublishConversationEventAsync(new ConversationEvent
+            {
+                Kind = ConversationEventKind.AgentMessageDelta,
+                ThreadId = ThreadId,
+                TurnId = TurnId,
+                ItemId = "goal-confirmation-agent-message",
+                Text = string.Join('\n',
+                    "依存制約が変わっていないことを再確認しました。更新済みの変更は保持し、ゴールを回答待ち（blocked）にしました。",
+                    string.Empty,
+                    "残りの最新版化には対象フレームワークの変更が必要です。ご提示のAGENTS.mdの範囲外変更の確認ルールに従い、**.NET 11 RC2への移行を進めてよいですか？**"),
+            });
+
+            await Bridge.PublishThreadGoalChangedAsync(new ThreadGoalEvent
+            {
+                ThreadId = ThreadId,
+                TurnId = TurnId,
+                Goal = new ThreadGoalInfo
+                {
+                    ThreadId = ThreadId,
+                    Objective = "preserve package target frameworks",
+                    Status = ThreadGoalStatus.Blocked,
+                },
+            });
+
+            WorkerStatus readyWithoutTurn = OwnerStatus("goal-confirmation-owner", 1, 1);
+            readyWithoutTurn.ThreadId = ThreadId;
+            await Bridge.PublishStateAsync(readyWithoutTurn);
+        }
+
+        public async Task CompleteTurnAsync()
+        {
+            await Bridge.PublishConversationEventAsync(new ConversationEvent
+            {
+                Kind = ConversationEventKind.TurnCompleted,
+                ThreadId = ThreadId,
+                TurnId = TurnId,
+            });
+            displayedCard = ViewModel.ActiveUserInput;
+        }
+
+        public void SelectYes()
+        {
+            UserInputViewModel card = Card ?? throw new InvalidOperationException("The Goal confirmation card is not available.");
+            UserInputOptionViewModel yes = card.Questions.Single().Options.Single(option => option.DisplayLabel == "Yes");
+            yes.IsSelected = true;
+        }
+
+        public Task SubmitAsync()
+        {
+            UserInputViewModel card = Card ?? throw new InvalidOperationException("The Goal confirmation card is not available.");
+            return RunCommandAsync(card.SubmitCommand);
+        }
+
+        public Task ChangeOwnerAsync()
+        {
+            WorkerStatus replacementOwner = OwnerStatus("goal-confirmation-owner-replacement", 2, 2);
+            replacementOwner.ThreadId = ThreadId;
+            return Bridge.PublishStateAsync(replacementOwner);
+        }
+
+        public void Dispose() => ViewModel.Dispose();
     }
 
     private sealed class FakeWorkerBridge : IWorkerBridge
