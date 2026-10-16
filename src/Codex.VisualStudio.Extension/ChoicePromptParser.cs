@@ -191,21 +191,31 @@ public static partial class ChoicePromptParser
     // The last non-list line that ends with a question mark reads as the prompt.
     private static string? FindQuestionLine(string[] lines)
     {
-        for (int i = lines.Length - 1; i >= 0; i--)
+        string? question = null;
+        bool inCodeFence = false;
+        foreach (string line in lines)
         {
-            if (NumberedItem().IsMatch(lines[i]))
+            if (CodeFenceDelimiter().IsMatch(line))
+            {
+                inCodeFence = !inCodeFence;
+                continue;
+            }
+
+            if (inCodeFence || NumberedItem().IsMatch(line))
             {
                 continue;
             }
 
-            string trimmed = lines[i].Trim();
-            if (IsQuestion(trimmed))
+            // Normalize inline Markdown before checking the terminal punctuation. A final ** or __
+            // otherwise hides the question mark from QuestionEnding and prevents confirmation cards.
+            string normalized = CleanInline(line);
+            if (IsQuestion(normalized))
             {
-                return CleanInline(trimmed);
+                question = normalized;
             }
         }
 
-        return null;
+        return question;
     }
 
     // Strips common inline markdown (bold/italic/code emphasis) so the label is clean both for display
@@ -218,6 +228,9 @@ public static partial class ChoicePromptParser
 
     [GeneratedRegex(@"^\s*(?:[-*+]\s+|[・•]\s*)(.+?)\s*$")]
     private static partial Regex BulletItem();
+
+    [GeneratedRegex(@"^\s*(?:`{3,}|~{3,})")]
+    private static partial Regex CodeFenceDelimiter();
 
     [GeneratedRegex(@"[?？]\s*(?:[(（][^()（）]*[)）])?$")]
     private static partial Regex QuestionEnding();
