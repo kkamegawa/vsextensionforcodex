@@ -70,6 +70,10 @@ jobs:
                 -TargetDirectory "schemas/0.163.0/$surface" `
                 -BaselineVersion $baseline -TargetVersion '0.163.0' -Surface $surface `
                 -ReportPath (Join-Path $reportDirectory "schema-diff-$baseline-to-0.163.0-$surface.txt")
+              if ($LASTEXITCODE -ne 0) {
+                Write-Output "::error::Schema comparison failed for $baseline to 0.163.0 ($surface)."
+                exit $LASTEXITCODE
+              }
             }
           }
       - name: Verify method surface for every version and surface
@@ -79,6 +83,10 @@ jobs:
             foreach ($surface in @('stable', 'experimental')) {
               pwsh -NoProfile -File scripts/verify-contract-surface.ps1 `
                 -SchemaDirectory "schemas/$version/$surface" -Version $version -Surface $surface
+              if ($LASTEXITCODE -ne 0) {
+                Write-Output "::error::Method surface verification failed for $version ($surface)."
+                exit $LASTEXITCODE
+              }
             }
           }
       - name: Upload versioned schema comparison evidence

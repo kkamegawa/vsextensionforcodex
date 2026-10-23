@@ -538,6 +538,68 @@ public sealed class ViewModelTests
     }
 
     [TestMethod]
+    public async Task ThreadReadState_NewConversationReadsInitialState()
+    {
+        var bridge = new FakeWorkerBridge { ExperimentalApi = true };
+        bridge.ReadThreadHandler = (request, _) => Task.FromResult(new ThreadReadResult
+        {
+            Thread = new ThreadSummary { Id = request.ThreadId },
+            ReadState = new ThreadReadStateSnapshot { Kind = ThreadReadStateKind.UnreadThreadStart, Revision = "revision-new" },
+        });
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        await bridge.PublishStateAsync(OwnerStatus("owner-a", 1, 4));
+
+        await RunCommandAsync(vm.NewThreadCommand);
+
+        Assert.AreEqual("thread-1", vm.SelectedThread!.Id);
+        Assert.AreEqual(1, bridge.ReadThreadCallCount, "thread/start returns no read state, so the new row reads it once.");
+        Assert.AreEqual(ThreadReadStateKind.UnreadThreadStart, vm.SelectedThreadReadState!.Kind);
+        Assert.AreEqual("revision-new", vm.SelectedThreadReadState.Revision);
+        Assert.IsTrue(vm.MarkSelectedThreadReadCommand.CanExecute);
+    }
+
+    [TestMethod]
+    public async Task ThreadReadState_JoinedConversationRereadsStateAfterResume()
+    {
+        var bridge = new FakeWorkerBridge { ExperimentalApi = true };
+        int readNumber = 0;
+        bridge.ReadThreadHandler = (request, _) => Task.FromResult(new ThreadReadResult
+        {
+            Thread = new ThreadSummary { Id = request.ThreadId },
+            ReadState = new ThreadReadStateSnapshot
+            {
+                Kind = ThreadReadStateKind.Read,
+                Revision = $"revision-{Interlocked.Increment(ref readNumber)}",
+            },
+        });
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        await bridge.PublishStateAsync(OwnerStatus("owner-a", 1, 4));
+        var thread = new ThreadSummary { Id = "thread-a" };
+        vm.Threads.Add(thread);
+        vm.SelectedThread = thread;
+        await WaitForHistoryLoadAsync(vm);
+        Assert.AreEqual("revision-1", vm.SelectedThreadReadState!.Revision);
+
+        await RunCommandAsync(vm.JoinThreadCommand);
+
+        Assert.IsTrue(vm.IsThreadJoined);
+        Assert.AreEqual("revision-2", vm.SelectedThreadReadState!.Revision, "thread/resume returns no read state, so the row rereads it.");
+    }
+
+    [TestMethod]
+    public async Task ThreadReadState_StableConnectionDoesNotReadStateAfterNewConversation()
+    {
+        var bridge = new FakeWorkerBridge();
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready });
+
+        await RunCommandAsync(vm.NewThreadCommand);
+
+        Assert.AreEqual("thread-1", vm.SelectedThread!.Id);
+        Assert.AreEqual(0, bridge.ReadThreadCallCount);
+    }
+
+    [TestMethod]
     public async Task ThreadReadState_NotificationWinsOverOlderListSnapshot()
     {
         var bridge = new FakeWorkerBridge { ExperimentalApi = true };

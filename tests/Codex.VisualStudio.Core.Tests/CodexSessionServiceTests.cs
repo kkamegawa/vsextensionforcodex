@@ -3048,6 +3048,46 @@ public sealed class CodexSessionServiceTests
     }
 
     [TestMethod]
+    [DataRow("codex-cli/0.163.0+build.5")]
+    [DataRow("codex-cli/0.163.0+build-5")]
+    [DataRow("codex-cli/0.164.0-alpha.1+build.5")]
+    public async Task MxcOptOutAcceptsSupportedVersionWithBuildMetadata(string userAgent)
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "initialize"
+                ? JsonSerializer.SerializeToElement(new { userAgent })
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        await using var service = CreateService();
+        WorkerOptions options = Options();
+        options.WindowsSandboxBackend = WindowsSandboxBackendPreference.DisableMxc;
+
+        await service.InitializeAsync(connection, options, CancellationToken.None);
+
+        Assert.IsTrue(connection.Notifications.Any(notification => notification.Method == "initialized"));
+    }
+
+    [TestMethod]
+    public async Task MxcOptOutRejectsMinimumPrereleaseWithBuildMetadata()
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "initialize"
+                ? JsonSerializer.SerializeToElement(new { userAgent = "codex-cli/0.163.0-alpha.2+build.5" })
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        await using var service = CreateService();
+        WorkerOptions options = Options();
+        options.WindowsSandboxBackend = WindowsSandboxBackendPreference.DisableMxc;
+
+        InvalidOperationException error = await Assert.ThrowsExactlyAsync<InvalidOperationException>(
+            () => service.InitializeAsync(connection, options, CancellationToken.None));
+
+        StringAssert.Contains(error.Message, "requires Codex CLI 0.163.0 or later");
+    }
+
+    [TestMethod]
     public async Task ReadStateUpdateTimeoutReportsUnknownOutcomeWithoutResending()
     {
         var connection = new RecordingConnection

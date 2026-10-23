@@ -907,7 +907,7 @@ Tracking: [Issue #214](https://github.com/kkamegawa/vsextensionforcodex/issues/2
 
 ### 2026-10-23: Codex App Server 0.163.0 implementation
 
-Detailed task and verification record: [English](task-app-server-0-163.md) · [日本語](task-app-server-0-163_ja.md). Automated implementation checks are complete; Experimental Instance visual acceptance remains open.
+Detailed task and verification record: [English](task-app-server-0-163.md) · [日本語](task-app-server-0-163_ja.md). Automated implementation checks and the PR #225 review follow-up are complete; the Experimental Instance theme, narrow-width, keyboard, and screen-reader checks were omitted by agreement.
 
 ### 2026-10-23: Keep automatic recovery current after the Worker is replaced
 

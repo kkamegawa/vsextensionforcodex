@@ -8,6 +8,9 @@ long nextTurn = 1;
 var threads = new List<object>();
 var threadReadStates = new Dictionary<string, Dictionary<string, object?>>(StringComparer.Ordinal);
 long nextReadStateRevision = 1;
+// Turn completion updates read state from a background task, so every read-state access,
+// revision allocation, comparison and mutation runs under this gate and returns detached snapshots.
+var readStateGate = new object();
 string scenario = Environment.GetEnvironmentVariable("CODEX_FAKE_SCENARIO") ?? string.Empty;
 var savedAttachments = new List<Dictionary<string, object?>>();
 var interactionResponses = new ConcurrentQueue<object>();
@@ -71,12 +74,26 @@ while (await Console.In.ReadLineAsync().ConfigureAwait(false) is { } line)
 
         JsonElement parameters = root.GetProperty("params");
         string threadId = parameters.GetProperty("threadId").GetString() ?? string.Empty;
-        Dictionary<string, object?> readState = EnsureThreadReadState(threadId);
         string expectedRevision = parameters.GetProperty("expectedRevision").GetString() ?? string.Empty;
-        if (IsScenario("ReadStateConflict")
-            || !string.Equals(expectedRevision, (string?)readState["revision"], StringComparison.Ordinal))
+        string operation = parameters.GetProperty("operation").GetProperty("type").GetString() ?? string.Empty;
+        bool conflict;
+        object updatedReadState;
+        lock (readStateGate)
         {
+            Dictionary<string, object?> readState = EnsureThreadReadState(threadId);
+            conflict = IsScenario("ReadStateConflict")
+                || !string.Equals(expectedRevision, (string?)readState["revision"], StringComparison.Ordinal);
+            if (!conflict)
+            {
+                readState["firstUnread"] = operation == "read" ? null : new { type = "threadStart" };
+            }
+
             readState["revision"] = NextReadStateRevision();
+            updatedReadState = ReadThreadReadStateData(readState);
+        }
+
+        if (conflict)
+        {
             await WriteAsync(new
             {
                 id = JsonSerializer.Deserialize<object>(id.GetRawText()),
@@ -84,16 +101,12 @@ while (await Console.In.ReadLineAsync().ConfigureAwait(false) is { } line)
                 {
                     code = -32600,
                     message = "Read state changed; refresh and retry.",
-                    data = new { reason = "readStateConflict", readState = ReadThreadReadStateData(readState) },
+                    data = new { reason = "readStateConflict", readState = updatedReadState },
                 },
             }).ConfigureAwait(false);
             continue;
         }
 
-        string operation = parameters.GetProperty("operation").GetProperty("type").GetString() ?? string.Empty;
-        readState["firstUnread"] = operation == "read" ? null : new { type = "threadStart" };
-        readState["revision"] = NextReadStateRevision();
-        object updatedReadState = ReadThreadReadStateData(readState);
         await WriteAsync(new { id = JsonSerializer.Deserialize<object>(id.GetRawText()), result = new { readState = updatedReadState } }).ConfigureAwait(false);
         await WriteAsync(new { method = "thread/readState/changed", @params = new { threadId, readState = updatedReadState } }).ConfigureAwait(false);
         continue;
@@ -364,12 +377,16 @@ string NextReadStateRevision()
 
 object SetThreadUnread(string threadId, string turnId)
 {
-    Dictionary<string, object?> state = EnsureThreadReadState(threadId);
-    state["revision"] = NextReadStateRevision();
-    state["firstUnread"] = new { type = "turn", turnId };
-    return ReadThreadReadStateData(state);
+    lock (readStateGate)
+    {
+        Dictionary<string, object?> state = EnsureThreadReadState(threadId);
+        state["revision"] = NextReadStateRevision();
+        state["firstUnread"] = new { type = "turn", turnId };
+        return ReadThreadReadStateData(state);
+    }
 }
 
+// Callers must hold readStateGate.
 Dictionary<string, object?> EnsureThreadReadState(string threadId)
 {
     if (!threadReadStates.TryGetValue(threadId, out Dictionary<string, object?>? state))
@@ -383,6 +400,14 @@ Dictionary<string, object?> EnsureThreadReadState(string threadId)
     }
 
     return state;
+}
+
+object SnapshotThreadReadState(string threadId)
+{
+    lock (readStateGate)
+    {
+        return ReadThreadReadStateData(EnsureThreadReadState(threadId));
+    }
 }
 
 object ReadThreadReadStateData(Dictionary<string, object?> state)
@@ -412,7 +437,7 @@ object ListThreads()
             continue;
         }
 
-        readStates[threadId] = ReadThreadReadStateData(EnsureThreadReadState(threadId));
+        readStates[threadId] = SnapshotThreadReadState(threadId);
     }
 
     return new { data = threads, nextCursor = (string?)null, readStates };
@@ -442,14 +467,14 @@ object ReadThread(JsonElement parameters)
 
     object? readState = IsScenario("ReadStateUnavailable")
         ? null
-        : ReadThreadReadStateData(EnsureThreadReadState(threadId));
+        : SnapshotThreadReadState(threadId);
     return new { thread, readState };
 }
 
 object ResumeThread(JsonElement parameters)
 {
     string threadId = parameters.GetProperty("threadId").GetString() ?? string.Empty;
-    _ = EnsureThreadReadState(threadId);
+    _ = SnapshotThreadReadState(threadId);
     return ThreadResponse(new { id = threadId, preview = "Resumed fake thread" });
 }
 
@@ -642,7 +667,7 @@ object CreateThread()
 {
     var thread = new { id = $"fake-thread-{nextThread++}", preview = "Fake conversation", cwd = Environment.CurrentDirectory };
     threads.Add(thread);
-    _ = EnsureThreadReadState(thread.id);
+    _ = SnapshotThreadReadState(thread.id);
     return ThreadResponse(thread);
 }
 

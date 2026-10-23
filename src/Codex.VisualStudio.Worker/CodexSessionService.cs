@@ -1237,8 +1237,11 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             return false;
         }
 
-        int suffixIndex = value.IndexOf('-');
-        string numericVersion = suffixIndex >= 0 ? value[..suffixIndex] : value;
+        // Build metadata does not affect precedence and may itself contain hyphens, so strip it first.
+        int buildIndex = value.IndexOf('+');
+        string withoutBuild = buildIndex >= 0 ? value[..buildIndex] : value;
+        int suffixIndex = withoutBuild.IndexOf('-');
+        string numericVersion = suffixIndex >= 0 ? withoutBuild[..suffixIndex] : withoutBuild;
         if (!Version.TryParse(numericVersion, out Version? version))
         {
             return false;

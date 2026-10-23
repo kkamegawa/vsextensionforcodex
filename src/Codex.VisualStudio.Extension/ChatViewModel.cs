@@ -3313,6 +3313,8 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             OnPropertyChanged(nameof(EffectiveApprovalModeText));
             ResetSelectedHistoryState(thread);
         }).ConfigureAwait(false);
+
+        await RefreshThreadReadStateAfterLifecycleAsync(thread.Id, owner).ConfigureAwait(false);
     }
 
     private async Task JoinSelectedThreadAsync()
@@ -3367,6 +3369,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             HistoryStatusText = "Conversation joined. Sending and turn controls are enabled.";
         }).ConfigureAwait(false);
 
+        await RefreshThreadReadStateAfterLifecycleAsync(thread.Id, owner).ConfigureAwait(false);
         await DrainSlashQueuesAsync(thread.Id).ConfigureAwait(false);
     }
 
@@ -4349,6 +4352,48 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                     }
                 }
             }).ConfigureAwait(false);
+        }
+    }
+
+    // thread/start and thread/resume return only a thread summary, so the row reads its read state
+    // once afterwards; otherwise a new or joined conversation has no receipt or explicit actions
+    // until a later notification. A newer notification or list snapshot still wins over this read.
+    private async Task RefreshThreadReadStateAfterLifecycleAsync(string threadId, OwnerSnapshot owner)
+    {
+        if (!IsThreadReadStateAvailable)
+        {
+            return;
+        }
+
+        long sequence = GetThreadReadStateSequence(threadId);
+        try
+        {
+            ThreadReadResult latest = await bridge.ReadThreadAsync(
+                StampOwner(new ReadThreadRequest { ThreadId = threadId }, owner),
+                lifetime.Token).ConfigureAwait(false);
+            await OnUiAsync(() =>
+            {
+                lock (threadHistoryStateGate)
+                {
+                    if (!IsCurrentOwner(owner)
+                        || GetThreadReadStateSequence(threadId) != sequence
+                        || !MatchesOwner(latest, owner)
+                        || !string.Equals(latest.Thread.Id, threadId, StringComparison.Ordinal))
+                    {
+                        return;
+                    }
+
+                    AdvanceThreadReadStateSequence(threadId);
+                    ApplyThreadReadState(threadId, IsThreadReadStateAvailable ? latest.ReadState : null);
+                }
+            }).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+        {
+        }
+        catch (Exception ex)
+        {
+            ExtensionDiagnostics.Write("Could not read the read state after starting or joining a conversation", ex);
         }
     }
 
