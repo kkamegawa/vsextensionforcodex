@@ -19,5 +19,6 @@
 ## 検証
 
 - 回帰テスト `ChatViewModel_TransientRecoveryAppliesReplacementWorkerWithLowerGenerations` を追加しました。Ready への復帰、置き換え後の owner、会話一覧の同期、その後の Busy 通知の反映を確認します。修正を外すと失敗します。
-- Debug のソリューションビルドは警告 0、エラー 0 です。Core 464 件成功／5 件スキップ／失敗 0、UI 490 件成功／1 件スキップ／失敗 0 でした。Release 構成のビルドとテストは実行していません。
+- Debug／Release のソリューションビルドはいずれも警告 0、エラー 0 です。各構成で Core 464 件成功／5 件スキップ／失敗 0、UI 490 件成功／1 件スキップ／失敗 0 でした。
 - Codex 0.163.0 を使った Experimental Instance で、Worker の子プロセス `codex app-server` を終了させました。新しい Worker プロセスで約 4 秒後に自動で Ready に戻りました。ヘッダーに Connection restored が表示され、会話履歴の一覧も読み込まれました。診断ログに古い世代による拒否はありませんでした。
+- 続けて、置き換え後の Worker の `codex app-server` を再度終了させた場合も Ready に戻りました。その後、使用量パネルと会話履歴の一覧が読み込まれ、会話を読み取り専用の履歴として開けました。拡張機能と Worker のログにエラーはありませんでした。
