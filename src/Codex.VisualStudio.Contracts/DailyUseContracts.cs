@@ -309,6 +309,9 @@ public sealed class WindowsSandboxReadinessResult : AppServerOperationResult
 
     public bool? PreferMxcFeature { get; set; }
 
+    // config/read: optional windows.allow_mxc. Missing means the server did not expose the value.
+    public bool? AllowMxc { get; set; }
+
     // configRequirements/read: managed policy. A null list means the policy does not restrict the
     // implementation; see RequirementsKnown for whether the policy could be read at all.
     public bool RequirementsKnown { get; set; }
@@ -322,14 +325,14 @@ public sealed class WindowsSandboxReadinessResult : AppServerOperationResult
     public string? BackendNotice { get; set; }
 }
 
-// Local Windows sandbox backend selection. PreferMxc passes features.prefer_mxc=true, which Codex
-// applies only when MXC is eligible under managed policy. RequireMxc passes windows.sandbox=mxc,
-// which Codex rejects at startup when managed policy disallows MXC. Neither relaxes any policy.
+// Local Windows sandbox preference. These values only provide CLI configuration overrides and do
+// not identify which backend a particular command used.
 public enum WindowsSandboxBackendPreference
 {
     FollowCodexConfig,
     PreferMxc,
     RequireMxc,
+    DisableMxc,
 }
 
 public enum WindowsSandboxSetupState

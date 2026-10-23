@@ -64,6 +64,7 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
         this.watchdogTiming = watchdogTiming ?? RemoteWatchdogTiming.Default;
         this.timeProvider = timeProvider ?? TimeProvider.System;
         session.ConversationEventReceived += PublishEventAsync;
+        session.ThreadReadStateChanged += PublishThreadReadStateChangedAsync;
         session.ApprovalRequested += PublishApprovalAsync;
         session.ApprovalResolved += PublishApprovalResolvedAsync;
         session.AccountStatusChanged += PublishAccountStatusAsync;
@@ -185,7 +186,7 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
     // local app-server stops before initialize. Name the extension setting that caused it.
     internal static string AppendSandboxBackendStartupHint(string message, WindowsSandboxBackendPreference sandboxBackend)
         => sandboxBackend == WindowsSandboxBackendPreference.RequireMxc
-            ? $"{message} The local app-server was started with the Windows sandbox backend set to \"Require MXC\". If managed policy does not allow MXC, Codex does not start; choose \"Follow Codex configuration\" in the Windows sandbox settings and connect again."
+            ? $"{message} The local backend selection was \"Require MXC\" (windows.sandbox=mxc). Review the sanitized CLI error and effective configuration or managed policy; this extension cannot identify which rule rejected the setting."
             : message;
 
     private async Task<WorkerStatus> ConnectLocalCoreAsync(WorkerOptions options, CancellationToken cancellationToken)
@@ -236,6 +237,19 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
         catch (Exception ex)
         {
             WorkerDiagnostics.Write("worker connect failed", ex);
+            if (!initialized)
+            {
+                DetachProcessObservers();
+                try
+                {
+                    await processHost.StopAsync(CancellationToken.None).ConfigureAwait(false);
+                }
+                catch (Exception stopException)
+                {
+                    WorkerDiagnostics.Write("failed local initialization cleanup failed", stopException);
+                }
+            }
+
             await PublishAccountStatusAsync(
                 new AccountStatus { State = AccountState.Unavailable },
                 CancellationToken.None).ConfigureAwait(false);
@@ -993,10 +1007,19 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
     public Task<ThreadReadResult> ReadThreadAsync(ReadThreadRequest request, CancellationToken cancellationToken)
         => ExecuteOwnerScopedGenerationAsync(
             request,
-            async () => new ThreadReadResult
-            {
-                Thread = await session.ReadThreadAsync(request.ThreadId, cancellationToken).ConfigureAwait(false),
-            },
+            () => session.ReadThreadWithStateAsync(request.ThreadId, cancellationToken),
+            cancellationToken);
+
+    public Task<UpdateThreadReadStateResult> UpdateThreadReadStateAsync(
+        UpdateThreadReadStateRequest request,
+        CancellationToken cancellationToken)
+        => ExecuteOwnerScopedGenerationAsync(
+            request,
+            () => session.UpdateThreadReadStateAsync(
+                request.ThreadId,
+                request.ExpectedRevision,
+                request.MarkRead,
+                cancellationToken),
             cancellationToken);
 
     public Task<ThreadTurnsPage> ListThreadTurnsAsync(ListThreadTurnsRequest request, CancellationToken cancellationToken)
@@ -1833,6 +1856,18 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
         {
             await clientRpc.NotifyWithParameterObjectAsync("observer/threadGoalChanged", new { notification = Stamp(value) }).ConfigureAwait(false);
         }
+    }
+
+    private async Task PublishThreadReadStateChangedAsync(ThreadReadStateChangedEvent value, CancellationToken cancellationToken)
+    {
+        if (!IsCurrentEmission() || clientRpc is null)
+        {
+            return;
+        }
+
+        await clientRpc.NotifyWithParameterObjectAsync(
+            "observer/threadReadStateChanged",
+            new { notification = Stamp(value) }).ConfigureAwait(false);
     }
 
     private async Task PublishRateLimitsChangedAsync(RateLimitsResult value, CancellationToken cancellationToken)

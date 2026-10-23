@@ -1,5 +1,6 @@
 ﻿using System.Collections.ObjectModel;
 using System.ComponentModel;
+using System.Collections.Concurrent;
 using System.Collections.Specialized;
 using System.Globalization;
 using System.IO;
@@ -51,6 +52,20 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
     private readonly ConnectionHealthPresentationViewModel connectionHealth;
     private RemoteProfileViewModel? observedHealthProfile;
     private readonly Dictionary<string, InteractionCardViewModel> interactionCards = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, ThreadHistoryRowViewModel> threadRowsById = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, long> threadReadStateSequences = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, long> threadReadStateRequestGenerations = new(StringComparer.Ordinal);
+    // Thread id -> request token of the update that owns the thread's read-state controls. Tokens
+    // are unique for the ViewModel lifetime, so a request that outlives an owner reset can never
+    // release or match an update started after the reset.
+    private readonly ConcurrentDictionary<string, long> threadReadStateUpdatesInFlight = new(StringComparer.Ordinal);
+    private long lastThreadReadStateRequestToken;
+    // OnUiAsync runs inline on the calling thread in the OOP host, so worker notifications and
+    // response continuations can interleave. This gate makes each check-then-apply step on the
+    // thread rows and read-state sequences atomic.
+    private readonly object threadHistoryStateGate = new();
+    private readonly object threadListRequestGate = new();
+    private ThreadListRequestLease? activeThreadListRequest;
     private const string ImplementPlanRequestPrefix = "implement-plan:";
     private const int MaximumTrackedLocalTurns = 32;
     private const int MaximumCompletedLocalTurns = 256;
@@ -73,6 +88,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
     private InterruptibilityDiagnostic? lastInterruptibilityDiagnostic;
     private WorkerStatus status = new() { State = WorkerConnectionState.Disconnected, Message = "Open Codex to connect." };
     private ThreadSummary? selectedThread;
+    private long selectedThreadGeneration;
     private string composerText = string.Empty;
     private string? nextCursor;
     private bool initialized;
@@ -158,7 +174,9 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
     private const long MaximumBufferedHistoryBytes = 8 * 1024 * 1024;
     private readonly ObservableCollection<ThreadAttachmentPresentationViewModel> threadAttachments = [];
     private readonly ObservableCollection<ThreadTurnSummary> threadTurns = [];
+    private readonly ObservableCollection<ThreadHistoryRowViewModel> threadRows = [];
     private string threadAttachmentsStatusText = string.Empty;
+    private string threadReadStateStatusText = string.Empty;
 
     private sealed record UnifiedSlashSuggestionSnapshot(
         List<SlashCommandSuggestionDescriptor> Suggestions,
@@ -207,6 +225,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         // The welcome/empty state is driven by IsThreadEmpty; keep it in sync with every
         // mutation of Items (Add/Clear from any call site) via a single subscription.
         Items.CollectionChanged += OnItemsCollectionChanged;
+        Threads.CollectionChanged += OnThreadsCollectionChanged;
         ThreadTurns.CollectionChanged += (_, _) => OnPropertyChanged(nameof(HistoryTurnSummaryText));
         PendingSkills.CollectionChanged += (_, _) =>
         {
@@ -216,10 +235,18 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         ConnectCommand = new AsyncCommand(ConnectAsync, () => Status.State is WorkerConnectionState.Disconnected or WorkerConnectionState.Degraded);
         RestartCommand = new AsyncCommand(RestartAsync, () => Status.State == WorkerConnectionState.Degraded);
         NewThreadCommand = new AsyncCommand(NewThreadAsync, () => Status.State == WorkerConnectionState.Ready);
-        LoadMoreCommand = new AsyncCommand(LoadMoreAsync, () => initialized && nextCursor is not null);
+        LoadMoreCommand = new AsyncCommand(
+            LoadMoreAsync,
+            () => initialized && nextCursor is not null && !IsThreadListRequestActive);
         LoadOlderHistoryCommand = new AsyncCommand(LoadOlderHistoryAsync, () => SelectedThread is not null && canLoadOlderHistory && !isHistoryLoading && !historyIsStale);
         JoinThreadCommand = new AsyncCommand(JoinSelectedThreadAsync, () => SelectedThread is not null && !IsThreadJoined && !IsRecovering && Status.State == WorkerConnectionState.Ready);
         RefreshHistoryCommand = new AsyncCommand(RefreshSelectedHistoryAsync, () => SelectedThread is not null && historyIsStale && !isHistoryLoading && Status.State == WorkerConnectionState.Ready);
+        MarkSelectedThreadReadCommand = new AsyncCommand(
+            () => UpdateSelectedThreadReadStateAsync(markRead: true),
+            () => CanMarkSelectedThreadRead);
+        MarkSelectedThreadUnreadCommand = new AsyncCommand(
+            () => UpdateSelectedThreadReadStateAsync(markRead: false),
+            () => CanMarkSelectedThreadUnread);
         RefreshAttachmentsCommand = new AsyncCommand(RefreshAttachmentsAsync, () => SelectedThread is not null && Status.State == WorkerConnectionState.Ready);
         SendCommand = new AsyncCommand(SendAsync, CanSend);
         SendKeyCommand = new AsyncCommand(() => IsGoalPrimaryMode ? Task.CompletedTask : SendAsync(), () => !IsGoalPrimaryMode && CanSend());
@@ -377,8 +404,25 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         ? "Closes and reopens this window's connection to the remote app-server you run. The remote server itself is not restarted."
         : "Stops and restarts the local codex app-server process that this window owns.";
 
-    [DataMember]
+    // The source list of loaded summaries. The XAML binds ThreadRows, so this collection is not
+    // replicated to Remote UI.
     public ObservableCollection<ThreadSummary> Threads { get; } = new();
+
+    [DataMember]
+    public ObservableCollection<ThreadHistoryRowViewModel> ThreadRows => threadRows;
+
+    [DataMember]
+    public ThreadHistoryRowViewModel? SelectedThreadRow
+    {
+        get => selectedThread is null ? null : FindThreadRow(selectedThread.Id);
+        set
+        {
+            if (value is not null && !string.Equals(selectedThread?.Id, value.Id, StringComparison.Ordinal))
+            {
+                SelectedThread = value.Thread;
+            }
+        }
+    }
 
     [DataMember]
     public ObservableCollection<ChatItemViewModel> Items { get; } = new();
@@ -468,6 +512,8 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             settingsStore.Save(settings);
             OnPropertyChanged();
             OnPropertyChanged(nameof(PlanModeHelpText));
+            OnPropertyChanged(nameof(SelectedThreadReadStateText));
+            OnPropertyChanged(nameof(ShowSelectedThreadReadState));
         }
     }
 
@@ -662,8 +708,16 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                 OnPropertyChanged(nameof(EffectiveApprovalModeText));
                 OnPropertyChanged(nameof(IsUsageAvailable));
                 OnPropertyChanged(nameof(IsPlanModeAvailable));
+                OnPropertyChanged(nameof(IsThreadReadStateAvailable));
+                OnPropertyChanged(nameof(ShowReadStateExperimentalNotice));
+                OnPropertyChanged(nameof(SelectedThreadReadStateText));
+                OnPropertyChanged(nameof(CanUpdateSelectedThreadReadState));
+                OnPropertyChanged(nameof(CanMarkSelectedThreadRead));
+                OnPropertyChanged(nameof(CanMarkSelectedThreadUnread));
+                OnPropertyChanged(nameof(ShowSelectedThreadReadState));
                 OnPropertyChanged(nameof(PlanModeHelpText));
                 OnPropertyChanged(nameof(PlanModeEnabled));
+                RaiseThreadReadStateCommandStates();
                 OnDailyUseStatusChanged(previousGeneration, value);
             }
         }
@@ -717,6 +771,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         source.StateChanged += OnStateChangedAsync;
         source.AccountChanged += OnAccountChangedAsync;
         source.ConversationEventReceived += OnConversationEventAsync;
+        source.ThreadReadStateChanged += OnThreadReadStateChangedAsync;
         source.ThreadAttachmentUpdated += OnThreadAttachmentUpdatedAsync;
         source.WindowsSandboxSetupChanged += OnWindowsSandboxSetupChangedAsync;
         source.ApprovalRequested += OnApprovalRequestedAsync;
@@ -747,6 +802,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         source.StateChanged -= OnStateChangedAsync;
         source.AccountChanged -= OnAccountChangedAsync;
         source.ConversationEventReceived -= OnConversationEventAsync;
+        source.ThreadReadStateChanged -= OnThreadReadStateChangedAsync;
         source.ThreadAttachmentUpdated -= OnThreadAttachmentUpdatedAsync;
         source.ApprovalRequested -= OnApprovalRequestedAsync;
         source.ApprovalResolved -= OnApprovalResolvedAsync;
@@ -890,6 +946,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             bridge = bridgeFactory();
             SubscribeBridge(bridge);
             await previous.DisposeAsync().ConfigureAwait(false);
+            await OnUiAsync(RetireReplacedWorkerOwner).ConfigureAwait(false);
 
             WorkerStatus result;
             try
@@ -925,6 +982,32 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         {
             profileOperationGate.Release();
         }
+    }
+
+    // A replacement Worker numbers owner and connection generations from zero and salts its state
+    // partition with a new instance ID, so the retired Worker's owner must not stay the baseline that
+    // the replacement's status snapshots and notifications are compared with. The target kind and
+    // display identity stay, so a failed attempt still offers the matching Restart or Reconnect.
+    private void RetireReplacedWorkerOwner()
+    {
+        ConnectionTargetSnapshot? target = Status.Target;
+        if (target is null)
+        {
+            return;
+        }
+
+        ConnectionTargetSnapshot retired = target.Clone();
+        retired.Generation = 0;
+        retired.OwnerGeneration = 0;
+        retired.StatePartitionFingerprint = null;
+        Status = new WorkerStatus
+        {
+            State = Status.State,
+            Message = Status.Message,
+            CodexVersion = Status.CodexVersion,
+            RecoveryFailureKind = Status.RecoveryFailureKind,
+            Target = retired,
+        };
     }
 
     private async Task<bool> IsRecoveryTargetValidAsync(
@@ -1030,26 +1113,148 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
     private async Task SynchronizeRecoveredThreadListAsync(CancellationToken cancellationToken)
     {
         OwnerSnapshot owner = CaptureOwnerSnapshot();
-        ThreadPage page = await bridge.ListThreadsAsync(
-            StampOwner(new ListThreadsRequest(), owner), cancellationToken).ConfigureAwait(false);
-        await OnUiAsync(() =>
+        ThreadListRefreshOutcome outcome = await RefreshCompleteThreadListAsync(
+            owner,
+            "Conversation list synchronized. Select one to inspect read-only history.",
+            cancellationToken).ConfigureAwait(false);
+
+        // Only a failed request for the still-current owner makes this owner's list stale. A
+        // superseded owner or a concurrent request for the same owner leaves the list untouched.
+        if (outcome == ThreadListRefreshOutcome.Failed && !cancellationToken.IsCancellationRequested)
         {
-            if (!IsCurrentOwner(owner) || !MatchesOwner(page, owner))
+            await OnUiAsync(() =>
             {
-                return;
+                if (IsCurrentOwner(owner))
+                {
+                    MarkThreadListStale("Connection restored, but thread history could not be synchronized. Refresh manually.");
+                }
+            }).ConfigureAwait(false);
+        }
+    }
+
+    private async Task<ThreadListRefreshOutcome> RefreshCompleteThreadListAsync(
+        OwnerSnapshot owner,
+        string successMessage,
+        CancellationToken cancellationToken)
+    {
+        ThreadListRequestLease? lease = TryBeginThreadListRequest(owner);
+        if (lease is null)
+        {
+            return ThreadListRefreshOutcome.Busy;
+        }
+
+        try
+        {
+            await OnUiAsync(RaiseCommandStates).ConfigureAwait(false);
+            Dictionary<string, long> readStateWatermark = CaptureThreadReadStateSequences();
+            ThreadPage page = await bridge.ListThreadsAsync(
+                StampOwner(new ListThreadsRequest(), owner), cancellationToken).ConfigureAwait(false);
+            bool applied = false;
+            IReadOnlyList<SlashCommandInvocation> canceled = Array.Empty<SlashCommandInvocation>();
+            await OnUiAsync(() =>
+            {
+                lock (threadHistoryStateGate)
+                {
+                    if (!IsCurrentOwner(owner) || !MatchesOwner(page, owner))
+                    {
+                        return;
+                    }
+
+                    Threads.Clear();
+                    AddDistinctThreads(page.Threads, skipExisting: false);
+                    ApplyThreadReadStates(page, readStateWatermark);
+                    nextCursor = page.NextCursor;
+                    initialized = true;
+                    HistoryStatusText = successMessage;
+                    if (page.NextCursor is null)
+                    {
+                        canceled = CancelMissingThreads(owner);
+                    }
+
+                    applied = true;
+                    RaiseCommandStates();
+                }
+            }).ConfigureAwait(false);
+
+            if (applied && canceled.Count > 0)
+            {
+                await ShowSlashStatusAsync(
+                    $"Canceled {canceled.Count} queued slash commands because their threads no longer exist.").ConfigureAwait(false);
             }
 
-            Threads.Clear();
-            foreach (ThreadSummary thread in page.Threads)
+            return applied ? ThreadListRefreshOutcome.Applied : ThreadListRefreshOutcome.Superseded;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            ExtensionDiagnostics.Write("Conversation list refresh failed; keeping existing rows", ex);
+            await SetThreadListFailureStatusAsync(
+                owner,
+                "Conversation list could not be refreshed. Existing conversations were kept; try again.").ConfigureAwait(false);
+            return ThreadListRefreshOutcome.Failed;
+        }
+        finally
+        {
+            EndThreadListRequest(lease);
+            await OnUiAsync(RaiseCommandStates).ConfigureAwait(false);
+        }
+    }
+
+    // A thread-list request blocks another request only while its owner is still current, so a
+    // slow request from a retired connection never suppresses the new owner's first page.
+    private ThreadListRequestLease? TryBeginThreadListRequest(OwnerSnapshot owner)
+    {
+        lock (threadListRequestGate)
+        {
+            if (activeThreadListRequest is { } active && IsCurrentOwner(active.Owner))
             {
-                Threads.Add(thread);
+                return null;
             }
 
-            nextCursor = page.NextCursor;
-            initialized = true;
-            HistoryStatusText = "Conversation list synchronized. Select one to inspect read-only history.";
-            RaiseCommandStates();
-        }).ConfigureAwait(false);
+            var lease = new ThreadListRequestLease(owner);
+            activeThreadListRequest = lease;
+            return lease;
+        }
+    }
+
+    private void EndThreadListRequest(ThreadListRequestLease lease)
+    {
+        lock (threadListRequestGate)
+        {
+            if (ReferenceEquals(activeThreadListRequest, lease))
+            {
+                activeThreadListRequest = null;
+            }
+        }
+    }
+
+    private bool IsThreadListRequestActive
+    {
+        get
+        {
+            lock (threadListRequestGate)
+            {
+                return activeThreadListRequest is { } active && IsCurrentOwner(active.Owner);
+            }
+        }
+    }
+
+    private sealed class ThreadListRequestLease
+    {
+        public ThreadListRequestLease(OwnerSnapshot owner) => Owner = owner;
+
+        public OwnerSnapshot Owner { get; }
+    }
+
+    private enum ThreadListRefreshOutcome
+    {
+        Applied,
+        Busy,
+        Superseded,
+        Failed,
     }
 
     private void MarkThreadListStale(string message)
@@ -1548,9 +1753,22 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         initialized = false;
         nextCursor = null;
 
-        selectedThread = null;
+        lock (threadHistoryStateGate)
+        {
+            selectedThread = null;
+            selectedThreadGeneration++;
+            threadReadStateSequences.Clear();
+            threadReadStateRequestGenerations.Clear();
+
+            // A request of the retired owner keeps its own token, so its completion cannot release
+            // a same-thread update started by the new owner.
+            threadReadStateUpdatesInFlight.Clear();
+        }
+
         ClearLocalTurnTracking();
         OnPropertyChanged(nameof(SelectedThread));
+        ThreadReadStateStatusText = string.Empty;
+        NotifySelectedThreadReadStateChanged();
         OnPropertyChanged(nameof(PlanModeEnabled));
         // The Goal reset below also re-evaluates interruptibility for the cleared selection.
         ResetGoalProjection();
@@ -1569,7 +1787,12 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         ThreadAttachmentsStatusText = string.Empty;
         ThreadTurns.Clear();
         OnPropertyChanged(nameof(EffectiveApprovalModeText));
-        Threads.Clear();
+        lock (threadHistoryStateGate)
+        {
+            Threads.Clear();
+            threadRowsById.Clear();
+        }
+
         Items.Clear();
         inFlightMutations.Clear();
         SetComposerText(string.Empty);
@@ -1635,7 +1858,20 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         {
             if (SetProperty(ref selectedThread, value))
             {
+                lock (threadHistoryStateGate)
+                {
+                    selectedThreadGeneration++;
+                    if (value is not null)
+                    {
+                        // Selection keeps the row's last known read state; only a newer server
+                        // response replaces it.
+                        GetOrCreateThreadRow(value);
+                    }
+                }
+
                 OnPropertyChanged(nameof(PlanModeEnabled));
+                ThreadReadStateStatusText = string.Empty;
+                NotifySelectedThreadReadStateChanged();
                 RemovePlanImplementationOffers();
                 OnDailyUseThreadChanged(value?.Id);
                 OnPropertyChanged(nameof(EffectiveApprovalModeText));
@@ -2141,6 +2377,63 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
 
     [DataMember]
     public AsyncCommand RefreshHistoryCommand { get; }
+
+    [DataMember]
+    public AsyncCommand MarkSelectedThreadReadCommand { get; }
+
+    [DataMember]
+    public AsyncCommand MarkSelectedThreadUnreadCommand { get; }
+
+    [DataMember]
+    public bool IsThreadReadStateAvailable => Status.Target?.ExperimentalApi == true;
+
+    [DataMember]
+    public bool ShowReadStateExperimentalNotice => !IsThreadReadStateAvailable;
+
+    public ThreadReadStateSnapshot? SelectedThreadReadState
+        => selectedThread is { } thread ? FindThreadRow(thread.Id)?.ReadState : null;
+
+    [DataMember]
+    public bool CanUpdateSelectedThreadReadState
+        => IsThreadReadStateAvailable
+            && selectedThread is { } thread
+            && !threadReadStateUpdatesInFlight.ContainsKey(thread.Id)
+            && SelectedThreadReadState is { Kind: ThreadReadStateKind.Read or ThreadReadStateKind.UnreadThreadStart or ThreadReadStateKind.UnreadTurn, Revision: { Length: > 0 } };
+
+    [DataMember]
+    public bool CanMarkSelectedThreadRead
+        => CanUpdateSelectedThreadReadState
+            && SelectedThreadReadState?.Kind is ThreadReadStateKind.UnreadThreadStart or ThreadReadStateKind.UnreadTurn;
+
+    [DataMember]
+    public bool CanMarkSelectedThreadUnread
+        => CanUpdateSelectedThreadReadState && SelectedThreadReadState?.Kind == ThreadReadStateKind.Read;
+
+    [DataMember]
+    public bool ShowSelectedThreadReadState
+        => selectedThread is not null && IsThreadReadStateAvailable;
+
+    [DataMember]
+    public string SelectedThreadReadStateText => !IsThreadReadStateAvailable
+        ? settings.ExperimentalApiEnabled
+            ? "Read state controls become available after reconnecting with Experimental API."
+            : "Enable Experimental API and reconnect to change read state."
+        : SelectedThreadReadState?.Kind switch
+        {
+            ThreadReadStateKind.Read => "Read",
+            ThreadReadStateKind.UnreadThreadStart => "Unread from the start",
+            ThreadReadStateKind.UnreadTurn => "Unread",
+            ThreadReadStateKind.NotApplicable => "Read state does not apply to this conversation.",
+            ThreadReadStateKind.Invalid => "Read state is invalid and cannot be changed.",
+            _ => "Read state is unavailable.",
+        };
+
+    [DataMember]
+    public string ThreadReadStateStatusText
+    {
+        get => threadReadStateStatusText;
+        private set => SetProperty(ref threadReadStateStatusText, value);
+    }
 
     [DataMember]
     public AsyncCommand RefreshAttachmentsCommand { get; }
@@ -3004,15 +3297,24 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                 unassignedPlanModeEnabled = false;
             }
 
-            selectedThread = thread;
+            lock (threadHistoryStateGate)
+            {
+                selectedThread = thread;
+                selectedThreadGeneration++;
+            }
+
             OnPropertyChanged(nameof(PlanModeEnabled));
             OnGoalThreadChanged(thread.Id);
             IsThreadJoined = true;
             OnPropertyChanged(nameof(SelectedThread));
+            ThreadReadStateStatusText = string.Empty;
+            NotifySelectedThreadReadStateChanged();
             OnPropertyChanged(nameof(IsHistoryOnly));
             OnPropertyChanged(nameof(EffectiveApprovalModeText));
             ResetSelectedHistoryState(thread);
         }).ConfigureAwait(false);
+
+        await RefreshThreadReadStateAfterLifecycleAsync(thread.Id, owner).ConfigureAwait(false);
     }
 
     private async Task JoinSelectedThreadAsync()
@@ -3067,13 +3369,27 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             HistoryStatusText = "Conversation joined. Sending and turn controls are enabled.";
         }).ConfigureAwait(false);
 
+        await RefreshThreadReadStateAfterLifecycleAsync(thread.Id, owner).ConfigureAwait(false);
         await DrainSlashQueuesAsync(thread.Id).ConfigureAwait(false);
     }
 
     private async Task ReadSelectedThreadHistoryAsync(ThreadSummary thread)
     {
         OwnerSnapshot owner = CaptureOwnerSnapshot();
-        await OnUiAsync(() => isHistoryLoading = true).ConfigureAwait(false);
+        long selectionGeneration = Interlocked.Read(ref selectedThreadGeneration);
+
+        // A watermark, not a reservation: the row keeps its last known state while this read is
+        // pending, and a newer notification or list snapshot still wins over this response.
+        long readStateSequence = GetThreadReadStateSequence(thread.Id);
+        await OnUiAsync(() =>
+        {
+            if (IsCurrentOwner(owner)
+                && selectedThreadGeneration == selectionGeneration
+                && string.Equals(SelectedThread?.Id, thread.Id, StringComparison.Ordinal))
+            {
+                isHistoryLoading = true;
+            }
+        }).ConfigureAwait(false);
         try
         {
             ThreadReadResult read = await bridge.ReadThreadAsync(
@@ -3086,7 +3402,9 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
 
             await OnUiAsync(() =>
             {
-                if (!IsCurrentOwner(owner) || !ReferenceEquals(SelectedThread, thread) && SelectedThread?.Id != thread.Id)
+                if (!IsCurrentOwner(owner)
+                    || selectedThreadGeneration != selectionGeneration
+                    || !string.Equals(SelectedThread?.Id, thread.Id, StringComparison.Ordinal))
                 {
                     return;
                 }
@@ -3100,6 +3418,15 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                 thread.Preview = read.Thread.Preview;
                 thread.Cwd = read.Thread.Cwd;
                 thread.UpdatedAt = read.Thread.UpdatedAt;
+                lock (threadHistoryStateGate)
+                {
+                    FindThreadRow(thread.Id)?.UpdateThread(thread);
+                    if (GetThreadReadStateSequence(thread.Id) == readStateSequence)
+                    {
+                        AdvanceThreadReadStateSequence(thread.Id);
+                        ApplyThreadReadState(thread.Id, IsThreadReadStateAvailable ? read.ReadState : null);
+                    }
+                }
                 threadTurnsCursor = turns.NextCursor;
                 threadItemsCursor = items.NextCursor is null ? null : new ThreadItemCursor { Kind = ThreadItemCursorKind.Opaque, Value = items.NextCursor };
                 foreach (ThreadHistoryItem item in items.Items.Reverse())
@@ -3134,11 +3461,27 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         catch (Exception ex)
         {
             ExtensionDiagnostics.Write("Could not load read-only thread history", ex);
-            await OnUiAsync(() => MarkHistoryStale("History could not be loaded completely. Refresh to try again.")).ConfigureAwait(false);
+            await OnUiAsync(() =>
+            {
+                if (IsCurrentOwner(owner)
+                    && selectedThreadGeneration == selectionGeneration
+                    && string.Equals(SelectedThread?.Id, thread.Id, StringComparison.Ordinal))
+                {
+                    MarkHistoryStale("History could not be loaded completely. Refresh to try again.");
+                }
+            }).ConfigureAwait(false);
         }
         finally
         {
-            await OnUiAsync(() => isHistoryLoading = false).ConfigureAwait(false);
+            await OnUiAsync(() =>
+            {
+                if (IsCurrentOwner(owner)
+                    && selectedThreadGeneration == selectionGeneration
+                    && string.Equals(SelectedThread?.Id, thread.Id, StringComparison.Ordinal))
+                {
+                    isHistoryLoading = false;
+                }
+            }).ConfigureAwait(false);
         }
     }
 
@@ -3374,6 +3717,195 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
 
         historyBytes = Math.Max(0, historyBytes);
         OnPropertyChanged(nameof(IsThreadEmpty));
+    }
+
+    // ThreadRows mirrors Threads position by position, so Remote UI receives incremental row
+    // changes. threadRowsById additionally keeps the selected row when it is not on a loaded page.
+    private void OnThreadsCollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
+    {
+        lock (threadHistoryStateGate)
+        {
+            if (e.Action == NotifyCollectionChangedAction.Add
+                && e.NewItems is not null
+                && e.NewStartingIndex >= 0
+                && e.NewStartingIndex <= threadRows.Count)
+            {
+                int index = e.NewStartingIndex;
+                foreach (ThreadSummary thread in e.NewItems)
+                {
+                    threadRows.Insert(index++, GetOrCreateThreadRow(thread));
+                }
+            }
+            else if (e.Action == NotifyCollectionChangedAction.Remove
+                && e.OldItems is not null
+                && e.OldStartingIndex >= 0
+                && e.OldStartingIndex + e.OldItems.Count <= threadRows.Count)
+            {
+                for (int removed = 0; removed < e.OldItems.Count; removed++)
+                {
+                    threadRows.RemoveAt(e.OldStartingIndex);
+                }
+
+                PruneThreadRows();
+            }
+            else
+            {
+                RebuildThreadRows();
+            }
+        }
+
+        OnPropertyChanged(nameof(SelectedThreadRow));
+    }
+
+    private void RebuildThreadRows()
+    {
+        threadRows.Clear();
+        foreach (ThreadSummary thread in Threads)
+        {
+            threadRows.Add(GetOrCreateThreadRow(thread));
+        }
+
+        PruneThreadRows();
+    }
+
+    private void PruneThreadRows()
+    {
+        var retainedIds = new HashSet<string>(Threads.Select(static thread => thread.Id), StringComparer.Ordinal);
+        if (selectedThread is not null)
+        {
+            retainedIds.Add(selectedThread.Id);
+        }
+
+        foreach (string staleId in threadRowsById.Keys.Where(id => !retainedIds.Contains(id)).ToList())
+        {
+            threadRowsById.Remove(staleId);
+        }
+    }
+
+    // Keeps the row (and its read state) for a thread; only OnThreadsCollectionChanged places rows
+    // in ThreadRows, so a selected thread outside the loaded pages never appears as an extra row.
+    private ThreadHistoryRowViewModel GetOrCreateThreadRow(ThreadSummary thread)
+    {
+        lock (threadHistoryStateGate)
+        {
+            if (threadRowsById.TryGetValue(thread.Id, out ThreadHistoryRowViewModel? row))
+            {
+                row.UpdateThread(thread);
+                return row;
+            }
+
+            row = new ThreadHistoryRowViewModel(thread);
+            threadRowsById.Add(thread.Id, row);
+            return row;
+        }
+    }
+
+    private ThreadHistoryRowViewModel? FindThreadRow(string threadId)
+    {
+        lock (threadHistoryStateGate)
+        {
+            return threadRowsById.TryGetValue(threadId, out ThreadHistoryRowViewModel? row) ? row : null;
+        }
+    }
+
+    private Dictionary<string, long> CaptureThreadReadStateSequences()
+    {
+        lock (threadHistoryStateGate)
+        {
+            return new(threadReadStateSequences, StringComparer.Ordinal);
+        }
+    }
+
+    private void ApplyThreadReadStates(ThreadPage page, Dictionary<string, long> sequenceWatermark)
+    {
+        lock (threadHistoryStateGate)
+        {
+            var seen = new HashSet<string>(StringComparer.Ordinal);
+            foreach (ThreadSummary thread in page.Threads)
+            {
+                if (!seen.Add(thread.Id))
+                {
+                    continue;
+                }
+
+                long capturedSequence = sequenceWatermark.TryGetValue(thread.Id, out long watermark) ? watermark : 0;
+                if (GetThreadReadStateSequence(thread.Id) != capturedSequence)
+                {
+                    continue;
+                }
+
+                ThreadReadStateSnapshot? state = page.ReadStatesAvailable
+                    && page.ReadStates.TryGetValue(thread.Id, out ThreadReadStateSnapshot? availableState)
+                        ? availableState
+                        : null;
+                AdvanceThreadReadStateSequence(thread.Id);
+                ApplyThreadReadState(thread.Id, state);
+            }
+        }
+    }
+
+    private void ApplyThreadReadState(string threadId, ThreadReadStateSnapshot? state)
+    {
+        lock (threadHistoryStateGate)
+        {
+            ThreadHistoryRowViewModel? row = FindThreadRow(threadId);
+            if (row is null)
+            {
+                ThreadSummary? thread = Threads.FirstOrDefault(item => string.Equals(item.Id, threadId, StringComparison.Ordinal));
+                if (thread is null && string.Equals(selectedThread?.Id, threadId, StringComparison.Ordinal))
+                {
+                    thread = selectedThread;
+                }
+
+                row = thread is null ? null : GetOrCreateThreadRow(thread);
+            }
+
+            row?.UpdateReadState(state);
+            if (string.Equals(selectedThread?.Id, threadId, StringComparison.Ordinal))
+            {
+                NotifySelectedThreadReadStateChanged();
+            }
+        }
+    }
+
+    // Remote UI re-reads a bound value only on PropertyChanged, so every change that can affect
+    // the selected thread's read-state controls (including the in-flight flag) raises all of them.
+    private void NotifySelectedThreadReadStateChanged()
+    {
+        OnPropertyChanged(nameof(SelectedThreadRow));
+        OnPropertyChanged(nameof(SelectedThreadReadState));
+        OnPropertyChanged(nameof(SelectedThreadReadStateText));
+        OnPropertyChanged(nameof(CanUpdateSelectedThreadReadState));
+        OnPropertyChanged(nameof(CanMarkSelectedThreadRead));
+        OnPropertyChanged(nameof(CanMarkSelectedThreadUnread));
+        OnPropertyChanged(nameof(ShowSelectedThreadReadState));
+        RaiseThreadReadStateCommandStates();
+    }
+
+    private long AdvanceThreadReadStateSequence(string threadId)
+    {
+        lock (threadHistoryStateGate)
+        {
+            long sequence = threadReadStateSequences.TryGetValue(threadId, out long current) ? current + 1 : 1;
+            threadReadStateSequences[threadId] = sequence;
+            return sequence;
+        }
+    }
+
+    private long GetThreadReadStateSequence(string threadId)
+    {
+        lock (threadHistoryStateGate)
+        {
+            return threadReadStateSequences.TryGetValue(threadId, out long sequence) ? sequence : 0;
+        }
+    }
+
+    private long GetThreadReadStateRequestGeneration(string threadId)
+    {
+        lock (threadHistoryStateGate)
+        {
+            return threadReadStateRequestGenerations.TryGetValue(threadId, out long generation) ? generation : 0;
+        }
     }
 
     private void SetTranscriptText(ChatItemViewModel item, string text)
@@ -3625,6 +4157,302 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         return (result, truncated);
     }
 
+    private Task OnThreadReadStateChangedAsync(WorkerNotification<ThreadReadStateChangedEvent> notification)
+        => OnUiAsync(() =>
+        {
+            if (!IsNotificationCurrent(notification)
+                || string.IsNullOrWhiteSpace(notification.Value.ThreadId)
+                || !IsThreadReadStateAvailable)
+            {
+                return;
+            }
+
+            string threadId = notification.Value.ThreadId;
+            lock (threadHistoryStateGate)
+            {
+                // Subscribers are also notified of this client's own committed update. A receipt
+                // identical to the displayed one is not a concurrent change.
+                if (FindThreadRow(threadId)?.ReadState is { } displayed
+                    && IsSameReadState(displayed, notification.Value.State))
+                {
+                    return;
+                }
+
+                AdvanceThreadReadStateSequence(threadId);
+                ApplyThreadReadState(threadId, notification.Value.State);
+
+                // While this client's own update is pending, its completion reports the outcome.
+                if (string.Equals(SelectedThread?.Id, threadId, StringComparison.Ordinal)
+                    && !threadReadStateUpdatesInFlight.ContainsKey(threadId))
+                {
+                    ThreadReadStateStatusText = "Read state changed. Review the current state before choosing an action.";
+                }
+            }
+        });
+
+    private static bool IsSameReadState(ThreadReadStateSnapshot left, ThreadReadStateSnapshot right)
+        => left.Kind == right.Kind
+            && !string.IsNullOrEmpty(left.Revision)
+            && string.Equals(left.Revision, right.Revision, StringComparison.Ordinal)
+            && string.Equals(left.TurnId, right.TurnId, StringComparison.Ordinal);
+
+    private async Task UpdateSelectedThreadReadStateAsync(bool markRead)
+    {
+        ThreadSummary thread;
+        string expectedRevision;
+        OwnerSnapshot owner;
+        long selectionGeneration;
+        long sequence;
+        long requestGeneration;
+        lock (threadHistoryStateGate)
+        {
+            ThreadReadStateSnapshot? state = SelectedThreadReadState;
+            if (SelectedThread is not { } selected
+                || !IsThreadReadStateAvailable
+                || state?.Revision is not { Length: > 0 } revision
+                || !CanUpdateSelectedThreadReadState)
+            {
+                return;
+            }
+
+            requestGeneration = Interlocked.Increment(ref lastThreadReadStateRequestToken);
+            if (!threadReadStateUpdatesInFlight.TryAdd(selected.Id, requestGeneration))
+            {
+                return;
+            }
+
+            thread = selected;
+            expectedRevision = revision;
+            threadReadStateRequestGenerations[thread.Id] = requestGeneration;
+            owner = CaptureOwnerSnapshot();
+            selectionGeneration = selectedThreadGeneration;
+            sequence = AdvanceThreadReadStateSequence(thread.Id);
+        }
+
+        ThreadReadStateStatusText = markRead ? "Marking conversation as read…" : "Marking conversation as unread…";
+        NotifySelectedThreadReadStateChanged();
+
+        try
+        {
+            UpdateThreadReadStateResult result = await bridge.UpdateThreadReadStateAsync(
+                StampOwner(new UpdateThreadReadStateRequest
+                {
+                    ThreadId = thread.Id,
+                    ExpectedRevision = expectedRevision,
+                    MarkRead = markRead,
+                }, owner),
+                lifetime.Token).ConfigureAwait(false);
+
+            string completionText = result.Conflict
+                ? "Read state changed elsewhere. Review the current state and choose again."
+                : result.Succeeded
+                    ? markRead ? "Conversation marked as read." : "Conversation marked as unread."
+                    : "Read state was not changed. Review the current state and try again.";
+            bool refreshLatestState = false;
+            await OnUiAsync(() =>
+            {
+                lock (threadHistoryStateGate)
+                {
+                    if (!IsCurrentOwner(owner)
+                        || requestGeneration != GetThreadReadStateRequestGeneration(thread.Id)
+                        || !MatchesOwner(result, owner)
+                        || !string.Equals(result.ThreadId, thread.Id, StringComparison.Ordinal))
+                    {
+                        return;
+                    }
+
+                    bool isSelected = selectedThreadGeneration == selectionGeneration
+                        && string.Equals(SelectedThread?.Id, thread.Id, StringComparison.Ordinal);
+                    if (result.OutcomeUnknown)
+                    {
+                        // The server may have committed the mark. Read the current receipt instead
+                        // of resending the update.
+                        refreshLatestState = true;
+                        if (isSelected)
+                        {
+                            ThreadReadStateStatusText = "The update result could not be confirmed. Checking the latest read state…";
+                        }
+
+                        return;
+                    }
+
+                    if (GetThreadReadStateSequence(thread.Id) != sequence)
+                    {
+                        // The notification for this same committed receipt can arrive before the
+                        // response; only a different receipt is a concurrent change.
+                        if (FindThreadRow(thread.Id)?.ReadState is { } displayed && IsSameReadState(displayed, result.State))
+                        {
+                            if (isSelected)
+                            {
+                                ThreadReadStateStatusText = completionText;
+                            }
+
+                            return;
+                        }
+
+                        refreshLatestState = true;
+                        if (isSelected)
+                        {
+                            ThreadReadStateStatusText = "Read state changed during the update. Refreshing the latest state…";
+                        }
+
+                        return;
+                    }
+
+                    AdvanceThreadReadStateSequence(thread.Id);
+                    ApplyThreadReadState(thread.Id, result.State);
+                    if (isSelected)
+                    {
+                        ThreadReadStateStatusText = completionText;
+                    }
+                }
+            }).ConfigureAwait(false);
+
+            if (refreshLatestState)
+            {
+                await RefreshThreadReadStateAfterUpdateAsync(thread.Id, owner, requestGeneration, result.OutcomeUnknown).ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+        {
+        }
+        catch (Exception ex)
+        {
+            ExtensionDiagnostics.Write("Could not update conversation read state", ex);
+            await OnUiAsync(() =>
+            {
+                lock (threadHistoryStateGate)
+                {
+                    if (IsCurrentOwner(owner)
+                        && requestGeneration == GetThreadReadStateRequestGeneration(thread.Id)
+                        && GetThreadReadStateSequence(thread.Id) == sequence
+                        && selectedThreadGeneration == selectionGeneration
+                        && string.Equals(SelectedThread?.Id, thread.Id, StringComparison.Ordinal))
+                    {
+                        ThreadReadStateStatusText = "The read-state update could not be confirmed. Refresh the conversation before trying again.";
+                    }
+                }
+            }).ConfigureAwait(false);
+        }
+        finally
+        {
+            await OnUiAsync(() =>
+            {
+                lock (threadHistoryStateGate)
+                {
+                    threadReadStateUpdatesInFlight.TryRemove(new KeyValuePair<string, long>(thread.Id, requestGeneration));
+                    if (string.Equals(SelectedThread?.Id, thread.Id, StringComparison.Ordinal))
+                    {
+                        // The controls were last evaluated while this update was in flight.
+                        NotifySelectedThreadReadStateChanged();
+                    }
+                    else
+                    {
+                        RaiseThreadReadStateCommandStates();
+                    }
+                }
+            }).ConfigureAwait(false);
+        }
+    }
+
+    // thread/start and thread/resume return only a thread summary, so the row reads its read state
+    // once afterwards; otherwise a new or joined conversation has no receipt or explicit actions
+    // until a later notification. A newer notification or list snapshot still wins over this read.
+    private async Task RefreshThreadReadStateAfterLifecycleAsync(string threadId, OwnerSnapshot owner)
+    {
+        if (!IsThreadReadStateAvailable)
+        {
+            return;
+        }
+
+        long sequence = GetThreadReadStateSequence(threadId);
+        try
+        {
+            ThreadReadResult latest = await bridge.ReadThreadAsync(
+                StampOwner(new ReadThreadRequest { ThreadId = threadId }, owner),
+                lifetime.Token).ConfigureAwait(false);
+            await OnUiAsync(() =>
+            {
+                lock (threadHistoryStateGate)
+                {
+                    if (!IsCurrentOwner(owner)
+                        || GetThreadReadStateSequence(threadId) != sequence
+                        || !MatchesOwner(latest, owner)
+                        || !string.Equals(latest.Thread.Id, threadId, StringComparison.Ordinal))
+                    {
+                        return;
+                    }
+
+                    AdvanceThreadReadStateSequence(threadId);
+                    ApplyThreadReadState(threadId, IsThreadReadStateAvailable ? latest.ReadState : null);
+                }
+            }).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+        {
+        }
+        catch (Exception ex)
+        {
+            ExtensionDiagnostics.Write("Could not read the read state after starting or joining a conversation", ex);
+        }
+    }
+
+    private async Task RefreshThreadReadStateAfterUpdateAsync(
+        string threadId,
+        OwnerSnapshot owner,
+        long requestGeneration,
+        bool outcomeUnknown)
+    {
+        long sequence = GetThreadReadStateSequence(threadId);
+        try
+        {
+            ThreadReadResult latest = await bridge.ReadThreadAsync(
+                StampOwner(new ReadThreadRequest { ThreadId = threadId }, owner),
+                lifetime.Token).ConfigureAwait(false);
+            await OnUiAsync(() =>
+            {
+                lock (threadHistoryStateGate)
+                {
+                    if (!IsCurrentOwner(owner)
+                        || requestGeneration != GetThreadReadStateRequestGeneration(threadId)
+                        || GetThreadReadStateSequence(threadId) != sequence
+                        || !MatchesOwner(latest, owner)
+                        || !string.Equals(latest.Thread.Id, threadId, StringComparison.Ordinal))
+                    {
+                        return;
+                    }
+
+                    AdvanceThreadReadStateSequence(threadId);
+                    ApplyThreadReadState(threadId, IsThreadReadStateAvailable ? latest.ReadState : null);
+                    if (string.Equals(SelectedThread?.Id, threadId, StringComparison.Ordinal))
+                    {
+                        ThreadReadStateStatusText = outcomeUnknown
+                            ? "The latest read state was loaded because the update result could not be confirmed. Check it before choosing again."
+                            : "Read state synchronized after a concurrent change.";
+                    }
+                }
+            }).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+        {
+        }
+        catch (Exception ex)
+        {
+            ExtensionDiagnostics.Write("Could not refresh read state after an update", ex);
+            await OnUiAsync(() =>
+            {
+                if (IsCurrentOwner(owner)
+                    && requestGeneration == GetThreadReadStateRequestGeneration(threadId)
+                    && string.Equals(SelectedThread?.Id, threadId, StringComparison.Ordinal))
+                {
+                    ThreadReadStateStatusText = outcomeUnknown
+                        ? "The update result could not be confirmed and the latest state could not be loaded. Refresh the conversation before trying again."
+                        : "Read state changed concurrently and could not be refreshed. Refresh the conversation before trying again.";
+                }
+            }).ConfigureAwait(false);
+        }
+    }
+
     private Task OnThreadAttachmentUpdatedAsync(WorkerNotification<ThreadAttachmentUpdatedEvent> notification)
         => OnUiAsync(() =>
         {
@@ -3652,59 +4480,103 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
     private async Task LoadMoreAsync()
     {
         OwnerSnapshot owner = CaptureOwnerSnapshot();
-        ThreadPage page = await bridge.ListThreadsAsync(StampOwner(new ListThreadsRequest { Cursor = nextCursor }, owner), lifetime.Token).ConfigureAwait(false);
-        await OnUiAsync(() =>
+        ThreadListRequestLease? lease = TryBeginThreadListRequest(owner);
+        if (lease is null)
         {
-            if (!IsCurrentOwner(owner))
-            {
-                return;
-            }
+            return;
+        }
 
-            foreach (ThreadSummary thread in page.Threads)
+        try
+        {
+            await OnUiAsync(RaiseCommandStates).ConfigureAwait(false);
+            string? cursor = nextCursor;
+            Dictionary<string, long> readStateWatermark = CaptureThreadReadStateSequences();
+            ThreadPage page = await bridge.ListThreadsAsync(
+                StampOwner(new ListThreadsRequest { Cursor = cursor }, owner), lifetime.Token).ConfigureAwait(false);
+            await OnUiAsync(() =>
             {
-                Threads.Add(thread);
-            }
+                lock (threadHistoryStateGate)
+                {
+                    if (!IsCurrentOwner(owner) || !MatchesOwner(page, owner))
+                    {
+                        return;
+                    }
 
-            nextCursor = page.NextCursor;
-            RaiseCommandStates();
-        }).ConfigureAwait(false);
+                    AddDistinctThreads(page.Threads, skipExisting: true);
+                    ApplyThreadReadStates(page, readStateWatermark);
+                    nextCursor = page.NextCursor;
+                    initialized = true;
+                    RaiseCommandStates();
+                }
+            }).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+        {
+        }
+        catch (OperationCanceledException)
+        {
+            await SetThreadListFailureStatusAsync(owner, "Conversation list loading was canceled. Existing conversations were kept.").ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            ExtensionDiagnostics.Write("Conversation list page failed; keeping existing rows", ex);
+            await SetThreadListFailureStatusAsync(owner, "More conversations could not be loaded. Existing conversations were kept; try again.").ConfigureAwait(false);
+        }
+        finally
+        {
+            EndThreadListRequest(lease);
+            await OnUiAsync(RaiseCommandStates).ConfigureAwait(false);
+        }
     }
 
     private async Task ReloadThreadsAsync()
     {
         OwnerSnapshot owner = CaptureOwnerSnapshot();
-        await OnUiAsync(() =>
+        ThreadListRefreshOutcome outcome = await RefreshCompleteThreadListAsync(
+            owner,
+            "Conversation list refreshed. Select one to inspect read-only history.",
+            lifetime.Token).ConfigureAwait(false);
+        if (outcome == ThreadListRefreshOutcome.Busy)
         {
-            if (IsCurrentOwner(owner))
-            {
-                Threads.Clear();
-                nextCursor = null;
-            }
-        }).ConfigureAwait(false);
-        if (!IsCurrentOwner(owner))
-        {
-            return;
+            await SetThreadListFailureStatusAsync(
+                owner,
+                "The conversation list is still loading. Refresh again after it finishes.").ConfigureAwait(false);
         }
+    }
 
-        await LoadMoreAsync().ConfigureAwait(false);
-        if (!IsCurrentOwner(owner))
+    private void AddDistinctThreads(IEnumerable<ThreadSummary> pageThreads, bool skipExisting)
+    {
+        var existingIds = skipExisting
+            ? new HashSet<string>(Threads.Select(static thread => thread.Id), StringComparer.Ordinal)
+            : new HashSet<string>(StringComparer.Ordinal);
+        foreach (ThreadSummary thread in pageThreads)
         {
-            return;
-        }
-        if (nextCursor is null)
-        {
-            var existingThreadIds = new HashSet<string>(
-                Threads.Select(static thread => thread.Id),
-                StringComparer.Ordinal);
-            IReadOnlyList<SlashCommandInvocation> canceled =
-                slashCommandCoordinator.CancelMissingThreads(existingThreadIds);
-            if (canceled.Count > 0)
+            if (existingIds.Add(thread.Id))
             {
-                await ShowSlashStatusAsync(
-                    $"Canceled {canceled.Count} queued slash commands because their threads no longer exist.").ConfigureAwait(false);
+                Threads.Add(thread);
             }
         }
     }
+
+    private IReadOnlyList<SlashCommandInvocation> CancelMissingThreads(OwnerSnapshot owner)
+    {
+        if (!IsCurrentOwner(owner))
+        {
+            return Array.Empty<SlashCommandInvocation>();
+        }
+
+        var existingThreadIds = new HashSet<string>(Threads.Select(static thread => thread.Id), StringComparer.Ordinal);
+        return slashCommandCoordinator.CancelMissingThreads(existingThreadIds);
+    }
+
+    private Task SetThreadListFailureStatusAsync(OwnerSnapshot owner, string message)
+        => OnUiAsync(() =>
+        {
+            if (IsCurrentOwner(owner))
+            {
+                HistoryStatusText = message;
+            }
+        });
 
     internal async Task PopulateModelsAsync()
     {
@@ -8065,8 +8937,15 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         LoadOlderHistoryCommand?.RaiseCanExecuteChanged();
         RefreshHistoryCommand?.RaiseCanExecuteChanged();
         RefreshAttachmentsCommand?.RaiseCanExecuteChanged();
+        RaiseThreadReadStateCommandStates();
         RestoreQuarantinedDraftCommand?.RaiseCanExecuteChanged();
         DiscardQuarantinedDraftCommand?.RaiseCanExecuteChanged();
+    }
+
+    private void RaiseThreadReadStateCommandStates()
+    {
+        MarkSelectedThreadReadCommand?.RaiseCanExecuteChanged();
+        MarkSelectedThreadUnreadCommand?.RaiseCanExecuteChanged();
     }
 
     // In the OOP extension process, Application.Current is null so the null-conditional
@@ -9353,6 +10232,70 @@ public sealed class UserInputOptionViewModel : ObservableObject
     }
 
     internal void SetSelectedSilently(bool value) => SetProperty(ref isSelected, value, nameof(IsSelected));
+}
+
+[DataContract]
+public sealed class ThreadHistoryRowViewModel : ObservableObject
+{
+    private readonly SafeMarkdownService markdown = new();
+    private ThreadSummary thread;
+    private ThreadReadStateSnapshot readState = new() { Kind = ThreadReadStateKind.Unavailable };
+
+    internal ThreadHistoryRowViewModel(ThreadSummary thread)
+    {
+        this.thread = thread;
+    }
+
+    internal ThreadSummary Thread => thread;
+
+    [DataMember]
+    public string Id => thread.Id;
+
+    [DataMember]
+    public string Preview => markdown.ToSafeText(thread.Preview ?? string.Empty);
+
+    [DataMember]
+    public string Cwd => markdown.ToSafeText(thread.Cwd ?? string.Empty);
+
+    [DataMember]
+    public bool IsUnread => readState.Kind is ThreadReadStateKind.UnreadThreadStart or ThreadReadStateKind.UnreadTurn;
+
+    [DataMember]
+    public string ReadStateBadgeText => IsUnread ? "Unread" : string.Empty;
+
+    [DataMember]
+    public string AccessibilityName => IsUnread
+        ? $"{Preview}, unread conversation"
+        : Preview;
+
+    internal ThreadReadStateSnapshot ReadState => readState;
+
+    internal void UpdateThread(ThreadSummary value)
+    {
+        if (ReferenceEquals(thread, value))
+        {
+            OnPropertyChanged(nameof(Preview));
+            OnPropertyChanged(nameof(Cwd));
+            OnPropertyChanged(nameof(AccessibilityName));
+            return;
+        }
+
+        thread = value;
+        OnPropertyChanged(nameof(Id));
+        OnPropertyChanged(nameof(Preview));
+        OnPropertyChanged(nameof(Cwd));
+        OnPropertyChanged(nameof(AccessibilityName));
+    }
+
+    internal void UpdateReadState(ThreadReadStateSnapshot? value)
+    {
+        readState = value is null
+            ? new ThreadReadStateSnapshot { Kind = ThreadReadStateKind.Unavailable }
+            : new ThreadReadStateSnapshot { Kind = value.Kind, Revision = value.Revision, TurnId = value.TurnId };
+        OnPropertyChanged(nameof(IsUnread));
+        OnPropertyChanged(nameof(ReadStateBadgeText));
+        OnPropertyChanged(nameof(AccessibilityName));
+    }
 }
 
 public abstract class ObservableObject : INotifyPropertyChanged

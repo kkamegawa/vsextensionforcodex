@@ -534,15 +534,15 @@ public sealed class SlashCommandPresentationTests
 
         XElement history = document
             .Descendants(Presentation + "ListBox")
-            .Single(element => element.Attribute("ItemsSource")?.Value == "{Binding Threads}");
+            .Single(element => element.Attribute("ItemsSource")?.Value == "{Binding ThreadRows}");
         Assert.AreEqual(
             "{StaticResource SelectableRowStyle}",
             history.Attribute("ItemContainerStyle")?.Value);
         XElement[] historyText = history
             .Descendants(Presentation + "TextBlock")
-            .Where(element => element.Attribute("Text")?.Value is "{Binding Preview}" or "{Binding Cwd}")
+            .Where(element => element.Attribute("Text")?.Value is "{Binding Preview}" or "{Binding Cwd}" or "{Binding ReadStateBadgeText}")
             .ToArray();
-        Assert.HasCount(2, historyText);
+        Assert.HasCount(3, historyText);
         Assert.IsTrue(historyText.All(element => element.Attribute("Style")?.Value == inheritingStyle));
         Assert.IsTrue(historyText.All(element => element.Attribute("Foreground") is null));
     }

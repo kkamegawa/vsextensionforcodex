@@ -5,7 +5,7 @@ namespace Codex.VisualStudio.Contracts;
 
 public static class ContractVersions
 {
-    public const int Current = 24;
+    public const int Current = 25;
 }
 
 public enum GoalStopStepOutcome
@@ -307,6 +307,15 @@ public sealed class ReadThreadRequest : OwnerScopedRequest
     public string ThreadId { get; set; } = string.Empty;
 }
 
+public sealed class UpdateThreadReadStateRequest : OwnerScopedRequest
+{
+    public string ThreadId { get; set; } = string.Empty;
+
+    public string ExpectedRevision { get; set; } = string.Empty;
+
+    public bool MarkRead { get; set; }
+}
+
 public sealed class ListThreadTurnsRequest : OwnerScopedRequest
 {
     public string ThreadId { get; set; } = string.Empty;
@@ -431,6 +440,35 @@ public sealed class ThreadPage : WorkerGenerationResult
 
     [DataMember]
     public string? NextCursor { get; set; }
+
+    [DataMember]
+    public bool ReadStatesAvailable { get; set; }
+
+    [DataMember]
+    public IReadOnlyDictionary<string, ThreadReadStateSnapshot> ReadStates { get; set; } = new Dictionary<string, ThreadReadStateSnapshot>();
+}
+
+public enum ThreadReadStateKind
+{
+    Read,
+    UnreadThreadStart,
+    UnreadTurn,
+    NotApplicable,
+    Unavailable,
+    Invalid,
+}
+
+[DataContract]
+public sealed class ThreadReadStateSnapshot
+{
+    [DataMember]
+    public ThreadReadStateKind Kind { get; set; }
+
+    [DataMember]
+    public string? Revision { get; set; }
+
+    [DataMember]
+    public string? TurnId { get; set; }
 }
 
 [DataContract]
@@ -451,6 +489,40 @@ public sealed class ThreadReadResult : WorkerGenerationResult
 {
     [DataMember]
     public ThreadSummary Thread { get; set; } = new();
+
+    [DataMember]
+    public ThreadReadStateSnapshot ReadState { get; set; } = new() { Kind = ThreadReadStateKind.Unavailable };
+}
+
+[DataContract]
+public sealed class UpdateThreadReadStateResult : WorkerGenerationResult
+{
+    [DataMember]
+    public string ThreadId { get; set; } = string.Empty;
+
+    [DataMember]
+    public bool Succeeded { get; set; }
+
+    [DataMember]
+    public bool Conflict { get; set; }
+
+    // The request may have reached the server, but no response confirmed whether it committed.
+    // Clients reread the current receipt instead of resending the update.
+    [DataMember]
+    public bool OutcomeUnknown { get; set; }
+
+    [DataMember]
+    public ThreadReadStateSnapshot State { get; set; } = new() { Kind = ThreadReadStateKind.Unavailable };
+}
+
+[DataContract]
+public sealed class ThreadReadStateChangedEvent
+{
+    [DataMember]
+    public string ThreadId { get; set; } = string.Empty;
+
+    [DataMember]
+    public ThreadReadStateSnapshot State { get; set; } = new() { Kind = ThreadReadStateKind.Unavailable };
 }
 
 [DataContract]
@@ -1258,6 +1330,9 @@ public interface ICodexWorkerObserver
     [JsonRpcMethod("observer/conversationEvent")]
     Task OnConversationEventAsync(WorkerNotification<ConversationEvent> notification, CancellationToken cancellationToken);
 
+    [JsonRpcMethod("observer/threadReadStateChanged")]
+    Task OnThreadReadStateChangedAsync(WorkerNotification<ThreadReadStateChangedEvent> notification, CancellationToken cancellationToken);
+
     [JsonRpcMethod("observer/approvalRequested")]
     Task OnApprovalRequestedAsync(WorkerNotification<ApprovalRequest> notification, CancellationToken cancellationToken);
 
@@ -1353,6 +1428,9 @@ public interface ICodexWorkerClient
 
     [JsonRpcMethod("worker/thread/read")]
     Task<ThreadReadResult> ReadThreadAsync(ReadThreadRequest request, CancellationToken cancellationToken);
+
+    [JsonRpcMethod("worker/thread/readState/update")]
+    Task<UpdateThreadReadStateResult> UpdateThreadReadStateAsync(UpdateThreadReadStateRequest request, CancellationToken cancellationToken);
 
     [JsonRpcMethod("worker/thread/turns/list")]
     Task<ThreadTurnsPage> ListThreadTurnsAsync(ListThreadTurnsRequest request, CancellationToken cancellationToken);

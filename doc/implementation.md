@@ -620,3 +620,7 @@ Tracking: [#195](https://github.com/kkamegawa/vsextensionforcodex/issues/195), [
 - [x] Review follow-up: argumentless `/plan` without a conversation enables the threadless selection; the implementation offer uses the mode the completed turn was started with; Plan selections are set aside on connection loss and restored only when transient recovery reconnects, because every attempt receives a new owner partition.
 - [x] Tests that use Plan mode now set Experimental API explicitly instead of depending on the machine's settings file. Release Core 424 passed / 5 skipped; Release UI 436 passed / 1 skipped; Debug and Release builds 0 warnings / 0 errors.
 - [x] Live WPF rendering binds the real view models to the production templates (Dark/Light): question steps 1 and 3, a tall card scrolled to Submit, the implementation offer and the proposed plan from the real probe text; all assertions passed and images were inspected. Evidence: `artifacts/issue192/live-render/output`. VS host templates remain unverified: Visual Studio could only be granted click-level control, so typing a prompt in the Experimental Instance was not possible.
+
+## Codex App Server 0.163.0
+
+Implementation and verification: [English](implementation-app-server-0-163.md) · [日本語](implementation-app-server-0-163_ja.md). Experimental Instance visual acceptance remains open.

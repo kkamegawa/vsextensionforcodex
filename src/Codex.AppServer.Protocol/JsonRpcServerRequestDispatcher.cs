@@ -97,7 +97,10 @@ internal sealed class JsonRpcServerRequestDispatcher
 
         if (message.Error is not null)
         {
-            completion.TrySetException(new JsonRpcRemoteException(message.Error.Code, message.Error.Message));
+            completion.TrySetException(new JsonRpcRemoteException(
+                message.Error.Code,
+                message.Error.Message,
+                message.Error.Data));
             return;
         }
 

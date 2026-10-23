@@ -904,3 +904,17 @@ Tracking: [Issue #214](https://github.com/kkamegawa/vsextensionforcodex/issues/2
 - [x] Debug and Release solution builds: 0 warnings, 0 errors. Per configuration: Core 451 passed / 5 skipped / 0 failed; UI 472 passed / 1 skipped / 0 failed. Both underlying test processes exited 0. The strict evidence harness reports blocked because of the six existing symbolic-link privilege limitations; those checks remain incomplete. Evidence: `artifacts/issue214/build-*.log`, `debug/test-results.json`, `release/test-results.json`, and their sanitized logs/TRX files.
 - [x] Render the extracted production question-card XAML with the real Goal ViewModel fixture and inspect both screenshots: unanswered Yes/No and Yes selected before Submit. The complete Japanese question and both options/actions are visible. Selection alone sends nothing; the bound Submit command sends one Yes answer. Evidence: `artifacts/issue214/visual/bin/Release/net8.0-windows10.0.22621.0/screenshots` and `visual-result.txt`. Standard WPF styles substitute Visual Studio resources; this does not establish Experimental Instance or actual VS host-template acceptance.
 - [x] Release VSIX payload, embedded Remote UI XAML, and contract version 24 inspection passed. Evidence: `artifacts/issue214/vsix.json`.
+
+### 2026-10-23: Codex App Server 0.163.0 implementation
+
+Detailed task and verification record: [English](task-app-server-0-163.md) · [日本語](task-app-server-0-163_ja.md). Automated implementation checks and the PR #225 review follow-up are complete; the Experimental Instance theme, narrow-width, keyboard, and screen-reader checks were omitted by agreement.
+
+### 2026-10-23: Keep automatic recovery current after the Worker is replaced
+
+Tracking: [Issue #224](https://github.com/kkamegawa/vsextensionforcodex/issues/224). Japanese record: [日本語](task-issue224_ja.md). Design: `doc/connection-history-recovery-design.md`, the paragraph after "A previous bridge's late signal cannot retire the replacement bridge.", and its Japanese counterpart.
+
+- [x] Root cause: a replacement Worker numbers owner and connection generations from zero and uses a new state partition, so its Ready status was rejected against the retired Worker's higher owner generation. The tool window stayed Degraded until Restart was used twice.
+- [x] After the recovery bridge swap, retire the previous owner baseline: keep state, message, target kind, and display identity; clear connection generation, owner generation, and state partition. The retired bridge is unsubscribed first.
+- [x] Regression test `ChatViewModel_TransientRecoveryAppliesReplacementWorkerWithLowerGenerations` covers Ready, the replacement owner, the synchronized conversation list, and a later Busy notification. It fails without the fix.
+- [x] Debug and Release solution builds: 0 warnings, 0 errors. Per configuration: Core 464 passed / 5 skipped / 0 failed; UI 490 passed / 1 skipped / 0 failed.
+- [x] Experimental Instance with Codex 0.163.0: killing the Worker's `codex app-server` child recovered automatically to Ready within about 4 seconds with a new Worker process. The header showed Connection restored, the conversation history list loaded, and the diagnostics log had no stale-generation rejection. A second kill of the next replacement Worker's app-server also recovered to Ready. After it, the usage panel and history list loaded, a conversation opened as read-only history, and the Extension and its Worker logged no errors.

@@ -16,6 +16,86 @@ public sealed class FakeAppServerIntegrationTests
     };
 
     [TestMethod]
+    public async Task FakeReadStateContractSupports163UpdatesConflictsAndRegression01621()
+    {
+        await using FakeAppServerProcess current = await FakeAppServerProcess.StartAsync(string.Empty);
+        await current.SendAsync(new
+        {
+            id = 1,
+            method = "initialize",
+            @params = new { capabilities = new { experimentalApi = true } },
+        });
+        using JsonDocument initialized = await current.ReadAsync();
+        Assert.AreEqual("codex-cli/0.163.0", initialized.RootElement.GetProperty("result").GetProperty("userAgent").GetString());
+
+        await current.SendAsync(new { id = 2, method = "thread/start", @params = new { } });
+        using JsonDocument started = await current.ReadAsync();
+        string threadId = started.RootElement.GetProperty("result").GetProperty("thread").GetProperty("id").GetString()!;
+        using JsonDocument idleStatus = await current.ReadAsync();
+        Assert.AreEqual("thread/status/changed", idleStatus.RootElement.GetProperty("method").GetString());
+
+        await current.SendAsync(new { id = 3, method = "thread/list", @params = new { } });
+        using JsonDocument listed = await current.ReadAsync();
+        Assert.IsTrue(listed.RootElement.TryGetProperty("result", out JsonElement listResult), listed.RootElement.ToString());
+        Assert.IsTrue(listResult.TryGetProperty("readStates", out JsonElement readStates), listed.RootElement.ToString());
+        JsonElement initialState = readStates.GetProperty(threadId);
+        Assert.AreEqual("threadStart", initialState.GetProperty("firstUnread").GetProperty("type").GetString());
+        string expectedRevision = initialState.GetProperty("revision").GetString()!;
+
+        await current.SendAsync(new
+        {
+            id = 4,
+            method = "thread/readState/update",
+            @params = new
+            {
+                threadId,
+                expectedRevision,
+                operation = new { type = "read" },
+            },
+        });
+        using JsonDocument updated = await current.ReadAsync();
+        using JsonDocument changed = await current.ReadAsync();
+        JsonElement updatedState = updated.RootElement.GetProperty("result").GetProperty("readState");
+        Assert.AreEqual(4, updated.RootElement.GetProperty("id").GetInt32());
+        Assert.AreEqual(JsonValueKind.Null, updatedState.GetProperty("firstUnread").ValueKind);
+        Assert.AreEqual("thread/readState/changed", changed.RootElement.GetProperty("method").GetString());
+        Assert.AreEqual(threadId, changed.RootElement.GetProperty("params").GetProperty("threadId").GetString());
+
+        await using FakeAppServerProcess conflict = await FakeAppServerProcess.StartAsync("ReadStateConflict");
+        await conflict.SendAsync(new
+        {
+            id = 1,
+            method = "initialize",
+            @params = new { capabilities = new { experimentalApi = true } },
+        });
+        using JsonDocument conflictInitialized = await conflict.ReadAsync();
+        await conflict.SendAsync(new { id = 2, method = "thread/start", @params = new { } });
+        using JsonDocument conflictStarted = await conflict.ReadAsync();
+        string conflictThreadId = conflictStarted.RootElement.GetProperty("result").GetProperty("thread").GetProperty("id").GetString()!;
+        using JsonDocument conflictIdleStatus = await conflict.ReadAsync();
+        Assert.AreEqual("thread/status/changed", conflictIdleStatus.RootElement.GetProperty("method").GetString());
+        await conflict.SendAsync(new { id = 3, method = "thread/readState/update", @params = new { threadId = conflictThreadId, expectedRevision = "stale", operation = new { type = "read" } } });
+        using JsonDocument conflicted = await conflict.ReadAsync();
+        JsonElement error = conflicted.RootElement.GetProperty("error");
+        Assert.AreEqual(-32600, error.GetProperty("code").GetInt32());
+        Assert.AreEqual("readStateConflict", error.GetProperty("data").GetProperty("reason").GetString());
+        Assert.IsTrue(error.GetProperty("data").GetProperty("readState").GetProperty("revision").GetString()!.Length > 0);
+
+        await using FakeAppServerProcess regression = await FakeAppServerProcess.StartAsync("Regression01621");
+        await regression.SendAsync(new
+        {
+            id = 1,
+            method = "initialize",
+            @params = new { capabilities = new { experimentalApi = true } },
+        });
+        using JsonDocument regressionInitialized = await regression.ReadAsync();
+        Assert.AreEqual("codex-cli/0.162.1", regressionInitialized.RootElement.GetProperty("result").GetProperty("userAgent").GetString());
+        await regression.SendAsync(new { id = 2, method = "thread/list", @params = new { } });
+        using JsonDocument regressionList = await regression.ReadAsync();
+        Assert.IsFalse(regressionList.RootElement.GetProperty("result").TryGetProperty("readStates", out _));
+    }
+
+    [TestMethod]
     [DataRow("Issue174GoalStop", true)]
     [DataRow("Issue174GoalGap", false)]
     public async Task GoalStopPausesBeforeInterruptingAnAutonomousTurnAndPreventsContinuation(string scenario, bool expectTurn)
