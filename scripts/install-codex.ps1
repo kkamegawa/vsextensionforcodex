@@ -1,6 +1,6 @@
 ﻿[CmdletBinding()]
 param(
-    [ValidateSet('latest', '0.159.1', '0.162.1')]
+    [ValidateSet('latest', '0.159.1', '0.162.1', '0.163.0')]
     [string]$Version = 'latest',
     [string]$OutputDirectory = (Join-Path ([IO.Path]::GetTempPath()) 'codex-cli'),
     [switch]$GitHubEnvironment,

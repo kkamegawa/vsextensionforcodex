@@ -15,6 +15,9 @@ namespace Codex.VisualStudio.Ui.Tests;
 [TestClass]
 public sealed class ViewModelTests
 {
+    private static readonly string[] ExpectedThreadIdsAfterDuplicatePages = ["thread-a", "thread-b"];
+    private static readonly string[] ExpectedRowIdsAfterSelectedThreadLeavesPage = ["thread-b", "thread-c"];
+
     private static readonly ApprovalDecision[] AcceptDeclineCancel =
         [ApprovalDecision.Accept, ApprovalDecision.Decline, ApprovalDecision.Cancel];
 
@@ -102,7 +105,7 @@ public sealed class ViewModelTests
         }
     }
 
-    private static readonly string[] ExpectedWindowsSandboxBackendIds = ["follow", "preferMxc", "requireMxc"];
+    private static readonly string[] ExpectedWindowsSandboxBackendIds = ["follow", "preferMxc", "requireMxc", "disableMxc"];
 
     [TestMethod]
     public void WindowsSandboxBackendSelection_PersistsStableIdAndReportsPendingRestart()
@@ -187,6 +190,571 @@ public sealed class ViewModelTests
         await loading;
 
         Assert.AreEqual(0, vm.Threads.Count);
+    }
+
+    [TestMethod]
+    public async Task ThreadReadState_SelectionDoesNotMarkReadAndExplicitActionUsesRevision()
+    {
+        var bridge = new FakeWorkerBridge { ExperimentalApi = true };
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        await bridge.PublishStateAsync(OwnerStatus("owner-a", 1, 4));
+        var thread = new ThreadSummary { Id = "thread-a", Preview = "Unread conversation" };
+
+        vm.Threads.Add(thread);
+        vm.SelectedThread = thread;
+        await WaitForHistoryLoadAsync(vm);
+        ApplyThreadReadState(vm, thread.Id, new ThreadReadStateSnapshot
+        {
+            Kind = ThreadReadStateKind.UnreadTurn,
+            Revision = "revision-1",
+            TurnId = "turn-opaque",
+        });
+        await Task.Delay(20);
+
+        Assert.AreEqual(0, bridge.UpdateThreadReadStateCallCount, "Selecting or loading a conversation must not mark it read.");
+        Assert.IsTrue(vm.ThreadRows.Single(row => row.Id == thread.Id).IsUnread);
+        Assert.IsTrue(vm.MarkSelectedThreadReadCommand.CanExecute);
+        Assert.IsFalse(vm.MarkSelectedThreadUnreadCommand.CanExecute);
+
+        await RunCommandAsync(vm.MarkSelectedThreadReadCommand);
+
+        Assert.AreEqual(1, bridge.UpdateThreadReadStateCallCount);
+        Assert.AreEqual(thread.Id, bridge.LastUpdateThreadReadStateRequest!.ThreadId);
+        Assert.AreEqual("revision-1", bridge.LastUpdateThreadReadStateRequest.ExpectedRevision);
+        Assert.IsTrue(bridge.LastUpdateThreadReadStateRequest.MarkRead);
+        Assert.AreEqual(ThreadReadStateKind.Read, vm.SelectedThreadReadState!.Kind);
+        Assert.IsTrue(vm.MarkSelectedThreadUnreadCommand.CanExecute);
+    }
+
+    [TestMethod]
+    public async Task ThreadReadState_ControlsAreRepublishedAfterTheUpdateLeavesFlight()
+    {
+        var bridge = new FakeWorkerBridge { ExperimentalApi = true };
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        await bridge.PublishStateAsync(OwnerStatus("owner-a", 1, 4));
+        var thread = new ThreadSummary { Id = "thread-a" };
+        vm.Threads.Add(thread);
+        vm.SelectedThread = thread;
+        await WaitForHistoryLoadAsync(vm);
+        ApplyThreadReadState(vm, thread.Id, new ThreadReadStateSnapshot { Kind = ThreadReadStateKind.UnreadTurn, Revision = "revision-1" });
+
+        // Remote UI reads a bound value when PropertyChanged is raised, so the last published value
+        // is what the Visibility binding shows.
+        bool? publishedUnreadVisibility = null;
+        bool? publishedReadVisibility = null;
+        vm.PropertyChanged += (_, args) =>
+        {
+            if (args.PropertyName == nameof(ChatViewModel.CanMarkSelectedThreadUnread))
+            {
+                publishedUnreadVisibility = vm.CanMarkSelectedThreadUnread;
+            }
+            else if (args.PropertyName == nameof(ChatViewModel.CanMarkSelectedThreadRead))
+            {
+                publishedReadVisibility = vm.CanMarkSelectedThreadRead;
+            }
+        };
+
+        await RunCommandAsync(vm.MarkSelectedThreadReadCommand);
+
+        Assert.IsTrue(publishedUnreadVisibility, "\"Mark as unread\" must be published as visible once the update completes.");
+        Assert.IsFalse(publishedReadVisibility);
+    }
+
+    [TestMethod]
+    public async Task ThreadReadState_OwnUpdateNotificationIsNotReportedAsConcurrentChange()
+    {
+        var bridge = new FakeWorkerBridge { ExperimentalApi = true };
+        var pendingUpdate = new TaskCompletionSource<UpdateThreadReadStateResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+#pragma warning disable VSTHRD003 // The fake holds the response so the server notification can arrive first.
+        bridge.UpdateThreadReadStateHandler = (_, _) => pendingUpdate.Task;
+#pragma warning restore VSTHRD003
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        await bridge.PublishStateAsync(OwnerStatus("owner-a", 1, 4));
+        var thread = new ThreadSummary { Id = "thread-a" };
+        vm.Threads.Add(thread);
+        vm.SelectedThread = thread;
+        await WaitForHistoryLoadAsync(vm);
+        ApplyThreadReadState(vm, thread.Id, new ThreadReadStateSnapshot { Kind = ThreadReadStateKind.UnreadTurn, Revision = "revision-1" });
+        int readsBeforeUpdate = bridge.ReadThreadCallCount;
+        var committed = new ThreadReadStateSnapshot { Kind = ThreadReadStateKind.Read, Revision = "revision-2" };
+
+        Task update = RunCommandAsync(vm.MarkSelectedThreadReadCommand);
+        await WaitForAsync(() => bridge.UpdateThreadReadStateCallCount == 1);
+        await bridge.PublishThreadReadStateChangedAsync(new ThreadReadStateChangedEvent { ThreadId = thread.Id, State = committed });
+        pendingUpdate.SetResult(new UpdateThreadReadStateResult { Succeeded = true, State = committed });
+        await update;
+
+        Assert.AreEqual(readsBeforeUpdate, bridge.ReadThreadCallCount, "The client's own committed receipt needs no reread.");
+        Assert.AreEqual("Conversation marked as read.", vm.ThreadReadStateStatusText);
+
+        // A notification that arrives after the response carries the same receipt.
+        await bridge.PublishThreadReadStateChangedAsync(new ThreadReadStateChangedEvent { ThreadId = thread.Id, State = committed });
+
+        Assert.AreEqual("Conversation marked as read.", vm.ThreadReadStateStatusText);
+        Assert.AreEqual("revision-2", vm.SelectedThreadReadState!.Revision);
+    }
+
+    [TestMethod]
+    public async Task ThreadReadState_UnknownUpdateOutcomeRereadsInsteadOfResending()
+    {
+        var bridge = new FakeWorkerBridge { ExperimentalApi = true };
+        bridge.UpdateThreadReadStateHandler = (_, _) => Task.FromResult(new UpdateThreadReadStateResult { OutcomeUnknown = true });
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        await bridge.PublishStateAsync(OwnerStatus("owner-a", 1, 4));
+        var thread = new ThreadSummary { Id = "thread-a" };
+        vm.Threads.Add(thread);
+        vm.SelectedThread = thread;
+        await WaitForHistoryLoadAsync(vm);
+        ApplyThreadReadState(vm, thread.Id, new ThreadReadStateSnapshot { Kind = ThreadReadStateKind.UnreadTurn, Revision = "revision-1" });
+        bridge.ReadThreadHandler = (request, _) => Task.FromResult(new ThreadReadResult
+        {
+            Thread = new ThreadSummary { Id = request.ThreadId },
+            ReadState = new ThreadReadStateSnapshot { Kind = ThreadReadStateKind.Read, Revision = "committed-revision" },
+        });
+        int readsBeforeUpdate = bridge.ReadThreadCallCount;
+
+        await RunCommandAsync(vm.MarkSelectedThreadReadCommand);
+
+        Assert.AreEqual(1, bridge.UpdateThreadReadStateCallCount, "An unknown outcome must not resend the update.");
+        Assert.AreEqual(readsBeforeUpdate + 1, bridge.ReadThreadCallCount);
+        Assert.AreEqual("committed-revision", vm.SelectedThreadReadState!.Revision);
+        StringAssert.Contains(vm.ThreadReadStateStatusText, "could not be confirmed");
+        Assert.IsTrue(vm.MarkSelectedThreadUnreadCommand.CanExecute);
+    }
+
+    [TestMethod]
+    public async Task ThreadReadState_SelectionKeepsUnreadMarkerWhenHistoryReadFails()
+    {
+        var bridge = new FakeWorkerBridge { ExperimentalApi = true };
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        await bridge.PublishStateAsync(OwnerStatus("owner-a", 1, 4));
+        var thread = new ThreadSummary { Id = "thread-a" };
+        vm.Threads.Add(thread);
+        ApplyThreadReadState(vm, thread.Id, new ThreadReadStateSnapshot { Kind = ThreadReadStateKind.UnreadTurn, Revision = "revision-1" });
+        bridge.ReadThreadHandler = (_, _) => throw new IOException("simulated history failure");
+
+        vm.SelectedThread = thread;
+        await WaitForHistoryLoadAsync(vm);
+
+        Assert.IsTrue(vm.ThreadRows.Single().IsUnread, "Selecting a conversation must not hide its unread marker.");
+        Assert.AreEqual("revision-1", vm.SelectedThreadReadState!.Revision);
+    }
+
+    [TestMethod]
+    public async Task ThreadRows_MirrorListOrderWhenSelectedThreadLeavesTheFirstPage()
+    {
+        var bridge = new FakeWorkerBridge { ExperimentalApi = true };
+        bridge.ListThreadsHandler = (_, _) => Task.FromResult(new ThreadPage
+        {
+            Threads = [new ThreadSummary { Id = "thread-a" }, new ThreadSummary { Id = "thread-b" }],
+        });
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        await bridge.PublishStateAsync(OwnerStatus("owner-a", 1, 4));
+        await InvokeThreadListMethodAsync(vm, "LoadMoreAsync");
+        vm.SelectedThreadRow = vm.ThreadRows.First();
+        await WaitForHistoryLoadAsync(vm);
+        ApplyThreadReadState(vm, "thread-a", new ThreadReadStateSnapshot { Kind = ThreadReadStateKind.UnreadTurn, Revision = "revision-1" });
+        bridge.ListThreadsHandler = (_, _) => Task.FromResult(new ThreadPage
+        {
+            Threads = [new ThreadSummary { Id = "thread-b" }, new ThreadSummary { Id = "thread-c" }],
+        });
+
+        await InvokeThreadListMethodAsync(vm, "ReloadThreadsAsync");
+
+        CollectionAssert.AreEqual(ExpectedRowIdsAfterSelectedThreadLeavesPage, vm.ThreadRows.Select(row => row.Id).ToArray());
+        Assert.AreEqual("thread-a", vm.SelectedThread?.Id);
+        Assert.AreEqual("revision-1", vm.SelectedThreadReadState?.Revision, "The selected row keeps its read state while off the loaded pages.");
+    }
+
+    [TestMethod]
+    public async Task ThreadList_RetiredOwnerRequestNeitherBlocksNorStalesTheNewOwnerList()
+    {
+        var bridge = new FakeWorkerBridge();
+        var oldOwnerPage = new TaskCompletionSource<ThreadPage>(TaskCreationOptions.RunContinuationsAsynchronously);
+#pragma warning disable VSTHRD003 // The fake holds the retired owner's synchronization until the new owner has loaded.
+        bridge.ListThreadsHandler = (_, _) => oldOwnerPage.Task;
+#pragma warning restore VSTHRD003
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        await bridge.PublishStateAsync(OwnerStatus("owner-a", 1, 4));
+        Task oldSynchronization = (Task)typeof(ChatViewModel).GetMethod("SynchronizeRecoveredThreadListAsync", BindingFlags.NonPublic | BindingFlags.Instance)!
+            .Invoke(vm, [CancellationToken.None])!;
+        await WaitForAsync(() => bridge.ListThreadsCallCount == 1);
+
+        await bridge.PublishStateAsync(OwnerStatus("owner-b", 2, 5));
+        bridge.ListThreadsHandler = (_, _) => Task.FromResult(new ThreadPage
+        {
+            Threads = [new ThreadSummary { Id = "new-owner-thread" }],
+            NextCursor = "next-page",
+        });
+        await InvokeThreadListMethodAsync(vm, "LoadMoreAsync");
+
+        Assert.AreEqual(2, bridge.ListThreadsCallCount, "A request of the retired owner must not suppress the new owner's first page.");
+        Assert.AreEqual("new-owner-thread", vm.Threads.Single().Id);
+
+        oldOwnerPage.SetResult(new ThreadPage { Threads = [new ThreadSummary { Id = "old-owner-thread" }] });
+        await oldSynchronization;
+
+        Assert.AreEqual("new-owner-thread", vm.Threads.Single().Id);
+        Assert.IsTrue(vm.LoadMoreCommand.CanExecute, "A superseded synchronization must not mark the new owner's list stale.");
+        Assert.IsFalse(vm.RecoveryStatusText.Contains("could not be synchronized", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    public async Task ThreadReadState_ListRowsDisplayUnreadStateAndKeepSelectionByIdAfterReload()
+    {
+        var bridge = new FakeWorkerBridge { ExperimentalApi = true };
+        bridge.ListThreadsHandler = (_, _) => Task.FromResult(new ThreadPage
+        {
+            Threads = [new ThreadSummary { Id = "thread-a", Preview = "Updated title" }],
+            ReadStatesAvailable = true,
+            ReadStates = new Dictionary<string, ThreadReadStateSnapshot>(StringComparer.Ordinal)
+            {
+                ["thread-a"] = new() { Kind = ThreadReadStateKind.UnreadTurn, Revision = "revision-1" },
+            },
+        });
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        await bridge.PublishStateAsync(OwnerStatus("owner-a", 1, 4));
+        Task load = (Task)typeof(ChatViewModel).GetMethod("LoadMoreAsync", BindingFlags.NonPublic | BindingFlags.Instance)!
+            .Invoke(vm, null)!;
+        await load;
+
+        ThreadHistoryRowViewModel row = vm.ThreadRows.Single();
+        Assert.AreEqual("thread-a", row.Id);
+        Assert.IsTrue(row.IsUnread);
+        vm.SelectedThreadRow = row;
+
+        Task reload = (Task)typeof(ChatViewModel).GetMethod("ReloadThreadsAsync", BindingFlags.NonPublic | BindingFlags.Instance)!
+            .Invoke(vm, null)!;
+        await reload;
+
+        Assert.AreEqual("thread-a", vm.SelectedThread?.Id);
+        Assert.AreEqual("thread-a", vm.SelectedThreadRow?.Id);
+        Assert.AreEqual("Updated title\n", vm.ThreadRows.Single().Preview);
+        Assert.IsTrue(vm.ThreadRows.Single().IsUnread);
+    }
+
+    [TestMethod]
+    public async Task ThreadReadState_ConflictRefreshesStateAndWaitsForAnotherUserAction()
+    {
+        var bridge = new FakeWorkerBridge { ExperimentalApi = true };
+        bridge.UpdateThreadReadStateHandler = (request, _) => Task.FromResult(new UpdateThreadReadStateResult
+        {
+            ThreadId = request.ThreadId,
+            Conflict = true,
+            State = new ThreadReadStateSnapshot
+            {
+                Kind = ThreadReadStateKind.UnreadThreadStart,
+                Revision = "revision-2",
+            },
+        });
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        await bridge.PublishStateAsync(OwnerStatus("owner-a", 1, 4));
+        var thread = new ThreadSummary { Id = "thread-a" };
+        vm.Threads.Add(thread);
+        vm.SelectedThread = thread;
+        await WaitForHistoryLoadAsync(vm);
+        ApplyThreadReadState(vm, thread.Id, new ThreadReadStateSnapshot
+        {
+            Kind = ThreadReadStateKind.UnreadTurn,
+            Revision = "revision-1",
+        });
+
+        await RunCommandAsync(vm.MarkSelectedThreadReadCommand);
+
+        Assert.AreEqual(1, bridge.UpdateThreadReadStateCallCount, "A conflict must not trigger an automatic retry.");
+        Assert.AreEqual("revision-1", bridge.LastUpdateThreadReadStateRequest!.ExpectedRevision);
+        Assert.AreEqual("revision-2", vm.SelectedThreadReadState!.Revision);
+        StringAssert.Contains(vm.ThreadReadStateStatusText, "choose again");
+
+        await RunCommandAsync(vm.MarkSelectedThreadReadCommand);
+
+        Assert.AreEqual(2, bridge.UpdateThreadReadStateCallCount, "A new explicit click may use the refreshed revision.");
+        Assert.AreEqual("revision-2", bridge.LastUpdateThreadReadStateRequest!.ExpectedRevision);
+    }
+
+    [TestMethod]
+    public async Task ThreadReadState_SerializesSameThreadUpdatesAcrossReadAndUnreadCommands()
+    {
+        var bridge = new FakeWorkerBridge { ExperimentalApi = true };
+        var pendingUpdate = new TaskCompletionSource<UpdateThreadReadStateResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        int updateCount = 0;
+#pragma warning disable VSTHRD003 // The fake holds the first read-state mutation until the notification race is exercised.
+        bridge.UpdateThreadReadStateHandler = (request, _) => Interlocked.Increment(ref updateCount) == 1
+            ? pendingUpdate.Task
+            : Task.FromResult(new UpdateThreadReadStateResult
+            {
+                ThreadId = request.ThreadId,
+                Succeeded = true,
+                State = new ThreadReadStateSnapshot { Kind = ThreadReadStateKind.UnreadThreadStart, Revision = "revision-3" },
+            });
+#pragma warning restore VSTHRD003
+        bridge.ReadThreadHandler = (request, _) => Task.FromResult(new ThreadReadResult
+        {
+            Thread = new ThreadSummary { Id = request.ThreadId },
+            ReadState = new ThreadReadStateSnapshot { Kind = ThreadReadStateKind.Read, Revision = "revision-2" },
+        });
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        await bridge.PublishStateAsync(OwnerStatus("owner-a", 1, 4));
+        var thread = new ThreadSummary { Id = "thread-a" };
+        vm.Threads.Add(thread);
+        vm.SelectedThread = thread;
+        await WaitForHistoryLoadAsync(vm);
+        ApplyThreadReadState(vm, thread.Id, new ThreadReadStateSnapshot
+        {
+            Kind = ThreadReadStateKind.UnreadTurn,
+            Revision = "revision-1",
+            TurnId = "turn-1",
+        });
+        int readsBeforeUpdate = bridge.ReadThreadCallCount;
+
+        Task firstUpdate = RunCommandAsync(vm.MarkSelectedThreadReadCommand);
+        await WaitForAsync(() => Volatile.Read(ref updateCount) == 1);
+        await bridge.PublishThreadReadStateChangedAsync(new ThreadReadStateChangedEvent
+        {
+            ThreadId = thread.Id,
+            State = new ThreadReadStateSnapshot { Kind = ThreadReadStateKind.Read, Revision = "revision-2" },
+        });
+
+        Assert.IsFalse(vm.MarkSelectedThreadUnreadCommand.CanExecute, "A state notification must not allow a second update while the first is pending.");
+        await RunCommandAsync(vm.MarkSelectedThreadUnreadCommand);
+        Assert.AreEqual(1, updateCount, "A second command for the same conversation must wait for another explicit action.");
+
+        pendingUpdate.SetResult(new UpdateThreadReadStateResult
+        {
+            ThreadId = thread.Id,
+            Succeeded = true,
+            State = new ThreadReadStateSnapshot { Kind = ThreadReadStateKind.Read, Revision = "older-response" },
+        });
+        await firstUpdate;
+
+        Assert.AreEqual(readsBeforeUpdate + 1, bridge.ReadThreadCallCount, "A successful update that races a notification must reread thread/read state.");
+        Assert.AreEqual("revision-2", vm.SelectedThreadReadState!.Revision, "The newer notification wins over the delayed response.");
+        Assert.IsTrue(vm.MarkSelectedThreadUnreadCommand.CanExecute);
+        await RunCommandAsync(vm.MarkSelectedThreadUnreadCommand);
+
+        Assert.AreEqual(2, updateCount);
+        Assert.AreEqual("revision-2", bridge.LastUpdateThreadReadStateRequest!.ExpectedRevision);
+        Assert.IsFalse(bridge.LastUpdateThreadReadStateRequest.MarkRead);
+    }
+
+    [TestMethod]
+    public async Task ThreadReadState_NotificationWinsOverOlderListSnapshot()
+    {
+        var bridge = new FakeWorkerBridge { ExperimentalApi = true };
+        var listPage = new TaskCompletionSource<ThreadPage>(TaskCreationOptions.RunContinuationsAsynchronously);
+#pragma warning disable VSTHRD003 // The fake deliberately holds this list response until the test publishes a newer state.
+        bridge.ListThreadsHandler = async (_, _) => await listPage.Task.ConfigureAwait(false);
+#pragma warning restore VSTHRD003
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        await bridge.PublishStateAsync(OwnerStatus("owner-a", 1, 4));
+        var thread = new ThreadSummary { Id = "thread-a" };
+        vm.Threads.Add(thread);
+        ApplyThreadReadState(vm, thread.Id, new ThreadReadStateSnapshot
+        {
+            Kind = ThreadReadStateKind.Read,
+            Revision = "revision-1",
+        });
+
+        Task load = (Task)typeof(ChatViewModel).GetMethod("LoadMoreAsync", BindingFlags.NonPublic | BindingFlags.Instance)!
+            .Invoke(vm, null)!;
+        await bridge.PublishThreadReadStateChangedAsync(new ThreadReadStateChangedEvent
+        {
+            ThreadId = thread.Id,
+            State = new ThreadReadStateSnapshot
+            {
+                Kind = ThreadReadStateKind.UnreadTurn,
+                Revision = "revision-2",
+                TurnId = "turn-2",
+            },
+        });
+        listPage.SetResult(new ThreadPage
+        {
+            Threads = [new ThreadSummary { Id = thread.Id }],
+            ReadStatesAvailable = true,
+            ReadStates = new Dictionary<string, ThreadReadStateSnapshot>(StringComparer.Ordinal)
+            {
+                [thread.Id] = new() { Kind = ThreadReadStateKind.Read, Revision = "revision-1" },
+            },
+        });
+        await load;
+
+        Assert.AreEqual("revision-2", vm.ThreadRows.Single(row => row.Id == thread.Id).ReadState.Revision);
+        Assert.IsTrue(vm.ThreadRows.Single(row => row.Id == thread.Id).IsUnread);
+    }
+
+    [TestMethod]
+    public async Task ThreadList_WrongOwnerPageKeepsRowsAndCursor()
+    {
+        var bridge = new FakeWorkerBridge();
+        bridge.ListThreadsHandler = (_, _) => Task.FromResult(new ThreadPage
+        {
+            Threads = [new ThreadSummary { Id = "thread-a" }],
+            NextCursor = "cursor-next",
+        });
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        await bridge.PublishStateAsync(OwnerStatus("owner-a", 1, 4));
+        await InvokeThreadListMethodAsync(vm, "LoadMoreAsync");
+        ThreadSummary existing = vm.Threads.Single();
+
+        bridge.PreserveThreadPageOwner = true;
+        bridge.ListThreadsHandler = (_, _) => Task.FromResult(new ThreadPage
+        {
+            Threads = [new ThreadSummary { Id = "thread-b" }],
+            NextCursor = "wrong-cursor",
+            StatePartitionFingerprint = "different-owner",
+        });
+        await InvokeThreadListMethodAsync(vm, "LoadMoreAsync");
+
+        Assert.AreSame(existing, vm.Threads.Single());
+        Assert.AreEqual("cursor-next", GetPrivateField<string?>(vm, "nextCursor"));
+    }
+
+    [TestMethod]
+    public async Task ThreadList_FailedRefreshPreservesRowsSelectionAndCursor()
+    {
+        var bridge = new FakeWorkerBridge();
+        bridge.ListThreadsHandler = (_, _) => Task.FromResult(new ThreadPage
+        {
+            Threads = [new ThreadSummary { Id = "thread-a", Preview = "Before refresh" }],
+            NextCursor = "cursor-before-refresh",
+        });
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        await bridge.PublishStateAsync(OwnerStatus("owner-a", 1, 4));
+        await InvokeThreadListMethodAsync(vm, "LoadMoreAsync");
+        ThreadSummary existing = vm.Threads.Single();
+        vm.SelectedThread = existing;
+        await WaitForHistoryLoadAsync(vm);
+        bridge.ListThreadsHandler = (_, _) => throw new IOException("simulated refresh failure");
+
+        await InvokeThreadListMethodAsync(vm, "ReloadThreadsAsync");
+
+        Assert.AreSame(existing, vm.Threads.Single());
+        Assert.AreEqual("thread-a", vm.SelectedThread?.Id);
+        Assert.AreEqual("cursor-before-refresh", GetPrivateField<string?>(vm, "nextCursor"));
+        StringAssert.Contains(vm.HistoryStatusText, "Existing conversations were kept");
+    }
+
+    [TestMethod]
+    public async Task ThreadList_DeduplicatesPageIdsAndSuppressesConcurrentLoadMore()
+    {
+        var bridge = new FakeWorkerBridge();
+        var firstPage = new TaskCompletionSource<ThreadPage>(TaskCreationOptions.RunContinuationsAsynchronously);
+#pragma warning disable VSTHRD003 // The fake deliberately holds the first page while a duplicate request is suppressed.
+        bridge.ListThreadsHandler = async (_, _) => await firstPage.Task.ConfigureAwait(false);
+#pragma warning restore VSTHRD003
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        await bridge.PublishStateAsync(OwnerStatus("owner-a", 1, 4));
+
+        Task firstLoad = InvokeThreadListMethodAsync(vm, "LoadMoreAsync");
+        await Task.Delay(20);
+        Task duplicateLoad = InvokeThreadListMethodAsync(vm, "LoadMoreAsync");
+        await duplicateLoad;
+        Assert.AreEqual(1, bridge.ListThreadsCallCount);
+        firstPage.SetResult(new ThreadPage
+        {
+            Threads =
+            [
+                new ThreadSummary { Id = "thread-a" },
+                new ThreadSummary { Id = "thread-a" },
+            ],
+            NextCursor = "cursor-next",
+        });
+        await firstLoad;
+
+        bridge.ListThreadsHandler = (_, cursor) => Task.FromResult(new ThreadPage
+        {
+            Threads =
+            [
+                new ThreadSummary { Id = "thread-a" },
+                new ThreadSummary { Id = "thread-b" },
+                new ThreadSummary { Id = "thread-b" },
+            ],
+        });
+        await InvokeThreadListMethodAsync(vm, "LoadMoreAsync");
+
+        CollectionAssert.AreEqual(ExpectedThreadIdsAfterDuplicatePages, vm.Threads.Select(thread => thread.Id).ToArray());
+    }
+
+    [TestMethod]
+    public async Task ThreadReadState_RequiresNegotiatedExperimentalApiAndValidRevision()
+    {
+        var bridge = new FakeWorkerBridge();
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings
+        {
+            ExperimentalApiEnabled = true,
+        }));
+        await bridge.PublishStateAsync(OwnerStatus("owner-a", 1, 4));
+        var thread = new ThreadSummary { Id = "thread-a" };
+        vm.Threads.Add(thread);
+        vm.SelectedThread = thread;
+        await WaitForHistoryLoadAsync(vm);
+        ApplyThreadReadState(vm, thread.Id, new ThreadReadStateSnapshot
+        {
+            Kind = ThreadReadStateKind.Read,
+            Revision = "revision-1",
+        });
+
+        Assert.IsFalse(vm.IsThreadReadStateAvailable, "A saved opt-in does not enable an API on a connection that did not negotiate it.");
+        Assert.IsTrue(vm.ShowReadStateExperimentalNotice, "The history area should explain the experimental API requirement once.");
+        Assert.IsFalse(vm.ShowSelectedThreadReadState, "Stable connections keep the selected-thread controls hidden.");
+        Assert.IsFalse(vm.CanUpdateSelectedThreadReadState);
+        Assert.IsFalse(vm.MarkSelectedThreadUnreadCommand.CanExecute);
+
+        bridge.ExperimentalApi = true;
+        await bridge.PublishStateAsync(OwnerStatus("owner-a", 1, 4));
+        ApplyThreadReadState(vm, thread.Id, new ThreadReadStateSnapshot { Kind = ThreadReadStateKind.Read });
+
+        Assert.IsTrue(vm.IsThreadReadStateAvailable);
+        Assert.IsFalse(vm.ShowReadStateExperimentalNotice);
+        Assert.IsTrue(vm.ShowSelectedThreadReadState);
+        Assert.IsFalse(vm.CanUpdateSelectedThreadReadState, "A valid state without an opaque revision is not actionable.");
+    }
+
+    [TestMethod]
+    public async Task ThreadReadState_DiscardsLateReadWhenSelectionReturnsToSameThread()
+    {
+        var bridge = new FakeWorkerBridge { ExperimentalApi = true };
+        var firstRead = new TaskCompletionSource<ThreadReadResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        int readNumber = 0;
+        bridge.ReadThreadHandler = (request, _) => Interlocked.Increment(ref readNumber) == 1
+            ? firstRead.Task
+            : Task.FromResult(new ThreadReadResult
+            {
+                Thread = new ThreadSummary { Id = request.ThreadId },
+                ReadState = new ThreadReadStateSnapshot { Kind = ThreadReadStateKind.Read, Revision = "latest" },
+            });
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        await bridge.PublishStateAsync(OwnerStatus("owner-a", 1, 4));
+        var first = new ThreadSummary { Id = "thread-a" };
+        var second = new ThreadSummary { Id = "thread-b" };
+        vm.Threads.Add(first);
+        vm.Threads.Add(second);
+        vm.SelectedThread = first;
+        vm.SelectedThread = second;
+        vm.SelectedThread = first;
+        for (int attempt = 0; attempt < 100 && readNumber < 3; attempt++)
+        {
+            await Task.Delay(10);
+        }
+
+        for (int attempt = 0; attempt < 100 && vm.SelectedThreadReadState?.Revision != "latest"; attempt++)
+        {
+            await Task.Delay(10);
+        }
+
+        firstRead.SetResult(new ThreadReadResult
+        {
+            Thread = new ThreadSummary { Id = first.Id },
+            ReadState = new ThreadReadStateSnapshot { Kind = ThreadReadStateKind.UnreadTurn, Revision = "stale" },
+        });
+        for (int attempt = 0; attempt < 100 && vm.ThreadReadStateStatusText.Contains("Loading", StringComparison.Ordinal); attempt++)
+        {
+            await Task.Delay(10);
+        }
+
+        Assert.AreEqual(first.Id, vm.SelectedThread?.Id);
+        Assert.AreEqual("latest", vm.SelectedThreadReadState?.Revision);
+        Assert.AreEqual(ThreadReadStateKind.Read, vm.SelectedThreadReadState?.Kind);
     }
 
     [TestMethod]
@@ -748,6 +1316,26 @@ public sealed class ViewModelTests
     private static object CaptureOwnerSnapshot(ChatViewModel viewModel)
         => typeof(ChatViewModel).GetMethod("CaptureOwnerSnapshot", BindingFlags.NonPublic | BindingFlags.Instance)!
             .Invoke(viewModel, null)!;
+
+    private static void ApplyThreadReadState(ChatViewModel viewModel, string threadId, ThreadReadStateSnapshot state)
+        => typeof(ChatViewModel).GetMethod("ApplyThreadReadState", BindingFlags.NonPublic | BindingFlags.Instance)!
+            .Invoke(viewModel, [threadId, state]);
+
+    private static Task InvokeThreadListMethodAsync(ChatViewModel viewModel, string methodName)
+        => (Task)typeof(ChatViewModel).GetMethod(methodName, BindingFlags.NonPublic | BindingFlags.Instance)!
+            .Invoke(viewModel, null)!;
+
+    private static T? GetPrivateField<T>(ChatViewModel viewModel, string fieldName)
+        => (T?)typeof(ChatViewModel).GetField(fieldName, BindingFlags.NonPublic | BindingFlags.Instance)!
+            .GetValue(viewModel);
+
+    private static async Task WaitForHistoryLoadAsync(ChatViewModel viewModel)
+    {
+        for (int attempt = 0; attempt < 100 && viewModel.HistoryStatusText == "Loading read-only history…"; attempt++)
+        {
+            await Task.Delay(10);
+        }
+    }
 
     [TestMethod]
     public async Task ApprovalViewModel_ResolvesOnlyOnce()
@@ -3081,6 +3669,35 @@ public sealed class ViewModelTests
     }
 
     [TestMethod]
+    public void ChatToolWindowXaml_ThreadHistoryShowsAccessibleReadStateActions()
+    {
+        const string resourceName = "Codex.VisualStudio.Extension.ToolWindows.ChatToolWindowContent.xaml";
+        using Stream? stream = typeof(ChatViewModel).Assembly.GetManifestResourceStream(resourceName);
+        Assert.IsNotNull(stream, $"Embedded resource '{resourceName}' not found.");
+        XDocument doc = XDocument.Load(stream);
+        XNamespace presentation = "http://schemas.microsoft.com/winfx/2006/xaml/presentation";
+
+        XElement? rows = doc.Descendants(presentation + "ListBox")
+            .SingleOrDefault(list => list.Attribute("ItemsSource")?.Value == "{Binding ThreadRows}");
+        Assert.IsNotNull(rows, "The history list must bind row presentation models.");
+        Assert.AreEqual("{Binding SelectedThreadRow, Mode=TwoWay}", rows!.Attribute("SelectedItem")?.Value);
+        XElement? unread = rows.Descendants(presentation + "TextBlock")
+            .SingleOrDefault(text => text.Attribute("Text")?.Value == "{Binding ReadStateBadgeText}");
+        Assert.IsNotNull(unread, "Unread conversations need a visible row marker.");
+        Assert.AreEqual("{Binding IsUnread, Converter={StaticResource BoolToVis}}", unread!.Attribute("Visibility")?.Value);
+        Assert.AreEqual("Unread conversation", unread.Attribute(XName.Get("AutomationProperties.Name"))?.Value);
+
+        XElement[] actions = doc.Descendants(presentation + "Button")
+            .Where(button => button.Attribute("Content")?.Value is "Mark as read" or "Mark as unread")
+            .ToArray();
+        Assert.AreEqual(2, actions.Length);
+        Assert.IsTrue(actions.All(button => button.Attribute(XName.Get("AutomationProperties.Name")) is not null));
+        Assert.IsTrue(actions.All(button => button.Attribute(XName.Get("AutomationProperties.HelpText")) is not null));
+        Assert.AreEqual("{Binding CanMarkSelectedThreadRead, Converter={StaticResource BoolToVis}}", actions.Single(button => button.Attribute("Content")?.Value == "Mark as read").Attribute("Visibility")?.Value);
+        Assert.AreEqual("{Binding CanMarkSelectedThreadUnread, Converter={StaticResource BoolToVis}}", actions.Single(button => button.Attribute("Content")?.Value == "Mark as unread").Attribute("Visibility")?.Value);
+    }
+
+    [TestMethod]
     public void ChatToolWindowXaml_ComposerBindsCtrlEnterToSendCommand()
     {
         // Regression: the redesigned composer uses an icon Send button (not IsDefault), so the
@@ -3138,6 +3755,7 @@ public sealed class ViewModelTests
             typeof(FileSuggestionViewModel), typeof(ReasoningEffortOption), typeof(ServiceTierOption),
             typeof(PendingSkillViewModel), typeof(UsagePresentation),
             typeof(WorkerStatus), typeof(ThreadSummary), typeof(ThreadAttachmentPresentationViewModel),
+            typeof(ThreadHistoryRowViewModel),
             typeof(ShellCommandConfirmationPresentation), typeof(PlanStepPresentationViewModel),
             typeof(AppServerNoticePresentationViewModel), typeof(ArtifactPartPresentationViewModel),
             typeof(RemoteProfilesPresentationViewModel), typeof(RemoteProfileViewModel),
@@ -8160,6 +8778,8 @@ public sealed class ViewModelTests
 
         public event Func<WorkerNotification<ConversationEvent>, Task>? ConversationEventReceived;
 
+        public event Func<WorkerNotification<ThreadReadStateChangedEvent>, Task>? ThreadReadStateChanged;
+
         public event Func<WorkerNotification<ThreadAttachmentUpdatedEvent>, Task>? ThreadAttachmentUpdated { add { } remove { } }
 
         public event Func<WorkerNotification<WindowsSandboxSetupCompletedEvent>, Task>? WindowsSandboxSetupChanged;
@@ -8240,6 +8860,20 @@ public sealed class ViewModelTests
 
         public Func<string?, CancellationToken, Task<ThreadPage>>? ListThreadsHandler { get; set; }
 
+        public bool PreserveThreadPageOwner { get; set; }
+
+        public int ListThreadsCallCount { get; private set; }
+
+        public int ReadThreadCallCount { get; private set; }
+
+        public Func<ReadThreadRequest, CancellationToken, Task<ThreadReadResult>>? ReadThreadHandler { get; set; }
+
+        public Func<UpdateThreadReadStateRequest, CancellationToken, Task<UpdateThreadReadStateResult>>? UpdateThreadReadStateHandler { get; set; }
+
+        public UpdateThreadReadStateRequest? LastUpdateThreadReadStateRequest { get; private set; }
+
+        public int UpdateThreadReadStateCallCount { get; private set; }
+
         public Func<ListThreadItemsRequest, CancellationToken, Task<ThreadItemsPage>>? ListThreadItemsHandler { get; set; }
 
         public Func<ListThreadTurnsRequest, CancellationToken, Task<ThreadTurnsPage>>? ListThreadTurnsHandler { get; set; }
@@ -8276,6 +8910,9 @@ public sealed class ViewModelTests
 
         public Task PublishConversationEventAsync(ConversationEvent value, WorkerStatus? status = null)
             => ConversationEventReceived?.Invoke(Notification(value, status ?? currentStatus)) ?? Task.CompletedTask;
+
+        public Task PublishThreadReadStateChangedAsync(ThreadReadStateChangedEvent value, WorkerStatus? status = null)
+            => ThreadReadStateChanged?.Invoke(Notification(value, status ?? currentStatus)) ?? Task.CompletedTask;
 
         public Task PublishThreadGoalChangedAsync(ThreadGoalEvent value)
             => ThreadGoalChanged?.Invoke(Notification(value, currentStatus)) ?? Task.CompletedTask;
@@ -8395,20 +9032,83 @@ public sealed class ViewModelTests
 
         public Func<LogoutAccountRequest, CancellationToken, Task<AccountStatus>>? LogoutHandler { get; set; }
 
-        public Task<ThreadPage> ListThreadsAsync(ListThreadsRequest request, CancellationToken cancellationToken)
-            => ListThreadsHandler?.Invoke(request.Cursor, cancellationToken) ?? Task.FromResult(new ThreadPage());
+        public async Task<ThreadPage> ListThreadsAsync(ListThreadsRequest request, CancellationToken cancellationToken)
+        {
+            ListThreadsCallCount++;
+            ThreadPage page = await (ListThreadsHandler?.Invoke(request.Cursor, cancellationToken)
+                ?? Task.FromResult(new ThreadPage()));
+            if (!PreserveThreadPageOwner)
+            {
+                page.StatePartitionFingerprint = request.StatePartitionFingerprint;
+                page.OwnerGeneration = request.OwnerGeneration;
+                page.ConnectionGeneration = request.ConnectionGeneration;
+            }
 
-        public Task<ThreadReadResult> ReadThreadAsync(ReadThreadRequest request, CancellationToken cancellationToken)
-            => Task.FromResult(new ThreadReadResult { Thread = new ThreadSummary { Id = request.ThreadId } });
+            return page;
+        }
 
-        public Task<ThreadTurnsPage> ListThreadTurnsAsync(ListThreadTurnsRequest request, CancellationToken cancellationToken)
-            => ListThreadTurnsHandler?.Invoke(request, cancellationToken) ?? Task.FromResult(new ThreadTurnsPage());
+        public async Task<ThreadReadResult> ReadThreadAsync(ReadThreadRequest request, CancellationToken cancellationToken)
+        {
+            ReadThreadCallCount++;
+            ThreadReadResult result = await (ReadThreadHandler?.Invoke(request, cancellationToken)
+                ?? Task.FromResult(new ThreadReadResult { Thread = new ThreadSummary { Id = request.ThreadId } }));
+            result.StatePartitionFingerprint = request.StatePartitionFingerprint;
+            result.OwnerGeneration = request.OwnerGeneration;
+            result.ConnectionGeneration = request.ConnectionGeneration;
+            return result;
+        }
 
-        public Task<ThreadItemsPage> ListThreadItemsAsync(ListThreadItemsRequest request, CancellationToken cancellationToken)
-            => ListThreadItemsHandler?.Invoke(request, cancellationToken) ?? Task.FromResult(new ThreadItemsPage());
+        public async Task<UpdateThreadReadStateResult> UpdateThreadReadStateAsync(UpdateThreadReadStateRequest request, CancellationToken cancellationToken)
+        {
+            LastUpdateThreadReadStateRequest = request;
+            UpdateThreadReadStateCallCount++;
+            UpdateThreadReadStateResult result = await (UpdateThreadReadStateHandler?.Invoke(request, cancellationToken)
+                ?? Task.FromResult(new UpdateThreadReadStateResult
+                {
+                    ThreadId = request.ThreadId,
+                    Succeeded = true,
+                    State = new ThreadReadStateSnapshot
+                    {
+                        Kind = request.MarkRead ? ThreadReadStateKind.Read : ThreadReadStateKind.UnreadThreadStart,
+                        Revision = "next-revision",
+                    },
+                }));
+            result.ThreadId = request.ThreadId;
+            result.StatePartitionFingerprint = request.StatePartitionFingerprint;
+            result.OwnerGeneration = request.OwnerGeneration;
+            result.ConnectionGeneration = request.ConnectionGeneration;
+            return result;
+        }
 
-        public Task<ThreadAttachmentsPage> ListThreadAttachmentsAsync(ListThreadAttachmentsRequest request, CancellationToken cancellationToken)
-            => ListThreadAttachmentsHandler?.Invoke(request, cancellationToken) ?? Task.FromResult(new ThreadAttachmentsPage());
+        public async Task<ThreadTurnsPage> ListThreadTurnsAsync(ListThreadTurnsRequest request, CancellationToken cancellationToken)
+        {
+            ThreadTurnsPage result = await (ListThreadTurnsHandler?.Invoke(request, cancellationToken)
+                ?? Task.FromResult(new ThreadTurnsPage()));
+            result.StatePartitionFingerprint = request.StatePartitionFingerprint;
+            result.OwnerGeneration = request.OwnerGeneration;
+            result.ConnectionGeneration = request.ConnectionGeneration;
+            return result;
+        }
+
+        public async Task<ThreadItemsPage> ListThreadItemsAsync(ListThreadItemsRequest request, CancellationToken cancellationToken)
+        {
+            ThreadItemsPage result = await (ListThreadItemsHandler?.Invoke(request, cancellationToken)
+                ?? Task.FromResult(new ThreadItemsPage()));
+            result.StatePartitionFingerprint = request.StatePartitionFingerprint;
+            result.OwnerGeneration = request.OwnerGeneration;
+            result.ConnectionGeneration = request.ConnectionGeneration;
+            return result;
+        }
+
+        public async Task<ThreadAttachmentsPage> ListThreadAttachmentsAsync(ListThreadAttachmentsRequest request, CancellationToken cancellationToken)
+        {
+            ThreadAttachmentsPage page = await (ListThreadAttachmentsHandler?.Invoke(request, cancellationToken)
+                ?? Task.FromResult(new ThreadAttachmentsPage()));
+            page.StatePartitionFingerprint = request.StatePartitionFingerprint;
+            page.OwnerGeneration = request.OwnerGeneration;
+            page.ConnectionGeneration = request.ConnectionGeneration;
+            return page;
+        }
 
         public Task<ArtifactActionResult> ResolveArtifactActionAsync(ArtifactActionRequest request, CancellationToken cancellationToken)
         {

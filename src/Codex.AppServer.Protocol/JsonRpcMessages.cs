@@ -1,4 +1,5 @@
-﻿using System.Text.Json;
+﻿using System.Text;
+using System.Text.Json;
 using System.Text.Json.Serialization;
 
 namespace Codex.AppServer.Protocol;
@@ -57,13 +58,50 @@ public sealed class JsonRpcError
 
 public sealed class JsonRpcRemoteException : Exception
 {
+    private const int MaximumErrorDataBytes = 16 * 1024;
+
     public JsonRpcRemoteException(int code, string message)
+        : this(code, message, errorData: null)
+    {
+    }
+
+    public JsonRpcRemoteException(int code, string message, JsonElement? errorData)
         : base(message)
     {
         Code = code;
+        ErrorData = CloneErrorData(errorData);
     }
 
     public int Code { get; }
+
+    /// <summary>
+    /// Gets a bounded copy of the remote JSON-RPC error data. This is separate from
+    /// <see cref="Exception.Data"/> and is never included in logs or user-facing messages.
+    /// </summary>
+    public JsonElement? ErrorData { get; }
+
+    private static JsonElement? CloneErrorData(JsonElement? errorData)
+    {
+        if (errorData is not JsonElement value)
+        {
+            return null;
+        }
+
+        try
+        {
+            if (Encoding.UTF8.GetByteCount(value.GetRawText()) > MaximumErrorDataBytes)
+            {
+                return null;
+            }
+
+            return value.Clone();
+        }
+        catch (InvalidOperationException)
+        {
+            // A disposed or otherwise unusable source element is not safe to retain.
+            return null;
+        }
+    }
 }
 
 public sealed class JsonRpcConnectionClosedException : Exception

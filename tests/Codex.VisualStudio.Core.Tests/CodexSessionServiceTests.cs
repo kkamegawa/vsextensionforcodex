@@ -2901,6 +2901,179 @@ public sealed class CodexSessionServiceTests
         CollectionAssert.AreEqual(CreativeOnly, selected);
     }
 
+    [TestMethod]
+    public async Task ThreadListReadStatesDistinguishReadUnreadAndIneligibleRows()
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method switch
+            {
+                "initialize" => JsonSerializer.SerializeToElement(new { userAgent = "codex-cli/0.163.0" }),
+                "thread/list" => JsonSerializer.SerializeToElement(new
+                {
+                    data = new[]
+                    {
+                        new { id = "read" }, new { id = "start" }, new { id = "turn" }, new { id = "excluded" }, new { id = "invalid" },
+                        new { id = "oversized-revision" }, new { id = "oversized-turn" },
+                    },
+                    readStates = new Dictionary<string, object>
+                    {
+                        ["read"] = new { revision = "opaque-read", firstUnread = (object?)null },
+                        ["start"] = new { revision = "opaque-start", firstUnread = new { type = "threadStart" } },
+                        ["turn"] = new { revision = "opaque-turn", firstUnread = new { type = "turn", turnId = "turn-9" } },
+                        ["invalid"] = new { revision = 7, firstUnread = (object?)null },
+                        ["oversized-revision"] = new { revision = new string('r', 257), firstUnread = (object?)null },
+                        ["oversized-turn"] = new { revision = "opaque-turn", firstUnread = new { type = "turn", turnId = new string('t', 257) } },
+                    },
+                }),
+                _ => JsonSerializer.SerializeToElement(new { }),
+            },
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(experimentalApi: true), CancellationToken.None);
+
+        ThreadPage page = await service.ListThreadsAsync(null, CancellationToken.None);
+
+        Assert.IsTrue(page.ReadStatesAvailable);
+        Assert.AreEqual(ThreadReadStateKind.Read, page.ReadStates["read"].Kind);
+        Assert.AreEqual("opaque-read", page.ReadStates["read"].Revision);
+        Assert.AreEqual(ThreadReadStateKind.UnreadThreadStart, page.ReadStates["start"].Kind);
+        Assert.AreEqual(ThreadReadStateKind.UnreadTurn, page.ReadStates["turn"].Kind);
+        Assert.AreEqual("turn-9", page.ReadStates["turn"].TurnId);
+        Assert.AreEqual(ThreadReadStateKind.NotApplicable, page.ReadStates["excluded"].Kind);
+        Assert.AreEqual(ThreadReadStateKind.Invalid, page.ReadStates["invalid"].Kind);
+        Assert.AreEqual(ThreadReadStateKind.Invalid, page.ReadStates["oversized-revision"].Kind);
+        Assert.AreEqual(ThreadReadStateKind.Invalid, page.ReadStates["oversized-turn"].Kind);
+    }
+
+    [TestMethod]
+    public async Task ThreadListNullReadStatesAreUnavailableRatherThanIneligible()
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method switch
+            {
+                "initialize" => JsonSerializer.SerializeToElement(new { userAgent = "codex-cli/0.163.0" }),
+                "thread/list" => JsonSerializer.SerializeToElement(new { data = new[] { new { id = "thread" } }, readStates = (object?)null }),
+                _ => JsonSerializer.SerializeToElement(new { }),
+            },
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(experimentalApi: true), CancellationToken.None);
+
+        ThreadPage page = await service.ListThreadsAsync(null, CancellationToken.None);
+
+        Assert.IsFalse(page.ReadStatesAvailable);
+        Assert.AreEqual(ThreadReadStateKind.Unavailable, page.ReadStates["thread"].Kind);
+    }
+
+    [TestMethod]
+    public async Task ReadStateConflictUsesOnlyExplicitConflictData()
+    {
+        JsonElement conflictData = JsonSerializer.SerializeToElement(new
+        {
+            reason = "readStateConflict",
+            readState = new { revision = "latest-opaque", firstUnread = (object?)null },
+        });
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method switch
+            {
+                "initialize" => JsonSerializer.SerializeToElement(new { userAgent = "codex-cli/0.163.0" }),
+                "thread/readState/update" => throw new JsonRpcRemoteException(-32600, "Invalid request", conflictData),
+                _ => JsonSerializer.SerializeToElement(new { }),
+            },
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(experimentalApi: true), CancellationToken.None);
+
+        UpdateThreadReadStateResult result = await service.UpdateThreadReadStateAsync(
+            "thread",
+            "stale-opaque",
+            markRead: true,
+            cancellationToken: CancellationToken.None);
+
+        Assert.IsFalse(result.Succeeded);
+        Assert.IsTrue(result.Conflict);
+        Assert.AreEqual(ThreadReadStateKind.Read, result.State.Kind);
+        Assert.AreEqual("latest-opaque", result.State.Revision);
+    }
+
+    [TestMethod]
+    public async Task GenericInvalidRequestIsNotMistakenForReadStateConflict()
+    {
+        JsonElement unrelatedData = JsonSerializer.SerializeToElement(new { reason = "invalidParams" });
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method switch
+            {
+                "initialize" => JsonSerializer.SerializeToElement(new { userAgent = "codex-cli/0.163.0" }),
+                "thread/readState/update" => throw new JsonRpcRemoteException(-32600, "Invalid request", unrelatedData),
+                _ => JsonSerializer.SerializeToElement(new { }),
+            },
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(experimentalApi: true), CancellationToken.None);
+
+        await Assert.ThrowsExactlyAsync<JsonRpcRemoteException>(() => service.UpdateThreadReadStateAsync(
+            "thread",
+            "revision",
+            markRead: true,
+            cancellationToken: CancellationToken.None));
+    }
+
+    [TestMethod]
+    public async Task MxcOptOutRejectsUnknownOrPre163LocalServerBeforeInitialized()
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "initialize"
+                ? JsonSerializer.SerializeToElement(new { userAgent = "codex-cli/0.162.1" })
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        await using var service = CreateService();
+        WorkerOptions options = Options();
+        options.WindowsSandboxBackend = WindowsSandboxBackendPreference.DisableMxc;
+
+        InvalidOperationException error = await Assert.ThrowsExactlyAsync<InvalidOperationException>(
+            () => service.InitializeAsync(connection, options, CancellationToken.None));
+
+        StringAssert.Contains(error.Message, "requires Codex CLI 0.163.0 or later");
+        Assert.IsFalse(connection.Notifications.Any(notification => notification.Method == "initialized"));
+        Assert.IsNull(service.CodexVersion, "The rejected server's version must not remain observable.");
+        Assert.IsNull(service.InitializationMetadata);
+        await Assert.ThrowsExactlyAsync<InvalidOperationException>(
+            () => service.ListThreadsAsync(null, CancellationToken.None),
+            "The rejected connection context must be retired.");
+    }
+
+    [TestMethod]
+    public async Task ReadStateUpdateTimeoutReportsUnknownOutcomeWithoutResending()
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method switch
+            {
+                "initialize" => JsonSerializer.SerializeToElement(new { userAgent = "codex-cli/0.163.0" }),
+                "thread/readState/update" => throw new TaskCanceledException("simulated request timeout"),
+                _ => JsonSerializer.SerializeToElement(new { }),
+            },
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(experimentalApi: true), CancellationToken.None);
+
+        UpdateThreadReadStateResult result = await service.UpdateThreadReadStateAsync(
+            "thread",
+            "revision",
+            markRead: true,
+            cancellationToken: CancellationToken.None);
+
+        Assert.IsTrue(result.OutcomeUnknown);
+        Assert.IsFalse(result.Succeeded);
+        Assert.IsFalse(result.Conflict);
+        Assert.AreEqual(1, connection.Requests.Count(request => request.Method == "thread/readState/update"), "An unknown outcome must not be retried.");
+    }
+
     private static CodexSessionService CreateService(ISkillCatalogStore? skillCatalogStore = null)
         => new(
             new ApprovalPolicyEngine(new PathAccessPolicy()),
@@ -2943,8 +3116,8 @@ public sealed class CodexSessionServiceTests
     }
 
     [TestMethod]
-    [DataRow(WindowsSandboxBackendPreference.RequireMxc, "\"Require MXC\" conflicts with managed policy")]
-    [DataRow(WindowsSandboxBackendPreference.PreferMxc, "\"Prefer MXC\" is not eligible under this policy")]
+    [DataRow(WindowsSandboxBackendPreference.RequireMxc, "explicit windows.sandbox=mxc setting conflicts with windows.allow_mxc=false")]
+    [DataRow(WindowsSandboxBackendPreference.PreferMxc, "configuration or local-binding policy may prevent MXC")]
     public async Task WindowsSandboxReadinessReportsConfigurationAndPolicyWithoutClaimingTheActiveBackend(
         WindowsSandboxBackendPreference backend,
         string expectedNotice)
@@ -2957,7 +3130,7 @@ public sealed class CodexSessionServiceTests
                 "windowsSandbox/readiness" => JsonSerializer.SerializeToElement(new { status = "ready" }),
                 "config/read" => JsonSerializer.SerializeToElement(new
                 {
-                    config = new { windows = new { sandbox = "mxc" }, features = new { prefer_mxc = true } },
+                    config = new { windows = new { sandbox = "mxc", allow_mxc = backend == WindowsSandboxBackendPreference.RequireMxc ? false : true }, features = new { prefer_mxc = true } },
                     origins = new { },
                 }),
                 "configRequirements/read" => JsonSerializer.SerializeToElement(new
@@ -2988,11 +3161,14 @@ public sealed class CodexSessionServiceTests
         Assert.AreEqual(backend, result.AppliedBackendPreference);
         Assert.IsTrue(result.ConfigKnown);
         Assert.AreEqual("mxc", result.ConfiguredImplementation);
+        Assert.AreEqual(backend != WindowsSandboxBackendPreference.RequireMxc, result.AllowMxc);
         Assert.IsTrue(result.PreferMxcFeature);
         Assert.IsTrue(result.RequirementsKnown);
         CollectionAssert.AreEqual(new[] { "elevated", "unelevated" }, result.AllowedImplementations, "Unknown implementations are dropped.");
         Assert.IsFalse(result.AllowLocalBinding);
         StringAssert.Contains(result.BackendNotice, expectedNotice);
+        Assert.IsFalse(result.BackendNotice!.Contains("Managed policy does not allow MXC", StringComparison.Ordinal));
+        StringAssert.Contains(result.BackendNotice, "does not determine MXC eligibility");
         StringAssert.Contains(result.BackendNotice, "Readiness does not prove which backend runs each command.");
     }
 
@@ -3024,7 +3200,11 @@ public sealed class CodexSessionServiceTests
 
         Assert.AreEqual(known, result.RequirementsKnown);
         Assert.IsNull(result.AllowedImplementations);
-        StringAssert.Contains(result.BackendNotice, known ? "Managed policy allows MXC." : "Managed policy could not be read.");
+        StringAssert.Contains(
+            result.BackendNotice,
+            known
+                ? "managed Windows sandbox requirements do not expose whether MXC is required"
+                : "Managed policy could not be read.");
     }
 
     [TestMethod]
@@ -3063,7 +3243,8 @@ public sealed class CodexSessionServiceTests
         string message = WorkerRpcService.AppendSandboxBackendStartupHint("codex app-server exited.", WindowsSandboxBackendPreference.RequireMxc);
 
         StringAssert.StartsWith(message, "codex app-server exited.");
-        StringAssert.Contains(message, "Follow Codex configuration");
+        StringAssert.Contains(message, "Review the sanitized CLI error");
+        StringAssert.Contains(message, "cannot identify which rule rejected the setting");
         Assert.AreEqual("boom", WorkerRpcService.AppendSandboxBackendStartupHint("boom", WindowsSandboxBackendPreference.PreferMxc));
     }
 
@@ -4144,6 +4325,8 @@ public sealed class CodexSessionServiceTests
 
         public List<RecordedRequest> Requests { get; } = new();
 
+        public List<RecordedNotification> Notifications { get; } = new();
+
         public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
 
         public Task<JsonElement> SendRequestAsync(string method, object? parameters, TimeSpan timeout, CancellationToken cancellationToken)
@@ -4161,7 +4344,10 @@ public sealed class CodexSessionServiceTests
         }
 
         public Task SendNotificationAsync(string method, object? parameters, CancellationToken cancellationToken)
-            => Task.CompletedTask;
+        {
+            Notifications.Add(new RecordedNotification(method, parameters));
+            return Task.CompletedTask;
+        }
 
         public Task EmitNotificationAsync(string method, object parameters)
             => NotificationReceived?.Invoke(
@@ -4250,6 +4436,8 @@ public sealed class CodexSessionServiceTests
     }
 
     private sealed record RecordedRequest(string Method, object? Parameters, TimeSpan Timeout);
+
+    private sealed record RecordedNotification(string Method, object? Parameters);
 
     private sealed class NullSkillCatalogStore : ISkillCatalogStore
     {

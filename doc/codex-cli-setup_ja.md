@@ -2,7 +2,7 @@
 
 [English](codex-cli-setup.md) · [README](../README_ja.md)
 
-このガイドは、現行の拡張機能と、接続仕様の固定対象である Codex CLI **0.162.1** に対応します。最初はローカルで利用してください。**Connection target** は App Server の接続先を選ぶ画面です。CLI のインストールや実行ファイルの指定はここでは行いません。**Connected to: Local**、**No remote profiles** と表示されていれば、通常の利用にリモートプロファイルの追加は不要です。
+このガイドは、現行の拡張機能と、接続仕様の固定対象である Codex CLI **0.163.0** に対応します。最初はローカルで利用してください。**Connection target** は App Server の接続先を選ぶ画面です。CLI のインストールや実行ファイルの指定はここでは行いません。**Connected to: Local**、**No remote profiles** と表示されていれば、通常の利用にリモートプロファイルの追加は不要です。
 
 ## 目次
 
@@ -36,7 +36,7 @@
 
 必要なものは、Windows x64 または Arm64、Visual Studio 2022 **17.14 以降**または Visual Studio 2026、Codex で利用できるアカウント／プロバイダー、拡張機能の VSIX です。
 
-1. [README の必要環境](../README_ja.md#動作要件)にある公式 `rust-v0.162.1` リリースへのリンクを開きます。
+1. [README の必要環境](../README_ja.md#動作要件)にある公式 `rust-v0.163.0` リリースへのリンクを開きます。
 2. x64 なら `codex-package-x86_64-pc-windows-msvc.tar.gz`、Arm64 なら `codex-package-aarch64-pc-windows-msvc.tar.gz` をダウンロードします。
 3. 完全パッケージを使用し、`bin\codex.exe`、`bin\codex-code-mode-host.exe`、`codex-resources\` を含む配置を維持します。単体の実行ファイルでは初期接続できても、ツール実行が `failed to spawn code-mode host` で失敗することがあります。
 4. そのパッケージの SHA-256 を、リリースページにある同じアセットのダイジェストと照合します。`app-server-contract.json` の単体実行ファイルのハッシュは別アセットの値です。
@@ -50,7 +50,7 @@ $actualHash = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash
 if ($expectedHash -notmatch '^[0-9a-fA-F]{64}$' -or $actualHash -ine $expectedHash) {
     throw 'Package SHA-256 mismatch.'
 }
-$codexInstall = Join-Path $env:LOCALAPPDATA 'OpenAI\Codex\0.162.1'
+$codexInstall = Join-Path $env:LOCALAPPDATA 'OpenAI\Codex\0.163.0'
 New-Item -ItemType Directory -Force -Path $codexInstall | Out-Null
 tar -xzf $archive -C $codexInstall
 if ($LASTEXITCODE -ne 0) { throw 'Package extraction failed.' }
@@ -62,8 +62,8 @@ if (-not (Test-Path -LiteralPath (Join-Path $codexInstall 'bin\codex-code-mode-h
     throw 'The complete CLI package is required.'
 }
 $version = & $codexExe --version
-if ($LASTEXITCODE -ne 0 -or $version.Trim() -ne 'codex-cli 0.162.1') {
-    throw 'Expected codex-cli 0.162.1.'
+if ($LASTEXITCODE -ne 0 -or $version.Trim() -ne 'codex-cli 0.163.0') {
+    throw 'Expected codex-cli 0.163.0.'
 }
 $env:CODEX_PATH = $codexExe
 [Environment]::SetEnvironmentVariable('CODEX_PATH', $codexExe, 'User')
@@ -176,9 +176,9 @@ model_reasoning_effort = "medium"
 
 Agent の権限には **Ask for approval**、**Approve on my behalf**、**Full access**、**Custom (config.toml)**、対応する権限プロファイルがあります。Chat は読み取り専用に固定されます。Full access は Codex のサンドボックスと通常の承認要求を無効化するため確認が必要です。Custom では、そのスレッドにすでに適用した上書きを解除できません。そのようなスレッドを Custom に戻す場合は新しいスレッドを開始します。
 
-**Experimental API** は既定でオフで、次回の初期化／再接続から反映されます。対応する実験 API 機能に必要な場合に有効にしてください。CLI の導入や認証の設定ではありません。明示的な `/shell` コマンドは CLI 0.159.1 でもサンドボックス外で Full access 実行されます。使う前に確認画面と[コマンドガイド](slash-commands_ja.md)を確認してください。
+**Experimental API** は既定でオフで、次回の初期化／再接続から反映されます。対応する実験 API 機能に必要な場合に有効にしてください。CLI の導入や認証の設定ではありません。CLI 0.163.0 以上に experimental API 接続した場合、会話履歴に未読状態を表示し、「既読にする」「未読にする」を明示操作できます。会話を開いたり操作したりしても、自動で既読にはなりません。明示的な `/shell` コマンドは CLI 0.159.1 でもサンドボックス外で Full access 実行されます。使う前に確認画面と[コマンドガイド](slash-commands_ja.md)を確認してください。
 
-**Windows sandbox** パネルで、ローカル app-server のバックエンドを **Follow Codex configuration**、**Prefer MXC**、**Require MXC** から選択します。選択は次回のローカル app-server 起動時に反映されます。**Check sandbox status** は実効設定と管理ポリシーを表示し、**Start setup** は legacy の elevated／unelevated の setup を実行します。MXC には setup は不要です。いずれもローカル専用で、リモートホストの設定は行いません。各設定の動作は [README の FAQ](../README_ja.md#faq) を参照してください。
+**Windows sandbox** パネルで、ローカル app-server のバックエンドを **Follow Codex configuration**、**Prefer MXC**、**Require MXC**、**Do not use MXC** から選択します。選択は次回のローカル app-server 起動時に反映されます。**Check sandbox status** は windows.allow_mxc を取得できる場合に報告し、管理要件も表示します。値がない場合は不明で、App Server は MXC が必須かどうかを公開しません。**Start setup** は legacy の elevated／unelevated の setup を実行します。MXC には setup は不要です。**Do not use MXC** は CLI 0.163.0 以上が必要で、ローカル起動時に windows.allow_mxc=false を渡します。いずれもローカル専用で、リモートホストの設定は行いません。各設定の動作は [README の FAQ](../README_ja.md#faq) を参照してください。
 
 ## 6. Connection target 画面の読み方
 
@@ -203,7 +203,7 @@ Agent の権限には **Ask for approval**、**Approve on my behalf**、**Full a
 
 Visual Studio のプロファイル入力より**先に**、サーバー管理者が次を用意します。
 
-1. 対応プラットフォームの CLI 0.162.1 完全パッケージと、動作する実行ヘルパー。
+1. 対応プラットフォームの CLI 0.163.0 完全パッケージと、動作する実行ヘルパー。
 2. サーバープロセス実行ユーザーのプロバイダー認証。サーバー上で `login status` を確認。
 3. サーバールートから参照できる同じ作業ツリー。既存のストレージ／作業環境の運用で内容を一致させる。
 4. 十分なランダム性を持つ Bearer トークンと認証付き WebSocket リスナー。
@@ -221,8 +221,8 @@ Visual Studio のプロファイル入力より**先に**、サーバー管理�
 ~~~powershell
 $serverCodex = (Resolve-Path -LiteralPath (Read-Host 'Server codex.exe path')).Path
 $serverVersion = & $serverCodex --version
-if ($LASTEXITCODE -ne 0 -or $serverVersion.Trim() -ne 'codex-cli 0.162.1') {
-    throw 'Expected codex-cli 0.162.1 on the server.'
+if ($LASTEXITCODE -ne 0 -or $serverVersion.Trim() -ne 'codex-cli 0.163.0') {
+    throw 'Expected codex-cli 0.163.0 on the server.'
 }
 & $serverCodex login status
 if ($LASTEXITCODE -ne 0) { throw 'Sign in as the server process user first.' }
@@ -247,12 +247,12 @@ $listenUri = Read-Host 'App Server ws listener URI'
 
 通常のアクセス制御の運用でファイルを非公開にしてください。このコマンドはフォアグラウンドで実行され、停止するまで継続します。
 
-**macOS/Linux サーバーの bash** では、公式リリースアセットからそのホスト用の 0.162.1 完全パッケージを先に導入します。次のトークン生成例には OpenSSL が必要です。
+**macOS/Linux サーバーの bash** では、公式リリースアセットからそのホスト用の 0.163.0 完全パッケージを先に導入します。次のトークン生成例には OpenSSL が必要です。
 
 ~~~bash
 read -r -p 'Server codex executable path: ' server_codex
 server_version=$("$server_codex" --version) || exit 1
-[ "$server_version" = "codex-cli 0.162.1" ] || { printf 'Expected codex-cli 0.162.1.\n' >&2; exit 1; }
+[ "$server_version" = "codex-cli 0.163.0" ] || { printf 'Expected codex-cli 0.163.0.\n' >&2; exit 1; }
 "$server_codex" login status || exit 1
 read -r -p 'New absolute local token-file path: ' server_token_file
 case "$server_token_file" in /*) ;; *) printf 'Use an absolute path.\n' >&2; exit 1 ;; esac

@@ -175,6 +175,7 @@ public sealed class CodexProcessHostTests
     [TestMethod]
     [DataRow(WindowsSandboxBackendPreference.PreferMxc, "features.prefer_mxc=true")]
     [DataRow(WindowsSandboxBackendPreference.RequireMxc, "windows.sandbox=mxc")]
+    [DataRow(WindowsSandboxBackendPreference.DisableMxc, "windows.allow_mxc=false")]
     public void CreateStartInfoPassesSandboxBackendOverrideToExecutable(WindowsSandboxBackendPreference backend, string expected)
     {
         ProcessStartInfo info = CodexProcessHost.CreateStartInfo(@"C:	ools\codex.exe", Path.GetTempPath(), backend);
@@ -185,6 +186,7 @@ public sealed class CodexProcessHostTests
     [TestMethod]
     [DataRow(WindowsSandboxBackendPreference.PreferMxc, "features.prefer_mxc=true")]
     [DataRow(WindowsSandboxBackendPreference.RequireMxc, "windows.sandbox=mxc")]
+    [DataRow(WindowsSandboxBackendPreference.DisableMxc, "windows.allow_mxc=false")]
     public void CreateStartInfoPassesSandboxBackendOverrideThroughCmdWithoutQuotes(WindowsSandboxBackendPreference backend, string expected)
     {
         string wrapperPath = @"C:	ools\codex.cmd";

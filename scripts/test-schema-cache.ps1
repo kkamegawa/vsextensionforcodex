@@ -1,5 +1,6 @@
 ﻿param(
     [Parameter(Mandatory = $true)][string]$CodexPath,
+    [Parameter(Mandatory = $true)][ValidateSet('0.159.1', '0.162.1', '0.163.0')][string]$Version,
     [string]$TemporaryRoot = $env:RUNNER_TEMP
 )
 
@@ -11,32 +12,36 @@ if ([string]::IsNullOrWhiteSpace($TemporaryRoot)) {
 $generator = Join-Path $PSScriptRoot 'generate-schemas.ps1'
 $root = [IO.Path]::GetFullPath($TemporaryRoot).TrimEnd([IO.Path]::DirectorySeparatorChar)
 $testRoot = Join-Path $root ('codex-schema-cache-test-' + [guid]::NewGuid().ToString('N'))
-$cache = Join-Path $testRoot '0.162.1\stable'
+$cache = Join-Path $testRoot "$Version\stable"
 $metadataPath = Join-Path $cache '.schema-metadata.json'
 $sentinelPath = Join-Path $cache 'codex_app_server_protocol.schemas.json'
 
-function Invoke-Generator {
-    & $generator -OutputDirectory $testRoot -Version '0.162.1' -Surface stable -CodexPath $CodexPath
+function Invoke-Generator([string]$Surface) {
+    & $generator -OutputDirectory $testRoot -Version $Version -Surface $Surface -CodexPath $CodexPath
     if ($LASTEXITCODE -ne 0) {
         throw "Schema generator failed with exit code $LASTEXITCODE."
     }
 }
 
 try {
-    Invoke-Generator
-    $firstWrite = (Get-Item -LiteralPath $sentinelPath).LastWriteTimeUtc
-    Invoke-Generator
-    $secondWrite = (Get-Item -LiteralPath $sentinelPath).LastWriteTimeUtc
-    if ($firstWrite -ne $secondWrite) {
-        throw 'Exact metadata and sentinel did not produce a schema cache hit.'
+    foreach ($surface in @('stable', 'experimental')) {
+        Invoke-Generator $surface
+        $surfaceCache = Join-Path $testRoot "$Version\$surface"
+        $surfaceSentinelPath = Join-Path $surfaceCache 'codex_app_server_protocol.schemas.json'
+        $firstWrite = (Get-Item -LiteralPath $surfaceSentinelPath).LastWriteTimeUtc
+        Invoke-Generator $surface
+        $secondWrite = (Get-Item -LiteralPath $surfaceSentinelPath).LastWriteTimeUtc
+        if ($firstWrite -ne $secondWrite) {
+            throw "Exact $Version/$surface metadata and sentinel did not produce a schema cache hit."
+        }
     }
 
     $metadata = Get-Content -Raw -LiteralPath $metadataPath | ConvertFrom-Json
-    $metadata.cliVersion = '0.159.1'
+    $metadata.cliVersion = if ($Version -eq '0.159.1') { '0.162.1' } else { '0.159.1' }
     $metadata | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $metadataPath -Encoding utf8
     $marker = Join-Path $cache 'stale-marker.txt'
     Set-Content -LiteralPath $marker -Value 'stale' -Encoding utf8
-    Invoke-Generator
+    Invoke-Generator 'stable'
     if (Test-Path -LiteralPath $marker) {
         throw 'CLI-version metadata mismatch did not replace the stale cache.'
     }
@@ -45,14 +50,23 @@ try {
     $metadata.generatorArguments = @('--unexpected')
     $metadata | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $metadataPath -Encoding utf8
     Set-Content -LiteralPath $marker -Value 'stale' -Encoding utf8
-    Invoke-Generator
+    Invoke-Generator 'stable'
     if (Test-Path -LiteralPath $marker) {
         throw 'Generator-argument metadata mismatch did not replace the stale cache.'
     }
 
+    $metadata = Get-Content -Raw -LiteralPath $metadataPath | ConvertFrom-Json
+    $metadata.schemaVersion = 2
+    $metadata | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $metadataPath -Encoding utf8
+    Set-Content -LiteralPath $marker -Value 'stale' -Encoding utf8
+    Invoke-Generator 'stable'
+    if (Test-Path -LiteralPath $marker) {
+        throw 'Cache-metadata format mismatch did not replace the stale cache.'
+    }
+
     Remove-Item -LiteralPath $sentinelPath -Force
     Set-Content -LiteralPath $marker -Value 'stale' -Encoding utf8
-    Invoke-Generator
+    Invoke-Generator 'stable'
     if (-not (Test-Path -LiteralPath $sentinelPath -PathType Leaf) -or (Test-Path -LiteralPath $marker)) {
         throw 'Missing schema sentinel did not replace the stale cache.'
     }
@@ -64,7 +78,7 @@ try {
         Set-Content -LiteralPath $stub -Value "@echo codex-cli $ReportedVersion" -Encoding ascii
         $failure = $null
         try {
-            & $generator -OutputDirectory (Join-Path $testRoot 'stub-cache') -Version '0.162.1' -Surface stable -CodexPath $stub -Force *> $null
+        & $generator -OutputDirectory (Join-Path $testRoot 'stub-cache') -Version $Version -Surface stable -CodexPath $stub -Force *> $null
         }
         catch {
             $failure = $_.Exception.Message
@@ -79,10 +93,11 @@ try {
         }
     }
 
-    Assert-VersionRejected '0.162.1-alpha.1' 'Prerelease Codex CLI is not a stable contract'
-    Assert-VersionRejected '0.159.1' 'Pinned Codex 0.162.1 is required'
+    Assert-VersionRejected "$Version-alpha.1" 'Prerelease Codex CLI is not a stable contract'
+    $otherStableVersion = @('0.159.1', '0.162.1', '0.163.0') | Where-Object { $_ -ne $Version } | Select-Object -First 1
+    Assert-VersionRejected $otherStableVersion "Pinned Codex $Version is required"
 
-    Write-Host 'Schema cache contract tests passed.'
+    Write-Host "Schema cache contract tests passed for $Version stable and experimental surfaces."
 }
 finally {
     $resolvedTestRoot = [IO.Path]::GetFullPath($testRoot).TrimEnd([IO.Path]::DirectorySeparatorChar)

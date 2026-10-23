@@ -1,11 +1,16 @@
 ﻿param(
     [Parameter(Mandatory = $true)][string]$SchemaDirectory,
-    [string]$ManifestPath = 'app-server-contract.json',
-    [string]$RegressionSchemaDirectory = 'schemas/0.159.1/stable'
+    [Parameter(Mandatory = $true)][ValidateSet('stable', 'experimental')][string]$Surface,
+    [Parameter(Mandatory = $true)][string]$Version,
+    [string]$ManifestPath = 'app-server-contract.json'
 )
 
 $ErrorActionPreference = 'Stop'
 $manifest = Get-Content -Raw -LiteralPath $ManifestPath | ConvertFrom-Json
+$expectedMethods = $manifest.methodsByVersion.$Version.$Surface
+if ($null -eq $expectedMethods) {
+    throw "The contract manifest has no method table for $Version/$Surface."
+}
 
 function Get-MethodTable {
     param(
@@ -68,9 +73,9 @@ $serverRequests = Get-MethodTable -Path (Join-Path $SchemaDirectory 'ServerReque
 $serverNotifications = Get-MethodTable -Path (Join-Path $SchemaDirectory 'ServerNotification.json')
 
 foreach ($definition in @(
-    @{ Name = 'client request'; Expected = @($manifest.usedMethods.clientRequests); Actual = $clientRequests },
-    @{ Name = 'server request'; Expected = @($manifest.usedMethods.serverRequests); Actual = $serverRequests },
-    @{ Name = 'server notification'; Expected = @($manifest.usedMethods.serverNotifications); Actual = $serverNotifications }
+    @{ Name = 'client request'; Expected = @($expectedMethods.clientRequests); Actual = $clientRequests },
+    @{ Name = 'server request'; Expected = @($expectedMethods.serverRequests); Actual = $serverRequests },
+    @{ Name = 'server notification'; Expected = @($expectedMethods.serverNotifications); Actual = $serverNotifications }
 )) {
     foreach ($method in $definition.Expected) {
         if (-not $definition.Actual.ContainsKey($method)) {
@@ -79,52 +84,30 @@ foreach ($definition in @(
     }
 }
 
-foreach ($method in @($manifest.usedMethods.experimentalDescribedServerNotifications)) {
-    if (-not $serverNotifications.ContainsKey($method)) {
-        throw "Experimental server notification '$method' is absent from $SchemaDirectory."
-    }
-
-    $description = Get-MethodDescription -Path (Join-Path $SchemaDirectory 'ServerNotification.json') -Method $method
-    if ($description -notmatch '^EXPERIMENTAL\b') {
-        throw "Experimental server notification '$method' is not marked EXPERIMENTAL in $SchemaDirectory."
-    }
-}
-
-if (-not [string]::IsNullOrWhiteSpace($RegressionSchemaDirectory) -and (Test-Path -LiteralPath $RegressionSchemaDirectory -PathType Container)) {
-    $regressionFixtureName = Split-Path -Leaf (Split-Path -Parent $RegressionSchemaDirectory)
-    $regressionExpectedMethods = $manifest.regressionMethods.$regressionFixtureName
-    if ($null -eq $regressionExpectedMethods) {
-        throw "Contract manifest does not define regressionMethods.$regressionFixtureName."
-    }
-
-    $regressionClientRequests = Get-MethodTable -Path (Join-Path $RegressionSchemaDirectory 'ClientRequest.json')
-    $regressionServerRequests = Get-MethodTable -Path (Join-Path $RegressionSchemaDirectory 'ServerRequest.json')
-    $regressionServerNotifications = Get-MethodTable -Path (Join-Path $RegressionSchemaDirectory 'ServerNotification.json')
-    foreach ($definition in @(
-        @{ Name = 'client request'; Expected = @($regressionExpectedMethods.clientRequests); Actual = $regressionClientRequests },
-        @{ Name = 'server request'; Expected = @($manifest.usedMethods.serverRequests); Actual = $regressionServerRequests },
-        @{ Name = 'server notification'; Expected = @($regressionExpectedMethods.serverNotifications); Actual = $regressionServerNotifications }
-    )) {
-        foreach ($method in $definition.Expected) {
-            if (-not $definition.Actual.ContainsKey($method)) {
-                throw "Used $($definition.Name) method '$method' is absent from regression fixture $RegressionSchemaDirectory."
-            }
-        }
-    }
-
-    foreach ($method in @($manifest.usedMethods.experimentalDescribedServerNotifications)) {
-        if (-not $regressionServerNotifications.ContainsKey($method)) {
-            throw "Experimental server notification '$method' is absent from regression fixture $RegressionSchemaDirectory."
+if ($Surface -eq 'experimental') {
+    foreach ($method in @($expectedMethods.experimentalServerNotifications)) {
+        if (-not $serverNotifications.ContainsKey($method)) {
+            throw "Experimental server notification '$method' is absent from $Version/$Surface."
         }
 
-        $description = Get-MethodDescription -Path (Join-Path $RegressionSchemaDirectory 'ServerNotification.json') -Method $method
+        $description = Get-MethodDescription -Path (Join-Path $SchemaDirectory 'ServerNotification.json') -Method $method
         if ($description -notmatch '^EXPERIMENTAL\b') {
-            throw "Experimental server notification '$method' is not marked EXPERIMENTAL in regression fixture $RegressionSchemaDirectory."
+            throw "Experimental server notification '$method' is not marked EXPERIMENTAL in $Version/$Surface."
         }
     }
-
-    Write-Host "Used app-server methods and experimental annotations match the generated contract surface and regression fixture $RegressionSchemaDirectory."
-    return
 }
 
-Write-Host "Used app-server methods match the generated contract surface in $SchemaDirectory."
+if ($Version -eq '0.163.0') {
+    $readStateUpdate = 'thread/readState/update'
+    if ($Surface -eq 'experimental' -and -not $clientRequests.ContainsKey($readStateUpdate)) {
+        throw "The experimental 0.163.0 contract is missing $readStateUpdate."
+    }
+    if ($Surface -eq 'stable' -and $clientRequests.ContainsKey($readStateUpdate)) {
+        throw "The stable 0.163.0 contract unexpectedly exposes $readStateUpdate."
+    }
+    if ($Surface -eq 'experimental' -and @($expectedMethods.serverNotifications) -notcontains 'thread/readState/changed') {
+        throw 'The 0.163.0 experimental method table must include thread/readState/changed.'
+    }
+}
+
+Write-Host "Used app-server methods match the $Version/$Surface generated contract surface in $SchemaDirectory."

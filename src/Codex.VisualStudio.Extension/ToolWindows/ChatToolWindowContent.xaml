@@ -779,8 +779,36 @@
                     <TextBlock Margin="2,4" Text="{Binding HistoryStatusText}" TextWrapping="Wrap"
                                Visibility="{Binding HasHistoryNotice, Converter={StaticResource BoolToVis}}"
                                AutomationProperties.LiveSetting="Polite" />
+                    <TextBlock Margin="2,2,2,4" Opacity="0.75"
+                               Text="Unread markers and read-state controls are available on a compatible App Server with Experimental API enabled. New replies stay unread until you mark them read."
+                               TextWrapping="Wrap"
+                               Visibility="{Binding ShowReadStateExperimentalNotice, Converter={StaticResource BoolToVis}}"
+                               AutomationProperties.Name="Experimental read-state availability"
+                               AutomationProperties.LiveSetting="Polite" />
                     <TextBlock Margin="2,0,2,4" Opacity="0.75" Text="{Binding HistoryTurnSummaryText}"
                                Visibility="{Binding IsHistoryOnly, Converter={StaticResource BoolToVis}}" />
+                    <StackPanel Margin="2,0,2,4"
+                                Visibility="{Binding ShowSelectedThreadReadState, Converter={StaticResource BoolToVis}}">
+                      <TextBlock Text="{Binding SelectedThreadReadStateText}"
+                                 AutomationProperties.LiveSetting="Polite" />
+                      <TextBlock Text="{Binding ThreadReadStateStatusText}"
+                                 TextWrapping="Wrap"
+                                 AutomationProperties.LiveSetting="Polite" />
+                      <WrapPanel Margin="0,3,0,0">
+                        <Button Margin="0,0,4,4" Content="Mark as read"
+                                Command="{Binding MarkSelectedThreadReadCommand}"
+                                Visibility="{Binding CanMarkSelectedThreadRead, Converter={StaticResource BoolToVis}}"
+                                AutomationProperties.Name="Mark selected conversation as read"
+                                AutomationProperties.HelpText="Marks the selected conversation as read using its current server revision."
+                                Style="{StaticResource SmallRoundButtonStyle}" />
+                        <Button Margin="0,0,4,4" Content="Mark as unread"
+                                Command="{Binding MarkSelectedThreadUnreadCommand}"
+                                Visibility="{Binding CanMarkSelectedThreadUnread, Converter={StaticResource BoolToVis}}"
+                                AutomationProperties.Name="Mark selected conversation as unread"
+                                AutomationProperties.HelpText="Marks the selected conversation as unread using its current server revision."
+                                Style="{StaticResource SmallRoundButtonStyle}" />
+                      </WrapPanel>
+                    </StackPanel>
                     <WrapPanel>
                       <Button Margin="0,0,4,4" Content="Join conversation"
                               Command="{Binding JoinThreadCommand}"
@@ -840,18 +868,29 @@
                   <ListBox Background="Transparent"
                            BorderThickness="0"
                            Foreground="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowTextBrushKey}}"
-                           ItemsSource="{Binding Threads}"
-                           SelectedItem="{Binding SelectedThread}"
+                           ItemsSource="{Binding ThreadRows}"
+                           SelectedItem="{Binding SelectedThreadRow, Mode=TwoWay}"
                            ItemContainerStyle="{StaticResource SelectableRowStyle}"
                            ScrollViewer.CanContentScroll="True"
                            VirtualizingPanel.IsVirtualizing="True">
                     <ListBox.ItemTemplate>
                       <DataTemplate>
-                        <StackPanel>
-                          <TextBlock FontWeight="SemiBold"
-                                     Style="{StaticResource SelectableContentTextStyle}"
-                                     Text="{Binding Preview}"
-                                     TextTrimming="CharacterEllipsis" />
+                        <StackPanel AutomationProperties.Name="{Binding AccessibilityName}">
+                          <Grid>
+                            <Grid.ColumnDefinitions>
+                              <ColumnDefinition Width="*" />
+                              <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" FontWeight="SemiBold"
+                                       Style="{StaticResource SelectableContentTextStyle}"
+                                       Text="{Binding Preview}"
+                                       TextTrimming="CharacterEllipsis" />
+                            <TextBlock Grid.Column="1" Margin="8,0,0,0" FontWeight="SemiBold"
+                                       Style="{StaticResource SelectableContentTextStyle}"
+                                       Text="{Binding ReadStateBadgeText}"
+                                       Visibility="{Binding IsUnread, Converter={StaticResource BoolToVis}}"
+                                       AutomationProperties.Name="Unread conversation" />
+                          </Grid>
                           <TextBlock Opacity="0.65"
                                      FontSize="10"
                                      Style="{StaticResource SelectableContentTextStyle}"

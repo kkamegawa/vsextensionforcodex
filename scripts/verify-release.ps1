@@ -13,6 +13,7 @@ $cliRoot = if ([string]::IsNullOrWhiteSpace($CodexDirectory)) { Join-Path $outpu
 New-Item -ItemType Directory -Force -Path $outputRoot, $schemaRoot, $cliRoot | Out-Null
 $manifestPath = Join-Path $outputRoot 'release-validation.json'
 $manifestDefinition = Get-Content -LiteralPath (Join-Path $root 'app-server-contract.json') -Raw | ConvertFrom-Json
+$contractVersions = @($manifestDefinition.regressionVersions) + @($manifestDefinition.targetVersion)
 $configurations = if ($Configuration -eq 'Both') { @('Debug', 'Release') } else { @($Configuration) }
 $manifest = [ordered]@{
     schemaVersion = 1
@@ -92,7 +93,7 @@ try {
 
     $cliPaths = @{}
     $allCliInstalled = $true
-    foreach ($version in @($manifestDefinition.regressionVersion, $manifestDefinition.targetVersion)) {
+    foreach ($version in $contractVersions) {
         $versionCopy = $version
         $versionCliRoot = Join-Path $cliRoot $versionCopy
         $versionAsset = $manifestDefinition.releases.$versionCopy
@@ -113,7 +114,7 @@ try {
 
     $schemaGenerationOk = $allCliInstalled
     if ($allCliInstalled) {
-        foreach ($version in @($manifestDefinition.regressionVersion, $manifestDefinition.targetVersion)) {
+        foreach ($version in $contractVersions) {
             foreach ($surface in @('stable', 'experimental')) {
                 $id = "schema.generate.$version.$surface"
                 $versionCopy = $version
@@ -125,13 +126,17 @@ try {
                 if (-not $ok) { $schemaGenerationOk = $false }
             }
         }
-        $cacheOk = Add-Scenario 'schema.cache.contract' 'test-schema-cache.ps1' {
-            & pwsh -NoProfile -File (Join-Path $PSScriptRoot 'test-schema-cache.ps1') -CodexPath $codexPath
-        } 'schema/cache-contract.log'
-        if (-not $cacheOk) { $schemaGenerationOk = $false }
+        foreach ($version in $contractVersions) {
+            $versionCopy = $version
+            $versionCodexPath = $cliPaths[$versionCopy]
+            $cacheOk = Add-Scenario "schema.cache.contract.$version" "test-schema-cache.ps1 -Version $version" {
+                & pwsh -NoProfile -File (Join-Path $PSScriptRoot 'test-schema-cache.ps1') -CodexPath $versionCodexPath -Version $versionCopy
+            } "schema/cache-contract-$version.log"
+            if (-not $cacheOk) { $schemaGenerationOk = $false }
+        }
     }
     else {
-        foreach ($version in @($manifestDefinition.regressionVersion, $manifestDefinition.targetVersion)) {
+        foreach ($version in $contractVersions) {
             foreach ($surface in @('stable', 'experimental')) {
                 $manifest.scenarios.Add([ordered]@{ id = "schema.generate.$version.$surface"; class = 'Local-required'; status = 'not-run'; command = 'blocked by pinned CLI download failure'; exitCode = $null; log = $null })
             }
@@ -139,16 +144,29 @@ try {
     }
 
     if ($schemaGenerationOk) {
-        foreach ($surface in @('stable', 'experimental')) {
-            $surfaceCopy = $surface
-            [void](Add-Scenario "schema.compare.$surface" "compare-schemas.ps1 -Surface $surface" {
-                & pwsh -NoProfile -File (Join-Path $PSScriptRoot 'compare-schemas.ps1') `
-                    -BaselineDirectory (Join-Path $schemaRoot "$($manifestDefinition.regressionVersion)/$surfaceCopy") `
-                    -TargetDirectory (Join-Path $schemaRoot "$($manifestDefinition.targetVersion)/$surfaceCopy") -Surface $surfaceCopy
-            } "schema/compare-$surface.log")
-            [void](Add-Scenario "schema.method-surface.$surface" "verify-contract-surface.ps1 -Surface $surface" {
-                & pwsh -NoProfile -File (Join-Path $PSScriptRoot 'verify-contract-surface.ps1') -SchemaDirectory (Join-Path $schemaRoot "$($manifestDefinition.targetVersion)/$surfaceCopy")
-            } "schema/method-surface-$surface.log")
+        foreach ($baselineVersion in @($manifestDefinition.regressionVersions)) {
+            foreach ($surface in @('stable', 'experimental')) {
+                $baselineCopy = $baselineVersion
+                $surfaceCopy = $surface
+                $targetVersion = $manifestDefinition.targetVersion
+                $scenarioId = "schema.compare.$baselineCopy-to-$targetVersion.$surfaceCopy"
+                [void](Add-Scenario $scenarioId "compare-schemas.ps1 -BaselineVersion $baselineCopy -TargetVersion $targetVersion -Surface $surfaceCopy" {
+                    & pwsh -NoProfile -File (Join-Path $PSScriptRoot 'compare-schemas.ps1') `
+                        -BaselineDirectory (Join-Path $schemaRoot "$baselineCopy/$surfaceCopy") `
+                        -TargetDirectory (Join-Path $schemaRoot "$targetVersion/$surfaceCopy") `
+                        -BaselineVersion $baselineCopy -TargetVersion $targetVersion -Surface $surfaceCopy
+                } "schema/compare-$baselineCopy-to-$targetVersion-$surfaceCopy.log")
+            }
+        }
+        foreach ($version in $contractVersions) {
+            foreach ($surface in @('stable', 'experimental')) {
+                $versionCopy = $version
+                $surfaceCopy = $surface
+                [void](Add-Scenario "schema.method-surface.$versionCopy.$surfaceCopy" "verify-contract-surface.ps1 -Version $versionCopy -Surface $surfaceCopy" {
+                    & pwsh -NoProfile -File (Join-Path $PSScriptRoot 'verify-contract-surface.ps1') `
+                        -SchemaDirectory (Join-Path $schemaRoot "$versionCopy/$surfaceCopy") -Version $versionCopy -Surface $surfaceCopy
+                } "schema/method-surface-$versionCopy-$surfaceCopy.log")
+            }
         }
     }
 

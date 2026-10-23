@@ -6,6 +6,8 @@ using System.Text.Json;
 long nextThread = 1;
 long nextTurn = 1;
 var threads = new List<object>();
+var threadReadStates = new Dictionary<string, Dictionary<string, object?>>(StringComparer.Ordinal);
+long nextReadStateRevision = 1;
 string scenario = Environment.GetEnvironmentVariable("CODEX_FAKE_SCENARIO") ?? string.Empty;
 var savedAttachments = new List<Dictionary<string, object?>>();
 var interactionResponses = new ConcurrentQueue<object>();
@@ -17,6 +19,7 @@ var goalRequests = new List<object>();
 var outputGate = new SemaphoreSlim(1, 1);
 JsonElement? initializeParams = null;
 bool signedIn = false;
+bool experimentalApiEnabled = false;
 
 while (await Console.In.ReadLineAsync().ConfigureAwait(false) is { } line)
 {
@@ -44,9 +47,55 @@ while (await Console.In.ReadLineAsync().ConfigureAwait(false) is { } line)
     if (method == "initialize" && root.TryGetProperty("params", out JsonElement initParams))
     {
         initializeParams = initParams.Clone();
+        experimentalApiEnabled = initParams.TryGetProperty("capabilities", out JsonElement capabilities)
+            && capabilities.ValueKind == JsonValueKind.Object
+            && capabilities.TryGetProperty("experimentalApi", out JsonElement experimentalApi)
+            && experimentalApi.ValueKind == JsonValueKind.True;
     }
     if (!root.TryGetProperty("id", out JsonElement id))
     {
+        continue;
+    }
+
+    if (method == "thread/readState/update")
+    {
+        if (!SupportsReadState())
+        {
+            await WriteAsync(new
+            {
+                id = JsonSerializer.Deserialize<object>(id.GetRawText()),
+                error = new { code = -32601, message = "Experimental thread read state is unavailable." },
+            }).ConfigureAwait(false);
+            continue;
+        }
+
+        JsonElement parameters = root.GetProperty("params");
+        string threadId = parameters.GetProperty("threadId").GetString() ?? string.Empty;
+        Dictionary<string, object?> readState = EnsureThreadReadState(threadId);
+        string expectedRevision = parameters.GetProperty("expectedRevision").GetString() ?? string.Empty;
+        if (IsScenario("ReadStateConflict")
+            || !string.Equals(expectedRevision, (string?)readState["revision"], StringComparison.Ordinal))
+        {
+            readState["revision"] = NextReadStateRevision();
+            await WriteAsync(new
+            {
+                id = JsonSerializer.Deserialize<object>(id.GetRawText()),
+                error = new
+                {
+                    code = -32600,
+                    message = "Read state changed; refresh and retry.",
+                    data = new { reason = "readStateConflict", readState = ReadThreadReadStateData(readState) },
+                },
+            }).ConfigureAwait(false);
+            continue;
+        }
+
+        string operation = parameters.GetProperty("operation").GetProperty("type").GetString() ?? string.Empty;
+        readState["firstUnread"] = operation == "read" ? null : new { type = "threadStart" };
+        readState["revision"] = NextReadStateRevision();
+        object updatedReadState = ReadThreadReadStateData(readState);
+        await WriteAsync(new { id = JsonSerializer.Deserialize<object>(id.GetRawText()), result = new { readState = updatedReadState } }).ConfigureAwait(false);
+        await WriteAsync(new { method = "thread/readState/changed", @params = new { threadId, readState = updatedReadState } }).ConfigureAwait(false);
         continue;
     }
 
@@ -54,17 +103,19 @@ while (await Console.In.ReadLineAsync().ConfigureAwait(false) is { } line)
     {
         "initialize" => new
         {
-            userAgent = IsScenario("Regression01591") ? "codex-cli/0.159.1" : "codex-cli/0.162.1",
+            userAgent = IsScenario("Regression01591")
+                ? "codex-cli/0.159.1"
+                : IsScenario("Regression01621") ? "codex-cli/0.162.1" : "codex-cli/0.163.0",
             codexHome = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".codex"),
             platformFamily = OperatingSystem.IsWindows() ? "windows" : "unix",
             platformOs = OperatingSystem.IsWindows() ? "windows" : OperatingSystem.IsMacOS() ? "macos" : "linux",
         },
         "thread/start" => CreateThread(),
-        "thread/resume" => ThreadResponse(
-            new { id = root.GetProperty("params").GetProperty("threadId").GetString(), preview = "Resumed fake thread" }),
+        "thread/resume" => ResumeThread(root.GetProperty("params")),
         "thread/fork" => ThreadResponse(
             new { id = $"fake-thread-{nextThread++}", preview = "Forked fake thread", cwd = Environment.CurrentDirectory }),
-        "thread/list" => new { data = threads, nextCursor = (string?)null },
+        "thread/list" => ListThreads(),
+        "thread/read" => ReadThread(root.GetProperty("params")),
         "thread/attachment/list" => ListAttachments(root.GetProperty("params")),
         "thread/attachment/add" => AddAttachment(root.GetProperty("params")),
         "thread/attachment/remove" => RemoveAttachment(root.GetProperty("params")),
@@ -305,6 +356,103 @@ bool IsScenario(string name)
     => scenario.Split([',', ';', '+'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
         .Contains(name, StringComparer.Ordinal);
 
+bool SupportsReadState()
+    => experimentalApiEnabled && !IsScenario("Regression01591") && !IsScenario("Regression01621");
+
+string NextReadStateRevision()
+    => $"fake-revision-{nextReadStateRevision++}";
+
+object SetThreadUnread(string threadId, string turnId)
+{
+    Dictionary<string, object?> state = EnsureThreadReadState(threadId);
+    state["revision"] = NextReadStateRevision();
+    state["firstUnread"] = new { type = "turn", turnId };
+    return ReadThreadReadStateData(state);
+}
+
+Dictionary<string, object?> EnsureThreadReadState(string threadId)
+{
+    if (!threadReadStates.TryGetValue(threadId, out Dictionary<string, object?>? state))
+    {
+        state = new Dictionary<string, object?>(StringComparer.Ordinal)
+        {
+            ["revision"] = NextReadStateRevision(),
+            ["firstUnread"] = new { type = "threadStart" },
+        };
+        threadReadStates[threadId] = state;
+    }
+
+    return state;
+}
+
+object ReadThreadReadStateData(Dictionary<string, object?> state)
+    => IsScenario("ReadStateInvalid")
+        ? new { revision = 42, firstUnread = state.GetValueOrDefault("firstUnread") }
+        : new { revision = (string?)state.GetValueOrDefault("revision"), firstUnread = state.GetValueOrDefault("firstUnread") };
+
+object ListThreads()
+{
+    if (!SupportsReadState())
+    {
+        return new { data = threads, nextCursor = (string?)null };
+    }
+
+    if (IsScenario("ReadStateUnavailable"))
+    {
+        return new { data = threads, nextCursor = (string?)null, readStates = (object?)null };
+    }
+
+    var readStates = new Dictionary<string, object>(StringComparer.Ordinal);
+    for (int index = 0; index < threads.Count; index++)
+    {
+        JsonElement thread = JsonSerializer.SerializeToElement(threads[index]);
+        string threadId = thread.GetProperty("id").GetString() ?? string.Empty;
+        if (IsScenario("ReadStateNotApplicable") && index == 0)
+        {
+            continue;
+        }
+
+        readStates[threadId] = ReadThreadReadStateData(EnsureThreadReadState(threadId));
+    }
+
+    return new { data = threads, nextCursor = (string?)null, readStates };
+}
+
+object ReadThread(JsonElement parameters)
+{
+    string threadId = parameters.GetProperty("threadId").GetString() ?? string.Empty;
+    JsonElement matchingThread = default;
+    foreach (object candidate in threads)
+    {
+        JsonElement parsed = JsonSerializer.SerializeToElement(candidate);
+        if (string.Equals(parsed.GetProperty("id").GetString(), threadId, StringComparison.Ordinal))
+        {
+            matchingThread = parsed;
+            break;
+        }
+    }
+
+    object thread = matchingThread.ValueKind != JsonValueKind.Undefined
+        ? JsonSerializer.Deserialize<object>(matchingThread.GetRawText()) ?? new { id = threadId }
+        : new { id = threadId, preview = "Read fake thread", cwd = Environment.CurrentDirectory };
+    if (!SupportsReadState())
+    {
+        return new { thread };
+    }
+
+    object? readState = IsScenario("ReadStateUnavailable")
+        ? null
+        : ReadThreadReadStateData(EnsureThreadReadState(threadId));
+    return new { thread, readState };
+}
+
+object ResumeThread(JsonElement parameters)
+{
+    string threadId = parameters.GetProperty("threadId").GetString() ?? string.Empty;
+    _ = EnsureThreadReadState(threadId);
+    return ThreadResponse(new { id = threadId, preview = "Resumed fake thread" });
+}
+
 bool IsGoalActive(string threadId)
     => goals.TryGetValue(threadId, out Dictionary<string, object?>? goal)
         && Equals(goal["status"], "active");
@@ -494,6 +642,7 @@ object CreateThread()
 {
     var thread = new { id = $"fake-thread-{nextThread++}", preview = "Fake conversation", cwd = Environment.CurrentDirectory };
     threads.Add(thread);
+    _ = EnsureThreadReadState(thread.id);
     return ThreadResponse(thread);
 }
 
@@ -573,6 +722,12 @@ object StartTurn(JsonElement request)
         }
 
         await WriteAsync(new { method = "item/agentMessage/delta", @params = new { threadId, turnId, itemId = "agent-1", delta = "Hello from the fake app-server." } }).ConfigureAwait(false);
+        if (SupportsReadState())
+        {
+            object readState = SetThreadUnread(threadId, turnId);
+            await WriteAsync(new { method = "thread/readState/changed", @params = new { threadId, readState } }).ConfigureAwait(false);
+        }
+
         await WriteAsync(new { method = "turn/completed", @params = new { threadId, turnId, turn = new { id = turnId, status = "completed" } } }).ConfigureAwait(false);
     });
     return new { turn = new { id = turnId, status = "inProgress" } };

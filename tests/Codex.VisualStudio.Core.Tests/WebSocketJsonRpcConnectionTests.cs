@@ -150,6 +150,106 @@ public sealed class WebSocketJsonRpcConnectionTests
     }
 
     [TestMethod]
+    public async Task WebSocketResponse_PreservesBoundedErrorData()
+    {
+        await using var harness = new SocketHarness();
+        await harness.Connection.StartAsync(CancellationToken.None);
+
+        Task<JsonElement> pending = harness.Connection.SendRequestAsync(
+            "thread/read",
+            new { threadId = "thread-1" },
+            TimeSpan.FromSeconds(5),
+            CancellationToken.None);
+        using JsonDocument request = JsonDocument.Parse(await harness.ReceiveServerTextAsync());
+        long id = request.RootElement.GetProperty("id").GetInt64();
+        await harness.SendServerTextAsync(
+            $"{{\"id\":{id},\"error\":{{\"code\":-32600,\"message\":\"conflict\",\"data\":{{\"reason\":\"readStateConflict\",\"readState\":{{\"revision\":\"rev-2\"}}}}}}}}");
+
+        JsonRpcRemoteException exception = await Assert.ThrowsExactlyAsync<JsonRpcRemoteException>(() => pending);
+        Assert.AreEqual(-32600, exception.Code);
+        Assert.AreEqual("conflict", exception.Message);
+        Assert.AreEqual(0, exception.Data.Count);
+        JsonElement errorData = exception.ErrorData ?? throw new InvalidOperationException("The bounded error data was not retained.");
+        Assert.AreEqual("readStateConflict", errorData.GetProperty("reason").GetString());
+        Assert.AreEqual("rev-2", errorData.GetProperty("readState").GetProperty("revision").GetString());
+    }
+
+    [TestMethod]
+    public async Task WebSocketResponse_PreservesGenericCodeAndMalformedData()
+    {
+        await using var harness = new SocketHarness();
+        await harness.Connection.StartAsync(CancellationToken.None);
+
+        Task<JsonElement> pending = harness.Connection.SendRequestAsync(
+            "thread/read",
+            new { threadId = "thread-1" },
+            TimeSpan.FromSeconds(5),
+            CancellationToken.None);
+        using JsonDocument request = JsonDocument.Parse(await harness.ReceiveServerTextAsync());
+        long id = request.RootElement.GetProperty("id").GetInt64();
+        await harness.SendServerTextAsync(
+            $"{{\"id\":{id},\"error\":{{\"code\":-32600,\"message\":\"invalid request\",\"data\":{{\"reason\":17}}}}}}");
+
+        JsonRpcRemoteException exception = await Assert.ThrowsExactlyAsync<JsonRpcRemoteException>(() => pending);
+        Assert.AreEqual(-32600, exception.Code);
+        JsonElement errorData = exception.ErrorData ?? throw new InvalidOperationException("The malformed error data was not retained.");
+        Assert.AreEqual(17, errorData.GetProperty("reason").GetInt32());
+    }
+
+    [TestMethod]
+    public async Task WebSocketResponse_DiscardsOversizedErrorData()
+    {
+        await using var harness = new SocketHarness();
+        await harness.Connection.StartAsync(CancellationToken.None);
+
+        Task<JsonElement> pending = harness.Connection.SendRequestAsync(
+            "thread/read",
+            new { threadId = "thread-1" },
+            TimeSpan.FromSeconds(5),
+            CancellationToken.None);
+        using JsonDocument request = JsonDocument.Parse(await harness.ReceiveServerTextAsync());
+        long id = request.RootElement.GetProperty("id").GetInt64();
+        string oversizedData = "\"" + new string('x', 16 * 1024) + "\"";
+        await harness.SendServerTextAsync(
+            $"{{\"id\":{id},\"error\":{{\"code\":-32600,\"message\":\"conflict\",\"data\":{oversizedData}}}}}");
+
+        JsonRpcRemoteException exception = await Assert.ThrowsExactlyAsync<JsonRpcRemoteException>(() => pending);
+        Assert.AreEqual(-32600, exception.Code);
+        Assert.IsNull(exception.ErrorData);
+    }
+
+    [TestMethod]
+    public async Task JsonLineResponse_PreservesErrorDataThroughSharedDispatcher()
+    {
+        var clientToServer = new Pipe();
+        var serverToClient = new Pipe();
+        await using var connection = new JsonLineRpcConnection(serverToClient.Reader.AsStream(), clientToServer.Writer.AsStream());
+        using var serverReader = new StreamReader(clientToServer.Reader.AsStream(), Encoding.UTF8, leaveOpen: true);
+        using var serverWriter = new StreamWriter(serverToClient.Writer.AsStream(), new UTF8Encoding(false), leaveOpen: true)
+        {
+            AutoFlush = true,
+            NewLine = "\n",
+        };
+        await connection.StartAsync(CancellationToken.None);
+
+        Task<JsonElement> pending = connection.SendRequestAsync(
+            "thread/read",
+            new { threadId = "thread-1" },
+            TimeSpan.FromSeconds(5),
+            CancellationToken.None);
+        string requestText = await serverReader.ReadLineAsync().WaitAsync(TimeSpan.FromSeconds(5))
+            ?? throw new InvalidOperationException("The stdio request was not written.");
+        using JsonDocument request = JsonDocument.Parse(requestText);
+        long id = request.RootElement.GetProperty("id").GetInt64();
+        await serverWriter.WriteLineAsync(
+            $"{{\"id\":{id},\"error\":{{\"code\":-32600,\"message\":\"conflict\",\"data\":{{\"reason\":\"readStateConflict\"}}}}}}");
+
+        JsonRpcRemoteException exception = await Assert.ThrowsExactlyAsync<JsonRpcRemoteException>(() => pending);
+        JsonElement errorData = exception.ErrorData ?? throw new InvalidOperationException("The stdio error data was not retained.");
+        Assert.AreEqual("readStateConflict", errorData.GetProperty("reason").GetString());
+    }
+
+    [TestMethod]
     public async Task MalformedFrames_AreToleratedUntilThreshold()
     {
         await using var harness = new SocketHarness();

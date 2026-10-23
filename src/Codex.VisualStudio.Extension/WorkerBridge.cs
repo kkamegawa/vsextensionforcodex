@@ -18,6 +18,8 @@ internal interface IWorkerBridge : IAsyncDisposable
 
     event Func<WorkerNotification<ConversationEvent>, Task>? ConversationEventReceived;
 
+    event Func<WorkerNotification<ThreadReadStateChangedEvent>, Task>? ThreadReadStateChanged;
+
     event Func<WorkerNotification<ThreadAttachmentUpdatedEvent>, Task>? ThreadAttachmentUpdated;
 
     event Func<WorkerNotification<WindowsSandboxSetupCompletedEvent>, Task>? WindowsSandboxSetupChanged;
@@ -71,6 +73,8 @@ internal interface IWorkerBridge : IAsyncDisposable
     Task<ThreadPage> ListThreadsAsync(ListThreadsRequest request, CancellationToken cancellationToken);
 
     Task<ThreadReadResult> ReadThreadAsync(ReadThreadRequest request, CancellationToken cancellationToken);
+
+    Task<UpdateThreadReadStateResult> UpdateThreadReadStateAsync(UpdateThreadReadStateRequest request, CancellationToken cancellationToken);
 
     Task<ThreadTurnsPage> ListThreadTurnsAsync(ListThreadTurnsRequest request, CancellationToken cancellationToken);
 
@@ -187,6 +191,8 @@ public sealed class WorkerBridge : IWorkerBridge, ICodexWorkerObserver
     public event Func<WorkerNotification<AccountStatus>, Task>? AccountChanged;
 
     public event Func<WorkerNotification<ConversationEvent>, Task>? ConversationEventReceived;
+
+    public event Func<WorkerNotification<ThreadReadStateChangedEvent>, Task>? ThreadReadStateChanged;
 
     public event Func<WorkerNotification<ThreadAttachmentUpdatedEvent>, Task>? ThreadAttachmentUpdated;
 
@@ -337,6 +343,14 @@ public sealed class WorkerBridge : IWorkerBridge, ICodexWorkerObserver
     public Task<ThreadReadResult> ReadThreadAsync(ReadThreadRequest request, CancellationToken cancellationToken)
         => RequireRpc().InvokeWithCancellationAsync<ThreadReadResult>(
             "worker/thread/read",
+            new object[] { request },
+            cancellationToken);
+
+    public Task<UpdateThreadReadStateResult> UpdateThreadReadStateAsync(
+        UpdateThreadReadStateRequest request,
+        CancellationToken cancellationToken)
+        => RequireRpc().InvokeWithCancellationAsync<UpdateThreadReadStateResult>(
+            "worker/thread/readState/update",
             new object[] { request },
             cancellationToken);
 
@@ -553,6 +567,11 @@ public sealed class WorkerBridge : IWorkerBridge, ICodexWorkerObserver
 
     public Task OnConversationEventAsync(WorkerNotification<ConversationEvent> notification, CancellationToken cancellationToken)
         => ConversationEventReceived?.Invoke(notification) ?? Task.CompletedTask;
+
+    public Task OnThreadReadStateChangedAsync(
+        WorkerNotification<ThreadReadStateChangedEvent> notification,
+        CancellationToken cancellationToken)
+        => ThreadReadStateChanged?.Invoke(notification) ?? Task.CompletedTask;
 
     public Task OnThreadAttachmentUpdatedAsync(
         WorkerNotification<ThreadAttachmentUpdatedEvent> notification,

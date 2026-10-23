@@ -364,6 +364,7 @@ public sealed class CodexProcessHost : ICodexProcessHost
         {
             WindowsSandboxBackendPreference.PreferMxc => ["-c", "features.prefer_mxc=true"],
             WindowsSandboxBackendPreference.RequireMxc => ["-c", "windows.sandbox=mxc"],
+            WindowsSandboxBackendPreference.DisableMxc => ["-c", "windows.allow_mxc=false"],
             _ => [],
         };
 

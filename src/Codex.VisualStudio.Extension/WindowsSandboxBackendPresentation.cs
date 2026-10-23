@@ -33,6 +33,7 @@ internal static class WindowsSandboxBackendCatalog
     public const string FollowId = "follow";
     public const string PreferMxcId = "preferMxc";
     public const string RequireMxcId = "requireMxc";
+    public const string DisableMxcId = "disableMxc";
 
     public static IReadOnlyList<WindowsSandboxBackendOption> Options { get; } =
     [
@@ -41,7 +42,9 @@ internal static class WindowsSandboxBackendCatalog
         new(PreferMxcId, WindowsSandboxBackendPreference.PreferMxc, "Prefer MXC",
             "Use MXC when managed policy allows it; otherwise Codex keeps its configured backend."),
         new(RequireMxcId, WindowsSandboxBackendPreference.RequireMxc, "Require MXC",
-            "Always use MXC. Codex does not start when managed policy does not allow MXC."),
+            "Set windows.sandbox=mxc explicitly. Codex reports an error if the effective configuration or policy rejects it."),
+        new(DisableMxcId, WindowsSandboxBackendPreference.DisableMxc, "Do not use MXC",
+            "Disable MXC for the local app-server. Codex reports an error if managed policy requires MXC."),
     ];
 
     public static ObservableCollection<WindowsSandboxBackendOption> CreateCollection() => new(Options);

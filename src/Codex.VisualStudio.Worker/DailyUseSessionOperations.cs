@@ -849,6 +849,10 @@ public sealed partial class CodexSessionService
                     && windows.ValueKind == JsonValueKind.Object
                         ? NormalizeWindowsSandboxImplementation(GetString(windows, "sandbox"))
                         : null;
+                result.AllowMxc = values.TryGetProperty("windows", out windows)
+                    && windows.ValueKind == JsonValueKind.Object
+                        ? GetBool(windows, "allow_mxc")
+                        : null;
                 result.PreferMxcFeature = values.TryGetProperty("features", out JsonElement features)
                     && features.ValueKind == JsonValueKind.Object
                         ? GetBool(features, "prefer_mxc")
@@ -904,37 +908,44 @@ public sealed partial class CodexSessionService
     private static string? NormalizeWindowsSandboxImplementation(string? value)
         => value is "elevated" or "unelevated" or "mxc" ? value : null;
 
-    // Mirrors Codex 0.162.1 selection: an explicit mxc mode must be allowed by managed policy, and
-    // prefer_mxc is applied only when policy allows MXC and does not set allowLocalBinding=false.
+    // allowedWindowsSandboxImplementations is a legacy-backend policy list and does not determine
+    // MXC eligibility. Report only explicit MXC configuration and the independently exposed
+    // local-binding policy; the CLI remains authoritative for policy conflicts.
     internal static string DescribeWindowsSandboxBackend(WindowsSandboxReadinessResult result)
     {
-        bool? policyAllowsMxc = !result.RequirementsKnown
-            ? null
-            : result.AllowedImplementations is null || result.AllowedImplementations.Contains("mxc");
         bool localBindingDenied = result.AllowLocalBinding == false;
         string observed = !result.ConfigKnown
             ? "The effective Codex configuration could not be read."
             : result.ConfiguredImplementation is null
                 ? "Codex configuration does not set windows.sandbox."
                 : $"Codex configuration sets windows.sandbox to {result.ConfiguredImplementation}.";
-        string policy = policyAllowsMxc switch
+        string mxcSetting = result.AllowMxc switch
         {
-            null => "Managed policy could not be read.",
-            true when localBindingDenied => "Managed policy allows MXC but sets allowLocalBinding=false.",
-            true => "Managed policy allows MXC.",
-            false => "Managed policy does not allow MXC.",
+            false => "windows.allow_mxc=false disables MXC in the effective configuration.",
+            true => "windows.allow_mxc=true permits MXC in the effective configuration, subject to CLI policy.",
+            null => "The effective windows.allow_mxc value is unknown.",
         };
+        string policy = !result.RequirementsKnown
+            ? "Managed policy could not be read."
+            : result.AllowedImplementations is not null
+                ? "The managed allowedWindowsSandboxImplementations list covers legacy backends and does not determine MXC eligibility."
+                : "The managed Windows sandbox requirements do not expose whether MXC is required.";
+        if (localBindingDenied)
+        {
+            policy += " Managed policy sets allowLocalBinding=false.";
+        }
+
         string eligibility = result.AppliedBackendPreference switch
         {
-            WindowsSandboxBackendPreference.RequireMxc when policyAllowsMxc == false =>
-                "\"Require MXC\" conflicts with managed policy; choose \"Follow Codex configuration\" and connect again.",
-            WindowsSandboxBackendPreference.PreferMxc when policyAllowsMxc == false || localBindingDenied =>
-                "\"Prefer MXC\" is not eligible under this policy, so Codex keeps its configured backend.",
+            WindowsSandboxBackendPreference.RequireMxc when result.AllowMxc == false =>
+                "The explicit windows.sandbox=mxc setting conflicts with windows.allow_mxc=false; use the sanitized CLI error to review the conflict.",
+            WindowsSandboxBackendPreference.PreferMxc when result.AllowMxc == false || localBindingDenied =>
+                "The effective configuration or local-binding policy may prevent MXC; the CLI decides whether it falls back.",
             WindowsSandboxBackendPreference.PreferMxc when result.PreferMxcFeature != true && result.ConfigKnown =>
                 "\"Prefer MXC\" was not observed in the effective configuration.",
             _ => string.Empty,
         };
-        return string.Join(' ', new[] { observed, policy, eligibility, "Readiness does not prove which backend runs each command." }
+        return string.Join(' ', new[] { observed, mxcSetting, policy, eligibility, "Readiness does not prove which backend runs each command." }
             .Where(static part => part.Length > 0));
     }
 

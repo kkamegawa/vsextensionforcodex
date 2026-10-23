@@ -904,3 +904,7 @@ Tracking: [Issue #214](https://github.com/kkamegawa/vsextensionforcodex/issues/2
 - [x] Debug and Release solution builds: 0 warnings, 0 errors. Per configuration: Core 451 passed / 5 skipped / 0 failed; UI 472 passed / 1 skipped / 0 failed. Both underlying test processes exited 0. The strict evidence harness reports blocked because of the six existing symbolic-link privilege limitations; those checks remain incomplete. Evidence: `artifacts/issue214/build-*.log`, `debug/test-results.json`, `release/test-results.json`, and their sanitized logs/TRX files.
 - [x] Render the extracted production question-card XAML with the real Goal ViewModel fixture and inspect both screenshots: unanswered Yes/No and Yes selected before Submit. The complete Japanese question and both options/actions are visible. Selection alone sends nothing; the bound Submit command sends one Yes answer. Evidence: `artifacts/issue214/visual/bin/Release/net8.0-windows10.0.22621.0/screenshots` and `visual-result.txt`. Standard WPF styles substitute Visual Studio resources; this does not establish Experimental Instance or actual VS host-template acceptance.
 - [x] Release VSIX payload, embedded Remote UI XAML, and contract version 24 inspection passed. Evidence: `artifacts/issue214/vsix.json`.
+
+### 2026-10-23: Codex App Server 0.163.0 implementation
+
+Detailed task and verification record: [English](task-app-server-0-163.md) · [日本語](task-app-server-0-163_ja.md). Automated implementation checks are complete; Experimental Instance visual acceptance remains open.

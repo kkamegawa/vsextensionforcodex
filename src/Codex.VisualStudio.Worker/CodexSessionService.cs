@@ -39,6 +39,12 @@ public partial interface ICodexSessionService : IAsyncDisposable
     }
     event Func<ConversationEvent, CancellationToken, Task>? ConversationEventReceived;
 
+    event Func<ThreadReadStateChangedEvent, CancellationToken, Task>? ThreadReadStateChanged
+    {
+        add { }
+        remove { }
+    }
+
     event Func<ApprovalRequest, CancellationToken, Task>? ApprovalRequested;
 
     event Func<string, CancellationToken, Task>? ApprovalResolved;
@@ -130,6 +136,16 @@ public partial interface ICodexSessionService : IAsyncDisposable
     Task<ThreadPage> ListThreadsAsync(string? cursor, CancellationToken cancellationToken);
 
     Task<ThreadSummary> ReadThreadAsync(string threadId, CancellationToken cancellationToken)
+        => throw new NotSupportedException();
+
+    async Task<ThreadReadResult> ReadThreadWithStateAsync(string threadId, CancellationToken cancellationToken)
+        => new() { Thread = await ReadThreadAsync(threadId, cancellationToken).ConfigureAwait(false) };
+
+    Task<UpdateThreadReadStateResult> UpdateThreadReadStateAsync(
+        string threadId,
+        string expectedRevision,
+        bool markRead,
+        CancellationToken cancellationToken)
         => throw new NotSupportedException();
 
     Task<ThreadTurnsPage> ListThreadTurnsAsync(string threadId, string? cursor, int limit, CancellationToken cancellationToken)
@@ -357,6 +373,8 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
 
     public event Func<ConversationEvent, CancellationToken, Task>? ConversationEventReceived;
 
+    public event Func<ThreadReadStateChangedEvent, CancellationToken, Task>? ThreadReadStateChanged;
+
     public event Func<ApprovalRequest, CancellationToken, Task>? ApprovalRequested;
 
     public event Func<string, CancellationToken, Task>? ApprovalResolved;
@@ -571,18 +589,31 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         {
             return;
         }
-        await connection.SendNotificationAsync("initialized", new { }, cancellationToken).ConfigureAwait(false);
-        if (!IsCurrent(context))
+        string? detectedVersion = ReadCodexVersion(initResponse);
+        if (context.IsLocal
+            && context.SandboxBackend == WindowsSandboxBackendPreference.DisableMxc
+            && !IsCodexVersionAtLeast163(detectedVersion))
         {
-            return;
+            // The rejected server is stopped by the caller; retire its context first so neither
+            // the context nor its version and metadata stay observable after the failure.
+            await RetireRejectedConnectionAsync(context).ConfigureAwait(false);
+            throw new InvalidOperationException(
+                $"The local MXC opt-out requires Codex CLI 0.163.0 or later; detected {detectedVersion ?? "an unknown version"}. Update Codex and connect again.");
         }
 
-        CodexVersion = ReadCodexVersion(initResponse);
+        CodexVersion = detectedVersion;
         InitializationMetadata = new(
             GetString(initResponse, "codexHome"),
             GetString(initResponse, "platformFamily"),
             GetString(initResponse, "platformOs"),
             GetString(initResponse, "userAgent"));
+        context.ExperimentalApi = options.ExperimentalApi;
+
+        await connection.SendNotificationAsync("initialized", new { }, cancellationToken).ConfigureAwait(false);
+        if (!IsCurrent(context))
+        {
+            return;
+        }
 
         string? serverName = null;
         if (initResponse.TryGetProperty("serverInfo", out JsonElement serverInfo)
@@ -1199,6 +1230,80 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         return null;
     }
 
+    private static bool IsCodexVersionAtLeast163(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return false;
+        }
+
+        int suffixIndex = value.IndexOf('-');
+        string numericVersion = suffixIndex >= 0 ? value[..suffixIndex] : value;
+        if (!Version.TryParse(numericVersion, out Version? version))
+        {
+            return false;
+        }
+
+        Version minimum = new(0, 163, 0);
+        return version >= minimum && (version != minimum || suffixIndex < 0);
+    }
+
+    private static ThreadReadStateSnapshot ReadThreadReadState(JsonElement container, string propertyName)
+        => container.TryGetProperty(propertyName, out JsonElement value)
+            ? ReadThreadReadState(value)
+            : new() { Kind = ThreadReadStateKind.Unavailable };
+
+    private static ThreadReadStateSnapshot ReadThreadReadState(JsonElement value)
+    {
+        if (value.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)
+        {
+            return new() { Kind = ThreadReadStateKind.Unavailable };
+        }
+
+        if (value.ValueKind != JsonValueKind.Object
+            || !value.TryGetProperty("revision", out JsonElement revisionValue)
+            || GetBoundedString(revisionValue, MaxAttachmentIdentityBytes) is not { } revision
+            || !value.TryGetProperty("firstUnread", out JsonElement firstUnread))
+        {
+            return new() { Kind = ThreadReadStateKind.Invalid };
+        }
+
+        if (firstUnread.ValueKind == JsonValueKind.Null)
+        {
+            return new() { Kind = ThreadReadStateKind.Read, Revision = revision };
+        }
+
+        if (firstUnread.ValueKind != JsonValueKind.Object
+            || !firstUnread.TryGetProperty("type", out JsonElement typeValue)
+            || typeValue.ValueKind != JsonValueKind.String)
+        {
+            return new() { Kind = ThreadReadStateKind.Invalid };
+        }
+
+        return typeValue.GetString() switch
+        {
+            "threadStart" => new() { Kind = ThreadReadStateKind.UnreadThreadStart, Revision = revision },
+            "turn" when GetBoundedString(firstUnread, "turnId", MaxAttachmentIdentityBytes) is { } turnId
+                => new() { Kind = ThreadReadStateKind.UnreadTurn, Revision = revision, TurnId = turnId },
+            _ => new() { Kind = ThreadReadStateKind.Invalid },
+        };
+    }
+
+    private static bool TryReadThreadReadStateConflict(JsonElement? errorData, out ThreadReadStateSnapshot state)
+    {
+        state = new() { Kind = ThreadReadStateKind.Unavailable };
+        if (errorData is not { ValueKind: JsonValueKind.Object } data
+            || !data.TryGetProperty("reason", out JsonElement reason)
+            || reason.ValueKind != JsonValueKind.String
+            || !string.Equals(reason.GetString(), "readStateConflict", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        state = ReadThreadReadState(data, "readState");
+        return true;
+    }
+
     private static bool IsValidCodexVersion(ReadOnlySpan<char> version)
     {
         if (version.IsEmpty || version.Length > 64)
@@ -1518,6 +1623,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
 
     public async Task<ThreadPage> ListThreadsAsync(string? cursor, CancellationToken cancellationToken)
     {
+        ConnectionContext context = RequireContext();
         JsonElement result = await SendReadOnlyAsync(
             "thread/list",
             new { cursor, limit = 25, sourceKinds = ThreadSourceKinds },
@@ -1531,16 +1637,59 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             }
         }
 
+        bool readStatesAvailable = false;
+        var readStates = new Dictionary<string, ThreadReadStateSnapshot>(StringComparer.Ordinal);
+        if (context.ExperimentalApi
+            && result.TryGetProperty("readStates", out JsonElement readStatesElement)
+            && readStatesElement.ValueKind == JsonValueKind.Object)
+        {
+            readStatesAvailable = true;
+            foreach (ThreadSummary thread in threads)
+            {
+                if (readStatesElement.TryGetProperty(thread.Id, out JsonElement state))
+                {
+                    readStates[thread.Id] = ReadThreadReadState(state);
+                }
+                else
+                {
+                    readStates[thread.Id] = new() { Kind = ThreadReadStateKind.NotApplicable };
+                }
+            }
+        }
+        else if (context.ExperimentalApi
+            && result.TryGetProperty("readStates", out JsonElement malformedReadStates)
+            && malformedReadStates.ValueKind is not JsonValueKind.Null and not JsonValueKind.Undefined)
+        {
+            readStatesAvailable = true;
+            foreach (ThreadSummary thread in threads)
+            {
+                readStates[thread.Id] = new() { Kind = ThreadReadStateKind.Invalid };
+            }
+        }
+        else
+        {
+            foreach (ThreadSummary thread in threads)
+            {
+                readStates[thread.Id] = new() { Kind = ThreadReadStateKind.Unavailable };
+            }
+        }
+
         return new ThreadPage
         {
             Threads = threads,
             NextCursor = GetString(result, "nextCursor"),
+            ReadStatesAvailable = readStatesAvailable,
+            ReadStates = readStates,
         };
     }
 
     public async Task<ThreadSummary> ReadThreadAsync(string threadId, CancellationToken cancellationToken)
+        => (await ReadThreadWithStateAsync(threadId, cancellationToken).ConfigureAwait(false)).Thread;
+
+    public async Task<ThreadReadResult> ReadThreadWithStateAsync(string threadId, CancellationToken cancellationToken)
     {
         ValidateHistoryId(threadId, nameof(threadId));
+        ConnectionContext context = RequireContext();
         JsonElement result = await SendReadOnlyAsync(
             "thread/read",
             new { threadId, includeTurns = false },
@@ -1556,7 +1705,88 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             throw InvalidHistoryResponse();
         }
 
-        return summary;
+        return new ThreadReadResult
+        {
+            Thread = summary,
+            ReadState = context.ExperimentalApi
+                ? ReadThreadReadState(result, "readState")
+                : new() { Kind = ThreadReadStateKind.Unavailable },
+        };
+    }
+
+    public async Task<UpdateThreadReadStateResult> UpdateThreadReadStateAsync(
+        string threadId,
+        string expectedRevision,
+        bool markRead,
+        CancellationToken cancellationToken)
+    {
+        ValidateHistoryId(threadId, nameof(threadId));
+        ArgumentException.ThrowIfNullOrWhiteSpace(expectedRevision);
+        ConnectionContext context = RequireContext();
+        EnsureCurrent(context);
+        if (!context.ExperimentalApi)
+        {
+            throw new InvalidOperationException("Thread read-state operations require the experimental API connection.");
+        }
+
+        JsonElement response;
+        try
+        {
+            response = await context.Connection.SendRequestAsync(
+                "thread/readState/update",
+                new
+                {
+                    threadId,
+                    expectedRevision,
+                    operation = new { type = markRead ? "read" : "unread" },
+                },
+                TimeSpan.FromSeconds(15),
+                cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (
+            exception is JsonRpcConnectionClosedException
+            || (exception is OperationCanceledException && !cancellationToken.IsCancellationRequested))
+        {
+            // A timeout or disconnect leaves the commit unknown. The update is never resent; the
+            // client rereads the current receipt instead.
+            WorkerDiagnostics.Write("thread/readState/update outcome unknown", exception);
+            return new UpdateThreadReadStateResult
+            {
+                ThreadId = threadId,
+                OutcomeUnknown = true,
+            };
+        }
+        catch (JsonRpcRemoteException exception) when (
+            exception.Code == -32600
+            && TryReadThreadReadStateConflict(exception.ErrorData, out ThreadReadStateSnapshot conflictState))
+        {
+            EnsureCurrent(context);
+            if (conflictState.Kind is ThreadReadStateKind.Invalid or ThreadReadStateKind.Unavailable)
+            {
+                conflictState = (await ReadThreadWithStateAsync(threadId, cancellationToken).ConfigureAwait(false)).ReadState;
+            }
+
+            return new UpdateThreadReadStateResult
+            {
+                ThreadId = threadId,
+                Conflict = true,
+                State = conflictState,
+            };
+        }
+
+        EnsureCurrent(context);
+        ThreadReadStateSnapshot state = ReadThreadReadState(response, "readState");
+        if (state.Kind is ThreadReadStateKind.Invalid or ThreadReadStateKind.Unavailable)
+        {
+            state = (await ReadThreadWithStateAsync(threadId, cancellationToken).ConfigureAwait(false)).ReadState;
+        }
+
+        return new UpdateThreadReadStateResult
+        {
+            ThreadId = threadId,
+            Succeeded = true,
+            State = state,
+        };
     }
 
     public async Task<ThreadTurnsPage> ListThreadTurnsAsync(
@@ -3560,6 +3790,22 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             return;
         }
 
+        if (method == "thread/readState/changed")
+        {
+            if (context.ExperimentalApi && ThreadReadStateChanged is not null)
+            {
+                await ThreadReadStateChanged(
+                    new ThreadReadStateChangedEvent
+                    {
+                        ThreadId = GetString(parameters, "threadId") ?? string.Empty,
+                        State = ReadThreadReadState(parameters, "readState"),
+                    },
+                    cancellationToken).ConfigureAwait(false);
+            }
+
+            return;
+        }
+
         string? threadId = GetString(parameters, "threadId");
         if (method == "thread/attachment/updated")
         {
@@ -4475,6 +4721,24 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         {
             emittingContext.Value = previousContext;
         }
+    }
+
+    // Retires a connection that initialize rejected before it became usable. A newer connection
+    // that already replaced it is left untouched.
+    private async Task RetireRejectedConnectionAsync(ConnectionContext context)
+    {
+        if (!ReferenceEquals(Interlocked.CompareExchange(ref connectionContext, null, context), context))
+        {
+            return;
+        }
+
+        context.Detach();
+        CancelPending(context.Generation);
+        pendingInteractions.RetireGeneration(context.Generation);
+        authorizationUrls.RetireGeneration(context.Generation);
+        CodexVersion = null;
+        InitializationMetadata = null;
+        await RetireStreamingBufferAsync().ConfigureAwait(false);
     }
 
     private async Task RetireStreamingBufferAsync()
@@ -6032,6 +6296,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
 
         public IJsonRpcConnection Connection { get; }
         public WindowsSandboxBackendPreference SandboxBackend { get; set; }
+        public bool ExperimentalApi { get; set; }
         public long Generation { get; }
         public string? StatePartitionFingerprint { get; }
         public long OwnerGeneration { get; }
