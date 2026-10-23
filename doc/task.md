@@ -908,3 +908,13 @@ Tracking: [Issue #214](https://github.com/kkamegawa/vsextensionforcodex/issues/2
 ### 2026-10-23: Codex App Server 0.163.0 implementation
 
 Detailed task and verification record: [English](task-app-server-0-163.md) · [日本語](task-app-server-0-163_ja.md). Automated implementation checks are complete; Experimental Instance visual acceptance remains open.
+
+### 2026-10-23: Keep automatic recovery current after the Worker is replaced
+
+Tracking: [Issue #224](https://github.com/kkamegawa/vsextensionforcodex/issues/224). Japanese record: [日本語](task-issue224_ja.md). Design: `doc/connection-history-recovery-design.md`, the paragraph after "A previous bridge's late signal cannot retire the replacement bridge.", and its Japanese counterpart.
+
+- [x] Root cause: a replacement Worker numbers owner and connection generations from zero and uses a new state partition, so its Ready status was rejected against the retired Worker's higher owner generation. The tool window stayed Degraded until Restart was used twice.
+- [x] After the recovery bridge swap, retire the previous owner baseline: keep state, message, target kind, and display identity; clear connection generation, owner generation, and state partition. The retired bridge is unsubscribed first.
+- [x] Regression test `ChatViewModel_TransientRecoveryAppliesReplacementWorkerWithLowerGenerations` covers Ready, the replacement owner, the synchronized conversation list, and a later Busy notification. It fails without the fix.
+- [x] Debug solution build: 0 warnings, 0 errors. Core 464 passed / 5 skipped / 0 failed; UI 490 passed / 1 skipped / 0 failed. Release build and tests were not run.
+- [x] Experimental Instance with Codex 0.163.0: killing the Worker's `codex app-server` child recovered automatically to Ready within about 4 seconds with a new Worker process. The header showed Connection restored, the conversation history list loaded, and the diagnostics log had no stale-generation rejection.

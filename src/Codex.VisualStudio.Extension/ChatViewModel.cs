@@ -946,6 +946,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             bridge = bridgeFactory();
             SubscribeBridge(bridge);
             await previous.DisposeAsync().ConfigureAwait(false);
+            await OnUiAsync(RetireReplacedWorkerOwner).ConfigureAwait(false);
 
             WorkerStatus result;
             try
@@ -981,6 +982,32 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         {
             profileOperationGate.Release();
         }
+    }
+
+    // A replacement Worker numbers owner and connection generations from zero and salts its state
+    // partition with a new instance ID, so the retired Worker's owner must not stay the baseline that
+    // the replacement's status snapshots and notifications are compared with. The target kind and
+    // display identity stay, so a failed attempt still offers the matching Restart or Reconnect.
+    private void RetireReplacedWorkerOwner()
+    {
+        ConnectionTargetSnapshot? target = Status.Target;
+        if (target is null)
+        {
+            return;
+        }
+
+        ConnectionTargetSnapshot retired = target.Clone();
+        retired.Generation = 0;
+        retired.OwnerGeneration = 0;
+        retired.StatePartitionFingerprint = null;
+        Status = new WorkerStatus
+        {
+            State = Status.State,
+            Message = Status.Message,
+            CodexVersion = Status.CodexVersion,
+            RecoveryFailureKind = Status.RecoveryFailureKind,
+            Target = retired,
+        };
     }
 
     private async Task<bool> IsRecoveryTargetValidAsync(

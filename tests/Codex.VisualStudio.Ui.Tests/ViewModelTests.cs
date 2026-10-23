@@ -4714,6 +4714,51 @@ public sealed class ViewModelTests
     }
 
     [TestMethod]
+    public async Task ChatViewModel_TransientRecoveryAppliesReplacementWorkerWithLowerGenerations()
+    {
+        var bridge = new FakeWorkerBridge();
+        WorkerStatus recovered = OwnerStatus("worker-b-owner", 2, 1);
+        recovered.CodexVersion = "0.163.0";
+        var replacement = new FakeWorkerBridge
+        {
+            ConnectHandler = () => Task.FromResult(recovered),
+            ListThreadsHandler = (_, _) => Task.FromResult(new ThreadPage
+            {
+                Threads = [new ThreadSummary { Id = "thread-recovered" }],
+            }),
+        };
+        using var vm = new ChatViewModel(
+            bridge,
+            autoConnect: false,
+            settingsStore: new MemorySettingsStore(new ExtensionSettings()),
+            bridgeFactory: () => replacement);
+        SetWorkingDirectory(vm, Path.GetTempPath());
+
+        // The retired Worker restarted its app-server before it exited, so its owner and connection
+        // generations are higher than the ones a fresh replacement Worker process starts from.
+        await bridge.PublishStateAsync(OwnerStatus("worker-a-owner", 4, 3));
+        WorkerStatus degraded = OwnerStatus("worker-a-owner", 4, 3);
+        degraded.State = WorkerConnectionState.Degraded;
+        degraded.RecoveryFailureKind = WorkerRecoveryFailureKind.WorkerProcessExit;
+        await bridge.PublishStateAsync(degraded);
+
+        MethodInfo method = typeof(ChatViewModel).GetMethod("HandleConnectionLostAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
+        await (Task)method.Invoke(vm, [bridge, WorkerRecoveryFailureKind.WorkerProcessExit])!;
+
+        Assert.AreEqual(WorkerConnectionState.Ready, vm.Status.State);
+        Assert.AreEqual("worker-b-owner", vm.Status.Target!.StatePartitionFingerprint);
+        Assert.AreEqual(2, vm.Status.Target.OwnerGeneration);
+        Assert.IsFalse(vm.IsRecovering);
+        Assert.AreEqual("thread-recovered", vm.Threads.Single().Id);
+
+        // Later replacement notifications stay current instead of being dropped as stale.
+        WorkerStatus busy = OwnerStatus("worker-b-owner", 2, 1);
+        busy.State = WorkerConnectionState.Busy;
+        await replacement.PublishStateAsync(busy);
+        Assert.AreEqual(WorkerConnectionState.Busy, vm.Status.State);
+    }
+
+    [TestMethod]
     public async Task ChatViewModel_QueuedPlanForOtherThreadDoesNotChangeSelectedThreadMode()
     {
         const string threadA = "thread-plan-queue";
