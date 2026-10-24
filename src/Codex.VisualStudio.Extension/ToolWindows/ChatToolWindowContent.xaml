@@ -1874,6 +1874,7 @@
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
           </Grid.RowDefinitions>
           <!-- Inline file-reference suggestions share the composer focus scope with the prompt.
                Keeping the list bounded and virtualized avoids Popup focus transfer in Remote UI. -->
@@ -2305,9 +2306,170 @@
             </DockPanel>
           </Border>
 
+          <!-- Presets shared with the Codex CLI (tui.presets). Using a preset only fills the
+               composer; replacing, deleting, and replacing a draft each need a confirmation. -->
+          <Border Grid.Row="5"
+                  Margin="6,2,6,6"
+                  Padding="10,8"
+                  CornerRadius="4"
+                  BorderThickness="1"
+                  Background="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBackgroundBrushKey}}"
+                  BorderBrush="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBorderBrushKey}}"
+                  Visibility="{Binding IsPresetsPanelOpen, Converter={StaticResource BoolToVis}}"
+                  AutomationProperties.Name="Presets">
+            <StackPanel>
+              <DockPanel LastChildFill="True">
+                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                  <Button Content="Refresh"
+                          Command="{Binding RefreshPresetsCommand}"
+                          Style="{StaticResource SmallRoundButtonStyle}"
+                          AutomationProperties.Name="Refresh presets" />
+                  <Button Margin="6,0,0,0"
+                          Content="Close"
+                          Command="{Binding ClosePresetsCommand}"
+                          Style="{StaticResource SmallRoundButtonStyle}"
+                          AutomationProperties.Name="Close presets" />
+                </StackPanel>
+                <StackPanel>
+                  <TextBlock FontWeight="SemiBold" Text="Presets" />
+                  <TextBlock FontSize="11" Opacity="0.75" TextWrapping="Wrap"
+                             Text="Shared with the Codex CLI through the connected server's configuration. Using a preset fills the composer without sending it." />
+                </StackPanel>
+              </DockPanel>
+
+              <TextBlock Margin="0,6,0,0"
+                         Text="{Binding PresetsTierNoticeText}"
+                         TextWrapping="Wrap"
+                         Visibility="{Binding ShowPresetsTierNotice, Converter={StaticResource BoolToVis}}"
+                         AutomationProperties.LiveSetting="Polite" />
+              <TextBlock Margin="0,6,0,0"
+                         Opacity="0.75"
+                         Text="Loading presets…"
+                         Visibility="{Binding IsPresetsLoading, Converter={StaticResource BoolToVis}}" />
+              <TextBlock Margin="0,6,0,0"
+                         Text="{Binding PresetsStatusText}"
+                         TextWrapping="Wrap"
+                         Visibility="{Binding HasPresetsStatus, Converter={StaticResource BoolToVis}}"
+                         AutomationProperties.Name="Preset status"
+                         AutomationProperties.LiveSetting="Polite" />
+
+              <Border Margin="0,6,0,0"
+                      Padding="8,6"
+                      CornerRadius="4"
+                      BorderThickness="1"
+                      BorderBrush="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBorderBrushKey}}"
+                      Visibility="{Binding HasPresetConfirmation, Converter={StaticResource BoolToVis}}"
+                      AutomationProperties.Name="Preset confirmation">
+                <DockPanel LastChildFill="True">
+                  <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Margin="10,0,0,0">
+                    <Button Content="Cancel"
+                            Command="{Binding CancelPresetConfirmationCommand}"
+                            Style="{StaticResource SmallRoundButtonStyle}"
+                            AutomationProperties.Name="Cancel preset change" />
+                    <Button Margin="6,0,0,0"
+                            Content="{Binding PresetConfirmationActionText}"
+                            Command="{Binding ConfirmPresetCommand}"
+                            Style="{StaticResource SmallRoundButtonStyle}"
+                            AutomationProperties.Name="{Binding PresetConfirmationActionText}" />
+                  </StackPanel>
+                  <TextBlock Text="{Binding PresetConfirmationText}"
+                             TextWrapping="Wrap"
+                             AutomationProperties.LiveSetting="Assertive" />
+                </DockPanel>
+              </Border>
+
+              <StackPanel Margin="0,6,0,0"
+                          Visibility="{Binding IsPresetEditorOpen, Converter={StaticResource BoolToVis}}">
+                <TextBlock FontWeight="SemiBold" Text="{Binding PresetEditorTitle}" />
+                <TextBlock Margin="0,4,0,2" Text="Label (optional)" />
+                <TextBox Padding="6,4"
+                         Text="{Binding PresetEditorLabel, UpdateSourceTrigger=PropertyChanged}"
+                         AutomationProperties.Name="Preset label" />
+                <TextBlock Margin="0,6,0,2" Text="Prompt or slash command" />
+                <TextBox MinHeight="54"
+                         MaxHeight="140"
+                         Padding="6,4"
+                         AcceptsReturn="True"
+                         TextWrapping="Wrap"
+                         VerticalScrollBarVisibility="Auto"
+                         Text="{Binding PresetEditorInput, UpdateSourceTrigger=PropertyChanged}"
+                         AutomationProperties.Name="Preset input"
+                         AutomationProperties.HelpText="Up to 8,000 UTF-8 bytes. Shell commands starting with ! are not allowed." />
+                <WrapPanel Margin="0,6,0,0">
+                  <Button Content="Save"
+                          Command="{Binding SavePresetCommand}"
+                          Style="{StaticResource SmallRoundButtonStyle}"
+                          AutomationProperties.Name="Save preset" />
+                  <Button Margin="6,0,0,0"
+                          Content="Cancel"
+                          Command="{Binding CancelPresetEditCommand}"
+                          Style="{StaticResource SmallRoundButtonStyle}"
+                          AutomationProperties.Name="Cancel preset edit" />
+                </WrapPanel>
+              </StackPanel>
+
+              <ScrollViewer Margin="0,6,0,0"
+                            MaxHeight="240"
+                            VerticalScrollBarVisibility="Auto"
+                            HorizontalScrollBarVisibility="Disabled"
+                            Visibility="{Binding ShowPresetSlots, Converter={StaticResource BoolToVis}}">
+                <ItemsControl ItemsSource="{Binding PresetSlots}"
+                              AutomationProperties.Name="Preset slots">
+                  <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                      <Grid Margin="0,2,0,4"
+                            AutomationProperties.Name="{Binding AutomationName}">
+                        <Grid.ColumnDefinitions>
+                          <ColumnDefinition Width="22" />
+                          <ColumnDefinition Width="*" />
+                          <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Grid.Column="0"
+                                   FontWeight="SemiBold"
+                                   VerticalAlignment="Top"
+                                   Text="{Binding Slot}" />
+                        <StackPanel Grid.Column="1">
+                          <TextBlock Text="{Binding Title}" TextTrimming="CharacterEllipsis" />
+                          <TextBlock FontSize="11" Opacity="0.75"
+                                     Text="{Binding InputPreview}"
+                                     TextTrimming="CharacterEllipsis"
+                                     Visibility="{Binding HasInputPreview, Converter={StaticResource BoolToVis}}" />
+                          <TextBlock FontSize="11" Opacity="0.75" TextWrapping="Wrap">
+                            <Run Text="{Binding SourceText, Mode=OneWay}" />
+                            <Run Text=" · " />
+                            <Run Text="{Binding AvailabilityText, Mode=OneWay}" />
+                          </TextBlock>
+                        </StackPanel>
+                        <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Top" Margin="6,0,0,0">
+                          <Button Content="Use"
+                                  Command="{Binding RecallCommand}"
+                                  Style="{StaticResource SmallRoundButtonStyle}"
+                                  Visibility="{Binding IsDefined, Converter={StaticResource BoolToVis}}"
+                                  AutomationProperties.Name="Use preset in composer" />
+                          <Button Margin="6,0,0,0"
+                                  Content="{Binding EditText}"
+                                  Command="{Binding EditCommand}"
+                                  Style="{StaticResource SmallRoundButtonStyle}"
+                                  Visibility="{Binding CanEdit, Converter={StaticResource BoolToVis}}"
+                                  AutomationProperties.Name="{Binding EditText}" />
+                          <Button Margin="6,0,0,0"
+                                  Content="Delete"
+                                  Command="{Binding DeleteCommand}"
+                                  Style="{StaticResource SmallRoundButtonStyle}"
+                                  Visibility="{Binding CanDelete, Converter={StaticResource BoolToVis}}"
+                                  AutomationProperties.Name="Delete preset" />
+                        </StackPanel>
+                      </Grid>
+                    </DataTemplate>
+                  </ItemsControl.ItemTemplate>
+                </ItemsControl>
+              </ScrollViewer>
+            </StackPanel>
+          </Border>
+
           <!-- Action row: controls wrap at narrow tool-window widths; interrupt/send remain
                reachable in a dedicated right-aligned group. -->
-          <Grid Grid.Row="5" Margin="6,0,6,6">
+          <Grid Grid.Row="6" Margin="6,0,6,6">
             <Grid.ColumnDefinitions>
               <ColumnDefinition Width="*" />
               <ColumnDefinition Width="Auto" />
@@ -2317,6 +2479,10 @@
                       Command="{Binding AttachCommand}"
                       Style="{StaticResource IconButtonStyle}"
                       AutomationProperties.Name="Attach context" />
+              <Button Margin="4,0,0,0" Content="&#xE728;" ToolTip="Presets"
+                      Command="{Binding OpenPresetsCommand}"
+                      Style="{StaticResource IconButtonStyle}"
+                      AutomationProperties.Name="Open presets" />
               <ComboBox Margin="6,0,0,0" Width="92" VerticalAlignment="Center"
                         ToolTip="Mode"
                         ItemsSource="{Binding Modes}" SelectedItem="{Binding SelectedMode}"

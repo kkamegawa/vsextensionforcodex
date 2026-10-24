@@ -5,7 +5,8 @@ namespace Codex.VisualStudio.Ui.Tests;
 [TestClass]
 public sealed class SlashCommandTests
 {
-    private static readonly string[] ReasoningAndReviewCommands = ["reasoning", "review"];
+    // Prefix matches first, then the substring match /presets.
+    private static readonly string[] ReFilterCommands = ["reasoning", "review", "presets"];
 
     private readonly SlashCommandCatalog catalog = new();
 
@@ -140,7 +141,7 @@ public sealed class SlashCommandTests
         IReadOnlyList<SlashCommandDefinition> results = catalog.Filter("/re");
 
         CollectionAssert.AreEqual(
-            ReasoningAndReviewCommands,
+            ReFilterCommands,
             results.Select(static command => command.Name).ToArray());
         Assert.IsFalse(results.Any(static command => command.Name == "project"));
     }

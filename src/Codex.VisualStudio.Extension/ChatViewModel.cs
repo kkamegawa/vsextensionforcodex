@@ -123,6 +123,8 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
     private string selectedServiceTierId = ServiceTierCatalog.DefaultId;
     private readonly Dictionary<string, PendingServiceTierOverride> pendingServiceTierByThread = new(StringComparer.Ordinal);
     private readonly Dictionary<string, string?> serviceTierRestoreByThread = new(StringComparer.Ordinal);
+    // A /model speed that is not a picker option ("default" for standard, or an off-catalog flex).
+    private string? modelCommandServiceTier;
     private ListModelsResult modelCatalog = new();
     private RateLimitsResult? latestRateLimits;
     private readonly HashSet<SlashCommandId> unavailableSlashCommands = [];
@@ -311,6 +313,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         ConfirmApprovalModeCommand = new AsyncCommand(ConfirmApprovalModeAsync, () => HasApprovalModeConfirmation);
         CancelApprovalModeCommand = new AsyncCommand(CancelApprovalModeAsync, () => HasApprovalModeConfirmation);
         InitializeDailyUseCommands();
+        InitializePresetCommands();
         SlashCommands.Configure(OnSlashSuggestionAcceptedAsync, ExecuteSlashSubmissionAsync, OnSlashCommandClearedAsync);
         SlashCommands.PropertyChanged += OnSlashCommandsPropertyChanged;
         FileSuggestions.Configure(OnFileSuggestionAcceptedAsync);
@@ -719,6 +722,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                 OnPropertyChanged(nameof(PlanModeEnabled));
                 RaiseThreadReadStateCommandStates();
                 OnDailyUseStatusChanged(previousGeneration, value);
+                OnPresetsStatusChanged(previousGeneration, value);
             }
         }
     }
@@ -1729,6 +1733,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         slashCommandCoordinator.CancelAll();
         CancelFileSuggestionRefresh();
         SlashCommands.ClearForOwnerChange();
+        ResetPresets();
         FileSuggestions.CloseSuggestions();
         FileSuggestions.Suggestions.Clear();
         unavailableSlashCommands.Clear();
@@ -1747,6 +1752,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         reasoningRestoreByThread.Clear();
         pendingServiceTierByThread.Clear();
         serviceTierRestoreByThread.Clear();
+        modelCommandServiceTier = null;
         nextPersonality = null;
         planModeThreads.Clear();
         unassignedPlanModeEnabled = false;
@@ -2167,6 +2173,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             }
 
             settings.ServiceTierId = option.Id;
+            modelCommandServiceTier = null;
             settingsStore.Save(settings);
             OnPropertyChanged(nameof(ServiceTierHelpText));
         }
@@ -2177,9 +2184,14 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
 
     [DataMember]
     public string ServiceTierHelpText
-        => ServiceTiers.FirstOrDefault(option =>
-            string.Equals(option.Id, SelectedServiceTierId, StringComparison.OrdinalIgnoreCase))?.AutomationName
-        ?? "Inherit the service tier from the Codex configuration.";
+        => modelCommandServiceTier switch
+        {
+            DefaultServiceTierRequestValue => "Standard speed, selected with /model.",
+            { } tier => $"{tier} speed, selected with /model.",
+            null => ServiceTiers.FirstOrDefault(option =>
+                    string.Equals(option.Id, SelectedServiceTierId, StringComparison.OrdinalIgnoreCase))?.AutomationName
+                ?? "Inherit the service tier from the Codex configuration.",
+        };
 
     [DataMember]
     public string SelectedReasoningEffortId
@@ -5172,6 +5184,11 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             }
         }
 
+        if (modelCommandServiceTier is not null)
+        {
+            return new TurnSettingResolution(true, modelCommandServiceTier);
+        }
+
         ServiceTierOption? configured = ServiceTiers.FirstOrDefault(option =>
             option.Id.Length > 0
             && string.Equals(option.Id, settings.ServiceTierId, StringComparison.OrdinalIgnoreCase));
@@ -5905,6 +5922,11 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             isAvailable = false;
             unavailableReason = "The selected model did not report a fast service tier.";
         }
+        else if (definition.Id == SlashCommandId.Presets && IsPresetsConnectionReady && !ArePresetsAvailable)
+        {
+            isAvailable = false;
+            unavailableReason = PresetsTierRequiredText;
+        }
 
         string argumentHint = definition.Id switch
         {
@@ -5913,6 +5935,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             SlashCommandId.Review => "Branch, commit, or custom instructions",
             SlashCommandId.Plan => "Optional prompt to start in Plan mode",
             SlashCommandId.Shell => "[--timeout-ms N] -- <command>. The command stays inert until you confirm it.",
+            SlashCommandId.Model => "[model] [--reasoning <level>] [--speed <tier>]",
             _ => string.Empty,
         };
         bool showArgumentInput = definition.ArgumentKind is
@@ -6148,6 +6171,14 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             return false;
         }
 
+        // Syntax errors surface now; a queued /model must never replace a valid one and fail later.
+        if (invocation.Definition.Id == SlashCommandId.Model
+            && !ModelCommandArgumentParser.TryParse(invocation.Arguments, out _, out string? modelSyntaxError))
+        {
+            await ShowSlashFailureAsync(modelSyntaxError!).ConfigureAwait(false);
+            return false;
+        }
+
         if (invocation.Definition.Id == SlashCommandId.Shell && Status.TurnId is not null)
         {
             await ShowSlashFailureAsync("Wait for the active turn to finish before preparing a shell command.").ConfigureAwait(false);
@@ -6233,6 +6264,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             or SlashCommandId.Fork
             or SlashCommandId.Goal
             or SlashCommandId.Mcp
+            or SlashCommandId.Presets
             or SlashCommandId.Review
             or SlashCommandId.Shell;
 
@@ -6272,6 +6304,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                 SlashCommandId.Status => await ExecuteStatusAsync(targetThreadId).ConfigureAwait(false),
                 SlashCommandId.Permissions => await ExecutePermissionsAsync(invocation.Arguments).ConfigureAwait(false),
                 SlashCommandId.Shell => await PrepareShellCommandAsync(invocation.Arguments, targetThreadId!, dispatchFence).ConfigureAwait(false),
+                SlashCommandId.Presets => await ExecutePresetsAsync().ConfigureAwait(false),
                 _ => false,
             };
         }
@@ -6590,7 +6623,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             ServiceTierOption? configured = ServiceTiers.FirstOrDefault(option =>
                 option.Id.Length > 0
                 && string.Equals(option.Id, settings.ServiceTierId, StringComparison.OrdinalIgnoreCase));
-            restoreTier = configured?.Id ?? GetEffectiveServiceTier(threadId);
+            restoreTier = modelCommandServiceTier ?? configured?.Id ?? GetEffectiveServiceTier(threadId);
         }
 
         pendingServiceTierByThread[threadId] = new PendingServiceTierOverride(fastTier.Id, restoreTier);
@@ -6600,19 +6633,231 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
 
     private async Task<bool> ExecuteModelAsync(string arguments)
     {
-        string requested = arguments.Trim();
-        string? model = requested.Length == 0
-            ? null
-            : Models.FirstOrDefault(candidate => string.Equals(candidate, requested, StringComparison.OrdinalIgnoreCase));
-        if (model is null)
+        if (!ModelCommandArgumentParser.TryParse(arguments, out ModelCommandArguments? parsed, out string? syntaxError))
         {
-            await ShowSlashFailureAsync("Select a model from the current model catalog.").ConfigureAwait(false);
+            await ShowSlashFailureAsync(syntaxError!).ConfigureAwait(false);
             return false;
         }
 
-        await OnUiAsync(() => SelectedModel = model).ConfigureAwait(false);
-        await ShowSlashStatusAsync($"Model set to {model}.").ConfigureAwait(false);
+        if (parsed!.Model is null && !parsed.HasSettings)
+        {
+            await ShowSlashStatusAsync(
+                $"Model: {SelectedModel ?? "(default)"}\r\nAvailable: {string.Join(", ", Models)}\r\n"
+                + "Use /model [model] [--reasoning <level>] [--speed <tier>].").ConfigureAwait(false);
+            return true;
+        }
+
+        OwnerSnapshot owner = CaptureOwnerSnapshot();
+        ModelCommandResolution? resolution = null;
+        string? error = null;
+        bool applied = false;
+        // Resolution and application run in one UI step, so every setting changes together or none does.
+        await OnUiAsync(() =>
+        {
+            if (!IsCurrentOwner(owner))
+            {
+                return;
+            }
+
+            if (TryResolveModelCommand(parsed, out resolution, out error))
+            {
+                ApplyModelCommand(resolution!);
+                applied = true;
+            }
+        }).ConfigureAwait(false);
+        if (!applied)
+        {
+            if (error is not null)
+            {
+                await ShowSlashFailureAsync(error).ConfigureAwait(false);
+            }
+
+            return false;
+        }
+
+        string message = $"Model set to {resolution!.Model} for the next turn.";
+        if (resolution.ReasoningEffort is { } effort)
+        {
+            message += effort.Length == 0 ? " Reasoning effort: model default." : $" Reasoning effort: {effort}.";
+        }
+
+        if (resolution.ServiceTierDisplay is { } speed)
+        {
+            message += $" Speed: {speed}.";
+        }
+
+        if (resolution.Notice is { } notice)
+        {
+            message += " " + notice;
+        }
+
+        await ShowSlashStatusAsync(message).ConfigureAwait(false);
         return true;
+    }
+
+    // Mirrors the Codex CLI 0.164.0 /model resolution. A null ReasoningEffort or ServiceTier keeps the
+    // current setting. ServiceTierOverride carries a request value that is not a picker option.
+    private sealed record ModelCommandResolution(
+        string Model,
+        string? ReasoningEffort,
+        string? ServiceTierOptionId,
+        string? ServiceTierOverride,
+        string? ServiceTierDisplay,
+        string? Notice);
+
+    private const string StandardSpeed = "standard";
+    private const string FlexSpeed = "flex";
+    // The CLI's "no service tier" request value; every supported app-server accepts it.
+    private const string DefaultServiceTierRequestValue = "default";
+
+    private bool TryResolveModelCommand(
+        ModelCommandArguments arguments,
+        out ModelCommandResolution? resolution,
+        out string? error)
+    {
+        resolution = null;
+        string? model;
+        if (arguments.Model is null)
+        {
+            model = SelectedModel;
+            if (model is null)
+            {
+                error = "Select a model before changing its reasoning effort or speed.";
+                return false;
+            }
+        }
+        else
+        {
+            model = Models.FirstOrDefault(candidate => string.Equals(candidate, arguments.Model, StringComparison.Ordinal));
+            if (model is null)
+            {
+                string[] caseInsensitive = Models
+                    .Where(candidate => string.Equals(candidate, arguments.Model, StringComparison.OrdinalIgnoreCase))
+                    .ToArray();
+                model = caseInsensitive.Length == 1 ? caseInsensitive[0] : null;
+            }
+
+            if (model is null)
+            {
+                error = $"Model '{arguments.Model}' is unavailable. Use /model to see available models.";
+                return false;
+            }
+        }
+
+        ModelInfo? info = FindModelInfo(model);
+        string? effort = null;
+        if (arguments.Reasoning is { } requestedEffort)
+        {
+            IReadOnlyList<ReasoningEffortInfo> supported = info?.SupportedReasoningEfforts ?? Array.Empty<ReasoningEffortInfo>();
+            bool matches = supported.Count == 0
+                ? string.Equals(info?.DefaultReasoningEffort, requestedEffort, StringComparison.Ordinal)
+                : supported.Any(option => string.Equals(option.Id, requestedEffort, StringComparison.Ordinal));
+            if (!matches)
+            {
+                string available = supported.Count == 0
+                    ? info?.DefaultReasoningEffort ?? "(none reported)"
+                    : string.Join(", ", supported.Select(option => option.Id));
+                error = $"Reasoning level '{requestedEffort}' is unavailable for {model}. Available: {available}.";
+                return false;
+            }
+
+            // A model without a list accepts only its default, which needs no explicit request.
+            effort = supported.Count == 0 ? ReasoningEffortCatalog.DefaultId : requestedEffort;
+        }
+        else if (arguments.Model is not null)
+        {
+            string? modelDefault = info?.DefaultReasoningEffort;
+            effort = modelDefault is not null
+                && info!.SupportedReasoningEfforts.Any(option => string.Equals(option.Id, modelDefault, StringComparison.Ordinal))
+                    ? modelDefault
+                    : ReasoningEffortCatalog.DefaultId;
+        }
+
+        string? tierOptionId = null;
+        string? tierOverride = null;
+        string? tierDisplay = null;
+        string? notice = null;
+        IReadOnlyList<ServiceTierInfo> tiers = info?.ServiceTiers ?? Array.Empty<ServiceTierInfo>();
+        if (arguments.Speed is { } speed)
+        {
+            ServiceTierInfo? catalogTier = tiers.FirstOrDefault(tier => string.Equals(tier.Id, speed, StringComparison.Ordinal))
+                ?? tiers.FirstOrDefault(tier => string.Equals(tier.Name, speed, StringComparison.OrdinalIgnoreCase));
+            if (speed == StandardSpeed)
+            {
+                tierOverride = DefaultServiceTierRequestValue;
+                tierDisplay = "standard";
+            }
+            else if (speed == FlexSpeed && catalogTier is null)
+            {
+                tierOverride = FlexSpeed;
+                tierDisplay = FlexSpeed;
+            }
+            else if (catalogTier is not null)
+            {
+                tierOptionId = catalogTier.Id;
+                tierDisplay = catalogTier.Id;
+            }
+            else
+            {
+                string available = string.Join(", ", new[] { StandardSpeed, FlexSpeed }.Concat(tiers.Select(tier => tier.Id)).Distinct(StringComparer.Ordinal));
+                error = $"Speed '{speed}' is unavailable for {model}. Available: {available}.";
+                return false;
+            }
+        }
+        else if (GetCurrentRequestedServiceTier() is { } current
+            && !string.Equals(current, DefaultServiceTierRequestValue, StringComparison.Ordinal)
+            && !string.Equals(current, FlexSpeed, StringComparison.Ordinal)
+            && !tiers.Any(tier => string.Equals(tier.Id, current, StringComparison.OrdinalIgnoreCase)))
+        {
+            // Unlike the CLI, which then sends no tier, fall back to an explicit normal speed.
+            tierOverride = DefaultServiceTierRequestValue;
+            tierDisplay = "standard";
+            notice = $"{model} does not support the {current} speed, so standard speed is used.";
+        }
+
+        resolution = new ModelCommandResolution(model, effort, tierOptionId, tierOverride, tierDisplay, notice);
+        error = null;
+        return true;
+    }
+
+    // The tier the next turn would request apart from one-turn overrides; null when none is requested.
+    private string? GetCurrentRequestedServiceTier()
+        => modelCommandServiceTier
+            ?? (string.IsNullOrEmpty(settings.ServiceTierId) ? null : settings.ServiceTierId);
+
+    private ModelInfo? FindModelInfo(string model)
+        => string.Equals(modelCatalog.DefaultModelInfo?.Id, model, StringComparison.Ordinal)
+            ? modelCatalog.DefaultModelInfo
+            : modelCatalog.Models.FirstOrDefault(candidate => string.Equals(candidate.Id, model, StringComparison.Ordinal));
+
+    private void ApplyModelCommand(ModelCommandResolution resolution)
+    {
+        SelectedModel = resolution.Model;
+        if (resolution.ReasoningEffort is { } effort)
+        {
+            settings.ReasoningEffortId = effort;
+            selectedReasoningEffortId = FindReasoningEffort(effort)?.Id ?? ReasoningEffortCatalog.DefaultId;
+            // A new persistent choice supersedes one-turn overrides and their restore values.
+            pendingReasoningByThread.Clear();
+            reasoningRestoreByThread.Clear();
+            OnPropertyChanged(nameof(SelectedReasoningEffortId));
+            OnPropertyChanged(nameof(ReasoningEffortHelpText));
+        }
+
+        if (resolution.ServiceTierOptionId is not null || resolution.ServiceTierOverride is not null)
+        {
+            settings.ServiceTierId = resolution.ServiceTierOptionId ?? ServiceTierCatalog.DefaultId;
+            selectedServiceTierId = ServiceTiers.FirstOrDefault(option =>
+                string.Equals(option.Id, settings.ServiceTierId, StringComparison.OrdinalIgnoreCase))?.Id
+                ?? ServiceTierCatalog.DefaultId;
+            modelCommandServiceTier = resolution.ServiceTierOverride;
+            pendingServiceTierByThread.Clear();
+            serviceTierRestoreByThread.Clear();
+            OnPropertyChanged(nameof(SelectedServiceTierId));
+            OnPropertyChanged(nameof(ServiceTierHelpText));
+        }
+
+        settingsStore.Save(settings);
     }
 
     private async Task<bool> ExecutePersonalityAsync(string arguments)
@@ -6966,8 +7211,11 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
     {
         OwnerSnapshot owner = CaptureOwnerSnapshot();
         long goalFenceVersion = CaptureGoalStopFenceVersion();
+        // A pending /permissions confirmation holds the queue: queued commands must not run under
+        // the permissions the user is still deciding to change.
         if ((SelectedThread is not null && !IsThreadJoined)
             || IsGoalStopUnresolved
+            || pendingApprovalMode is not null
             || Status.TurnId is not null
             || Interlocked.CompareExchange(ref drainingSlashQueue, 1, 0) != 0)
         {
@@ -7003,6 +7251,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                 while (IsCurrentOwner(owner)
                     && goalFenceVersion == CaptureGoalStopFenceVersion()
                     && !IsGoalStopUnresolved
+                    && pendingApprovalMode is null
                     && (SelectedThread is null || IsThreadJoined)
                     && Status.TurnId is null
                     && slashCommandCoordinator.TryDequeue(queueKey, out SlashCommandInvocation? invocation)
@@ -7128,6 +7377,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
 
         ClearApprovalModeConfirmation();
         ApplyApprovalMode(option);
+        await DrainSlashQueuesAsync(SelectedThread?.Id).ConfigureAwait(false);
     }
 
     private static bool HasPerTurnApprovalOverride(ApprovalModeOption? option)
@@ -7149,7 +7399,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         ClearApprovalModeConfirmation();
         OnPropertyChanged(nameof(SelectedApprovalMode));
         OnPropertyChanged(nameof(SelectedApprovalModeId));
-        return Task.CompletedTask;
+        return DrainSlashQueuesAsync(SelectedThread?.Id);
     }
 
     private void ApplyApprovalMode(ApprovalModeOption option)
