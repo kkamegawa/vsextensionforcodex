@@ -140,6 +140,27 @@ internal interface IWorkerBridge : IAsyncDisposable
 
     Task<UploadFeedbackResult> UploadFeedbackAsync(UploadFeedbackRequest request, CancellationToken cancellationToken);
 
+    Task<SaveFeedbackResult> SaveFeedbackAsync(SaveFeedbackRequest request, CancellationToken cancellationToken)
+        => Task.FromResult(new SaveFeedbackResult
+        {
+            IsSupported = false,
+            UnavailableReason = "Saving a diagnostic ZIP is not available through this bridge.",
+        });
+
+    Task<ListPresetsResult> ListPresetsAsync(ListPresetsRequest request, CancellationToken cancellationToken)
+        => Task.FromResult(new ListPresetsResult
+        {
+            IsSupported = false,
+            UnavailableReason = "Presets are not available through this bridge.",
+        });
+
+    Task<WritePresetResult> WritePresetAsync(WritePresetRequest request, CancellationToken cancellationToken)
+        => Task.FromResult(new WritePresetResult
+        {
+            IsSupported = false,
+            UnavailableReason = "Presets are not available through this bridge.",
+        });
+
     Task<RateLimitsResult> GetRateLimitsAsync(GetRateLimitsRequest request, CancellationToken cancellationToken);
 
     Task ResolveApprovalAsync(ResolveApprovalRequest request, CancellationToken cancellationToken);
@@ -502,6 +523,24 @@ public sealed class WorkerBridge : IWorkerBridge, ICodexWorkerObserver
     public Task<UploadFeedbackResult> UploadFeedbackAsync(UploadFeedbackRequest request, CancellationToken cancellationToken)
         => RequireRpc().InvokeWithCancellationAsync<UploadFeedbackResult>(
             "worker/feedback/upload",
+            new object[] { request },
+            cancellationToken);
+
+    public Task<SaveFeedbackResult> SaveFeedbackAsync(SaveFeedbackRequest request, CancellationToken cancellationToken)
+        => RequireRpc().InvokeWithCancellationAsync<SaveFeedbackResult>(
+            "worker/feedback/save",
+            new object[] { request },
+            cancellationToken);
+
+    public Task<ListPresetsResult> ListPresetsAsync(ListPresetsRequest request, CancellationToken cancellationToken)
+        => RequireRpc().InvokeWithCancellationAsync<ListPresetsResult>(
+            "worker/presets/list",
+            new object[] { request },
+            cancellationToken);
+
+    public Task<WritePresetResult> WritePresetAsync(WritePresetRequest request, CancellationToken cancellationToken)
+        => RequireRpc().InvokeWithCancellationAsync<WritePresetResult>(
+            "worker/presets/write",
             new object[] { request },
             cancellationToken);
 

@@ -804,6 +804,10 @@ public sealed partial class CodexSessionService
             AddServerPathPart(context, parts, GetString(item, "path"), ArtifactPartKind.Image,
                 [ArtifactActionKind.Preview, ArtifactActionKind.Open, ArtifactActionKind.Reveal]);
         }
+        else if (itemType == "imageGeneration" && context.FeatureTier >= CodexFeatureTier.Tier164)
+        {
+            ProjectGeneratedImage(context, parts, item);
+        }
         else if (itemType == "imageGeneration")
         {
             string? savedPath = GetString(item, "savedPath");
@@ -996,6 +1000,64 @@ public sealed partial class CodexSessionService
         }
     }
 
+    // 0.164.0 image items carry either an attachment-store fileId or an inline Base64 result,
+    // plus an optional savedPath, inputImages provenance, and a failure. No public RPC resolves a
+    // fileId, so a reference without a saved path is described instead of fetched.
+    private void ProjectGeneratedImage(ConnectionContext context, List<ArtifactPart> parts, JsonElement item)
+    {
+        string? status = GetString(item, "status");
+        bool failed = item.TryGetProperty("failure", out JsonElement failure) && failure.ValueKind != JsonValueKind.Null
+            || string.Equals(status, "failed", StringComparison.Ordinal);
+        if (failed)
+        {
+            parts.Add(new ArtifactPart { Kind = ArtifactPartKind.Fallback, Text = "Image generation failed." });
+            return;
+        }
+
+        if (status is not null && !string.Equals(status, "completed", StringComparison.Ordinal))
+        {
+            parts.Add(new ArtifactPart { Kind = ArtifactPartKind.Fallback, Text = "Image generation has not completed." });
+            return;
+        }
+
+        string? savedPath = GetString(item, "savedPath");
+        string? fileId = GetString(item, "fileId");
+        string? result = GetString(item, "result");
+        if (savedPath is not null)
+        {
+            AddServerPathPart(context, parts, savedPath, ArtifactPartKind.Image,
+                [ArtifactActionKind.Preview, ArtifactActionKind.Open, ArtifactActionKind.Reveal]);
+        }
+        else if (!string.IsNullOrEmpty(fileId))
+        {
+            parts.Add(new ArtifactPart
+            {
+                Kind = ArtifactPartKind.Fallback,
+                Text = "The generated image is stored as a reference that this connection cannot preview.",
+            });
+        }
+        else if (!string.IsNullOrEmpty(result))
+        {
+            AddImageGenerationFallback(context, parts, result);
+        }
+        else
+        {
+            parts.Add(new ArtifactPart { Kind = ArtifactPartKind.Fallback, Text = "Image generation completed without an image reference." });
+        }
+
+        int inputImages = item.TryGetProperty("inputImages", out JsonElement inputs) && inputs.ValueKind == JsonValueKind.Array
+            ? inputs.GetArrayLength()
+            : 0;
+        if (inputImages > 0)
+        {
+            parts.Add(new ArtifactPart
+            {
+                Kind = ArtifactPartKind.Text,
+                Text = inputImages == 1 ? "Generated from 1 local input image." : $"Generated from {inputImages} local input images.",
+            });
+        }
+    }
+
     private void AddImageGenerationFallback(ConnectionContext context, List<ArtifactPart> parts, string? result)
     {
         const string pngPrefix = "data:image/png;base64,";
@@ -1006,6 +1068,15 @@ public sealed partial class CodexSessionService
         string? encoded = mimeType == "image/png" ? result![pngPrefix.Length..]
             : mimeType == "image/jpeg" ? result![jpegPrefix.Length..]
             : null;
+        if (encoded is null && context.FeatureTier >= CodexFeatureTier.Tier164 && result is not null)
+        {
+            // 0.164.0 sends raw standard Base64. The leading characters identify the format;
+            // AddInlineImagePart still bounds the size and verifies the decoded signature.
+            mimeType = result.StartsWith("iVBORw0KGgo", StringComparison.Ordinal) ? "image/png"
+                : result.StartsWith("/9j/", StringComparison.Ordinal) ? "image/jpeg"
+                : null;
+            encoded = mimeType is null ? null : result.Trim();
+        }
         if (encoded is null)
         {
             parts.Add(new ArtifactPart

@@ -5,14 +5,7 @@ namespace Codex.VisualStudio.Contracts;
 
 public static class ContractVersions
 {
-    public const int Current = 25;
-}
-
-// Mirrors minimumVersion and targetVersion in app-server-contract.json; a Core test keeps them in sync.
-public static class SupportedCodexVersions
-{
-    public const string Minimum = "0.161.0";
-    public const string Target = "0.164.0";
+    public const int Current = 26;
 }
 
 public enum GoalStopStepOutcome
@@ -39,6 +32,8 @@ public enum WorkerRecoveryFailureKind
     ConfigurationChanged,
     Cancelled,
     Unknown,
+    // The server is older than the minimum supported version or its version cannot be determined.
+    UnsupportedServerVersion,
 }
 
 public enum ThreadAttachmentOperation
@@ -243,6 +238,13 @@ public sealed class WorkerStatus
     [DataMember]
     public string? CodexVersion { get; set; }
 
+    // Unsupported until initialize confirms a supported version for this connection.
+    [DataMember]
+    public CodexFeatureTier FeatureTier { get; set; }
+
+    [DataMember]
+    public bool IsNewerThanVerifiedVersion { get; set; }
+
     [DataMember]
     public EffectiveApprovalState? EffectiveApprovalState { get; set; }
 
@@ -434,6 +436,12 @@ public sealed class ThreadSummary
 
     [DataMember]
     public string? EffectiveModelId { get; set; }
+
+    // True when a 0.164.0+ resume returned the thread's saved settings. Model, reasoning effort,
+    // and service tier then replace the composer settings together; a null tier means normal
+    // speed. Older servers return global defaults, so only their non-empty values are applied.
+    [DataMember]
+    public bool HasAuthoritativeTurnSettings { get; set; }
 
     [DataMember]
     public IReadOnlyList<string> DisabledPluginIds { get; set; } = Array.Empty<string>();
@@ -1002,6 +1010,29 @@ public sealed class McpServerStatusInfo
     public string? HttpOrigin { get; set; }
 
     public IReadOnlyList<string> ServerCapabilities { get; set; } = Array.Empty<string>();
+
+    // Set only for 0.164.0+ connections, which report runtime state and tool discovery separately
+    // from authentication. Older connections keep the authentication-only presentation.
+    public bool HasRuntimeDetails { get; set; }
+
+    public McpRuntimeStatus RuntimeStatus { get; set; }
+
+    public int ToolCount { get; set; }
+
+    // Bounded and redacted; set only when tool discovery failed and no catalog was returned.
+    public string? ToolsError { get; set; }
+}
+
+public enum McpRuntimeStatus
+{
+    Unknown,
+    NotStarted,
+    Starting,
+    Connected,
+    AuthenticationRequired,
+    Failed,
+    Cancelled,
+    Disabled,
 }
 
 public sealed class McpServerListResult : AppServerOperationResult
@@ -1113,6 +1144,39 @@ public sealed class UploadFeedbackRequest : OwnerScopedRequest
 public sealed class UploadFeedbackResult : AppServerOperationResult
 {
     public string? ThreadId { get; set; }
+}
+
+// feedback/save (0.164.0+) writes a diagnostic ZIP on the app-server host. SavePath is an absolute
+// path on that host that must not exist yet; the server never overwrites a file.
+public sealed class SaveFeedbackRequest : OwnerScopedRequest
+{
+    public string Classification { get; set; } = string.Empty;
+
+    public string? Reason { get; set; }
+
+    public bool IncludeLogs { get; set; }
+
+    public string? ThreadId { get; set; }
+
+    public string SavePath { get; set; } = string.Empty;
+}
+
+public enum SaveFeedbackOutcome
+{
+    Saved,
+    Failed,
+    // The connection ended or timed out after the request was sent; the file may or may not exist.
+    Unconfirmed,
+}
+
+public sealed class SaveFeedbackResult : AppServerOperationResult
+{
+    public SaveFeedbackOutcome Outcome { get; set; }
+
+    // The server-reported path; a server path that the Extension never opens as a local file.
+    public string? SavedPath { get; set; }
+
+    public string? Message { get; set; }
 }
 
 public sealed class RateLimitWindowInfo
@@ -1513,6 +1577,15 @@ public interface ICodexWorkerClient
 
     [JsonRpcMethod("worker/feedback/upload")]
     Task<UploadFeedbackResult> UploadFeedbackAsync(UploadFeedbackRequest request, CancellationToken cancellationToken);
+
+    [JsonRpcMethod("worker/feedback/save")]
+    Task<SaveFeedbackResult> SaveFeedbackAsync(SaveFeedbackRequest request, CancellationToken cancellationToken);
+
+    [JsonRpcMethod("worker/presets/list")]
+    Task<ListPresetsResult> ListPresetsAsync(ListPresetsRequest request, CancellationToken cancellationToken);
+
+    [JsonRpcMethod("worker/presets/write")]
+    Task<WritePresetResult> WritePresetAsync(WritePresetRequest request, CancellationToken cancellationToken);
 
     [JsonRpcMethod("worker/account/rateLimits")]
     Task<RateLimitsResult> GetRateLimitsAsync(GetRateLimitsRequest request, CancellationToken cancellationToken);

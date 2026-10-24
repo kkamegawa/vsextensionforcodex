@@ -38,6 +38,52 @@ public sealed class WorkerRpcServiceTests
     }
 
     [TestMethod]
+    [DataRow("codex-cli/0.159.1", "version 0.159.1")]
+    [DataRow("unparseable", "an unknown version")]
+    public async Task LocalConnectToAnUnsupportedServerStopsWithoutRetryAndReportsTheVersion(string userAgent, string detected)
+    {
+        var connection = new StubConnection
+        {
+            Handler = method => method == "initialize"
+                ? JsonSerializer.SerializeToElement(new { userAgent })
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        var host = new FakeProcessHost(connection);
+        var session = new CodexSessionService(new ApprovalPolicyEngine(new PathAccessPolicy()), new SecretRedactor());
+        await using var worker = new WorkerRpcService(new SecretRedactor(), host, session);
+
+        WorkerStatus status = await worker.ConnectAsync(Options(), CancellationToken.None);
+
+        Assert.AreEqual(WorkerConnectionState.Degraded, status.State);
+        Assert.AreEqual(WorkerRecoveryFailureKind.UnsupportedServerVersion, status.RecoveryFailureKind);
+        StringAssert.Contains(status.Message, detected);
+        StringAssert.Contains(status.Message, SupportedCodexVersions.Minimum);
+        Assert.AreEqual(CodexFeatureTier.Unsupported, status.FeatureTier);
+        Assert.IsNull(status.CodexVersion);
+        Assert.IsTrue(host.Stops > 0, "The rejected local app-server is stopped.");
+        CollectionAssert.DoesNotContain(connection.Methods, "account/read");
+    }
+
+    [TestMethod]
+    public async Task LocalConnectPublishesTheFeatureTierWhenReady()
+    {
+        var connection = new StubConnection
+        {
+            Handler = method => method == "initialize"
+                ? JsonSerializer.SerializeToElement(new { userAgent = "codex-cli/0.165.0" })
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        var session = new CodexSessionService(new ApprovalPolicyEngine(new PathAccessPolicy()), new SecretRedactor());
+        await using var worker = new WorkerRpcService(new SecretRedactor(), new FakeProcessHost(connection), session);
+
+        WorkerStatus status = await worker.ConnectAsync(Options(), CancellationToken.None);
+
+        Assert.AreEqual(WorkerConnectionState.Ready, status.State);
+        Assert.AreEqual(CodexFeatureTier.Tier164, status.FeatureTier);
+        Assert.IsTrue(status.IsNewerThanVerifiedVersion);
+    }
+
+    [TestMethod]
     public async Task LocalConnectCancellation_StaysCancellationAndStopsThePartialProcess()
     {
         // A recovery attempt deadline cancels the connect. It must surface as cancellation, not a
@@ -1802,6 +1848,13 @@ public sealed class WorkerRpcServiceTests
                     ? Handler(method)
                     : await AsyncHandler(method, timeout, cancellationToken);
 
+            if (method == "initialize" && result.ValueKind == JsonValueKind.Object && !result.TryGetProperty("userAgent", out _))
+            {
+                // Handlers that do not model the server version get a supported target server.
+                System.Text.Json.Nodes.JsonObject initialize = System.Text.Json.Nodes.JsonNode.Parse(result.GetRawText())!.AsObject();
+                initialize["userAgent"] = $"codex-cli/{SupportedCodexVersions.Target}";
+                result = JsonSerializer.SerializeToElement(initialize);
+            }
             if (method == "model/list" && !result.TryGetProperty("data", out _))
             {
                 result = JsonSerializer.SerializeToElement(new

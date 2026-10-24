@@ -7,7 +7,7 @@ using StreamJsonRpc;
 namespace Codex.VisualStudio.Core.Tests;
 
 [TestClass]
-public sealed class CodexSessionServiceTests
+public sealed partial class CodexSessionServiceTests
 {
     private static readonly JsonSerializerOptions WireJsonOptions = new(JsonSerializerDefaults.Web)
     {
@@ -94,7 +94,7 @@ public sealed class CodexSessionServiceTests
     }
 
     [TestMethod]
-    public async Task InitializeFallsBackToValidatedLegacyServerVersion()
+    public async Task InitializeIgnoresServerInfoVersionWhenUserAgentHasNoVersion()
     {
         var connection = new RecordingConnection
         {
@@ -102,15 +102,19 @@ public sealed class CodexSessionServiceTests
                 ? JsonSerializer.SerializeToElement(new
                 {
                     userAgent = "malformed user agent",
-                    serverInfo = new { version = "2.3.4-rc.1" },
+                    serverInfo = new { version = "0.164.0" },
                 })
                 : JsonSerializer.SerializeToElement(new { }),
         };
         await using var service = CreateService();
 
-        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+        UnsupportedCodexVersionException error = await Assert.ThrowsExactlyAsync<UnsupportedCodexVersionException>(
+            () => service.InitializeAsync(connection, Options(), CancellationToken.None));
 
-        Assert.AreEqual("2.3.4-rc.1", service.CodexVersion);
+        StringAssert.Contains(error.Message, "an unknown version");
+        Assert.IsNull(service.CodexVersion);
+        Assert.AreEqual(CodexFeatureTier.Unsupported, service.FeatureTier);
+        Assert.IsFalse(connection.Notifications.Any(notification => notification.Method == "initialized"));
     }
 
     [TestMethod]
@@ -138,9 +142,51 @@ public sealed class CodexSessionServiceTests
         foreach (string value in unsafeUserAgents)
         {
             userAgent = value;
-            await service.InitializeAsync(connection, Options(), CancellationToken.None);
+            await Assert.ThrowsExactlyAsync<UnsupportedCodexVersionException>(
+                () => service.InitializeAsync(connection, Options(), CancellationToken.None),
+                value);
             Assert.IsNull(service.CodexVersion, value);
         }
+    }
+
+    [TestMethod]
+    [DataRow("0.159.1", CodexFeatureTier.Unsupported, false)]
+    [DataRow("0.160.9", CodexFeatureTier.Unsupported, false)]
+    [DataRow("0.161.0-alpha.1", CodexFeatureTier.Unsupported, false)]
+    [DataRow("0.0.0", CodexFeatureTier.Unsupported, false)]
+    [DataRow("0.161.0", CodexFeatureTier.Baseline, false)]
+    [DataRow("0.162.1", CodexFeatureTier.Baseline, false)]
+    [DataRow("0.163.0-alpha.2", CodexFeatureTier.Baseline, false)]
+    [DataRow("0.163.0", CodexFeatureTier.Tier163, false)]
+    [DataRow("0.164.0-alpha.1", CodexFeatureTier.Tier163, false)]
+    [DataRow("0.164.0+build.7", CodexFeatureTier.Tier164, false)]
+    [DataRow("0.164.0", CodexFeatureTier.Tier164, false)]
+    [DataRow("0.165.0", CodexFeatureTier.Tier164, true)]
+    public async Task InitializeAssignsTheFeatureTierOrRejectsTheServer(string version, CodexFeatureTier expected, bool newer)
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "initialize"
+                ? JsonSerializer.SerializeToElement(new { userAgent = $"codex-cli/{version} (Windows 10.0.26200; x86_64)" })
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        await using var service = CreateService();
+
+        if (expected == CodexFeatureTier.Unsupported)
+        {
+            UnsupportedCodexVersionException error = await Assert.ThrowsExactlyAsync<UnsupportedCodexVersionException>(
+                () => service.InitializeAsync(connection, Options(), CancellationToken.None));
+            StringAssert.Contains(error.Message, SupportedCodexVersions.Minimum);
+            Assert.IsNull(service.CodexVersion);
+            Assert.IsFalse(connection.Notifications.Any(notification => notification.Method == "initialized"));
+            return;
+        }
+
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        Assert.AreEqual(expected, service.FeatureTier);
+        Assert.AreEqual(newer, service.IsNewerThanVerifiedVersion);
+        Assert.AreEqual(version, service.CodexVersion);
     }
 
     [TestMethod]
@@ -3299,7 +3345,7 @@ public sealed class CodexSessionServiceTests
                     codexHome = "C:/private/codex",
                     platformFamily = "windows",
                     platformOs = "windows-11",
-                    userAgent = "codex-cli/0.159.1",
+                    userAgent = "codex-cli/0.161.0",
                 })
                 : JsonSerializer.SerializeToElement(new { }),
         };
@@ -4430,6 +4476,20 @@ public sealed class CodexSessionServiceTests
             Task<JsonElement> responseTask)
         {
             JsonElement response = await responseTask.ConfigureAwait(false);
+            if (method == "initialize"
+                && (response.ValueKind != JsonValueKind.Object
+                    || !response.EnumerateObject().Any(property => property.Name is "userAgent" or "serverInfo")))
+            {
+                // A handler that does not model the server version gets a supported target server;
+                // any other initialize fields it returns are kept.
+                var initialize = response.ValueKind == JsonValueKind.Object
+                    && response.EnumerateObject().Any(property => property.Name.StartsWith("platform", StringComparison.Ordinal) || property.Name == "codexHome")
+                        ? System.Text.Json.Nodes.JsonNode.Parse(response.GetRawText())!.AsObject()
+                        : new System.Text.Json.Nodes.JsonObject();
+                initialize["userAgent"] = $"codex-cli/{SupportedCodexVersions.Target}";
+                return JsonSerializer.SerializeToElement(initialize);
+            }
+
             if (response.ValueKind != JsonValueKind.Object || response.EnumerateObject().Any())
             {
                 return response;
