@@ -26,3 +26,9 @@ Codex CLI 0.162.1 adds goal mutation provenance, MCP OAuth attempt identifiers, 
 - A Require MXC selection that managed policy forbids stops the local App Server before initialization. The connection error names the setting, and the sandbox panel stays available after a failed local start so the user can change it.
 - Readiness and configuration reads cannot prove which backend ran a given command; the UI states this rather than inferring it.
 - The approved design and plan are in [app-server-0-162-1-plan.md](../app-server-0-162-1-plan.md).
+
+## Amendment (2026-10-25, 0.159.1 support removed)
+
+- Status: Accepted
+- Task: [Issue #226](https://github.com/kkamegawa/vsextensionforcodex/issues/226)
+- The ADR-011 amendment of 2026-10-25 sets the minimum supported version to 0.161.0. The 0.159.1 regression fixture and the 0.159.1-only fallbacks are removed: server-name matching when `loginId` is absent no longer exists, and every supported version returns `loginId`. Goal `origin` and opaque skill paths are unchanged. See [ADR-019](ADR-019-app-server-0-164.md).
