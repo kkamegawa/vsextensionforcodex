@@ -1,6 +1,7 @@
 ﻿[CmdletBinding()]
 param(
-    [ValidateSet('latest', '0.159.1', '0.162.1', '0.163.0')]
+    # 'latest' or a version pinned in app-server-contract.json; Get-PinnedRelease rejects any other version.
+    [ValidatePattern('^(latest|\d+\.\d+\.\d+)$')]
     [string]$Version = 'latest',
     [string]$OutputDirectory = (Join-Path ([IO.Path]::GetTempPath()) 'codex-cli'),
     [switch]$GitHubEnvironment,

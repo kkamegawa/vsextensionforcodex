@@ -97,16 +97,24 @@ if ($Surface -eq 'experimental') {
     }
 }
 
-if ($Version -eq '0.163.0') {
+if ([version]$Version -ge [version]'0.163.0') {
     $readStateUpdate = 'thread/readState/update'
     if ($Surface -eq 'experimental' -and -not $clientRequests.ContainsKey($readStateUpdate)) {
-        throw "The experimental 0.163.0 contract is missing $readStateUpdate."
+        throw "The experimental $Version contract is missing $readStateUpdate."
     }
     if ($Surface -eq 'stable' -and $clientRequests.ContainsKey($readStateUpdate)) {
-        throw "The stable 0.163.0 contract unexpectedly exposes $readStateUpdate."
+        throw "The stable $Version contract unexpectedly exposes $readStateUpdate."
     }
     if ($Surface -eq 'experimental' -and @($expectedMethods.serverNotifications) -notcontains 'thread/readState/changed') {
-        throw 'The 0.163.0 experimental method table must include thread/readState/changed.'
+        throw "The $Version experimental method table must include thread/readState/changed."
+    }
+}
+
+if ([version]$Version -ge [version]'0.164.0') {
+    foreach ($method in @('config/batchWrite', 'feedback/save')) {
+        if (@($expectedMethods.clientRequests) -notcontains $method) {
+            throw "The $Version/$Surface method table must include $method."
+        }
     }
 }
 

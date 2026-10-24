@@ -55,23 +55,31 @@ jobs:
             8.0.x
             10.0.x
 
+      - name: Validate contract manifest
+        id: contract
+        shell: pwsh
+        run: pwsh -NoProfile -File scripts/validate-contract-manifest.ps1 -GitHubOutput
+
       - name: Download pinned Codex CLI for schema generation
         id: install_schema_codex
         shell: pwsh
+        env:
+          CODEX_VERSION: ${{ steps.contract.outputs.target }}
         run: |
           pwsh -NoProfile -File scripts/install-codex.ps1 `
-            -Version '0.163.0' `
-            -OutputDirectory (Join-Path $env:RUNNER_TEMP 'codex-cli-0.163.0') `
+            -Version $env:CODEX_VERSION `
+            -OutputDirectory (Join-Path $env:RUNNER_TEMP "codex-cli-$env:CODEX_VERSION") `
             -GitHubOutput
 
       - name: Generate release schema cache
         shell: pwsh
         env:
           CODEX_PATH: ${{ steps.install_schema_codex.outputs.codex_path }}
+          CODEX_VERSION: ${{ steps.contract.outputs.target }}
         run: |
           pwsh -NoProfile -File scripts/generate-schemas.ps1 `
             -OutputDirectory schemas `
-            -Version '0.163.0' `
+            -Version $env:CODEX_VERSION `
             -Surface stable `
             -CodexPath $env:CODEX_PATH
 

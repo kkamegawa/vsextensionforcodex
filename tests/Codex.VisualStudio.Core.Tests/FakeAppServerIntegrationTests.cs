@@ -16,7 +16,20 @@ public sealed class FakeAppServerIntegrationTests
     };
 
     [TestMethod]
-    public async Task FakeReadStateContractSupports163UpdatesConflictsAndRegression01621()
+    [DataRow("Regression01610", "codex-cli/0.161.0")]
+    [DataRow("Regression01621", "codex-cli/0.162.1")]
+    [DataRow("Regression01630", "codex-cli/0.163.0")]
+    [DataRow("", "codex-cli/0.164.0")]
+    public async Task FakeReportsEachContractVersionInUserAgent(string scenario, string expectedUserAgent)
+    {
+        await using FakeAppServerProcess server = await FakeAppServerProcess.StartAsync(scenario);
+        await server.SendAsync(new { id = 1, method = "initialize", @params = new { } });
+        using JsonDocument initialized = await server.ReadAsync();
+        Assert.AreEqual(expectedUserAgent, initialized.RootElement.GetProperty("result").GetProperty("userAgent").GetString());
+    }
+
+    [TestMethod]
+    public async Task FakeReadStateContractSupportsUpdatesConflictsAndRegression01621()
     {
         await using FakeAppServerProcess current = await FakeAppServerProcess.StartAsync(string.Empty);
         await current.SendAsync(new
@@ -26,7 +39,7 @@ public sealed class FakeAppServerIntegrationTests
             @params = new { capabilities = new { experimentalApi = true } },
         });
         using JsonDocument initialized = await current.ReadAsync();
-        Assert.AreEqual("codex-cli/0.163.0", initialized.RootElement.GetProperty("result").GetProperty("userAgent").GetString());
+        Assert.AreEqual("codex-cli/0.164.0", initialized.RootElement.GetProperty("result").GetProperty("userAgent").GetString());
 
         await current.SendAsync(new { id = 2, method = "thread/start", @params = new { } });
         using JsonDocument started = await current.ReadAsync();

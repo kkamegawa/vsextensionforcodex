@@ -116,9 +116,11 @@ while (await Console.In.ReadLineAsync().ConfigureAwait(false) is { } line)
     {
         "initialize" => new
         {
-            userAgent = IsScenario("Regression01591")
-                ? "codex-cli/0.159.1"
-                : IsScenario("Regression01621") ? "codex-cli/0.162.1" : "codex-cli/0.163.0",
+            userAgent = IsScenario("Regression01610")
+                ? "codex-cli/0.161.0"
+                : IsScenario("Regression01621")
+                    ? "codex-cli/0.162.1"
+                    : IsScenario("Regression01630") ? "codex-cli/0.163.0" : "codex-cli/0.164.0",
             codexHome = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".codex"),
             platformFamily = OperatingSystem.IsWindows() ? "windows" : "unix",
             platformOs = OperatingSystem.IsWindows() ? "windows" : OperatingSystem.IsMacOS() ? "macos" : "linux",
@@ -370,7 +372,7 @@ bool IsScenario(string name)
         .Contains(name, StringComparer.Ordinal);
 
 bool SupportsReadState()
-    => experimentalApiEnabled && !IsScenario("Regression01591") && !IsScenario("Regression01621");
+    => experimentalApiEnabled && !IsScenario("Regression01610") && !IsScenario("Regression01621");
 
 string NextReadStateRevision()
     => $"fake-revision-{nextReadStateRevision++}";

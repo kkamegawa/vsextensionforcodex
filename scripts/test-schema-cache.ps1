@@ -1,10 +1,16 @@
 ﻿param(
     [Parameter(Mandatory = $true)][string]$CodexPath,
-    [Parameter(Mandatory = $true)][ValidateSet('0.159.1', '0.162.1', '0.163.0')][string]$Version,
-    [string]$TemporaryRoot = $env:RUNNER_TEMP
+    [Parameter(Mandatory = $true)][string]$Version,
+    [string]$TemporaryRoot = $env:RUNNER_TEMP,
+    [string]$ManifestPath = (Join-Path $PSScriptRoot '..\app-server-contract.json')
 )
 
 $ErrorActionPreference = 'Stop'
+$manifest = Get-Content -Raw -LiteralPath $ManifestPath | ConvertFrom-Json
+$pinnedVersions = @($manifest.releases.psobject.Properties.Name)
+if ($pinnedVersions -notcontains $Version) {
+    throw "Codex $Version is not pinned in $ManifestPath."
+}
 if ([string]::IsNullOrWhiteSpace($TemporaryRoot)) {
     $TemporaryRoot = [IO.Path]::GetTempPath()
 }
@@ -37,7 +43,7 @@ try {
     }
 
     $metadata = Get-Content -Raw -LiteralPath $metadataPath | ConvertFrom-Json
-    $metadata.cliVersion = if ($Version -eq '0.159.1') { '0.162.1' } else { '0.159.1' }
+    $metadata.cliVersion = @($pinnedVersions | Where-Object { $_ -ne $Version } | Select-Object -First 1)[0]
     $metadata | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $metadataPath -Encoding utf8
     $marker = Join-Path $cache 'stale-marker.txt'
     Set-Content -LiteralPath $marker -Value 'stale' -Encoding utf8
@@ -94,7 +100,7 @@ try {
     }
 
     Assert-VersionRejected "$Version-alpha.1" 'Prerelease Codex CLI is not a stable contract'
-    $otherStableVersion = @('0.159.1', '0.162.1', '0.163.0') | Where-Object { $_ -ne $Version } | Select-Object -First 1
+    $otherStableVersion = @($pinnedVersions | Where-Object { $_ -ne $Version } | Select-Object -First 1)[0]
     Assert-VersionRejected $otherStableVersion "Pinned Codex $Version is required"
 
     Write-Host "Schema cache contract tests passed for $Version stable and experimental surfaces."
