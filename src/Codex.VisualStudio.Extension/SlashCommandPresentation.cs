@@ -252,6 +252,8 @@ public sealed class SlashCommandPresentationViewModel : ObservableObject
         StatusAnnouncement = string.Empty;
     }
 
+    internal void DiscardActiveCommand() => ResetActiveCommand();
+
     internal void ClearForOwnerChange()
     {
         ResetActiveCommand();

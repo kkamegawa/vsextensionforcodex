@@ -13,7 +13,7 @@ using AsyncCommand = Codex.VisualStudio.Extension.AsyncCommand;
 namespace Codex.VisualStudio.Ui.Tests;
 
 [TestClass]
-public sealed class ViewModelTests
+public sealed partial class ViewModelTests
 {
     private static readonly string[] ExpectedThreadIdsAfterDuplicatePages = ["thread-a", "thread-b"];
     private static readonly string[] ExpectedRowIdsAfterSelectedThreadLeavesPage = ["thread-b", "thread-c"];
@@ -3822,6 +3822,7 @@ public sealed class ViewModelTests
             typeof(AppServerNoticePresentationViewModel), typeof(ArtifactPartPresentationViewModel),
             typeof(RemoteProfilesPresentationViewModel), typeof(RemoteProfileViewModel),
             typeof(ConnectionHealthPresentationViewModel), typeof(ConnectionTargetSnapshot),
+            typeof(PresetSlotViewModel),
         ];
 
     [TestMethod]
@@ -6767,9 +6768,10 @@ public sealed class ViewModelTests
 
         Assert.IsTrue(vm.SlashCommands.IsSuggestionOpen);
         var builtIns = vm.SlashCommands.Suggestions.Where(static item => item.IsSelectable && !item.IsSkill).ToArray();
-        Assert.HasCount(2, builtIns);
+        Assert.HasCount(3, builtIns);
         Assert.AreEqual("/reasoning", builtIns[0].CommandName);
         Assert.AreEqual("/review", builtIns[1].CommandName);
+        Assert.AreEqual("/presets", builtIns[2].CommandName, "Substring matches rank after prefix matches.");
     }
 
     [TestMethod]
@@ -9014,6 +9016,28 @@ public sealed class ViewModelTests
         public List<WindowsSandboxReadinessRequest> WindowsSandboxReadinessRequests { get; } = [];
 
         public List<WindowsSandboxSetupStartRequest> WindowsSandboxSetupStartRequests { get; } = [];
+
+        public Func<ListPresetsRequest, CancellationToken, Task<ListPresetsResult>>? ListPresetsHandler { get; set; }
+
+        public Func<WritePresetRequest, CancellationToken, Task<WritePresetResult>>? WritePresetHandler { get; set; }
+
+        public int ListPresetsCallCount { get; private set; }
+
+        public List<WritePresetRequest> WritePresetRequests { get; } = [];
+
+        public Task<ListPresetsResult> ListPresetsAsync(ListPresetsRequest request, CancellationToken cancellationToken)
+        {
+            ListPresetsCallCount++;
+            return ListPresetsHandler?.Invoke(request, cancellationToken)
+                ?? Task.FromResult(new ListPresetsResult { IsSupported = true });
+        }
+
+        public Task<WritePresetResult> WritePresetAsync(WritePresetRequest request, CancellationToken cancellationToken)
+        {
+            WritePresetRequests.Add(request);
+            return WritePresetHandler?.Invoke(request, cancellationToken)
+                ?? Task.FromResult(new WritePresetResult { IsSupported = true, Outcome = WritePresetOutcome.Written });
+        }
 
         public Task PublishConversationEventAsync(ConversationEvent value, WorkerStatus? status = null)
             => ConversationEventReceived?.Invoke(Notification(value, status ?? currentStatus)) ?? Task.CompletedTask;

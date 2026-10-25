@@ -26,6 +26,7 @@ internal enum SlashCommandId
     Project,
     Side,
     Shell,
+    Presets,
 }
 
 internal enum SlashCommandArgumentKind
@@ -83,6 +84,7 @@ internal sealed class SlashCommandCatalog
         new(SlashCommandId.Project, "project", "Project switching is not supported by the current single-workspace session.", SlashCommandArgumentKind.None, false, false, false, "Project switching requires multi-workspace session support."),
         new(SlashCommandId.Side, "side", "Side threads are not supported by the current single-thread view.", SlashCommandArgumentKind.None, false, false, false, "Side threads require simultaneous multi-thread UI support."),
         new(SlashCommandId.Shell, "shell", "Run an explicit server shell command after confirmation.", SlashCommandArgumentKind.RequiredText, true, false, false),
+        new(SlashCommandId.Presets, "presets", "Open the presets shared with the Codex CLI.", SlashCommandArgumentKind.None, true, false, false),
     ];
 
     // Suggestions further than this edit distance are noise rather than likely typos.
@@ -210,12 +212,16 @@ internal sealed record SlashCommandInvocation(
     string OriginalText)
 {
     public bool IsImmediateWhileTurnActive
-        => Definition.Id is SlashCommandId.Status or SlashCommandId.Mcp
-            || (Definition.Id == SlashCommandId.Goal && string.IsNullOrWhiteSpace(Arguments));
+        => Definition.Id is SlashCommandId.Status or SlashCommandId.Mcp or SlashCommandId.Presets
+            ||(Definition.Id == SlashCommandId.Goal && string.IsNullOrWhiteSpace(Arguments));
 
+    // A /model with settings is not coalesced: replacing it would silently drop its flags.
     public bool IsCoalescibleSetting
         => Definition.IsSetting
-            && !(Definition.Id == SlashCommandId.Plan && !string.IsNullOrWhiteSpace(Arguments));
+            && !(Definition.Id == SlashCommandId.Plan && !string.IsNullOrWhiteSpace(Arguments))
+            && !(Definition.Id == SlashCommandId.Model
+                && (!ModelCommandArgumentParser.TryParse(Arguments, out ModelCommandArguments? model, out _)
+                    || model!.HasSettings));
 
     public bool StartsTurn
         => Definition.StartsTurn
@@ -477,9 +483,13 @@ internal sealed class SlashCommandCoordinator
     public SlashCommandQueueDecision Schedule(
         SlashCommandInvocation invocation,
         string? threadId,
-        bool turnActive)
+        bool turnActive,
+        bool permissionConfirmationPending = false)
     {
-        if (!turnActive || invocation.IsImmediateWhileTurnActive)
+        // A pending /permissions confirmation holds the queue like an active turn; another
+        // /permissions still runs so it can replace the pending choice.
+        bool permissionHold = permissionConfirmationPending && invocation.Definition.Id != SlashCommandId.Permissions;
+        if ((!turnActive && !permissionHold) || invocation.IsImmediateWhileTurnActive)
         {
             return new SlashCommandQueueDecision(
                 SlashCommandQueueDecisionKind.ExecuteNow,
@@ -521,7 +531,9 @@ internal sealed class SlashCommandCoordinator
             return new SlashCommandQueueDecision(
                 SlashCommandQueueDecisionKind.Queued,
                 queue.Count,
-                $"Queued /{invocation.Definition.Name} until the active turn completes.");
+                turnActive
+                    ? $"Queued /{invocation.Definition.Name} until the active turn completes."
+                    : $"Queued /{invocation.Definition.Name} until the permissions change is confirmed or canceled.");
         }
     }
 
