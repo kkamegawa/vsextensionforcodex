@@ -27,6 +27,7 @@ internal enum SlashCommandId
     Side,
     Shell,
     Presets,
+    Diagnostics,
 }
 
 internal enum SlashCommandArgumentKind
@@ -85,6 +86,7 @@ internal sealed class SlashCommandCatalog
         new(SlashCommandId.Side, "side", "Side threads are not supported by the current single-thread view.", SlashCommandArgumentKind.None, false, false, false, "Side threads require simultaneous multi-thread UI support."),
         new(SlashCommandId.Shell, "shell", "Run an explicit server shell command after confirmation.", SlashCommandArgumentKind.RequiredText, true, false, false),
         new(SlashCommandId.Presets, "presets", "Open the presets shared with the Codex CLI.", SlashCommandArgumentKind.None, true, false, false),
+        new(SlashCommandId.Diagnostics, "diagnostics", "Save a diagnostic ZIP on the app-server host.", SlashCommandArgumentKind.OptionalText, true, false, false),
     ];
 
     // Suggestions further than this edit distance are noise rather than likely typos.
