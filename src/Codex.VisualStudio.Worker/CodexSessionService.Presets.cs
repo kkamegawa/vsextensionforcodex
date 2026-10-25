@@ -1,4 +1,5 @@
 ﻿using System.Text.Json;
+using System.Text.Json.Nodes;
 using Codex.AppServer.Protocol;
 using Codex.VisualStudio.Contracts;
 
@@ -164,19 +165,22 @@ public sealed partial class CodexSessionService
                 : "This preset is defined by a higher-priority configuration layer and cannot be edited here.");
         }
 
-        object? value = delete ? null : new { input = request.Input, label };
+        // A JsonObject keeps an explicit "value": null for a delete; the connection's serializer
+        // drops null properties of ordinary objects, and the server requires the field.
+        var edit = new JsonObject
+        {
+            ["keyPath"] = PresetKeyPrefix + request.Slot,
+            ["value"] = delete ? null : new JsonObject { ["input"] = request.Input, ["label"] = label },
+            ["mergeStrategy"] = "replace",
+        };
         try
         {
             OperationCallResult call = await TrySendOperationAsync(
                 "config/batchWrite",
                 new
                 {
-                    edits = new[]
-                    {
-                        new { keyPath = PresetKeyPrefix + request.Slot, value, mergeStrategy = "replace" },
-                    },
+                    edits = new JsonArray { edit },
                     expectedVersion = request.ExpectedVersion,
-                    filePath = (string?)null,
                 },
                 TimeSpan.FromSeconds(30),
                 cancellationToken).ConfigureAwait(false);

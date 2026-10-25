@@ -125,17 +125,23 @@ public sealed partial class CodexSessionServiceTests
         Assert.AreEqual(WritePresetOutcome.Written, saved.Outcome);
         Assert.AreEqual(WritePresetOutcome.Written, deleted.Outcome);
         Assert.AreEqual(2, writes.Count);
-        using JsonDocument save = JsonDocument.Parse(JsonSerializer.Serialize(writes[0]));
+        // Serialize as the JSON-RPC connections do, which drop null properties of ordinary objects.
+        var wireOptions = new JsonSerializerOptions(JsonSerializerDefaults.Web)
+        {
+            DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
+        };
+        using JsonDocument save = JsonDocument.Parse(JsonSerializer.Serialize(writes[0], wireOptions));
         JsonElement edit = save.RootElement.GetProperty("edits").EnumerateArray().Single();
         Assert.AreEqual("tui.presets.7", edit.GetProperty("keyPath").GetString());
         Assert.AreEqual("replace", edit.GetProperty("mergeStrategy").GetString());
         Assert.AreEqual("Explain this file", edit.GetProperty("value").GetProperty("input").GetString());
         Assert.AreEqual(string.Empty, edit.GetProperty("value").GetProperty("label").GetString(), "A missing label is written as an explicit empty string.");
         Assert.AreEqual("user-v1", save.RootElement.GetProperty("expectedVersion").GetString());
-        using JsonDocument delete = JsonDocument.Parse(JsonSerializer.Serialize(writes[1]));
+        using JsonDocument delete = JsonDocument.Parse(JsonSerializer.Serialize(writes[1], wireOptions));
         JsonElement deleteEdit = delete.RootElement.GetProperty("edits").EnumerateArray().Single();
         Assert.AreEqual("tui.presets.1", deleteEdit.GetProperty("keyPath").GetString());
-        Assert.AreEqual(JsonValueKind.Null, deleteEdit.GetProperty("value").ValueKind);
+        Assert.IsTrue(deleteEdit.TryGetProperty("value", out JsonElement deleteValue), "A delete must send an explicit null value.");
+        Assert.AreEqual(JsonValueKind.Null, deleteValue.ValueKind);
     }
 
     [TestMethod]
