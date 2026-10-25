@@ -483,9 +483,13 @@ internal sealed class SlashCommandCoordinator
     public SlashCommandQueueDecision Schedule(
         SlashCommandInvocation invocation,
         string? threadId,
-        bool turnActive)
+        bool turnActive,
+        bool permissionConfirmationPending = false)
     {
-        if (!turnActive || invocation.IsImmediateWhileTurnActive)
+        // A pending /permissions confirmation holds the queue like an active turn; another
+        // /permissions still runs so it can replace the pending choice.
+        bool permissionHold = permissionConfirmationPending && invocation.Definition.Id != SlashCommandId.Permissions;
+        if ((!turnActive && !permissionHold) || invocation.IsImmediateWhileTurnActive)
         {
             return new SlashCommandQueueDecision(
                 SlashCommandQueueDecisionKind.ExecuteNow,
@@ -527,7 +531,9 @@ internal sealed class SlashCommandCoordinator
             return new SlashCommandQueueDecision(
                 SlashCommandQueueDecisionKind.Queued,
                 queue.Count,
-                $"Queued /{invocation.Definition.Name} until the active turn completes.");
+                turnActive
+                    ? $"Queued /{invocation.Definition.Name} until the active turn completes."
+                    : $"Queued /{invocation.Definition.Name} until the permissions change is confirmed or canceled.");
         }
     }
 

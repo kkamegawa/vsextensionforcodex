@@ -253,10 +253,14 @@ public sealed partial class ChatViewModel
         }
     }
 
+    // Slot commands can arrive after a connection or owner change has replaced the list. A retired
+    // slot holds the previous owner's raw input, so its callbacks are ignored.
+    private bool IsLivePresetSlot(PresetSlotViewModel slot) => PresetSlots.Contains(slot);
+
     private Task EditPresetAsync(PresetSlotViewModel slot)
         => OnUiAsync(() =>
         {
-            if (!slot.CanEdit)
+            if (!IsLivePresetSlot(slot) || !slot.CanEdit)
             {
                 return;
             }
@@ -305,7 +309,7 @@ public sealed partial class ChatViewModel
     private Task DeletePresetAsync(PresetSlotViewModel slot)
         => OnUiAsync(() =>
         {
-            if (slot.CanDelete)
+            if (IsLivePresetSlot(slot) && slot.CanDelete)
             {
                 BeginPresetConfirmation(
                     PresetConfirmationKind.Delete,
@@ -317,7 +321,7 @@ public sealed partial class ChatViewModel
     private Task RecallPresetAsync(PresetSlotViewModel slot)
         => OnUiAsync(() =>
         {
-            if (!slot.IsDefined)
+            if (!IsLivePresetSlot(slot) || !slot.IsDefined)
             {
                 return;
             }
@@ -338,7 +342,7 @@ public sealed partial class ChatViewModel
     {
         PresetConfirmationKind kind = presetConfirmationKind;
         PresetSlotViewModel? slot = presetConfirmationSlot;
-        if (slot is null)
+        if (slot is null || !IsLivePresetSlot(slot))
         {
             return;
         }

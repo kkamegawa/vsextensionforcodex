@@ -6229,7 +6229,8 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         SlashCommandQueueDecision decision = slashCommandCoordinator.Schedule(
             invocation,
             targetThreadId,
-            Status.TurnId is not null);
+            Status.TurnId is not null,
+            pendingApprovalMode is not null);
         if (decision.Kind == SlashCommandQueueDecisionKind.QueueFull)
         {
             await ShowSlashFailureAsync(decision.Message).ConfigureAwait(false);
@@ -6820,10 +6821,25 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         return true;
     }
 
-    // The tier the next turn would request apart from one-turn overrides; null when none is requested.
+    // The tier the next turn would use apart from one-turn overrides; null when none is in effect.
+    // Without an explicit extension setting the tier is inherited from config.toml, so the current
+    // conversation's effective tier stands in for it.
     private string? GetCurrentRequestedServiceTier()
-        => modelCommandServiceTier
-            ?? (string.IsNullOrEmpty(settings.ServiceTierId) ? null : settings.ServiceTierId);
+    {
+        if (modelCommandServiceTier is not null)
+        {
+            return modelCommandServiceTier;
+        }
+
+        if (!string.IsNullOrEmpty(settings.ServiceTierId))
+        {
+            return settings.ServiceTierId;
+        }
+
+        string? threadId = SelectedThread?.Id ?? Status.ThreadId;
+        string? effective = threadId is null ? null : GetEffectiveServiceTier(threadId);
+        return string.IsNullOrWhiteSpace(effective) ? null : effective;
+    }
 
     private ModelInfo? FindModelInfo(string model)
         => string.Equals(modelCatalog.DefaultModelInfo?.Id, model, StringComparison.Ordinal)
@@ -6833,12 +6849,16 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
     private void ApplyModelCommand(ModelCommandResolution resolution)
     {
         SelectedModel = resolution.Model;
+        // /model supersedes every unsent one-turn /fast or /reasoning override. A restore entry
+        // for an override that was already sent stays unless the field is set explicitly below,
+        // so the conversation still returns to its earlier setting.
+        pendingReasoningByThread.Clear();
+        pendingServiceTierByThread.Clear();
         if (resolution.ReasoningEffort is { } effort)
         {
             settings.ReasoningEffortId = effort;
             selectedReasoningEffortId = FindReasoningEffort(effort)?.Id ?? ReasoningEffortCatalog.DefaultId;
-            // A new persistent choice supersedes one-turn overrides and their restore values.
-            pendingReasoningByThread.Clear();
+            // A new persistent choice also supersedes the restore values.
             reasoningRestoreByThread.Clear();
             OnPropertyChanged(nameof(SelectedReasoningEffortId));
             OnPropertyChanged(nameof(ReasoningEffortHelpText));
@@ -6851,7 +6871,6 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                 string.Equals(option.Id, settings.ServiceTierId, StringComparison.OrdinalIgnoreCase))?.Id
                 ?? ServiceTierCatalog.DefaultId;
             modelCommandServiceTier = resolution.ServiceTierOverride;
-            pendingServiceTierByThread.Clear();
             serviceTierRestoreByThread.Clear();
             OnPropertyChanged(nameof(SelectedServiceTierId));
             OnPropertyChanged(nameof(ServiceTierHelpText));

@@ -160,6 +160,50 @@ public sealed partial class ViewModelTests
     }
 
     [TestMethod]
+    public async Task ModelCommand_InheritedEffectiveSpeedFallsBackToStandardWithNotice()
+    {
+        FakeWorkerBridge bridge = CreateModelCommandBridge();
+        using ChatViewModel vm = await CreateModelCommandViewModelAsync(bridge);
+        vm.SelectedThread!.EffectiveServiceTier = "priority";
+
+        await RunComposerAsync(vm, "/model model-b");
+        await SendMessageAsync(vm, "hello", clearComposer: false);
+
+        Assert.AreEqual("default", bridge.LastStartTurnRequest!.ServiceTier);
+        Assert.IsTrue(vm.Items.Any(item => item.Text.Contains("does not support the priority speed", StringComparison.Ordinal)));
+    }
+
+    [TestMethod]
+    public async Task ModelCommand_SupersedesUnsentOneTurnOverridesForOmittedFields()
+    {
+        var bridge = new FakeWorkerBridge
+        {
+            ModelListResult = new ListModelsResult
+            {
+                Models =
+                [
+                    new ModelInfo
+                    {
+                        Id = "gpt-5",
+                        DefaultReasoningEffort = "medium",
+                        SupportedReasoningEfforts = [new ReasoningEffortInfo { Id = "low" }, new ReasoningEffortInfo { Id = "medium" }],
+                        ServiceTiers = [new ServiceTierInfo { Id = "fast" }],
+                    },
+                ],
+                DefaultModel = "gpt-5",
+            },
+        };
+        using ChatViewModel vm = await CreateModelCommandViewModelAsync(bridge);
+
+        await RunComposerAsync(vm, "/fast");
+        await RunComposerAsync(vm, "/model --reasoning low");
+        await SendMessageAsync(vm, "first", clearComposer: false);
+
+        Assert.AreEqual("low", bridge.LastStartTurnRequest!.Effort);
+        Assert.AreNotEqual("fast", bridge.LastStartTurnRequest.ServiceTier, "/model supersedes the unsent /fast override.");
+    }
+
+    [TestMethod]
     public async Task PermissionsConfirmation_HoldsQueuedCommandsUntilResolved()
     {
         var bridge = new FakeWorkerBridge();
@@ -177,6 +221,27 @@ public sealed partial class ViewModelTests
         await WaitForAsync(() => vm.HasApprovalModeConfirmation);
 
         Assert.AreEqual(0, bridge.ReviewCallCount, "A queued command must wait for the permission confirmation.");
+
+        await RunCommandAsync(vm.CancelApprovalModeCommand);
+        await WaitForAsync(() => bridge.ReviewCallCount == 1);
+    }
+
+    [TestMethod]
+    public async Task PermissionsConfirmation_HoldsCommandsSubmittedWhileItIsPending()
+    {
+        var bridge = new FakeWorkerBridge();
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()))
+        {
+            SelectedThread = new ThreadSummary { Id = "thread-1" },
+        };
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready, ThreadId = "thread-1" });
+        await RunCommandAsync(vm.JoinThreadCommand);
+
+        await RunComposerAsync(vm, "/permissions full");
+        await WaitForAsync(() => vm.HasApprovalModeConfirmation);
+        await RunComposerAsync(vm, "/review uncommitted");
+
+        Assert.AreEqual(0, bridge.ReviewCallCount, "A command submitted while the confirmation is pending must wait for it.");
 
         await RunCommandAsync(vm.CancelApprovalModeCommand);
         await WaitForAsync(() => bridge.ReviewCallCount == 1);
@@ -371,5 +436,29 @@ public sealed partial class ViewModelTests
         await opening;
 
         Assert.AreEqual(0, vm.PresetSlots.Count);
+    }
+
+    [TestMethod]
+    public async Task Presets_RetiredSlotCommandsAreIgnoredAfterConnectionChange()
+    {
+        var bridge = new FakeWorkerBridge { ListPresetsHandler = (_, _) => Task.FromResult(PresetsResult()) };
+        using var vm = new ChatViewModel(bridge, autoConnect: false);
+        WorkerStatus first = Tier164Status();
+        first.Target = new ConnectionTargetSnapshot { Generation = 1 };
+        await bridge.PublishStateAsync(first);
+        await RunCommandAsync(vm.OpenPresetsCommand);
+        PresetSlotViewModel retired = vm.PresetSlots[0];
+
+        WorkerStatus second = Tier164Status();
+        second.Target = new ConnectionTargetSnapshot { Generation = 2 };
+        await bridge.PublishStateAsync(second);
+        await RunCommandAsync(retired.RecallCommand);
+        await RunCommandAsync(retired.EditCommand);
+        await RunCommandAsync(retired.DeleteCommand);
+
+        Assert.AreEqual(string.Empty, vm.ComposerText, "The previous owner's preset must not reach the new owner's composer.");
+        Assert.IsFalse(vm.IsPresetEditorOpen);
+        Assert.IsFalse(vm.HasPresetConfirmation);
+        Assert.AreEqual(0, bridge.WritePresetRequests.Count);
     }
 }
