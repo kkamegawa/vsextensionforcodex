@@ -165,9 +165,9 @@ The client cannot detect either case, so it does not claim that the catalog belo
 ### Compaction failure and compressed histories
 
 - All tiers: compaction is complete only on `thread/compacted` or a completed `contextCompaction` item.
-  - An RPC error, an error notification, or a failed turn during compaction is shown as "Compaction failed; the conversation history is unchanged." No compaction marker is added, and nothing is retried.
+  - An RPC error, an error notification, or a failed turn during compaction is shown as "Compaction failed." The extension adds no compaction marker and retries nothing. Whether the server history changed depends on the tier, as described below.
   - Displayed history always comes from the server. The extension never synthesizes or hides summary items.
-- 0.164 tier: upstream no longer keeps partial summaries after a failed compaction and can resume compressed histories. No additional client handling is needed.
+- 0.164 tier: upstream no longer keeps partial summaries after a failed compaction, so the history is unchanged, and it can resume compressed histories. No additional client handling is needed.
 - Older tiers:
   - A failed compaction can leave a partial summary in server history, and it is shown as returned.
   - Resuming a compressed history can fail. In that case the sanitized error is shown, together with a note that CLI 0.164.0 resumes compressed histories. The history row is kept, and nothing is retried automatically.
