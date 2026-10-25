@@ -13,8 +13,21 @@ Tracking: [#226](https://github.com/kkamegawa/vsextensionforcodex/issues/226), [
 - [x] MXC startup with 0.164.0, and a real 0.164.0 compaction followed by a resume after a restart.
 - [x] Core and UI suites and the Debug and Release builds, with 0 warnings; Release VSIX inspection.
 
+- [x] The owner's Experimental Instance acceptance against the real CLI:
+  - connections, model selection, and a real prompt
+  - preset save with a CLI read-back, recall, and edit
+  - Dark, Light, and High Contrast themes
+  - Japanese text, keyboard operation, and Narrator output
+  - a remote diagnostic ZIP save
+- [x] Acceptance defects fixed:
+  - Preset delete now sends an explicit null value (#234).
+  - A `userAgent` whose originator contains spaces is read correctly (#234).
+  - The header keeps the status on its own row above a wrapping toolbar (#237).
+  - The delete fix was verified against the real CLI. The header fix was verified by a standalone WPF render at four widths.
+
 ## Not completed
 
-- [ ] Experimental Instance screenshots covering themes, narrow width, Japanese text, keyboard operation, and screen-reader output, plus the presets, `/model`, and `/diagnostics` UI. Visual Studio UI automation access was not granted in this session.
-- [ ] Remote presets and remote diagnostic saves against a real server, and a real CLI preset round-trip.
-- [ ] An automated test for the account-change notices.
+- [ ] Recheck the preset delete and the narrow-width header in the Experimental Instance after the fixes.
+- [ ] A local diagnostic ZIP save on 0.164.0.
+
+The automated test for the account-change notices is out of scope by agreement.

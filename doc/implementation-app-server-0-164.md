@@ -55,11 +55,40 @@ Verified on 2026-10-25 on Windows 11 (10.0.26200) x64 with .NET SDK 10.0.402 and
 
 The test-suite evidence script (`Invoke-TestSuitesWithEvidence.ps1`) reported `blocked` in both configurations, with no failures. The six skips are tests that need symbolic links, which this machine cannot create without Developer Mode or elevation. They are reported as skips, not passes. During one Release run before the final run, the Core test `FakeAppServerExercisesConcurrentInteractionsAndAuthenticationRecoveryOverStdio` timed out under load. Its standalone and full reruns passed.
 
+## Experimental Instance acceptance (2026-10-25 to 2026-10-26)
+
+The owner ran the Release extension in the Visual Studio Insiders 18.12 Experimental Instance with Computer Use, against the real CLI.
+
+**Passed:**
+- Connections:
+  - a local 0.161.0 connection
+  - an authenticated WebSocket connection to 0.164.0
+- Model and prompt:
+  - selecting the GPT-6 luna model with high reasoning and standard speed
+  - a real prompt that generated and built a WinForms solution
+- Presets:
+  - save, with a real CLI read-back
+  - recall without sending
+  - edit with the replace confirmation
+- Display and accessibility:
+  - Dark, Light, and High Contrast themes, including Japanese text and the presets panel
+  - keyboard Tab navigation
+  - Narrator output
+- Diagnostics: a remote diagnostic ZIP saved without logs. It contained only `report.json` and `manifest.json`, and the server path was shown without being opened locally.
+
+**Defects found, and fixed after the run:**
+- **Preset delete failed with `missing field 'value'`.** The JSON-RPC connections drop null properties of ordinary objects, so the explicit null never reached `config/batchWrite`.
+  - The edit is now built as a `JsonObject`, which keeps the null.
+  - Against the real 0.164.0 CLI, with a temporary `CODEX_HOME`, an edit without `value` reproduced the error, and an edit with `"value": null` deleted the slot.
+- **A narrow pane (about 480 logical pixels) squeezed the status to "Ready / Sign…".** The right-docked toolbar took the width first.
+  - The header now gives the status its own full-width row. The toolbar sits below it, right-aligned, and wraps.
+  - A standalone WPF render of the production header with the real view model reproduced the defect in the old layout at 300 and 360 pixels, and passed at 300, 360, 480, and 700 pixels after the change. The renders are in `artifacts/0164-header/before` and `after`.
+- **An inherited `CODEX_INTERNAL_ORIGINATOR_OVERRIDE=Codex Desktop` made a supported 0.164.0 server look unsupported.** The originator contained a space, so the first space-separated `userAgent` token had no version.
+  - The version is now read from the first `/` to the next whitespace. The design states this rule.
+  - The real CLI returned `Codex Desktop/0.164.0 (Windows 10.0.26200; x86_64) ...` under the override.
+
 ## Remaining acceptance
 
-- **Experimental Instance.** No screenshots were captured, because access to Visual Studio for UI automation was not granted in this session. No host-level UI pass is claimed for:
-  - the presets panel, `/model`, and `/diagnostics`
-  - the supported themes, narrow widths, Japanese text, keyboard operation, and screen-reader output
-  - the extension's own connection to a real CLI
-- **Account change.** The account-change notices have no automated test, because the fake bridge cannot replace the owner mid-session.
-- **Real CLI coverage.** The real CLI runs used direct JSON-RPC from a validation script, not the extension. Remote presets, remote diagnostic saves, and the real CLI preset round-trip were not exercised.
+- **Fixed defects.** The preset delete and the narrow-width header have not been rechecked in the Experimental Instance since the fixes.
+- **Local diagnostic ZIP.** A local diagnostic ZIP save on 0.164.0 was not exercised. The last local connection used 0.161.0.
+- **Account change.** The account-change notices have no automated test, by agreement.

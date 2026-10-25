@@ -129,6 +129,28 @@ public sealed partial class ViewModelTests
         Assert.AreEqual("- docs: oAuth; 2 tools, 0 resources, 0 templates", text);
     }
 
+    [TestMethod]
+    public void ChatToolWindowXaml_HeaderKeepsStatusOnItsOwnRowAboveAWrappingToolbar()
+    {
+        using Stream stream = typeof(ChatViewModel).Assembly.GetManifestResourceStream("Codex.VisualStudio.Extension.ToolWindows.ChatToolWindowContent.xaml")!;
+        System.Xml.Linq.XDocument doc = System.Xml.Linq.XDocument.Load(stream);
+        System.Xml.Linq.XNamespace presentation = "http://schemas.microsoft.com/winfx/2006/xaml/presentation";
+
+        System.Xml.Linq.XElement detail = doc.Descendants(presentation + "TextBlock")
+            .Single(element => element.Attribute("Text")?.Value == "{Binding StatusDetailText}");
+        System.Xml.Linq.XElement status = detail.Parent!;
+        System.Xml.Linq.XElement restart = doc.Descendants(presentation + "Button")
+            .Single(element => element.Attribute("Command")?.Value == "{Binding RestartCommand}");
+        System.Xml.Linq.XElement toolbar = restart.Parent!;
+
+        // A narrow pane must not squeeze the connection and account status (acceptance 2026-10-26).
+        Assert.AreEqual("0", status.Attribute("Grid.Row")?.Value);
+        Assert.AreEqual(presentation + "WrapPanel", toolbar.Name);
+        Assert.AreEqual("1", toolbar.Attribute("Grid.Row")?.Value);
+        Assert.AreSame(status.Parent, toolbar.Parent);
+        Assert.AreEqual("Wrap", detail.Attribute("TextWrapping")?.Value);
+    }
+
     private static ChatViewModel CreateDiagnosticsViewModel(FakeWorkerBridge bridge, string? savePath)
         => new(
             bridge,
