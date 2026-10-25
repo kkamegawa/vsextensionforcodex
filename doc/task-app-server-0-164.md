@@ -13,7 +13,7 @@ Tracking: [#226](https://github.com/kkamegawa/vsextensionforcodex/issues/226), [
 - [x] MXC startup with 0.164.0, and a real 0.164.0 compaction followed by a resume after a restart.
 - [x] Core and UI suites and the Debug and Release builds, with 0 warnings; Release VSIX inspection.
 
-- [x] The owner's Experimental Instance acceptance against the real CLI:
+- [x] The owner's Experimental Instance acceptance against the real CLI, run in a separate Computer Use session with a screenshot for each step (stored outside the repository):
   - connections, model selection, and a real prompt
   - preset save with a CLI read-back, recall, and edit
   - Dark, Light, and High Contrast themes
@@ -27,7 +27,7 @@ Tracking: [#226](https://github.com/kkamegawa/vsextensionforcodex/issues/226), [
 
 ## Not completed
 
-- [ ] Recheck the preset delete and the narrow-width header in the Experimental Instance after the fixes.
+- [ ] Screenshot acceptance for narrow width: the header failed in the run. Recheck it, together with the preset delete, in the Experimental Instance after the fixes.
 - [ ] A local diagnostic ZIP save on 0.164.0.
 
 The automated test for the account-change notices is out of scope by agreement.

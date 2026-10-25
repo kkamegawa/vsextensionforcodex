@@ -26,7 +26,7 @@ The work is delivered as stacked pull requests, merged bottom up: design #232, c
   - After an owner change, the model selection is kept when the new catalog offers it.
   - `/mcp` shows authentication, runtime state, and tool discovery separately.
   - `/diagnostics` saves a diagnostic ZIP through `feedback/save`.
-  - A compaction that does not complete reports "Compaction failed; the conversation history is unchanged."
+  - A compaction that does not complete reports "Compaction failed." Tracking starts before the request is sent, so a failure notified while the request is pending is still reported.
   - On older tiers, a resume failure adds a note that CLI 0.164.0 resumes compressed histories.
 
 ## Verification
@@ -57,9 +57,9 @@ The test-suite evidence script (`Invoke-TestSuitesWithEvidence.ps1`) reported `b
 
 ## Experimental Instance acceptance (2026-10-25 to 2026-10-26)
 
-The owner ran the Release extension in the Visual Studio Insiders 18.12 Experimental Instance with Computer Use, against the real CLI.
+The owner ran this acceptance in a separate session, after the implementation session had been refused Visual Studio access twice and had taken no screenshots of its own. That session drove the Release extension in the Visual Studio Insiders 18.12 Experimental Instance through Computer Use, against the real CLI. For each step it kept a screenshot and a UI Automation text dump, which are stored with the acceptance report outside the repository (`<acceptance-evidence-folder>`). The results below are taken from that report.
 
-**Passed:**
+**Passed (with screenshots):**
 - Connections:
   - a local 0.161.0 connection
   - an authenticated WebSocket connection to 0.164.0
@@ -89,6 +89,6 @@ The owner ran the Release extension in the Visual Studio Insiders 18.12 Experime
 
 ## Remaining acceptance
 
-- **Fixed defects.** The preset delete and the narrow-width header have not been rechecked in the Experimental Instance since the fixes.
+- **Fixed defects.** The preset delete and the narrow-width header have not been rechecked in the Experimental Instance since the fixes. Until then, the screenshot criterion of phase 5 is not met for narrow width.
 - **Local diagnostic ZIP.** A local diagnostic ZIP save on 0.164.0 was not exercised. The last local connection used 0.161.0.
 - **Account change.** The account-change notices have no automated test, by agreement.
