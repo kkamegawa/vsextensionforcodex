@@ -12,7 +12,7 @@ The extension is an out-of-process `Microsoft.VisualStudio.Extensibility` extens
 
 - Windows (x64 or Arm64)
 - Visual Studio 2022 17.14 or later, or Visual Studio 2026 (Community, Professional, or Enterprise)
-- The official Windows Codex CLI 0.164.0 executable (x64 or Arm64) from the [rust-v0.164.0 release](https://github.com/openai/codex/releases/tag/rust-v0.164.0). Versions 0.161.0 through 0.163.0 still connect with fewer features; anything older is rejected
+- The official Windows Codex CLI 0.164.0 executable (x64 or Arm64) from the [rust-v0.164.0 release](https://github.com/openai/codex/releases/tag/rust-v0.164.0). Versions 0.161.0 through 0.163.0 still connect with fewer features; anything older is not supported
 - A ChatGPT account that can sign in with `codex login`
 
 ## Setup
@@ -75,7 +75,7 @@ Both roots are required: local paths for the working directory and attachments a
 
 ## Limitations
 
-- **Other Codex CLI versions are not the target contract.** The verified version is 0.164.0, and the minimum supported version is 0.161.0. Versions 0.163.0, 0.162.1, and 0.161.0 are retained as regression baselines, because a remote app-server can still run them. The extension rejects a server older than 0.161.0, or one whose version cannot be determined, when it connects. Other builds
+- **Other Codex CLI versions are not the target contract.** The verified version is 0.164.0, and the minimum supported version is 0.161.0. Versions 0.163.0, 0.162.1, and 0.161.0 are retained as regression baselines, because a remote app-server can still run them. A server older than 0.161.0, or one whose version cannot be determined, is not supported. Other builds
   expose different app-server protocol shapes, so `initialize` or `turn/start` can fail or silently drop events. Issues reproduced only on older versions are out of scope.
 - **Multiple Codex installations can select the wrong version.** Version managers (mise), winget, npm, and the Codex desktop app each place a `codex` executable in a different location, and the one that wins on `PATH` is not necessarily the newest. The worker resolves the executable in this order:
   1. the `CODEX_PATH` environment variable

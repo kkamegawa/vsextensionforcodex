@@ -109,6 +109,28 @@ public sealed class FakeAppServerIntegrationTests
     }
 
     [TestMethod]
+    [DataRow("Regression01610", "codex-cli/0.161.0", false)]
+    [DataRow("Regression01621", "codex-cli/0.162.1", false)]
+    [DataRow("Regression01630", "codex-cli/0.163.0", true)]
+    [DataRow("", "codex-cli/0.164.0", true)]
+    public async Task FakeThreadListExposesReadStatesOnlyFrom0163(string scenario, string expectedUserAgent, bool expectReadStates)
+    {
+        await using FakeAppServerProcess server = await FakeAppServerProcess.StartAsync(scenario);
+        await server.SendAsync(new
+        {
+            id = 1,
+            method = "initialize",
+            @params = new { capabilities = new { experimentalApi = true } },
+        });
+        using JsonDocument initialized = await server.ReadAsync();
+        Assert.AreEqual(expectedUserAgent, initialized.RootElement.GetProperty("result").GetProperty("userAgent").GetString());
+        await server.SendAsync(new { id = 2, method = "thread/list", @params = new { } });
+        using JsonDocument listed = await server.ReadAsync();
+        Assert.IsTrue(listed.RootElement.TryGetProperty("result", out JsonElement listResult), listed.RootElement.ToString());
+        Assert.AreEqual(expectReadStates, listResult.TryGetProperty("readStates", out _), listed.RootElement.ToString());
+    }
+
+    [TestMethod]
     [DataRow("Issue174GoalStop", true)]
     [DataRow("Issue174GoalGap", false)]
     public async Task GoalStopPausesBeforeInterruptingAnAutonomousTurnAndPreventsContinuation(string scenario, bool expectTurn)
