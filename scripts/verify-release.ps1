@@ -91,6 +91,10 @@ try {
     $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
     if (Test-Path -LiteralPath $vswhere) { $manifest.host.visualStudio = (& $vswhere -latest -property installationVersion 2>$null | Out-String).Trim() }
 
+    [void](Add-Scenario 'contract.manifest' 'validate-contract-manifest.ps1' {
+        & pwsh -NoProfile -File (Join-Path $PSScriptRoot 'validate-contract-manifest.ps1') -ManifestPath (Join-Path $root 'app-server-contract.json')
+    } 'contract-manifest.log')
+
     $cliPaths = @{}
     $allCliInstalled = $true
     foreach ($version in $contractVersions) {

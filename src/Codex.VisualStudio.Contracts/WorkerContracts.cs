@@ -8,6 +8,13 @@ public static class ContractVersions
     public const int Current = 25;
 }
 
+// Mirrors minimumVersion and targetVersion in app-server-contract.json; a Core test keeps them in sync.
+public static class SupportedCodexVersions
+{
+    public const string Minimum = "0.161.0";
+    public const string Target = "0.164.0";
+}
+
 public enum GoalStopStepOutcome
 {
     NotRequired,

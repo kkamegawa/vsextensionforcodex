@@ -16,7 +16,20 @@ public sealed class FakeAppServerIntegrationTests
     };
 
     [TestMethod]
-    public async Task FakeReadStateContractSupports163UpdatesConflictsAndRegression01621()
+    [DataRow("Regression01610", "codex-cli/0.161.0")]
+    [DataRow("Regression01621", "codex-cli/0.162.1")]
+    [DataRow("Regression01630", "codex-cli/0.163.0")]
+    [DataRow("", "codex-cli/0.164.0")]
+    public async Task FakeReportsEachContractVersionInUserAgent(string scenario, string expectedUserAgent)
+    {
+        await using FakeAppServerProcess server = await FakeAppServerProcess.StartAsync(scenario);
+        await server.SendAsync(new { id = 1, method = "initialize", @params = new { } });
+        using JsonDocument initialized = await server.ReadAsync();
+        Assert.AreEqual(expectedUserAgent, initialized.RootElement.GetProperty("result").GetProperty("userAgent").GetString());
+    }
+
+    [TestMethod]
+    public async Task FakeReadStateContractSupportsUpdatesConflictsAndRegression01621()
     {
         await using FakeAppServerProcess current = await FakeAppServerProcess.StartAsync(string.Empty);
         await current.SendAsync(new
@@ -26,7 +39,7 @@ public sealed class FakeAppServerIntegrationTests
             @params = new { capabilities = new { experimentalApi = true } },
         });
         using JsonDocument initialized = await current.ReadAsync();
-        Assert.AreEqual("codex-cli/0.163.0", initialized.RootElement.GetProperty("result").GetProperty("userAgent").GetString());
+        Assert.AreEqual("codex-cli/0.164.0", initialized.RootElement.GetProperty("result").GetProperty("userAgent").GetString());
 
         await current.SendAsync(new { id = 2, method = "thread/start", @params = new { } });
         using JsonDocument started = await current.ReadAsync();
@@ -93,6 +106,28 @@ public sealed class FakeAppServerIntegrationTests
         await regression.SendAsync(new { id = 2, method = "thread/list", @params = new { } });
         using JsonDocument regressionList = await regression.ReadAsync();
         Assert.IsFalse(regressionList.RootElement.GetProperty("result").TryGetProperty("readStates", out _));
+    }
+
+    [TestMethod]
+    [DataRow("Regression01610", "codex-cli/0.161.0", false)]
+    [DataRow("Regression01621", "codex-cli/0.162.1", false)]
+    [DataRow("Regression01630", "codex-cli/0.163.0", true)]
+    [DataRow("", "codex-cli/0.164.0", true)]
+    public async Task FakeThreadListExposesReadStatesOnlyFrom0163(string scenario, string expectedUserAgent, bool expectReadStates)
+    {
+        await using FakeAppServerProcess server = await FakeAppServerProcess.StartAsync(scenario);
+        await server.SendAsync(new
+        {
+            id = 1,
+            method = "initialize",
+            @params = new { capabilities = new { experimentalApi = true } },
+        });
+        using JsonDocument initialized = await server.ReadAsync();
+        Assert.AreEqual(expectedUserAgent, initialized.RootElement.GetProperty("result").GetProperty("userAgent").GetString());
+        await server.SendAsync(new { id = 2, method = "thread/list", @params = new { } });
+        using JsonDocument listed = await server.ReadAsync();
+        Assert.IsTrue(listed.RootElement.TryGetProperty("result", out JsonElement listResult), listed.RootElement.ToString());
+        Assert.AreEqual(expectReadStates, listResult.TryGetProperty("readStates", out _), listed.RootElement.ToString());
     }
 
     [TestMethod]

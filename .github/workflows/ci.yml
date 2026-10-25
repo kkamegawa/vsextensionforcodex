@@ -7,12 +7,29 @@ on:
   pull_request:
 
 jobs:
+  contract-manifest:
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    outputs:
+      versions: ${{ steps.contract.outputs.versions }}
+      regressions: ${{ steps.contract.outputs.regressions }}
+      target: ${{ steps.contract.outputs.target }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Validate contract manifest
+        id: contract
+        shell: pwsh
+        run: pwsh -NoProfile -File scripts/validate-contract-manifest.ps1 -GitHubOutput
+
   generate-schemas:
     runs-on: windows-latest
+    needs: contract-manifest
     strategy:
       fail-fast: false
       matrix:
-        version: ["0.159.1", "0.162.1", "0.163.0"]
+        version: ${{ fromJSON(needs.contract-manifest.outputs.versions) }}
         surface: [stable, experimental]
     permissions:
       contents: read
@@ -46,7 +63,11 @@ jobs:
 
   verify-schemas:
     runs-on: windows-latest
-    needs: generate-schemas
+    needs: [contract-manifest, generate-schemas]
+    env:
+      CONTRACT_VERSIONS: ${{ needs.contract-manifest.outputs.versions }}
+      CONTRACT_REGRESSIONS: ${{ needs.contract-manifest.outputs.regressions }}
+      CONTRACT_TARGET: ${{ needs.contract-manifest.outputs.target }}
     permissions:
       contents: read
     steps:
@@ -63,15 +84,16 @@ jobs:
         run: |
           $reportDirectory = Join-Path $env:RUNNER_TEMP 'release-validation/schema-diffs'
           New-Item -ItemType Directory -Force -Path $reportDirectory | Out-Null
-          foreach ($baseline in @('0.162.1', '0.159.1')) {
+          $target = $env:CONTRACT_TARGET
+          foreach ($baseline in @($env:CONTRACT_REGRESSIONS | ConvertFrom-Json)) {
             foreach ($surface in @('stable', 'experimental')) {
               pwsh -NoProfile -File scripts/compare-schemas.ps1 `
                 -BaselineDirectory "schemas/$baseline/$surface" `
-                -TargetDirectory "schemas/0.163.0/$surface" `
-                -BaselineVersion $baseline -TargetVersion '0.163.0' -Surface $surface `
-                -ReportPath (Join-Path $reportDirectory "schema-diff-$baseline-to-0.163.0-$surface.txt")
+                -TargetDirectory "schemas/$target/$surface" `
+                -BaselineVersion $baseline -TargetVersion $target -Surface $surface `
+                -ReportPath (Join-Path $reportDirectory "schema-diff-$baseline-to-$target-$surface.txt")
               if ($LASTEXITCODE -ne 0) {
-                Write-Output "::error::Schema comparison failed for $baseline to 0.163.0 ($surface)."
+                Write-Output "::error::Schema comparison failed for $baseline to $target ($surface)."
                 exit $LASTEXITCODE
               }
             }
@@ -79,7 +101,7 @@ jobs:
       - name: Verify method surface for every version and surface
         shell: pwsh
         run: |
-          foreach ($version in @('0.159.1', '0.162.1', '0.163.0')) {
+          foreach ($version in @($env:CONTRACT_VERSIONS | ConvertFrom-Json)) {
             foreach ($surface in @('stable', 'experimental')) {
               pwsh -NoProfile -File scripts/verify-contract-surface.ps1 `
                 -SchemaDirectory "schemas/$version/$surface" -Version $version -Surface $surface
@@ -93,13 +115,13 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: schema-diff-evidence-0.159.1-0.162.1-to-0.163.0-${{ github.run_id }}
+          name: schema-diff-evidence-to-${{ needs.contract-manifest.outputs.target }}-${{ github.run_id }}
           path: ${{ runner.temp }}/release-validation/schema-diffs/
           if-no-files-found: warn
 
   build:
     runs-on: windows-latest
-    needs: [generate-schemas, verify-schemas]
+    needs: [contract-manifest, generate-schemas, verify-schemas]
     # Skip pull requests from forks: a fork PR cannot supply CODEX_PATH-worthy
     # secrets and should not consume Windows runner minutes on this repository.
     # Tag pushes and same-repository pull requests still run.
@@ -131,10 +153,12 @@ jobs:
       - name: Download pinned Codex CLI
         id: install_pinned_codex
         shell: pwsh
+        env:
+          CODEX_VERSION: ${{ needs.contract-manifest.outputs.target }}
         run: |
           pwsh -NoProfile -File scripts/install-codex.ps1 `
-            -Version '0.163.0' `
-            -OutputDirectory (Join-Path $env:RUNNER_TEMP 'codex-cli-0.163.0') `
+            -Version $env:CODEX_VERSION `
+            -OutputDirectory (Join-Path $env:RUNNER_TEMP "codex-cli-$env:CODEX_VERSION") `
             -GitHubOutput
 
       - name: Restore
@@ -196,7 +220,7 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
 
-      # The pinned 0.163.0 executable is the schema and build contract. The latest stable release
+      # The pinned target executable is the schema and build contract. The latest stable release
       # is only smoke-tested (start + initialize) so an upstream break is visible without blocking.
       - name: Download latest Codex CLI
         id: install_latest_codex
