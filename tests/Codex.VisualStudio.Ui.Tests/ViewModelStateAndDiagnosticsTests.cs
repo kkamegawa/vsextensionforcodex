@@ -86,6 +86,22 @@ public sealed partial class ViewModelTests
     }
 
     [TestMethod]
+    public async Task Resume_OlderTierConnectionFailureMentionsCompressedHistories()
+    {
+        var bridge = new FakeWorkerBridge
+        {
+            ResumeThreadHandler = (_, _) => Task.FromException<ThreadSummary>(new IOException("the connection closed")),
+        };
+        using ChatViewModel vm = await CreateJoinableViewModelAsync(bridge, CodexFeatureTier.Tier163);
+
+        await RunCommandAsync(vm.JoinThreadCommand);
+
+        StringAssert.Contains(vm.HistoryStatusText, "the connection closed");
+        StringAssert.Contains(vm.HistoryStatusText, "0.164.0");
+        Assert.IsFalse(vm.IsThreadJoined);
+    }
+
+    [TestMethod]
     [DataRow(McpRuntimeStatus.Connected, "oAuth", 0, null, "authentication oAuth; runtime connected; 0 tools")]
     [DataRow(McpRuntimeStatus.AuthenticationRequired, "oAuth", 3, null, "authentication sign-in required; runtime authentication required; 3 tools")]
     [DataRow(McpRuntimeStatus.Unknown, "", 1, null, "authentication unknown; runtime unknown; 1 tool")]
@@ -245,7 +261,7 @@ public sealed partial class ViewModelTests
     }
 
     [TestMethod]
-    public async Task Compaction_RpcErrorShowsHistoryUnchanged()
+    public async Task Compaction_RpcErrorIsReportedAsFailure()
     {
         var bridge = new FakeWorkerBridge
         {
@@ -291,5 +307,33 @@ public sealed partial class ViewModelTests
         });
 
         Assert.IsFalse(vm.Items.Any(item => item.Text == ChatViewModel.CompactionFailedText));
+    }
+
+    [TestMethod]
+    public async Task Compaction_FailureNotifiedBeforeTheRequestReturnsIsReportedOnce()
+    {
+        var bridge = new FakeWorkerBridge();
+        bridge.CompactThreadHandler = async (_, _) =>
+        {
+            await bridge.PublishConversationEventAsync(new ConversationEvent
+            {
+                Kind = ConversationEventKind.TurnCompleted,
+                ThreadId = "thread-1",
+                TurnId = "turn-compact",
+            });
+            return new CompactThreadResult();
+        };
+        using ChatViewModel vm = await CreateCompactionViewModelAsync(bridge);
+
+        await RunComposerAsync(vm, "/compact");
+        await bridge.PublishConversationEventAsync(new ConversationEvent
+        {
+            Kind = ConversationEventKind.TurnCompleted,
+            ThreadId = "thread-1",
+            TurnId = "turn-later",
+        });
+
+        Assert.AreEqual(1, vm.Items.Count(item => item.Text == ChatViewModel.CompactionFailedText),
+            "The early failure is reported, and a later unrelated turn is not.");
     }
 }

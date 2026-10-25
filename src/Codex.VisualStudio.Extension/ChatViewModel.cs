@@ -1736,7 +1736,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         CancelFileSuggestionRefresh();
         SlashCommands.ClearForOwnerChange();
         ResetPresets();
-        pendingCompactionThreadId = null;
+        pendingCompaction = null;
         FileSuggestions.CloseSuggestions();
         FileSuggestions.Suggestions.Clear();
         unavailableSlashCommands.Clear();
@@ -3363,8 +3363,9 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                     StampOwner(new ResumeThreadRequest { ThreadId = thread.Id, UserConfirmed = true }, owner),
                     lifetime.Token).ConfigureAwait(false);
             }
-            catch (StreamJsonRpc.RemoteInvocationException ex)
+            catch (Exception ex) when (ex is not OperationCanceledException)
             {
+                // A closed connection or a timeout fails the resume as much as an RPC error does.
                 resumeRejection = ex;
                 throw;
             }
@@ -6423,6 +6424,19 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             return false;
         }
 
+        CompactionOperation? operation = null;
+        await OnUiAsync(() =>
+        {
+            if (IsCurrentOwner(owner))
+            {
+                operation = BeginCompactionTracking(threadId);
+            }
+        }).ConfigureAwait(false);
+        if (operation is null)
+        {
+            return false;
+        }
+
         CompactThreadResult result;
         try
         {
@@ -6433,25 +6447,31 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             ExtensionDiagnostics.Write("Context compaction request failed", ex);
-            await ShowSlashFailureAsync(CompactionFailedText).ConfigureAwait(false);
+            bool unreported = false;
+            await OnUiAsync(() => unreported = EndCompactionTracking(operation)).ConfigureAwait(false);
+            if (unreported)
+            {
+                await ShowSlashFailureAsync(CompactionFailedText).ConfigureAwait(false);
+            }
+
             return false;
+        }
+        catch (OperationCanceledException)
+        {
+            await OnUiAsync(() => EndCompactionTracking(operation)).ConfigureAwait(false);
+            throw;
         }
 
         if (!IsCurrentOwner(owner))
         {
+            await OnUiAsync(() => EndCompactionTracking(operation)).ConfigureAwait(false);
             return false;
         }
 
         bool started = await HandleOperationResultAsync(SlashCommandId.Compact, result, "Context compaction started.").ConfigureAwait(false);
-        if (started)
+        if (!started)
         {
-            await OnUiAsync(() =>
-            {
-                if (IsCurrentOwner(owner))
-                {
-                    BeginCompactionTracking(threadId);
-                }
-            }).ConfigureAwait(false);
+            await OnUiAsync(() => EndCompactionTracking(operation)).ConfigureAwait(false);
         }
 
         return started;
