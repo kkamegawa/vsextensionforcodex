@@ -1512,6 +1512,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             EffectiveServiceTier);
         ActiveThreadId = summary.Id;
         effectiveThreadModelId = summary.EffectiveModelId ?? ReadEffectiveModelId(result);
+        summary.EffectiveModelId = effectiveThreadModelId;
         activeThreadInheritsDefaultModel = false;
         // 0.164.0 restores the saved thread settings on resume; older servers report defaults.
         summary.HasAuthoritativeTurnSettings = RequireContext().FeatureTier >= CodexFeatureTier.Tier164;

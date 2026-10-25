@@ -8730,10 +8730,13 @@ public sealed partial class ViewModelTests
         return viewModel.Items.Single(item => item.ItemId == itemId && item.Kind == kind && item.Role == role);
     }
 
-    private sealed class FakeFilePickerService(IReadOnlyList<string> files) : IFilePickerService
+    private sealed class FakeFilePickerService(IReadOnlyList<string> files, string? savePath = null) : IFilePickerService
     {
         public Task<IReadOnlyList<string>> PickFilesAsync(string? initialDirectory, CancellationToken cancellationToken)
             => Task.FromResult(files);
+
+        public Task<string?> PickSaveFileAsync(string suggestedFileName, CancellationToken cancellationToken)
+            => Task.FromResult(savePath);
     }
 
     private sealed class FakeWorkspaceFileSearchService(IReadOnlyList<WorkspaceFileSearchResult> results)
@@ -9315,7 +9318,23 @@ public sealed partial class ViewModelTests
         {
             LastResumedThreadId = request.ThreadId;
             LastResumeRequest = request;
-            return Task.FromResult(new ThreadSummary { Id = request.ThreadId });
+            return ResumeThreadHandler?.Invoke(request, cancellationToken)
+                ?? Task.FromResult(new ThreadSummary { Id = request.ThreadId });
+        }
+
+        public Func<ResumeThreadRequest, CancellationToken, Task<ThreadSummary>>? ResumeThreadHandler { get; set; }
+
+        public Func<CompactThreadRequest, CancellationToken, Task<CompactThreadResult>>? CompactThreadHandler { get; set; }
+
+        public Func<SaveFeedbackRequest, CancellationToken, Task<SaveFeedbackResult>>? SaveFeedbackHandler { get; set; }
+
+        public List<SaveFeedbackRequest> SaveFeedbackRequests { get; } = [];
+
+        public Task<SaveFeedbackResult> SaveFeedbackAsync(SaveFeedbackRequest request, CancellationToken cancellationToken)
+        {
+            SaveFeedbackRequests.Add(request);
+            return SaveFeedbackHandler?.Invoke(request, cancellationToken)
+                ?? Task.FromResult(new SaveFeedbackResult { Outcome = SaveFeedbackOutcome.Saved, SavedPath = request.SavePath });
         }
 
         public Task<string> StartTurnAsync(StartTurnRequest request, CancellationToken cancellationToken)
@@ -9349,7 +9368,7 @@ public sealed partial class ViewModelTests
         }
 
         public Task<CompactThreadResult> CompactThreadAsync(CompactThreadRequest request, CancellationToken cancellationToken)
-            => Task.FromResult(new CompactThreadResult());
+            => CompactThreadHandler?.Invoke(request, cancellationToken) ?? Task.FromResult(new CompactThreadResult());
 
         public Task<StartReviewResult> StartReviewAsync(StartReviewRequest request, CancellationToken cancellationToken)
         {

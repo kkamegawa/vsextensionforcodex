@@ -126,6 +126,8 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
     // A /model speed that is not a picker option ("default" for standard, or an off-catalog flex).
     private string? modelCommandServiceTier;
     private ListModelsResult modelCatalog = new();
+    // The model selected from the previous owner's catalog, restored on the next catalog read.
+    private string? modelBeforeOwnerChange;
     private RateLimitsResult? latestRateLimits;
     private readonly HashSet<SlashCommandId> unavailableSlashCommands = [];
     private readonly BoundedOrderedSet<LocalTurnKey> locallyStartedTurns = new(MaximumTrackedLocalTurns);
@@ -1734,6 +1736,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         CancelFileSuggestionRefresh();
         SlashCommands.ClearForOwnerChange();
         ResetPresets();
+        pendingCompactionThreadId = null;
         FileSuggestions.CloseSuggestions();
         FileSuggestions.Suggestions.Clear();
         unavailableSlashCommands.Clear();
@@ -1840,6 +1843,12 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         InvalidateUsage();
         Interlocked.Increment(ref usageConnectionGeneration);
         usageConnectionActive = false;
+        // The new owner's catalog keeps this choice when it still offers it (ADR-013 account change).
+        if (modelCatalog.Models.Count > 0 && selectedModel is not null)
+        {
+            modelBeforeOwnerChange = selectedModel;
+        }
+
         modelCatalog = new ListModelsResult();
         Models.Clear();
         Models.Add("gpt-5-codex");
@@ -3345,12 +3354,34 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         }
 
         ThreadSummary? resumed = null;
+        Exception? resumeRejection = null;
         bool joined = await RunTrackedMutationAsync("Join conversation", owner, async () =>
         {
-            resumed = await bridge.ResumeThreadAsync(
-                StampOwner(new ResumeThreadRequest { ThreadId = thread.Id, UserConfirmed = true }, owner),
-                lifetime.Token).ConfigureAwait(false);
+            try
+            {
+                resumed = await bridge.ResumeThreadAsync(
+                    StampOwner(new ResumeThreadRequest { ThreadId = thread.Id, UserConfirmed = true }, owner),
+                    lifetime.Token).ConfigureAwait(false);
+            }
+            catch (StreamJsonRpc.RemoteInvocationException ex)
+            {
+                resumeRejection = ex;
+                throw;
+            }
         }).ConfigureAwait(false);
+        if (!joined && resumeRejection is not null)
+        {
+            // The history row is kept and the resume is not retried automatically.
+            await OnUiAsync(() =>
+            {
+                if (IsCurrentOwner(owner))
+                {
+                    HistoryStatusText = DescribeResumeFailure(resumeRejection);
+                }
+            }).ConfigureAwait(false);
+            return;
+        }
+
         if (!joined || resumed is null)
         {
             return;
@@ -3368,18 +3399,34 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             {
                 thread.EffectiveApprovalState = resumed.EffectiveApprovalState;
             }
-            if (!string.IsNullOrWhiteSpace(resumed.EffectiveReasoningEffort))
+
+            string? settingsNotice = null;
+            if (resumed.HasAuthoritativeTurnSettings)
             {
+                // 0.164.0+ returns the thread's saved settings: nulls are meaningful values.
                 thread.EffectiveReasoningEffort = resumed.EffectiveReasoningEffort;
-            }
-            if (!string.IsNullOrWhiteSpace(resumed.EffectiveServiceTier))
-            {
                 thread.EffectiveServiceTier = resumed.EffectiveServiceTier;
+                thread.EffectiveModelId = resumed.EffectiveModelId;
+                settingsNotice = ApplyResumedTurnSettings(resumed);
             }
+            else
+            {
+                if (!string.IsNullOrWhiteSpace(resumed.EffectiveReasoningEffort))
+                {
+                    thread.EffectiveReasoningEffort = resumed.EffectiveReasoningEffort;
+                }
+                if (!string.IsNullOrWhiteSpace(resumed.EffectiveServiceTier))
+                {
+                    thread.EffectiveServiceTier = resumed.EffectiveServiceTier;
+                }
+            }
+
             IsThreadJoined = true;
             _ = LoadSelectedThreadGoalAsync(thread.Id);
             OnPropertyChanged(nameof(EffectiveApprovalModeText));
-            HistoryStatusText = "Conversation joined. Sending and turn controls are enabled.";
+            HistoryStatusText = settingsNotice is null
+                ? "Conversation joined. Sending and turn controls are enabled."
+                : $"Conversation joined. Sending and turn controls are enabled. {settingsNotice}";
         }).ConfigureAwait(false);
 
         await RefreshThreadReadStateAfterLifecycleAsync(thread.Id, owner).ConfigureAwait(false);
@@ -4665,6 +4712,8 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             }
 
             string? previousSelection = SelectedModel;
+            string? carriedModel = modelBeforeOwnerChange;
+            modelBeforeOwnerChange = null;
 
             // Merge in place instead of Clear+Add: with Remote UI, clearing the list would
             // momentarily invalidate the VS-side ComboBox selection, whose TwoWay binding then
@@ -4687,7 +4736,11 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                 }
             }
 
-            if (result.DefaultModel is not null && Models.Contains(result.DefaultModel))
+            if (carriedModel is not null && modelIds.Contains(carriedModel, StringComparer.Ordinal))
+            {
+                SelectedModel = carriedModel;
+            }
+            else if (result.DefaultModel is not null && Models.Contains(result.DefaultModel))
             {
                 SelectedModel = result.DefaultModel;
             }
@@ -4713,7 +4766,39 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             RefreshReasoningEfforts();
             OnPropertyChanged(nameof(ComposerAdmissionReason));
             OnPropertyChanged(nameof(HasComposerAdmissionReason));
+            if (carriedModel is not null)
+            {
+                AddCatalogChangeNotices(carriedModel);
+            }
         }).ConfigureAwait(false);
+    }
+
+    // After an owner change, each kept selection the new catalog does not offer falls back to the
+    // catalog default. The client cannot tell whether the catalog belongs to the new account, so the
+    // notices only describe the selection.
+    private void AddCatalogChangeNotices(string carriedModel)
+    {
+        var notices = new List<string>();
+        if (!string.Equals(SelectedModel, carriedModel, StringComparison.Ordinal))
+        {
+            notices.Add($"The model {carriedModel} is not in the current model list, so {SelectedModel ?? "the default model"} is selected.");
+        }
+
+        if (settings.ReasoningEffortId.Length > 0 && FindReasoningEffort(settings.ReasoningEffortId) is null)
+        {
+            notices.Add($"The reasoning effort {settings.ReasoningEffortId} is not offered by {SelectedModel}, so the model default is used.");
+        }
+
+        if (settings.ServiceTierId.Length > 0
+            && !ServiceTiers.Any(option => string.Equals(option.Id, settings.ServiceTierId, StringComparison.OrdinalIgnoreCase)))
+        {
+            notices.Add($"The speed {settings.ServiceTierId} is not offered by {SelectedModel}, so the default speed is used.");
+        }
+
+        foreach (string notice in notices)
+        {
+            Items.Add(new ChatItemViewModel("Status", markdown.ToSafeText(notice).Trim(), ConversationEventKind.ItemCompleted));
+        }
     }
 
     private async Task SendAsync()
@@ -5927,6 +6012,11 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             isAvailable = false;
             unavailableReason = PresetsTierRequiredText;
         }
+        else if (definition.Id == SlashCommandId.Diagnostics && IsPresetsConnectionReady && !ArePresetsAvailable)
+        {
+            isAvailable = false;
+            unavailableReason = DiagnosticsTierRequiredText;
+        }
 
         string argumentHint = definition.Id switch
         {
@@ -5936,6 +6026,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             SlashCommandId.Plan => "Optional prompt to start in Plan mode",
             SlashCommandId.Shell => "[--timeout-ms N] -- <command>. The command stays inert until you confirm it.",
             SlashCommandId.Model => "[model] [--reasoning <level>] [--speed <tier>]",
+            SlashCommandId.Diagnostics => "Remote connections: an absolute path on the app-server host for the new ZIP",
             _ => string.Empty,
         };
         bool showArgumentInput = definition.ArgumentKind is
@@ -6266,6 +6357,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             or SlashCommandId.Goal
             or SlashCommandId.Mcp
             or SlashCommandId.Presets
+            or SlashCommandId.Diagnostics
             or SlashCommandId.Review
             or SlashCommandId.Shell;
 
@@ -6306,6 +6398,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                 SlashCommandId.Permissions => await ExecutePermissionsAsync(invocation.Arguments).ConfigureAwait(false),
                 SlashCommandId.Shell => await PrepareShellCommandAsync(invocation.Arguments, targetThreadId!, dispatchFence).ConfigureAwait(false),
                 SlashCommandId.Presets => await ExecutePresetsAsync().ConfigureAwait(false),
+                SlashCommandId.Diagnostics => await ExecuteDiagnosticsAsync(invocation.Arguments, targetThreadId).ConfigureAwait(false),
                 _ => false,
             };
         }
@@ -6330,15 +6423,38 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             return false;
         }
 
-        CompactThreadResult result = await bridge.CompactThreadAsync(
-            StampOwner(new CompactThreadRequest { ThreadId = threadId }, owner),
-            lifetime.Token).ConfigureAwait(false);
+        CompactThreadResult result;
+        try
+        {
+            result = await bridge.CompactThreadAsync(
+                StampOwner(new CompactThreadRequest { ThreadId = threadId }, owner),
+                lifetime.Token).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            ExtensionDiagnostics.Write("Context compaction request failed", ex);
+            await ShowSlashFailureAsync(CompactionFailedText).ConfigureAwait(false);
+            return false;
+        }
+
         if (!IsCurrentOwner(owner))
         {
             return false;
         }
 
-        return await HandleOperationResultAsync(SlashCommandId.Compact, result, "Context compaction started.").ConfigureAwait(false);
+        bool started = await HandleOperationResultAsync(SlashCommandId.Compact, result, "Context compaction started.").ConfigureAwait(false);
+        if (started)
+        {
+            await OnUiAsync(() =>
+            {
+                if (IsCurrentOwner(owner))
+                {
+                    BeginCompactionTracking(threadId);
+                }
+            }).ConfigureAwait(false);
+        }
+
+        return started;
     }
 
     private async Task<bool> ExecuteFeedbackAsync(string arguments, string? threadId, long goalStopFence)
@@ -6554,10 +6670,40 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             ? "No MCP servers are configured."
             : string.Join(
                 "\r\n",
-                result.Servers.Select(server =>
-                    $"- {server.DisplayName ?? server.Name}: {server.AuthStatus}; {server.ToolNames.Count} tools, {server.ResourceCount} resources, {server.ResourceTemplateCount} templates"));
+                result.Servers.Select(FormatMcpServerStatus));
         await ShowSlashStatusAsync(message).ConfigureAwait(false);
         return true;
+    }
+
+    // 0.164.0+ servers report authentication, runtime state, and tool discovery separately. A tool
+    // count of zero never implies a failed or unauthenticated server.
+    internal static string FormatMcpServerStatus(McpServerStatusInfo server)
+    {
+        string name = server.DisplayName ?? server.Name;
+        string resources = $"{server.ResourceCount} resources, {server.ResourceTemplateCount} templates";
+        if (!server.HasRuntimeDetails)
+        {
+            return $"- {name}: {server.AuthStatus}; {server.ToolNames.Count} tools, {resources}";
+        }
+
+        string authentication = server.RuntimeStatus == McpRuntimeStatus.AuthenticationRequired
+            ? "sign-in required"
+            : string.IsNullOrWhiteSpace(server.AuthStatus) ? "unknown" : server.AuthStatus;
+        string runtime = server.RuntimeStatus switch
+        {
+            McpRuntimeStatus.NotStarted => "not started",
+            McpRuntimeStatus.Starting => "starting",
+            McpRuntimeStatus.Connected => "connected",
+            McpRuntimeStatus.AuthenticationRequired => "authentication required",
+            McpRuntimeStatus.Failed => "failed",
+            McpRuntimeStatus.Cancelled => "cancelled",
+            McpRuntimeStatus.Disabled => "disabled",
+            _ => "unknown",
+        };
+        string tools = server.ToolsError is { Length: > 0 } toolsError
+            ? $"tool discovery failed: {toolsError}"
+            : server.ToolCount == 1 ? "1 tool" : $"{server.ToolCount} tools";
+        return $"- {name}: authentication {authentication}; runtime {runtime}; {tools}; {resources}";
     }
 
     private async Task<bool> ExecuteReviewAsync(string threadId, string arguments, long goalStopFence)
@@ -6845,6 +6991,42 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         => string.Equals(modelCatalog.DefaultModelInfo?.Id, model, StringComparison.Ordinal)
             ? modelCatalog.DefaultModelInfo
             : modelCatalog.Models.FirstOrDefault(candidate => string.Equals(candidate.Id, model, StringComparison.Ordinal));
+
+    // Applies a 0.164.0+ resume's saved model, effort, and tier to the composer together. A null
+    // effort means the model default and a null tier means normal speed. Returns a notice, or null.
+    private string? ApplyResumedTurnSettings(ThreadSummary resumed)
+    {
+        string? model = resumed.EffectiveModelId is { } resumedModel
+            ? Models.FirstOrDefault(candidate => string.Equals(candidate, resumedModel, StringComparison.Ordinal))
+            : SelectedModel;
+        string? notice = null;
+        if (model is null)
+        {
+            model = SelectedModel;
+            notice = $"The conversation's model {markdown.ToSafeText(resumed.EffectiveModelId ?? string.Empty).Trim()} is not in the model list, so the selected model is kept.";
+            if (model is null)
+            {
+                return notice;
+            }
+        }
+
+        ModelInfo? info = FindModelInfo(model);
+        string effort = resumed.EffectiveReasoningEffort is { } savedEffort
+            && info?.SupportedReasoningEfforts.Any(option => string.Equals(option.Id, savedEffort, StringComparison.Ordinal)) == true
+                ? savedEffort
+                : ReasoningEffortCatalog.DefaultId;
+        string? tier = resumed.EffectiveServiceTier;
+        bool catalogTier = tier is not null
+            && info?.ServiceTiers.Any(option => string.Equals(option.Id, tier, StringComparison.OrdinalIgnoreCase)) == true;
+        ApplyModelCommand(new ModelCommandResolution(
+            model,
+            effort,
+            catalogTier ? tier : null,
+            catalogTier ? null : tier ?? DefaultServiceTierRequestValue,
+            null,
+            null));
+        return notice;
+    }
 
     private void ApplyModelCommand(ModelCommandResolution resolution)
     {
@@ -7718,6 +7900,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         {
             if (IsNotificationCurrent(notification))
             {
+                CompleteCompactionTracking(value.ThreadId);
                 string message = markdown.ToSafeText("Context compaction completed.");
                 SlashCommands.ShowStatus(message);
                 Items.Add(new ChatItemViewModel("Status", message, ConversationEventKind.ItemCompleted));
@@ -7819,6 +8002,8 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             {
                 ObserveStartedTurn(NotificationOwner(notification), value);
             }
+
+            ObserveCompactionOutcome(value);
 
             if (string.IsNullOrWhiteSpace(value.ThreadId))
             {

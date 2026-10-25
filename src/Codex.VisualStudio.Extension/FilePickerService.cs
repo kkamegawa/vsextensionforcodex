@@ -9,6 +9,10 @@ namespace Codex.VisualStudio.Extension;
 public interface IFilePickerService
 {
     Task<IReadOnlyList<string>> PickFilesAsync(string? initialDirectory, CancellationToken cancellationToken);
+
+    // Returns the chosen full path, or null when the dialog is canceled.
+    Task<string?> PickSaveFileAsync(string suggestedFileName, CancellationToken cancellationToken)
+        => Task.FromResult<string?>(null);
 }
 
 public sealed class FilePickerService : IFilePickerService
@@ -50,6 +54,38 @@ public sealed class FilePickerService : IFilePickerService
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .Take(MaximumFiles)
             .ToArray();
+    }
+
+    public async Task<string?> PickSaveFileAsync(string suggestedFileName, CancellationToken cancellationToken)
+    {
+        if (extensibility is null)
+        {
+            return null;
+        }
+
+        string? selected = await extensibility.Shell().ShowSaveAsFileDialogAsync(
+            new FileDialogOptions
+            {
+                Title = "Save Diagnostic ZIP",
+                InitialDirectory = NormalizeInitialDirectory(null),
+                InitialFileName = suggestedFileName,
+                Filters = new DialogFilters(new DialogFilter("ZIP archive", "*.zip")),
+            },
+            cancellationToken).ConfigureAwait(false);
+        if (string.IsNullOrWhiteSpace(selected))
+        {
+            return null;
+        }
+
+        try
+        {
+            string fullPath = Path.GetFullPath(selected);
+            return protectedDirectoryPolicy.IsProtected(fullPath) ? null : fullPath;
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return null;
+        }
     }
 
     private string? TryNormalizeFile(string path)
