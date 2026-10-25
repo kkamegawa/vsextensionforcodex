@@ -918,3 +918,11 @@ Tracking: [Issue #224](https://github.com/kkamegawa/vsextensionforcodex/issues/2
 - [x] Regression test `ChatViewModel_TransientRecoveryAppliesReplacementWorkerWithLowerGenerations` covers Ready, the replacement owner, the synchronized conversation list, and a later Busy notification. It fails without the fix.
 - [x] Debug and Release solution builds: 0 warnings, 0 errors. Per configuration: Core 464 passed / 5 skipped / 0 failed; UI 490 passed / 1 skipped / 0 failed.
 - [x] Experimental Instance with Codex 0.163.0: killing the Worker's `codex app-server` child recovered automatically to Ready within about 4 seconds with a new Worker process. The header showed Connection restored, the conversation history list loaded, and the diagnostics log had no stale-generation rejection. A second kill of the next replacement Worker's app-server also recovered to Ready. After it, the usage panel and history list loaded, a conversation opened as read-only history, and the Extension and its Worker logged no errors.
+
+### 2026-10-25: Codex App Server 0.164.0 support
+
+Detailed task and verification record: [English](task-app-server-0-164.md) · [日本語](task-app-server-0-164_ja.md). Tracking: [#226](https://github.com/kkamegawa/vsextensionforcodex/issues/226). Automated checks, the four-version contract and real CLI startup, and a real 0.164.0 compaction and resume are complete. Experimental Instance screenshots remain open, because Visual Studio UI automation access was not granted.
+
+### 2026-10-26: Compaction outcome isolation review fix
+
+Tracking: [#230](https://github.com/kkamegawa/vsextensionforcodex/issues/230), within the approved [0.164.0 plan](app-server-0-164-plan.md). Fixed cross-conversation compaction messages in #236 and propagated the fix into #237. Four regression tests were added; Debug and Release UI suites each passed 569 tests with 1 symbolic-link skip. Release solution build and VSIX inspection passed, and standalone WPF transcript renders were inspected. Details and evidence limits: [English](implementation-app-server-0-164.md) · [日本語](implementation-app-server-0-164_ja.md).

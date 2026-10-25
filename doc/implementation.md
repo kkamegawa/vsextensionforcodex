@@ -624,3 +624,7 @@ Tracking: [#195](https://github.com/kkamegawa/vsextensionforcodex/issues/195), [
 ## Codex App Server 0.163.0
 
 Implementation and verification: [English](implementation-app-server-0-163.md) · [日本語](implementation-app-server-0-163_ja.md). Experimental Instance visual acceptance remains open.
+
+## Codex App Server 0.164.0
+
+Implementation and verification: [English](implementation-app-server-0-164.md) · [日本語](implementation-app-server-0-164_ja.md). Contract, build, test, VSIX, and real CLI checks for 0.161.0 through 0.164.0 passed. Experimental Instance visual acceptance remains open.

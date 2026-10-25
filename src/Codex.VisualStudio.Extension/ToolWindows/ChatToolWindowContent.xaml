@@ -494,14 +494,20 @@
       <RowDefinition Height="Auto" />
     </Grid.RowDefinitions>
 
-    <!-- Slim icon toolbar: status (left) · account + connection target + usage + history flyout + new + restart (right) -->
+    <!-- Header: status (first row) · account + connection target + usage + history flyout + new + restart (second row, right-aligned) -->
     <Border Grid.Row="0"
             Padding="10,6"
             Background="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBackgroundBrushKey}}"
             BorderThickness="0,0,0,1"
             BorderBrush="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBorderBrushKey}}">
-      <DockPanel>
-        <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
+      <!-- The status owns the full width of the first row so it is never squeezed by the
+           toolbar; the toolbar sits right-aligned below it and wraps in a narrow pane. -->
+      <Grid>
+        <Grid.RowDefinitions>
+          <RowDefinition Height="Auto" />
+          <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+        <WrapPanel Grid.Row="1" Margin="0,4,0,0" HorizontalAlignment="Right" VerticalAlignment="Center">
           <Button Content="{Binding AccountActionText}" Command="{Binding AccountCommand}"
                   Style="{StaticResource SmallRoundButtonStyle}" Margin="0,0,8,0"
                   Visibility="{Binding ShowAccountAction, Converter={StaticResource BoolToVis}}" />
@@ -915,9 +921,9 @@
                   AutomationProperties.Name="{Binding RestartActionText}"
                   AutomationProperties.HelpText="{Binding RestartActionHelpText}"
                   Style="{StaticResource IconButtonStyle}" />
-        </StackPanel>
+        </WrapPanel>
 
-        <StackPanel VerticalAlignment="Center">
+        <StackPanel Grid.Row="0" VerticalAlignment="Center">
           <!-- Keep the state in the non-trimming column and constrain only the version. The
                state TextBlock owns the combined accessible name and live-region notification;
                the visual version TextBlock has no AutomationProperties overrides. -->
@@ -939,13 +945,13 @@
                        TextTrimming="CharacterEllipsis"
                        ToolTip="{Binding StatusAutomationHelpText}" />
           </Grid>
-          <TextBlock Opacity="0.8" Text="{Binding StatusDetailText}" TextTrimming="CharacterEllipsis" />
+          <TextBlock Opacity="0.8" Text="{Binding StatusDetailText}" TextWrapping="Wrap" />
           <TextBlock Margin="0,3,0,0" Text="{Binding RecoveryStatusText}" TextWrapping="Wrap"
                      Visibility="{Binding HasRecoveryStatus, Converter={StaticResource BoolToVis}}"
                      AutomationProperties.Name="Connection recovery status"
                      AutomationProperties.LiveSetting="Polite" />
         </StackPanel>
-      </DockPanel>
+      </Grid>
     </Border>
 
     <!-- Body: full-width transcript with a centered welcome overlay, plus pending approvals -->
