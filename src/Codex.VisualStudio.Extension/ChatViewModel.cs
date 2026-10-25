@@ -6447,12 +6447,13 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             ExtensionDiagnostics.Write("Context compaction request failed", ex);
-            bool unreported = false;
-            await OnUiAsync(() => unreported = EndCompactionTracking(operation)).ConfigureAwait(false);
-            if (unreported)
+            await OnUiAsync(() =>
             {
-                await ShowSlashFailureAsync(CompactionFailedText).ConfigureAwait(false);
-            }
+                if (EndCompactionTracking(operation))
+                {
+                    ReportCompactionFailure(threadId);
+                }
+            }).ConfigureAwait(false);
 
             return false;
         }
@@ -6468,7 +6469,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             return false;
         }
 
-        bool started = await HandleOperationResultAsync(SlashCommandId.Compact, result, "Context compaction started.").ConfigureAwait(false);
+        bool started = await HandleCompactionResultAsync(threadId, result, owner, operation).ConfigureAwait(false);
         if (!started)
         {
             await OnUiAsync(() => EndCompactionTracking(operation)).ConfigureAwait(false);
@@ -7921,9 +7922,12 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             if (IsNotificationCurrent(notification))
             {
                 CompleteCompactionTracking(value.ThreadId);
-                string message = markdown.ToSafeText("Context compaction completed.");
-                SlashCommands.ShowStatus(message);
-                Items.Add(new ChatItemViewModel("Status", message, ConversationEventKind.ItemCompleted));
+                if (IsCompactionThreadSelected(value.ThreadId))
+                {
+                    string message = markdown.ToSafeText("Context compaction completed.");
+                    SlashCommands.ShowStatus(message);
+                    Items.Add(new ChatItemViewModel("Status", message, ConversationEventKind.ItemCompleted));
+                }
             }
         }).ConfigureAwait(false);
 

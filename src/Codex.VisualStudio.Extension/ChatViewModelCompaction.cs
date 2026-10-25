@@ -53,6 +53,7 @@ public sealed partial class ChatViewModel
     private void ObserveCompactionOutcome(ConversationEvent value)
     {
         if (pendingCompaction is null
+            || string.IsNullOrEmpty(value.ThreadId)
             || !string.Equals(pendingCompaction.ThreadId, value.ThreadId, StringComparison.Ordinal)
             || value.Kind is not (ConversationEventKind.Error or ConversationEventKind.TurnCompleted))
         {
@@ -60,13 +61,65 @@ public sealed partial class ChatViewModel
         }
 
         pendingCompaction = null;
-        ReportCompactionFailure();
+        ReportCompactionFailure(value.ThreadId);
     }
 
-    private void ReportCompactionFailure()
+    private void ReportCompactionFailure(string threadId)
     {
+        if (!IsCompactionThreadSelected(threadId))
+        {
+            return;
+        }
+
         SlashCommands.ShowFailure(CompactionFailedText);
         Items.Add(new ChatItemViewModel("Error", CompactionFailedText, ConversationEventKind.Error));
+    }
+
+    private bool IsCompactionThreadSelected(string threadId)
+        => string.Equals(SelectedThread?.Id, threadId, StringComparison.Ordinal);
+
+    private async Task<bool> HandleCompactionResultAsync(
+        string threadId,
+        CompactThreadResult result,
+        OwnerSnapshot owner,
+        CompactionOperation operation)
+    {
+        bool started = false;
+        await OnUiAsync(() =>
+        {
+            if (!IsCurrentOwner(owner))
+            {
+                return;
+            }
+
+            bool isCurrentOperation = ReferenceEquals(pendingCompaction, operation);
+            if (!result.IsSupported)
+            {
+                unavailableSlashCommands.Add(SlashCommandId.Compact);
+                string reason = string.IsNullOrWhiteSpace(result.UnavailableReason)
+                    ? "The app-server does not support this command."
+                    : result.UnavailableReason;
+                if (isCurrentOperation && IsCompactionThreadSelected(threadId))
+                {
+                    string safeMessage = markdown.ToSafeText(reason);
+                    SlashCommands.ShowFailure(safeMessage);
+                    Items.Add(new ChatItemViewModel("Error", safeMessage, ConversationEventKind.Error));
+                }
+
+                UpdateComposerSuggestions(ComposerText);
+                return;
+            }
+
+            started = true;
+            if (isCurrentOperation && IsCompactionThreadSelected(threadId))
+            {
+                string message = markdown.ToSafeText("Context compaction started.");
+                SlashCommands.ShowStatus(message);
+                Items.Add(new ChatItemViewModel("Status", message, ConversationEventKind.ItemCompleted));
+            }
+        }).ConfigureAwait(false);
+
+        return started;
     }
 
     private string DescribeResumeFailure(Exception error)

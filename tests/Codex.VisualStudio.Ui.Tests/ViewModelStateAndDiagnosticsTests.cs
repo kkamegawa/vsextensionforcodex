@@ -336,4 +336,121 @@ public sealed partial class ViewModelTests
         Assert.AreEqual(1, vm.Items.Count(item => item.Text == ChatViewModel.CompactionFailedText),
             "The early failure is reported, and a later unrelated turn is not.");
     }
+
+    [TestMethod]
+    public async Task Compaction_BackgroundFailureDoesNotPolluteSelectedThreadAndClearsTracking()
+    {
+        var bridge = new FakeWorkerBridge();
+        using ChatViewModel vm = await CreateCompactionViewModelAsync(bridge);
+
+        await RunComposerAsync(vm, "/compact");
+        vm.SelectedThread = new ThreadSummary { Id = "thread-2" };
+        await bridge.PublishConversationEventAsync(new ConversationEvent
+        {
+            Kind = ConversationEventKind.Error,
+            ThreadId = "thread-1",
+            Text = "Compaction failed on thread-1.",
+        });
+
+        Assert.IsFalse(vm.Items.Any(item => item.Text == ChatViewModel.CompactionFailedText),
+            "A background thread's compaction failure must not appear in the selected transcript.");
+        Assert.AreNotEqual(ChatViewModel.CompactionFailedText, vm.SlashCommands.StatusAnnouncement,
+            "A background thread's failure must not replace the selected thread's command status.");
+
+        vm.SelectedThread = new ThreadSummary { Id = "thread-1" };
+        await bridge.PublishConversationEventAsync(new ConversationEvent
+        {
+            Kind = ConversationEventKind.TurnCompleted,
+            ThreadId = "thread-1",
+            TurnId = "turn-later",
+        });
+
+        Assert.IsFalse(vm.Items.Any(item => item.Text == ChatViewModel.CompactionFailedText),
+            "The failure event retires tracking even while its thread is not selected.");
+    }
+
+    [TestMethod]
+    public async Task Compaction_BackgroundCompletionDoesNotPolluteSelectedThreadAndClearsTracking()
+    {
+        var bridge = new FakeWorkerBridge();
+        using ChatViewModel vm = await CreateCompactionViewModelAsync(bridge);
+
+        await RunComposerAsync(vm, "/compact");
+        vm.SelectedThread = new ThreadSummary { Id = "thread-2" };
+        await RaiseContextCompactedAsync(vm, new ContextCompactionEvent { ThreadId = "thread-1", IsCompleted = true });
+
+        Assert.IsFalse(vm.Items.Any(item => item.Text == "Context compaction completed."),
+            "A background thread's completion must not appear in the selected transcript.");
+        Assert.AreNotEqual("Context compaction completed.", vm.SlashCommands.StatusAnnouncement,
+            "A background thread's completion must not replace the selected thread's command status.");
+
+        vm.SelectedThread = new ThreadSummary { Id = "thread-1" };
+        await bridge.PublishConversationEventAsync(new ConversationEvent
+        {
+            Kind = ConversationEventKind.TurnCompleted,
+            ThreadId = "thread-1",
+            TurnId = "turn-later",
+        });
+
+        Assert.IsFalse(vm.Items.Any(item => item.Text == ChatViewModel.CompactionFailedText),
+            "The completion event retires tracking even while its thread is not selected.");
+    }
+
+    [TestMethod]
+    public async Task Compaction_LateSuccessfulRpcResponseDoesNotPolluteSelectedThread()
+    {
+        var requestStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var requestResult = new TaskCompletionSource<CompactThreadResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var bridge = new FakeWorkerBridge
+        {
+            CompactThreadHandler = async (_, _) =>
+            {
+                requestStarted.TrySetResult();
+#pragma warning disable VSTHRD003 // The test intentionally completes this RPC from the controlling test method.
+                return await requestResult.Task.ConfigureAwait(false);
+#pragma warning restore VSTHRD003
+            },
+        };
+        using ChatViewModel vm = await CreateCompactionViewModelAsync(bridge);
+
+        Task compact = RunComposerAsync(vm, "/compact");
+        await requestStarted.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        vm.SelectedThread = new ThreadSummary { Id = "thread-2" };
+        requestResult.SetResult(new CompactThreadResult());
+        await compact;
+
+        Assert.IsFalse(vm.Items.Any(item => item.Text == "Context compaction started."),
+            "A successful background thread's delayed RPC response must not appear in the selected transcript.");
+        Assert.AreNotEqual("Context compaction started.", vm.SlashCommands.StatusAnnouncement,
+            "A successful background thread's delayed RPC response must not replace the selected thread's command status.");
+    }
+
+    [TestMethod]
+    public async Task Compaction_RpcFailureAfterSelectionChangeDoesNotPolluteSelectedThread()
+    {
+        var requestStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var requestResult = new TaskCompletionSource<CompactThreadResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var bridge = new FakeWorkerBridge
+        {
+            CompactThreadHandler = async (_, _) =>
+            {
+                requestStarted.TrySetResult();
+#pragma warning disable VSTHRD003 // The test intentionally completes this RPC from the controlling test method.
+                return await requestResult.Task.ConfigureAwait(false);
+#pragma warning restore VSTHRD003
+            },
+        };
+        using ChatViewModel vm = await CreateCompactionViewModelAsync(bridge);
+
+        Task compact = RunComposerAsync(vm, "/compact");
+        await requestStarted.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        vm.SelectedThread = new ThreadSummary { Id = "thread-2" };
+        requestResult.SetException(new InvalidOperationException("boom"));
+        await compact;
+
+        Assert.IsFalse(vm.Items.Any(item => item.Text == ChatViewModel.CompactionFailedText),
+            "An RPC failure must not appear in a different thread selected while the request was pending.");
+        Assert.AreNotEqual(ChatViewModel.CompactionFailedText, vm.SlashCommands.StatusAnnouncement,
+            "An RPC failure must not replace the selected thread's command status.");
+    }
 }
