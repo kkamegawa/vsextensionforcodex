@@ -255,7 +255,9 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
                 CancellationToken.None).ConfigureAwait(false);
             return await SetStatusAsync(
                 WorkerConnectionState.Degraded,
-                redactor.Redact(initialized ? ex.Message : AppendSandboxBackendStartupHint(ex.Message, options.WindowsSandboxBackend)),
+                redactor.Redact(initialized || ex is UnsupportedCodexVersionException
+                    ? ex.Message
+                    : AppendSandboxBackendStartupHint(ex.Message, options.WindowsSandboxBackend)),
                 cancellationToken,
                 ClassifyRecoveryFailure(ex)).ConfigureAwait(false);
         }
@@ -354,6 +356,16 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
                 "The remote connection attempt was canceled.",
                 WorkerRecoveryFailureKind.Cancelled).ConfigureAwait(false);
             throw;
+        }
+        catch (UnsupportedCodexVersionException ex)
+        {
+            // The version rejection already names the detected and required versions; keep that
+            // message instead of the generic initialize-stage description.
+            WorkerDiagnostics.Write("worker remote connect rejected the server version", ex);
+            await RetireCandidateAsync().ConfigureAwait(false);
+            return await PublishRemoteFailureAsync(
+                redactor.Redact(ex.Message),
+                WorkerRecoveryFailureKind.UnsupportedServerVersion).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
@@ -1373,6 +1385,15 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
         CancellationToken cancellationToken)
         => ExecuteOwnerScopedAsync(request, () => session.UploadFeedbackAsync(request, cancellationToken), cancellationToken);
 
+    public Task<SaveFeedbackResult> SaveFeedbackAsync(SaveFeedbackRequest request, CancellationToken cancellationToken)
+        => ExecuteOwnerScopedAsync(request, () => session.SaveFeedbackAsync(request, cancellationToken), cancellationToken);
+
+    public Task<ListPresetsResult> ListPresetsAsync(ListPresetsRequest request, CancellationToken cancellationToken)
+        => ExecuteOwnerScopedAsync(request, () => session.ListPresetsAsync(cancellationToken), cancellationToken);
+
+    public Task<WritePresetResult> WritePresetAsync(WritePresetRequest request, CancellationToken cancellationToken)
+        => ExecuteOwnerScopedAsync(request, () => session.WritePresetAsync(request, cancellationToken), cancellationToken);
+
     public Task<RateLimitsResult> GetRateLimitsAsync(GetRateLimitsRequest request, CancellationToken cancellationToken)
         => ExecuteOwnerScopedAsync(request, () => session.GetRateLimitsAsync(cancellationToken), cancellationToken);
 
@@ -1489,6 +1510,8 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
                 TurnId = session.ActiveTurnId,
                 ProcessId = targetSnapshot.Kind == ConnectionTargetKind.Local ? processHost.ProcessId : null,
                 CodexVersion = ShouldIncludeCodexVersion(state) ? session.CodexVersion : null,
+                FeatureTier = ShouldIncludeCodexVersion(state) ? session.FeatureTier : CodexFeatureTier.Unsupported,
+                IsNewerThanVerifiedVersion = ShouldIncludeCodexVersion(state) && session.IsNewerThanVerifiedVersion,
                 EffectiveApprovalState = session.EffectiveApprovalState,
                 EffectiveReasoningEffort = session.EffectiveReasoningEffort,
                 EffectiveServiceTier = session.EffectiveServiceTier,
@@ -2072,6 +2095,8 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
         status.TurnId = session.ActiveTurnId;
         status.ProcessId = OwnedProcessId();
         status.CodexVersion = ShouldIncludeCodexVersion(status.State) ? session.CodexVersion : null;
+        status.FeatureTier = ShouldIncludeCodexVersion(status.State) ? session.FeatureTier : CodexFeatureTier.Unsupported;
+        status.IsNewerThanVerifiedVersion = ShouldIncludeCodexVersion(status.State) && session.IsNewerThanVerifiedVersion;
         status.EffectiveApprovalState = session.EffectiveApprovalState;
         status.EffectiveReasoningEffort = session.EffectiveReasoningEffort;
         status.EffectiveServiceTier = session.EffectiveServiceTier;
@@ -2091,6 +2116,8 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
         TurnId = status.TurnId,
         ProcessId = status.ProcessId,
         CodexVersion = status.CodexVersion,
+        FeatureTier = status.FeatureTier,
+        IsNewerThanVerifiedVersion = status.IsNewerThanVerifiedVersion,
         EffectiveApprovalState = status.EffectiveApprovalState,
         EffectiveReasoningEffort = status.EffectiveReasoningEffort,
         EffectiveServiceTier = status.EffectiveServiceTier,
@@ -2104,6 +2131,7 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
         => exception switch
         {
             RemoteConnectionException remote => ToRecoveryFailureKind(remote.Failure),
+            UnsupportedCodexVersionException => WorkerRecoveryFailureKind.UnsupportedServerVersion,
             OperationCanceledException => WorkerRecoveryFailureKind.Cancelled,
             _ => WorkerRecoveryFailureKind.Unknown,
         };

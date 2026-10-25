@@ -38,7 +38,7 @@ Schemas are generated from the hash-verified official executables for all four v
 
 ### Version determination
 
-1. Source: the first product token of the `initialize` response `userAgent`, in the form `<originator>/<version>`. No other field and no `--version` process is used.
+1. Source: the first product of the `initialize` response `userAgent`, in the form `<originator>/<version> (<os>; <arch>) ...`. The originator may contain spaces, such as `Codex Desktop`, but never `/`, so the version runs from the first `/` to the next whitespace. No other field and no `--version` process is used.
 2. Syntax: Semantic Versioning 2.0. `MAJOR.MINOR.PATCH` has exactly three numeric components without leading zeros, followed by an optional `-prerelease` and an optional `+build`. At most 64 characters, with the existing character validation.
 3. Ordering: Semantic Versioning precedence. Build metadata is ignored, and a prerelease sorts below its release, so `0.161.0-alpha.1` is below the minimum and `0.164.0-alpha.1` is treated as below 0.164.0.
 4. Versions that cannot be determined are unsupported: a missing or invalid `userAgent`, an invalid token, or `0.0.0` from a source build. No override setting exists.

@@ -1300,6 +1300,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         WorkerRecoveryFailureKind.RootChanged => "The working directory changed. Choose a working directory and connect manually.",
         WorkerRecoveryFailureKind.OwnerChanged => "The app-server owner changed. Select a conversation to inspect history; no conversation was resumed.",
         WorkerRecoveryFailureKind.ConfigurationChanged => "The connection configuration changed. Review it and connect manually.",
+        WorkerRecoveryFailureKind.UnsupportedServerVersion => $"The Codex CLI is not supported. Use Codex CLI {SupportedCodexVersions.Minimum} or later (recommended {SupportedCodexVersions.Target}), then connect manually.",
         WorkerRecoveryFailureKind.None => "Reconnection stopped. Connect manually to continue.",
         _ => "Automatic reconnection stopped. Check the connection and connect manually.",
     };

@@ -675,7 +675,7 @@ public sealed class WorkerRpcOwnerBoundaryTests
                     nextCursor = (string?)null,
                 }),
                 "turn/start" => JsonSerializer.SerializeToElement(new { turn = new { id = "turn-a" } }),
-                "initialize" => JsonSerializer.SerializeToElement(new { userAgent = "codex-cli/0.1.0" }),
+                "initialize" => JsonSerializer.SerializeToElement(new { userAgent = $"codex-cli/{SupportedCodexVersions.Target}" }),
                 "account/gatewayOAuth/read" => JsonSerializer.SerializeToElement(new
                 {
                     providerId = "test-provider",

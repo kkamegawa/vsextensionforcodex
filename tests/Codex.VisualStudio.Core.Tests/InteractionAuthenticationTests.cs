@@ -209,8 +209,8 @@ public sealed class InteractionAuthenticationTests
             new StartMcpOAuthLoginRequest { ServerName = "example-mcp", ThreadId = "thread-1" },
             CancellationToken.None);
         await loginStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
-        await connection.EmitNotificationAsync("mcpServer/oauthLogin/completed", new { name = "example-mcp", success = true });
-        finishLogin.TrySetResult(JsonSerializer.SerializeToElement(new { authorizationUrl = "https://login.example.test/old" }));
+        await connection.EmitNotificationAsync("mcpServer/oauthLogin/completed", new { name = "example-mcp", success = true, loginId = "login-1" });
+        finishLogin.TrySetResult(JsonSerializer.SerializeToElement(new { authorizationUrl = "https://login.example.test/old", loginId = "login-1" }));
         McpOAuthLoginStatus loginStatus = await loginTask.WaitAsync(TimeSpan.FromSeconds(2));
 
         Assert.AreEqual(InteractionAuthState.Authenticated, loginStatus.State);
@@ -356,7 +356,8 @@ public sealed class InteractionAuthenticationTests
     [TestMethod]
     [DataRow("login-1", "login-1", InteractionAuthState.Authenticated)]
     [DataRow("login-0", "login-1", InteractionAuthState.LoginPending)]
-    [DataRow("login-0", null, InteractionAuthState.Authenticated)]
+    // A response without loginId cannot be matched, so no completion is applied by server name.
+    [DataRow("login-0", null, InteractionAuthState.LoginPending)]
     public async Task McpCompletionBeforeLoginResponse_IsAppliedOnlyForTheSameLoginId(string notifiedLoginId, string? responseLoginId, InteractionAuthState expected)
     {
         var connection = new RecordingConnection();
@@ -550,12 +551,12 @@ public sealed class InteractionAuthenticationTests
                 return GatewayOAuthReadResponse.Clone();
             }
 
-            if (AsyncHandler is not null)
-            {
-                return await AsyncHandler(method, parameters, cancellationToken).ConfigureAwait(false);
-            }
-
-            return JsonSerializer.SerializeToElement(new { });
+            JsonElement response = AsyncHandler is not null
+                ? await AsyncHandler(method, parameters, cancellationToken).ConfigureAwait(false)
+                : JsonSerializer.SerializeToElement(new { });
+            return method == "initialize" && response.ValueKind == JsonValueKind.Object && !response.EnumerateObject().Any()
+                ? JsonSerializer.SerializeToElement(new { userAgent = $"codex-cli/{SupportedCodexVersions.Target}" })
+                : response;
         }
 
         public Task SendNotificationAsync(string method, object? parameters, CancellationToken cancellationToken)

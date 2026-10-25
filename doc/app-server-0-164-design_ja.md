@@ -61,7 +61,7 @@ experimental API は明示的な opt-in のままとし、既定では無効に�
 
 ### バージョン判定規則
 
-1. **情報源**: `initialize` 応答の `userAgent` の先頭プロダクトトークン（`<originator>/<version>`）を使う。それ以外のフィールドや `--version` の別プロセスは使わない。
+1. **情報源**: `initialize` 応答の `userAgent` の先頭プロダクト（`<originator>/<version> (<os>; <arch>) ...`）を使う。originator には `Codex Desktop` のように空白を含むことがあるが、`/` は含まない。そのため、最初の `/` から次の空白までをバージョンとする。それ以外のフィールドや `--version` の別プロセスは使わない。
 2. **構文**: Semantic Versioning 2.0 に従う。
    - `MAJOR.MINOR.PATCH` は先頭ゼロのない 3 つの数値で、任意の `-prerelease` と `+build` が続く。
    - 長さは 64 文字以内とし、既存の文字種検証を適用する。

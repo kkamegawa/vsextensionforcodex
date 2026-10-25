@@ -115,6 +115,10 @@ public partial interface ICodexSessionService : IAsyncDisposable
 
     string? CodexVersion { get; }
 
+    CodexFeatureTier FeatureTier => CodexFeatureTier.Unsupported;
+
+    bool IsNewerThanVerifiedVersion => false;
+
     EffectiveApprovalState? EffectiveApprovalState { get; }
 
     string? EffectiveReasoningEffort { get; }
@@ -432,6 +436,10 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
 
     public string? CodexVersion { get; private set; }
 
+    public CodexFeatureTier FeatureTier { get; private set; }
+
+    public bool IsNewerThanVerifiedVersion { get; private set; }
+
     public EffectiveApprovalState? EffectiveApprovalState { get; private set; }
 
     public string? EffectiveReasoningEffort { get; private set; }
@@ -518,6 +526,8 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         await ResetSkillsBackgroundRefreshAsync().ConfigureAwait(false);
         InvalidateSkillsCache();
         CodexVersion = null;
+        FeatureTier = CodexFeatureTier.Unsupported;
+        IsNewerThanVerifiedVersion = false;
         EffectiveApprovalState = null;
         EffectiveReasoningEffort = null;
         EffectiveServiceTier = null;
@@ -589,19 +599,29 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         {
             return;
         }
-        string? detectedVersion = ReadCodexVersion(initResponse);
-        if (context.IsLocal
-            && context.SandboxBackend == WindowsSandboxBackendPreference.DisableMxc
-            && !IsCodexVersionAtLeast163(detectedVersion))
+        CodexCliVersion? detectedVersion = ReadCodexVersion(initResponse);
+        CodexFeatureTier featureTier = CodexCliVersion.GetFeatureTier(detectedVersion);
+        if (featureTier == CodexFeatureTier.Unsupported)
         {
             // The rejected server is stopped by the caller; retire its context first so neither
             // the context nor its version and metadata stay observable after the failure.
             await RetireRejectedConnectionAsync(context).ConfigureAwait(false);
-            throw new InvalidOperationException(
-                $"The local MXC opt-out requires Codex CLI 0.163.0 or later; detected {detectedVersion ?? "an unknown version"}. Update Codex and connect again.");
+            throw new UnsupportedCodexVersionException(DescribeUnsupportedVersion(detectedVersion, context.IsLocal));
         }
 
-        CodexVersion = detectedVersion;
+        if (context.IsLocal
+            && context.SandboxBackend == WindowsSandboxBackendPreference.DisableMxc
+            && featureTier < CodexFeatureTier.Tier163)
+        {
+            await RetireRejectedConnectionAsync(context).ConfigureAwait(false);
+            throw new InvalidOperationException(
+                $"The local MXC opt-out requires Codex CLI 0.163.0 or later; detected {detectedVersion}. Update Codex and connect again.");
+        }
+
+        context.FeatureTier = featureTier;
+        FeatureTier = featureTier;
+        IsNewerThanVerifiedVersion = detectedVersion!.IsNewerThanTarget;
+        CodexVersion = detectedVersion.Text;
         InitializationMetadata = new(
             GetString(initResponse, "codexHome"),
             GetString(initResponse, "platformFamily"),
@@ -871,9 +891,9 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             // The notification handler runs on another task. Publishing the response state and
             // taking a stored early completion happen under the same gate, so a completion is
             // either stored before this point and taken here, or matched by the handler afterwards.
-            // An invalid loginId is kept distinct from an absent one: only a server that omits the
-            // ID gets the server-name fallback.
-            operation.LoginIdInvalid = !TryReadMcpOAuthLoginId(result, out string? loginId);
+            // Every supported server returns loginId, so a missing one is as unmatchable as an
+            // invalid one; no completion is matched to this attempt by server name alone.
+            operation.LoginIdInvalid = !TryReadMcpOAuthLoginId(result, out string? loginId) || loginId is null;
             operation.LoginId = loginId;
             operation.ResponseReceived = true;
             early = operation.EarlyCompletion;
@@ -883,10 +903,9 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         if (early is not null)
         {
             // The completion notification overtook the response. Apply it only when it belongs to
-            // this attempt; a completion for any other loginId is stale and is dropped. A response
-            // without loginId falls back to server-name matching, as for a late notification.
+            // this attempt; a completion for any other loginId is stale and is dropped.
             if (!operation.LoginIdInvalid
-                && (operation.LoginId is null || string.Equals(operation.LoginId, early.LoginId, StringComparison.Ordinal))
+                && string.Equals(operation.LoginId, early.LoginId, StringComparison.Ordinal)
                 && context.McpOAuthOperations.ContainsKey(operation.OperationId))
             {
                 await ApplyMcpOAuthCompletionAsync(context, serverName, early.Succeeded, cancellationToken).ConfigureAwait(false);
@@ -1197,58 +1216,40 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         }
     }
 
-    private static string? ReadCodexVersion(JsonElement initResponse)
+    // The only version source is the first product of the initialize userAgent,
+    // "<originator>/<version> (<os>; <arch>) ...", which every supported server returns. The
+    // originator may contain spaces (for example "Codex Desktop") but no '/', so the version
+    // runs from the first '/' to the next whitespace.
+    internal static CodexCliVersion? ReadCodexVersion(JsonElement initResponse)
     {
         string? userAgent = GetString(initResponse, "userAgent");
-        if (userAgent is not null)
+        if (userAgent is null)
         {
-            int separator = userAgent.IndexOf(' ');
-            ReadOnlySpan<char> firstProduct = separator >= 0
-                ? userAgent.AsSpan(0, separator)
-                : userAgent.AsSpan();
-            int slash = firstProduct.IndexOf('/');
-            if (slash > 0)
-            {
-                ReadOnlySpan<char> version = firstProduct[(slash + 1)..];
-                if (IsValidCodexVersion(version))
-                {
-                    return version.ToString();
-                }
-            }
+            return null;
         }
 
-        if (initResponse.TryGetProperty("serverInfo", out JsonElement serverInfo)
-            && serverInfo.ValueKind == JsonValueKind.Object)
+        int slash = userAgent.IndexOf('/');
+        if (slash <= 0)
         {
-            string? legacyVersion = GetString(serverInfo, "version");
-            if (legacyVersion is not null && IsValidCodexVersion(legacyVersion.AsSpan()))
-            {
-                return legacyVersion;
-            }
+            return null;
         }
 
-        return null;
+        int end = slash + 1;
+        while (end < userAgent.Length && !char.IsWhiteSpace(userAgent[end]))
+        {
+            end++;
+        }
+
+        return CodexCliVersion.TryParse(userAgent[(slash + 1)..end], out CodexCliVersion? version) ? version : null;
     }
 
-    private static bool IsCodexVersionAtLeast163(string? value)
+    internal static string DescribeUnsupportedVersion(CodexCliVersion? version, bool isLocal)
     {
-        if (string.IsNullOrWhiteSpace(value))
-        {
-            return false;
-        }
-
-        // Build metadata does not affect precedence and may itself contain hyphens, so strip it first.
-        int buildIndex = value.IndexOf('+');
-        string withoutBuild = buildIndex >= 0 ? value[..buildIndex] : value;
-        int suffixIndex = withoutBuild.IndexOf('-');
-        string numericVersion = suffixIndex >= 0 ? withoutBuild[..suffixIndex] : withoutBuild;
-        if (!Version.TryParse(numericVersion, out Version? version))
-        {
-            return false;
-        }
-
-        Version minimum = new(0, 163, 0);
-        return version >= minimum && (version != minimum || suffixIndex < 0);
+        string detected = version is null ? "an unknown version" : $"version {version}";
+        string action = isLocal
+            ? "Install Codex CLI 0.164.0 as described in the CLI setup guide, or select a supported executable, then connect again."
+            : "Update the remote app-server to Codex CLI 0.164.0, then connect again. The extension does not update a server.";
+        return $"This extension requires Codex CLI {SupportedCodexVersions.Minimum} or later (recommended {SupportedCodexVersions.Target}); the app-server reported {detected}. {action}";
     }
 
     private static ThreadReadStateSnapshot ReadThreadReadState(JsonElement container, string propertyName)
@@ -1306,115 +1307,6 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         state = ReadThreadReadState(data, "readState");
         return true;
     }
-
-    private static bool IsValidCodexVersion(ReadOnlySpan<char> version)
-    {
-        if (version.IsEmpty || version.Length > 64)
-        {
-            return false;
-        }
-
-        int buildSeparator = version.IndexOf('+');
-        ReadOnlySpan<char> withoutBuild = buildSeparator >= 0 ? version[..buildSeparator] : version;
-        if (buildSeparator >= 0
-            && (!IsValidIdentifierList(version[(buildSeparator + 1)..], allowNumericLeadingZero: true)
-                || version[(buildSeparator + 1)..].Contains('+')))
-        {
-            return false;
-        }
-
-        int prereleaseSeparator = withoutBuild.IndexOf('-');
-        ReadOnlySpan<char> core = prereleaseSeparator >= 0 ? withoutBuild[..prereleaseSeparator] : withoutBuild;
-        if (prereleaseSeparator >= 0
-            && !IsValidIdentifierList(withoutBuild[(prereleaseSeparator + 1)..], allowNumericLeadingZero: false))
-        {
-            return false;
-        }
-
-        int firstDot = core.IndexOf('.');
-        if (firstDot <= 0)
-        {
-            return false;
-        }
-
-        int secondDotOffset = core[(firstDot + 1)..].IndexOf('.');
-        if (secondDotOffset <= 0)
-        {
-            return false;
-        }
-
-        int secondDot = firstDot + 1 + secondDotOffset;
-        return !core[(secondDot + 1)..].Contains('.')
-            && IsValidCoreComponent(core[..firstDot])
-            && IsValidCoreComponent(core[(firstDot + 1)..secondDot])
-            && IsValidCoreComponent(core[(secondDot + 1)..]);
-    }
-
-    private static bool IsValidIdentifierList(ReadOnlySpan<char> identifiers, bool allowNumericLeadingZero)
-    {
-        if (identifiers.IsEmpty)
-        {
-            return false;
-        }
-
-        while (true)
-        {
-            int dot = identifiers.IndexOf('.');
-            ReadOnlySpan<char> identifier = dot >= 0 ? identifiers[..dot] : identifiers;
-            if (identifier.IsEmpty)
-            {
-                return false;
-            }
-
-            bool numeric = true;
-            foreach (char value in identifier)
-            {
-                bool isDigit = value is >= '0' and <= '9';
-                bool isLetter = value is >= 'A' and <= 'Z' or >= 'a' and <= 'z';
-                if (!isDigit && !isLetter && value != '-')
-                {
-                    return false;
-                }
-
-                numeric &= isDigit;
-            }
-
-            if (!allowNumericLeadingZero && numeric && HasLeadingZero(identifier))
-            {
-                return false;
-            }
-
-            if (dot < 0)
-            {
-                return true;
-            }
-
-            identifiers = identifiers[(dot + 1)..];
-        }
-    }
-
-    private static bool IsValidCoreComponent(ReadOnlySpan<char> value)
-        => IsAsciiDigits(value) && !HasLeadingZero(value);
-
-    private static bool IsAsciiDigits(ReadOnlySpan<char> value)
-    {
-        if (value.IsEmpty)
-        {
-            return false;
-        }
-
-        foreach (char character in value)
-        {
-            if (character is < '0' or > '9')
-            {
-                return false;
-            }
-        }
-
-        return true;
-    }
-
-    private static bool HasLeadingZero(ReadOnlySpan<char> value) => value.Length > 1 && value[0] == '0';
 
     public async Task<ThreadSummary> StartThreadAsync(CancellationToken cancellationToken)
     {
@@ -1621,6 +1513,8 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         ActiveThreadId = summary.Id;
         effectiveThreadModelId = summary.EffectiveModelId ?? ReadEffectiveModelId(result);
         activeThreadInheritsDefaultModel = false;
+        // 0.164.0 restores the saved thread settings on resume; older servers report defaults.
+        summary.HasAuthoritativeTurnSettings = RequireContext().FeatureTier >= CodexFeatureTier.Tier164;
         return summary;
     }
 
@@ -2463,7 +2357,10 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             return Unsupported<McpServerListResult>("MCP server status is not supported by this app-server.");
         }
 
-        return new McpServerListResult { Servers = ReadMcpServers(call.Result) };
+        return new McpServerListResult
+        {
+            Servers = ReadMcpServers(call.Result, RequireContext().FeatureTier >= CodexFeatureTier.Tier164),
+        };
     }
 
     public async Task<ListSkillsResult> ListSkillsAsync(bool forceReload, CancellationToken cancellationToken)
@@ -4233,7 +4130,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
                 }
 
                 stale = active.LoginIdInvalid
-                    || (active.LoginId is not null && !string.Equals(active.LoginId, loginId, StringComparison.Ordinal));
+                    || !string.Equals(active.LoginId, loginId, StringComparison.Ordinal);
             }
 
             if (stale)
@@ -4241,6 +4138,14 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
                 // A completion for an older or foreign attempt must not finish the current one.
                 return;
             }
+        }
+        else if (context.McpOAuthOperationsByServer.TryGetValue(rawName, out string? pendingOperationId)
+            && context.McpOAuthOperations.TryGetValue(pendingOperationId, out McpOAuthOperation? pending)
+            && !pending.Completed)
+        {
+            // An unidentified completion cannot be proven to belong to the explicit attempt
+            // in progress, so it never completes that attempt by server name.
+            return;
         }
 
         await ApplyMcpOAuthCompletionAsync(context, rawName, succeeded, cancellationToken).ConfigureAwait(false);
@@ -4319,7 +4224,8 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         await EmitInteractionAuthStatusAsync(context, cancellationToken).ConfigureAwait(false);
     }
 
-    // loginId is an opaque attempt identifier added in 0.162.1; older servers omit it.
+    // loginId is an opaque attempt identifier. Absent or null reads as success with a null value;
+    // callers treat that as unmatchable because every supported server returns it.
     private static bool TryReadMcpOAuthLoginId(JsonElement element, out string? loginId)
     {
         loginId = null;
@@ -4662,6 +4568,8 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             skillsCacheGate.Release();
         }
         CodexVersion = null;
+        FeatureTier = CodexFeatureTier.Unsupported;
+        IsNewerThanVerifiedVersion = false;
         InitializationMetadata = null;
         EffectiveApprovalState = null;
         EffectiveReasoningEffort = null;
@@ -4740,6 +4648,8 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         pendingInteractions.RetireGeneration(context.Generation);
         authorizationUrls.RetireGeneration(context.Generation);
         CodexVersion = null;
+        FeatureTier = CodexFeatureTier.Unsupported;
+        IsNewerThanVerifiedVersion = false;
         InitializationMetadata = null;
         await RetireStreamingBufferAsync().ConfigureAwait(false);
     }
@@ -5654,7 +5564,10 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         return value;
     }
 
-    private IReadOnlyList<McpServerStatusInfo> ReadMcpServers(JsonElement result)
+    private const int MaxMcpToolsErrorLength = 512;
+
+    // toolListMeta is opaque server metadata and is deliberately never read.
+    internal IReadOnlyList<McpServerStatusInfo> ReadMcpServers(JsonElement result, bool includeRuntimeDetails)
     {
         if (!result.TryGetProperty("data", out JsonElement data) || data.ValueKind != JsonValueKind.Array)
         {
@@ -5693,10 +5606,42 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
                 ResourceTemplateCount = GetArrayLength(server, "resourceTemplates"),
                 HttpOrigin = ReadHttpOrigin(server),
                 ServerCapabilities = ReadMcpServerCapabilities(server),
+                HasRuntimeDetails = includeRuntimeDetails,
+                RuntimeStatus = includeRuntimeDetails ? ReadMcpRuntimeStatus(server) : McpRuntimeStatus.Unknown,
+                ToolCount = tools.Count,
+                ToolsError = includeRuntimeDetails ? ReadMcpToolsError(server) : null,
             });
         }
 
         return servers;
+    }
+
+    private static McpRuntimeStatus ReadMcpRuntimeStatus(JsonElement server)
+        => GetString(server, "runtimeStatus") switch
+        {
+            "notStarted" => McpRuntimeStatus.NotStarted,
+            "starting" => McpRuntimeStatus.Starting,
+            "connected" => McpRuntimeStatus.Connected,
+            "authenticationRequired" => McpRuntimeStatus.AuthenticationRequired,
+            "failed" => McpRuntimeStatus.Failed,
+            "cancelled" => McpRuntimeStatus.Cancelled,
+            "disabled" => McpRuntimeStatus.Disabled,
+            _ => McpRuntimeStatus.Unknown,
+        };
+
+    private string? ReadMcpToolsError(JsonElement server)
+    {
+        string? error = GetString(server, "toolsError");
+        if (string.IsNullOrWhiteSpace(error))
+        {
+            return null;
+        }
+
+        string singleLine = new(error.Select(character => char.IsControl(character) ? ' ' : character).ToArray());
+        string bounded = singleLine.Length > MaxMcpToolsErrorLength
+            ? singleLine[..MaxMcpToolsErrorLength] + "..."
+            : singleLine;
+        return redactor.Redact(bounded.Trim());
     }
 
     private string? ReadHttpOrigin(JsonElement server)
@@ -6300,6 +6245,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         public IJsonRpcConnection Connection { get; }
         public WindowsSandboxBackendPreference SandboxBackend { get; set; }
         public bool ExperimentalApi { get; set; }
+        public CodexFeatureTier FeatureTier { get; set; }
         public long Generation { get; }
         public string? StatePartitionFingerprint { get; }
         public long OwnerGeneration { get; }
