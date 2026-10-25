@@ -94,6 +94,25 @@ public sealed partial class CodexSessionServiceTests
     }
 
     [TestMethod]
+    [DataRow("Codex Desktop/0.164.0 (Windows 10.0.26200; x86_64) xterm-256color (Codex Desktop; 1.0.0)")]
+    [DataRow("codex_vscode/0.164.0 (Windows 10.0.26200; x86_64) vscode/1.99.0")]
+    public async Task InitializeReadsVersionWhenTheOriginatorContainsSpaces(string userAgent)
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "initialize"
+                ? JsonSerializer.SerializeToElement(new { userAgent })
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        await using var service = CreateService();
+
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        Assert.AreEqual("0.164.0", service.CodexVersion);
+        Assert.AreEqual(CodexFeatureTier.Tier164, service.FeatureTier);
+    }
+
+    [TestMethod]
     public async Task InitializeIgnoresServerInfoVersionWhenUserAgentHasNoVersion()
     {
         var connection = new RecordingConnection

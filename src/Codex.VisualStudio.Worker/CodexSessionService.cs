@@ -1216,8 +1216,10 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         }
     }
 
-    // The only version source is the first product token of the initialize userAgent
-    // (<originator>/<version>), which every supported server returns.
+    // The only version source is the first product of the initialize userAgent,
+    // "<originator>/<version> (<os>; <arch>) ...", which every supported server returns. The
+    // originator may contain spaces (for example "Codex Desktop") but no '/', so the version
+    // runs from the first '/' to the next whitespace.
     internal static CodexCliVersion? ReadCodexVersion(JsonElement initResponse)
     {
         string? userAgent = GetString(initResponse, "userAgent");
@@ -1226,12 +1228,19 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             return null;
         }
 
-        int separator = userAgent.IndexOf(' ');
-        string firstProduct = separator >= 0 ? userAgent[..separator] : userAgent;
-        int slash = firstProduct.IndexOf('/');
-        return slash > 0 && CodexCliVersion.TryParse(firstProduct[(slash + 1)..], out CodexCliVersion? version)
-            ? version
-            : null;
+        int slash = userAgent.IndexOf('/');
+        if (slash <= 0)
+        {
+            return null;
+        }
+
+        int end = slash + 1;
+        while (end < userAgent.Length && !char.IsWhiteSpace(userAgent[end]))
+        {
+            end++;
+        }
+
+        return CodexCliVersion.TryParse(userAgent[(slash + 1)..end], out CodexCliVersion? version) ? version : null;
     }
 
     internal static string DescribeUnsupportedVersion(CodexCliVersion? version, bool isLocal)
