@@ -148,6 +148,15 @@ public sealed partial class CodexSessionService
             return Unsupported<WritePresetResult>("Reading presets is not supported by this app-server.");
         }
 
+        if (layers.IsUserLayerVersionUnknown)
+        {
+            return new WritePresetResult
+            {
+                Outcome = WritePresetOutcome.Failed,
+                Message = "The version of your user configuration could not be read, so the preset was not saved. Reopen the presets and try again.",
+            };
+        }
+
         if (!string.Equals(layers.UserLayerVersion, request.ExpectedVersion, StringComparison.Ordinal))
         {
             return new WritePresetResult
@@ -233,6 +242,12 @@ public sealed partial class CodexSessionService
 
         public string? UserLayerVersion { get; private set; }
 
+        // An enabled user layer whose version is missing cannot be written safely: without
+        // expectedVersion, config/batchWrite would skip the optimistic-concurrency check.
+        public bool HasUserLayer { get; private set; }
+
+        public bool IsUserLayerVersionUnknown => HasUserLayer && UserLayerVersion is null;
+
         public static PresetLayers Read(JsonElement result)
         {
             var presetLayers = new PresetLayers();
@@ -250,9 +265,12 @@ public sealed partial class CodexSessionService
                 }
 
                 PresetLayerKind kind = ReadLayerKind(layer);
-                if (kind == PresetLayerKind.User && presetLayers.UserLayerVersion is null)
+                if (kind == PresetLayerKind.User && !presetLayers.HasUserLayer)
                 {
-                    presetLayers.UserLayerVersion = GetString(layer, "version");
+                    presetLayers.HasUserLayer = true;
+                    presetLayers.UserLayerVersion = GetString(layer, "version") is { } version && !string.IsNullOrWhiteSpace(version)
+                        ? version
+                        : null;
                 }
 
                 var slots = new Dictionary<string, JsonElement>(StringComparer.Ordinal);

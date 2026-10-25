@@ -208,6 +208,34 @@ public sealed partial class CodexSessionServiceTests
     }
 
     [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task WritePresetRefusesAUserLayerWithoutAVersion(bool blankVersion)
+    {
+        int writes = 0;
+        object userLayer = blankVersion
+            ? new { name = new { type = "user" }, version = "  ", config = new { } }
+            : new { name = new { type = "user" }, config = new { } };
+        var connection = Tier164Connection((method, _) =>
+        {
+            writes += method == "config/batchWrite" ? 1 : 0;
+            return method == "config/read"
+                ? JsonSerializer.SerializeToElement(new { config = new { }, origins = new { }, layers = new[] { userLayer } })
+                : null;
+        });
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        WritePresetResult result = await service.WritePresetAsync(
+            new WritePresetRequest { Slot = "2", Input = "hello", ExpectedVersion = null },
+            CancellationToken.None);
+
+        Assert.AreEqual(WritePresetOutcome.Failed, result.Outcome);
+        StringAssert.Contains(result.Message, "version");
+        Assert.AreEqual(0, writes, "A write without an optimistic-concurrency guard must never be sent.");
+    }
+
+    [TestMethod]
     public async Task PresetsAndDiagnosticSaveRequireThe164Tier()
     {
         var connection = new RecordingConnection
