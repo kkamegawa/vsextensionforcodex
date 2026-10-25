@@ -25,6 +25,8 @@ Tracking: [#226](https://github.com/kkamegawa/vsextensionforcodex/issues/226), [
   - The header keeps the status on its own row above a wrapping toolbar (#237).
   - The delete fix was verified against the real CLI. The header fix was verified by a standalone WPF render at four widths.
 
+- [x] Review follow-up for #230: isolate compaction status and transcript updates to the selected operation thread, while retaining background tracking cleanup and usage refresh. Added four regressions; eight compaction-focused tests pass. Debug/Release UI: 569 passed, 1 symbolic-link skip each. Release solution build: 0 warnings/errors; VSIX inspection passed. Standalone WPF transcript renders were inspected; see the implementation record for local evidence and its limits.
+
 ## Not completed
 
 - [ ] Screenshot acceptance for narrow width: the header failed in the run. Recheck it, together with the preset delete, in the Experimental Instance after the fixes.

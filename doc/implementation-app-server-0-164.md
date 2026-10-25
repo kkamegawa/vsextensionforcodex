@@ -87,6 +87,16 @@ The owner ran this acceptance in a separate session, after the implementation se
   - The version is now read from the first `/` to the next whitespace. The design states this rule.
   - The real CLI returned `Codex Desktop/0.164.0 (Windows 10.0.26200; x86_64) ...` under the override.
 
+## Review follow-up: compaction thread isolation (2026-10-26)
+
+Tracking: #230; fixed in #236 and propagated into #237. Compaction start, completion, failure, and delayed RPC results are displayed only in the selected conversation that owns the operation. A background outcome still retires its tracking, and a completed compaction still refreshes usage. An early outcome cannot be overwritten by a later start acknowledgement.
+
+Four regression tests cover background failure/completion, a delayed successful response, and an RPC exception after selecting another conversation. The original failure, completion, and RPC-exception cases failed before the fix. The eight compaction-focused tests now pass, with no skips.
+
+Validation on the combined stack: Debug and Release UI suites each passed 569 tests, with 1 symbolic-link capability skip and no failures. The Release solution build completed with 0 warnings and 0 errors; `Test-VsixContents.ps1 -Configuration Release` passed. Core tests were not rerun for this UI-only fix.
+
+The real view model's `Items` collection was also rendered in a standalone WPF transcript. Both background completion and failure left the selected conversation's text intact, without adding the other conversation's outcome; the PNGs were visually inspected. Local ignored evidence is under `artifacts/compaction-isolation/bin/Debug/net8.0-windows10.0.22621.0/`: `visual-result.json`, `screenshots/completion-thread-B.png`, and `screenshots/failure-thread-B.png`. This standard WPF rendering is not an Experimental Instance or Visual Studio theme check; the remaining acceptance below is unchanged.
+
 ## Remaining acceptance
 
 - **Fixed defects.** The preset delete and the narrow-width header have not been rechecked in the Experimental Instance since the fixes. Until then, the screenshot criterion of phase 5 is not met for narrow width.

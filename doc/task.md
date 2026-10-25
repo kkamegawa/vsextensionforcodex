@@ -922,3 +922,7 @@ Tracking: [Issue #224](https://github.com/kkamegawa/vsextensionforcodex/issues/2
 ### 2026-10-25: Codex App Server 0.164.0 support
 
 Detailed task and verification record: [English](task-app-server-0-164.md) · [日本語](task-app-server-0-164_ja.md). Tracking: [#226](https://github.com/kkamegawa/vsextensionforcodex/issues/226). Automated checks, the four-version contract and real CLI startup, and a real 0.164.0 compaction and resume are complete. Experimental Instance screenshots remain open, because Visual Studio UI automation access was not granted.
+
+### 2026-10-26: Compaction outcome isolation review fix
+
+Tracking: [#230](https://github.com/kkamegawa/vsextensionforcodex/issues/230), within the approved [0.164.0 plan](app-server-0-164-plan.md). Fixed cross-conversation compaction messages in #236 and propagated the fix into #237. Four regression tests were added; Debug and Release UI suites each passed 569 tests with 1 symbolic-link skip. Release solution build and VSIX inspection passed, and standalone WPF transcript renders were inspected. Details and evidence limits: [English](implementation-app-server-0-164.md) · [日本語](implementation-app-server-0-164_ja.md).
