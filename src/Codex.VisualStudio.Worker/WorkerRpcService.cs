@@ -1,4 +1,5 @@
-﻿using Codex.AppServer.Protocol;
+﻿using System.Text.Json;
+using Codex.AppServer.Protocol;
 using Codex.VisualStudio.Contracts;
 using StreamJsonRpc;
 using System.Diagnostics;
@@ -977,12 +978,102 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
 
         return ExecuteOwnerScopedAsync(request, async () =>
         {
-            ThreadSummary thread = await session.ResumeThreadAsync(request.ThreadId, cancellationToken).ConfigureAwait(false);
+            ThreadSummary thread;
+            try
+            {
+                thread = await session.ResumeThreadAsync(request.ThreadId, cancellationToken).ConfigureAwait(false);
+            }
+            catch (JsonRpcRemoteException exception)
+            {
+                throw ProjectResumeFailure(exception);
+            }
+
             ValidateOwnerScope(request);
             UpdateSessionIds();
             return thread;
         }, cancellationToken);
     }
+
+    private LocalRpcException ProjectResumeFailure(JsonRpcRemoteException exception)
+    {
+        string? providerErrorCode = ReadProviderErrorCode(exception.ErrorData);
+        string message = providerErrorCode is null
+            ? redactor.Redact(exception.Message)
+            : "The app-server rejected the conversation resume.";
+        if (message.Length > 512)
+        {
+            message = string.Concat(message.AsSpan(0, 511), "…");
+        }
+
+        return new LocalRpcException(message)
+        {
+            ErrorCode = WorkerErrorCodes.UpstreamOperationFailed,
+            ErrorData = providerErrorCode is null
+                ? null
+                : JsonSerializer.SerializeToElement(new { providerErrorCode }),
+        };
+    }
+
+    private static string? ReadProviderErrorCode(JsonElement? errorData)
+    {
+        if (errorData is not JsonElement element)
+        {
+            return null;
+        }
+
+        int visitedNodes = 0;
+        return FindProviderErrorCode(element, depth: 0, ref visitedNodes);
+    }
+
+    private static string? FindProviderErrorCode(JsonElement element, int depth, ref int visitedNodes)
+    {
+        if (depth > 16 || ++visitedNodes > 256)
+        {
+            return null;
+        }
+
+        if (element.ValueKind == JsonValueKind.Object)
+        {
+            foreach (JsonProperty property in element.EnumerateObject())
+            {
+                if (NormalizeProviderErrorCode(property.Name) is { } propertyCode)
+                {
+                    return propertyCode;
+                }
+
+                string? nested = FindProviderErrorCode(property.Value, depth + 1, ref visitedNodes);
+                if (nested is not null)
+                {
+                    return nested;
+                }
+            }
+        }
+        else if (element.ValueKind == JsonValueKind.Array)
+        {
+            foreach (JsonElement child in element.EnumerateArray())
+            {
+                string? nested = FindProviderErrorCode(child, depth + 1, ref visitedNodes);
+                if (nested is not null)
+                {
+                    return nested;
+                }
+            }
+        }
+        else if (element.ValueKind == JsonValueKind.String)
+        {
+            return NormalizeProviderErrorCode(element.GetString());
+        }
+
+        return null;
+    }
+
+    private static string? NormalizeProviderErrorCode(string? value) => value?.ToLowerInvariant() switch
+    {
+        "modelprovidermismatch" => "modelProviderMismatch",
+        "modelprovidernotconfigured" => "modelProviderNotConfigured",
+        "modelproviderpolicyconflict" => "modelProviderPolicyConflict",
+        _ => null,
+    };
 
     private async Task<T> ExecuteOwnerScopedGenerationAsync<T>(
         OwnerScopedRequest request,
@@ -1680,6 +1771,15 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
         else if (conversationEvent.Kind == ConversationEventKind.TurnCompleted)
         {
             await SetStatusAsync(WorkerConnectionState.Ready, "Turn completed.", cancellationToken).ConfigureAwait(false);
+        }
+        else if (conversationEvent.Kind == ConversationEventKind.ThreadClosed
+            && status.State is WorkerConnectionState.Ready or WorkerConnectionState.Busy or WorkerConnectionState.WaitingForApproval
+            && string.Equals(status.ThreadId, conversationEvent.ThreadId, StringComparison.Ordinal))
+        {
+            // The session has already cleared its active IDs, so the last published status is what
+            // identifies the closed thread as active. Closing another loaded thread leaves a busy
+            // turn's status untouched.
+            await SetStatusAsync(WorkerConnectionState.Ready, "Conversation closed by the app-server.", cancellationToken).ConfigureAwait(false);
         }
         else if (conversationEvent.Kind == ConversationEventKind.Error)
         {

@@ -1791,8 +1791,9 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
                 TurnId = itemTurnId,
                 Type = itemType,
                 Text = ReadHistoryText(item, itemType) is { } historyText ? redactor.Redact(historyText) : null,
-                StartedAtMs = GetInt64(entry, "startedAtMs"),
-                CompletedAtMs = GetInt64(entry, "completedAtMs"),
+                StartedAtMs = GetInt64(item, "startedAtMs") ?? GetInt64(entry, "startedAtMs"),
+                CompletedAtMs = GetInt64(item, "completedAtMs") ?? GetInt64(entry, "completedAtMs"),
+                ErrorReason = ReadTurnErrorReason(item),
             };
             if (itemType == "plan")
             {
@@ -2220,6 +2221,11 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         StartReviewRequest request,
         CancellationToken cancellationToken)
     {
+        if (request.Placement != ReviewPlacement.CurrentThread)
+        {
+            throw new InvalidOperationException("Starting a review in a separate conversation is not supported by this Worker.");
+        }
+
         object target = CreateReviewTarget(request.Target);
         OperationCallResult call = await TrySendOperationAsync(
             "review/start",
@@ -2227,7 +2233,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             {
                 threadId = request.ThreadId,
                 target,
-                delivery = request.Delivery == ReviewDelivery.Detached ? "detached" : "inline",
+                delivery = "inline",
             },
             TimeSpan.FromSeconds(60),
             cancellationToken).ConfigureAwait(false);
@@ -3784,6 +3790,11 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         else if (method == "thread/closed")
         {
             context.ApprovalGrants.EndThread(threadId);
+            if (string.Equals(ActiveThreadId, threadId, StringComparison.Ordinal))
+            {
+                ActiveThreadId = null;
+                ActiveTurnId = null;
+            }
         }
 
         if (method == "serverRequest/resolved")
@@ -3989,13 +4000,18 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         if (method == "error")
         {
             output.ErrorReason = ReadTurnErrorReason(parameters);
-            output.Text = output.ErrorReason switch
-            {
-                "flexUnavailable" => "The selected model's Flex service is currently unavailable. No retry was started.",
-                "tooManyDenials" => "The request was stopped after too many denials. No retry was started.",
-                _ => null,
-            };
+            output.Text = DescribeTurnErrorReason(output.ErrorReason);
             output.PayloadJson = null;
+        }
+        else if (method == "thread/closed")
+        {
+            output.Kind = ConversationEventKind.ThreadClosed;
+            output.Text = "The conversation was closed by the app-server and can be joined again.";
+        }
+        else if (method == "turn/completed" && ReadTurnErrorReason(parameters) is { } turnErrorReason)
+        {
+            output.ErrorReason = turnErrorReason;
+            output.Text = DescribeTurnErrorReason(turnErrorReason);
         }
         string? delta = GetString(parameters, "delta") ?? GetString(parameters, "text");
         if (delta is not null && streamingBuffer is not null)
@@ -4034,6 +4050,17 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         }
 
         await EmitAsync(output, cancellationToken).ConfigureAwait(false);
+        if (method == "turn/completed" && output.ErrorReason is { } completedErrorReason)
+        {
+            await EmitForContextAsync(context, new ConversationEvent
+            {
+                Kind = ConversationEventKind.Error,
+                ThreadId = threadId,
+                TurnId = turnId,
+                ErrorReason = completedErrorReason,
+                Text = DescribeTurnErrorReason(completedErrorReason),
+            }, cancellationToken).ConfigureAwait(false);
+        }
     }
 
     private async Task HandleGatewayOAuthChangedAsync(
@@ -5932,6 +5959,15 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
                 }
             }
         }
+        else if (itemType == "error")
+        {
+            string? reason = ReadTurnErrorReason(item);
+            string? displayText = DescribeTurnErrorReason(reason) ?? GetString(item, "message");
+            if (displayText is not null)
+            {
+                AppendBoundedHistoryText(text, displayText);
+            }
+        }
 
         return text.ToString();
     }
@@ -6178,6 +6214,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         "turn/started" => ConversationEventKind.TurnStarted,
         "turn/completed" => ConversationEventKind.TurnCompleted,
         "error" => ConversationEventKind.Error,
+        "thread/closed" => ConversationEventKind.ThreadClosed,
         _ => ConversationEventKind.Unknown,
     };
 

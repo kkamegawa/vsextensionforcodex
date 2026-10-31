@@ -1,4 +1,5 @@
-﻿using Codex.VisualStudio.Contracts;
+﻿using System.Text.Json;
+using Codex.VisualStudio.Contracts;
 
 namespace Codex.VisualStudio.Extension;
 
@@ -124,6 +125,19 @@ public sealed partial class ChatViewModel
 
     private string DescribeResumeFailure(Exception error)
     {
+        if (GetProviderErrorCode(error) is { } providerErrorCode)
+        {
+            string providerMessage = providerErrorCode switch
+            {
+                "modelProviderMismatch" => "The conversation's saved model uses a provider that does not match the current configuration.",
+                "modelProviderNotConfigured" => "The provider required by this conversation is not configured.",
+                "modelProviderPolicyConflict" => "The conversation's provider conflicts with the current policy.",
+                _ => "The app-server could not resume this conversation with its current provider configuration.",
+            };
+            return markdown.ToSafeText(
+                $"{providerMessage} The transcript is opening read-only. You can still interrupt an active turn and use /goal pause or /goal clear.");
+        }
+
         string message = markdown.ToSafeText(error.Message).Trim();
         if (message.Length > 512)
         {
@@ -133,5 +147,38 @@ public sealed partial class ChatViewModel
         return Status.FeatureTier < CodexFeatureTier.Tier164
             ? $"The conversation could not be resumed: {message} {CompressedHistoryResumeNote}"
             : $"The conversation could not be resumed: {message}";
+    }
+
+    private static string? GetProviderErrorCode(Exception error)
+    {
+        if (error is not StreamJsonRpc.RemoteInvocationException remote
+            || remote.ErrorCode != WorkerErrorCodes.UpstreamOperationFailed
+            || remote.ErrorData is null)
+        {
+            return null;
+        }
+
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(remote.ErrorData.ToString() ?? string.Empty);
+            if (document.RootElement.ValueKind != JsonValueKind.Object
+                || !document.RootElement.TryGetProperty("providerErrorCode", out JsonElement codeElement)
+                || codeElement.ValueKind != JsonValueKind.String)
+            {
+                return null;
+            }
+
+            return codeElement.GetString() switch
+            {
+                "modelProviderMismatch" => "modelProviderMismatch",
+                "modelProviderNotConfigured" => "modelProviderNotConfigured",
+                "modelProviderPolicyConflict" => "modelProviderPolicyConflict",
+                _ => null,
+            };
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
     }
 }

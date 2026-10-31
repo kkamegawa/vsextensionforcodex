@@ -12,12 +12,15 @@ public sealed class SupportedCodexVersionsTests
         using JsonDocument manifest = JsonDocument.Parse(File.ReadAllText(FindManifest()));
         JsonElement root = manifest.RootElement;
 
-        Assert.AreEqual(3, root.GetProperty("schemaVersion").GetInt32());
+        Assert.AreEqual(4, root.GetProperty("schemaVersion").GetInt32());
         Assert.AreEqual(SupportedCodexVersions.Minimum, root.GetProperty("minimumVersion").GetString());
         Assert.AreEqual(SupportedCodexVersions.Target, root.GetProperty("targetVersion").GetString());
         CollectionAssert.Contains(
             root.GetProperty("regressionVersions").EnumerateArray().Select(version => version.GetString()).ToArray(),
             SupportedCodexVersions.Minimum);
+        CollectionAssert.Contains(
+            root.GetProperty("regressionVersions").EnumerateArray().Select(version => version.GetString()).ToArray(),
+            SupportedCodexVersions.Tier165);
     }
 
     private static string FindManifest()

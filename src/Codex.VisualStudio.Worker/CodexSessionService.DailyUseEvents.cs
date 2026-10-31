@@ -1157,10 +1157,37 @@ public sealed partial class CodexSessionService
 
     internal static string? ReadTurnErrorReason(JsonElement parameters)
     {
-        if (parameters.ValueKind != JsonValueKind.Object
-            || !parameters.TryGetProperty("error", out JsonElement error)
-            || error.ValueKind != JsonValueKind.Object
-            || !error.TryGetProperty("codexErrorInfo", out JsonElement info))
+        if (parameters.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+
+        JsonElement error = parameters;
+        if (parameters.TryGetProperty("turn", out JsonElement turn)
+            && turn.ValueKind == JsonValueKind.Object
+            && turn.TryGetProperty("error", out JsonElement turnError)
+            && turnError.ValueKind == JsonValueKind.Object)
+        {
+            error = turnError;
+        }
+        else if (parameters.TryGetProperty("item", out JsonElement item)
+            && item.ValueKind == JsonValueKind.Object)
+        {
+            error = item;
+        }
+        else if (parameters.TryGetProperty("error", out JsonElement nestedError)
+            && nestedError.ValueKind == JsonValueKind.Object)
+        {
+            error = nestedError;
+        }
+
+        if (error.TryGetProperty("error", out JsonElement itemError)
+            && itemError.ValueKind == JsonValueKind.Object)
+        {
+            error = itemError;
+        }
+
+        if (!error.TryGetProperty("codexErrorInfo", out JsonElement info))
         {
             return null;
         }
@@ -1171,8 +1198,22 @@ public sealed partial class CodexSessionService
             JsonValueKind.Object => info.EnumerateObject().Select(static property => property.Name).FirstOrDefault(),
             _ => null,
         };
-        return code is "flexUnavailable" or "tooManyDenials" ? code : null;
+        return code?.ToLowerInvariant() switch
+        {
+            "flexunavailable" => "flexUnavailable",
+            "toomanydenials" => "tooManyDenials",
+            "policycapacityunavailable" => "policyCapacityUnavailable",
+            _ => null,
+        };
     }
+
+    internal static string? DescribeTurnErrorReason(string? reason) => reason switch
+    {
+        "flexUnavailable" => "The selected model's Flex service is currently unavailable. No retry was started.",
+        "tooManyDenials" => "The request was stopped after too many denials. No retry was started.",
+        "policyCapacityUnavailable" => "Policy-restricted model capacity is temporarily unavailable. Try again later.",
+        _ => null,
+    };
 
     private static string PlanDeltaBufferKey(string threadId, string turnId, string itemId)
         => $"plan-delta:{threadId}:{turnId}:{itemId}";

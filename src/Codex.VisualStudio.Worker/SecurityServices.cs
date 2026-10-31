@@ -69,6 +69,7 @@ public sealed partial class SecretRedactor : ISecretRedactor
 
         result = AuthorizationRegex().Replace(result, "$1[REDACTED]");
         result = KeyValueSecretRegex().Replace(result, "$1[REDACTED]");
+        result = TokenValueRegex().Replace(result, "[REDACTED]");
         result = PrivateKeyRegex().Replace(result, "-----BEGIN PRIVATE KEY-----[REDACTED]-----END PRIVATE KEY-----"); // gitleaks:allow
         return result;
     }
@@ -119,6 +120,9 @@ public sealed partial class SecretRedactor : ISecretRedactor
 
     [GeneratedRegex(@"(?i)((?:api[_-]?key|token|password|client[_-]?secret|access[_-]?token)\s*[=:]\s*)[^\s;,""]+")]
     private static partial Regex KeyValueSecretRegex();
+
+    [GeneratedRegex(@"(?i)\b(?:sk-[a-z0-9_-]{16,}|gh[pousr]_[a-z0-9]{20,})\b")]
+    private static partial Regex TokenValueRegex();
 
     [GeneratedRegex(@"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----[\s\S]*?-----END (?:RSA |EC |OPENSSH )?PRIVATE KEY-----")]
     private static partial Regex PrivateKeyRegex();
