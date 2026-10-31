@@ -1247,8 +1247,8 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
     {
         string detected = version is null ? "an unknown version" : $"version {version}";
         string action = isLocal
-            ? "Install Codex CLI 0.164.0 as described in the CLI setup guide, or select a supported executable, then connect again."
-            : "Update the remote app-server to Codex CLI 0.164.0, then connect again. The extension does not update a server.";
+            ? $"Install Codex CLI {SupportedCodexVersions.Target} as described in the CLI setup guide, or select a supported executable, then connect again."
+            : $"Update the remote app-server to Codex CLI {SupportedCodexVersions.Target}, then connect again. The extension does not update a server.";
         return $"This extension requires Codex CLI {SupportedCodexVersions.Minimum} or later (recommended {SupportedCodexVersions.Target}); the app-server reported {detected}. {action}";
     }
 
@@ -1710,12 +1710,15 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
                 continue;
             }
 
+            string? errorReason = ReadTurnErrorReason(turn);
             turns.Add(new ThreadTurnSummary
             {
                 Id = id,
                 Status = status,
                 StartedAt = GetInt64(turn, "startedAt"),
                 CompletedAt = GetInt64(turn, "completedAt"),
+                ErrorReason = errorReason,
+                ErrorText = DescribeTurnErrorReason(errorReason),
             });
             if (turns.Count == boundedLimit)
             {
@@ -1793,7 +1796,6 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
                 Text = ReadHistoryText(item, itemType) is { } historyText ? redactor.Redact(historyText) : null,
                 StartedAtMs = GetInt64(item, "startedAtMs") ?? GetInt64(entry, "startedAtMs"),
                 CompletedAtMs = GetInt64(item, "completedAtMs") ?? GetInt64(entry, "completedAtMs"),
-                ErrorReason = ReadTurnErrorReason(item),
             };
             if (itemType == "plan")
             {
@@ -3996,6 +3998,8 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             TurnId = turnId,
             ItemId = itemId,
             PayloadJson = redactor.Redact(parameters.GetRawText()),
+            StartedAtMs = ReadItemTimestamp(parameters, "startedAtMs"),
+            CompletedAtMs = ReadItemTimestamp(parameters, "completedAtMs"),
         };
         if (method == "error")
         {
@@ -4050,18 +4054,13 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         }
 
         await EmitAsync(output, cancellationToken).ConfigureAwait(false);
-        if (method == "turn/completed" && output.ErrorReason is { } completedErrorReason)
-        {
-            await EmitForContextAsync(context, new ConversationEvent
-            {
-                Kind = ConversationEventKind.Error,
-                ThreadId = threadId,
-                TurnId = turnId,
-                ErrorReason = completedErrorReason,
-                Text = DescribeTurnErrorReason(completedErrorReason),
-            }, cancellationToken).ConfigureAwait(false);
-        }
     }
+
+    private static long? ReadItemTimestamp(JsonElement parameters, string propertyName)
+        => (parameters.TryGetProperty("item", out JsonElement item) && item.ValueKind == JsonValueKind.Object
+                ? GetInt64(item, propertyName)
+                : null)
+            ?? GetInt64(parameters, propertyName);
 
     private async Task HandleGatewayOAuthChangedAsync(
         ConnectionContext context,
@@ -5957,15 +5956,6 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
                         break;
                     }
                 }
-            }
-        }
-        else if (itemType == "error")
-        {
-            string? reason = ReadTurnErrorReason(item);
-            string? displayText = DescribeTurnErrorReason(reason) ?? GetString(item, "message");
-            if (displayText is not null)
-            {
-                AppendBoundedHistoryText(text, displayText);
             }
         }
 

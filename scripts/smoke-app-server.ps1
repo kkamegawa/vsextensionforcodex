@@ -26,6 +26,7 @@ $process = [Diagnostics.Process]::Start($startInfo)
 $stderrRead = $process.StandardError.ReadToEndAsync()
 $pendingMessages = [System.Collections.Generic.List[object]]::new()
 $threadId = $null
+$pendingRead = $null
 
 function Send-Request([int]$Id, [string]$Method, [object]$Params) {
     $request = [ordered]@{ id = $Id; method = $Method; params = $Params } | ConvertTo-Json -Compress -Depth 20
@@ -40,12 +41,17 @@ function Send-Notification([string]$Method, [object]$Params) {
 }
 
 function Read-Message([TimeSpan]$Timeout) {
-    $read = $process.StandardOutput.ReadLineAsync()
-    if (-not $read.Wait($Timeout)) {
+    # A timed-out read stays pending and owns the stream, so the next call continues it.
+    if ($null -eq $script:pendingRead) {
+        $script:pendingRead = $process.StandardOutput.ReadLineAsync()
+    }
+
+    if (-not $script:pendingRead.Wait($Timeout)) {
         throw "codex app-server did not answer within $([int]$Timeout.TotalSeconds) seconds."
     }
 
-    $line = $read.Result
+    $line = $script:pendingRead.Result
+    $script:pendingRead = $null
     if ($null -eq $line) {
         throw "codex app-server exited before answering (exit code $($process.ExitCode))."
     }
@@ -152,14 +158,23 @@ try {
 
         Write-Host "codex app-server unloaded thread after $([Math]::Round($idleSeconds, 1)) seconds and resumed it successfully."
 
-        Send-Request 7 'thread/unsubscribe' ([ordered]@{ threadId = $threadId })
-        [void](Read-Response 7 $TimeoutSeconds)
-        Send-Request 8 'thread/delete' ([ordered]@{ threadId = $threadId })
-        [void](Read-Response 8 $TimeoutSeconds)
-        Write-Host 'Removed the local app-server idle-unload verification thread.'
     }
 }
 finally {
+    # The verification thread is persistent, so remove it on failure as well as on success.
+    if ($null -ne $threadId) {
+        try {
+            Send-Request 7 'thread/unsubscribe' ([ordered]@{ threadId = $threadId })
+            [void](Read-Response 7 $TimeoutSeconds)
+            Send-Request 8 'thread/delete' ([ordered]@{ threadId = $threadId })
+            [void](Read-Response 8 $TimeoutSeconds)
+            Write-Host 'Removed the local app-server idle-unload verification thread.'
+        }
+        catch {
+            Write-Warning "Could not remove verification thread $threadId`: $($_.Exception.Message)"
+        }
+    }
+
     if (-not $process.HasExited) {
         $process.Kill($true)
         $process.WaitForExit()

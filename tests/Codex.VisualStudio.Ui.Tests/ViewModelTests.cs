@@ -6079,7 +6079,7 @@ public sealed partial class ViewModelTests
                 new StreamJsonRpc.RemoteInvocationException(
                     "provider rejected this conversation",
                     WorkerErrorCodes.UpstreamOperationFailed,
-                    "{\"providerErrorCode\":\"modelProviderNotConfigured\"}")),
+                    ProviderErrorCodes.ModelProviderNotConfigured)),
         };
         using var vm = new ChatViewModel(bridge, autoConnect: false)
         {
@@ -6115,13 +6115,46 @@ public sealed partial class ViewModelTests
             Objective = "Recover provider configuration",
             Status = ThreadGoalStatus.Active,
         };
+        vm.ComposerText = "ordinary prompt";
+        Assert.IsFalse(vm.SendCommand.CanExecute, "Model input stays blocked in read-only history.");
+
         vm.ComposerText = "/goal pause";
-        await InvokeComposerSendAsync(vm);
+        Assert.IsTrue(vm.SendCommand.CanExecute, "Goal pause stays reachable from the composer.");
+        await RunCommandAsync(vm.SendCommand);
         Assert.AreEqual(ThreadGoalStatus.Paused, bridge.CurrentThreadGoal?.Status);
 
         vm.ComposerText = "/goal clear";
-        await InvokeComposerSendAsync(vm);
+        Assert.IsTrue(vm.SendCommand.CanExecute, "Goal clear stays reachable from the composer.");
+        await RunCommandAsync(vm.SendCommand);
         Assert.IsNull(bridge.CurrentThreadGoal);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_TurnErrorReasonShowsOneRowForLiveEventsAndReplay()
+    {
+        const string threadId = "thread-capacity";
+        const string errorText = "Policy-restricted model capacity is temporarily unavailable. Try again later.";
+        var bridge = new FakeWorkerBridge();
+        using var vm = new ChatViewModel(bridge, autoConnect: false)
+        {
+            SelectedThread = new ThreadSummary { Id = threadId },
+        };
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready, ThreadId = threadId });
+        await RunCommandAsync(vm.JoinThreadCommand);
+
+        foreach (ConversationEventKind kind in new[] { ConversationEventKind.Error, ConversationEventKind.TurnCompleted })
+        {
+            await bridge.PublishConversationEventAsync(new ConversationEvent
+            {
+                Kind = kind,
+                ThreadId = threadId,
+                TurnId = "turn-capacity",
+                ErrorReason = "policyCapacityUnavailable",
+                Text = errorText,
+            });
+        }
+
+        Assert.AreEqual(1, vm.Items.Count(item => item.Kind == ConversationEventKind.Error && item.Text == errorText));
     }
 
     [TestMethod]

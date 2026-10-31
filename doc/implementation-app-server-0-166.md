@@ -4,7 +4,7 @@ Tracking: [#241](https://github.com/kkamegawa/vsextensionforcodex/issues/241). T
 
 ## Contract and CLI packages
 
-`app-server-contract.json` is schema v4. It targets 0.166.0 and lists 0.165.0, 0.164.0, 0.163.0, 0.162.1, and 0.161.0 as regressions. Each release entry pins the complete Windows package asset and package/executable SHA-256. The installer extracts that package, reads its `codex-package.json` entrypoint, and validates the pinned hashes instead of relying on a fixed helper-file list. The manifest validator passed.
+`app-server-contract.json` is schema v4. It targets 0.166.0 and lists 0.165.0, 0.164.0, 0.163.0, 0.162.1, and 0.161.0 as regressions. Each release entry pins the complete Windows package asset and package/executable SHA-256. The installer extracts that package into a staging directory, rejects unsafe paths and link entries, reads its `codex-package.json` entrypoint, validates the pinned hashes, and only then publishes the files, instead of relying on a fixed helper-file list. The manifest validator passed.
 
 The official complete packages for all six versions were downloaded and validated. The real CLI initialization smoke test passed on all six. Stable and experimental schemas were generated for each version; all ten regression-to-0.166.0 comparisons and all twelve method-surface checks passed. Per-version schema paths not adopted by the host remain recorded under `knownDifferences`.
 

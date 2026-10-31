@@ -1162,32 +1162,14 @@ public sealed partial class CodexSessionService
             return null;
         }
 
-        JsonElement error = parameters;
-        if (parameters.TryGetProperty("turn", out JsonElement turn)
-            && turn.ValueKind == JsonValueKind.Object
-            && turn.TryGetProperty("error", out JsonElement turnError)
-            && turnError.ValueKind == JsonValueKind.Object)
-        {
-            error = turnError;
-        }
-        else if (parameters.TryGetProperty("item", out JsonElement item)
-            && item.ValueKind == JsonValueKind.Object)
-        {
-            error = item;
-        }
-        else if (parameters.TryGetProperty("error", out JsonElement nestedError)
-            && nestedError.ValueKind == JsonValueKind.Object)
-        {
-            error = nestedError;
-        }
-
-        if (error.TryGetProperty("error", out JsonElement itemError)
-            && itemError.ValueKind == JsonValueKind.Object)
-        {
-            error = itemError;
-        }
-
-        if (!error.TryGetProperty("codexErrorInfo", out JsonElement info))
+        // turn/completed nests the error in its turn; the error notification and a history turn
+        // carry it directly.
+        JsonElement container = parameters.TryGetProperty("turn", out JsonElement turn) && turn.ValueKind == JsonValueKind.Object
+            ? turn
+            : parameters;
+        if (!container.TryGetProperty("error", out JsonElement error)
+            || error.ValueKind != JsonValueKind.Object
+            || !error.TryGetProperty("codexErrorInfo", out JsonElement info))
         {
             return null;
         }

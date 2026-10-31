@@ -1008,72 +1008,16 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
         return new LocalRpcException(message)
         {
             ErrorCode = WorkerErrorCodes.UpstreamOperationFailed,
-            ErrorData = providerErrorCode is null
-                ? null
-                : JsonSerializer.SerializeToElement(new { providerErrorCode }),
+            ErrorData = providerErrorCode,
         };
     }
 
     private static string? ReadProviderErrorCode(JsonElement? errorData)
-    {
-        if (errorData is not JsonElement element)
-        {
-            return null;
-        }
-
-        int visitedNodes = 0;
-        return FindProviderErrorCode(element, depth: 0, ref visitedNodes);
-    }
-
-    private static string? FindProviderErrorCode(JsonElement element, int depth, ref int visitedNodes)
-    {
-        if (depth > 16 || ++visitedNodes > 256)
-        {
-            return null;
-        }
-
-        if (element.ValueKind == JsonValueKind.Object)
-        {
-            foreach (JsonProperty property in element.EnumerateObject())
-            {
-                if (NormalizeProviderErrorCode(property.Name) is { } propertyCode)
-                {
-                    return propertyCode;
-                }
-
-                string? nested = FindProviderErrorCode(property.Value, depth + 1, ref visitedNodes);
-                if (nested is not null)
-                {
-                    return nested;
-                }
-            }
-        }
-        else if (element.ValueKind == JsonValueKind.Array)
-        {
-            foreach (JsonElement child in element.EnumerateArray())
-            {
-                string? nested = FindProviderErrorCode(child, depth + 1, ref visitedNodes);
-                if (nested is not null)
-                {
-                    return nested;
-                }
-            }
-        }
-        else if (element.ValueKind == JsonValueKind.String)
-        {
-            return NormalizeProviderErrorCode(element.GetString());
-        }
-
-        return null;
-    }
-
-    private static string? NormalizeProviderErrorCode(string? value) => value?.ToLowerInvariant() switch
-    {
-        "modelprovidermismatch" => "modelProviderMismatch",
-        "modelprovidernotconfigured" => "modelProviderNotConfigured",
-        "modelproviderpolicyconflict" => "modelProviderPolicyConflict",
-        _ => null,
-    };
+        => errorData is { ValueKind: JsonValueKind.Object } element
+            && element.TryGetProperty("type", out JsonElement type)
+            && type.ValueKind == JsonValueKind.String
+            ? ProviderErrorCodes.Normalize(type.GetString())
+            : null;
 
     private async Task<T> ExecuteOwnerScopedGenerationAsync<T>(
         OwnerScopedRequest request,

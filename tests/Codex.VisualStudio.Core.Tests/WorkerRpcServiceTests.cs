@@ -576,7 +576,9 @@ public sealed class WorkerRpcServiceTests
                     "provider rejected the saved model",
                     JsonSerializer.SerializeToElement(new
                     {
-                        codexErrorInfo = new { modelProviderMismatch = new { credential = "must-not-cross-the-worker" } },
+                        type = "modelProviderMismatch",
+                        modelProvider = "must-not-cross-the-worker",
+                        currentModelProvider = "openai",
                     })),
                 _ => JsonSerializer.SerializeToElement(new { }),
             },
@@ -591,10 +593,8 @@ public sealed class WorkerRpcServiceTests
             CancellationToken.None));
 
         Assert.AreEqual(WorkerErrorCodes.UpstreamOperationFailed, failure.ErrorCode);
-        Assert.IsInstanceOfType<JsonElement>(failure.ErrorData);
-        JsonElement data = (JsonElement)failure.ErrorData;
-        Assert.AreEqual("modelProviderMismatch", data.GetProperty("providerErrorCode").GetString());
-        Assert.IsFalse(data.GetRawText().Contains("must-not-cross-the-worker", StringComparison.Ordinal));
+        // A string crosses the Newtonsoft-based JsonRpc formatter intact; a JsonElement does not.
+        Assert.AreEqual(ProviderErrorCodes.ModelProviderMismatch, failure.ErrorData);
     }
 
     [TestMethod]
@@ -609,7 +609,7 @@ public sealed class WorkerRpcServiceTests
                 "thread/resume" => throw new JsonRpcRemoteException(
                     -32000,
                     "Unknown provider failure " + secret + " " + new string('x', 1000),
-                    JsonSerializer.SerializeToElement(new { codexErrorInfo = new { providerSomethingNew = new { token = secret } } })),
+                    JsonSerializer.SerializeToElement(new { type = "providerSomethingNew", modelProvider = ProviderErrorCodes.ModelProviderMismatch, token = secret })),
                 _ => JsonSerializer.SerializeToElement(new { }),
             },
         };
