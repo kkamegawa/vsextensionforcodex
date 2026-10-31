@@ -48,6 +48,23 @@ public enum ThreadItemCursorKind
     ExclusiveItem,
 }
 
+// The app-server's ModelProviderError types. The Worker sends one as the error data of a rejected
+// resume, because a plain string survives the StreamJsonRpc formatter on both ends.
+public static class ProviderErrorCodes
+{
+    public const string ModelProviderMismatch = "modelProviderMismatch";
+
+    public const string ModelProviderNotConfigured = "modelProviderNotConfigured";
+
+    public const string ModelProviderPolicyConflict = "modelProviderPolicyConflict";
+
+    public static string? Normalize(string? value) => value switch
+    {
+        ModelProviderMismatch or ModelProviderNotConfigured or ModelProviderPolicyConflict => value,
+        _ => null,
+    };
+}
+
 // JSON-RPC error codes the Worker uses for failures the Extension presents specifically. They
 // cross the StreamJsonRpc boundary as RemoteInvocationException.ErrorCode.
 public static class WorkerErrorCodes
@@ -555,6 +572,12 @@ public sealed class ThreadTurnSummary
 
     [DataMember]
     public long? CompletedAt { get; set; }
+
+    [DataMember]
+    public string? ErrorReason { get; set; }
+
+    [DataMember]
+    public string? ErrorText { get; set; }
 }
 
 [DataContract]
@@ -1280,6 +1303,10 @@ public sealed class ConversationEvent
     public string? OverflowFile { get; set; }
 
     public string? ErrorReason { get; set; }
+
+    public long? StartedAtMs { get; set; }
+
+    public long? CompletedAtMs { get; set; }
 
     public TurnPlanSnapshot? Plan { get; set; }
 

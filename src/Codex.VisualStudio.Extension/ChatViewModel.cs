@@ -3387,6 +3387,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                         providerRejectedThreadId = thread.Id;
                     }
                     HistoryStatusText = recoveryText;
+                    NotifyInterruptibilityChanged();
                     RaiseCommandStates();
                 }
             }).ConfigureAwait(false);
@@ -3511,7 +3512,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                     MergeHistoryItem(thread.Id, item, owner, prepend: false);
                 }
 
-                MergeThreadTurns(turns.Turns.Reverse(), prepend: false);
+                MergeThreadTurns(thread.Id, turns.Turns.Reverse(), owner, prepend: false);
 
                 foreach (ThreadAttachmentMetadata attachment in attachments)
                 {
@@ -3598,7 +3599,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                     MergeHistoryItem(thread.Id, item, owner, prepend: true);
                 }
 
-                MergeThreadTurns(turns?.Turns ?? Array.Empty<ThreadTurnSummary>(), prepend: true);
+                MergeThreadTurns(thread.Id, turns?.Turns ?? Array.Empty<ThreadTurnSummary>(), owner, prepend: true);
 
                 threadItemsCursor = page?.NextCursor is null ? null : new ThreadItemCursor { Kind = ThreadItemCursorKind.Opaque, Value = page.NextCursor };
                 threadTurnsCursor = turns?.NextCursor;
@@ -4012,7 +4013,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         Items.Clear();
     }
 
-    private void MergeThreadTurns(IEnumerable<ThreadTurnSummary> turns, bool prepend)
+    private void MergeThreadTurns(string threadId, IEnumerable<ThreadTurnSummary> turns, OwnerSnapshot owner, bool prepend)
     {
         var knownIds = ThreadTurns.Select(static turn => turn.Id).ToHashSet(StringComparer.Ordinal);
         foreach (ThreadTurnSummary turn in turns)
@@ -4027,8 +4028,47 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                 {
                     ThreadTurns.Add(turn);
                 }
+
+                // A turn's failure lives on the turn, not on an item, so replay adds its own row.
+                if (turn.ErrorText is not null)
+                {
+                    MergeHistoryItem(
+                        threadId,
+                        new ThreadHistoryItem
+                        {
+                            Id = TurnErrorItemId(turn.Id),
+                            TurnId = turn.Id,
+                            Type = "error",
+                            Text = turn.ErrorText,
+                            ErrorReason = turn.ErrorReason,
+                        },
+                        owner,
+                        prepend);
+                }
             }
         }
+    }
+
+    private static string TurnErrorItemId(string? turnId) => $"turn-error-{turnId}";
+
+    private void ShowTurnError(ConversationEvent value, WorkerNotification<ConversationEvent> notification)
+    {
+        string itemId = TurnErrorItemId(value.TurnId);
+        if (Items.Any(item => string.Equals(item.ItemId, itemId, StringComparison.Ordinal)))
+        {
+            return;
+        }
+
+        Items.Add(new ChatItemViewModel("Error", markdown.ToSafeText(value.Text ?? string.Empty).Trim(), ConversationEventKind.Error)
+        {
+            ItemId = itemId,
+            ThreadId = value.ThreadId,
+            TurnId = value.TurnId,
+            StatePartitionFingerprint = notification.StatePartitionFingerprint,
+            OwnerGeneration = notification.OwnerGeneration,
+            ConnectionGeneration = notification.ConnectionGeneration,
+        });
+        TrimHistoryWindow();
     }
 
     // Attachment refreshes are single-flight. A request that arrives while a scan runs is
@@ -6381,6 +6421,11 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             && SlashCommandArgumentParser.TryParseGoal(invocation.Arguments, out GoalCommandArguments? arguments, out _)
             && arguments?.Operation is GoalCommandOperation.Pause or GoalCommandOperation.Clear;
 
+    private bool IsProviderGoalRecoveryComposerText()
+        => IsProviderRejectedThread(SelectedThread?.Id)
+            && slashCommandParser.Parse(ComposerText) is { Kind: SlashCommandParseKind.Command, Invocation: { } invocation }
+            && IsProviderGoalRecoveryCommand(invocation);
+
     private bool IsProviderRejectedThread(string? threadId)
         => !string.IsNullOrWhiteSpace(threadId)
             && string.Equals(providerRejectedThreadId, threadId, StringComparison.Ordinal);
@@ -8087,6 +8132,8 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                 IsThreadJoined = false;
                 providerRejectedThreadId = null;
                 HistoryStatusText = "The conversation was closed by the app-server and is available to join again.";
+                NotifyInterruptibilityChanged();
+                RaiseCommandStates();
                 return;
             }
 
@@ -8112,6 +8159,14 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                 bufferedEventCount++;
                 bufferedEventBytes += eventBytes;
                 return;
+            }
+
+            // The error notification and turn/completed can report the same failure; one row shows it.
+            if (value.Kind is ConversationEventKind.Error or ConversationEventKind.TurnCompleted
+                && value.ErrorReason is not null
+                && !string.IsNullOrWhiteSpace(value.Text))
+            {
+                ShowTurnError(value, notification);
             }
 
             if (ApplyDailyUseEvent(value, notification))
@@ -9415,7 +9470,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             ? CanStopThreadGoal()
             : (!string.IsNullOrWhiteSpace(ComposerText) || (Status.TurnId is null && (HasPendingAttachments || HasPendingSkill)))
         && !IsRecovering
-        && (SelectedThread is null || IsThreadJoined)
+        && (SelectedThread is null || IsThreadJoined || IsProviderGoalRecoveryComposerText())
         && !HasComposerAdmissionReason
         && !(HasPendingSkill && (Status.State is WorkerConnectionState.Busy or WorkerConnectionState.WaitingForApproval))
         && (Status.State is WorkerConnectionState.Ready or WorkerConnectionState.Busy

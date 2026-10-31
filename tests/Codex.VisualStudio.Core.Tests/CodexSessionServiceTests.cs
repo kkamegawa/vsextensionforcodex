@@ -512,6 +512,54 @@ public sealed partial class CodexSessionServiceTests
     }
 
     [TestMethod]
+    public async Task ItemNotificationsProjectTheirTimestamps()
+    {
+        var connection = new RecordingConnection();
+        await using var service = CreateService();
+        var events = new List<ConversationEvent>();
+        service.ConversationEventReceived += (value, _) =>
+        {
+            events.Add(value);
+            return Task.CompletedTask;
+        };
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        await connection.EmitNotificationAsync("item/started", new
+        {
+            threadId = "thread-1",
+            turnId = "turn-1",
+            startedAtMs = 11L,
+            item = new { id = "item-1", type = "commandExecution" },
+        });
+
+        Assert.IsTrue(events.Any(value => value.ThreadId == "thread-1" && value.StartedAtMs == 11L));
+    }
+
+    [TestMethod]
+    public async Task ListThreadTurnsProjectsTheTurnError()
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "thread/turns/list"
+                ? JsonSerializer.SerializeToElement(new
+                {
+                    data = new[]
+                    {
+                        new { id = "turn-1", status = "failed", error = new { message = "raw", codexErrorInfo = "policyCapacityUnavailable" } },
+                    },
+                })
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        ThreadTurnsPage page = await service.ListThreadTurnsAsync("thread-1", null, 10, CancellationToken.None);
+
+        Assert.AreEqual("policyCapacityUnavailable", page.Turns.Single().ErrorReason);
+        StringAssert.Contains(page.Turns.Single().ErrorText, "capacity");
+    }
+
+    [TestMethod]
     public async Task ThreadClosedClearsTheActiveThreadAndPublishesAResumableEvent()
     {
         var connection = new RecordingConnection

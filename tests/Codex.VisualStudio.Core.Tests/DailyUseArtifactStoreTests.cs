@@ -75,6 +75,10 @@ public sealed class DailyUseArtifactStoreTests
         using var completedTurn = System.Text.Json.JsonDocument.Parse(
             "{\"turn\":{\"error\":{\"codexErrorInfo\":\"policyCapacityUnavailable\"}}}");
         Assert.AreEqual("policyCapacityUnavailable", CodexSessionService.ReadTurnErrorReason(completedTurn.RootElement));
+
+        using var historyTurn = System.Text.Json.JsonDocument.Parse(
+            "{\"id\":\"turn-1\",\"error\":{\"codexErrorInfo\":\"policyCapacityUnavailable\"}}");
+        Assert.AreEqual("policyCapacityUnavailable", CodexSessionService.ReadTurnErrorReason(historyTurn.RootElement));
     }
 
     [TestMethod]

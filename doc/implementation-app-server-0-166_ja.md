@@ -4,7 +4,7 @@
 
 ## Contract と CLI パッケージ
 
-`app-server-contract.json` を schema v4 にし、target を 0.166.0、回帰対象を 0.165.0、0.164.0、0.163.0、0.162.1、0.161.0 としました。各リリースには Windows 完全パッケージの asset 名と package / executable の SHA-256 を固定しています。インストーラーは完全パッケージを展開し、`codex-package.json` の entrypoint を読み取って各ハッシュを検証します。固定された補助ファイル一覧には依存しません。manifest validator は成功しました。
+`app-server-contract.json` を schema v4 にし、target を 0.166.0、回帰対象を 0.165.0、0.164.0、0.163.0、0.162.1、0.161.0 としました。各リリースには Windows 完全パッケージの asset 名と package / executable の SHA-256 を固定しています。インストーラーは完全パッケージをステージングディレクトリへ展開し、危険なパスとリンクを拒否します。`codex-package.json` の entrypoint を読み取って各ハッシュを検証してから、ファイルを配置します。固定された補助ファイル一覧には依存しません。manifest validator は成功しました。
 
 6 バージョンすべての公式完全パッケージを取得・検証し、実 CLI の初期化 smoke test に成功しました。各バージョンの stable / experimental schema を生成し、0.166.0 との回帰比較 10 件、method surface 検証 12 件がすべて成功しました。ホストへ採用していないバージョン固有の schema パスは `knownDifferences` に記録しています。
 
