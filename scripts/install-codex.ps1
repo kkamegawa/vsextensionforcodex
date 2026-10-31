@@ -122,7 +122,7 @@ try {
         throw "The downloaded Codex package hash '$actualPackageHash' does not match the published SHA-256 digest '$expectedPackageHash'."
     }
 
-    $tar = Get-Command tar.exe -CommandType Application -ErrorAction Stop
+    $tar = Get-Command tar.exe -CommandType Application -ErrorAction Stop | Select-Object -First 1
     & $tar.Source -xzf $archivePath -C $downloadDirectory
     if ($LASTEXITCODE -ne 0) {
         throw "Codex package extraction failed with exit code $LASTEXITCODE."
