@@ -926,3 +926,11 @@ Detailed task and verification record: [English](task-app-server-0-164.md) · [�
 ### 2026-10-26: Compaction outcome isolation review fix
 
 Tracking: [#230](https://github.com/kkamegawa/vsextensionforcodex/issues/230), within the approved [0.164.0 plan](app-server-0-164-plan.md). Fixed cross-conversation compaction messages in #236 and propagated the fix into #237. Four regression tests were added; Debug and Release UI suites each passed 569 tests with 1 symbolic-link skip. Release solution build and VSIX inspection passed, and standalone WPF transcript renders were inspected. Details and evidence limits: [English](implementation-app-server-0-164.md) · [日本語](implementation-app-server-0-164_ja.md).
+
+### 2026-10-31: Codex App Server 0.166.0 design and plan
+
+Tracking: [#240](https://github.com/kkamegawa/vsextensionforcodex/issues/240) with sub-issues [#241](https://github.com/kkamegawa/vsextensionforcodex/issues/241), [#242](https://github.com/kkamegawa/vsextensionforcodex/issues/242), [#243](https://github.com/kkamegawa/vsextensionforcodex/issues/243), and [#244](https://github.com/kkamegawa/vsextensionforcodex/issues/244). Documents only; no source code changed.
+
+- [x] Added the approved [design](app-server-0-166-design.md), [plan](app-server-0-166-plan.md), and [ADR-020](adr/ADR-020-app-server-0-166.md) in English and Japanese, and the 2026-10-31 ADR-011 amendment.
+- [x] Created the parent Issue and four native sub-issues with their blocking order, and read back the hierarchy (`subIssuesSummary.total` = 4).
+- [x] Published the plan to the wiki as `codex-cli-0-166-support` in English and Japanese, added both Home rows, and passed the wiki route validation.
