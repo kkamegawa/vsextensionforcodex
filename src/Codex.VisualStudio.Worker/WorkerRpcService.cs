@@ -1772,8 +1772,13 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
         {
             await SetStatusAsync(WorkerConnectionState.Ready, "Turn completed.", cancellationToken).ConfigureAwait(false);
         }
-        else if (conversationEvent.Kind == ConversationEventKind.ThreadClosed)
+        else if (conversationEvent.Kind == ConversationEventKind.ThreadClosed
+            && status.State is WorkerConnectionState.Ready or WorkerConnectionState.Busy or WorkerConnectionState.WaitingForApproval
+            && string.Equals(status.ThreadId, conversationEvent.ThreadId, StringComparison.Ordinal))
         {
+            // The session has already cleared its active IDs, so the last published status is what
+            // identifies the closed thread as active. Closing another loaded thread leaves a busy
+            // turn's status untouched.
             await SetStatusAsync(WorkerConnectionState.Ready, "Conversation closed by the app-server.", cancellationToken).ConfigureAwait(false);
         }
         else if (conversationEvent.Kind == ConversationEventKind.Error)
