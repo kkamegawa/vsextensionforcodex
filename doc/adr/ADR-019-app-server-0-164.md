@@ -46,3 +46,4 @@ Remote servers may still run 0.161.0 to 0.163.0. Those versions return global de
 - Users on 0.161.0 to 0.163.0 can connect, but do not get the 0.164 features. The UI explains which version a hidden feature requires.
 - A preset edited in a running CLI is detected only at the next read, because the CLI writes without a version check.
 - The approved design and plan are in [app-server-0-164-design.md](../app-server-0-164-design.md) and [app-server-0-164-plan.md](../app-server-0-164-plan.md).
+- [ADR-020](ADR-020-app-server-0-166.md) raises the target to 0.166.0 and adds tiers 0.165 and 0.166. Each tier now compares with its own introduction version, so the 0.164 tier stays defined by 0.164.0 and not by the target.
