@@ -10,7 +10,7 @@
        welcome state with suggestion chips, and a rounded composer with mode/model pickers.
        Custom value converters cannot be used here (they would not resolve inside VS's WPF
        process), so the view model exposes pre-computed bool flags for BooleanToVisibility. -->
-  <Grid MinWidth="360"
+  <Grid MinWidth="300"
         MinHeight="360"
         Background="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBackgroundBrushKey}}"
         TextElement.Foreground="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowTextBrushKey}}">

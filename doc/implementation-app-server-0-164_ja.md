@@ -100,10 +100,29 @@
 
 スタックを統合した状態で、Debug と Release の UI テストはそれぞれ569件合格、シンボリックリンクの権限によるスキップ1件、失敗0件でした。Release の全体ビルドは警告0・エラー0で、`Test-VsixContents.ps1 -Configuration Release` も通りました。今回は UI のみの修正のため、Core テストは再実行していません。
 
-実際のビュー モデルの `Items` を WPF 単体の会話欄に描画し、別会話の完了・失敗のどちらでも、選択中の会話の本文が残り、他の会話の結果が追加されないことを画像で確認しました。ローカルの無視対象の証跡は `artifacts/compaction-isolation/bin/Debug/net8.0-windows10.0.22621.0/` の `visual-result.json`、`screenshots/completion-thread-B.png`、`screenshots/failure-thread-B.png` です。これは標準 WPF での表示確認であり、Experimental Instance や Visual Studio のテーマ確認ではありません。次の未完了項目は変更していません。
+実際のビュー モデルの `Items` を WPF 単体の会話欄に描画し、別会話の完了・失敗のどちらでも、選択中の会話の本文が残り、他の会話の結果が追加されないことを画像で確認しました。ローカルの無視対象の証跡は `artifacts/compaction-isolation/bin/Debug/net8.0-windows10.0.22621.0/` の `visual-result.json`、`screenshots/completion-thread-B.png`、`screenshots/failure-thread-B.png` です。これは標準 WPF での表示確認であり、Experimental Instance や Visual Studio のテーマ確認ではありません。2026-10-31 の Experimental Instance での追加確認を次に記録します。
 
-## 未完了の受け入れ確認
+## 2026-10-31 Experimental Instance での追加確認
 
-- **修正した不具合**：プリセットの削除と狭い幅のヘッダーは、修正後に Experimental Instance で再確認していません。再確認するまで、フェーズ5のスクリーンショットによる受け入れ条件は、狭い幅について満たしていません。
-- **ローカルの診断 ZIP**：0.164.0 でのローカルの診断 ZIP の保存は確認していません。最後のローカル接続は 0.161.0 でした。
-- **アカウントの変更**：アカウント変更時の通知の自動テストは、合意のうえで対象外にしました。
+オーナーが Windows 11（`10.0.29695.0`、PowerShell 7.6.5、.NET SDK 10.0.403）で、公式 Codex CLI 0.164.0（`F:/temp/issue226-20261031/cli/codex.exe`、SHA-256 `6f267830b029ee25d9339864aa867cd45de9f8fd4c5ea007d2e63c13a0c66d36`）を使ってローカルの受け入れ確認を再実施しました。Visual Studio Enterprise 18.11.12328.437 の Experimental Instance `18.0_3b4a7eadExp` は、Experimental Instance 内に配置した拡張機能 0.2.1.0 をロードしました。ロード済み DLL の SHA-256 は `DD4BD666EF5C0979E2445591C04AC20AA2CB6AAA9909121BD70098BEEA82C934` です。使い捨ての Windows Forms ソリューション `F:/temp/issue226-20261031/WinFormsAcceptance/Issue226Acceptance.slnx` は Release で警告0・エラー0でビルドしました。
+
+**合格:**
+- ローカルの `/diagnostics`：保存ダイアログと確認にローカルの保存先と内容が表示されました。ログは既定で無効です。保存ダイアログをキャンセルした場合、ファイルは作られませんでした。保存した ZIP（SHA-256 `586d237af6935df4f1c210db6b39295bc5cbc2a602ee7d1badec9a56a323b4da`）には `report.json` と `manifest.json` のみが含まれ、rollout やログはありませんでした。既存の保存先は拒否され、ZIP は変化しませんでした。
+- プリセット：テスト用プリセットを保存し、CLI 設定を読み戻してラベルと入力を確認しました。確認ダイアログを経て削除し、CLI 設定でスロットが存在しないことを確認しました。一時的に使った CLI 設定は元のバックアップと同じ SHA-256 `6ea2e8c2610200d3b3963391c7ef6cf1cf7cab2eeb42ab584eba8fb5f31fd420` に復元しました。
+- Dark テーマ：論理ピクセル幅694と479のヘッダーを撮影し、状態表示が専用の行にあり、折り返したツールバーが重ならず読めることを確認しました。スクリーンショットと UI Automation の出力は `F:/temp/issue226-20261031/screenshots/` にあります。
+
+**メンテナーによる受け入れ（2026-10-31）：**
+- 300論理ピクセル幅でのクリッピングを、外側 Grid の最小幅を360から300に下げて修正しました。既存の狭幅回帰テストも更新しました。修正後の Release 全体ビルドは警告0・エラー0、Core は516件合格・シンボリックリンク権限によるスキップ5件、UI は569件合格・dangling solution symlink によるスキップ1件でした。Release VSIX 検査も合格しました。
+- 修正後の Experimental Instance で、CLI 0.164.0 の Light と CLI 0.161.0 の Dark における約300px幅のヘッダーを撮影しました。メンテナーがキーボード操作を手動確認し、狭幅での確認に基づいて他の幅を受け入れ、High Contrast も受け入れました。これらについて追加の修正後スクリーンショットは求められませんでした。
+- 2026-10-25/26 の Experimental Instance 確認では、Light・Dark・High Contrast、日本語、キーボード、Narrator の画面も撮影済みです。オーナーは2026-10-31に残る視覚的な受け入れ確認を完了としました。
+
+2026-10-31 のスクリーンショットと機械可読な証跡は `F:/temp/issue226-20261031/` にあります。試験用 Windows Forms ソリューションは `F:/temp/issue226-20261031/WinFormsAcceptance/` にあります。
+
+## 受け入れ完了（2026-10-31）
+
+Issue #226 で追跡する受け入れ確認はすべて完了しました。
+
+- オーナーが Experimental Instance でキーボード操作を手動確認しました。
+- 狭い幅での確認をもとに残るペイン幅を受け入れ、High Contrast も受け入れました。これらについて修正後の追加スクリーンショットは求められませんでした。修正後のスクリーンショットは、CLI 0.164.0 の Light と CLI 0.161.0 の Dark で約300論理ピクセル幅を記録しています。以前のスクリーンショットには Light、Dark、High Contrast、日本語、キーボード操作、Narrator の読み上げが含まれます。
+- 修正後の Debug 全体ビルドは警告0・エラー0でした。Debug Core は516件合格・シンボリックリンク権限によるスキップ5件・失敗0件、Debug UI は569件合格・dangling solution symlink によるスキップ1件・失敗0件でした。証跡スクリプトは、権限が必要な6件を実行できなかったため `blocked` と報告しています。Release の結果は上記に記録しています。
+- アカウント変更通知の自動テストは合意により対象外です。所有者変更と古い応答の破棄の検証は #230 に記録しています。

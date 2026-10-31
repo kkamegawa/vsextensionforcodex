@@ -95,10 +95,29 @@ Four regression tests cover background failure/completion, a delayed successful 
 
 Validation on the combined stack: Debug and Release UI suites each passed 569 tests, with 1 symbolic-link capability skip and no failures. The Release solution build completed with 0 warnings and 0 errors; `Test-VsixContents.ps1 -Configuration Release` passed. Core tests were not rerun for this UI-only fix.
 
-The real view model's `Items` collection was also rendered in a standalone WPF transcript. Both background completion and failure left the selected conversation's text intact, without adding the other conversation's outcome; the PNGs were visually inspected. Local ignored evidence is under `artifacts/compaction-isolation/bin/Debug/net8.0-windows10.0.22621.0/`: `visual-result.json`, `screenshots/completion-thread-B.png`, and `screenshots/failure-thread-B.png`. This standard WPF rendering is not an Experimental Instance or Visual Studio theme check; the remaining acceptance below is unchanged.
+The real view model's `Items` collection was also rendered in a standalone WPF transcript. Both background completion and failure left the selected conversation's text intact, without adding the other conversation's outcome; the PNGs were visually inspected. Local ignored evidence is under `artifacts/compaction-isolation/bin/Debug/net8.0-windows10.0.22621.0/`: `visual-result.json`, `screenshots/completion-thread-B.png`, and `screenshots/failure-thread-B.png`. This standard WPF rendering is not an Experimental Instance or Visual Studio theme check. The 2026-10-31 Experimental Instance follow-up is recorded below.
 
-## Remaining acceptance
+## 2026-10-31 Experimental Instance follow-up
 
-- **Fixed defects.** The preset delete and the narrow-width header have not been rechecked in the Experimental Instance since the fixes. Until then, the screenshot criterion of phase 5 is not met for narrow width.
-- **Local diagnostic ZIP.** A local diagnostic ZIP save on 0.164.0 was not exercised. The last local connection used 0.161.0.
-- **Account change.** The account-change notices have no automated test, by agreement.
+The owner reran the local acceptance on Windows 11 (`10.0.29695.0`, PowerShell 7.6.5, .NET SDK 10.0.403) with the official Codex CLI 0.164.0 (`F:/temp/issue226-20261031/cli/codex.exe`, SHA-256 `6f267830b029ee25d9339864aa867cd45de9f8fd4c5ea007d2e63c13a0c66d36`). Visual Studio Enterprise 18.11.12328.437, Experimental Instance `18.0_3b4a7eadExp`, loaded extension 0.2.1.0 from the Experimental Instance deployment; the loaded DLL SHA-256 was `DD4BD666EF5C0979E2445591C04AC20AA2CB6AAA9909121BD70098BEEA82C934`. The disposable WinForms solution at `F:/temp/issue226-20261031/WinFormsAcceptance/Issue226Acceptance.slnx` built in Release with 0 warnings and 0 errors.
+
+**Passed:**
+- Local `/diagnostics`: the save picker and confirmation showed the local path and contents; logs were off by default. Canceling the picker created no file. Saving produced a ZIP with only `report.json` and `manifest.json` (SHA-256 `586d237af6935df4f1c210db6b39295bc5cbc2a602ee7d1badec9a56a323b4da`); no rollout or log files were present. An existing destination was rejected and the ZIP stayed unchanged.
+- Presets: saved a test preset, confirmed its label and input by reading the CLI config, then deleted it with confirmation and confirmed the slot was absent. The temporary CLI configuration was restored to the original backup SHA-256 `6ea2e8c2610200d3b3963391c7ef6cf1cf7cab2eeb42ab584eba8fb5f31fd420`.
+- Dark-theme header screenshots at 694 and 479 logical pixels showed the status on its own row and the wrapping toolbar readable without overlap. Screenshots and UI Automation dumps are under `F:/temp/issue226-20261031/screenshots/`.
+
+**Maintainer acceptance (2026-10-31):**
+- The 300-pixel clipping defect was fixed by reducing the outer grid minimum width from 360 to 300 logical pixels. The existing narrow-width regression assertion was updated. The post-fix Release solution build completed with zero warnings and errors; Core passed 516 tests with 5 symbolic-link capability skips, and UI passed 569 with 1 dangling-solution symbolic-link skip. Release VSIX inspection passed.
+- In the post-fix Experimental Instance, the approximately 300-pixel header was captured in Light with CLI 0.164.0 and Dark with CLI 0.161.0. The maintainer manually checked keyboard operation, accepted the other widths based on the narrow-width check, and accepted High Contrast. No additional post-fix screenshots were requested for those accepted conditions.
+- The 2026-10-25/26 Experimental Instance run had already captured Light, Dark, High Contrast, Japanese, keyboard, and Narrator output. The owner marked the remaining visual acceptance complete on 2026-10-31.
+
+The 2026-10-31 screenshots and machine-readable evidence are under `F:/temp/issue226-20261031/`. The temporary WinForms solution is under `F:/temp/issue226-20261031/WinFormsAcceptance/`.
+
+## Acceptance completion (2026-10-31)
+
+All tracked Issue #226 acceptance checks are complete.
+
+- The owner manually verified keyboard operation in the Experimental Instance.
+- The owner accepted the remaining pane widths based on the narrow-width checks and accepted High Contrast. No additional post-fix screenshots were requested. Post-fix screenshots record Light at approximately 300 logical pixels with CLI 0.164.0 and Dark at approximately 300 logical pixels with CLI 0.161.0; earlier screenshots cover Light, Dark, High Contrast, Japanese text, keyboard navigation, and Narrator output.
+- The post-fix Debug solution build completed with 0 warnings and 0 errors. Debug Core passed 516 tests with 5 symbolic-link capability skips and 0 failures; Debug UI passed 569 tests with 1 dangling-solution symbolic-link skip and 0 failures. The evidence runner reports `blocked` solely because those six capability-dependent checks could not run. Release results are recorded above.
+- The account-change notification automated test remains excluded by agreement; owner-change and stale-result coverage is recorded under #230.
