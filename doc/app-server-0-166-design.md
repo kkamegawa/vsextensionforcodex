@@ -23,7 +23,7 @@ Decisions are recorded in [ADR-020](adr/ADR-020-app-server-0-166.md) and the ADR
 | 0.166 | `detached` review delivery removed (openai/codex#57667) | `Detached` removed, and separate-conversation review added as a new feature | 1, 2 |
 | 0.166 | Item times, structured provider errors, `policyCapacityUnavailable` | Projected, with recovery paths | 1 |
 | 0.166 | Default thread unload delay of 60 seconds (openai/codex#57242) | Regression coverage | 1 |
-| 0.166 | Markdown in questions, conversation selection and search | Implemented | 2 |
+| 0.166 | Markdown in questions, conversation selection and search | Implemented in the extension for every supported version, with no version gate, because neither needs a new server method or wire format | 2 |
 | 0.166 | USD usage, network diagnostics | Implemented | 2 |
 | 0.166 | Linked forks (openai/codex#57256) | Available when experimental is enabled, with 0.166 as the introduction version | 3 |
 | 0.166 | Workspace switching | Available when experimental is enabled | 3 |

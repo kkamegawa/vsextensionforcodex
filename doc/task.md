@@ -934,3 +934,4 @@ Tracking: [#240](https://github.com/kkamegawa/vsextensionforcodex/issues/240) wi
 - [x] Added the approved [design](app-server-0-166-design.md), [plan](app-server-0-166-plan.md), and [ADR-020](adr/ADR-020-app-server-0-166.md) in English and Japanese, and the 2026-10-31 ADR-011 amendment.
 - [x] Created the parent Issue and four native sub-issues with their blocking order, and read back the hierarchy (`subIssuesSummary.total` = 4).
 - [x] Published the plan to the wiki as `codex-cli-0-166-support` in English and Japanese, added both Home rows, and passed the wiki route validation.
+- [x] Addressed the PR review of the feature tier table: question Markdown and conversation text stay in Baseline, and the adopted-changes table in both design documents now states that they apply to every supported version with no version gate. The approved scope is unchanged.
