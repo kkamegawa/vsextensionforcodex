@@ -184,7 +184,7 @@ All of them are recorded in `methodsByVersion`. Linked forks use `thread/fork.at
 
 | Path | Source | Values |
 | --- | --- | --- |
-| Notifications and history | `error`, `turn/completed`, history items | `policyCapacityUnavailable`, distinct from existing safety policy reasons |
+| Notifications and history | `error`, `turn/completed`, and `Turn.error.codexErrorInfo` in `thread/turns/list` | `policyCapacityUnavailable`, distinct from existing safety policy reasons |
 | JSON-RPC error `data` | Rejected requests | `modelProviderMismatch`, `modelProviderNotConfigured`, `modelProviderPolicyConflict`; unknown values display as ordinary errors |
 
 The size limit and secret removal stay in force.

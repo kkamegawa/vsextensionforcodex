@@ -184,7 +184,7 @@ Vertex AI、Bedrock、Terraはサーバーのモデル一覧から取得しま�
 
 | 経路 | 取得元 | 値 |
 | --- | --- | --- |
-| 通知と履歴 | `error`、`turn/completed`、履歴項目 | `policyCapacityUnavailable`。既存の安全ポリシー理由と区別する |
+| 通知と履歴 | `error`、`turn/completed`、`thread/turns/list` の `Turn.error.codexErrorInfo` | `policyCapacityUnavailable`。既存の安全ポリシー理由と区別する |
 | JSON-RPCエラーの `data` | 拒否された要求 | `modelProviderMismatch`、`modelProviderNotConfigured`、`modelProviderPolicyConflict`。未知の値は通常のエラーとして表示する |
 
 サイズ制限と秘密情報の除去は維持します。
