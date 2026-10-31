@@ -529,6 +529,41 @@ public sealed class WorkerRpcServiceTests
     }
 
     [TestMethod]
+    public async Task ThreadClosedChangesStatusOnlyForTheActiveThread()
+    {
+        var connection = new StubConnection
+        {
+            Handler = method => method switch
+            {
+                "thread/start" => JsonSerializer.SerializeToElement(new { thread = new { id = "thread-1" } }),
+                "turn/start" => JsonSerializer.SerializeToElement(new { turn = new { id = "turn-1" } }),
+                _ => JsonSerializer.SerializeToElement(new { }),
+            },
+        };
+        var session = new CodexSessionService(new ApprovalPolicyEngine(new PathAccessPolicy()), new SecretRedactor());
+        await using var worker = new WorkerRpcService(new SecretRedactor(), new FakeProcessHost(connection), session);
+        await worker.ConnectAsync(Options(), CancellationToken.None);
+        await worker.StartThreadAsync(Scoped(worker, new StartThreadRequest()), CancellationToken.None);
+        await connection.EmitNotificationAsync("turn/started", new { threadId = "thread-1", turn = new { id = "turn-1" } });
+        WorkerStatus busy = await worker.GetStatusAsync(CancellationToken.None);
+        Assert.AreEqual(WorkerConnectionState.Busy, busy.State);
+
+        await connection.EmitNotificationAsync("thread/closed", new { threadId = "thread-other" });
+
+        WorkerStatus unrelated = await worker.GetStatusAsync(CancellationToken.None);
+        Assert.AreEqual(WorkerConnectionState.Busy, unrelated.State);
+        Assert.AreEqual("thread-1", unrelated.ThreadId);
+        Assert.AreEqual(busy.TurnId, unrelated.TurnId);
+
+        await connection.EmitNotificationAsync("thread/closed", new { threadId = "thread-1" });
+
+        WorkerStatus closed = await worker.GetStatusAsync(CancellationToken.None);
+        Assert.AreEqual(WorkerConnectionState.Ready, closed.State);
+        Assert.IsNull(closed.ThreadId);
+        Assert.IsNull(closed.TurnId);
+    }
+
+    [TestMethod]
     public async Task ResumeThreadProjectsKnownProviderErrorAsBoundedStructuredData()
     {
         var connection = new StubConnection

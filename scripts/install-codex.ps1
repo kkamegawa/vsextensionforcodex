@@ -94,6 +94,54 @@ function Set-GitHubValue([string]$Name, [string]$Value, [switch]$Environment, [s
     }
 }
 
+# Accepts only directories and regular files that stay under the staging directory, so a malformed
+# archive cannot write outside it or plant a link that later validation or publishing would follow.
+function Expand-CodexPackage([string]$ArchivePath, [string]$StagingDirectory) {
+    Add-Type -AssemblyName System.Formats.Tar
+    $stagingBoundary = [IO.Path]::GetFullPath($StagingDirectory).TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
+    $archiveStream = [IO.File]::OpenRead($ArchivePath)
+    try {
+        $gzipStream = [IO.Compression.GZipStream]::new($archiveStream, [IO.Compression.CompressionMode]::Decompress)
+        $reader = [System.Formats.Tar.TarReader]::new($gzipStream)
+        try {
+            while ($null -ne ($entry = $reader.GetNextEntry())) {
+                $entryName = $entry.Name.Replace('\', '/')
+                if ([IO.Path]::IsPathRooted($entryName) -or
+                    $entryName.Contains(':') -or
+                    ($entryName.Split('/') -contains '..')) {
+                    throw "The Codex package contains an unsafe path: $($entry.Name)"
+                }
+
+                $entryPath = [IO.Path]::GetFullPath((Join-Path $stagingBoundary $entryName.Replace('/', [IO.Path]::DirectorySeparatorChar)))
+                if ($entry.EntryType -eq [System.Formats.Tar.TarEntryType]::Directory) {
+                    if (-not "$entryPath$([IO.Path]::DirectorySeparatorChar)".StartsWith($stagingBoundary, [StringComparison]::OrdinalIgnoreCase)) {
+                        throw "The Codex package contains an unsafe path: $($entry.Name)"
+                    }
+                    [void][IO.Directory]::CreateDirectory($entryPath)
+                    continue
+                }
+
+                if ($entry.EntryType -notin @([System.Formats.Tar.TarEntryType]::RegularFile, [System.Formats.Tar.TarEntryType]::V7RegularFile)) {
+                    throw "The Codex package contains an unsupported '$($entry.EntryType)' entry: $($entry.Name)"
+                }
+                if (-not $entryPath.StartsWith($stagingBoundary, [StringComparison]::OrdinalIgnoreCase)) {
+                    throw "The Codex package contains an unsafe path: $($entry.Name)"
+                }
+
+                [void][IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($entryPath))
+                $entry.ExtractToFile($entryPath, $false)
+            }
+        }
+        finally {
+            $reader.Dispose()
+            $gzipStream.Dispose()
+        }
+    }
+    finally {
+        $archiveStream.Dispose()
+    }
+}
+
 $release = if ($Version -eq 'latest') { Get-LatestRelease } else { Get-PinnedRelease $Version }
 if ($release.ExecutableAsset -ne $executableAssetName -or $release.PackageAsset -ne $packageAssetName) {
     throw "Unexpected Codex release assets. Only the Windows x64 MSVC executable and complete package are supported."
@@ -102,6 +150,7 @@ if ($release.ExecutableAsset -ne $executableAssetName -or $release.PackageAsset 
 $downloadDirectory = [IO.Path]::GetFullPath($OutputDirectory)
 New-Item -ItemType Directory -Force -Path $downloadDirectory | Out-Null
 $archivePath = Join-Path ([IO.Path]::GetTempPath()) ("codex-package-$([guid]::NewGuid().ToString('N')).tar.gz")
+$stagingDirectory = Join-Path ([IO.Path]::GetTempPath()) ("codex-package-$([guid]::NewGuid().ToString('N'))")
 
 $uri = [Uri]$release.PackageUri
 $escapedTag = [regex]::Escape($release.Tag)
@@ -122,17 +171,14 @@ try {
         throw "The downloaded Codex package hash '$actualPackageHash' does not match the published SHA-256 digest '$expectedPackageHash'."
     }
 
-    $tar = Get-Command tar.exe -CommandType Application -ErrorAction Stop | Select-Object -First 1
-    & $tar.Source -xzf $archivePath -C $downloadDirectory
-    if ($LASTEXITCODE -ne 0) {
-        throw "Codex package extraction failed with exit code $LASTEXITCODE."
-    }
+    New-Item -ItemType Directory -Path $stagingDirectory | Out-Null
+    Expand-CodexPackage $archivePath $stagingDirectory
 
-    $metadataPath = Join-Path $downloadDirectory 'codex-package.json'
-    if (-not (Test-Path -LiteralPath $metadataPath -PathType Leaf)) {
+    $stagedMetadataPath = Join-Path $stagingDirectory 'codex-package.json'
+    if (-not (Test-Path -LiteralPath $stagedMetadataPath -PathType Leaf)) {
         throw "The Codex package '$($release.PackageAsset)' does not contain codex-package.json at its root."
     }
-    $packageMetadata = Get-Content -Raw -LiteralPath $metadataPath | ConvertFrom-Json
+    $packageMetadata = Get-Content -Raw -LiteralPath $stagedMetadataPath | ConvertFrom-Json
     if ([string]$packageMetadata.version -ne [string]$release.Version) {
         throw "The Codex package metadata reports version '$($packageMetadata.version)', expected '$($release.Version)'."
     }
@@ -143,26 +189,34 @@ try {
         $entrypoint -match '(^|[\\/])\.\.([\\/]|$)') {
         throw 'The Codex package metadata has an invalid entrypoint path.'
     }
-    $entrypointPath = [IO.Path]::GetFullPath((Join-Path $downloadDirectory $entrypoint.Replace('/', [IO.Path]::DirectorySeparatorChar)))
-    $packageBoundary = $downloadDirectory.TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
-    if (-not $entrypointPath.StartsWith($packageBoundary, [StringComparison]::OrdinalIgnoreCase) -or
-        -not (Test-Path -LiteralPath $entrypointPath -PathType Leaf)) {
+    $entrypointRelativePath = $entrypoint.Replace('/', [IO.Path]::DirectorySeparatorChar)
+    $stagedEntrypointPath = [IO.Path]::GetFullPath((Join-Path $stagingDirectory $entrypointRelativePath))
+    $packageBoundary = $stagingDirectory.TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
+    if (-not $stagedEntrypointPath.StartsWith($packageBoundary, [StringComparison]::OrdinalIgnoreCase) -or
+        -not (Test-Path -LiteralPath $stagedEntrypointPath -PathType Leaf)) {
         throw "The Codex package entrypoint is missing or outside the package directory: $entrypoint"
     }
 
-    $actualExecutableHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $entrypointPath).Hash.ToLowerInvariant()
+    $actualExecutableHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $stagedEntrypointPath).Hash.ToLowerInvariant()
     $expectedExecutableHash = ([regex]::Match([string]$release.ExecutableDigest, '^sha256:(?<hash>[0-9a-fA-F]{64})$')).Groups['hash'].Value.ToLowerInvariant()
     if ([string]::IsNullOrWhiteSpace($expectedExecutableHash) -or $actualExecutableHash -ne $expectedExecutableHash) {
         throw "The packaged Codex executable hash '$actualExecutableHash' does not match its pinned release digest."
     }
 
-    $versionOutput = (& $entrypointPath '--version' 2>&1 | Out-String).Trim()
+    $versionOutput = (& $stagedEntrypointPath '--version' 2>&1 | Out-String).Trim()
     if ($LASTEXITCODE -ne 0) {
         throw "The downloaded Codex CLI failed --version: $versionOutput"
     }
+
+    # Only a fully validated package reaches the output directory.
+    Get-ChildItem -LiteralPath $stagingDirectory -Force |
+        Copy-Item -Destination $downloadDirectory -Recurse -Force
+    $metadataPath = Join-Path $downloadDirectory 'codex-package.json'
+    $entrypointPath = [IO.Path]::GetFullPath((Join-Path $downloadDirectory $entrypointRelativePath))
 }
 finally {
     Remove-Item -LiteralPath $archivePath -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $stagingDirectory -Recurse -Force -ErrorAction SilentlyContinue
 }
 Write-Host "Codex CLI $($release.Version) ($($release.Tag)) downloaded to $entrypointPath"
 Write-Host $versionOutput
