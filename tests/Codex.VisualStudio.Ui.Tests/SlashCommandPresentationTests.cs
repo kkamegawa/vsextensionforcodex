@@ -553,7 +553,7 @@ public sealed class SlashCommandPresentationTests
         XDocument document = LoadXaml();
         XElement rootGrid = document.Root!.Element(Presentation + "Grid")!;
 
-        Assert.AreEqual("360", rootGrid.Attribute("MinWidth")?.Value);
+        Assert.AreEqual("300", rootGrid.Attribute("MinWidth")?.Value);
         XElement actionRow = document
             .Descendants(Presentation + "Grid")
             .Single(element => element.Attribute("Margin")?.Value == "6,0,6,6");
