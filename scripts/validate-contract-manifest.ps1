@@ -19,7 +19,7 @@ function ConvertTo-StableVersion([string]$Value, [string]$Field) {
     return [version]$Value
 }
 
-Assert-Contract ($manifest.schemaVersion -eq 3) "schemaVersion must be 3 (found '$($manifest.schemaVersion)')."
+Assert-Contract ($manifest.schemaVersion -eq 4) "schemaVersion must be 4 (found '$($manifest.schemaVersion)')."
 Assert-Contract (-not [string]::IsNullOrWhiteSpace([string]$manifest.minimumVersion)) 'minimumVersion is required.'
 Assert-Contract (-not [string]::IsNullOrWhiteSpace([string]$manifest.targetVersion)) 'targetVersion is required.'
 
@@ -52,6 +52,8 @@ foreach ($version in $contractVersions) {
     Assert-Contract ([string]$release.tag -eq "rust-v$version") "Release tag for $version must be rust-v$version."
     Assert-Contract (-not [string]::IsNullOrWhiteSpace([string]$release.asset)) "Release asset for $version is missing."
     Assert-Contract ([string]$release.sha256 -match '^[0-9a-f]{64}$') "Release SHA-256 for $version must be 64 lowercase hex characters."
+    Assert-Contract ([string]$release.packageAsset -eq 'codex-package-x86_64-pc-windows-msvc.tar.gz') "Complete package asset for $version is missing or incorrect."
+    Assert-Contract ([string]$release.packageSha256 -match '^[0-9a-f]{64}$') "Complete package SHA-256 for $version must be 64 lowercase hex characters."
     foreach ($surface in @('stable', 'experimental')) {
         Assert-Contract ($null -ne $manifest.methodsByVersion.$version.$surface) "methodsByVersion is missing $version/$surface."
     }

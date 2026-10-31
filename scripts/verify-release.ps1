@@ -31,7 +31,7 @@ $manifest = [ordered]@{
 function Write-Manifest {
     $temporary = "$manifestPath.$([guid]::NewGuid().ToString('N')).tmp"
     [IO.File]::WriteAllText($temporary, (ConvertTo-Json $manifest -Depth 30) + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-    Move-Item -LiteralPath $temporary -Destination $manifestPath -Force
+    [IO.File]::Move($temporary, $manifestPath, $true)
 }
 
 function Add-Scenario([string]$Id, [string]$Command, [scriptblock]$Action, [string]$LogFile) {
@@ -101,20 +101,64 @@ try {
         $versionCopy = $version
         $versionCliRoot = Join-Path $cliRoot $versionCopy
         $versionAsset = $manifestDefinition.releases.$versionCopy
-        $versionCliPath = Join-Path $versionCliRoot $versionAsset.asset
         $installed = Add-Scenario "cli.pinned-download-hash.$version" "pwsh scripts/install-codex.ps1 -Version $version" {
             & pwsh -NoProfile -File (Join-Path $PSScriptRoot 'install-codex.ps1') -Version $versionCopy -OutputDirectory $versionCliRoot
         } "cli-install-$version.log"
         if ($installed) {
+            $packageMetadata = Get-Content -Raw -LiteralPath (Join-Path $versionCliRoot 'codex-package.json') | ConvertFrom-Json
+            $versionCliPath = [IO.Path]::GetFullPath((Join-Path $versionCliRoot ([string]$packageMetadata.entrypoint).Replace('/', [IO.Path]::DirectorySeparatorChar)))
+            if (-not $versionCliPath.StartsWith([IO.Path]::GetFullPath($versionCliRoot).TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase) -or
+                -not (Test-Path -LiteralPath $versionCliPath -PathType Leaf)) {
+                throw "The complete package metadata for $versionCopy has an invalid entrypoint."
+            }
             $cliPaths[$versionCopy] = $versionCliPath
-            $manifest.codex.assets.Add([ordered]@{ version = $versionCopy; sha256 = $versionAsset.sha256; status = 'passed' })
+            $manifest.codex.assets.Add([ordered]@{
+                version = $versionCopy
+                executableSha256 = $versionAsset.sha256
+                packageAsset = $versionAsset.packageAsset
+                packageSha256 = $versionAsset.packageSha256
+                status = 'passed'
+            })
         }
         else {
             $allCliInstalled = $false
-            $manifest.codex.assets.Add([ordered]@{ version = $versionCopy; sha256 = $versionAsset.sha256; status = 'failed' })
+            $manifest.codex.assets.Add([ordered]@{
+                version = $versionCopy
+                executableSha256 = $versionAsset.sha256
+                packageAsset = $versionAsset.packageAsset
+                packageSha256 = $versionAsset.packageSha256
+                status = 'failed'
+            })
         }
     }
     $codexPath = if ($cliPaths.ContainsKey([string]$manifestDefinition.targetVersion)) { $cliPaths[[string]$manifestDefinition.targetVersion] } else { '' }
+
+    if ($allCliInstalled) {
+        foreach ($version in $contractVersions) {
+            $versionCopy = [string]$version
+            $versionCodexPath = $cliPaths[$versionCopy]
+            [void](Add-Scenario "app-server.initialize.$versionCopy" "smoke-app-server.ps1 -CodexPath <pinned $versionCopy package entrypoint>" {
+                if ($versionCopy -eq [string]$manifestDefinition.targetVersion) {
+                    & pwsh -NoProfile -File (Join-Path $PSScriptRoot 'smoke-app-server.ps1') -CodexPath $versionCodexPath -VerifyIdleUnload
+                }
+                else {
+                    & pwsh -NoProfile -File (Join-Path $PSScriptRoot 'smoke-app-server.ps1') -CodexPath $versionCodexPath
+                }
+            } "app-server-initialize-$versionCopy.log")
+        }
+    }
+    else {
+        foreach ($version in $contractVersions) {
+            $manifest.scenarios.Add([ordered]@{
+                id = "app-server.initialize.$version"
+                class = 'Local-required'
+                status = 'not-run'
+                command = 'blocked by pinned complete-package installation failure'
+                exitCode = $null
+                log = $null
+            })
+        }
+    }
 
     $schemaGenerationOk = $allCliInstalled
     if ($allCliInstalled) {

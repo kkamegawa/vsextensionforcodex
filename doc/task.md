@@ -848,6 +848,10 @@ Tracking: [#195](https://github.com/kkamegawa/vsextensionforcodex/issues/195), [
 - [x] Tests that use Plan mode now set Experimental API explicitly instead of depending on the machine's settings file. Release Core 424 passed / 5 skipped; Release UI 436 passed / 1 skipped; Debug and Release builds 0 warnings / 0 errors.
 - [x] Live WPF rendering binds the real view models to the production templates (Dark/Light): question steps 1 and 3, a tall card scrolled to Submit, the implementation offer and the proposed plan from the real probe text; all assertions passed and images were inspected. Evidence: `artifacts/issue192/live-render/output`. VS host templates remain unverified: Visual Studio could only be granted click-level control, so typing a prompt in the Experimental Instance was not possible.
 
+### 2026-10-31: Codex App Server 0.166.0 compatibility
+
+Tracking: [#241](https://github.com/kkamegawa/vsextensionforcodex/issues/241). Task and acceptance evidence: [English](task-app-server-0-166.md) · [日本語](task-app-server-0-166_ja.md). Detailed implementation evidence: [English](implementation-app-server-0-166.md) · [日本語](implementation-app-server-0-166_ja.md). The issue checklist is complete. The separate Visual Studio screenshot acceptance remains pending because the Computer Use app-list request timed out on its permitted retries.
+
 ### 2026-10-14: Preserve ordinary Interrupt after Plan implementation and questions
 
 Tracking: [Issue #210](https://github.com/kkamegawa/vsextensionforcodex/issues/210); related [Issue #22](https://github.com/kkamegawa/vsextensionforcodex/issues/22) and interactive acceptance [Issue #188](https://github.com/kkamegawa/vsextensionforcodex/issues/188). Approved repair plan: [English Wiki](https://github.com/kkamegawa/vsextensionforcodex/wiki/stop-after-plan-questions) and [Japanese Wiki](https://github.com/kkamegawa/vsextensionforcodex/wiki/stop-after-plan-questions_ja); published Wiki commit `0021eb5`.

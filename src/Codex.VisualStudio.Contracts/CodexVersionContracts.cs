@@ -4,8 +4,11 @@
 public static class SupportedCodexVersions
 {
     public const string Minimum = "0.161.0";
-    public const string Target = "0.164.0";
+    public const string Target = "0.166.0";
     public const string Tier163 = "0.163.0";
+    public const string Tier164 = "0.164.0";
+    public const string Tier165 = "0.165.0";
+    public const string Tier166 = "0.166.0";
 }
 
 // The features a connection may use. Computed once per connection from the initialize userAgent.
@@ -15,6 +18,8 @@ public enum CodexFeatureTier
     Baseline,
     Tier163,
     Tier164,
+    Tier165,
+    Tier166,
 }
 
 /// <summary>A Codex CLI version ordered by Semantic Versioning 2.0 precedence.</summary>
@@ -46,6 +51,12 @@ public sealed class CodexCliVersion
     public static CodexCliVersion Target { get; } = Parse(SupportedCodexVersions.Target);
 
     private static CodexCliVersion Tier163Minimum { get; } = Parse(SupportedCodexVersions.Tier163);
+
+    private static CodexCliVersion Tier164Minimum { get; } = Parse(SupportedCodexVersions.Tier164);
+
+    private static CodexCliVersion Tier165Minimum { get; } = Parse(SupportedCodexVersions.Tier165);
+
+    private static CodexCliVersion Tier166Minimum { get; } = Parse(SupportedCodexVersions.Tier166);
 
     public static CodexCliVersion Parse(string value)
         => TryParse(value, out CodexCliVersion? version)
@@ -108,7 +119,17 @@ public sealed class CodexCliVersion
             return CodexFeatureTier.Unsupported;
         }
 
-        if (version.CompareTo(Target) >= 0)
+        if (version.CompareTo(Tier166Minimum) >= 0)
+        {
+            return CodexFeatureTier.Tier166;
+        }
+
+        if (version.CompareTo(Tier165Minimum) >= 0)
+        {
+            return CodexFeatureTier.Tier165;
+        }
+
+        if (version.CompareTo(Tier164Minimum) >= 0)
         {
             return CodexFeatureTier.Tier164;
         }
