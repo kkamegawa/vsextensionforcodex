@@ -6070,6 +6070,87 @@ public sealed partial class ViewModelTests
     }
 
     [TestMethod]
+    public async Task ChatViewModel_ProviderResumeRejectionLoadsHistoryAndKeepsRecoveryControlsAvailable()
+    {
+        const string threadId = "thread-provider";
+        var bridge = new FakeWorkerBridge
+        {
+            ResumeThreadHandler = (_, _) => Task.FromException<ThreadSummary>(
+                new StreamJsonRpc.RemoteInvocationException(
+                    "provider rejected this conversation",
+                    WorkerErrorCodes.UpstreamOperationFailed,
+                    "{\"providerErrorCode\":\"modelProviderNotConfigured\"}")),
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false)
+        {
+            SelectedThread = new ThreadSummary { Id = threadId },
+        };
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready, ThreadId = threadId });
+        int historyReadsBeforeJoin = bridge.ReadThreadCallCount;
+
+        await RunCommandAsync(vm.JoinThreadCommand);
+
+        Assert.IsTrue(vm.IsHistoryOnly);
+        Assert.IsTrue(bridge.ReadThreadCallCount > historyReadsBeforeJoin, "Provider rejection should open the transcript through thread/read.");
+        StringAssert.Contains(vm.HistoryStatusText, "not configured");
+        StringAssert.Contains(vm.HistoryStatusText, "/goal pause");
+
+        await bridge.PublishStateAsync(new WorkerStatus
+        {
+            State = WorkerConnectionState.Busy,
+            ThreadId = threadId,
+            TurnId = "turn-provider",
+        });
+        await bridge.PublishConversationEventAsync(new ConversationEvent
+        {
+            Kind = ConversationEventKind.TurnStarted,
+            ThreadId = threadId,
+            TurnId = "turn-provider",
+        });
+        Assert.IsTrue(vm.InterruptCommand.CanExecute, "An active provider-rejected turn remains interruptible.");
+
+        bridge.CurrentThreadGoal = new ThreadGoalInfo
+        {
+            ThreadId = threadId,
+            Objective = "Recover provider configuration",
+            Status = ThreadGoalStatus.Active,
+        };
+        vm.ComposerText = "/goal pause";
+        await InvokeComposerSendAsync(vm);
+        Assert.AreEqual(ThreadGoalStatus.Paused, bridge.CurrentThreadGoal?.Status);
+
+        vm.ComposerText = "/goal clear";
+        await InvokeComposerSendAsync(vm);
+        Assert.IsNull(bridge.CurrentThreadGoal);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_ThreadClosedMakesJoinedConversationExplicitlyResumable()
+    {
+        const string threadId = "thread-unloaded";
+        var bridge = new FakeWorkerBridge();
+        using var vm = new ChatViewModel(bridge, autoConnect: false)
+        {
+            SelectedThread = new ThreadSummary { Id = threadId },
+        };
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready, ThreadId = threadId });
+        await RunCommandAsync(vm.JoinThreadCommand);
+        Assert.IsFalse(vm.IsHistoryOnly);
+
+        await bridge.PublishConversationEventAsync(new ConversationEvent
+        {
+            Kind = ConversationEventKind.ThreadClosed,
+            ThreadId = threadId,
+        });
+
+        Assert.IsTrue(vm.IsHistoryOnly);
+        StringAssert.Contains(vm.HistoryStatusText, "available to join again");
+        await RunCommandAsync(vm.JoinThreadCommand);
+        Assert.AreEqual(threadId, bridge.LastResumedThreadId);
+        Assert.IsFalse(vm.IsHistoryOnly);
+    }
+
+    [TestMethod]
     public async Task ChatViewModel_ModelCommandMatchesCatalogCaseInsensitively()
     {
         var bridge = new FakeWorkerBridge();

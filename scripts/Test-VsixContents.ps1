@@ -110,7 +110,7 @@ try {
     $contractMatch = [regex]::Match($contractSource, 'public const int Current = (?<version>\d+);')
     if (-not $contractMatch.Success) { throw 'Worker contract version declaration was not found.' }
     $contractVersion = [int]$contractMatch.Groups['version'].Value
-    if ($contractVersion -ne 26) { throw "Expected Worker contract v26, found v$contractVersion." }
+    if ($contractVersion -ne 27) { throw "Expected Worker contract v27, found v$contractVersion." }
     $checks.Add([ordered]@{ source = 'WorkerContracts.cs'; contractVersion = $contractVersion; status = 'passed' })
 }
 finally { $archive.Dispose() }

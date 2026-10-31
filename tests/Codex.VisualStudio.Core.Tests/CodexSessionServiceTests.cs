@@ -180,7 +180,12 @@ public sealed partial class CodexSessionServiceTests
     [DataRow("0.164.0-alpha.1", CodexFeatureTier.Tier163, false)]
     [DataRow("0.164.0+build.7", CodexFeatureTier.Tier164, false)]
     [DataRow("0.164.0", CodexFeatureTier.Tier164, false)]
-    [DataRow("0.165.0", CodexFeatureTier.Tier164, true)]
+    [DataRow("0.165.0-alpha.1", CodexFeatureTier.Tier164, false)]
+    [DataRow("0.165.0", CodexFeatureTier.Tier165, false)]
+    [DataRow("0.166.0-alpha.1", CodexFeatureTier.Tier165, false)]
+    [DataRow("0.166.0+build.7", CodexFeatureTier.Tier166, false)]
+    [DataRow("0.166.0", CodexFeatureTier.Tier166, false)]
+    [DataRow("0.167.0", CodexFeatureTier.Tier166, true)]
     public async Task InitializeAssignsTheFeatureTierOrRejectsTheServer(string version, CodexFeatureTier expected, bool newer)
     {
         var connection = new RecordingConnection
@@ -282,13 +287,21 @@ public sealed partial class CodexSessionServiceTests
                 }),
                 "thread/items/list" => JsonSerializer.SerializeToElement(new
                 {
-                    data = new[]
+                    data = new object[]
                     {
                         new
                         {
                             turnId = "turn-1",
                             startedAtMs = 11L,
-                            item = new { id = "item-1", type = "agentMessage", text = "hello history" },
+                            completedAtMs = 21L,
+                            item = new { id = "item-1", type = "agentMessage", text = "hello history", startedAtMs = 12L, completedAtMs = 13L },
+                        },
+                        new
+                        {
+                            turnId = "turn-1",
+                            startedAtMs = 31L,
+                            completedAtMs = 41L,
+                            item = new { id = "item-2", type = "agentMessage", text = "entry timestamp fallback" },
                         },
                     },
                     nextCursor = "item-cursor",
@@ -316,7 +329,11 @@ public sealed partial class CodexSessionServiceTests
         Assert.AreEqual("thread-1", thread.Id);
         Assert.AreEqual("turn-1", turns.Turns.Single().Id);
         Assert.AreEqual("turn-cursor", turns.NextCursor);
-        Assert.AreEqual("hello history", items.Items.Single().Text);
+        Assert.AreEqual("hello history", items.Items[0].Text);
+        Assert.AreEqual(12L, items.Items[0].StartedAtMs);
+        Assert.AreEqual(13L, items.Items[0].CompletedAtMs);
+        Assert.AreEqual(31L, items.Items[1].StartedAtMs);
+        Assert.AreEqual(41L, items.Items[1].CompletedAtMs);
         Assert.AreEqual("item-cursor", items.NextCursor);
         Assert.AreEqual(2, attachments.Attachments.Count);
         Assert.IsNotNull(attachments.Attachments[0].UnavailableReason);
@@ -492,6 +509,33 @@ public sealed partial class CodexSessionServiceTests
         JsonElement parameters = JsonSerializer.SerializeToElement(
             connection.Requests.Single(item => item.Method == "thread/resume").Parameters);
         Assert.IsTrue(parameters.GetProperty("excludeTurns").GetBoolean());
+    }
+
+    [TestMethod]
+    public async Task ThreadClosedClearsTheActiveThreadAndPublishesAResumableEvent()
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "thread/start"
+                ? JsonSerializer.SerializeToElement(new { thread = new { id = "thread-1" } })
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        await using var service = CreateService();
+        var events = new List<ConversationEvent>();
+        service.ConversationEventReceived += (value, _) =>
+        {
+            events.Add(value);
+            return Task.CompletedTask;
+        };
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+        await service.StartThreadAsync(CancellationToken.None);
+
+        await connection.EmitNotificationAsync("thread/closed", new { threadId = "thread-1" });
+
+        Assert.IsNull(service.ActiveThreadId);
+        Assert.IsNull(service.ActiveTurnId);
+        ConversationEvent closedEvent = events.Single(value => value.Kind == ConversationEventKind.ThreadClosed);
+        Assert.AreEqual("thread-1", closedEvent.ThreadId);
     }
 
     [TestMethod]
@@ -2166,7 +2210,7 @@ public sealed partial class CodexSessionServiceTests
             new StartReviewRequest
             {
                 ThreadId = "thread-1",
-                Delivery = ReviewDelivery.Detached,
+                Placement = ReviewPlacement.CurrentThread,
                 Target = new ReviewTarget { Kind = ReviewTargetKind.BaseBranch, Value = "main" },
             },
             CancellationToken.None);
@@ -2224,7 +2268,7 @@ public sealed partial class CodexSessionServiceTests
             },
             connection.Requests.Select(item => item.Method).ToArray());
         JsonElement reviewParameters = ParametersFor(connection, "review/start");
-        Assert.AreEqual("detached", reviewParameters.GetProperty("delivery").GetString());
+        Assert.AreEqual("inline", reviewParameters.GetProperty("delivery").GetString());
         Assert.AreEqual("baseBranch", reviewParameters.GetProperty("target").GetProperty("type").GetString());
         Assert.AreEqual("main", reviewParameters.GetProperty("target").GetProperty("branch").GetString());
         JsonElement goalParameters = ParametersFor(connection, "thread/goal/set");
@@ -2236,6 +2280,26 @@ public sealed partial class CodexSessionServiceTests
         Assert.AreEqual("toolsAndAuthOnly", mcpParameters.GetProperty("detail").GetString());
         JsonElement feedbackParameters = ParametersFor(connection, "feedback/upload");
         Assert.IsFalse(feedbackParameters.GetProperty("includeLogs").GetBoolean());
+    }
+
+    [TestMethod]
+    public async Task StartReviewRejectsNewThreadPlacementWithoutSendingDetached()
+    {
+        var connection = new RecordingConnection();
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        await Assert.ThrowsExactlyAsync<InvalidOperationException>(
+            () => service.StartReviewAsync(
+                new StartReviewRequest
+                {
+                    ThreadId = "thread-1",
+                    Placement = ReviewPlacement.NewThread,
+                    Target = new ReviewTarget { Kind = ReviewTargetKind.UncommittedChanges },
+                },
+                CancellationToken.None));
+
+        Assert.IsFalse(connection.Requests.Any(item => item.Method == "review/start"));
     }
 
     [TestMethod]

@@ -5,7 +5,7 @@ namespace Codex.VisualStudio.Contracts;
 
 public static class ContractVersions
 {
-    public const int Current = 26;
+    public const int Current = 27;
 }
 
 public enum GoalStopStepOutcome
@@ -104,6 +104,7 @@ public enum ConversationEventKind
     TurnCompleted,
     Error,
     Unknown,
+    ThreadClosed,
 }
 
 public enum ApprovalRiskCategory
@@ -148,10 +149,10 @@ public enum ReviewTargetKind
     Custom,
 }
 
-public enum ReviewDelivery
+public enum ReviewPlacement
 {
-    Inline,
-    Detached,
+    CurrentThread,
+    NewThread,
 }
 
 public enum ThreadGoalStatus
@@ -592,6 +593,9 @@ public sealed class ThreadHistoryItem
 
     [DataMember]
     public long? CompletedAtMs { get; set; }
+
+    [DataMember]
+    public string? ErrorReason { get; set; }
 }
 
 [DataContract]
@@ -906,7 +910,7 @@ public sealed class StartReviewRequest : OwnerScopedRequest
 
     public ReviewTarget Target { get; set; } = new();
 
-    public ReviewDelivery Delivery { get; set; } = ReviewDelivery.Inline;
+    public ReviewPlacement Placement { get; set; } = ReviewPlacement.CurrentThread;
 }
 
 public sealed class StartReviewResult : AppServerOperationResult
