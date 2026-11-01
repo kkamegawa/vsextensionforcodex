@@ -1048,8 +1048,11 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
     public Task<ThreadPage> ListThreadsAsync(ListThreadsRequest request, CancellationToken cancellationToken)
         => ExecuteOwnerScopedGenerationAsync(
             request,
-            () => session.ListThreadsAsync(request.Cursor, cancellationToken),
+            () => session.ListThreadsAsync(request.Cursor, request.WorkingDirectories, cancellationToken),
             cancellationToken);
+
+    public Task<ThreadListScopesResult> GetThreadListScopesAsync(GetThreadListScopesRequest request, CancellationToken cancellationToken)
+        => ExecuteOwnerScopedAsync(request, () => session.GetThreadListScopesAsync(cancellationToken), cancellationToken);
 
     public Task<ThreadReadResult> ReadThreadAsync(ReadThreadRequest request, CancellationToken cancellationToken)
         => ExecuteOwnerScopedGenerationAsync(
@@ -1352,8 +1355,9 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
         {
             StartReviewResult result = await session.StartReviewAsync(request, cancellationToken).ConfigureAwait(false);
             ValidateOwnerScope(request);
-            if (result.IsSupported)
+            if (result.IsSupported && result.Outcome == ReviewStartOutcome.Started)
             {
+                UpdateSessionIds();
                 await SetStatusAsync(WorkerConnectionState.Busy, "Code review in progress.", cancellationToken).ConfigureAwait(false);
             }
 
@@ -1431,6 +1435,12 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
 
     public Task<RateLimitsResult> GetRateLimitsAsync(GetRateLimitsRequest request, CancellationToken cancellationToken)
         => ExecuteOwnerScopedAsync(request, () => session.GetRateLimitsAsync(cancellationToken), cancellationToken);
+
+    public Task<NetworkDiagnosticsResult> RunNetworkDiagnosticsAsync(RunNetworkDiagnosticsRequest request, CancellationToken cancellationToken)
+        => ExecuteOwnerScopedAsync(request, () => session.RunNetworkDiagnosticsAsync(cancellationToken), cancellationToken);
+
+    public Task<ThreadUsageResult> GetThreadUsageAsync(GetThreadUsageRequest request, CancellationToken cancellationToken)
+        => ExecuteOwnerScopedAsync(request, () => session.GetThreadUsageAsync(request.ThreadId, cancellationToken), cancellationToken);
 
     public Task ResolveApprovalAsync(ResolveApprovalRequest request, CancellationToken cancellationToken)
         => ExecuteOwnerScopedAsync(request, () => session.ResolveApprovalAsync(request, cancellationToken), cancellationToken);

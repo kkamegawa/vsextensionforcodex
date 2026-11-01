@@ -44,6 +44,8 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
     private readonly IExternalLinkOpener externalLinkOpener;
     private readonly Func<DateTimeOffset> utcNow;
     private readonly SemaphoreSlim usageRefreshGate = new(1, 1);
+    private int reviewThreadStartInFlight;
+    private string? usageThreadId;
     private readonly ExtensionSettings settings;
     private readonly RemoteProfilesPresentationViewModel remoteProfiles;
     // One gate for every same-instance profile/settings mutation, reconnect snapshot validation,
@@ -212,6 +214,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         this.outputChannel = outputChannel;
         this.extensibility = extensibility;
         artifactFileActions = new ArtifactFileActions(extensibility);
+        ConversationTextDocuments = new ConversationTextDocuments(extensibility);
         workspaceDirectoryResolver = new WorkspaceDirectoryResolver(extensibility);
         projectScaffolder = new ProjectScaffolder(extensibility);
         agentsFileInitializer = new AgentsFileInitializer(extensibility);
@@ -221,6 +224,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         this.settingsStore = settingsStore ?? new FileExtensionSettingsStore();
         this.externalLinkOpener = externalLinkOpener ?? new ExternalLinkOpener();
         this.utcNow = utcNow ?? (() => DateTimeOffset.UtcNow);
+        InitializeConversationText();
         settings = this.settingsStore.Load();
         remoteProfiles = new RemoteProfilesPresentationViewModel(settings, this.settingsStore, profileOperationGate);
         connectionHealth = new ConnectionHealthPresentationViewModel(markdown);
@@ -260,7 +264,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         ToggleHistoryCommand = new AsyncCommand(() =>
         {
             IsHistoryOpen = !IsHistoryOpen;
-            return Task.CompletedTask;
+            return IsHistoryOpen ? RefreshThreadListScopesAsync() : Task.CompletedTask;
         });
         CloseHistoryCommand = new AsyncCommand(() =>
         {
@@ -1154,26 +1158,33 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         {
             await OnUiAsync(RaiseCommandStates).ConfigureAwait(false);
             Dictionary<string, long> readStateWatermark = CaptureThreadReadStateSequences();
+            long scopeGeneration = Interlocked.Read(ref threadListScopeGeneration);
+            IReadOnlyList<string>? workingDirectories = threadListWorkingDirectories;
             ThreadPage page = await bridge.ListThreadsAsync(
-                StampOwner(new ListThreadsRequest(), owner), cancellationToken).ConfigureAwait(false);
+                StampOwner(new ListThreadsRequest { WorkingDirectories = workingDirectories }, owner), cancellationToken).ConfigureAwait(false);
             bool applied = false;
             IReadOnlyList<SlashCommandInvocation> canceled = Array.Empty<SlashCommandInvocation>();
             await OnUiAsync(() =>
             {
                 lock (threadHistoryStateGate)
                 {
-                    if (!IsCurrentOwner(owner) || !MatchesOwner(page, owner))
+                    if (!IsCurrentOwner(owner)
+                        || !MatchesOwner(page, owner)
+                        || scopeGeneration != Interlocked.Read(ref threadListScopeGeneration))
                     {
                         return;
                     }
 
                     Threads.Clear();
                     AddDistinctThreads(page.Threads, skipExisting: false);
+                    KeepSelectedThreadRow();
                     ApplyThreadReadStates(page, readStateWatermark);
                     nextCursor = page.NextCursor;
                     initialized = true;
                     HistoryStatusText = successMessage;
-                    if (page.NextCursor is null)
+
+                    // A filtered list says nothing about conversations outside it.
+                    if (page.NextCursor is null && workingDirectories is null)
                     {
                         canceled = CancelMissingThreads(owner);
                     }
@@ -1207,6 +1218,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         {
             EndThreadListRequest(lease);
             await OnUiAsync(RaiseCommandStates).ConfigureAwait(false);
+            await ReloadPendingThreadListAsync().ConfigureAwait(false);
         }
     }
 
@@ -1763,6 +1775,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         planModeTurnIds.Clear();
         initialized = false;
         nextCursor = null;
+        ResetThreadListScope();
 
         lock (threadHistoryStateGate)
         {
@@ -2591,6 +2604,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         CancelFileSuggestionRefresh();
         slashCommandCoordinator.CancelAll();
         DisposeDailyUse();
+        (ConversationTextDocuments as IDisposable)?.Dispose();
         lifetime.Dispose();
         ValueTask bridgeDisposal = bridge.DisposeAsync();
         if (!bridgeDisposal.IsCompletedSuccessfully)
@@ -3687,13 +3701,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             return;
         }
 
-        string type = historyItem.Type.ToLowerInvariant();
-        string role = historyItem.ErrorReason is not null ? "Error"
-            : type.Contains("user", StringComparison.Ordinal) ? "You"
-            : type.Contains("command", StringComparison.Ordinal) ? "Command"
-            : type.Contains("reason", StringComparison.Ordinal) ? "Reasoning"
-            : type.Contains("agent", StringComparison.Ordinal) || type.Contains("assistant", StringComparison.Ordinal) ? "Codex"
-            : "History";
+        string role = GetHistoryRole(historyItem);
         ConversationEventKind kind = historyItem.ErrorReason is not null ? ConversationEventKind.Error : role switch
         {
             "You" => ConversationEventKind.ItemCompleted,
@@ -4609,13 +4617,16 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             await OnUiAsync(RaiseCommandStates).ConfigureAwait(false);
             string? cursor = nextCursor;
             Dictionary<string, long> readStateWatermark = CaptureThreadReadStateSequences();
+            long scopeGeneration = Interlocked.Read(ref threadListScopeGeneration);
             ThreadPage page = await bridge.ListThreadsAsync(
-                StampOwner(new ListThreadsRequest { Cursor = cursor }, owner), lifetime.Token).ConfigureAwait(false);
+                StampOwner(new ListThreadsRequest { Cursor = cursor, WorkingDirectories = threadListWorkingDirectories }, owner), lifetime.Token).ConfigureAwait(false);
             await OnUiAsync(() =>
             {
                 lock (threadHistoryStateGate)
                 {
-                    if (!IsCurrentOwner(owner) || !MatchesOwner(page, owner))
+                    if (!IsCurrentOwner(owner)
+                        || !MatchesOwner(page, owner)
+                        || scopeGeneration != Interlocked.Read(ref threadListScopeGeneration))
                     {
                         return;
                     }
@@ -4644,6 +4655,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         {
             EndThreadListRequest(lease);
             await OnUiAsync(RaiseCommandStates).ConfigureAwait(false);
+            await ReloadPendingThreadListAsync().ConfigureAwait(false);
         }
     }
 
@@ -6027,6 +6039,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                 new("base", "Base branch", "Review changes against a base branch."),
                 new("commit", "Commit", "Review a specific commit."),
                 new("custom", "Custom", "Review using custom instructions."),
+                new(SlashCommandArgumentParser.NewThreadOption, "New conversation", "Review in a new conversation. Add a target, or leave it empty for uncommitted changes."),
             ],
             SlashCommandId.Model => Models
                 .Select(model => new SlashCommandOptionDescriptor(model, model))
@@ -6075,12 +6088,17 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             isAvailable = false;
             unavailableReason = DiagnosticsTierRequiredText;
         }
+        else if (definition.Id == SlashCommandId.Doctor && IsPresetsConnectionReady && Status.FeatureTier < CodexFeatureTier.Tier166)
+        {
+            isAvailable = false;
+            unavailableReason = DoctorTierRequiredText;
+        }
 
         string argumentHint = definition.Id switch
         {
             SlashCommandId.Feedback => "Feedback reason",
             SlashCommandId.Goal => "Goal objective for Set or Edit",
-            SlashCommandId.Review => "Branch, commit, or custom instructions",
+            SlashCommandId.Review => "[--new-thread] Branch, commit, or custom instructions",
             SlashCommandId.Plan => "Optional prompt to start in Plan mode",
             SlashCommandId.Shell => "[--timeout-ms N] -- <command>. The command stays inert until you confirm it.",
             SlashCommandId.Model => "[model] [--reasoning <level>] [--speed <tier>]",
@@ -6480,6 +6498,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                 SlashCommandId.Shell => await PrepareShellCommandAsync(invocation.Arguments, targetThreadId!, dispatchFence).ConfigureAwait(false),
                 SlashCommandId.Presets => await ExecutePresetsAsync().ConfigureAwait(false),
                 SlashCommandId.Diagnostics => await ExecuteDiagnosticsAsync(invocation.Arguments, targetThreadId).ConfigureAwait(false),
+                SlashCommandId.Doctor => await ExecuteDoctorAsync().ConfigureAwait(false),
                 _ => false,
             };
         }
@@ -6822,29 +6841,144 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             return false;
         }
 
-        StartReviewResult result = await bridge.StartReviewAsync(
-            StampOwner(new StartReviewRequest
+        var target = new ReviewTarget
+        {
+            Kind = reviewArguments.Target switch
             {
-                ThreadId = threadId,
-                Target = new ReviewTarget
-                {
-                    Kind = reviewArguments.Target switch
-                    {
-                        ReviewCommandTargetKind.UncommittedChanges => ReviewTargetKind.UncommittedChanges,
-                        ReviewCommandTargetKind.BaseBranch => ReviewTargetKind.BaseBranch,
-                        ReviewCommandTargetKind.Commit => ReviewTargetKind.Commit,
-                        ReviewCommandTargetKind.Custom => ReviewTargetKind.Custom,
-                        _ => ReviewTargetKind.UncommittedChanges,
-                    },
-                    Value = reviewArguments.Value,
-                },
-            }, owner),
+                ReviewCommandTargetKind.UncommittedChanges => ReviewTargetKind.UncommittedChanges,
+                ReviewCommandTargetKind.BaseBranch => ReviewTargetKind.BaseBranch,
+                ReviewCommandTargetKind.Commit => ReviewTargetKind.Commit,
+                ReviewCommandTargetKind.Custom => ReviewTargetKind.Custom,
+                _ => ReviewTargetKind.UncommittedChanges,
+            },
+            Value = reviewArguments.Value,
+        };
+        if (reviewArguments.NewThread)
+        {
+            return await ExecuteReviewInNewThreadAsync(threadId, target, owner).ConfigureAwait(false);
+        }
+
+        StartReviewResult result = await bridge.StartReviewAsync(
+            StampOwner(new StartReviewRequest { ThreadId = threadId, Target = target }, owner),
             lifetime.Token).ConfigureAwait(false);
         if (!IsCurrentOwner(owner))
         {
             return false;
         }
         return await HandleOperationResultAsync(SlashCommandId.Review, result, "Code review started.").ConfigureAwait(false);
+    }
+
+    private async Task<bool> ExecuteReviewInNewThreadAsync(string threadId, ReviewTarget target, OwnerSnapshot owner)
+    {
+        if (Interlocked.CompareExchange(ref reviewThreadStartInFlight, 1, 0) != 0)
+        {
+            await ShowSlashFailureAsync("A review is already starting in a separate conversation.").ConfigureAwait(false);
+            return false;
+        }
+
+        try
+        {
+            StartReviewResult result;
+            try
+            {
+                result = await bridge.StartReviewAsync(
+                    StampOwner(new StartReviewRequest { ThreadId = threadId, Target = target, Placement = ReviewPlacement.NewThread }, owner),
+                    lifetime.Token).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (!lifetime.IsCancellationRequested)
+            {
+                // A lost response proves nothing about the server, so the start is never assumed or resent.
+                ExtensionDiagnostics.Write("Separate-conversation review outcome is unknown", ex);
+                result = new StartReviewResult { Outcome = ReviewStartOutcome.Unknown };
+            }
+
+            if (!IsCurrentOwner(owner))
+            {
+                return false;
+            }
+
+            if (!result.IsSupported)
+            {
+                await ShowSlashFailureAsync(result.UnavailableReason ?? "The app-server does not support this command.").ConfigureAwait(false);
+                return false;
+            }
+
+            switch (result.Outcome)
+            {
+                case ReviewStartOutcome.Started when result.CreatedThread is not null:
+                    return await AdoptReviewThreadAsync(result.CreatedThread, threadId, owner).ConfigureAwait(false);
+                case ReviewStartOutcome.CreatedNotStarted:
+                    await AddThreadRowAsync(result.CreatedThread, owner).ConfigureAwait(false);
+                    await ShowSlashFailureAsync(
+                        $"{result.FailureReason ?? "The review did not start."} The new conversation was kept in the history, and nothing was resent.").ConfigureAwait(false);
+                    return false;
+                case ReviewStartOutcome.NotCreated:
+                    await ShowSlashFailureAsync(result.FailureReason ?? "The review did not start, and no conversation was created.").ConfigureAwait(false);
+                    return false;
+                default:
+                    await AddThreadRowAsync(result.CreatedThread, owner).ConfigureAwait(false);
+                    await ShowSlashFailureAsync(
+                        "The review outcome is unknown, and it was not resent. Check the history before starting it again.").ConfigureAwait(false);
+                    return false;
+            }
+        }
+        finally
+        {
+            Volatile.Write(ref reviewThreadStartInFlight, 0);
+        }
+    }
+
+    private Task AddThreadRowAsync(ThreadSummary? thread, OwnerSnapshot owner)
+        => thread is null
+            ? Task.CompletedTask
+            : OnUiAsync(() =>
+            {
+                if (IsCurrentOwner(owner) && !Threads.Any(existing => string.Equals(existing.Id, thread.Id, StringComparison.Ordinal)))
+                {
+                    Threads.Insert(0, thread);
+                }
+            });
+
+    private async Task<bool> AdoptReviewThreadAsync(ThreadSummary thread, string sourceThreadId, OwnerSnapshot owner)
+    {
+        await AddThreadRowAsync(thread, owner).ConfigureAwait(false);
+        bool adopted = false;
+        await OnUiAsync(() =>
+        {
+            // A user who moved away during the start keeps their selection.
+            if (!IsCurrentOwner(owner) || !string.Equals(SelectedThread?.Id, sourceThreadId, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            lock (threadHistoryStateGate)
+            {
+                selectedThread = thread;
+                selectedThreadGeneration++;
+            }
+
+            OnPropertyChanged(nameof(PlanModeEnabled));
+            OnGoalThreadChanged(thread.Id);
+            IsThreadJoined = true;
+            OnPropertyChanged(nameof(SelectedThread));
+            ThreadReadStateStatusText = string.Empty;
+            NotifySelectedThreadReadStateChanged();
+            OnPropertyChanged(nameof(IsHistoryOnly));
+            OnPropertyChanged(nameof(EffectiveApprovalModeText));
+            ResetSelectedHistoryState(thread);
+            adopted = true;
+        }).ConfigureAwait(false);
+        if (!adopted)
+        {
+            await ShowSlashStatusAsync("Code review started in a new conversation. Select it in the history to follow it.").ConfigureAwait(false);
+            return true;
+        }
+
+        // Events raised before the switch were not shown, so the history read restores them.
+        await ReadSelectedThreadHistoryAsync(thread, "Code review started in a new conversation.").ConfigureAwait(false);
+        await RefreshThreadReadStateAfterLifecycleAsync(thread.Id, owner).ConfigureAwait(false);
+        await ShowSlashStatusAsync("Code review started in a new conversation.").ConfigureAwait(false);
+        return true;
     }
 
     private async Task<bool> ExecuteFastAsync(string threadId)
@@ -8142,6 +8276,8 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                 OnGoalConversationCompleted(value);
             }
 
+            ApplyItemTiming(value);
+
             if (isHistoryLoading && !string.IsNullOrWhiteSpace(value.ThreadId))
             {
                 long eventBytes = GetConversationEventBytes(value);
@@ -8284,6 +8420,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                     IsTruncated = value.Truncated,
                     OverflowFile = value.OverflowFile,
                 };
+                item.ApplyTiming(value.StartedAtMs, value.CompletedAtMs);
                 if (renderFromAccumulatedText)
                 {
                     item.UpdateBlocks(renderedBlocks);
@@ -8337,6 +8474,19 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
 
     private static bool ShouldRenderFromAccumulatedText(ConversationEventKind kind)
         => kind is ConversationEventKind.AgentMessageDelta or ConversationEventKind.ReasoningSummaryDelta;
+
+    private void ApplyItemTiming(ConversationEvent value)
+    {
+        if (string.IsNullOrWhiteSpace(value.ItemId) || (value.StartedAtMs is null && value.CompletedAtMs is null))
+        {
+            return;
+        }
+
+        // The lifecycle events and the delta rows have different kinds, so only the item identity matches.
+        Items.LastOrDefault(item =>
+            string.Equals(item.ItemId, value.ItemId, StringComparison.Ordinal)
+            && string.Equals(item.ThreadId, value.ThreadId, StringComparison.Ordinal))?.ApplyTiming(value.StartedAtMs, value.CompletedAtMs);
+    }
 
     private ChatItemViewModel? FindCurrentTranscriptItem(ConversationEvent value, WorkerNotification<ConversationEvent> notification)
     {
@@ -9324,6 +9474,41 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         }
     }
 
+    // A failed read only clears the amounts, so stale values never stay beside a new conversation.
+    private async Task RefreshThreadUsageAsync(long generation, OwnerSnapshot owner)
+    {
+        string? threadId = SelectedThread?.Id;
+        ThreadUsageResult? result = null;
+        if (threadId is not null && Status.FeatureTier >= CodexFeatureTier.Tier166)
+        {
+            try
+            {
+                result = await bridge.GetThreadUsageAsync(
+                    StampOwner(new GetThreadUsageRequest { ThreadId = threadId }, owner),
+                    lifetime.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+            {
+                return;
+            }
+            catch (Exception ex)
+            {
+                ExtensionDiagnostics.Write($"Conversation usage lookup failed ({ex.GetType().Name}).");
+            }
+        }
+
+        await OnUiAsync(() =>
+        {
+            if (generation == Volatile.Read(ref usageConnectionGeneration)
+                && IsCurrentOwner(owner)
+                && string.Equals(SelectedThread?.Id, threadId, StringComparison.Ordinal))
+            {
+                usageThreadId = threadId;
+                Usage.UpdateThreadUsage(result);
+            }
+        }).ConfigureAwait(false);
+    }
+
     internal async Task RefreshUsageAsync(bool force)
     {
         try
@@ -9345,16 +9530,22 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
 
             generation = Volatile.Read(ref usageConnectionGeneration);
             DateTimeOffset requestedAt = utcNow();
+            OwnerSnapshot usageOwner = CaptureOwnerSnapshot();
             if (!force
                 && usageFetchedGeneration == generation
                 && latestRateLimitsAt.HasValue
                 && requestedAt - latestRateLimitsAt.Value < TimeSpan.FromSeconds(60))
             {
+                // Account limits may be cached, but amounts belong to one conversation.
+                if (!string.Equals(usageThreadId, SelectedThread?.Id, StringComparison.Ordinal))
+                {
+                    await RefreshThreadUsageAsync(generation, usageOwner).ConfigureAwait(false);
+                }
+
                 return;
             }
 
             long pushVersion = Volatile.Read(ref rateLimitPushVersion);
-            OwnerSnapshot usageOwner = CaptureOwnerSnapshot();
             await OnUiAsync(() =>
             {
                 if (generation == Volatile.Read(ref usageConnectionGeneration) && IsUsageAvailable)
@@ -9392,6 +9583,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                 usageFetchedGeneration = generation;
                 Usage.Update(result, refreshedAt, markdown);
             }).ConfigureAwait(false);
+            await RefreshThreadUsageAsync(generation, usageOwner).ConfigureAwait(false);
         }
         finally
         {
@@ -9514,6 +9706,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         // A connection generation change can clear an in-flight health check.
         CheckProfileHealthCommand?.RaiseCanExecuteChanged();
         JoinThreadCommand?.RaiseCanExecuteChanged();
+        OpenConversationTextCommand?.RaiseCanExecuteChanged();
         LoadOlderHistoryCommand?.RaiseCanExecuteChanged();
         RefreshHistoryCommand?.RaiseCanExecuteChanged();
         RefreshAttachmentsCommand?.RaiseCanExecuteChanged();
@@ -9618,6 +9811,9 @@ public sealed class ChatItemViewModel : ObservableObject
 
     private readonly StringBuilder? commandOutputBuffer;
     private string text = string.Empty;
+    private string timingText = string.Empty;
+    private long? startedAtMs;
+    private long? completedAtMs;
     private bool isDeliveryUnknown;
     private bool isHistoryCompleted;
     private bool isTruncated;
@@ -9678,6 +9874,68 @@ public sealed class ChatItemViewModel : ObservableObject
 
     [DataMember]
     public long ConnectionGeneration { get; set; }
+
+    [DataMember]
+    public string TimingText
+    {
+        get => timingText;
+        private set
+        {
+            if (SetProperty(ref timingText, value))
+            {
+                OnPropertyChanged(nameof(HasTiming));
+            }
+        }
+    }
+
+    [DataMember]
+    public bool HasTiming => TimingText.Length > 0;
+
+    // Either time may be missing, and a later event never erases one already known.
+    internal void ApplyTiming(long? started, long? completed)
+    {
+        startedAtMs = started ?? startedAtMs;
+        completedAtMs = completed ?? completedAtMs;
+        TimingText = FormatTiming(startedAtMs, completedAtMs);
+    }
+
+    internal static string FormatTiming(long? started, long? completed)
+    {
+        var parts = new List<string>();
+        if (FormatTime(started) is { } startedText)
+        {
+            parts.Add($"Started {startedText}");
+        }
+
+        if (FormatTime(completed) is { } completedText)
+        {
+            parts.Add($"Completed {completedText}");
+        }
+
+        if (started is long from && completed is long to && parts.Count == 2 && to >= from)
+        {
+            parts.Add(string.Create(CultureInfo.InvariantCulture, $"{(to - from) / 1000d:0.#}s"));
+        }
+
+        return string.Join(" · ", parts);
+    }
+
+    private static string? FormatTime(long? unixMilliseconds)
+    {
+        if (unixMilliseconds is not long value)
+        {
+            return null;
+        }
+
+        try
+        {
+            return DateTimeOffset.FromUnixTimeMilliseconds(value).ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture);
+        }
+        catch (ArgumentOutOfRangeException)
+        {
+            return null;
+        }
+    }
 
     internal string? HistoryKey { get; set; }
 
@@ -10682,7 +10940,9 @@ public sealed class UserInputQuestionViewModel : ObservableObject
     {
         Id = question.Id;
         Header = markdown.ToSafeText(question.Header).Trim();
-        Question = markdown.ToSafeText(question.Question).Trim();
+        SafeMarkdownRenderResult rendered = markdown.ToSafeTextAndBlocks(question.Question);
+        Question = rendered.Text.Trim();
+        QuestionBlocks = rendered.Blocks;
         IsOther = question.IsOther;
         Options = new ObservableCollection<UserInputOptionViewModel>(
             question.Options.Select(option => new UserInputOptionViewModel(option, markdown, OnOptionSelected)));
@@ -10696,6 +10956,9 @@ public sealed class UserInputQuestionViewModel : ObservableObject
 
     [DataMember]
     public string Question { get; }
+
+    [DataMember]
+    public IReadOnlyList<ChatBlockViewModel> QuestionBlocks { get; }
 
     [DataMember]
     public bool HasQuestion => Question.Length > 0;
@@ -10789,7 +11052,9 @@ public sealed class UserInputOptionViewModel : ObservableObject
         // Opaque option IDs remain inside the Extension and are never rendered in Remote UI.
         OptionId = string.IsNullOrEmpty(option.OptionId) ? option.Label : option.OptionId;
         DisplayLabel = markdown.ToSafeText(option.Label).Trim();
-        Description = markdown.ToSafeText(option.Description).Trim();
+        SafeMarkdownRenderResult rendered = markdown.ToSafeTextAndBlocks(option.Description);
+        Description = rendered.Text.Trim();
+        DescriptionBlocks = rendered.Blocks;
     }
 
     public string OptionId { get; }
@@ -10799,6 +11064,9 @@ public sealed class UserInputOptionViewModel : ObservableObject
 
     [DataMember]
     public string Description { get; }
+
+    [DataMember]
+    public IReadOnlyList<ChatBlockViewModel> DescriptionBlocks { get; }
 
     [DataMember]
     public bool IsSelected

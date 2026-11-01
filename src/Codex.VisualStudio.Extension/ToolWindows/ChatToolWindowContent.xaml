@@ -17,6 +17,46 @@
     <Grid.Resources>
       <BooleanToVisibilityConverter x:Key="BoolToVis" />
 
+      <!-- Sanitized Markdown blocks inside question cards. Text inherits the card's font size. -->
+      <DataTemplate x:Key="QuestionBlockTemplate">
+        <Grid Margin="0,1">
+          <TextBlock Text="{Binding Text}" TextWrapping="Wrap">
+            <TextBlock.Style>
+              <Style TargetType="TextBlock">
+                <Setter Property="Foreground" Value="{DynamicResource {x:Static styles:VsBrushes.WindowTextKey}}" />
+                <Style.Triggers>
+                  <DataTrigger Binding="{Binding IsHeading}" Value="True">
+                    <Setter Property="FontWeight" Value="SemiBold" />
+                  </DataTrigger>
+                  <DataTrigger Binding="{Binding IsListItem}" Value="True">
+                    <Setter Property="Margin" Value="12,0,0,0" />
+                  </DataTrigger>
+                  <DataTrigger Binding="{Binding IsCodeBlock}" Value="True">
+                    <Setter Property="Visibility" Value="Collapsed" />
+                  </DataTrigger>
+                  <DataTrigger Binding="{Binding IsSeparator}" Value="True">
+                    <Setter Property="Visibility" Value="Collapsed" />
+                  </DataTrigger>
+                </Style.Triggers>
+              </Style>
+            </TextBlock.Style>
+          </TextBlock>
+          <TextBlock FontFamily="Consolas, Courier New, monospace" Text="{Binding Code}" TextWrapping="Wrap">
+            <TextBlock.Style>
+              <Style TargetType="TextBlock">
+                <Setter Property="Visibility" Value="Collapsed" />
+                <Setter Property="Foreground" Value="{DynamicResource {x:Static styles:VsBrushes.WindowTextKey}}" />
+                <Style.Triggers>
+                  <DataTrigger Binding="{Binding IsCodeBlock}" Value="True">
+                    <Setter Property="Visibility" Value="Visible" />
+                  </DataTrigger>
+                </Style.Triggers>
+              </Style>
+            </TextBlock.Style>
+          </TextBlock>
+        </Grid>
+      </DataTemplate>
+
       <!-- Themed ComboBox (mode / model pickers) — re-based on the VS style so it renders
            correctly in dark/light/high-contrast themes. -->
       <Style TargetType="ComboBox" BasedOn="{StaticResource {x:Static styles:VsResourceKeys.ComboBoxStyleKey}}" />
@@ -737,6 +777,8 @@
                              Visibility="{Binding Usage.HasSecondary, Converter={StaticResource BoolToVis}}" />
                   <TextBlock Margin="0,4,0,0" TextWrapping="Wrap" Text="{Binding Usage.CreditsText}"
                              Visibility="{Binding Usage.HasCredits, Converter={StaticResource BoolToVis}}" />
+                  <TextBlock Margin="0,4,0,0" TextWrapping="Wrap" Text="{Binding Usage.ThreadUsageText}"
+                             Visibility="{Binding Usage.HasThreadUsage, Converter={StaticResource BoolToVis}}" />
                   <TextBlock Margin="0,8,0,0" FontSize="10" TextWrapping="Wrap" Text="{Binding Usage.UpdatedText}" />
                   <WrapPanel Margin="0,12,0,0">
                     <Button Content="Open usage dashboard"
@@ -781,9 +823,20 @@
                   <KeyBinding Key="Escape" Command="{Binding CloseHistoryCommand}" />
                 </Border.InputBindings>
                 <DockPanel Margin="6">
+                  <ComboBox DockPanel.Dock="Top" Margin="0,0,0,6"
+                            ItemsSource="{Binding ThreadListScopes}"
+                            DisplayMemberPath="DisplayText"
+                            SelectedValuePath="Id"
+                            SelectedValue="{Binding SelectedThreadListScopeId, Mode=TwoWay}"
+                            ToolTip="Conversations to list"
+                            AutomationProperties.Name="Conversation history scope"
+                            AutomationProperties.HelpText="Choose which conversations the history lists." />
                   <StackPanel DockPanel.Dock="Bottom" Margin="0,6,0,0">
                     <TextBlock Margin="2,4" Text="{Binding HistoryStatusText}" TextWrapping="Wrap"
                                Visibility="{Binding HasHistoryNotice, Converter={StaticResource BoolToVis}}"
+                               AutomationProperties.LiveSetting="Polite" />
+                    <TextBlock Margin="2,4" Text="{Binding ConversationTextStatusText}" TextWrapping="Wrap"
+                               Visibility="{Binding HasConversationTextStatus, Converter={StaticResource BoolToVis}}"
                                AutomationProperties.LiveSetting="Polite" />
                     <TextBlock Margin="2,2,2,4" Opacity="0.75"
                                Text="Unread markers and read-state controls are available on a compatible App Server with Experimental API enabled. New replies stay unread until you mark them read."
@@ -821,6 +874,16 @@
                               Visibility="{Binding IsHistoryOnly, Converter={StaticResource BoolToVis}}"
                               Style="{StaticResource SmallRoundButtonStyle}"
                               AutomationProperties.Name="Join selected conversation" />
+                      <Button Margin="0,0,4,4" Content="Open conversation text"
+                              Command="{Binding OpenConversationTextCommand}"
+                              Style="{StaticResource SmallRoundButtonStyle}"
+                              AutomationProperties.Name="Open conversation text"
+                              AutomationProperties.HelpText="Opens a fixed copy of the whole conversation in a read-only editor tab." />
+                      <Button Margin="0,0,4,4" Content="Cancel"
+                              Command="{Binding CancelConversationTextCommand}"
+                              Visibility="{Binding IsConversationTextLoading, Converter={StaticResource BoolToVis}}"
+                              Style="{StaticResource SmallRoundButtonStyle}"
+                              AutomationProperties.Name="Cancel opening conversation text" />
                       <Button Margin="0,0,4,4" Content="Load older"
                               Command="{Binding LoadOlderHistoryCommand}"
                               Style="{StaticResource SmallRoundButtonStyle}" />
@@ -1111,6 +1174,10 @@
                   <TextBlock FontWeight="SemiBold"
                              Foreground="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowTextBrushKey}}"
                              Text="{Binding DisplayRole}" />
+                  <TextBlock FontSize="10" TextWrapping="Wrap"
+                             Foreground="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowTextBrushKey}}"
+                             Text="{Binding TimingText}"
+                             Visibility="{Binding HasTiming, Converter={StaticResource BoolToVis}}" />
 
                   <Border Margin="0,6,0,0"
                           Padding="6,4"
@@ -1650,8 +1717,11 @@
                       <DataTemplate>
                         <StackPanel Margin="0,8,0,0">
                           <TextBlock FontWeight="Bold" Text="{Binding Header}" TextWrapping="Wrap" />
-                          <TextBlock Margin="0,2,0,0" Text="{Binding Question}" TextWrapping="Wrap"
-                                     Visibility="{Binding HasQuestion, Converter={StaticResource BoolToVis}}" />
+                          <ItemsControl Margin="0,2,0,0" ItemsSource="{Binding QuestionBlocks}"
+                                        ItemTemplate="{StaticResource QuestionBlockTemplate}"
+                                        Visibility="{Binding HasQuestion, Converter={StaticResource BoolToVis}}"
+                                        Focusable="False"
+                                        AutomationProperties.Name="{Binding Question}" />
                           <TextBox Margin="0,5,0,0" MinHeight="50" TextWrapping="Wrap" AcceptsReturn="True"
                                    Text="{Binding FreeText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
                                    Visibility="{Binding IsFreeText, Converter={StaticResource BoolToVis}}" />
@@ -1662,7 +1732,10 @@
                                 <RadioButton Margin="0,2" IsChecked="{Binding IsSelected, Mode=TwoWay}">
                                   <StackPanel>
                                     <TextBlock Text="{Binding DisplayLabel}" TextWrapping="Wrap" />
-                                    <TextBlock FontSize="11" Opacity="0.75" Text="{Binding Description}" TextWrapping="Wrap" />
+                                    <ItemsControl FontSize="11" ItemsSource="{Binding DescriptionBlocks}"
+                                                  ItemTemplate="{StaticResource QuestionBlockTemplate}"
+                                                  Focusable="False"
+                                                  AutomationProperties.Name="{Binding Description}" />
                                   </StackPanel>
                                 </RadioButton>
                               </DataTemplate>

@@ -18,3 +18,38 @@ Tracking: [#241](https://github.com/kkamegawa/vsextensionforcodex/issues/241). D
 - [ ] Capture and inspect the changed behavior in the Visual Studio Experimental Instance. The Computer Use app-list request timed out on its permitted retries, so this session could not obtain a screenshot. Automated UI tests passed; this does not replace the requested visual check.
 
 Evidence is under `D:\temp\issue241-verify-2\`.
+
+## Stage 2: stable features
+
+Tracking: [#242](https://github.com/kkamegawa/vsextensionforcodex/issues/242). This stage stays open until the items under Not yet verified are done.
+
+### Implemented and passing automated tests
+
+- [x] Add `/review --new-thread` as one Worker operation over `thread/start` and `review/start` with `inline` delivery.
+- [x] Add the history scopes All, Current working folder, and Same repository worktrees over `thread/list.cwd`.
+- [x] Render question text and option descriptions through the safe Markdown path, keeping `OptionId` as the submitted value.
+- [x] Add Open conversation text as a fixed snapshot in a read-only editor tab.
+- [x] Show item times on transcript items.
+- [x] Read `account/usage/read` with `threadId` on 0.166 and later, keeping actual USD, estimated USD, and estimated credits distinct.
+- [x] Add `/doctor`, which runs `codex doctor --network-only` on local 0.166 connections and shows the procedure on remote connections.
+- [x] Pass Debug and Release Core (548) and UI (592) tests with no failures, zero-warning Debug and Release builds, the Release VSIX inspection, and the contract manifest validator.
+
+### Real CLI confirmations
+
+- [x] 0.161.0: `review/start` works in a new empty conversation, and the review runs on that same thread.
+- [x] 0.161.0: the history list shows the conversation with an empty name and the review prompt as its preview.
+
+- [x] 0.166.0: the generated schema matches the implementation for `threadUsage.nativeUsageUsdMicros` (nullable, where none means unknown), `account/usage/read.threadId`, `thread/start` (`permissions` and `activePermissionProfile` are experimental only), and `inline` as the only delivery value.
+- [x] 0.166.0: two review turns in a new empty conversation completed on that same thread, and the history row matched 0.161.0. The test conversations were deleted.
+- [x] 0.166.0: `codex doctor --network-only --no-color --ascii` accepted the flags, needed no TTY, wrote plain text, and exited with 0.
+- [x] `verify-contract-surface.ps1` passed for 0.161.0 and 0.166.0 on both surfaces.
+
+### Not observable
+
+- `review_model` precedence: setting it through `thread/start.config` changed nothing the protocol reports. No notification or `thread/read` field names the model a review turn used, so the precedence stays unknown, and the extension does not depend on it.
+
+### Not yet verified
+
+- [ ] Rerun `verify-contract-surface.ps1` for 0.165.0, 0.164.0, 0.163.0, and 0.162.1, because `account/usage/read` was added to `methodsByVersion`.
+- [ ] Run `/doctor` from the extension in Visual Studio.
+- [ ] Capture and judge Experimental Instance screenshots for Light, Dark, High Contrast, Japanese, narrow width, keyboard, and Narrator. This includes selection, copy, Ctrl+F, and F3 in the conversation text tab, and its removal on close. This session had no current Experimental deployment and click-only Visual Studio access.

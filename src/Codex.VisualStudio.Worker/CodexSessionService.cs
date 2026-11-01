@@ -139,6 +139,10 @@ public partial interface ICodexSessionService : IAsyncDisposable
 
     Task<ThreadPage> ListThreadsAsync(string? cursor, CancellationToken cancellationToken);
 
+    Task<ThreadPage> ListThreadsAsync(string? cursor, IReadOnlyList<string>? workingDirectories, CancellationToken cancellationToken);
+
+    Task<ThreadListScopesResult> GetThreadListScopesAsync(CancellationToken cancellationToken);
+
     Task<ThreadSummary> ReadThreadAsync(string threadId, CancellationToken cancellationToken)
         => throw new NotSupportedException();
 
@@ -206,6 +210,10 @@ public partial interface ICodexSessionService : IAsyncDisposable
     Task<UploadFeedbackResult> UploadFeedbackAsync(UploadFeedbackRequest request, CancellationToken cancellationToken);
 
     Task<RateLimitsResult> GetRateLimitsAsync(CancellationToken cancellationToken);
+
+    Task<ThreadUsageResult> GetThreadUsageAsync(string threadId, CancellationToken cancellationToken);
+
+    Task<NetworkDiagnosticsResult> RunNetworkDiagnosticsAsync(CancellationToken cancellationToken);
 
     Task ResolveApprovalAsync(ResolveApprovalRequest request, CancellationToken cancellationToken);
 
@@ -309,6 +317,9 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
     private readonly PendingInteractionRegistry pendingInteractions;
     private readonly ProtectedAuthorizationUrlStore authorizationUrls = new();
     private readonly AsyncLocal<ConnectionContext?> emittingContext = new();
+    private static readonly string[] NetworkDiagnosticsArguments = ["doctor", "--network-only", "--no-color", "--ascii"];
+    private static readonly TimeSpan NetworkDiagnosticsTimeout = TimeSpan.FromSeconds(60);
+    private readonly GitWorktreeScope gitWorktreeScope = new();
     private readonly object turnStateLock = new();
     private readonly HashSet<TurnKey> completedTurnIds = new();
     // Thread whose turn/start request is in flight. Its turn notifications can arrive before the
@@ -425,6 +436,9 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
     public string? ActiveThreadId { get; private set; }
 
     public string? EffectiveModelId => effectiveThreadModelId;
+
+    // Tests replace the process start; production runs the resolved CLI.
+    internal BoundedProcessRun NetworkDiagnosticsRun { get; set; } = BoundedProcessRunner.RunAsync;
 
     internal long ConnectionGeneration => Interlocked.Read(ref connectionGeneration);
 
@@ -1519,13 +1533,43 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         return summary;
     }
 
-    public async Task<ThreadPage> ListThreadsAsync(string? cursor, CancellationToken cancellationToken)
+    public Task<ThreadPage> ListThreadsAsync(string? cursor, CancellationToken cancellationToken)
+        => ListThreadsAsync(cursor, null, cancellationToken);
+
+    public async Task<ThreadListScopesResult> GetThreadListScopesAsync(CancellationToken cancellationToken)
     {
         ConnectionContext context = RequireContext();
-        JsonElement result = await SendReadOnlyAsync(
-            "thread/list",
-            new { cursor, limit = 25, sourceKinds = ThreadSourceKinds },
-            cancellationToken).ConfigureAwait(false);
+        var result = new ThreadListScopesResult
+        {
+            CurrentFolder = TryMapLocalPathForServer(options.WorkingDirectory, out string serverPath) ? serverPath : null,
+        };
+        if (context.IsLocal)
+        {
+            result.WorktreeFolders = await gitWorktreeScope.ResolveAsync(options.WorkingDirectory, cancellationToken).ConfigureAwait(false);
+            EnsureCurrent(context);
+        }
+
+        return result;
+    }
+
+    public async Task<ThreadPage> ListThreadsAsync(
+        string? cursor,
+        IReadOnlyList<string>? workingDirectories,
+        CancellationToken cancellationToken)
+    {
+        ConnectionContext context = RequireContext();
+        var parameters = new Dictionary<string, object?>
+        {
+            ["cursor"] = cursor,
+            ["limit"] = 25,
+            ["sourceKinds"] = ThreadSourceKinds,
+        };
+        if (workingDirectories is not null)
+        {
+            parameters["cwd"] = workingDirectories;
+        }
+
+        JsonElement result = await SendReadOnlyAsync("thread/list", parameters, cancellationToken).ConfigureAwait(false);
         var threads = new List<ThreadSummary>();
         if (result.TryGetProperty("data", out JsonElement data))
         {
@@ -2223,9 +2267,9 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         StartReviewRequest request,
         CancellationToken cancellationToken)
     {
-        if (request.Placement != ReviewPlacement.CurrentThread)
+        if (request.Placement == ReviewPlacement.NewThread)
         {
-            throw new InvalidOperationException("Starting a review in a separate conversation is not supported by this Worker.");
+            return await StartReviewInNewThreadAsync(request, cancellationToken).ConfigureAwait(false);
         }
 
         object target = CreateReviewTarget(request.Target);
@@ -2585,6 +2629,80 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         }
 
         return ReadRateLimitsResult(call.Result);
+    }
+
+    public async Task<ThreadUsageResult> GetThreadUsageAsync(string threadId, CancellationToken cancellationToken)
+    {
+        if (RequireContext().FeatureTier < CodexFeatureTier.Tier166)
+        {
+            return Unsupported<ThreadUsageResult>("Conversation usage amounts require Codex CLI 0.166.0 or later.");
+        }
+
+        OperationCallResult call = await TrySendOperationAsync(
+            "account/usage/read",
+            new { threadId },
+            TimeSpan.FromSeconds(15),
+            cancellationToken).ConfigureAwait(false);
+        if (!call.IsSupported)
+        {
+            return Unsupported<ThreadUsageResult>("Conversation usage amounts are not supported by this app-server.");
+        }
+
+        var result = new ThreadUsageResult { ThreadId = threadId };
+        if (call.Result.ValueKind == JsonValueKind.Object
+            && call.Result.TryGetProperty("threadUsage", out JsonElement usage)
+            && usage.ValueKind == JsonValueKind.Object)
+        {
+            result.NativeUsageUsdMicros = GetInt64(usage, "nativeUsageUsdMicros");
+            result.EstimatedUsageUsdMicros = GetInt64(usage, "estimatedUsageUsdMicros");
+            result.EstimatedUsageCreditsMicros = GetInt64(usage, "estimatedUsageCreditsMicros");
+        }
+
+        return result;
+    }
+
+    public async Task<NetworkDiagnosticsResult> RunNetworkDiagnosticsAsync(CancellationToken cancellationToken)
+    {
+        ConnectionContext context = RequireContext();
+        if (context.FeatureTier < CodexFeatureTier.Tier166)
+        {
+            return Unsupported<NetworkDiagnosticsResult>("Network diagnostics require Codex CLI 0.166.0 or later.");
+        }
+
+        if (!context.IsLocal)
+        {
+            return new NetworkDiagnosticsResult { RequiresServerRun = true };
+        }
+
+        string codexPath = CodexExecutableResolver.Resolve(options.CodexPath);
+        (string fileName, string[] arguments) = CodexProcessHost.IsCommandScript(codexPath)
+            ? (Environment.GetEnvironmentVariable("ComSpec") ?? "cmd.exe",
+                ["/d", "/s", "/c", $"\"\"{codexPath}\" {string.Join(' ', NetworkDiagnosticsArguments)}\""])
+            : (codexPath, NetworkDiagnosticsArguments);
+        string workingDirectory = Directory.Exists(options.WorkingDirectory)
+            ? options.WorkingDirectory
+            : Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        try
+        {
+            BoundedProcessResult result = await NetworkDiagnosticsRun(
+                fileName,
+                arguments,
+                workingDirectory,
+                NetworkDiagnosticsTimeout,
+                cancellationToken).ConfigureAwait(false);
+            EnsureCurrent(context);
+            return new NetworkDiagnosticsResult
+            {
+                ExitCode = result.ExitCode,
+                TimedOut = result.TimedOut,
+                Output = redactor.Redact(string.Join("\n", new[] { result.StandardOutput, result.StandardError }.Where(text => text.Length > 0))),
+            };
+        }
+        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException or IOException)
+        {
+            WorkerDiagnostics.Write($"Network diagnostics could not start ({ex.GetType().Name}).");
+            return new NetworkDiagnosticsResult { Output = "The Codex CLI could not be started for network diagnostics." };
+        }
     }
 
     public async Task ResolveApprovalAsync(ResolveApprovalRequest request, CancellationToken cancellationToken)

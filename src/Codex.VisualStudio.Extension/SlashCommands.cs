@@ -28,6 +28,7 @@ internal enum SlashCommandId
     Shell,
     Presets,
     Diagnostics,
+    Doctor,
 }
 
 internal enum SlashCommandArgumentKind
@@ -87,6 +88,7 @@ internal sealed class SlashCommandCatalog
         new(SlashCommandId.Shell, "shell", "Run an explicit server shell command after confirmation.", SlashCommandArgumentKind.RequiredText, true, false, false),
         new(SlashCommandId.Presets, "presets", "Open the presets shared with the Codex CLI.", SlashCommandArgumentKind.None, true, false, false),
         new(SlashCommandId.Diagnostics, "diagnostics", "Save a diagnostic ZIP on the app-server host.", SlashCommandArgumentKind.OptionalText, true, false, false),
+        new(SlashCommandId.Doctor, "doctor", "Check network access with codex doctor.", SlashCommandArgumentKind.None, true, false, false),
     ];
 
     // Suggestions further than this edit distance are noise rather than likely typos.
@@ -261,11 +263,13 @@ internal enum ReviewCommandTargetKind
 
 internal sealed record ReviewCommandArguments(
     ReviewCommandTargetKind Target,
-    string? Value = null);
+    string? Value = null,
+    bool NewThread = false);
 
 internal static class SlashCommandArgumentParser
 {
     public const int MaximumGoalLength = 4000;
+    public const string NewThreadOption = "--new-thread";
 
     public static bool TryParseGoal(
         string arguments,
@@ -334,9 +338,18 @@ internal static class SlashCommandArgumentParser
         out string? errorMessage)
     {
         string trimmed = arguments.Trim();
+
+        // Only a leading option counts, so custom instructions may mention the option text.
+        SplitOperation(trimmed, out string firstToken, out string afterOption);
+        bool newThread = string.Equals(firstToken, NewThreadOption, StringComparison.OrdinalIgnoreCase);
+        if (newThread)
+        {
+            trimmed = afterOption;
+        }
+
         if (trimmed.Length == 0 || string.Equals(trimmed, "uncommitted", StringComparison.OrdinalIgnoreCase))
         {
-            result = new ReviewCommandArguments(ReviewCommandTargetKind.UncommittedChanges);
+            result = new ReviewCommandArguments(ReviewCommandTargetKind.UncommittedChanges, NewThread: newThread);
             errorMessage = null;
             return true;
         }
@@ -351,13 +364,13 @@ internal static class SlashCommandArgumentParser
 
         result = target.ToUpperInvariant() switch
         {
-            "BASE" => new ReviewCommandArguments(ReviewCommandTargetKind.BaseBranch, value),
-            "COMMIT" => new ReviewCommandArguments(ReviewCommandTargetKind.Commit, value),
-            "CUSTOM" => new ReviewCommandArguments(ReviewCommandTargetKind.Custom, value),
+            "BASE" => new ReviewCommandArguments(ReviewCommandTargetKind.BaseBranch, value, newThread),
+            "COMMIT" => new ReviewCommandArguments(ReviewCommandTargetKind.Commit, value, newThread),
+            "CUSTOM" => new ReviewCommandArguments(ReviewCommandTargetKind.Custom, value, newThread),
             _ => null,
         };
         errorMessage = result is null
-            ? "Use /review uncommitted, /review base <branch>, /review commit <sha>, or /review custom <instructions>."
+            ? "Use /review [--new-thread] with uncommitted, base <branch>, commit <sha>, or custom <instructions>."
             : null;
         return result is not null;
     }

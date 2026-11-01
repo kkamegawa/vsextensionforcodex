@@ -187,6 +187,26 @@ public sealed class SlashCommandTests
     }
 
     [TestMethod]
+    public void ArgumentParser_ParsesNewThreadReviewOption()
+    {
+        Assert.IsTrue(SlashCommandArgumentParser.TryParseReview("--new-thread", out ReviewCommandArguments? bare, out _));
+        Assert.AreEqual(ReviewCommandTargetKind.UncommittedChanges, bare!.Target);
+        Assert.IsTrue(bare.NewThread);
+
+        Assert.IsTrue(SlashCommandArgumentParser.TryParseReview("--new-thread base main", out ReviewCommandArguments? branch, out _));
+        Assert.AreEqual(ReviewCommandTargetKind.BaseBranch, branch!.Target);
+        Assert.AreEqual("main", branch.Value);
+        Assert.IsTrue(branch.NewThread);
+
+        Assert.IsTrue(SlashCommandArgumentParser.TryParseReview("custom --new-thread is only text", out ReviewCommandArguments? custom, out _));
+        Assert.AreEqual("--new-thread is only text", custom!.Value);
+        Assert.IsFalse(custom.NewThread);
+
+        Assert.IsFalse(SlashCommandArgumentParser.TryParseReview("--new-thread nonsense value", out _, out string? error));
+        StringAssert.Contains(error, "--new-thread");
+    }
+
+    [TestMethod]
     public void Coordinator_AllowsOnlyReadCommandsDuringActiveTurn()
     {
         var parser = new SlashCommandParser(catalog);

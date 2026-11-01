@@ -2330,24 +2330,286 @@ public sealed partial class CodexSessionServiceTests
         Assert.IsFalse(feedbackParameters.GetProperty("includeLogs").GetBoolean());
     }
 
+    private static StartReviewRequest NewThreadReview(string threadId = "thread-source")
+        => new()
+        {
+            ThreadId = threadId,
+            Placement = ReviewPlacement.NewThread,
+            Target = new ReviewTarget { Kind = ReviewTargetKind.UncommittedChanges },
+        };
+
+    private static JsonElement ReviewThreadResponse(string threadId, string sandbox = "readOnly", string approval = "on-request")
+        => JsonSerializer.SerializeToElement(new
+        {
+            thread = new { id = threadId, preview = string.Empty, createdAt = 1L, updatedAt = 1L },
+            model = "gpt-test",
+            approvalPolicy = approval,
+            sandbox = new { type = sandbox },
+        });
+
+    private static async Task<CodexSessionService> StartSourceThreadForReviewAsync(RecordingConnection connection, JsonElement newThread)
+    {
+        int starts = 0;
+        Func<string, object?, JsonElement> inner = connection.Handler;
+        connection.Handler = (method, parameters) =>
+        {
+            if (method == "thread/start")
+            {
+                starts++;
+                return starts == 1 ? ReviewThreadResponse("thread-source") : newThread;
+            }
+
+            return inner(method, parameters);
+        };
+        CodexSessionService service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+        await service.StartThreadAsync(CancellationToken.None);
+        return service;
+    }
+
     [TestMethod]
-    public async Task StartReviewRejectsNewThreadPlacementWithoutSendingDetached()
+    public async Task StartReviewNewThread_InheritsSettingsAndMovesActiveThreadOnlyAfterStart()
+    {
+        string? activeDuringReviewStart = null;
+        CodexSessionService? session = null;
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) =>
+            {
+                if (method == "review/start")
+                {
+                    activeDuringReviewStart = session!.ActiveThreadId;
+                    return JsonSerializer.SerializeToElement(new { reviewThreadId = "thread-review", turn = new { id = "turn-review" } });
+                }
+
+                return JsonSerializer.SerializeToElement(new { });
+            },
+        };
+        await using CodexSessionService service = await StartSourceThreadForReviewAsync(connection, ReviewThreadResponse("thread-review"));
+        session = service;
+
+        StartReviewResult result = await service.StartReviewAsync(NewThreadReview(), CancellationToken.None);
+
+        Assert.AreEqual(ReviewStartOutcome.Started, result.Outcome);
+        Assert.AreEqual("thread-review", result.CreatedThread?.Id);
+        Assert.AreEqual("thread-source", activeDuringReviewStart);
+        Assert.AreEqual("thread-review", service.ActiveThreadId);
+        Assert.AreEqual("turn-review", service.ActiveTurnId);
+        JsonElement start = JsonSerializer.SerializeToElement(
+            connection.Requests.Last(item => item.Method == "thread/start").Parameters,
+            WireJsonOptions);
+        Assert.AreEqual("on-request", start.GetProperty("approvalPolicy").GetString());
+        Assert.AreEqual("read-only", start.GetProperty("sandbox").GetString());
+        JsonElement review = ParametersFor(connection, "review/start");
+        Assert.AreEqual("thread-review", review.GetProperty("threadId").GetString());
+        Assert.AreEqual("inline", review.GetProperty("delivery").GetString());
+    }
+
+    [TestMethod]
+    public async Task StartReviewNewThread_UnmappableSandbox_CreatesNothing()
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "thread/start"
+                ? ReviewThreadResponse("thread-source", sandbox: "externalSandbox")
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        await using CodexSessionService service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+        await service.StartThreadAsync(CancellationToken.None);
+        int startsBefore = connection.Requests.Count(item => item.Method == "thread/start");
+
+        StartReviewResult result = await service.StartReviewAsync(NewThreadReview(), CancellationToken.None);
+
+        Assert.AreEqual(ReviewStartOutcome.NotCreated, result.Outcome);
+        Assert.AreEqual(startsBefore, connection.Requests.Count(item => item.Method == "thread/start"));
+        Assert.IsFalse(connection.Requests.Any(item => item.Method == "review/start"));
+        Assert.AreEqual("thread-source", service.ActiveThreadId);
+    }
+
+    [TestMethod]
+    public async Task StartReviewNewThread_WiderReportedPermissions_DoNotStartReview()
     {
         var connection = new RecordingConnection();
-        await using var service = CreateService();
+        await using CodexSessionService service = await StartSourceThreadForReviewAsync(
+            connection,
+            ReviewThreadResponse("thread-review", sandbox: "dangerFullAccess"));
+
+        StartReviewResult result = await service.StartReviewAsync(NewThreadReview(), CancellationToken.None);
+
+        Assert.AreEqual(ReviewStartOutcome.CreatedNotStarted, result.Outcome);
+        Assert.AreEqual("thread-review", result.CreatedThread?.Id);
+        Assert.IsFalse(connection.Requests.Any(item => item.Method == "review/start"));
+        Assert.AreEqual("thread-source", service.ActiveThreadId);
+    }
+
+    [TestMethod]
+    public async Task StartReviewNewThread_ReviewRejected_KeepsConversationAndSelection()
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "review/start"
+                ? throw new JsonRpcRemoteException(-32000, "rejected")
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        await using CodexSessionService service = await StartSourceThreadForReviewAsync(connection, ReviewThreadResponse("thread-review"));
+
+        StartReviewResult result = await service.StartReviewAsync(NewThreadReview(), CancellationToken.None);
+
+        Assert.AreEqual(ReviewStartOutcome.CreatedNotStarted, result.Outcome);
+        Assert.AreEqual("thread-review", result.CreatedThread?.Id);
+        Assert.AreEqual("thread-source", service.ActiveThreadId);
+        Assert.AreEqual(1, connection.Requests.Count(item => item.Method == "review/start"));
+    }
+
+    [TestMethod]
+    public async Task StartReviewNewThread_Disconnect_IsUnknownAndNotResent()
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "review/start"
+                ? throw new JsonRpcConnectionClosedException("closed")
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        await using CodexSessionService service = await StartSourceThreadForReviewAsync(connection, ReviewThreadResponse("thread-review"));
+
+        StartReviewResult result = await service.StartReviewAsync(NewThreadReview(), CancellationToken.None);
+
+        Assert.AreEqual(ReviewStartOutcome.Unknown, result.Outcome);
+        Assert.AreEqual("thread-source", service.ActiveThreadId);
+        Assert.AreEqual(1, connection.Requests.Count(item => item.Method == "review/start"));
+    }
+
+    [TestMethod]
+    public async Task StartReviewNewThread_NotActiveSource_CreatesNothing()
+    {
+        var connection = new RecordingConnection();
+        await using CodexSessionService service = await StartSourceThreadForReviewAsync(connection, ReviewThreadResponse("thread-review"));
+
+        StartReviewResult result = await service.StartReviewAsync(NewThreadReview("thread-other"), CancellationToken.None);
+
+        Assert.AreEqual(ReviewStartOutcome.NotCreated, result.Outcome);
+        Assert.AreEqual(1, connection.Requests.Count(item => item.Method == "thread/start"));
+    }
+
+    [TestMethod]
+    public async Task GetThreadUsage_ReadsMicrosAndKeepsNullUnknown()
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "account/usage/read"
+                ? JsonSerializer.SerializeToElement(new
+                {
+                    summary = new { },
+                    threadUsage = new { nativeUsageUsdMicros = 2_500_000L, estimatedUsageUsdMicros = (long?)null, estimatedUsageCreditsMicros = 0L },
+                })
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        await using CodexSessionService service = CreateService();
         await service.InitializeAsync(connection, Options(), CancellationToken.None);
 
-        await Assert.ThrowsExactlyAsync<InvalidOperationException>(
-            () => service.StartReviewAsync(
-                new StartReviewRequest
-                {
-                    ThreadId = "thread-1",
-                    Placement = ReviewPlacement.NewThread,
-                    Target = new ReviewTarget { Kind = ReviewTargetKind.UncommittedChanges },
-                },
-                CancellationToken.None));
+        ThreadUsageResult result = await service.GetThreadUsageAsync("thread-1", CancellationToken.None);
 
-        Assert.IsFalse(connection.Requests.Any(item => item.Method == "review/start"));
+        Assert.AreEqual(2_500_000L, result.NativeUsageUsdMicros);
+        Assert.IsNull(result.EstimatedUsageUsdMicros);
+        Assert.AreEqual(0L, result.EstimatedUsageCreditsMicros);
+        Assert.AreEqual("thread-1", ParametersFor(connection, "account/usage/read").GetProperty("threadId").GetString());
+    }
+
+    [TestMethod]
+    public async Task GetThreadUsage_BelowTier166_SendsNothing()
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "initialize"
+                ? JsonSerializer.SerializeToElement(new { userAgent = "codex-cli/0.165.0" })
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        await using CodexSessionService service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        ThreadUsageResult result = await service.GetThreadUsageAsync("thread-1", CancellationToken.None);
+
+        Assert.IsFalse(result.IsSupported);
+        Assert.IsFalse(connection.Requests.Any(item => item.Method == "account/usage/read"));
+    }
+
+    [TestMethod]
+    public async Task ListThreads_SendsFixedFolderArray()
+    {
+        var connection = new RecordingConnection();
+        await using CodexSessionService service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        await service.ListThreadsAsync("cursor", [@"C:\repo", @"C:\repo-wt"], CancellationToken.None);
+
+        JsonElement parameters = ParametersFor(connection, "thread/list");
+        Assert.AreEqual(2, parameters.GetProperty("cwd").GetArrayLength());
+        Assert.AreEqual("cursor", parameters.GetProperty("cursor").GetString());
+    }
+
+    [TestMethod]
+    public async Task NetworkDiagnostics_RedactsOutputAndUsesNetworkOnlyArguments()
+    {
+        IReadOnlyList<string>? arguments = null;
+        var connection = new RecordingConnection();
+        await using CodexSessionService service = CreateService();
+        service.NetworkDiagnosticsRun = (_, args, _, timeout, _) =>
+        {
+            arguments = args;
+            Assert.IsTrue(timeout > TimeSpan.Zero);
+            return Task.FromResult(new BoundedProcessResult(0, "token sk-abcdefghijklmnopqrstuvwxyz0123456789", string.Empty, TimedOut: false));
+        };
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        NetworkDiagnosticsResult result = await service.RunNetworkDiagnosticsAsync(CancellationToken.None);
+
+        CollectionAssert.AreEqual(new[] { "doctor", "--network-only", "--no-color", "--ascii" }, arguments!.ToArray());
+        Assert.IsFalse(result.Output.Contains("sk-abcdefghijklmnopqrstuvwxyz0123456789", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    public void GitWorktreeScope_ParsesPorcelainAndSkipsBareAndPrunable()
+    {
+        const string Porcelain = "worktree C:/repo\nHEAD 1\nbranch refs/heads/main\n\nworktree C:/bare\nbare\n\nworktree C:/gone\nprunable gitdir file\n\nworktree C:/repo-wt\nHEAD 2\ndetached\n";
+
+        CollectionAssert.AreEqual(new[] { "C:/repo", "C:/repo-wt" }, GitWorktreeScope.ParseWorktreeRoots(Porcelain).ToArray());
+    }
+
+    [TestMethod]
+    public void GitWorktreeScope_AppliesSubfolderAndKeepsSessionSpellingAndRemovesDuplicates()
+    {
+        string working = Path.Combine(Path.GetTempPath(), "Repo", "src", "app");
+        string root = Path.Combine(Path.GetTempPath(), "Repo");
+        string other = Path.Combine(Path.GetTempPath(), "repo-wt");
+
+        IReadOnlyList<string> paths = GitWorktreeScope.BuildPaths(working, "src/app/", [root, root + Path.DirectorySeparatorChar, other]);
+
+        Assert.AreEqual(2, paths.Count);
+        Assert.AreEqual(working, paths[0]);
+        Assert.AreEqual(Path.GetFullPath(Path.Combine(other, "src", "app")), paths[1], ignoreCase: true);
+    }
+
+    [TestMethod]
+    public async Task GitWorktreeScope_OutsideGit_OffersNothing()
+    {
+        var scope = new GitWorktreeScope((_, _, _, _, _) => Task.FromResult(new BoundedProcessResult(128, string.Empty, "not a git repository", TimedOut: false)));
+
+        Assert.AreEqual(0, (await scope.ResolveAsync(Path.GetTempPath(), CancellationToken.None)).Count);
+    }
+
+    [TestMethod]
+    public async Task BoundedProcessRunner_KillsOnTimeout()
+    {
+        BoundedProcessResult result = await BoundedProcessRunner.RunAsync(
+            "cmd.exe",
+            ["/d", "/c", "ping -n 30 127.0.0.1"],
+            Path.GetTempPath(),
+            TimeSpan.FromMilliseconds(300),
+            CancellationToken.None);
+
+        Assert.IsTrue(result.TimedOut);
+        Assert.IsNull(result.ExitCode);
     }
 
     [TestMethod]

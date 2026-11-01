@@ -63,6 +63,7 @@ public static class ReadOnlyRequestAllowlist
     private static readonly HashSet<string> UnconditionalMethods = new(StringComparer.Ordinal)
     {
         "account/rateLimits/read",
+        "account/usage/read",
         "thread/list",
         "thread/goal/get",
         "model/list",

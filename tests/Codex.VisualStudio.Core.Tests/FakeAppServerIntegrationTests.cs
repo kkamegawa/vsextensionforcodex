@@ -20,12 +20,54 @@ public sealed class FakeAppServerIntegrationTests
     [DataRow("Regression01621", "codex-cli/0.162.1")]
     [DataRow("Regression01630", "codex-cli/0.163.0")]
     [DataRow("", "codex-cli/0.164.0")]
+    [DataRow("Current01660", "codex-cli/0.166.0")]
     public async Task FakeReportsEachContractVersionInUserAgent(string scenario, string expectedUserAgent)
     {
         await using FakeAppServerProcess server = await FakeAppServerProcess.StartAsync(scenario);
         await server.SendAsync(new { id = 1, method = "initialize", @params = new { } });
         using JsonDocument initialized = await server.ReadAsync();
         Assert.AreEqual(expectedUserAgent, initialized.RootElement.GetProperty("result").GetProperty("userAgent").GetString());
+    }
+
+    [TestMethod]
+    public async Task FakeSeparateReviewAndUsageMatchTheStableSurface()
+    {
+        await using FakeAppServerProcess server = await FakeAppServerProcess.StartAsync("Current01660");
+        await server.SendAsync(new { id = 1, method = "initialize", @params = new { } });
+        (await server.ReadAsync()).Dispose();
+
+        await server.SendAsync(new { id = 2, method = "thread/start", @params = new { sandbox = "read-only" } });
+        using JsonDocument started = await server.ReadAsync();
+        JsonElement thread = started.RootElement.GetProperty("result");
+        Assert.AreEqual(JsonValueKind.Null, thread.GetProperty("activePermissionProfile").ValueKind);
+        string threadId = thread.GetProperty("thread").GetProperty("id").GetString()!;
+
+        await server.SendAsync(new { id = 3, method = "review/start", @params = new { threadId, target = new { type = "uncommittedChanges" }, delivery = "inline" } });
+        using JsonDocument review = await ReadResponseAsync(server, 3);
+        Assert.AreEqual(threadId, review.RootElement.GetProperty("result").GetProperty("reviewThreadId").GetString());
+
+        await server.SendAsync(new { id = 4, method = "account/usage/read", @params = new { threadId } });
+        using JsonDocument usage = await ReadResponseAsync(server, 4);
+        JsonElement amounts = usage.RootElement.GetProperty("result").GetProperty("threadUsage");
+        Assert.AreEqual(1_500_000L, amounts.GetProperty("estimatedUsageCreditsMicros").GetInt64());
+        Assert.AreEqual(JsonValueKind.Null, amounts.GetProperty("estimatedUsageUsdMicros").ValueKind);
+    }
+
+    // Notifications may precede a response, so messages are read until the id matches.
+    private static async Task<JsonDocument> ReadResponseAsync(FakeAppServerProcess server, int id)
+    {
+        while (true)
+        {
+            JsonDocument message = await server.ReadAsync();
+            if (message.RootElement.TryGetProperty("id", out JsonElement value)
+                && value.ValueKind == JsonValueKind.Number
+                && value.GetInt32() == id)
+            {
+                return message;
+            }
+
+            message.Dispose();
+        }
     }
 
     [TestMethod]

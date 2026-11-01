@@ -393,6 +393,7 @@ public sealed partial class ChatViewModel
         string threadId,
         OwnerSnapshot owner)
     {
+        item.ApplyTiming(historyItem.StartedAtMs, historyItem.CompletedAtMs);
         if (historyItem.Plan is { } plan
             && string.Equals(plan.ThreadId, threadId, StringComparison.Ordinal)
             && string.Equals(plan.TurnId, historyItem.TurnId, StringComparison.Ordinal))

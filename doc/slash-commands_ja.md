@@ -16,13 +16,14 @@ Visual Studio拡張機能は、入力の先頭文字が`/`の場合だけCodex�
 | App Server操作 | `/compact`, `/feedback`, `/fork`, `/goal`, `/mcp`, `/review`, `/shell` | 専用の型付きWorker RPCを呼び出します。`/shell`は明示的な入力と確認からだけ実行します。 |
 | 次ターン設定 | `/fast`, `/model`, `/permissions`（`/approve`は互換エイリアス）, `/personality`, `/reasoning` | 次の`turn/start`へ渡す型付きフィールドを更新します。ピッカー選択以外は次のターン開始時に消費されます。 |
 | 会話モード | `/plan` | 入力欄のチェックと連動してPlanモードを有効にし、明示的にチェックを外すまで継続します。 |
-| Visual Studio操作 | `/ide-context`, `/init`, `/status` | 上限付きIDEコンテキスト、`AGENTS.md`の安全な生成、ローカル状態表示を行います。 |
+| Visual Studio操作 | `/ide-context`, `/init`, `/status`, `/doctor` | 上限付きIDEコンテキスト、`AGENTS.md`の安全な生成、ローカル状態表示、0.166以降での`codex doctor --network-only`によるネットワーク確認を行います。リモート接続では、サーバー上で実行する手順を表示します。 |
 
 公式の意味を現在のApp Serverまたは単一スレッドUIで維持できない
 `/cloud`, `/cloud-environment`, `/local`, `/memories`, `/project`,
 `/side`は候補から隠します。直接入力時はローカルの非対応メッセージを表示します。
 
 `/review`は未コミット変更、基準ブランチ、コミット、自由指示を選べます。
+先頭に`--new-thread`を付けると、同じ設定の新しい会話でレビューします。
 `/goal`は表示（`show`または`get`）、設定、編集、一時停止、再開、クリアに
 対応し、目的は1～4,000文字です。`/model`はカタログと大文字小文字を区別せず
 照合し、正規のモデルIDを適用します。

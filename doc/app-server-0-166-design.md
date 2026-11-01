@@ -62,8 +62,8 @@ Decisions are recorded in [ADR-020](adr/ADR-020-app-server-0-166.md) and the ADR
 `/review --new-thread [uncommitted|base <branch>|commit <sha>|custom <instructions>]` runs a review in a new conversation. `/review` without that option keeps reviewing in the current conversation. The option appears in the input candidates and hints.
 
 - **Protocol:** on every supported version, the extension sends `thread/start` and then `review/start` with `inline` delivery to the new thread ID. It never sends `detached`.
-- **Inherited settings:** working directory, model, service tier, approval policy, approvals reviewer, and sandbox mode or permission profile. Permissions are never widened. If a setting cannot be inherited, no conversation is created and the reason is displayed.
-- **History:** the new conversation does not inherit the source history. A user who needs it runs `/fork` and gives the instruction there.
+- **Inherited settings:** working directory, model, service tier, approval policy, approvals reviewer, and sandbox mode or permission profile. A named profile exists only on the experimental surface, so it is sent as `permissions` when experimental is negotiated, and the stable surface sends `sandbox`. Permissions are never widened. If a setting cannot be inherited, no conversation is created and the reason is displayed. If `thread/start` reports other permissions, the conversation is kept and the review does not start.
+- **History:** the new conversation does not inherit the source history. A user who needs it runs `/fork` and gives the instruction there. The history list shows it by its preview, which is the review prompt, because the server gives it no name.
 - **Selection:** the UI selection and `ActiveThreadId` stay on the original conversation until the review has started. On success, the extension switches to the new conversation, joins it, and shows progress.
 - **Failure:** a failure after the conversation is created keeps the conversation and explains what happened. Nothing is deleted or resent automatically.
 - **Unknown outcome:** a disconnect or missing response is not treated as started. The user is guided to the history.
@@ -154,7 +154,7 @@ On 0.166 or later, `account/usage/read` receives `threadId`.
 
 ### Network diagnostics
 
-Local connections on 0.166 or later run `codex doctor --network-only` with the resolved CLI path, a timeout, and `ISecretRedactor`. Remote connections show the procedure to run on the server.
+The `/doctor` slash command starts the check. Local connections on 0.166 or later run `codex doctor --network-only` with the resolved CLI path, a timeout, and `ISecretRedactor`. Remote connections show the procedure to run on the server.
 
 ## 7. Contract and implementation structure
 

@@ -120,7 +120,9 @@ while (await Console.In.ReadLineAsync().ConfigureAwait(false) is { } line)
                 ? "codex-cli/0.161.0"
                 : IsScenario("Regression01621")
                     ? "codex-cli/0.162.1"
-                    : IsScenario("Regression01630") ? "codex-cli/0.163.0" : "codex-cli/0.164.0",
+                    : IsScenario("Regression01630")
+                        ? "codex-cli/0.163.0"
+                        : IsScenario("Current01660") ? "codex-cli/0.166.0" : "codex-cli/0.164.0",
             codexHome = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".codex"),
             platformFamily = OperatingSystem.IsWindows() ? "windows" : "unix",
             platformOs = OperatingSystem.IsWindows() ? "windows" : OperatingSystem.IsMacOS() ? "macos" : "linux",
@@ -130,6 +132,22 @@ while (await Console.In.ReadLineAsync().ConfigureAwait(false) is { } line)
         "thread/fork" => ThreadResponse(
             new { id = $"fake-thread-{nextThread++}", preview = "Forked fake thread", cwd = Environment.CurrentDirectory }),
         "thread/list" => ListThreads(),
+        "review/start" => new
+        {
+            reviewThreadId = root.GetProperty("params").GetProperty("threadId").GetString(),
+            turn = new { id = $"fake-review-turn-{nextThread}" },
+        },
+        "account/usage/read" => new
+        {
+            summary = new { },
+            threadUsage = new
+            {
+                threadId = root.GetProperty("params").GetProperty("threadId").GetString(),
+                groups = Array.Empty<object>(),
+                estimatedUsageCreditsMicros = 1_500_000L,
+                estimatedUsageUsdMicros = (long?)null,
+            },
+        },
         "thread/read" => ReadThread(root.GetProperty("params")),
         "thread/attachment/list" => ListAttachments(root.GetProperty("params")),
         "thread/attachment/add" => AddAttachment(root.GetProperty("params")),
@@ -682,10 +700,11 @@ static string RepoSkillPath(params string[] segments)
 static string UserSkillPath(params string[] segments)
     => Path.Combine([Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".codex", "skills", .. segments]);
 
-static object ThreadResponse(object thread) => new
+// activePermissionProfile exists only on the experimental surface, as on a real app-server.
+object ThreadResponse(object thread) => new
 {
     thread,
-    activePermissionProfile = new { id = ":workspace" },
+    activePermissionProfile = experimentalApiEnabled ? new { id = ":workspace" } : null,
     approvalPolicy = "on-request",
     approvalsReviewer = "user",
     sandbox = new { type = "workspaceWrite" },

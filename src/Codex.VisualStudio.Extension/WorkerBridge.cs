@@ -72,6 +72,8 @@ internal interface IWorkerBridge : IAsyncDisposable
 
     Task<ThreadPage> ListThreadsAsync(ListThreadsRequest request, CancellationToken cancellationToken);
 
+    Task<ThreadListScopesResult> GetThreadListScopesAsync(GetThreadListScopesRequest request, CancellationToken cancellationToken);
+
     Task<ThreadReadResult> ReadThreadAsync(ReadThreadRequest request, CancellationToken cancellationToken);
 
     Task<UpdateThreadReadStateResult> UpdateThreadReadStateAsync(UpdateThreadReadStateRequest request, CancellationToken cancellationToken);
@@ -162,6 +164,10 @@ internal interface IWorkerBridge : IAsyncDisposable
         });
 
     Task<RateLimitsResult> GetRateLimitsAsync(GetRateLimitsRequest request, CancellationToken cancellationToken);
+
+    Task<ThreadUsageResult> GetThreadUsageAsync(GetThreadUsageRequest request, CancellationToken cancellationToken);
+
+    Task<NetworkDiagnosticsResult> RunNetworkDiagnosticsAsync(RunNetworkDiagnosticsRequest request, CancellationToken cancellationToken);
 
     Task ResolveApprovalAsync(ResolveApprovalRequest request, CancellationToken cancellationToken);
 
@@ -361,6 +367,9 @@ public sealed class WorkerBridge : IWorkerBridge, ICodexWorkerObserver
     public Task<ThreadPage> ListThreadsAsync(ListThreadsRequest request, CancellationToken cancellationToken)
         => rpc!.InvokeWithCancellationAsync<ThreadPage>("worker/thread/list", new object[] { request }, cancellationToken);
 
+    public Task<ThreadListScopesResult> GetThreadListScopesAsync(GetThreadListScopesRequest request, CancellationToken cancellationToken)
+        => RequireRpc().InvokeWithCancellationAsync<ThreadListScopesResult>("worker/threads/scopes", new object[] { request }, cancellationToken);
+
     public Task<ThreadReadResult> ReadThreadAsync(ReadThreadRequest request, CancellationToken cancellationToken)
         => RequireRpc().InvokeWithCancellationAsync<ThreadReadResult>(
             "worker/thread/read",
@@ -547,6 +556,18 @@ public sealed class WorkerBridge : IWorkerBridge, ICodexWorkerObserver
     public Task<RateLimitsResult> GetRateLimitsAsync(GetRateLimitsRequest request, CancellationToken cancellationToken)
         => RequireRpc().InvokeWithCancellationAsync<RateLimitsResult>(
             "worker/account/rateLimits",
+            new object[] { request },
+            cancellationToken);
+
+    public Task<NetworkDiagnosticsResult> RunNetworkDiagnosticsAsync(RunNetworkDiagnosticsRequest request, CancellationToken cancellationToken)
+        => RequireRpc().InvokeWithCancellationAsync<NetworkDiagnosticsResult>(
+            "worker/diagnostics/network",
+            new object[] { request },
+            cancellationToken);
+
+    public Task<ThreadUsageResult> GetThreadUsageAsync(GetThreadUsageRequest request, CancellationToken cancellationToken)
+        => RequireRpc().InvokeWithCancellationAsync<ThreadUsageResult>(
+            "worker/account/threadUsage",
             new object[] { request },
             cancellationToken);
 
