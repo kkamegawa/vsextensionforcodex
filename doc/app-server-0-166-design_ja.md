@@ -23,7 +23,7 @@ Visual Studio拡張機能をCodex App Server 0.166.0で検証し、0.165と0.166
 | 0.166 | `detached` レビュー配信の削除(openai/codex#57667) | `Detached` を廃止し、別会話レビューを新機能として追加する | 1, 2 |
 | 0.166 | 項目時刻、構造化プロバイダーエラー、`policyCapacityUnavailable` | 投影し、復旧導線を設ける | 1 |
 | 0.166 | スレッドのアンロード既定60秒(openai/codex#57242) | 回帰対象にする | 1 |
-| 0.166 | 質問のMarkdown、会話の選択と検索 | 実装する | 2 |
+| 0.166 | 質問のMarkdown、会話の選択と検索 | 新しいサーバーメソッドもワイヤー形式も不要なため、拡張機能側ですべての対応版に実装する。版による制限なし | 2 |
 | 0.166 | USD利用額、ネットワーク診断 | 実装する | 2 |
 | 0.166 | 関連分岐(openai/codex#57256) | Experimental有効時に利用する。導入版は0.166とする | 3 |
 | 0.166 | ワークスペース切替 | Experimental有効時に利用する | 3 |
@@ -184,7 +184,7 @@ Vertex AI、Bedrock、Terraはサーバーのモデル一覧から取得しま�
 
 | 経路 | 取得元 | 値 |
 | --- | --- | --- |
-| 通知と履歴 | `error`、`turn/completed`、履歴項目 | `policyCapacityUnavailable`。既存の安全ポリシー理由と区別する |
+| 通知と履歴 | `error`、`turn/completed`、`thread/turns/list` の `Turn.error.codexErrorInfo` | `policyCapacityUnavailable`。既存の安全ポリシー理由と区別する |
 | JSON-RPCエラーの `data` | 拒否された要求 | `modelProviderMismatch`、`modelProviderNotConfigured`、`modelProviderPolicyConflict`。未知の値は通常のエラーとして表示する |
 
 サイズ制限と秘密情報の除去は維持します。
