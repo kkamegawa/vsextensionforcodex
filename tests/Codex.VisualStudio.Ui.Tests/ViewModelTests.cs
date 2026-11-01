@@ -9280,9 +9280,17 @@ public sealed partial class ViewModelTests
 
         public Func<LogoutAccountRequest, CancellationToken, Task<AccountStatus>>? LogoutHandler { get; set; }
 
+        public ThreadListScopesResult ThreadListScopesResult { get; set; } = new();
+
+        public List<IReadOnlyList<string>?> ListedWorkingDirectories { get; } = [];
+
+        public Task<ThreadListScopesResult> GetThreadListScopesAsync(GetThreadListScopesRequest request, CancellationToken cancellationToken)
+            => Task.FromResult(ThreadListScopesResult);
+
         public async Task<ThreadPage> ListThreadsAsync(ListThreadsRequest request, CancellationToken cancellationToken)
         {
             ListThreadsCallCount++;
+            ListedWorkingDirectories.Add(request.WorkingDirectories);
             ThreadPage page = await (ListThreadsHandler?.Invoke(request.Cursor, cancellationToken)
                 ?? Task.FromResult(new ThreadPage()));
             if (!PreserveThreadPageOwner)
@@ -9484,10 +9492,13 @@ public sealed partial class ViewModelTests
         public Task<CompactThreadResult> CompactThreadAsync(CompactThreadRequest request, CancellationToken cancellationToken)
             => CompactThreadHandler?.Invoke(request, cancellationToken) ?? Task.FromResult(new CompactThreadResult());
 
+        public Func<StartReviewRequest, CancellationToken, Task<StartReviewResult>>? StartReviewHandler { get; set; }
+
         public Task<StartReviewResult> StartReviewAsync(StartReviewRequest request, CancellationToken cancellationToken)
         {
             ReviewCallCount++;
-            return Task.FromResult(new StartReviewResult { TurnId = "turn-review" });
+            return StartReviewHandler?.Invoke(request, cancellationToken)
+                ?? Task.FromResult(new StartReviewResult { TurnId = "turn-review" });
         }
 
         public List<ForkThreadRequest> ForkThreadRequests { get; } = [];
@@ -9563,6 +9574,21 @@ public sealed partial class ViewModelTests
         {
             RateLimitCallCount++;
             return RateLimitHandler?.Invoke(RateLimitCallCount) ?? Task.FromResult(RateLimitsResult);
+        }
+
+        public NetworkDiagnosticsResult NetworkDiagnosticsResult { get; set; } = new();
+
+        public Task<NetworkDiagnosticsResult> RunNetworkDiagnosticsAsync(RunNetworkDiagnosticsRequest request, CancellationToken cancellationToken)
+            => Task.FromResult(NetworkDiagnosticsResult);
+
+        public ThreadUsageResult ThreadUsageResult { get; set; } = new() { IsSupported = false };
+
+        public List<string> ThreadUsageRequests { get; } = [];
+
+        public Task<ThreadUsageResult> GetThreadUsageAsync(GetThreadUsageRequest request, CancellationToken cancellationToken)
+        {
+            ThreadUsageRequests.Add(request.ThreadId);
+            return Task.FromResult(ThreadUsageResult);
         }
 
         public Task ResolveApprovalAsync(ResolveApprovalRequest request, CancellationToken cancellationToken)

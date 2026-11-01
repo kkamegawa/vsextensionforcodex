@@ -939,3 +939,12 @@ Tracking: [#240](https://github.com/kkamegawa/vsextensionforcodex/issues/240) wi
 - [x] Created the parent Issue and four native sub-issues with their blocking order, and read back the hierarchy (`subIssuesSummary.total` = 4).
 - [x] Published the plan to the wiki as `codex-cli-0-166-support` in English and Japanese, added both Home rows, and passed the wiki route validation.
 - [x] Addressed the PR review of the feature tier table: question Markdown and conversation text stay in Baseline, and the adopted-changes table in both design documents now states that they apply to every supported version with no version gate. The approved scope is unchanged.
+
+### 2026-11-01: Codex App Server 0.166.0 stable features
+
+Tracking: [#242](https://github.com/kkamegawa/vsextensionforcodex/issues/242). All seven tasks are implemented and pass automated tests, but the stage stays open. Task and acceptance evidence: [English](task-app-server-0-166.md) · [日本語](task-app-server-0-166_ja.md). Implementation record: [English](implementation-app-server-0-166.md) · [日本語](implementation-app-server-0-166_ja.md).
+
+- [x] Debug and Release Core (548) and UI (592) tests passed with no failures. Debug and Release solution builds had zero warnings. The Release VSIX inspection and contract manifest validator passed. One earlier Release Core run reported one extra failure whose name was not captured; it did not recur in the seven later runs.
+- [x] `verify-contract-surface.ps1` passed for 0.161.0 and 0.166.0 on both surfaces. The other four versions were not rerun after `account/usage/read` was added to `methodsByVersion`.
+- [x] Real CLI: the 0.161.0 review start and history row, and the 0.166.0 schema, completed reviews, and `codex doctor` run were confirmed. `review_model` precedence is not observable through the protocol.
+- [ ] Experimental Instance screenshot acceptance, including `/doctor` from the extension, remains open.

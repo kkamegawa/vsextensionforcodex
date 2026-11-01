@@ -30,3 +30,16 @@ item の `startedAtMs` と `completedAtMs` は、値がない場合に entry の
 ## Visual acceptance の制約
 
 変更対象に Visual Studio の UI 状態が含まれます。このセッションでは Computer Use で Visual Studio を確認しようとしましたが、`sky.list_apps()` が 2 回タイムアウトしました。skill の復旧手順に従い再試行後に停止したため、スクリーンショットによる表示確認はできていません。自動 UI テストは成功していますが、メンテナーの実画面確認は保留です。
+
+## Stage 2: 安定機能
+
+追跡 Issue: [#242](https://github.com/kkamegawa/vsextensionforcodex/issues/242)。設計どおり Worker contract は v27 のままです。未完了の項目は[作業記録](task-app-server-0-166_ja.md)にあります。
+
+- **レビュー:** `ReviewPlacement.NewThread` は `CodexSessionService.Review.cs` で処理します。設定は有効な会話の実効状態から取得し、対応付けられない値があれば `thread/start` の前に止めます。名前付きプロファイルの項目は Experimental 面にしかないため、Stable 面では `sandbox` を送ります。応答は元の会話と比較し、異なる権限が報告された場合は会話を残してレビューを開始しません。`ActiveThreadId` は `review/start` の成功後にのみ移動します。結果は Started、NotCreated、CreatedNotStarted、Unknown に分かれ、自動再送はしません。
+- **履歴スコープ:** `GitWorktreeScope` は読み取り専用の Git コマンドをタイムアウト付きで実行し、失敗時はスコープを表示しません。フォルダーの組はスコープ選択時に固定し、スコープを変えるとカーソルを破棄し、遅れた応答は世代で破棄します。絞り込み中の一覧を根拠に、キュー済みコマンドを削除扱いで取り消すことはありません。開いている会話の行も残します。
+- **質問:** 質問文と選択肢の説明は `ToSafeTextAndBlocks` を使います。`AppendUserInputResultItem` は送信した回答を固定の確認文としてのみ表示し、合成回答は既存の `ToSafeText` 経路を通るユーザーメッセージとして送るため、回答専用の描画処理は不要です。
+- **会話テキスト:** 履歴全体を先にメモリへ読み込むため、失敗やキャンセルでは何も開きません。`ConversationTextStore` は所有者ごとに分けた一時フォルダーへ、生成したファイル名で書き込みます。タブを閉じるとファイルを削除し、起動時に 24 時間より古い未使用ファイルを削除します。
+- **利用額:** 値は `long?` のマイクロ単位で保持します。上限情報は 60 秒キャッシュしますが、別の会話に移ると金額は必ず読み直します。
+- **診断:** `BoundedProcessRunner` は `/doctor` をシェルなしで起動し、出力に上限を設け、60 秒のタイムアウトでプロセスツリーを終了します。`--no-color --ascii` で端末制御コードを除き、出力は `ISecretRedactor` を通します。
+
+実 CLI の確認は 0.161.0 と 0.166.0 を使い、使い捨てリポジトリで実施しました。テスト用の会話は削除済みです。0.161.0 のターンは 150 秒で打ち切ったため、結果の範囲は開始と履歴行の表示のみです。0.166.0 の 2 ターンは完了しました。0.166.0 CLI は `scripts/install-codex.ps1` で導入し、固定ハッシュを検証しました。レビューターンが使ったモデルはプロトコルに現れないため、`review_model` の優先順位は観測できませんでした。Release VSIX 検査の結果は `doc/task.md` に記録しています。

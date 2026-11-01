@@ -21,6 +21,23 @@ public sealed class UsagePresentation : ObservableObject
     private string secondaryText = string.Empty;
     private string creditsText = string.Empty;
     private string updatedText = string.Empty;
+    private bool hasThreadUsage;
+    private string threadUsageText = string.Empty;
+    private string limitsSlashStatusText = "Usage data is unavailable.";
+
+    [DataMember]
+    public bool HasThreadUsage
+    {
+        get => hasThreadUsage;
+        private set => SetProperty(ref hasThreadUsage, value);
+    }
+
+    [DataMember]
+    public string ThreadUsageText
+    {
+        get => threadUsageText;
+        private set => SetProperty(ref threadUsageText, value);
+    }
 
     [DataMember]
     public bool HasData
@@ -133,12 +150,50 @@ public sealed class UsagePresentation : ObservableObject
         AutomationName = "Codex usage";
         AutomationHelpText = "Usage data is unavailable.";
         StatusText = "Usage data is unavailable.";
-        SlashStatusText = "Usage data is unavailable.";
+        limitsSlashStatusText = "Usage data is unavailable.";
+        SlashStatusText = limitsSlashStatusText;
         PrimaryText = string.Empty;
         SecondaryText = string.Empty;
         CreditsText = string.Empty;
         UpdatedText = string.Empty;
+        HasThreadUsage = false;
+        ThreadUsageText = string.Empty;
     }
+
+    /// <summary>Shows only amounts the server reported, each under its own label.</summary>
+    public void UpdateThreadUsage(ThreadUsageResult? result)
+    {
+        var lines = new List<string>();
+        if (result is { IsSupported: true })
+        {
+            if (result.NativeUsageUsdMicros is long native)
+            {
+                lines.Add($"This conversation: {FormatUsd(native)}");
+            }
+
+            if (result.EstimatedUsageUsdMicros is long estimatedUsd)
+            {
+                lines.Add($"This conversation (estimated): {FormatUsd(estimatedUsd)}");
+            }
+
+            if (result.EstimatedUsageCreditsMicros is long estimatedCredits)
+            {
+                lines.Add($"This conversation (estimated credits): {FormatMicros(estimatedCredits)}");
+            }
+        }
+
+        ThreadUsageText = string.Join("\r\n", lines);
+        HasThreadUsage = lines.Count > 0;
+        SlashStatusText = HasThreadUsage
+            ? string.Concat(limitsSlashStatusText, "\r\n", ThreadUsageText)
+            : limitsSlashStatusText;
+    }
+
+    private static string FormatUsd(long micros)
+        => string.Concat(micros < 0 ? "-$" : "$", FormatMicros(Math.Abs((decimal)micros)));
+
+    private static string FormatMicros(decimal micros)
+        => (micros / 1_000_000m).ToString("0.00####", CultureInfo.InvariantCulture);
 
     public void Update(RateLimitsResult? result, DateTimeOffset refreshedAt, SafeMarkdownService markdown)
     {
@@ -166,9 +221,12 @@ public sealed class UsagePresentation : ObservableObject
                 ? "Credit information available."
                 : "Usage data is unavailable.";
         string[] details = [PrimaryText, SecondaryText, CreditsText];
-        SlashStatusText = HasData
+        limitsSlashStatusText = HasData
             ? string.Join("\r\n", details.Where(value => value.Length > 0))
             : "Usage data is unavailable.";
+        SlashStatusText = HasThreadUsage
+            ? string.Concat(limitsSlashStatusText, "\r\n", ThreadUsageText)
+            : limitsSlashStatusText;
         AutomationName = HasData ? $"Codex usage, {StatusText}" : "Codex usage";
         AutomationHelpText = HasData
             ? string.Join(" ", details.Where(value => value.Length > 0))
