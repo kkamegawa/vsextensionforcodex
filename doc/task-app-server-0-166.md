@@ -36,7 +36,9 @@ Tracking: [#242](https://github.com/kkamegawa/vsextensionforcodex/issues/242). T
 - [x] Guard turn dispatch during connection recovery and bridge replacement. An unavailable Worker RPC is treated as a known not-dispatched request instead of a null reference.
 - [x] Share account/model/permission/usage initialization between ordinary connection and recovery. Reproduce the missing catalog read before the fix (0 calls), verify reloading and preserving the selected model after recovery and a new conversation, and log the loaded extension/Worker build and assembly location.
 - [x] Reproduce stderr-triggered owner invalidation during `thread/start` and `turn/start`: both regression cases failed with `StaleGeneration` before the fix. Keep optional MCP network errors and WebSocket fallback diagnostics from triggering connection recovery, and persist redacted stderr for diagnosis.
-- [x] Latest Release verification including both recovery fixes: Core tests (544 passed, 5 skipped), UI tests (596 passed, 1 skipped), solution build (0 warnings and errors), and VSIX content inspection.
+- [x] Stop forwarding raw stderr/HTTP HTML to the transcript; retain redacted diagnostics with HTML removed and a 2,048-character limit, plus one short network/MCP notice. Three send cases failed with duplicate raw transcript errors before the fix and pass afterward. Independent diff review found no remaining actionable defect in this scope.
+- [x] Review Plan-mode mode serialization and completion against the running 0.166 turn: the turn completed and returned to Ready at 20:07:45; the license question was final model prose, not an extension lifecycle failure. Plan mode remains read-only.
+- [x] Latest Release verification: Core tests (549 passed, 5 skipped), UI tests (596 passed, 1 skipped), solution build (0 warnings and errors), and VSIX content inspection.
 
 ### Real CLI confirmations
 

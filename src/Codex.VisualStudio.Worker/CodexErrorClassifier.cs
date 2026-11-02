@@ -6,6 +6,34 @@
 // substrings only.
 internal static class CodexErrorClassifier
 {
+    internal const int MaximumDiagnosticCharacters = 2048;
+
+    public const string McpAccessDeniedMessage =
+        "An MCP service rejected its connection (HTTP 403). Open MCP details to review the affected service. The conversation can continue.";
+
+    public static string GetNetworkFailureMessage(string line)
+        => line.Contains("rmcp::", StringComparison.OrdinalIgnoreCase)
+            && line.Contains("HTTP 403", StringComparison.OrdinalIgnoreCase)
+                ? McpAccessDeniedMessage
+                : NetworkFailureMessage;
+
+    // HTTP error bodies may contain challenge scripts, cookies, and very large HTML pages.
+    // Keep only the diagnostic prefix and status in persisted/output diagnostics.
+    public static string FormatStandardError(string line)
+    {
+        int html = line.IndexOf("<html", StringComparison.OrdinalIgnoreCase);
+        int doctype = line.IndexOf("<!doctype html", StringComparison.OrdinalIgnoreCase);
+        int bodyStart = html < 0 ? doctype : doctype < 0 ? html : Math.Min(html, doctype);
+        string diagnostic = bodyStart < 0
+            ? line
+            : string.Concat(line.AsSpan(0, bodyStart), "[HTML response omitted]");
+        diagnostic = diagnostic.Replace('\r', ' ').Replace('\n', ' ').Trim();
+        const string Truncated = " [truncated]";
+        return diagnostic.Length <= MaximumDiagnosticCharacters
+            ? diagnostic
+            : string.Concat(diagnostic.AsSpan(0, MaximumDiagnosticCharacters - Truncated.Length), Truncated);
+    }
+
     private static readonly string[] NetworkFailureSignatures =
     [
         "os error 11003", // WSANO_RECOVERY - non-recoverable DNS failure

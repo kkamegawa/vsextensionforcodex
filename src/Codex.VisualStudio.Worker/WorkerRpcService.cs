@@ -1684,12 +1684,8 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
 
     private async Task OnStandardErrorReceivedAsync(string text)
     {
-        WorkerDiagnostics.Write($"app-server stderr: {redactor.Redact(text)}");
-        // Forward the raw (already redacted) line to the transcript and output
-        // log, preserving existing behavior.
-        await PublishEventAsync(
-            new ConversationEvent { Kind = ConversationEventKind.Error, Text = text },
-            CancellationToken.None).ConfigureAwait(false);
+        string diagnostic = CodexErrorClassifier.FormatStandardError(redactor.Redact(text));
+        WorkerDiagnostics.Write($"app-server stderr: {diagnostic}");
 
         // stderr also contains optional MCP failures and recoverable transport fallbacks.
         // It does not prove that the app-server RPC connection was lost. Invalidating the
@@ -1702,7 +1698,7 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
                 new ConversationEvent
                 {
                     Kind = ConversationEventKind.Error,
-                    Text = CodexErrorClassifier.NetworkFailureMessage,
+                    Text = CodexErrorClassifier.GetNetworkFailureMessage(text),
                 },
                 CancellationToken.None).ConfigureAwait(false);
         }

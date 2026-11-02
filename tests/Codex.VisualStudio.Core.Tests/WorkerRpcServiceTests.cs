@@ -889,6 +889,7 @@ public sealed class WorkerRpcServiceTests
     [TestMethod]
     [DataRow("thread/start", "ERROR rmcp::transport::worker: error sending request for url (https://example.invalid/apps)")]
     [DataRow("turn/start", "WARN responses_websocket: failed to connect to websocket; falling back to HTTP")]
+    [DataRow("thread/start", "ERROR rmcp::transport::worker: Transport channel closed, HTTP 403: <!DOCTYPE html><html>private-challenge-body</html>")]
     public async Task NetworkStderrDuringSendDoesNotInvalidateTheOwner(string phase, string stderr)
     {
         var connection = new StubConnection();
@@ -929,6 +930,9 @@ public sealed class WorkerRpcServiceTests
         Assert.AreEqual(connected.Target!.OwnerGeneration, current.Target!.OwnerGeneration);
         Assert.AreEqual(connected.Target.Generation, current.Target.Generation);
         Assert.AreEqual(0, host.Stops);
+        ConversationEvent[] errors = client.ConversationEvents.Where(item => item.Kind == ConversationEventKind.Error).ToArray();
+        Assert.HasCount(1, errors, "Raw stderr must not be forwarded as a second transcript error.");
+        Assert.IsFalse(errors.Any(item => item.Text?.Contains("private-challenge-body", StringComparison.Ordinal) == true));
     }
 
     [TestMethod]
@@ -1748,6 +1752,8 @@ public sealed class WorkerRpcServiceTests
 
         public WorkerStatus[] StateChanges => observer.StateChanges;
 
+        public ConversationEvent[] ConversationEvents => observer.ConversationEvents;
+
         public ValueTask DisposeAsync()
         {
             workerRpc.Dispose();
@@ -1759,6 +1765,7 @@ public sealed class WorkerRpcServiceTests
         {
             private readonly object gate = new();
             private readonly List<WorkerStatus> stateChanges = [];
+            private readonly List<ConversationEvent> conversationEvents = [];
             private readonly TaskCompletionSource<WorkerStatus> turnIdSeen =
                 new(TaskCreationOptions.RunContinuationsAsynchronously);
             private readonly TaskCompletionSource<WorkerStatus> effectiveStateSeen =
@@ -1785,7 +1792,15 @@ public sealed class WorkerRpcServiceTests
             [JsonRpcMethod("observer/conversationEvent", UseSingleObjectParameterDeserialization = true)]
             public void OnConversationEvent(ConversationEventArgs args)
             {
-                if (args.Notification?.Value.Text == CodexErrorClassifier.NetworkFailureMessage)
+                if (args.Notification?.Value is { } value)
+                {
+                    lock (gate)
+                    {
+                        conversationEvents.Add(value);
+                    }
+                }
+
+                if (args.Notification?.Value.Text is CodexErrorClassifier.NetworkFailureMessage or CodexErrorClassifier.McpAccessDeniedMessage)
                 {
                     networkDiagnosticSeen.TrySetResult();
                 }
@@ -1800,6 +1815,17 @@ public sealed class WorkerRpcServiceTests
                     lock (gate)
                     {
                         return [.. stateChanges];
+                    }
+                }
+            }
+
+            public ConversationEvent[] ConversationEvents
+            {
+                get
+                {
+                    lock (gate)
+                    {
+                        return [.. conversationEvents];
                     }
                 }
             }
