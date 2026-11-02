@@ -1027,6 +1027,63 @@ public sealed partial class CodexSessionServiceTests
                             turnId = "turn-1",
                             item = new { id = "plan-1", type = "plan", text = "final history plan" },
                         },
+                        new
+                        {
+                            turnId = "turn-1",
+                            item = new
+                            {
+                                id = "reasoning-1", type = "reasoning",
+                                summary = new[] { "日本語の要約", "Second summary line" },
+                                content = new[] { "Private reasoning that must not be displayed" },
+                            },
+                        },
+                        new
+                        {
+                            turnId = "turn-1",
+                            item = new
+                            {
+                                id = "command-1", type = "commandExecution",
+                                command = "dotnet build",
+                                aggregatedOutput = "Build succeeded. token sk-abcdefghijklmnopqrstuvwxyz0123456789",
+                            },
+                        },
+                        new
+                        {
+                            turnId = "turn-1",
+                            item = new
+                            {
+                                id = "reasoning-long-1", type = "reasoning",
+                                summary = new[] { new string('あ', 22_000) },
+                            },
+                        },
+                        new
+                        {
+                            turnId = "turn-1",
+                            item = new
+                            {
+                                id = "reasoning-boundary-1", type = "reasoning",
+                                summary = new[] { "12345", new string('x', 64 * 1024 - 5) },
+                            },
+                        },
+                        new
+                        {
+                            turnId = "turn-1",
+                            item = new
+                            {
+                                id = "reasoning-empty-prefix-1", type = "reasoning",
+                                summary = Enumerable.Repeat(string.Empty, 512).Append("beyond item bound").ToArray(),
+                            },
+                        },
+                        new
+                        {
+                            turnId = "turn-1",
+                            item = new
+                            {
+                                id = "command-boundary-1", type = "commandExecution",
+                                command = "12345",
+                                aggregatedOutput = new string('x', 64 * 1024 - 5),
+                            },
+                        },
                     },
                     nextCursor = (string?)null,
                 })
@@ -1043,6 +1100,27 @@ public sealed partial class CodexSessionServiceTests
         ThreadHistoryItem planItem = page.Items.Single(item => item.Type == "plan");
         Assert.IsTrue(planItem.Plan?.IsComplete);
         Assert.AreEqual("final history plan", planItem.Plan?.Explanation);
+        ThreadHistoryItem reasoningItem = page.Items.Single(item => item.Id == "reasoning-1");
+        Assert.AreEqual($"日本語の要約{Environment.NewLine}Second summary line", reasoningItem.Text);
+        Assert.IsFalse(reasoningItem.Text!.Contains("Private reasoning", StringComparison.Ordinal));
+        Assert.AreEqual(reasoningItem.Text, reasoningItem.Parts.Single(part => part.Kind == ArtifactPartKind.Text).Text);
+        ThreadHistoryItem commandItem = page.Items.Single(item => item.Id == "command-1");
+        StringAssert.StartsWith(commandItem.Text!, $"dotnet build{Environment.NewLine}Build succeeded.");
+        Assert.IsFalse(commandItem.Text!.Contains("sk-abcdefghijklmnopqrstuvwxyz0123456789", StringComparison.Ordinal));
+        StringAssert.Contains(commandItem.Text, "[REDACTED]");
+        Assert.AreEqual(commandItem.Text, commandItem.Parts.Single(part => part.Kind == ArtifactPartKind.Text).Text);
+        ThreadHistoryItem longReasoningItem = page.Items.Single(item => item.Id == "reasoning-long-1");
+        Assert.IsTrue(longReasoningItem.Parts.Single(part => part.Kind == ArtifactPartKind.Text).IsLocallyTruncated);
+        Assert.IsTrue(System.Text.Encoding.UTF8.GetByteCount(longReasoningItem.Text!) <= 64 * 1024);
+        ThreadHistoryItem reasoningBoundaryItem = page.Items.Single(item => item.Id == "reasoning-boundary-1");
+        Assert.IsTrue(reasoningBoundaryItem.Parts.Single(part => part.Kind == ArtifactPartKind.Text).IsLocallyTruncated);
+        Assert.IsTrue(System.Text.Encoding.UTF8.GetByteCount(reasoningBoundaryItem.Text!) <= 64 * 1024);
+        ThreadHistoryItem reasoningEmptyPrefixItem = page.Items.Single(item => item.Id == "reasoning-empty-prefix-1");
+        Assert.IsFalse(reasoningEmptyPrefixItem.Parts.Single(part => part.Kind == ArtifactPartKind.Text).IsLocallyTruncated);
+        Assert.AreEqual(string.Empty, reasoningEmptyPrefixItem.Text);
+        ThreadHistoryItem commandBoundaryItem = page.Items.Single(item => item.Id == "command-boundary-1");
+        Assert.IsTrue(commandBoundaryItem.Parts.Single(part => part.Kind == ArtifactPartKind.Text).IsLocallyTruncated);
+        Assert.IsTrue(System.Text.Encoding.UTF8.GetByteCount(commandBoundaryItem.Text!) <= 64 * 1024);
 
         await connection.EmitNotificationAsync("item/plan/delta", new
         {

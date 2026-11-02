@@ -6060,6 +6060,29 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         {
             AppendBoundedHistoryText(text, agentText);
         }
+        else if (itemType == "reasoning")
+        {
+            // The summary is the user-facing representation. The content field can
+            // contain private reasoning and must not be exposed in restored history.
+            AppendHistoryStringArray(text, item, "summary");
+        }
+        else if (itemType == "commandExecution")
+        {
+            if (GetString(item, "command") is { } command)
+            {
+                AppendBoundedHistoryText(text, command);
+            }
+
+            if (GetString(item, "aggregatedOutput") is { Length: > 0 } output)
+            {
+                if (text.Length > 0)
+                {
+                    AppendBoundedHistoryText(text, Environment.NewLine);
+                }
+
+                AppendBoundedHistoryText(text, output);
+            }
+        }
         else if (itemType == "userMessage"
             && item.TryGetProperty("content", out JsonElement content)
             && content.ValueKind == JsonValueKind.Array)
@@ -6078,6 +6101,33 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         }
 
         return text.ToString();
+    }
+
+    private static void AppendHistoryStringArray(StringBuilder target, JsonElement item, string propertyName)
+    {
+        if (!item.TryGetProperty(propertyName, out JsonElement values) || values.ValueKind != JsonValueKind.Array)
+        {
+            return;
+        }
+
+        foreach (JsonElement value in values.EnumerateArray().Take(512))
+        {
+            if (value.ValueKind != JsonValueKind.String || string.IsNullOrEmpty(value.GetString()))
+            {
+                continue;
+            }
+
+            if (target.Length > 0)
+            {
+                AppendBoundedHistoryText(target, Environment.NewLine);
+            }
+
+            AppendBoundedHistoryText(target, value.GetString()!);
+            if (Encoding.UTF8.GetByteCount(target.ToString()) >= MaxHistoryTextBytes)
+            {
+                break;
+            }
+        }
     }
 
     private static void AppendBoundedHistoryText(StringBuilder target, string value)

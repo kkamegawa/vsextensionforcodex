@@ -184,12 +184,41 @@ public sealed class InteractionThemePresentationTests
     public void Xaml_ProposedPlanUsesBlockRenderingInsteadOfRawText()
     {
         XDocument document = LoadXaml();
-        XElement rawPlanText = document
-            .Descendants(Presentation + "TextBlock")
-            .Single(element => element.Attribute("Text")?.Value == "{Binding PlanDeltaText}");
+        XElement transcript = document
+            .Descendants(Presentation + "ListBox")
+            .Single(element => element.Attribute("ItemsSource")?.Value == "{Binding Items}");
+        XElement rawPlanText = transcript
+            .Descendants(Presentation + "TextBox")
+            .Single(element => element.Attribute("Text")?.Value == "{Binding PlanDeltaText, Mode=OneWay}");
+        Assert.AreEqual("{Binding PlanDeltaText, Mode=OneWay}", rawPlanText.Attribute("Text")?.Value);
+        Assert.AreEqual("{StaticResource SelectableTranscriptTextStyle}", rawPlanText.Attribute("Style")?.Value);
         StringAssert.Contains(rawPlanText.Attribute("Visibility")?.Value, "ShowPlanDeltaText");
         Assert.IsTrue(document.Descendants(Presentation + "TextBlock")
             .Any(element => element.Attribute("Text")?.Value == "{Binding DisplayRole}"));
+
+        XElement blockRenderer = transcript
+            .Descendants(Presentation + "ItemsControl")
+            .Single(element => element.Attribute("ItemsSource")?.Value == "{Binding Blocks}");
+        Assert.IsTrue(blockRenderer
+            .Element(Presentation + "ItemsControl.Style")!
+            .Descendants(Presentation + "DataTrigger")
+            .Any(element => element.Attribute("Binding")?.Value == "{Binding UsesBlockRendering}"
+                && element.Attribute("Value")?.Value == "True"),
+            "Proposed plans must continue to use the structured Markdown block renderer.");
+        Assert.IsTrue(blockRenderer.Descendants(Presentation + "TextBox")
+            .Any(element => element.Attribute("Text")?.Value == "{Binding Text, Mode=OneWay}"),
+            "Markdown block text must be selectable without replacing the structured block renderer.");
+
+        XElement structuredSteps = transcript
+            .Descendants(Presentation + "ItemsControl")
+            .Single(element => element.Attribute("ItemsSource")?.Value == "{Binding StructuredPlanSteps}");
+        Assert.AreEqual(
+            "{Binding HasStructuredPlanSteps, Converter={StaticResource BoolToVis}}",
+            structuredSteps.Attribute("Visibility")?.Value);
+        Assert.IsTrue(structuredSteps.Descendants(Presentation + "TextBox")
+            .Any(element => element.Attribute("Text")?.Value == "{Binding Text, Mode=OneWay}"
+                && element.Attribute("Style")?.Value == "{StaticResource SelectableTranscriptTextStyle}"),
+            "Structured plan step text must use the read-only selectable presentation without changing block rendering.");
     }
 
     private static XElement GetImplicitStyle(XDocument document, string targetType)
