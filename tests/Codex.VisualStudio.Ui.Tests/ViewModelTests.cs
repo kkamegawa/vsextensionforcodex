@@ -3806,7 +3806,7 @@ public sealed partial class ViewModelTests
     // object and every binding to it fails silently (blank text, empty button content).
     private static readonly Type[] RemoteUiContextTypes =
         [
-            typeof(ChatViewModel), typeof(ChatItemViewModel), typeof(ChatBlockViewModel), typeof(ApprovalViewModel),
+            typeof(ChatViewModel), typeof(ChatItemViewModel), typeof(ChatBlockViewModel), typeof(TranscriptSearchResultViewModel), typeof(ApprovalViewModel),
             typeof(InteractionCardViewModel), typeof(ApprovalChoiceViewModel), typeof(PermissionSelectionViewModel),
             typeof(PermissionGrantOptionViewModel), typeof(McpElicitationViewModel), typeof(McpElicitationFieldViewModel),
             typeof(McpElicitationChoiceViewModel), typeof(InteractionAuthStatusPresentationViewModel),

@@ -12,8 +12,18 @@
        process), so the view model exposes pre-computed bool flags for BooleanToVisibility. -->
   <Grid MinWidth="300"
         MinHeight="360"
+        FocusManager.IsFocusScope="True"
         Background="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBackgroundBrushKey}}"
         TextElement.Foreground="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowTextBrushKey}}">
+    <Grid.Style>
+      <Style TargetType="Grid">
+        <Style.Triggers>
+          <DataTrigger Binding="{Binding IsVisible, ElementName=TranscriptSearchInput}" Value="True">
+            <Setter Property="FocusManager.FocusedElement" Value="{Binding ElementName=TranscriptSearchInput}" />
+          </DataTrigger>
+        </Style.Triggers>
+      </Style>
+    </Grid.Style>
     <Grid.Resources>
       <BooleanToVisibilityConverter x:Key="BoolToVis" />
 
@@ -523,6 +533,7 @@
     </Grid.Resources>
 
     <Grid.InputBindings>
+      <KeyBinding Key="F" Modifiers="Alt+Shift" Command="{Binding OpenTranscriptSearchCommand}" />
       <KeyBinding Key="Return" Modifiers="Control" Command="{Binding SlashCommands.ExecuteKeyCommand}" />
       <KeyBinding Key="Escape" Command="{Binding SlashCommands.ClearKeyCommand}" />
     </Grid.InputBindings>
@@ -974,6 +985,10 @@
             </Popup>
           </Grid>
 
+          <Button Content="&#xE721;" ToolTip="Search conversation (Alt+Shift+F)" Margin="2,0,0,0"
+                  AutomationProperties.Name="Search conversation (Alt+Shift+F)"
+                  Command="{Binding OpenTranscriptSearchCommand}"
+                  Style="{StaticResource IconButtonStyle}" />
           <Button Content="&#xE710;" ToolTip="New thread" Margin="2,0,0,0"
                   Command="{Binding NewThreadCommand}"
                   Style="{StaticResource IconButtonStyle}" />
@@ -1608,6 +1623,65 @@
             </DataTemplate>
           </ListBox.ItemTemplate>
         </ListBox>
+
+        <Border Panel.ZIndex="10" Margin="10" Padding="10" VerticalAlignment="Top" MaxHeight="440"
+                Background="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBackgroundBrushKey}}"
+                BorderBrush="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBorderBrushKey}}"
+                BorderThickness="1" CornerRadius="6"
+                Visibility="{Binding IsTranscriptSearchOpen, Converter={StaticResource BoolToVis}}"
+                AutomationProperties.Name="Search conversation">
+          <Grid>
+            <Grid.RowDefinitions>
+              <RowDefinition Height="Auto" />
+              <RowDefinition Height="Auto" />
+              <RowDefinition Height="Auto" />
+              <RowDefinition Height="*" />
+            </Grid.RowDefinitions>
+            <WrapPanel Grid.Row="0">
+              <TextBlock Text="Search conversation" FontWeight="SemiBold" VerticalAlignment="Center" />
+              <Button Margin="8,0,0,0" Content="Close" Command="{Binding CloseTranscriptSearchCommand}"
+                      Style="{StaticResource SmallRoundButtonStyle}" AutomationProperties.Name="Close conversation search" />
+            </WrapPanel>
+            <Grid Grid.Row="1" Margin="0,6,0,0">
+              <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+              </Grid.ColumnDefinitions>
+              <TextBox x:Name="TranscriptSearchInput" Grid.Column="0" MinWidth="60" Text="{Binding TranscriptSearchText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                       AutomationProperties.Name="Search conversation text">
+                <TextBox.InputBindings>
+                  <KeyBinding Key="Return" Command="{Binding SearchTranscriptCommand}" />
+                  <KeyBinding Key="Escape" Command="{Binding CloseTranscriptSearchCommand}" />
+                </TextBox.InputBindings>
+              </TextBox>
+              <Button Grid.Column="1" Margin="6,0,0,0" Content="Search" Command="{Binding SearchTranscriptCommand}"
+                      Style="{StaticResource SmallRoundButtonStyle}" AutomationProperties.Name="Find conversation matches" />
+            </Grid>
+            <WrapPanel Grid.Row="2" Margin="0,4,0,0">
+              <TextBlock Text="{Binding TranscriptSearchStatusText}" TextWrapping="Wrap" AutomationProperties.LiveSetting="Polite" />
+              <Button Margin="6,0,0,0" Content="Cancel" Command="{Binding CancelTranscriptSearchCommand}"
+                      Style="{StaticResource SmallRoundButtonStyle}"
+                      Visibility="{Binding IsTranscriptSearchLoading, Converter={StaticResource BoolToVis}}" />
+            </WrapPanel>
+            <ListBox Grid.Row="3" Margin="0,6,0,0" MaxHeight="300"
+                     ItemsSource="{Binding TranscriptSearchResults}"
+                     SelectedItem="{Binding SelectedTranscriptSearchResult, Mode=TwoWay}"
+                     ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                     VirtualizingPanel.IsVirtualizing="True"
+                     VirtualizingPanel.VirtualizationMode="Recycling"
+                     AutomationProperties.Name="Conversation search results">
+              <ListBox.ItemTemplate>
+                <DataTemplate>
+                  <StackPanel Margin="0,3">
+                    <TextBlock Text="{Binding PositionText}" />
+                    <TextBlock FontWeight="SemiBold" Text="{Binding Role}" />
+                    <TextBlock Text="{Binding Text}" TextWrapping="Wrap" />
+                  </StackPanel>
+                </DataTemplate>
+              </ListBox.ItemTemplate>
+            </ListBox>
+          </Grid>
+        </Border>
 
         <!-- Welcome / empty state — centered over the (empty) transcript. -->
         <StackPanel Visibility="{Binding IsThreadEmpty, Converter={StaticResource BoolToVis}}"

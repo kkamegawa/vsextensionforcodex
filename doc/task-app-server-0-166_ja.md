@@ -32,7 +32,8 @@
 - [x] 会話の項目に時刻を表示。
 - [x] 0.166 以降で `threadId` 付きの `account/usage/read` を読み、実額 USD、推定 USD、推定クレジットを区別して表示。
 - [x] ローカルの 0.166 接続で `codex doctor --network-only` を実行し、リモート接続では手順を表示する `/doctor` を追加。
-- [x] Debug / Release の Core 548 件、UI 592 件が失敗なしで成功。Debug / Release ビルドは警告 0 件で、Release VSIX 検査と contract manifest validator も成功。
+- [x] 全ページの履歴を検索する Alt+Shift+F の会話内検索を追加。結果を揃えてから表示し、キャンセル、キーボード操作可能な結果一覧、会話切替時の検索状態リセットに対応。
+- [x] 最新の Release 検証: Core テスト 543 件合格・5 件スキップ、UI テスト 596 件合格・1 件スキップ、ソリューションビルドは警告・エラー 0 件、VSIX 内容検査に合格。
 
 ### 実 CLI の確認
 
@@ -51,5 +52,6 @@
 
 ### 未確認
 
+- [ ] Visual Studio で会話検索を確認する。Alt+Shift+F 後のフォーカス、キーボード操作、長い履歴、テーマのコントラスト、狭い幅での結果ペインを対象とする。自動テストと VSIX 検査は実画面確認の代わりにならない。
 - [ ] Visual Studio 上の拡張機能から `/doctor` を実行する。
 - [ ] Experimental Instance で Light、Dark、High Contrast、日本語、狭い幅、キーボード、Narrator のスクリーンショットを取得して判定する。会話テキストタブの選択、コピー、Ctrl+F、F3、閉じたときの削除も対象とする。このセッションには最新の Experimental 配置がなく、Visual Studio の操作権限もクリックのみだった。

@@ -32,7 +32,8 @@ Tracking: [#242](https://github.com/kkamegawa/vsextensionforcodex/issues/242). T
 - [x] Show item times on transcript items.
 - [x] Read `account/usage/read` with `threadId` on 0.166 and later, keeping actual USD, estimated USD, and estimated credits distinct.
 - [x] Add `/doctor`, which runs `codex doctor --network-only` on local 0.166 connections and shows the procedure on remote connections.
-- [x] Pass Debug and Release Core (548) and UI (592) tests with no failures, zero-warning Debug and Release builds, the Release VSIX inspection, and the contract manifest validator.
+- [x] Add Alt+Shift+F in-window conversation search across the full paged history, with complete-result publication, cancellation, keyboard-accessible results, and search-state reset when the conversation changes.
+- [x] Latest Release verification: Core tests (543 passed, 5 skipped), UI tests (596 passed, 1 skipped), solution build (0 warnings and errors), and VSIX content inspection.
 
 ### Real CLI confirmations
 
@@ -51,5 +52,6 @@ Tracking: [#242](https://github.com/kkamegawa/vsextensionforcodex/issues/242). T
 
 ### Not yet verified
 
+- [ ] Verify conversation search in Visual Studio: Alt+Shift+F focus, keyboard navigation, long histories, theme contrast, and the result panel at narrow widths. The automated tests and VSIX inspection do not replace this visual check.
 - [ ] Run `/doctor` from the extension in Visual Studio.
 - [ ] Capture and judge Experimental Instance screenshots for Light, Dark, High Contrast, Japanese, narrow width, keyboard, and Narrator. This includes selection, copy, Ctrl+F, and F3 in the conversation text tab, and its removal on close. This session had no current Experimental deployment and click-only Visual Studio access.
