@@ -887,20 +887,48 @@ public sealed class WorkerRpcServiceTests
     }
 
     [TestMethod]
-    public async Task FirstNetworkFailureOnStandardErrorMarksServerUnavailable()
+    [DataRow("thread/start", "ERROR rmcp::transport::worker: error sending request for url (https://example.invalid/apps)")]
+    [DataRow("turn/start", "WARN responses_websocket: failed to connect to websocket; falling back to HTTP")]
+    public async Task NetworkStderrDuringSendDoesNotInvalidateTheOwner(string phase, string stderr)
     {
         var connection = new StubConnection();
         var host = new FakeProcessHost(connection);
         var session = new CodexSessionService(new ApprovalPolicyEngine(new PathAccessPolicy()), new SecretRedactor());
         await using var worker = new WorkerRpcService(new SecretRedactor(), host, session);
-        await worker.ConnectAsync(Options(), CancellationToken.None);
+        WorkerStatus connected = await worker.ConnectAsync(Options(), CancellationToken.None);
+        await using var client = new ClientChannel(worker);
+        connection.AsyncHandler = async (method, _, cancellationToken) =>
+        {
+            if (method == phase)
+            {
+                host.EmitStandardError(stderr);
+                await client.NetworkDiagnosticSeen.WaitAsync(TimeSpan.FromSeconds(5), cancellationToken);
+            }
 
-        host.EmitStandardError(
-            "ERROR codex_api::endpoint::responses_websocket: failed to connect to websocket: " +
-            "IO error: ... (os error 11003), url: wss://chatgpt.com/backend-api/codex/responses");
+            return method switch
+            {
+                "thread/start" => JsonSerializer.SerializeToElement(new { thread = new { id = "thread-1" } }),
+                "turn/start" => JsonSerializer.SerializeToElement(new { turn = new { id = "turn-1" } }),
+                _ => JsonSerializer.SerializeToElement(new { }),
+            };
+        };
 
-        WorkerStatus degraded = await WaitForStatusAsync(worker, WorkerConnectionState.Degraded);
-        Assert.AreEqual(WorkerRecoveryFailureKind.ServerUnavailable, degraded.RecoveryFailureKind);
+        if (phase == "thread/start")
+        {
+            ThreadSummary thread = await worker.StartThreadAsync(Scoped(worker, new StartThreadRequest()), CancellationToken.None);
+            Assert.AreEqual("thread-1", thread.Id);
+        }
+        else
+        {
+            string turn = await worker.StartTurnAsync(Scoped(worker, new StartTurnRequest { ThreadId = "thread-1", Text = "hello" }), CancellationToken.None);
+            Assert.AreEqual("turn-1", turn);
+        }
+
+        WorkerStatus current = await worker.GetStatusAsync(CancellationToken.None);
+        Assert.AreNotEqual(WorkerConnectionState.Degraded, current.State);
+        Assert.AreEqual(connected.Target!.OwnerGeneration, current.Target!.OwnerGeneration);
+        Assert.AreEqual(connected.Target.Generation, current.Target.Generation);
+        Assert.AreEqual(0, host.Stops);
     }
 
     [TestMethod]
@@ -1714,6 +1742,8 @@ public sealed class WorkerRpcServiceTests
 
         public Task<WorkerStatus> DegradedSeen => observer.DegradedSeen;
 
+        public Task NetworkDiagnosticSeen => observer.NetworkDiagnosticSeen;
+
         public Task<WorkerNotification<AccountStatus>> AccountChangedSeen => observer.AccountChangedSeen;
 
         public WorkerStatus[] StateChanges => observer.StateChanges;
@@ -1737,6 +1767,8 @@ public sealed class WorkerRpcServiceTests
                 new(TaskCreationOptions.RunContinuationsAsynchronously);
             private readonly TaskCompletionSource<WorkerStatus> degradedSeen =
                 new(TaskCreationOptions.RunContinuationsAsynchronously);
+            private readonly TaskCompletionSource networkDiagnosticSeen =
+                new(TaskCreationOptions.RunContinuationsAsynchronously);
             private readonly TaskCompletionSource<WorkerNotification<AccountStatus>> accountChangedSeen =
                 new(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -1747,6 +1779,17 @@ public sealed class WorkerRpcServiceTests
             public Task<WorkerStatus> ReadySeen => readySeen.Task;
 
             public Task<WorkerStatus> DegradedSeen => degradedSeen.Task;
+
+            public Task NetworkDiagnosticSeen => networkDiagnosticSeen.Task;
+
+            [JsonRpcMethod("observer/conversationEvent", UseSingleObjectParameterDeserialization = true)]
+            public void OnConversationEvent(ConversationEventArgs args)
+            {
+                if (args.Notification?.Value.Text == CodexErrorClassifier.NetworkFailureMessage)
+                {
+                    networkDiagnosticSeen.TrySetResult();
+                }
+            }
 
             public Task<WorkerNotification<AccountStatus>> AccountChangedSeen => accountChangedSeen.Task;
 
@@ -1816,6 +1859,12 @@ public sealed class WorkerRpcServiceTests
         {
             [JsonPropertyName("notification")]
             public WorkerNotification<AccountStatus>? Notification { get; set; }
+        }
+
+        private sealed class ConversationEventArgs
+        {
+            [JsonPropertyName("notification")]
+            public WorkerNotification<ConversationEvent>? Notification { get; set; }
         }
     }
 

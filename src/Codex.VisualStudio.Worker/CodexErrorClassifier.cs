@@ -17,7 +17,8 @@ internal static class CodexErrorClassifier
     ];
 
     public const string NetworkFailureMessage =
-        "Cannot reach chatgpt.com. Check your network connection or proxy/TLS settings " +
+        "Codex reported a network request failure. The app-server connection remains active. " +
+        "Check the affected request and your network or proxy/TLS settings " +
         "(HTTP_PROXY / HTTPS_PROXY / ALL_PROXY / NO_PROXY / SSL_CERT_FILE / NODE_EXTRA_CA_CERTS). " +
         "See the Codex output window for details.";
 

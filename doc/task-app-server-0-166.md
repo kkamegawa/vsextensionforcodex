@@ -34,8 +34,8 @@ Tracking: [#242](https://github.com/kkamegawa/vsextensionforcodex/issues/242). T
 - [x] Add `/doctor`, which runs `codex doctor --network-only` on local 0.166 connections and shows the procedure on remote connections.
 - [x] Add Alt+Shift+F in-window conversation search across the full paged history, with complete-result publication, cancellation, keyboard-accessible results, and search-state reset when the conversation changes.
 - [x] Guard turn dispatch during connection recovery and bridge replacement. An unavailable Worker RPC is treated as a known not-dispatched request instead of a null reference.
-- [x] Latest Release verification: Core tests (543 passed, 5 skipped), UI tests (596 passed, 1 skipped), solution build (0 warnings and errors), and VSIX content inspection.
-- [x] Follow-up Release build after the Worker recovery fix: 0 warnings and errors. The Core and UI test suites were not rerun for this follow-up.
+- [x] Reproduce stderr-triggered owner invalidation during `thread/start` and `turn/start`: both regression cases failed with `StaleGeneration` before the fix. Keep optional MCP network errors and WebSocket fallback diagnostics from triggering connection recovery, and persist redacted stderr for diagnosis.
+- [x] Latest Release verification including both recovery fixes: Core tests (544 passed, 5 skipped), UI tests (596 passed, 1 skipped), solution build (0 warnings and errors), and VSIX content inspection.
 
 ### Real CLI confirmations
 
