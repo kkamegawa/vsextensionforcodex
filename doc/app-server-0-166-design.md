@@ -128,6 +128,8 @@ Question text, option descriptions, and answer display use the safe Markdown pat
 
 ### Conversation text
 
+The conversation tool window also provides an in-window search, opened with Alt+Shift+F. Search covers the whole conversation, including history outside the visible window. Matching content appears in a keyboard-accessible results pane without changing the transcript position. A failed or cancelled history read does not present partial results as complete.
+
 Open conversation text shows the conversation in a read-only Visual Studio editor tab, which provides selection, Ctrl+C, Ctrl+F, F3, and word and line movement.
 
 - **Snapshot:** paging reads the whole history into a fixed snapshot, with progress and cancellation. A failure opens nothing incomplete, and the content does not update live.

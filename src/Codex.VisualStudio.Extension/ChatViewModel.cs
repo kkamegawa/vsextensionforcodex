@@ -225,6 +225,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         this.externalLinkOpener = externalLinkOpener ?? new ExternalLinkOpener();
         this.utcNow = utcNow ?? (() => DateTimeOffset.UtcNow);
         InitializeConversationText();
+        InitializeTranscriptSearch();
         settings = this.settingsStore.Load();
         remoteProfiles = new RemoteProfilesPresentationViewModel(settings, this.settingsStore, profileOperationGate);
         connectionHealth = new ConnectionHealthPresentationViewModel(markdown);
@@ -1889,6 +1890,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         {
             if (SetProperty(ref selectedThread, value))
             {
+                ResetTranscriptSearchForThreadChange();
                 lock (threadHistoryStateGate)
                 {
                     selectedThreadGeneration++;
@@ -3335,6 +3337,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                 unassignedPlanModeEnabled = false;
             }
 
+            ResetTranscriptSearchForThreadChange();
             lock (threadHistoryStateGate)
             {
                 selectedThread = thread;
@@ -6951,6 +6954,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                 return;
             }
 
+            ResetTranscriptSearchForThreadChange();
             lock (threadHistoryStateGate)
             {
                 selectedThread = thread;
