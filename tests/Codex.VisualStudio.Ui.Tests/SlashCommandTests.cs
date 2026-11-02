@@ -7,6 +7,7 @@ public sealed class SlashCommandTests
 {
     // Prefix matches first, then the substring match /presets.
     private static readonly string[] ReFilterCommands = ["reasoning", "review", "presets"];
+    private static readonly string[] DoctorCommand = ["doctor"];
 
     private readonly SlashCommandCatalog catalog = new();
 
@@ -144,6 +145,14 @@ public sealed class SlashCommandTests
             ReFilterCommands,
             results.Select(static command => command.Name).ToArray());
         Assert.IsFalse(results.Any(static command => command.Name == "project"));
+    }
+
+    [TestMethod]
+    public void Catalog_FilterIncludesDoctorForExactCommandName()
+    {
+        IReadOnlyList<SlashCommandDefinition> results = catalog.Filter("/doctor");
+
+        CollectionAssert.AreEqual(DoctorCommand, results.Select(static command => command.Name).ToArray());
     }
 
     [TestMethod]
