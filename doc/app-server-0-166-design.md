@@ -158,6 +158,8 @@ On 0.166 or later, `account/usage/read` receives `threadId`.
 
 The `/doctor` slash command starts the check. Local connections on 0.166 or later run `codex doctor --network-only` with the resolved CLI path, a timeout, and `ISecretRedactor`. Remote connections show the procedure to run on the server.
 
+Network messages on app-server stderr are diagnostic output. Optional MCP failures and WebSocket fallback messages do not invalidate the connection owner or trigger reconnection. Recovery is driven by transport closure, process exit, or a failed liveness watchdog.
+
 ## 7. Contract and implementation structure
 
 ### Worker contract v27

@@ -1684,23 +1684,20 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
 
     private async Task OnStandardErrorReceivedAsync(string text)
     {
+        WorkerDiagnostics.Write($"app-server stderr: {redactor.Redact(text)}");
         // Forward the raw (already redacted) line to the transcript and output
         // log, preserving existing behavior.
         await PublishEventAsync(
             new ConversationEvent { Kind = ConversationEventKind.Error, Text = text },
             CancellationToken.None).ConfigureAwait(false);
 
-        // On the first network/DNS failure, surface a single actionable message
-        // and mark the connection degraded instead of flooding the transcript
-        // with repeated low-level errors.
+        // stderr also contains optional MCP failures and recoverable transport fallbacks.
+        // It does not prove that the app-server RPC connection was lost. Invalidating the
+        // owner here turns successful in-flight requests into StaleGeneration failures.
+        // Actual transport closure, process exit, and watchdog failure drive recovery.
         if (CodexErrorClassifier.IsNetworkFailure(text)
             && Interlocked.CompareExchange(ref networkFailureReported, 1, 0) == 0)
         {
-            await SetStatusAsync(
-                WorkerConnectionState.Degraded,
-                CodexErrorClassifier.NetworkFailureMessage,
-                CancellationToken.None,
-                WorkerRecoveryFailureKind.ServerUnavailable).ConfigureAwait(false);
             await PublishEventAsync(
                 new ConversationEvent
                 {
