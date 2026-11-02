@@ -205,9 +205,16 @@ public sealed class InteractionThemePresentationTests
             .Any(element => element.Attribute("Binding")?.Value == "{Binding UsesBlockRendering}"
                 && element.Attribute("Value")?.Value == "True"),
             "Proposed plans must continue to use the structured Markdown block renderer.");
-        Assert.IsTrue(blockRenderer.Descendants(Presentation + "TextBox")
-            .Any(element => element.Attribute("Text")?.Value == "{Binding Text, Mode=OneWay}"),
-            "Markdown block text must be selectable without replacing the structured block renderer.");
+        XElement markdownBlockText = blockRenderer
+            .Descendants(Presentation + "TextBox")
+            .First(element => element.Attribute("Text")?.Value == "{Binding Text, Mode=OneWay}");
+        Assert.IsTrue(
+            markdownBlockText.Attribute("Style")?.Value.StartsWith(
+                "{StaticResource SelectableMarkdown", StringComparison.Ordinal) == true,
+            "Markdown block text must reference a keyed selectable style directly while retaining structured rendering.");
+        Assert.IsNull(
+            markdownBlockText.Element(Presentation + "TextBox.Style"),
+            "Remote UI transcript controls must avoid inline TextBox.Style property elements.");
 
         XElement structuredSteps = transcript
             .Descendants(Presentation + "ItemsControl")
