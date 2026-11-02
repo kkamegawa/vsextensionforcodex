@@ -160,6 +160,8 @@ The `/doctor` slash command starts the check. Local connections on 0.166 or late
 
 Network messages on app-server stderr are diagnostic output. Optional MCP failures and WebSocket fallback messages do not invalidate the connection owner or trigger reconnection. Recovery is driven by transport closure, process exit, or a failed liveness watchdog.
 
+Raw stderr is not conversation content. Diagnostics are redacted, HTML response bodies are omitted, and each line is limited to 2,048 characters. A network diagnostic produces at most one short notice per connection; an MCP HTTP 403 points to MCP details without including the server's HTML response.
+
 After recovery replaces the Worker, the extension refreshes account state, models, permission profiles, and usage through the same initialization path as an ordinary connection before enabling the composer. It then synchronizes history without joining or replaying a conversation. A new conversation retains the initialized model catalog and the selected model when offered by that catalog.
 
 ## 7. Contract and implementation structure
