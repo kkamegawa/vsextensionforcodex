@@ -4973,8 +4973,9 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         }
 
         string targetThreadId = SelectedThread.Id;
+        IWorkerBridge turnBridge = bridge;
 
-        if (!IsCurrentOwner(owner))
+        if (!IsCurrentOwner(owner) || IsRecovering || !ReferenceEquals(bridge, turnBridge))
         {
             return;
         }
@@ -4995,7 +4996,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             ChatItemViewModel? optimisticItem = null;
             await OnUiAsync(() =>
             {
-                if (IsCurrentOwner(owner))
+                if (IsCurrentOwner(owner) && !IsRecovering && ReferenceEquals(bridge, turnBridge))
                 {
                     optimisticItem = new ChatItemViewModel("You", displayText, ConversationEventKind.ItemStarted)
                     {
@@ -5011,8 +5012,13 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                 targetThreadId,
                 text,
                 forcePlanMode: false).ConfigureAwait(false);
-            if (!IsCurrentOwner(owner))
+            if (!IsCurrentOwner(owner) || IsRecovering || !ReferenceEquals(bridge, turnBridge))
             {
+                if (optimisticItem is not null)
+                {
+                    await OnUiAsync(() => Items.Remove(optimisticItem)).ConfigureAwait(false);
+                }
+
                 return;
             }
 
@@ -5020,16 +5026,32 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             Guid operationId = Guid.NewGuid();
             try
             {
+                bool dispatchAllowed = false;
                 await OnUiAsync(() =>
                 {
-                    if (IsCurrentOwner(owner) && optimisticItem is not null)
+                    if (!IsCurrentOwner(owner) || IsRecovering || !ReferenceEquals(bridge, turnBridge))
+                    {
+                        return;
+                    }
+
+                    if (optimisticItem is not null)
                     {
                         inFlightMutations[operationId] = optimisticItem;
                     }
-
                     BeginLocalTurnStart(operationId, owner, targetThreadId);
+                    dispatchAllowed = true;
                 }).ConfigureAwait(false);
-                string startedTurnId = await bridge.StartTurnAsync(request, lifetime.Token).ConfigureAwait(false);
+                if (!dispatchAllowed)
+                {
+                    if (optimisticItem is not null)
+                    {
+                        await OnUiAsync(() => Items.Remove(optimisticItem)).ConfigureAwait(false);
+                    }
+
+                    return;
+                }
+
+                string startedTurnId = await turnBridge.StartTurnAsync(request, lifetime.Token).ConfigureAwait(false);
                 await OnUiAsync(() =>
                 {
                     if (IsCurrentOwner(owner))
@@ -5101,6 +5123,24 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
 
                 return;
             }
+            catch (WorkerRpcUnavailableException)
+            {
+                await OnUiAsync(() =>
+                {
+                    inFlightMutations.Remove(operationId);
+                    if (optimisticItem is not null)
+                    {
+                        Items.Remove(optimisticItem);
+                    }
+                }).ConfigureAwait(false);
+
+                if (IsCurrentOwner(owner))
+                {
+                    await ShowSlashFailureAsync("The message was not sent because the Worker connection is restarting. Wait for it to reconnect, then try again.").ConfigureAwait(false);
+                }
+
+                return;
+            }
             catch (OperationCanceledException)
             {
                 await OnUiAsync(() => inFlightMutations.Remove(operationId)).ConfigureAwait(false);
@@ -5145,6 +5185,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         }
         else
         {
+            bool dispatchAllowed = false;
             var optimisticItem = new ChatItemViewModel("You", markdown.ToSafeText(text), ConversationEventKind.ItemStarted)
             {
                 ThreadId = SelectedThread.Id,
@@ -5156,15 +5197,41 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             Guid operationId = Guid.NewGuid();
             await OnUiAsync(() =>
             {
+                if (!IsCurrentOwner(owner) || IsRecovering || !ReferenceEquals(bridge, turnBridge))
+                {
+                    return;
+                }
+
                 Items.Add(optimisticItem);
                 inFlightMutations[operationId] = optimisticItem;
+                dispatchAllowed = true;
             }).ConfigureAwait(false);
+            if (!dispatchAllowed)
+            {
+                return;
+            }
+
             try
             {
-                await bridge.SteerTurnAsync(
+                await turnBridge.SteerTurnAsync(
                     StampOwner(new SteerTurnRequest { ThreadId = SelectedThread.Id, ExpectedTurnId = Status.TurnId, Text = text }, owner),
                     lifetime.Token).ConfigureAwait(false);
                 await OnUiAsync(() => inFlightMutations.Remove(operationId)).ConfigureAwait(false);
+            }
+            catch (WorkerRpcUnavailableException)
+            {
+                await OnUiAsync(() =>
+                {
+                    inFlightMutations.Remove(operationId);
+                    Items.Remove(optimisticItem);
+                }).ConfigureAwait(false);
+
+                if (IsCurrentOwner(owner))
+                {
+                    await ShowSlashFailureAsync("The message was not sent because the Worker connection is restarting. Wait for it to reconnect, then try again.").ConfigureAwait(false);
+                }
+
+                return;
             }
             catch (Exception ex)
             {
@@ -7320,6 +7387,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
     private async Task<bool> ExecutePlanAsync(string? threadId, string arguments, long goalStopFence)
     {
         OwnerSnapshot owner = CaptureOwnerSnapshot();
+        IWorkerBridge turnBridge = bridge;
         string prompt = arguments.Trim();
         string? blocker = prompt.Length > 0 && threadId is not null
             ? GetCollaborationModeBlocker(threadId, forcePlanMode: true)
@@ -7358,26 +7426,53 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             return true;
         }
 
+        ChatItemViewModel? planPrompt = null;
         await OnUiAsync(() =>
         {
-            if (IsCurrentOwner(owner))
+            if (IsCurrentOwner(owner) && !IsRecovering && ReferenceEquals(bridge, turnBridge))
             {
-                Items.Add(new ChatItemViewModel("You", markdown.ToSafeText(prompt), ConversationEventKind.ItemStarted));
+                planPrompt = new ChatItemViewModel("You", markdown.ToSafeText(prompt), ConversationEventKind.ItemStarted);
+                Items.Add(planPrompt);
             }
         }).ConfigureAwait(false);
+        if (planPrompt is null)
+        {
+            return false;
+        }
+
         StartTurnRequest request = await CreateStartTurnRequestAsync(threadId, prompt, forcePlanMode: true).ConfigureAwait(false);
         if (!IsCurrentOwner(owner)
-            || !await EnsureGoalStopFenceAsync(goalStopFence, threadId).ConfigureAwait(false))
+            || IsRecovering
+            || !ReferenceEquals(bridge, turnBridge)
+            || !await EnsureGoalStopFenceAsync(goalStopFence, threadId).ConfigureAwait(false)
+            || !IsCurrentOwner(owner)
+            || IsRecovering
+            || !ReferenceEquals(bridge, turnBridge))
         {
+            await OnUiAsync(() => Items.Remove(planPrompt)).ConfigureAwait(false);
             return false;
         }
 
         StampOwner(request, owner);
         Guid operationId = Guid.NewGuid();
-        await OnUiAsync(() => BeginLocalTurnStart(operationId, owner, threadId)).ConfigureAwait(false);
+        bool dispatchAllowed = false;
+        await OnUiAsync(() =>
+        {
+            if (IsCurrentOwner(owner) && !IsRecovering && ReferenceEquals(bridge, turnBridge))
+            {
+                BeginLocalTurnStart(operationId, owner, threadId);
+                dispatchAllowed = true;
+            }
+        }).ConfigureAwait(false);
+        if (!dispatchAllowed)
+        {
+            await OnUiAsync(() => Items.Remove(planPrompt)).ConfigureAwait(false);
+            return false;
+        }
+
         try
         {
-            string planTurnId = await bridge.StartTurnAsync(request, lifetime.Token).ConfigureAwait(false);
+            string planTurnId = await turnBridge.StartTurnAsync(request, lifetime.Token).ConfigureAwait(false);
             await OnUiAsync(() =>
             {
                 if (!IsCurrentOwner(owner))
@@ -7390,6 +7485,16 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                 ClearSentAttachments(request.Attachments);
                 ConsumeNextTurnSettings(request);
             }).ConfigureAwait(false);
+        }
+        catch (WorkerRpcUnavailableException)
+        {
+            await OnUiAsync(() => Items.Remove(planPrompt)).ConfigureAwait(false);
+            if (IsCurrentOwner(owner))
+            {
+                await ShowSlashFailureAsync("The Plan prompt was not sent because the Worker connection is restarting. Wait for it to reconnect, then try again.").ConfigureAwait(false);
+            }
+
+            return false;
         }
         catch (Exception ex) when (ex is not OperationCanceledException
             && ex is not StreamJsonRpc.RemoteInvocationException { ErrorCode: WorkerErrorCodes.ConnectionOperationRejected or WorkerErrorCodes.PreDispatchRejected })
