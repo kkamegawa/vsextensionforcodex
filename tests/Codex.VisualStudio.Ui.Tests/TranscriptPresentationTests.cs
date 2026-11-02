@@ -181,21 +181,22 @@ public sealed class TranscriptPresentationTests
     public void Xaml_CommandOutputSurfacesUseNoWrapAndHorizontalScrolling()
     {
         XDocument document = LoadXaml();
-        XElement[] commandTextBlocks = document
-            .Descendants(Presentation + "TextBlock")
-            .Where(element => element.Attribute("Text")?.Value == "{Binding Text}"
+        XElement[] commandTextBoxes = GetTranscript(document)
+            .Descendants(Presentation + "TextBox")
+            .Where(element => element.Attribute("Text")?.Value == "{Binding Text, Mode=OneWay}"
                 && element.Attribute("FontFamily")?.Value?.StartsWith("Consolas", StringComparison.Ordinal) == true)
             .ToArray();
 
-        Assert.AreEqual(3, commandTextBlocks.Length);
-        foreach (XElement textBlock in commandTextBlocks)
+        Assert.AreEqual(3, commandTextBoxes.Length);
+        foreach (XElement textBox in commandTextBoxes)
         {
-            Assert.AreEqual("NoWrap", textBlock.Attribute("TextWrapping")?.Value);
-            XElement scrollViewer = textBlock.Ancestors(Presentation + "ScrollViewer").First();
+            Assert.AreEqual("NoWrap", textBox.Attribute("TextWrapping")?.Value);
+            AssertSelectableTranscriptText(textBox);
+            XElement scrollViewer = textBox.Ancestors(Presentation + "ScrollViewer").First();
             Assert.AreEqual("Auto", scrollViewer.Attribute("HorizontalScrollBarVisibility")?.Value);
         }
 
-        XElement expandedOutput = commandTextBlocks
+        XElement expandedOutput = commandTextBoxes
             .Select(element => element.Ancestors(Presentation + "ScrollViewer").First())
             .Single(element => element.Attributes().Any(attribute =>
                 attribute.Name.LocalName == "AutomationProperties.Name"
@@ -203,7 +204,7 @@ public sealed class TranscriptPresentationTests
         Assert.AreEqual("320", expandedOutput.Attribute("MaxHeight")?.Value);
         Assert.AreEqual("Auto", expandedOutput.Attribute("VerticalScrollBarVisibility")?.Value);
 
-        XElement preview = commandTextBlocks
+        XElement preview = commandTextBoxes
             .Select(element => element.Ancestors(Presentation + "ScrollViewer").First())
             .Single(element => element.Attributes().Any(attribute =>
                 attribute.Name.LocalName == "AutomationProperties.Name"
@@ -214,12 +215,92 @@ public sealed class TranscriptPresentationTests
             && element.Attribute("Value")?.Value == "True"));
     }
 
+    [TestMethod]
+    public void Xaml_TranscriptBodiesAndPlanTextUseReadOnlySelectableTextBoxes()
+    {
+        XDocument document = LoadXaml();
+        XElement transcript = GetTranscript(document);
+        XElement selectableStyle = document
+            .Descendants(Presentation + "Style")
+            .Single(element => element.Attribute(X + "Key")?.Value == "SelectableTranscriptTextStyle");
+
+        Assert.AreEqual("TextBox", selectableStyle.Attribute("TargetType")?.Value);
+        Assert.IsTrue(selectableStyle.Elements(Presentation + "Setter").Any(element =>
+            element.Attribute("Property")?.Value == "IsReadOnly"
+            && element.Attribute("Value")?.Value == "True"));
+        Assert.IsTrue(selectableStyle.Elements(Presentation + "Setter").Any(element =>
+            element.Attribute("Property")?.Value == "IsTabStop"
+            && element.Attribute("Value")?.Value == "True"));
+        Assert.IsTrue(selectableStyle.Elements(Presentation + "Setter").Any(element =>
+            element.Attribute("Property")?.Value == "MinHeight"
+            && element.Attribute("Value")?.Value == "0"));
+        Assert.IsTrue(selectableStyle.Elements(Presentation + "Setter").Any(element =>
+            element.Attribute("Property")?.Value == "VerticalContentAlignment"
+            && element.Attribute("Value")?.Value == "Top"));
+        Assert.IsTrue(selectableStyle.Elements(Presentation + "Setter").Any(element =>
+            element.Attribute("Property")?.Value == "IsReadOnlyCaretVisible"
+            && element.Attribute("Value")?.Value == "True"));
+
+        XElement[] boundBodies = transcript
+            .Descendants(Presentation + "TextBox")
+            .Where(element => element.Attribute("Text")?.Value is "{Binding Text, Mode=OneWay}"
+                or "{Binding Code, Mode=OneWay}"
+                or "{Binding PlanDeltaText, Mode=OneWay}")
+            .ToArray();
+
+        Assert.IsTrue(boundBodies.Length >= 8, "Message prose, Markdown blocks, code, command output, and plans must be selectable.");
+        foreach (XElement textBox in boundBodies)
+        {
+            AssertSelectableTranscriptText(textBox);
+        }
+
+        Assert.IsTrue(transcript.Descendants(Presentation + "TextBox").Any(element =>
+            element.Attribute("Text")?.Value == "{Binding ., Mode=OneWay}"),
+            "Fallback plan steps must be rendered with a selectable read-only control.");
+        Assert.IsTrue(transcript.Descendants(Presentation + "TextBox").Any(element =>
+            element.Attribute("Text")?.Value == "{Binding Text, Mode=OneWay}"
+            && element.Ancestors(Presentation + "Grid").Any(grid => grid.Attribute("Margin")?.Value == "0,2")),
+            "Structured plan step text must be selectable.");
+    }
+
+    [TestMethod]
+    public void Xaml_ConversationSearchUsesButtonWithoutVisualStudioShortcutClaim()
+    {
+        XDocument document = LoadXaml();
+        XElement[] bindings = document.Descendants(Presentation + "KeyBinding").ToArray();
+        Assert.IsFalse(bindings.Any(element => element.Attribute("Key")?.Value == "F"
+            && element.Attribute("Modifiers")?.Value == "Alt+Shift"));
+
+        XElement searchButton = document
+            .Descendants(Presentation + "Button")
+            .Single(element => element.Attribute("Command")?.Value == "{Binding OpenTranscriptSearchCommand}");
+        Assert.AreEqual("Search conversation", searchButton.Attribute("ToolTip")?.Value);
+        Assert.AreEqual("Search conversation", searchButton.Attributes()
+            .Single(attribute => attribute.Name.LocalName == "AutomationProperties.Name").Value);
+    }
+
     private static void AssertDynamicThemeKey(XElement element, string attributeName, string expectedKey)
     {
         string? value = element.Attribute(attributeName)?.Value;
         Assert.IsNotNull(value);
         StringAssert.StartsWith(value, "{DynamicResource ");
         StringAssert.Contains(value, expectedKey);
+    }
+
+    private static XElement GetTranscript(XDocument document)
+        => document
+            .Descendants(Presentation + "ListBox")
+            .Single(element => element.Attribute("ItemsSource")?.Value == "{Binding Items}");
+
+    private static void AssertSelectableTranscriptText(XElement textBox)
+    {
+        string? text = textBox.Attribute("Text")?.Value;
+        Assert.IsNotNull(text);
+        StringAssert.Contains(text, "Mode=OneWay");
+        Assert.IsTrue(textBox.Attribute("Style")?.Value == "{StaticResource SelectableTranscriptTextStyle}"
+            || textBox.Element(Presentation + "TextBox.Style")?.Element(Presentation + "Style")?
+                .Attribute("BasedOn")?.Value == "{StaticResource SelectableTranscriptTextStyle}",
+            "Transcript text must use the shared read-only, VS-themed selectable style.");
     }
 
     private static void AssertTriggerThemePair(

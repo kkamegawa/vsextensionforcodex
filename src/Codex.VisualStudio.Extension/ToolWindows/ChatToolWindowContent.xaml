@@ -377,6 +377,26 @@
         <Setter Property="TextOptions.TextFormattingMode" Value="Display" />
       </Style>
 
+      <!-- Transcript content is presented as immutable text while retaining native TextBox
+           selection, copy, keyboard focus, and UI Automation behavior. -->
+      <Style x:Key="SelectableTranscriptTextStyle"
+             TargetType="TextBox"
+             BasedOn="{StaticResource {x:Static styles:VsResourceKeys.TextBoxStyleKey}}">
+        <Setter Property="Background" Value="Transparent" />
+        <Setter Property="BorderThickness" Value="0" />
+        <Setter Property="Padding" Value="0" />
+        <Setter Property="MinHeight" Value="0" />
+        <Setter Property="VerticalContentAlignment" Value="Top" />
+        <Setter Property="HorizontalAlignment" Value="Stretch" />
+        <Setter Property="AcceptsReturn" Value="True" />
+        <Setter Property="IsReadOnly" Value="True" />
+        <Setter Property="IsReadOnlyCaretVisible" Value="True" />
+        <Setter Property="IsTabStop" Value="True" />
+        <Setter Property="VerticalScrollBarVisibility" Value="Disabled" />
+        <Setter Property="HorizontalScrollBarVisibility" Value="Disabled" />
+        <Setter Property="Foreground" Value="{DynamicResource {x:Static styles:VsBrushes.WindowTextKey}}" />
+      </Style>
+
       <!-- ── Accent icon button (Send / Steer) ── -->
       <Style x:Key="SendIconButtonStyle" TargetType="Button" BasedOn="{StaticResource PrimaryRoundButtonStyle}">
         <Setter Property="FontFamily" Value="Segoe MDL2 Assets" />
@@ -533,7 +553,6 @@
     </Grid.Resources>
 
     <Grid.InputBindings>
-      <KeyBinding Key="F" Modifiers="Alt+Shift" Command="{Binding OpenTranscriptSearchCommand}" />
       <KeyBinding Key="Return" Modifiers="Control" Command="{Binding SlashCommands.ExecuteKeyCommand}" />
       <KeyBinding Key="Escape" Command="{Binding SlashCommands.ClearKeyCommand}" />
     </Grid.InputBindings>
@@ -985,8 +1004,8 @@
             </Popup>
           </Grid>
 
-          <Button Content="&#xE721;" ToolTip="Search conversation (Alt+Shift+F)" Margin="2,0,0,0"
-                  AutomationProperties.Name="Search conversation (Alt+Shift+F)"
+          <Button Content="&#xE721;" ToolTip="Search conversation" Margin="2,0,0,0"
+                  AutomationProperties.Name="Search conversation"
                   Command="{Binding OpenTranscriptSearchCommand}"
                   Style="{StaticResource IconButtonStyle}" />
           <Button Content="&#xE710;" ToolTip="New thread" Margin="2,0,0,0"
@@ -1260,9 +1279,9 @@
                     <ItemsControl.ItemTemplate>
                       <DataTemplate>
                         <Grid Margin="0,2,0,2" HorizontalAlignment="Stretch">
-                          <TextBlock Text="{Binding Text}" TextWrapping="Wrap">
-                            <TextBlock.Style>
-                              <Style TargetType="TextBlock">
+                          <TextBox Text="{Binding Text, Mode=OneWay}" TextWrapping="Wrap">
+                            <TextBox.Style>
+                              <Style TargetType="TextBox" BasedOn="{StaticResource SelectableTranscriptTextStyle}">
                                 <Setter Property="Visibility" Value="Collapsed" />
                                 <Setter Property="Foreground" Value="{DynamicResource {x:Static styles:VsBrushes.WindowTextKey}}" />
                                 <Setter Property="TextOptions.TextFormattingMode" Value="Display" />
@@ -1285,12 +1304,12 @@
                                   </DataTrigger>
                                 </Style.Triggers>
                               </Style>
-                            </TextBlock.Style>
-                          </TextBlock>
+                            </TextBox.Style>
+                          </TextBox>
 
-                          <TextBlock Text="{Binding Text}" TextWrapping="Wrap">
-                            <TextBlock.Style>
-                              <Style TargetType="TextBlock">
+                          <TextBox Text="{Binding Text, Mode=OneWay}" TextWrapping="Wrap">
+                            <TextBox.Style>
+                              <Style TargetType="TextBox" BasedOn="{StaticResource SelectableTranscriptTextStyle}">
                                 <Setter Property="Visibility" Value="Collapsed" />
                                 <Setter Property="Foreground" Value="{DynamicResource {x:Static styles:VsBrushes.WindowTextKey}}" />
                                 <Setter Property="TextOptions.TextFormattingMode" Value="Display" />
@@ -1300,12 +1319,12 @@
                                   </DataTrigger>
                                 </Style.Triggers>
                               </Style>
-                            </TextBlock.Style>
-                          </TextBlock>
+                            </TextBox.Style>
+                          </TextBox>
 
-                          <TextBlock Text="{Binding Text}" TextWrapping="Wrap">
-                            <TextBlock.Style>
-                              <Style TargetType="TextBlock">
+                          <TextBox Text="{Binding Text, Mode=OneWay}" TextWrapping="Wrap">
+                            <TextBox.Style>
+                              <Style TargetType="TextBox" BasedOn="{StaticResource SelectableTranscriptTextStyle}">
                                 <Setter Property="Visibility" Value="Collapsed" />
                                 <Setter Property="Margin" Value="12,0,0,0" />
                                 <Setter Property="Foreground" Value="{DynamicResource {x:Static styles:VsBrushes.WindowTextKey}}" />
@@ -1324,8 +1343,8 @@
                                   </DataTrigger>
                                 </Style.Triggers>
                               </Style>
-                            </TextBlock.Style>
-                          </TextBlock>
+                            </TextBox.Style>
+                          </TextBox>
 
                           <Separator Margin="0,6,0,6">
                             <Separator.Style>
@@ -1372,11 +1391,12 @@
                               <ScrollViewer HorizontalScrollBarVisibility="Auto"
                                             VerticalScrollBarVisibility="Disabled"
                                             AutomationProperties.Name="{Binding CodeBlockAutomationName}">
-                                <TextBlock FontFamily="Consolas, Courier New, monospace"
-                                           FontSize="11"
-                                           Text="{Binding Code}"
-                                           TextWrapping="NoWrap"
-                                           Foreground="{DynamicResource {x:Static styles:VsBrushes.WindowTextKey}}" />
+                                <TextBox Style="{StaticResource SelectableTranscriptTextStyle}"
+                                         FontFamily="Consolas, Courier New, monospace"
+                                         FontSize="11"
+                                         Text="{Binding Code, Mode=OneWay}"
+                                         TextWrapping="NoWrap"
+                                         AutomationProperties.Name="{Binding CodeBlockAutomationName}" />
                               </ScrollViewer>
                             </StackPanel>
                           </Border>
@@ -1406,12 +1426,12 @@
                         </Style.Triggers>
                       </Style>
                     </ScrollViewer.Style>
-                    <TextBlock FontFamily="Consolas, Courier New, monospace"
-                               FontSize="11"
-                               Foreground="{DynamicResource {x:Static styles:VsBrushes.WindowTextKey}}"
-                               Text="{Binding Text}"
-                               TextOptions.TextFormattingMode="Display"
-                               TextWrapping="NoWrap" />
+                    <TextBox Style="{StaticResource SelectableTranscriptTextStyle}"
+                             FontFamily="Consolas, Courier New, monospace"
+                             FontSize="11"
+                             Text="{Binding Text, Mode=OneWay}"
+                             TextOptions.TextFormattingMode="Display"
+                             TextWrapping="NoWrap" />
                   </ScrollViewer>
 
                   <Expander Margin="0,4,0,0"
@@ -1437,12 +1457,12 @@
                                   HorizontalScrollBarVisibility="Auto"
                                   VerticalScrollBarVisibility="Auto"
                                   AutomationProperties.Name="Buffered command output">
-                      <TextBlock FontFamily="Consolas, Courier New, monospace"
-                                 FontSize="11"
-                                 Foreground="{DynamicResource {x:Static styles:VsBrushes.WindowTextKey}}"
-                                 Text="{Binding Text}"
-                                 TextOptions.TextFormattingMode="Display"
-                                 TextWrapping="NoWrap" />
+                      <TextBox Style="{StaticResource SelectableTranscriptTextStyle}"
+                               FontFamily="Consolas, Courier New, monospace"
+                               FontSize="11"
+                               Text="{Binding Text, Mode=OneWay}"
+                               TextOptions.TextFormattingMode="Display"
+                               TextWrapping="NoWrap" />
                     </ScrollViewer>
                   </Expander>
 
@@ -1465,18 +1485,18 @@
                         </Style.Triggers>
                       </Style>
                     </ScrollViewer.Style>
-                    <TextBlock FontFamily="Consolas, Courier New, monospace"
-                               FontSize="11"
-                               Foreground="{DynamicResource {x:Static styles:VsBrushes.WindowTextKey}}"
-                               Text="{Binding Text}"
-                               TextOptions.TextFormattingMode="Display"
-                               TextWrapping="NoWrap" />
+                    <TextBox Style="{StaticResource SelectableTranscriptTextStyle}"
+                             FontFamily="Consolas, Courier New, monospace"
+                             FontSize="11"
+                             Text="{Binding Text, Mode=OneWay}"
+                             TextOptions.TextFormattingMode="Display"
+                             TextWrapping="NoWrap" />
                   </ScrollViewer>
 
                   <!-- Main text content: plain, monospace diff, or hidden (command/plan/block rendering/collapsed reasoning). -->
-                  <TextBlock Margin="0,4,0,0" TextWrapping="Wrap" Text="{Binding Text}">
-                    <TextBlock.Style>
-                      <Style TargetType="TextBlock">
+                  <TextBox Margin="0,4,0,0" TextWrapping="Wrap" Text="{Binding Text, Mode=OneWay}">
+                    <TextBox.Style>
+                      <Style TargetType="TextBox" BasedOn="{StaticResource SelectableTranscriptTextStyle}">
                         <Setter Property="Foreground" Value="{DynamicResource {x:Static styles:VsBrushes.WindowTextKey}}" />
                         <Setter Property="TextOptions.TextFormattingMode" Value="Display" />
                         <Setter Property="Visibility" Value="Visible" />
@@ -1508,8 +1528,8 @@
                           </DataTrigger>
                         </Style.Triggers>
                       </Style>
-                    </TextBlock.Style>
-                  </TextBlock>
+                    </TextBox.Style>
+                  </TextBox>
 
                   <!-- Plan step list — shown only for PlanUpdated items. -->
                   <ItemsControl Margin="0,4,0,0" MinHeight="0" ItemsSource="{Binding PlanSteps}">
@@ -1528,16 +1548,17 @@
                     </ItemsControl.Style>
                     <ItemsControl.ItemTemplate>
                       <DataTemplate>
-                        <TextBlock Margin="0,2" Text="{Binding}" TextWrapping="Wrap"
-                                   Foreground="{DynamicResource {x:Static styles:VsBrushes.WindowTextKey}}"
-                                   TextOptions.TextFormattingMode="Display" />
+                        <TextBox Margin="0,2" Style="{StaticResource SelectableTranscriptTextStyle}"
+                                 Text="{Binding ., Mode=OneWay}" TextWrapping="Wrap"
+                                 TextOptions.TextFormattingMode="Display" />
                       </DataTemplate>
                     </ItemsControl.ItemTemplate>
                   </ItemsControl>
 
-                  <TextBlock Margin="0,4,0,0" Text="{Binding PlanDeltaText}" TextWrapping="Wrap"
-                             Visibility="{Binding ShowPlanDeltaText, Converter={StaticResource BoolToVis}}"
-                             AutomationProperties.Name="Provisional plan update" />
+                  <TextBox Margin="0,4,0,0" Style="{StaticResource SelectableTranscriptTextStyle}"
+                           Text="{Binding PlanDeltaText, Mode=OneWay}" TextWrapping="Wrap"
+                           Visibility="{Binding ShowPlanDeltaText, Converter={StaticResource BoolToVis}}"
+                           AutomationProperties.Name="Provisional plan update" />
                   <TextBlock Margin="0,3,0,0" FontSize="11"
                              Text="Plan preview was truncated by the display size limit."
                              Visibility="{Binding PlanWasTruncated, Converter={StaticResource BoolToVis}}"
@@ -1553,7 +1574,8 @@
                             <ColumnDefinition Width="*" />
                           </Grid.ColumnDefinitions>
                           <TextBlock Margin="0,0,6,0" Grid.Column="0" FontWeight="SemiBold" Text="{Binding StatusText}" />
-                          <TextBlock Grid.Column="1" Text="{Binding Text}" TextWrapping="Wrap" />
+                          <TextBox Grid.Column="1" Style="{StaticResource SelectableTranscriptTextStyle}"
+                                   Text="{Binding Text, Mode=OneWay}" TextWrapping="Wrap" />
                         </Grid>
                       </DataTemplate>
                     </ItemsControl.ItemTemplate>
@@ -1571,8 +1593,9 @@
                                        Visibility="{Binding HasDisplayName, Converter={StaticResource BoolToVis}}" />
                             <TextBlock Margin="0,2,0,0" Text="{Binding MimeType}" FontSize="10" Opacity="0.75"
                                        Visibility="{Binding HasMimeType, Converter={StaticResource BoolToVis}}" />
-                            <TextBlock Margin="0,3,0,0" Text="{Binding Text}" TextWrapping="Wrap"
-                                       Visibility="{Binding HasText, Converter={StaticResource BoolToVis}}" />
+                            <TextBox Margin="0,3,0,0" Style="{StaticResource SelectableTranscriptTextStyle}"
+                                     Text="{Binding Text, Mode=OneWay}" TextWrapping="Wrap"
+                                     Visibility="{Binding HasText, Converter={StaticResource BoolToVis}}" />
                             <TextBlock Margin="0,3,0,0" Text="Artifact content was truncated by the server."
                                        Visibility="{Binding IsServerTruncated, Converter={StaticResource BoolToVis}}" />
                             <TextBlock Margin="0,3,0,0" Text="Artifact content was shortened for display."

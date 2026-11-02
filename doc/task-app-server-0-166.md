@@ -32,13 +32,15 @@ Tracking: [#242](https://github.com/kkamegawa/vsextensionforcodex/issues/242). T
 - [x] Show item times on transcript items.
 - [x] Read `account/usage/read` with `threadId` on 0.166 and later, keeping actual USD, estimated USD, and estimated credits distinct.
 - [x] Add `/doctor`, which runs `codex doctor --network-only` on local 0.166 connections and shows the procedure on remote connections.
-- [x] Add Alt+Shift+F in-window conversation search across the full paged history, with complete-result publication, cancellation, keyboard-accessible results, and search-state reset when the conversation changes.
+- [x] Add button-operated in-window conversation search across the full paged history, with complete-result publication, cancellation, keyboard-accessible results, and search-state reset when the conversation changes.
+- [x] Render conversation, Markdown blocks, generated Plan text, and command output as read-only selectable text. Selection works within each text block; Open conversation text provides whole-conversation selection in the editor.
+- [x] Restore Reasoning summaries and Command command/output from history. Preserve secret redaction and the 64 KiB limit, including separator bytes in truncation detection.
 - [x] Guard turn dispatch during connection recovery and bridge replacement. An unavailable Worker RPC is treated as a known not-dispatched request instead of a null reference.
 - [x] Share account/model/permission/usage initialization between ordinary connection and recovery. Reproduce the missing catalog read before the fix (0 calls), verify reloading and preserving the selected model after recovery and a new conversation, and log the loaded extension/Worker build and assembly location.
 - [x] Reproduce stderr-triggered owner invalidation during `thread/start` and `turn/start`: both regression cases failed with `StaleGeneration` before the fix. Keep optional MCP network errors and WebSocket fallback diagnostics from triggering connection recovery, and persist redacted stderr for diagnosis.
 - [x] Stop forwarding raw stderr/HTTP HTML to the transcript; retain redacted diagnostics with HTML removed and a 2,048-character limit, plus one short network/MCP notice. Three send cases failed with duplicate raw transcript errors before the fix and pass afterward. Independent diff review found no remaining actionable defect in this scope.
 - [x] Review Plan-mode mode serialization and completion against the running 0.166 turn: the turn completed and returned to Ready at 20:07:45; the license question was final model prose, not an extension lifecycle failure. Plan mode remains read-only.
-- [x] Latest Release verification: Core tests (549 passed, 5 skipped), UI tests (596 passed, 1 skipped), solution build (0 warnings and errors), and VSIX content inspection.
+- [x] Latest Release verification: Core tests (549 passed, 5 skipped), UI tests (598 passed, 1 skipped), solution build (0 warnings and errors), and VSIX content inspection.
 
 ### Real CLI confirmations
 
@@ -55,8 +57,14 @@ Tracking: [#242](https://github.com/kkamegawa/vsextensionforcodex/issues/242). T
 
 - `review_model` precedence: setting it through `thread/start.config` changed nothing the protocol reports. No notification or `thread/read` field names the model a review turn used, so the precedence stays unknown, and the extension does not depend on it.
 
+### Maintainer-confirmed Visual Studio acceptance
+
+- [x] Conversation search finds matching content. The maintainer confirmed focus, keyboard operation, Light/Dark, and narrow-width accessibility on 2026-11-02 and supplied search screenshots.
+- [x] `/doctor` appears and works in the extension; accepted by the maintainer on 2026-11-02.
+
 ### Not yet verified
 
-- [ ] Verify conversation search in Visual Studio: Alt+Shift+F focus, keyboard navigation, long histories, theme contrast, and the result panel at narrow widths. The automated tests and VSIX inspection do not replace this visual check.
-- [ ] Run `/doctor` from the extension in Visual Studio.
-- [ ] Capture and judge Experimental Instance screenshots for Light, Dark, High Contrast, Japanese, narrow width, keyboard, and Narrator. This includes selection, copy, Ctrl+F, and F3 in the conversation text tab, and its removal on close. This session had no current Experimental deployment and click-only Visual Studio access.
+- [ ] Verify conversation search with long histories in Visual Studio.
+- [ ] Verify selection and copying of conversation and generated Plan text in the tool window after the fix.
+- [ ] Verify restored Reasoning and Command bodies in Visual Studio after the fix.
+- [ ] Capture and judge High Contrast and Narrator behavior. Separately verify selection, copy, Ctrl+F, F3, Japanese text, long histories, and removal on close in the conversation text editor tab. The maintainer's acceptance of the tool window does not cover this separate editor tab.
