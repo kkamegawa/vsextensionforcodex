@@ -3706,7 +3706,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         {
             if (existingItem is not null && !existingItem.IsHistoryCompleted)
             {
-                SetHistoryTranscriptText(existingItem, GetHistoryDisplayText(existingItem.Kind, historyItem.Text));
+                SetHistoryTranscriptText(existingItem, historyItem.Text);
                 ApplyDailyUseHistoryItem(existingItem, historyItem, threadId, owner);
                 existingItem.HistoryKey = key;
                 existingItem.IsHistoryCompleted = true;
@@ -3718,7 +3718,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
 
         if (existingItem is not null)
         {
-            SetHistoryTranscriptText(existingItem, GetHistoryDisplayText(existingItem.Kind, historyItem.Text));
+            SetHistoryTranscriptText(existingItem, historyItem.Text);
             ApplyDailyUseHistoryItem(existingItem, historyItem, threadId, owner);
             existingItem.HistoryKey = key;
             existingItem.IsHistoryCompleted = true;
@@ -3735,7 +3735,9 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             "Codex" => ConversationEventKind.AgentMessageDelta,
             _ => ConversationEventKind.ItemCompleted,
         };
-        SafeMarkdownRenderResult rendered = markdown.ToSafeTextAndBlocks(GetHistoryDisplayText(kind, historyItem.Text));
+        bool missingReasoningSummary = IsMissingReasoningSummary(kind, historyItem.Text);
+        string displayText = missingReasoningSummary ? MissingReasoningSummaryText : historyItem.Text ?? string.Empty;
+        SafeMarkdownRenderResult rendered = markdown.ToSafeTextAndBlocks(displayText);
         var item = new ChatItemViewModel(role, rendered.Text, kind)
         {
             ItemId = historyItem.Id,
@@ -3750,6 +3752,10 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         if (item.UsesBlockRendering)
         {
             item.UpdateBlocks(rendered.Blocks);
+        }
+        if (missingReasoningSummary)
+        {
+            item.IsCollapsed = false;
         }
 
         ApplyDailyUseHistoryItem(item, historyItem, threadId, owner);
@@ -4032,20 +4038,24 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         historyBytes += Encoding.UTF8.GetByteCount(text);
     }
 
-    private void SetHistoryTranscriptText(ChatItemViewModel item, string text)
+    private void SetHistoryTranscriptText(ChatItemViewModel item, string? text)
     {
-        SafeMarkdownRenderResult rendered = markdown.ToSafeTextAndBlocks(text);
+        bool missingReasoningSummary = IsMissingReasoningSummary(item.Kind, text);
+        string displayText = missingReasoningSummary ? MissingReasoningSummaryText : text ?? string.Empty;
+        SafeMarkdownRenderResult rendered = markdown.ToSafeTextAndBlocks(displayText);
         SetTranscriptText(item, rendered.Text);
         if (item.UsesBlockRendering)
         {
             item.UpdateBlocks(rendered.Blocks);
         }
+        if (missingReasoningSummary)
+        {
+            item.IsCollapsed = false;
+        }
     }
 
-    private static string GetHistoryDisplayText(ConversationEventKind kind, string? text)
-        => kind == ConversationEventKind.ReasoningSummaryDelta && string.IsNullOrWhiteSpace(text)
-            ? MissingReasoningSummaryText
-            : text ?? string.Empty;
+    private static bool IsMissingReasoningSummary(ConversationEventKind kind, string? text)
+        => kind == ConversationEventKind.ReasoningSummaryDelta && string.IsNullOrWhiteSpace(text);
 
     private void ResetSelectedHistoryState(ThreadSummary thread)
     {

@@ -1118,6 +1118,8 @@ public sealed partial class ViewModelTests
 
         ChatItemViewModel withoutSummary = vm.Items.Single(item => item.ItemId == "reasoning-without-summary");
         Assert.AreEqual("No reasoning summary was saved for this item.", withoutSummary.Text);
+        Assert.IsFalse(withoutSummary.IsCollapsed,
+            "A missing-summary explanation must be visible without asking the user to expand an otherwise empty reasoning card.");
         Assert.IsTrue(withoutSummary.Blocks.Any(block => block.IsParagraph && block.Text == withoutSummary.Text));
     }
 
