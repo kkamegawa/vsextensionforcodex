@@ -1314,7 +1314,8 @@ public sealed partial class CodexSessionService
             int bytes = 0;
             foreach (JsonElement part in content.EnumerateArray().Take(512))
             {
-                if (GetString(part, "type") == "inputText" && GetString(part, "text") is { } text)
+                if (GetString(part, "type") is "text" or "inputText"
+                    && GetString(part, "text") is { } text)
                 {
                     bytes = Math.Min(MaxHistoryTextBytes + 1, bytes + Encoding.UTF8.GetByteCount(text));
                     if (bytes > MaxHistoryTextBytes)

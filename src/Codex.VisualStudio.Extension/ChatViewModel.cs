@@ -25,6 +25,8 @@ namespace Codex.VisualStudio.Extension;
 [DataContract]
 public sealed partial class ChatViewModel : ObservableObject, IDisposable
 {
+    private const string MissingReasoningSummaryText = "No reasoning summary was saved for this item.";
+
     private IWorkerBridge bridge;
     private readonly Func<IWorkerBridge> bridgeFactory;
     private readonly OutputChannel? outputChannel;
@@ -3704,8 +3706,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         {
             if (existingItem is not null && !existingItem.IsHistoryCompleted)
             {
-                string replacement = markdown.ToSafeText(historyItem.Text ?? string.Empty);
-                SetTranscriptText(existingItem, replacement);
+                SetHistoryTranscriptText(existingItem, GetHistoryDisplayText(existingItem.Kind, historyItem.Text));
                 ApplyDailyUseHistoryItem(existingItem, historyItem, threadId, owner);
                 existingItem.HistoryKey = key;
                 existingItem.IsHistoryCompleted = true;
@@ -3717,7 +3718,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
 
         if (existingItem is not null)
         {
-            SetTranscriptText(existingItem, markdown.ToSafeText(historyItem.Text ?? string.Empty));
+            SetHistoryTranscriptText(existingItem, GetHistoryDisplayText(existingItem.Kind, historyItem.Text));
             ApplyDailyUseHistoryItem(existingItem, historyItem, threadId, owner);
             existingItem.HistoryKey = key;
             existingItem.IsHistoryCompleted = true;
@@ -3734,8 +3735,8 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             "Codex" => ConversationEventKind.AgentMessageDelta,
             _ => ConversationEventKind.ItemCompleted,
         };
-        string safeText = markdown.ToSafeText(historyItem.Text ?? string.Empty);
-        var item = new ChatItemViewModel(role, safeText, kind)
+        SafeMarkdownRenderResult rendered = markdown.ToSafeTextAndBlocks(GetHistoryDisplayText(kind, historyItem.Text));
+        var item = new ChatItemViewModel(role, rendered.Text, kind)
         {
             ItemId = historyItem.Id,
             ThreadId = threadId,
@@ -3746,6 +3747,11 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             OwnerGeneration = owner.OwnerGeneration,
             ConnectionGeneration = owner.ConnectionGeneration,
         };
+        if (item.UsesBlockRendering)
+        {
+            item.UpdateBlocks(rendered.Blocks);
+        }
+
         ApplyDailyUseHistoryItem(item, historyItem, threadId, owner);
         if (prepend)
         {
@@ -4025,6 +4031,21 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         item.Text = text;
         historyBytes += Encoding.UTF8.GetByteCount(text);
     }
+
+    private void SetHistoryTranscriptText(ChatItemViewModel item, string text)
+    {
+        SafeMarkdownRenderResult rendered = markdown.ToSafeTextAndBlocks(text);
+        SetTranscriptText(item, rendered.Text);
+        if (item.UsesBlockRendering)
+        {
+            item.UpdateBlocks(rendered.Blocks);
+        }
+    }
+
+    private static string GetHistoryDisplayText(ConversationEventKind kind, string? text)
+        => kind == ConversationEventKind.ReasoningSummaryDelta && string.IsNullOrWhiteSpace(text)
+            ? MissingReasoningSummaryText
+            : text ?? string.Empty;
 
     private void ResetSelectedHistoryState(ThreadSummary thread)
     {

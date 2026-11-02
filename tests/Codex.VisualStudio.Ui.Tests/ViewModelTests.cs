@@ -1065,6 +1065,10 @@ public sealed partial class ViewModelTests
         await WaitForAsync(() => vm.CanLoadOlderHistory);
 
         CollectionAssert.AreEqual(new List<string> { "h2", "h3" }, HistoryItemIds(vm));
+        ChatItemViewModel historicalAssistant = vm.Items.Single(item => item.ItemId == "h2");
+        Assert.IsTrue(historicalAssistant.UsesBlockRendering);
+        Assert.IsTrue(historicalAssistant.Blocks.Any(block => block.IsParagraph && block.Text == "h2"),
+            "History assistant messages use the Markdown block renderer and must populate blocks when loaded.");
         CollectionAssert.AreEqual(new List<string> { "turn-2", "turn-3" }, vm.ThreadTurns.Select(static turn => turn.Id).ToList());
         await RunCommandAsync(vm.LoadOlderHistoryCommand);
         CollectionAssert.AreEqual(new List<string> { "h0", "h1", "h2", "h3" }, HistoryItemIds(vm));
@@ -1073,6 +1077,48 @@ public sealed partial class ViewModelTests
         await RunCommandAsync(vm.NewThreadCommand);
         Assert.AreEqual("thread-1", vm.SelectedThread!.Id);
         Assert.IsFalse(vm.CanLoadOlderHistory, "A new conversation must not inherit the previous thread's cursor.");
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_HistoryRebuildsReasoningMarkdownBlocksAndExplainsMissingSummary()
+    {
+        var bridge = new FakeWorkerBridge();
+        bridge.ListThreadItemsHandler = (_, _) => Task.FromResult(new ThreadItemsPage
+        {
+            Items =
+            [
+                new ThreadHistoryItem
+                {
+                    Id = "reasoning-with-summary",
+                    TurnId = "reasoning-turn",
+                    Type = "reasoning_summary",
+                    Text = "## Summary\n\nBecause the request needs analysis.",
+                },
+                new ThreadHistoryItem
+                {
+                    Id = "reasoning-without-summary",
+                    TurnId = "reasoning-turn",
+                    Type = "reasoning_summary",
+                    Text = string.Empty,
+                },
+            ],
+        });
+
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready });
+        var thread = new ThreadSummary { Id = "thread-reasoning-history" };
+        vm.Threads.Add(thread);
+        vm.SelectedThread = thread;
+        await WaitForAsync(() => vm.Items.Count == 2);
+
+        ChatItemViewModel withSummary = vm.Items.Single(item => item.ItemId == "reasoning-with-summary");
+        Assert.IsTrue(withSummary.UsesBlockRendering);
+        Assert.IsTrue(withSummary.Blocks.Any(block => block.IsHeading && block.IsH2 && block.Text == "Summary"));
+        Assert.IsTrue(withSummary.Blocks.Any(block => block.IsParagraph && block.Text == "Because the request needs analysis."));
+
+        ChatItemViewModel withoutSummary = vm.Items.Single(item => item.ItemId == "reasoning-without-summary");
+        Assert.AreEqual("No reasoning summary was saved for this item.", withoutSummary.Text);
+        Assert.IsTrue(withoutSummary.Blocks.Any(block => block.IsParagraph && block.Text == withoutSummary.Text));
     }
 
     [TestMethod]

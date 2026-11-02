@@ -283,6 +283,6 @@ internal static class ConversationTextFormatter
             }
         }
 
-        return text.ToString();
+        return text.ToString().ReplaceLineEndings("\r\n");
     }
 }
