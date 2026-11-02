@@ -43,6 +43,7 @@ Tracking: [#242](https://github.com/kkamegawa/vsextensionforcodex/issues/242). T
 - [x] 0.166.0: two review turns in a new empty conversation completed on that same thread, and the history row matched 0.161.0. The test conversations were deleted.
 - [x] 0.166.0: `codex doctor --network-only --no-color --ascii` accepted the flags, needed no TTY, wrote plain text, and exited with 0.
 - [x] `verify-contract-surface.ps1` passed for 0.161.0 and 0.166.0 on both surfaces.
+- [x] `verify-contract-surface.ps1` passed for 0.165.0, 0.164.0, 0.163.0, and 0.162.1 on both surfaces, using pinned packages with verified hashes. Schema generation completed despite temporary PATH alias access warnings.
 
 ### Not observable
 
@@ -50,6 +51,5 @@ Tracking: [#242](https://github.com/kkamegawa/vsextensionforcodex/issues/242). T
 
 ### Not yet verified
 
-- [ ] Rerun `verify-contract-surface.ps1` for 0.165.0, 0.164.0, 0.163.0, and 0.162.1, because `account/usage/read` was added to `methodsByVersion`.
 - [ ] Run `/doctor` from the extension in Visual Studio.
 - [ ] Capture and judge Experimental Instance screenshots for Light, Dark, High Contrast, Japanese, narrow width, keyboard, and Narrator. This includes selection, copy, Ctrl+F, and F3 in the conversation text tab, and its removal on close. This session had no current Experimental deployment and click-only Visual Studio access.

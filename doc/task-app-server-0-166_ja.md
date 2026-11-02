@@ -43,6 +43,7 @@
 - [x] 0.166.0: 新しい空の会話で 2 回のレビューターンが同じ thread で完了し、履歴行は 0.161.0 と同じであることを確認。テスト用の会話は削除済み。
 - [x] 0.166.0: `codex doctor --network-only --no-color --ascii` がフラグを受理し、TTY なしでプレーンテキストを出力して終了コード 0 で終了することを確認。
 - [x] 0.161.0 と 0.166.0 の両方の面で `verify-contract-surface.ps1` が成功。
+- [x] 0.165.0、0.164.0、0.163.0、0.162.1 の stable / experimental 両面で `verify-contract-surface.ps1` が成功。固定されたパッケージのハッシュを検証済み。スキーマ生成は一時的な PATH エイリアスへのアクセス警告が出たものの完了。
 
 ### 観測不能
 
@@ -50,6 +51,5 @@
 
 ### 未確認
 
-- [ ] `methodsByVersion` に `account/usage/read` を追加したため、0.165.0、0.164.0、0.163.0、0.162.1 で `verify-contract-surface.ps1` を再実行する。
 - [ ] Visual Studio 上の拡張機能から `/doctor` を実行する。
 - [ ] Experimental Instance で Light、Dark、High Contrast、日本語、狭い幅、キーボード、Narrator のスクリーンショットを取得して判定する。会話テキストタブの選択、コピー、Ctrl+F、F3、閉じたときの削除も対象とする。このセッションには最新の Experimental 配置がなく、Visual Studio の操作権限もクリックのみだった。
