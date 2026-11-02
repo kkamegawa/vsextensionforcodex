@@ -6087,9 +6087,10 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             && item.TryGetProperty("content", out JsonElement content)
             && content.ValueKind == JsonValueKind.Array)
         {
-            foreach (JsonElement part in content.EnumerateArray())
+            foreach (JsonElement part in content.EnumerateArray().Take(512))
             {
-                if (GetString(part, "type") == "inputText" && GetString(part, "text") is { } userText)
+                if (GetString(part, "type") is "text" or "inputText"
+                    && GetString(part, "text") is { } userText)
                 {
                     AppendBoundedHistoryText(text, userText);
                     if (Encoding.UTF8.GetByteCount(text.ToString()) >= MaxHistoryTextBytes)

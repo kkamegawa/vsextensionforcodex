@@ -1032,9 +1032,52 @@ public sealed partial class CodexSessionServiceTests
                             turnId = "turn-1",
                             item = new
                             {
+                                id = "user-message-1", type = "userMessage",
+                                content = new object[]
+                                {
+                                    new { type = "text", text = "ユーザーからの依頼: " },
+                                    new { type = "inputText", text = "旧形式の入力テキスト" },
+                                },
+                            },
+                        },
+                        new
+                        {
+                            turnId = "turn-1",
+                            item = new
+                            {
+                                id = "user-message-long-1", type = "userMessage",
+                                content = new[] { new { type = "text", text = new string('あ', 22_000) } },
+                            },
+                        },
+                        new
+                        {
+                            turnId = "turn-1",
+                            item = new
+                            {
+                                id = "user-message-empty-prefix-1", type = "userMessage",
+                                content = Enumerable.Repeat(new { type = "text", text = string.Empty }, 512)
+                                    .Append(new { type = "text", text = "beyond item bound" })
+                                    .ToArray(),
+                            },
+                        },
+                        new
+                        {
+                            turnId = "turn-1",
+                            item = new
+                            {
                                 id = "reasoning-1", type = "reasoning",
                                 summary = new[] { "日本語の要約", "Second summary line" },
                                 content = new[] { "Private reasoning that must not be displayed" },
+                            },
+                        },
+                        new
+                        {
+                            turnId = "turn-1",
+                            item = new
+                            {
+                                id = "reasoning-empty-summary-1", type = "reasoning",
+                                summary = Array.Empty<string>(),
+                                content = new[] { "Private reasoning is not a summary" },
                             },
                         },
                         new
@@ -1092,11 +1135,21 @@ public sealed partial class CodexSessionServiceTests
         await using var service = CreateService();
         await service.InitializeAsync(connection, Options(root), CancellationToken.None);
 
-        ThreadItemsPage page = await service.ListThreadItemsAsync("thread-1", "turn-1", null, 10, CancellationToken.None);
+        ThreadItemsPage page = await service.ListThreadItemsAsync("thread-1", "turn-1", null, 20, CancellationToken.None);
 
         ThreadHistoryItem fileItem = page.Items.Single(item => item.Type == "fileChange");
         Assert.IsNotNull(fileItem.Parts.Single().ActionId);
         Assert.IsFalse(JsonSerializer.Serialize(fileItem).Contains(localFile, StringComparison.Ordinal));
+        ThreadHistoryItem userMessageItem = page.Items.Single(item => item.Id == "user-message-1");
+        Assert.AreEqual("ユーザーからの依頼: 旧形式の入力テキスト", userMessageItem.Text);
+        Assert.AreEqual(userMessageItem.Text, userMessageItem.Parts.Single(part => part.Kind == ArtifactPartKind.Text).Text);
+        ThreadHistoryItem longUserMessageItem = page.Items.Single(item => item.Id == "user-message-long-1");
+        Assert.IsTrue(longUserMessageItem.Parts.Single(part => part.Kind == ArtifactPartKind.Text).IsLocallyTruncated);
+        Assert.IsTrue(System.Text.Encoding.UTF8.GetByteCount(longUserMessageItem.Text!) <= 64 * 1024);
+        ThreadHistoryItem userMessageEmptyPrefixItem = page.Items.Single(item => item.Id == "user-message-empty-prefix-1");
+        Assert.AreEqual(string.Empty, userMessageEmptyPrefixItem.Text);
+        Assert.AreEqual(string.Empty, userMessageEmptyPrefixItem.Parts.Single(part => part.Kind == ArtifactPartKind.Text).Text);
+        Assert.IsFalse(userMessageEmptyPrefixItem.Parts.Single(part => part.Kind == ArtifactPartKind.Text).IsLocallyTruncated);
         ThreadHistoryItem planItem = page.Items.Single(item => item.Type == "plan");
         Assert.IsTrue(planItem.Plan?.IsComplete);
         Assert.AreEqual("final history plan", planItem.Plan?.Explanation);
@@ -1104,6 +1157,10 @@ public sealed partial class CodexSessionServiceTests
         Assert.AreEqual($"日本語の要約{Environment.NewLine}Second summary line", reasoningItem.Text);
         Assert.IsFalse(reasoningItem.Text!.Contains("Private reasoning", StringComparison.Ordinal));
         Assert.AreEqual(reasoningItem.Text, reasoningItem.Parts.Single(part => part.Kind == ArtifactPartKind.Text).Text);
+        ThreadHistoryItem reasoningEmptySummaryItem = page.Items.Single(item => item.Id == "reasoning-empty-summary-1");
+        Assert.AreEqual(string.Empty, reasoningEmptySummaryItem.Text);
+        Assert.AreEqual(string.Empty, reasoningEmptySummaryItem.Parts.Single(part => part.Kind == ArtifactPartKind.Text).Text);
+        Assert.IsFalse(reasoningEmptySummaryItem.Text!.Contains("Private reasoning", StringComparison.Ordinal));
         ThreadHistoryItem commandItem = page.Items.Single(item => item.Id == "command-1");
         StringAssert.StartsWith(commandItem.Text!, $"dotnet build{Environment.NewLine}Build succeeded.");
         Assert.IsFalse(commandItem.Text!.Contains("sk-abcdefghijklmnopqrstuvwxyz0123456789", StringComparison.Ordinal));
