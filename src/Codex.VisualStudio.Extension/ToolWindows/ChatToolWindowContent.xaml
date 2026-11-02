@@ -397,6 +397,94 @@
         <Setter Property="Foreground" Value="{DynamicResource {x:Static styles:VsBrushes.WindowTextKey}}" />
       </Style>
 
+      <!-- Keep Remote UI TextBox styles as keyed resources referenced directly from controls.
+           Inline BasedOn styles did not materialize transcript TextBoxes in the tool-window UI. -->
+      <Style x:Key="SelectableMarkdownHeadingTextStyle"
+             TargetType="TextBox"
+             BasedOn="{StaticResource SelectableTranscriptTextStyle}">
+        <Setter Property="Visibility" Value="Collapsed" />
+        <Setter Property="TextOptions.TextFormattingMode" Value="Display" />
+        <Setter Property="FontWeight" Value="SemiBold" />
+        <Setter Property="FontSize" Value="13" />
+        <Setter Property="Margin" Value="0,6,0,2" />
+        <Style.Triggers>
+          <DataTrigger Binding="{Binding IsHeading}" Value="True">
+            <Setter Property="Visibility" Value="Visible" />
+          </DataTrigger>
+          <DataTrigger Binding="{Binding IsH1}" Value="True">
+            <Setter Property="FontSize" Value="18" />
+            <Setter Property="Margin" Value="0,8,0,4" />
+          </DataTrigger>
+          <DataTrigger Binding="{Binding IsH2}" Value="True">
+            <Setter Property="FontSize" Value="15" />
+          </DataTrigger>
+          <DataTrigger Binding="{Binding IsH3}" Value="True">
+            <Setter Property="FontSize" Value="13" />
+          </DataTrigger>
+        </Style.Triggers>
+      </Style>
+
+      <Style x:Key="SelectableMarkdownParagraphTextStyle"
+             TargetType="TextBox"
+             BasedOn="{StaticResource SelectableTranscriptTextStyle}">
+        <Setter Property="Visibility" Value="Collapsed" />
+        <Setter Property="TextOptions.TextFormattingMode" Value="Display" />
+        <Style.Triggers>
+          <DataTrigger Binding="{Binding IsParagraph}" Value="True">
+            <Setter Property="Visibility" Value="Visible" />
+          </DataTrigger>
+        </Style.Triggers>
+      </Style>
+
+      <Style x:Key="SelectableMarkdownListItemTextStyle"
+             TargetType="TextBox"
+             BasedOn="{StaticResource SelectableTranscriptTextStyle}">
+        <Setter Property="Visibility" Value="Collapsed" />
+        <Setter Property="Margin" Value="12,0,0,0" />
+        <Setter Property="TextOptions.TextFormattingMode" Value="Display" />
+        <Style.Triggers>
+          <DataTrigger Binding="{Binding IsListItem}" Value="True">
+            <Setter Property="Visibility" Value="Visible" />
+          </DataTrigger>
+          <!-- Nested list levels use fixed indentation to avoid converters in Remote UI. -->
+          <DataTrigger Binding="{Binding IsNestedListItem}" Value="True">
+            <Setter Property="Margin" Value="28,0,0,0" />
+          </DataTrigger>
+          <DataTrigger Binding="{Binding IsDeeplyNestedListItem}" Value="True">
+            <Setter Property="Margin" Value="44,0,0,0" />
+          </DataTrigger>
+        </Style.Triggers>
+      </Style>
+
+      <Style x:Key="SelectableTranscriptBodyTextStyle"
+             TargetType="TextBox"
+             BasedOn="{StaticResource SelectableTranscriptTextStyle}">
+        <Setter Property="TextOptions.TextFormattingMode" Value="Display" />
+        <Setter Property="Visibility" Value="Visible" />
+        <Style.Triggers>
+          <DataTrigger Binding="{Binding IsPlanItem}" Value="True">
+            <Setter Property="Visibility" Value="Collapsed" />
+          </DataTrigger>
+          <DataTrigger Binding="{Binding UsesBlockRendering}" Value="True">
+            <Setter Property="Visibility" Value="Collapsed" />
+          </DataTrigger>
+          <DataTrigger Binding="{Binding IsCommandItem}" Value="True">
+            <Setter Property="Visibility" Value="Collapsed" />
+          </DataTrigger>
+          <MultiDataTrigger>
+            <MultiDataTrigger.Conditions>
+              <Condition Binding="{Binding IsReasoningItem}" Value="True" />
+              <Condition Binding="{Binding IsCollapsed}" Value="True" />
+            </MultiDataTrigger.Conditions>
+            <Setter Property="Visibility" Value="Collapsed" />
+          </MultiDataTrigger>
+          <DataTrigger Binding="{Binding IsDiffItem}" Value="True">
+            <Setter Property="FontFamily" Value="Consolas, Courier New, monospace" />
+            <Setter Property="FontSize" Value="11" />
+          </DataTrigger>
+        </Style.Triggers>
+      </Style>
+
       <!-- ── Accent icon button (Send / Steer) ── -->
       <Style x:Key="SendIconButtonStyle" TargetType="Button" BasedOn="{StaticResource PrimaryRoundButtonStyle}">
         <Setter Property="FontFamily" Value="Segoe MDL2 Assets" />
@@ -1279,72 +1367,14 @@
                     <ItemsControl.ItemTemplate>
                       <DataTemplate>
                         <Grid Margin="0,2,0,2" HorizontalAlignment="Stretch">
-                          <TextBox Text="{Binding Text, Mode=OneWay}" TextWrapping="Wrap">
-                            <TextBox.Style>
-                              <Style TargetType="TextBox" BasedOn="{StaticResource SelectableTranscriptTextStyle}">
-                                <Setter Property="Visibility" Value="Collapsed" />
-                                <Setter Property="Foreground" Value="{DynamicResource {x:Static styles:VsBrushes.WindowTextKey}}" />
-                                <Setter Property="TextOptions.TextFormattingMode" Value="Display" />
-                                <Setter Property="FontWeight" Value="SemiBold" />
-                                <Setter Property="FontSize" Value="13" />
-                                <Setter Property="Margin" Value="0,6,0,2" />
-                                <Style.Triggers>
-                                  <DataTrigger Binding="{Binding IsHeading}" Value="True">
-                                    <Setter Property="Visibility" Value="Visible" />
-                                  </DataTrigger>
-                                  <DataTrigger Binding="{Binding IsH1}" Value="True">
-                                    <Setter Property="FontSize" Value="18" />
-                                    <Setter Property="Margin" Value="0,8,0,4" />
-                                  </DataTrigger>
-                                  <DataTrigger Binding="{Binding IsH2}" Value="True">
-                                    <Setter Property="FontSize" Value="15" />
-                                  </DataTrigger>
-                                  <DataTrigger Binding="{Binding IsH3}" Value="True">
-                                    <Setter Property="FontSize" Value="13" />
-                                  </DataTrigger>
-                                </Style.Triggers>
-                              </Style>
-                            </TextBox.Style>
-                          </TextBox>
+                          <TextBox Style="{StaticResource SelectableMarkdownHeadingTextStyle}"
+                                   Text="{Binding Text, Mode=OneWay}" TextWrapping="Wrap" />
 
-                          <TextBox Text="{Binding Text, Mode=OneWay}" TextWrapping="Wrap">
-                            <TextBox.Style>
-                              <Style TargetType="TextBox" BasedOn="{StaticResource SelectableTranscriptTextStyle}">
-                                <Setter Property="Visibility" Value="Collapsed" />
-                                <Setter Property="Foreground" Value="{DynamicResource {x:Static styles:VsBrushes.WindowTextKey}}" />
-                                <Setter Property="TextOptions.TextFormattingMode" Value="Display" />
-                                <Style.Triggers>
-                                  <DataTrigger Binding="{Binding IsParagraph}" Value="True">
-                                    <Setter Property="Visibility" Value="Visible" />
-                                  </DataTrigger>
-                                </Style.Triggers>
-                              </Style>
-                            </TextBox.Style>
-                          </TextBox>
+                          <TextBox Style="{StaticResource SelectableMarkdownParagraphTextStyle}"
+                                   Text="{Binding Text, Mode=OneWay}" TextWrapping="Wrap" />
 
-                          <TextBox Text="{Binding Text, Mode=OneWay}" TextWrapping="Wrap">
-                            <TextBox.Style>
-                              <Style TargetType="TextBox" BasedOn="{StaticResource SelectableTranscriptTextStyle}">
-                                <Setter Property="Visibility" Value="Collapsed" />
-                                <Setter Property="Margin" Value="12,0,0,0" />
-                                <Setter Property="Foreground" Value="{DynamicResource {x:Static styles:VsBrushes.WindowTextKey}}" />
-                                <Setter Property="TextOptions.TextFormattingMode" Value="Display" />
-                                <Style.Triggers>
-                                  <DataTrigger Binding="{Binding IsListItem}" Value="True">
-                                    <Setter Property="Visibility" Value="Visible" />
-                                  </DataTrigger>
-                                  <!-- Nested list levels get a fixed extra indent step (converters are
-                                       unavailable in Remote UI, so each depth flag maps to a margin). -->
-                                  <DataTrigger Binding="{Binding IsNestedListItem}" Value="True">
-                                    <Setter Property="Margin" Value="28,0,0,0" />
-                                  </DataTrigger>
-                                  <DataTrigger Binding="{Binding IsDeeplyNestedListItem}" Value="True">
-                                    <Setter Property="Margin" Value="44,0,0,0" />
-                                  </DataTrigger>
-                                </Style.Triggers>
-                              </Style>
-                            </TextBox.Style>
-                          </TextBox>
+                          <TextBox Style="{StaticResource SelectableMarkdownListItemTextStyle}"
+                                   Text="{Binding Text, Mode=OneWay}" TextWrapping="Wrap" />
 
                           <Separator Margin="0,6,0,6">
                             <Separator.Style>
@@ -1494,42 +1524,9 @@
                   </ScrollViewer>
 
                   <!-- Main text content: plain, monospace diff, or hidden (command/plan/block rendering/collapsed reasoning). -->
-                  <TextBox Margin="0,4,0,0" TextWrapping="Wrap" Text="{Binding Text, Mode=OneWay}">
-                    <TextBox.Style>
-                      <Style TargetType="TextBox" BasedOn="{StaticResource SelectableTranscriptTextStyle}">
-                        <Setter Property="Foreground" Value="{DynamicResource {x:Static styles:VsBrushes.WindowTextKey}}" />
-                        <Setter Property="TextOptions.TextFormattingMode" Value="Display" />
-                        <Setter Property="Visibility" Value="Visible" />
-                        <Style.Triggers>
-                          <!-- Plan items use a structured step list instead. -->
-                          <DataTrigger Binding="{Binding IsPlanItem}" Value="True">
-                            <Setter Property="Visibility" Value="Collapsed" />
-                          </DataTrigger>
-                          <!-- Agent/reasoning items use the structured block renderer above. -->
-                          <DataTrigger Binding="{Binding UsesBlockRendering}" Value="True">
-                            <Setter Property="Visibility" Value="Collapsed" />
-                          </DataTrigger>
-                          <!-- Command output uses the bounded, horizontally scrollable surfaces above. -->
-                          <DataTrigger Binding="{Binding IsCommandItem}" Value="True">
-                            <Setter Property="Visibility" Value="Collapsed" />
-                          </DataTrigger>
-                          <!-- Collapsed reasoning hides its full text. -->
-                          <MultiDataTrigger>
-                            <MultiDataTrigger.Conditions>
-                              <Condition Binding="{Binding IsReasoningItem}" Value="True" />
-                              <Condition Binding="{Binding IsCollapsed}" Value="True" />
-                            </MultiDataTrigger.Conditions>
-                            <Setter Property="Visibility" Value="Collapsed" />
-                          </MultiDataTrigger>
-                          <!-- Diff rendered in monospace. -->
-                          <DataTrigger Binding="{Binding IsDiffItem}" Value="True">
-                            <Setter Property="FontFamily" Value="Consolas, Courier New, monospace" />
-                            <Setter Property="FontSize" Value="11" />
-                          </DataTrigger>
-                        </Style.Triggers>
-                      </Style>
-                    </TextBox.Style>
-                  </TextBox>
+                  <TextBox Margin="0,4,0,0"
+                           Style="{StaticResource SelectableTranscriptBodyTextStyle}"
+                           TextWrapping="Wrap" Text="{Binding Text, Mode=OneWay}" />
 
                   <!-- Plan step list — shown only for PlanUpdated items. -->
                   <ItemsControl Margin="0,4,0,0" MinHeight="0" ItemsSource="{Binding PlanSteps}">

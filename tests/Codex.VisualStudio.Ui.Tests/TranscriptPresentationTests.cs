@@ -297,10 +297,9 @@ public sealed class TranscriptPresentationTests
         string? text = textBox.Attribute("Text")?.Value;
         Assert.IsNotNull(text);
         StringAssert.Contains(text, "Mode=OneWay");
-        Assert.IsTrue(textBox.Attribute("Style")?.Value == "{StaticResource SelectableTranscriptTextStyle}"
-            || textBox.Element(Presentation + "TextBox.Style")?.Element(Presentation + "Style")?
-                .Attribute("BasedOn")?.Value == "{StaticResource SelectableTranscriptTextStyle}",
-            "Transcript text must use the shared read-only, VS-themed selectable style.");
+        string? style = textBox.Attribute("Style")?.Value;
+        Assert.IsTrue(style?.StartsWith("{StaticResource Selectable", StringComparison.Ordinal) == true,
+            "Transcript text must reference a keyed, VS-themed selectable TextBox style directly.");
     }
 
     private static void AssertTriggerThemePair(
