@@ -4779,12 +4779,24 @@ public sealed partial class ViewModelTests
     [TestMethod]
     public async Task ChatViewModel_TransientRecoveryAppliesReplacementWorkerWithLowerGenerations()
     {
-        var bridge = new FakeWorkerBridge();
+        var bridge = new FakeWorkerBridge
+        {
+            ModelListResult = new ListModelsResult
+            {
+                Models = [new ModelInfo { Id = "gpt-6-luna" }],
+                DefaultModel = "gpt-6-luna",
+            },
+        };
         WorkerStatus recovered = OwnerStatus("worker-b-owner", 2, 1);
         recovered.CodexVersion = "0.163.0";
         var replacement = new FakeWorkerBridge
         {
             ConnectHandler = () => Task.FromResult(recovered),
+            ModelListResult = new ListModelsResult
+            {
+                Models = [new ModelInfo { Id = "gpt-6.1-sol" }, new ModelInfo { Id = "gpt-6-luna" }],
+                DefaultModel = "gpt-6.1-sol",
+            },
             ListThreadsHandler = (_, _) => Task.FromResult(new ThreadPage
             {
                 Threads = [new ThreadSummary { Id = "thread-recovered" }],
@@ -4800,6 +4812,8 @@ public sealed partial class ViewModelTests
         // The retired Worker restarted its app-server before it exited, so its owner and connection
         // generations are higher than the ones a fresh replacement Worker process starts from.
         await bridge.PublishStateAsync(OwnerStatus("worker-a-owner", 4, 3));
+        await vm.PopulateModelsAsync();
+        Assert.AreEqual("gpt-6-luna", vm.SelectedModel);
         WorkerStatus degraded = OwnerStatus("worker-a-owner", 4, 3);
         degraded.State = WorkerConnectionState.Degraded;
         degraded.RecoveryFailureKind = WorkerRecoveryFailureKind.WorkerProcessExit;
@@ -4813,6 +4827,15 @@ public sealed partial class ViewModelTests
         Assert.AreEqual(2, vm.Status.Target.OwnerGeneration);
         Assert.IsFalse(vm.IsRecovering);
         Assert.AreEqual("thread-recovered", vm.Threads.Single().Id);
+        Assert.AreEqual(1, replacement.ModelListCallCount, "A replacement owner must load its own catalog before recovery completes.");
+        string[] expectedModels = ["gpt-6.1-sol", "gpt-6-luna"];
+        CollectionAssert.AreEqual(expectedModels, vm.Models.ToArray());
+        Assert.AreEqual("gpt-6-luna", vm.SelectedModel, "Keep the draft's model when the replacement still offers it.");
+
+        await RunCommandAsync(vm.NewThreadCommand);
+        CollectionAssert.AreEqual(expectedModels, vm.Models.ToArray());
+        Assert.AreEqual("gpt-6-luna", vm.SelectedModel);
+        Assert.AreEqual(1, replacement.ModelListCallCount, "A new conversation preserves the initialized catalog.");
 
         // Later replacement notifications stay current instead of being dropped as stale.
         WorkerStatus busy = OwnerStatus("worker-b-owner", 2, 1);

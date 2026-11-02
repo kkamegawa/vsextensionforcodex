@@ -112,7 +112,7 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
         CancellationToken cancellationToken,
         string? connectingMessage = null)
     {
-        WorkerDiagnostics.Write("worker connect RPC received");
+        WorkerDiagnostics.Write($"worker connect RPC received build={System.Diagnostics.FileVersionInfo.GetVersionInfo(typeof(WorkerRpcService).Assembly.Location).ProductVersion} assembly={typeof(WorkerRpcService).Assembly.Location}");
         if (options.ContractVersion != ContractVersions.Current)
         {
             throw new InvalidOperationException($"Unsupported contract version {options.ContractVersion}.");

@@ -1062,22 +1062,29 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
 
     private async Task FinishRecoveryAsync(ConnectionRecoveryResult result)
     {
+        bool readyStateSynchronized = false;
         if (result.Outcome == ConnectionRecoveryOutcome.Reconnected)
         {
             using var synchronizationDeadline = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
             synchronizationDeadline.CancelAfter(TimeSpan.FromSeconds(45));
             try
             {
+                if (!await RefreshReadyCatalogsAsync().WaitAsync(synchronizationDeadline.Token).ConfigureAwait(false))
+                {
+                    throw new InvalidOperationException("The connection owner changed during recovered initialization.");
+                }
+
                 await SynchronizeRecoveredThreadListAsync(synchronizationDeadline.Token).ConfigureAwait(false);
+                readyStateSynchronized = true;
             }
             catch (OperationCanceledException) when (synchronizationDeadline.IsCancellationRequested)
             {
-                await OnUiAsync(() => MarkThreadListStale("Connection restored, but thread synchronization timed out. Refresh the thread list manually.")).ConfigureAwait(false);
+                await OnUiAsync(() => MarkThreadListStale("Connection restored, but initialization timed out. Reconnect to refresh models and history.")).ConfigureAwait(false);
             }
             catch (Exception ex)
             {
                 ExtensionDiagnostics.Write("Recovered connection state synchronization failed", ex);
-                await OnUiAsync(() => MarkThreadListStale("Connection restored, but thread history could not be synchronized. Refresh manually.")).ConfigureAwait(false);
+                await OnUiAsync(() => MarkThreadListStale("Connection restored, but initialization did not complete. Reconnect to refresh models and history.")).ConfigureAwait(false);
             }
         }
 
@@ -1090,7 +1097,10 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             {
                 case ConnectionRecoveryOutcome.Reconnected:
                     RestoreRecoveredPlanMode(preservedPlanMode);
-                    RecoveryStatusText = "Connection restored. Choose a conversation to inspect its history, then Join explicitly before sending.";
+                    if (readyStateSynchronized)
+                    {
+                        RecoveryStatusText = "Connection restored. Choose a conversation to inspect its history, then Join explicitly before sending.";
+                    }
                     break;
                 case ConnectionRecoveryOutcome.Cancelled:
                     RecoveryStatusText = string.Empty;
@@ -3260,10 +3270,28 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
     internal async Task RefreshReadyStateAsync(bool reloadThreads)
     {
         OwnerSnapshot owner = CaptureOwnerSnapshot();
+        if (!await RefreshReadyCatalogsAsync().ConfigureAwait(false) || !IsCurrentOwner(owner))
+        {
+            return;
+        }
+
+        if (reloadThreads)
+        {
+            await ReloadThreadsAsync().ConfigureAwait(false);
+        }
+        else
+        {
+            await LoadMoreAsync().ConfigureAwait(false);
+        }
+    }
+
+    private async Task<bool> RefreshReadyCatalogsAsync()
+    {
+        OwnerSnapshot owner = CaptureOwnerSnapshot();
         AccountStatus accountStatus = await bridge.GetAccountStatusAsync(lifetime.Token).ConfigureAwait(false);
         if (!IsCurrentOwner(owner))
         {
-            return;
+            return false;
         }
 
         ExtensionDiagnostics.Write($"Account status received state={accountStatus.State} plan={accountStatus.PlanType ?? "none"}");
@@ -3274,13 +3302,13 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         await PopulateModelsAsync().ConfigureAwait(false);
         if (!IsCurrentOwner(owner))
         {
-            return;
+            return false;
         }
 
         await PopulatePermissionProfilesAsync().ConfigureAwait(false);
         if (!IsCurrentOwner(owner))
         {
-            return;
+            return false;
         }
 
         await OnUiAsync(() =>
@@ -3292,21 +3320,14 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         }).ConfigureAwait(false);
         if (!IsCurrentOwner(owner))
         {
-            return;
+            return false;
         }
 
         if (accountStatus.State == AccountState.SignedIn)
         {
             await RefreshUsageAsync(force: false).ConfigureAwait(false);
         }
-        if (reloadThreads)
-        {
-            await ReloadThreadsAsync().ConfigureAwait(false);
-        }
-        else
-        {
-            await LoadMoreAsync().ConfigureAwait(false);
-        }
+        return IsCurrentOwner(owner);
     }
 
     private async Task NewThreadAsync()
