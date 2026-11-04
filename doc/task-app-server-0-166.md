@@ -69,3 +69,11 @@ Tracking: [#242](https://github.com/kkamegawa/vsextensionforcodex/issues/242). T
 - [ ] Verify selection and copying of conversation and generated Plan text in the tool window after the fix.
 - [ ] Verify restored Reasoning and Command bodies in Visual Studio after the fix.
 - [ ] Capture and judge High Contrast and Narrator behavior. Separately verify selection, copy, Ctrl+F, F3, Japanese text, long histories, and removal on close in the conversation text editor tab. The maintainer's acceptance of the tool window does not cover this separate editor tab.
+
+### Stage 2 review follow-up
+
+- [x] Compare the new conversation's effective approval policy, reviewer, profile, and full sandbox settings before starting the review. Keep the source selected when the settings differ or the source changes during creation.
+- [x] Clear conversation-specific usage when the selection changes and refresh it while the usage popup is open.
+- [x] Keep the history popup open during scope selection. Escape and Close history dismiss it.
+- [x] Skip redirected conversation-text roots and owner directories during automatic cleanup. Cover junctions with a stale external file in the regression test.
+- [ ] Verify the scope ComboBox in the Visual Studio Experimental Instance.

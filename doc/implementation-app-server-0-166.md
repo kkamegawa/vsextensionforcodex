@@ -43,3 +43,9 @@ Tracking: [#242](https://github.com/kkamegawa/vsextensionforcodex/issues/242). T
 - **Diagnostics:** `BoundedProcessRunner` starts `/doctor` with no shell, bounded output, and a 60-second timeout that kills the process tree. `--no-color --ascii` keeps terminal codes out, and output passes through `ISecretRedactor`.
 
 Real CLI probes ran on 0.161.0 and 0.166.0 in a throwaway repository, and their test conversations were deleted. The 0.161.0 turn was stopped after 150 seconds, so that result covers the start and the history row only. Both 0.166.0 turns completed. The 0.166.0 CLI was installed with `scripts/install-codex.ps1`, which verified the pinned hashes. The protocol does not report which model a review turn used, so `review_model` precedence could not be observed. The Release VSIX inspection result is recorded in `doc/task.md`.
+
+### Stage 2 review follow-up
+
+The Worker retains the server-reported sandbox object alongside the approval state. A separate review starts only when the new conversation reports the same effective policy, reviewer, permission profile, and sandbox settings and the source selection is still current. A failed comparison leaves the new conversation in history and leaves the source selected.
+
+Selecting a conversation clears the previous conversation's usage amount. An open usage popup refreshes the amount for the new selection. The history popup stays open while choosing a scope and provides an explicit close action. Automatic snapshot cleanup skips redirected roots and owner directories.

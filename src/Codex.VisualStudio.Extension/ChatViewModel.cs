@@ -1924,6 +1924,12 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                 OnPropertyChanged(nameof(HasHistoryNotice));
                 OnGoalThreadChanged(value?.Id);
                 NotifyInterruptibilityChanged();
+                usageThreadId = null;
+                Usage.UpdateThreadUsage(null);
+                if (IsUsageOpen)
+                {
+                    _ = RefreshUsageAsync(force: false);
+                }
                 if (value is not null)
                 {
                     IsThreadJoined = false;
