@@ -65,7 +65,7 @@
 
 ### 未確認
 
-- [ ] 空でない Reasoning 要約が保存された会話を Visual Studio で復元する。隔離した 0.166.0 の実 CLI では `model_reasoning_summary="auto"` がループバックの Responses 要求に反映された。以前の Visual Studio セッションで `none` が記録された原因は未確認。
+- [ ] 空でない Reasoning 要約が保存された会話を Visual Studio で復元する。隔離した 0.166.0 の実 CLI では `model_reasoning_summary="auto"` がループバックの Responses 要求に反映された。以前の Visual Studio セッションで記録された `none` は CLI の記録不具合による。`TurnContext::to_turn_context_item` が `ReasoningSummaryConfig::None` を固定値として書き込んでいる（openai/codex#57472、`rust-v0.166.0` のソースで確認）。保存された要約が空なのはモデルの応答によるもの（openai/codex#38160 を参照）。どちらも README の制限事項に記載した。
 - [ ] 会話テキストのエディタータブで選択、コピー、Ctrl+F、F3、日本語、長い履歴、閉じた際のファイル削除を確認する。
 
 ### Stage 2 のレビュー対応

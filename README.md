@@ -91,6 +91,7 @@ Both roots are required: local paths for the working directory and attachments a
   slash menu keeps working with built-in commands only for the rest of the session. Skill icons
   declared by `interface.iconSmall` are not rendered; every row uses a fixed glyph. Skill-specific
   approval requests are declined rather than granted.
+- **Saved conversation settings always show the reasoning summary as `none`.** Codex CLI writes `summary: "none"` to every `turn_context` entry in the session rollout, whatever `model_reasoning_summary` is set to (openai/codex#57472, still present in 0.166.0). The configured value is still sent with each request. The extension sends no reasoning summary setting of its own, so do not read `none` there as the cause of missing summaries. Restored history shows a Reasoning summary only when the saved reasoning item contains summary text. The model can return reasoning with an empty summary even when one was requested (openai/codex#38160), and the extension then explains that no summary was saved.
 - The app-server contract is verified against 0.166.0. CI also downloads the latest stable release and runs a non-blocking smoke test (start `codex app-server` and complete `initialize`), so a newer release is only known to start, not to match the contract. Schema generation and the build stay pinned to the manifest versions. Confirm the local executable with `codex --version`.
 - The extension is Windows-only and targets Visual Studio; there is no Visual Studio Code or cross-platform host.
 

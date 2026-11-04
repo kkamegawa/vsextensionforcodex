@@ -65,7 +65,7 @@ Tracking: [#242](https://github.com/kkamegawa/vsextensionforcodex/issues/242). T
 
 ### Not yet verified
 
-- [ ] Restore a conversation with a saved non-empty Reasoning summary in Visual Studio. An isolated 0.166.0 CLI passed `model_reasoning_summary="auto"` through to its loopback Responses request. The earlier Visual Studio turn contexts that recorded `none` have no confirmed cause.
+- [ ] Restore a conversation with a saved non-empty Reasoning summary in Visual Studio. An isolated 0.166.0 CLI passed `model_reasoning_summary="auto"` through to its loopback Responses request. The `none` recorded in the earlier Visual Studio turn contexts is a CLI recording defect: `TurnContext::to_turn_context_item` hard-codes `ReasoningSummaryConfig::None` (openai/codex#57472, confirmed in the `rust-v0.166.0` source). The empty saved summaries come from the model response (see openai/codex#38160). Both are listed under Limitations in the README.
 - [ ] Verify selection, copy, Ctrl+F, F3, Japanese text, long histories, and file removal on close in the conversation text editor tab.
 
 ### Stage 2 review follow-up
