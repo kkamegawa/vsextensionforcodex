@@ -292,6 +292,104 @@ public sealed partial class ViewModelTests
     }
 
     [TestMethod]
+    public void ConversationTextStore_RemoveUnusedSkipsRedirectedDirectories()
+    {
+        string testRoot = Path.Combine(Path.GetTempPath(), "codex-store-tests", Guid.NewGuid().ToString("N"));
+        string root = Path.Combine(testRoot, "ConversationText");
+        string outside = Path.Combine(testRoot, "Outside");
+        string? linkedOwnerDirectory = null;
+        string? linkedRoot = null;
+
+        try
+        {
+            Directory.CreateDirectory(root);
+            Directory.CreateDirectory(outside);
+            var owner = new ArtifactPreviewOwner("partition", 1, 1);
+            string generated = new ConversationTextStore(root).Write(owner, "snapshot");
+            string ownerDirectory = Path.GetDirectoryName(generated)!;
+            File.Delete(generated);
+            Directory.Delete(ownerDirectory);
+
+            string outsideOwnerDirectory = Path.Combine(outside, "owner");
+            Directory.CreateDirectory(outsideOwnerDirectory);
+            string externalFile = Path.Combine(outsideOwnerDirectory, "stale.txt");
+            File.WriteAllText(externalFile, "keep");
+            File.SetLastWriteTimeUtc(externalFile, DateTime.UtcNow.AddHours(-30));
+            linkedOwnerDirectory = ownerDirectory;
+            CreateDirectoryLink(linkedOwnerDirectory, outsideOwnerDirectory);
+
+            new ConversationTextStore(root).RemoveUnused(DateTimeOffset.UtcNow);
+
+            Assert.IsTrue(File.Exists(externalFile), "A linked owner directory must never expose external files to cleanup.");
+            Directory.Delete(linkedOwnerDirectory);
+            linkedOwnerDirectory = null;
+
+            string redirectedRoot = Path.Combine(testRoot, "RedirectedConversationText");
+            string rootTarget = Path.Combine(outside, "root-target");
+            Directory.CreateDirectory(rootTarget);
+            string rootFile = Path.Combine(rootTarget, "stale.txt");
+            File.WriteAllText(rootFile, "keep");
+            File.SetLastWriteTimeUtc(rootFile, DateTime.UtcNow.AddHours(-30));
+            linkedRoot = redirectedRoot;
+            CreateDirectoryLink(redirectedRoot, rootTarget);
+
+            new ConversationTextStore(redirectedRoot).RemoveUnused(DateTimeOffset.UtcNow);
+
+            Assert.IsTrue(File.Exists(rootFile), "A redirected store root must never be traversed.");
+        }
+        finally
+        {
+            if (linkedOwnerDirectory is not null && Directory.Exists(linkedOwnerDirectory))
+            {
+                Directory.Delete(linkedOwnerDirectory);
+            }
+
+            if (linkedRoot is not null && Directory.Exists(linkedRoot))
+            {
+                Directory.Delete(linkedRoot);
+            }
+
+            if (Directory.Exists(testRoot))
+            {
+                Directory.Delete(testRoot, recursive: true);
+            }
+        }
+    }
+
+    private static void CreateDirectoryLink(string linkPath, string targetPath)
+    {
+        try
+        {
+            Directory.CreateSymbolicLink(linkPath, targetPath);
+            return;
+        }
+        catch (Exception exception) when (exception is UnauthorizedAccessException
+            or PlatformNotSupportedException
+            or IOException
+            or NotSupportedException)
+        {
+            // Junctions provide the same path redirection case without Developer Mode or elevation.
+        }
+
+        using System.Diagnostics.Process process = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+        {
+            FileName = Path.Combine(Environment.SystemDirectory, "cmd.exe"),
+            ArgumentList = { "/d", "/c", "mklink", "/J", linkPath, targetPath },
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+        }) ?? throw new IOException("The directory junction process could not start.");
+        process.StandardOutput.ReadToEnd();
+        process.StandardError.ReadToEnd();
+        process.WaitForExit();
+        if (process.ExitCode != 0 || !Directory.Exists(linkPath))
+        {
+            Assert.Inconclusive($"Directory links are unavailable (exit code {process.ExitCode}).");
+        }
+    }
+
+    [TestMethod]
     public void ThreadUsage_KeepsActualEstimatedAndUnknownDistinct()
     {
         var usage = new UsagePresentation();
@@ -320,9 +418,12 @@ public sealed partial class ViewModelTests
         int limitReads = bridge.RateLimitCallCount;
 
         vm.SelectedThread = new ThreadSummary { Id = "thread-2" };
+        Assert.IsFalse(vm.Usage.HasThreadUsage, "Changing conversations clears the previous conversation amount immediately.");
+        Assert.AreEqual(string.Empty, vm.Usage.ThreadUsageText);
         await vm.RefreshUsageAsync(force: false);
 
         CollectionAssert.Contains(bridge.ThreadUsageRequests, "thread-2");
+        Assert.IsTrue(vm.Usage.HasThreadUsage, "The new conversation amount is shown after its usage read completes.");
         Assert.AreEqual(limitReads, bridge.RateLimitCallCount, "Account limits stay cached.");
     }
 

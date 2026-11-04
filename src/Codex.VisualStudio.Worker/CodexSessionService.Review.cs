@@ -1,4 +1,5 @@
 ﻿using System.Text.Json;
+using System.Text.Json.Nodes;
 using Codex.AppServer.Protocol;
 using Codex.VisualStudio.Contracts;
 
@@ -6,6 +7,12 @@ namespace Codex.VisualStudio.Worker;
 
 public sealed partial class CodexSessionService
 {
+    private sealed record EffectiveThreadPermissions(
+        EffectiveApprovalState Approval,
+        JsonElement? Sandbox,
+        bool HasMalformedProfile);
+
+    private EffectiveThreadPermissions? effectiveThreadPermissions;
     private int reviewThreadStartInFlight;
 
     // thread/start and review/start run as one operation. ActiveThreadId and the effective settings
@@ -24,7 +31,10 @@ public sealed partial class CodexSessionService
 
         try
         {
-            if (!TryBuildReviewThreadParameters(context, request.ThreadId, out Dictionary<string, object?> parameters, out string? reason))
+            EffectiveThreadPermissions? sourcePermissions = effectiveThreadPermissions;
+            if (!TryBuildReviewThreadParameters(
+                    context, request.ThreadId, sourcePermissions,
+                    out Dictionary<string, object?> parameters, out string? reason))
             {
                 return ReviewNotCreated(reason);
             }
@@ -50,11 +60,17 @@ public sealed partial class CodexSessionService
                 return Unsupported<StartReviewResult>("Starting a new conversation is not supported by this app-server.");
             }
 
-            EffectiveApprovalState createdApproval = ReadEffectiveApprovalState(created.Result);
+            EffectiveThreadPermissions createdPermissions = ReadEffectiveThreadPermissions(created.Result);
             ReadEffectiveTurnSettings(created.Result, out string? reasoningEffort, out string? serviceTier);
-            ThreadSummary thread = ReadThread(created.Result.GetProperty("thread"), createdApproval, reasoningEffort, serviceTier);
+            ThreadSummary thread = ReadThread(created.Result.GetProperty("thread"), createdPermissions.Approval, reasoningEffort, serviceTier);
             string? modelId = thread.EffectiveModelId ?? ReadEffectiveModelId(created.Result);
-            if (!IsReviewThreadWithinSource(createdApproval, EffectiveApprovalState))
+            if (!string.Equals(request.ThreadId, ActiveThreadId, StringComparison.Ordinal)
+                || !ReferenceEquals(sourcePermissions, effectiveThreadPermissions))
+            {
+                return ReviewCreatedNotStarted(thread, "The source conversation changed, so the review did not start.");
+            }
+
+            if (!IsReviewThreadWithinSource(createdPermissions, sourcePermissions))
             {
                 return ReviewCreatedNotStarted(thread, "The new conversation did not report the same permissions, so the review did not start.");
             }
@@ -113,7 +129,7 @@ public sealed partial class CodexSessionService
                     : null;
             }
 
-            EffectiveApprovalState = createdApproval;
+            effectiveThreadPermissions = createdPermissions;
             EffectiveReasoningEffort = reasoningEffort;
             EffectiveServiceTier = serviceTier;
             effectiveThreadModelId = modelId;
@@ -134,6 +150,7 @@ public sealed partial class CodexSessionService
     private bool TryBuildReviewThreadParameters(
         ConnectionContext context,
         string sourceThreadId,
+        EffectiveThreadPermissions? sourcePermissions,
         out Dictionary<string, object?> parameters,
         out string? reason)
     {
@@ -145,7 +162,13 @@ public sealed partial class CodexSessionService
             return false;
         }
 
-        EffectiveApprovalState? source = EffectiveApprovalState;
+        if (sourcePermissions is { HasMalformedProfile: true })
+        {
+            reason = "The current permission profile could not be read.";
+            return false;
+        }
+
+        EffectiveApprovalState? source = sourcePermissions?.Approval;
         if (source?.ApprovalPolicy is not ("untrusted" or "on-request" or "never"))
         {
             reason = "The current approval policy cannot be applied to a new conversation.";
@@ -206,12 +229,27 @@ public sealed partial class CodexSessionService
         return true;
     }
 
-    private static bool IsReviewThreadWithinSource(EffectiveApprovalState created, EffectiveApprovalState? source)
+    private static bool IsReviewThreadWithinSource(EffectiveThreadPermissions created, EffectiveThreadPermissions? source)
         => source is not null
-            && string.Equals(created.ApprovalPolicy, source.ApprovalPolicy, StringComparison.Ordinal)
-            && (source.ActivePermissionProfile is not null
-                ? string.Equals(created.ActivePermissionProfile, source.ActivePermissionProfile, StringComparison.Ordinal)
-                : string.Equals(created.SandboxMode, source.SandboxMode, StringComparison.Ordinal));
+            && !created.HasMalformedProfile
+            && string.Equals(created.Approval.ApprovalPolicy, source.Approval.ApprovalPolicy, StringComparison.Ordinal)
+            && string.Equals(created.Approval.ApprovalsReviewer, source.Approval.ApprovalsReviewer, StringComparison.Ordinal)
+            && string.Equals(created.Approval.ActivePermissionProfile, source.Approval.ActivePermissionProfile, StringComparison.Ordinal)
+            && SandboxPoliciesMatch(created.Sandbox, source.Sandbox);
+
+    private static bool SandboxPoliciesMatch(JsonElement? created, JsonElement? source)
+    {
+        try
+        {
+            return JsonNode.DeepEquals(
+                created is JsonElement createdSandbox ? JsonNode.Parse(createdSandbox.GetRawText()) : null,
+                source is JsonElement sourceSandbox ? JsonNode.Parse(sourceSandbox.GetRawText()) : null);
+        }
+        catch (Exception ex) when (ex is JsonException or ArgumentException)
+        {
+            return false;
+        }
+    }
 
     private static bool IsUnknownOperationOutcome(Exception exception, CancellationToken cancellationToken)
         => exception is TimeoutException or JsonRpcConnectionClosedException

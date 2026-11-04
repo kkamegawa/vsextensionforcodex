@@ -196,6 +196,31 @@ public sealed class UsagePresentationTests
                 .ToArray());
     }
 
+    [TestMethod]
+    public void ChatToolWindowXaml_HistoryScopeComboBox_KeepsFlyoutOpenAndCanBeDismissed()
+    {
+        const string resourceName = "Codex.VisualStudio.Extension.ToolWindows.ChatToolWindowContent.xaml";
+        using Stream? stream = typeof(ChatViewModel).Assembly.GetManifestResourceStream(resourceName);
+        Assert.IsNotNull(stream);
+        XDocument document = XDocument.Load(stream);
+        XNamespace presentation = "http://schemas.microsoft.com/winfx/2006/xaml/presentation";
+
+        XElement popup = document.Descendants(presentation + "Popup")
+            .Single(value => value.Attribute("IsOpen")?.Value == "{Binding IsHistoryOpen, Mode=TwoWay}");
+        Assert.AreEqual("True", popup.Attribute("StaysOpen")?.Value);
+
+        XElement scopePicker = popup.Descendants(presentation + "ComboBox")
+            .Single(value => value.Attribute("AutomationProperties.Name")?.Value == "Conversation history scope");
+        Assert.AreEqual("{Binding SelectedThreadListScopeId, Mode=TwoWay}", scopePicker.Attribute("SelectedValue")?.Value);
+
+        XElement closeButton = popup.Descendants(presentation + "Button")
+            .Single(value => value.Attribute("Command")?.Value == "{Binding CloseHistoryCommand}");
+        Assert.AreEqual("Close conversation history", closeButton.Attribute("AutomationProperties.Name")?.Value);
+        Assert.IsTrue(popup.Descendants(presentation + "KeyBinding")
+            .Any(value => value.Attribute("Key")?.Value == "Escape"
+                && value.Attribute("Command")?.Value == "{Binding CloseHistoryCommand}"));
+    }
+
     private static RateLimitsResult Result(RateLimitInfo rateLimit)
         => new() { RateLimits = rateLimit };
 }
