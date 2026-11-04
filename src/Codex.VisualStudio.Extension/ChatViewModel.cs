@@ -9824,12 +9824,17 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         bool wasSignedIn = Account.IsSignedIn;
         string? previousWorkspaceId = Account.WorkspaceId;
         // The workspace name comes from the app-server and is shown in the account header.
-        if (!string.IsNullOrWhiteSpace(value.WorkspaceName))
+        // Sanitize a copy once here; readers use Account.WorkspaceName as is.
+        Account.Update(new AccountStatus
         {
-            value.WorkspaceName = ToSafeHeaderText(value.WorkspaceName);
-        }
-
-        Account.Update(value);
+            State = value.State,
+            PlanType = value.PlanType,
+            Message = value.Message,
+            WorkspaceId = value.WorkspaceId,
+            WorkspaceName = string.IsNullOrWhiteSpace(value.WorkspaceName)
+                ? value.WorkspaceName
+                : ToSafeHeaderText(value.WorkspaceName),
+        });
         OnPropertyChanged(nameof(CurrentWorkspaceText));
         OnPropertyChanged(nameof(ShowWorkspaceSwitcher));
         OnPropertyChanged(nameof(ShowWorkspaceSwitcherButton));

@@ -34,7 +34,7 @@ public sealed partial class ChatViewModel
 
     [DataMember]
     public string CurrentWorkspaceText
-        => Account.WorkspaceName is { Length: > 0 } name ? ToSafeHeaderText(name) : "Workspace";
+        => Account.WorkspaceName is { Length: > 0 } name ? name : "Workspace";
 
     [DataMember]
     public bool ShowWorkspaceSwitcher
