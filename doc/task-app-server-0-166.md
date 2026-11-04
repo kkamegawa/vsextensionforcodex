@@ -41,7 +41,7 @@ Tracking: [#242](https://github.com/kkamegawa/vsextensionforcodex/issues/242). T
 - [x] Reproduce stderr-triggered owner invalidation during `thread/start` and `turn/start`: both regression cases failed with `StaleGeneration` before the fix. Keep optional MCP network errors and WebSocket fallback diagnostics from triggering connection recovery, and persist redacted stderr for diagnosis.
 - [x] Stop forwarding raw stderr/HTTP HTML to the transcript; retain redacted diagnostics with HTML removed and a 2,048-character limit, plus one short network/MCP notice. Three send cases failed with duplicate raw transcript errors before the fix and pass afterward. Independent diff review found no remaining actionable defect in this scope.
 - [x] Review Plan-mode mode serialization and completion against the running 0.166 turn: the turn completed and returned to Ready at 20:07:45; the license question was final model prose, not an extension lifecycle failure. Plan mode remains read-only.
-- [x] Latest Release verification: Core tests (549 passed, 5 skipped), UI tests (600 passed, 1 skipped), solution build (0 warnings and errors), and VSIX content inspection.
+- [x] Stage 2 review fixes, commit `b3b23e4`: Debug and Release builds had zero warnings and errors. Each configuration reported Core 553 passed and 5 skipped, UI 602 passed and 1 skipped, and no failures. Release VSIX inspection passed. The release gate remains blocked by six required symbolic-link cases because this Windows account lacks link creation privilege. Evidence: `app-server-0166-acceptance-evidence/release-validation.json`.
 
 ### Real CLI confirmations
 
@@ -54,21 +54,19 @@ Tracking: [#242](https://github.com/kkamegawa/vsextensionforcodex/issues/242). T
 - [x] `verify-contract-surface.ps1` passed for 0.161.0 and 0.166.0 on both surfaces.
 - [x] `verify-contract-surface.ps1` passed for 0.165.0, 0.164.0, 0.163.0, and 0.162.1 on both surfaces, using pinned packages with verified hashes. Schema generation completed despite temporary PATH alias access warnings.
 
-### Not observable
-
-- `review_model` precedence: setting it through `thread/start.config` changed nothing the protocol reports. No notification or `thread/read` field names the model a review turn used, so the precedence stays unknown, and the extension does not depend on it.
+- [x] 0.166.0: an isolated CLI with a loopback Responses fixture sent the configured `review_model` for an inline review. With the setting omitted, it sent the conversation model. The fixture recorded the request model; this probe did not measure review completion.
 
 ### Maintainer-confirmed Visual Studio acceptance
 
 - [x] Conversation search finds matching content. The maintainer confirmed focus, keyboard operation, Light/Dark, and narrow-width accessibility on 2026-11-02 and supplied search screenshots.
 - [x] `/doctor` appears and works in the extension; accepted by the maintainer on 2026-11-02.
 
+- [x] PR #248 records maintainer acceptance of long-history search, generated Plan selection and copy, High Contrast, Narrator, Japanese conversation selection and copy, and restored Command content in the tool window.
+
 ### Not yet verified
 
-- [ ] Verify conversation search with long histories in Visual Studio.
-- [ ] Verify selection and copying of conversation and generated Plan text in the tool window after the fix.
-- [ ] Verify restored Reasoning and Command bodies in Visual Studio after the fix.
-- [ ] Capture and judge High Contrast and Narrator behavior. Separately verify selection, copy, Ctrl+F, F3, Japanese text, long histories, and removal on close in the conversation text editor tab. The maintainer's acceptance of the tool window does not cover this separate editor tab.
+- [ ] Restore a conversation with a saved non-empty Reasoning summary in Visual Studio. An isolated 0.166.0 CLI passed `model_reasoning_summary="auto"` through to its loopback Responses request. The earlier Visual Studio turn contexts that recorded `none` have no confirmed cause.
+- [ ] Verify selection, copy, Ctrl+F, F3, Japanese text, long histories, and file removal on close in the conversation text editor tab.
 
 ### Stage 2 review follow-up
 
