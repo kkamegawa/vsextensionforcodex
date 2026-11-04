@@ -202,6 +202,8 @@ public sealed partial class WorkerBridge : IWorkerBridge, ICodexWorkerObserver
 {
     private static readonly TimeSpan ModelListTimeout = TimeSpan.FromSeconds(20);
 
+    internal const int WorkerPipeConnectTimeoutMilliseconds = 30_000;
+
     private readonly OutputChannel? log;
     private readonly SemaphoreSlim lifecycleGate = new(1, 1);
     private Process? process;
@@ -854,7 +856,8 @@ public sealed partial class WorkerBridge : IWorkerBridge, ICodexWorkerObserver
         try
         {
             pipe = new NamedPipeClientStream(".", pipeName, PipeDirection.InOut, PipeOptions.Asynchronous);
-            await Task.Run(() => pipe.Connect(15_000), cancellationToken).ConfigureAwait(false);
+            // A newly installed Worker can start slowly while Visual Studio loads a solution.
+            await pipe.ConnectAsync(WorkerPipeConnectTimeoutMilliseconds, cancellationToken).ConfigureAwait(false);
             ExtensionDiagnostics.Write("Worker pipe connected");
             var workerRpc = new JsonRpc(pipe);
             workerRpc.AddLocalRpcTarget<ICodexWorkerObserver>(this, null);

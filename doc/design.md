@@ -454,7 +454,15 @@ metadata reads. An Extension-owned coordinator recovers transient failures with
 five bounded attempts. It preserves the active owner boundary in section 14:
 only an isolated, in-memory old-owner draft may survive retirement, and explicit
 connection/conversation review is required before copying it into the composer.
-Restoration and sending are separate actions.
+Restoration and sending are separate actions. A first Worker start that
+times out or loses its transport is recovered the same way, without a
+recovery draft or conversation selection because no owner existed yet.
+
+Decision history:
+
+| Date | Previous decision | Current decision | Reason and approval evidence |
+|---|---|---|---|
+| 2026-11-04 | A failed first Worker start ended in Degraded after a 15-second pipe wait, with no retry, and the status detail kept "Checking account...". | The pipe wait is 30 seconds and cancellable; a timeout or transport failure on the first start runs one bounded recovery episode, and the status detail shows the connection message. | A cold Worker start during solution load in the Experimental Instance exceeded 15 seconds and left the tool window unresponsive; the user approved adding first-start recovery to the design in this conversation on 2026-11-04. |
 
 History uses bounded read-only pages and generation-stamped notification
 merging. Joining a conversation remains an explicit resume action. Attachment

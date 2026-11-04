@@ -534,11 +534,13 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
     // Intentionally NOT a DataMember: the XAML binds the flattened Account* properties below.
     public AccountPanelViewModel Account { get; } = new();
 
-    // Shown beneath the connection status. Before the first connection attempt the account
-    // has never been checked, so showing "Checking account..." would look like a stuck
-    // loading state; show the connection status's own guidance message instead.
+    // Shown beneath the connection status. The account is never checked without a connected
+    // Worker, so before the first connection or after a failed one "Checking account..." would
+    // look like a stuck loading state; show the connection status's own message instead.
     [DataMember]
-    public string StatusDetailText => Status.State == WorkerConnectionState.Disconnected && Account.State == AccountState.Checking
+    public string StatusDetailText => Status.State is WorkerConnectionState.Disconnected or WorkerConnectionState.Degraded
+        && Account.State == AccountState.Checking
+        && !string.IsNullOrEmpty(Status.Message)
         ? Status.Message
         : Account.DisplayText;
 
@@ -850,7 +852,15 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         source.ApprovalAuditReceived -= OnApprovalAuditReceivedAsync;
     }
 
-    private async Task HandleConnectionLostAsync(IWorkerBridge source, WorkerRecoveryFailureKind failureKind)
+    private Task HandleConnectionLostAsync(IWorkerBridge source, WorkerRecoveryFailureKind failureKind)
+        => RecoverConnectionAsync(source, failureKind, firstConnectionRoot: null);
+
+    // A non-null firstConnectionRoot marks a failed first Worker start: no owner existed yet, so
+    // there is no draft to isolate, no operation to mark uncertain, and no owner state to clear.
+    private async Task RecoverConnectionAsync(
+        IWorkerBridge source,
+        WorkerRecoveryFailureKind failureKind,
+        string? firstConnectionRoot)
     {
         if (!ConnectionRecoveryCoordinator.IsTransient(failureKind) || lifetime.IsCancellationRequested)
         {
@@ -859,7 +869,8 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             return;
         }
 
-        string? root = workingDirectory;
+        bool firstConnection = firstConnectionRoot is not null;
+        string? root = firstConnectionRoot ?? workingDirectory;
         string? profileName = connectedProfileName;
         string? fingerprint = profileName is null
             ? null
@@ -870,6 +881,17 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         {
             if (!ReferenceEquals(source, bridge) || IsRecovering)
             {
+                return;
+            }
+
+            if (firstConnection)
+            {
+                IsRecovering = true;
+                RecoveryStatusText = "The Codex Worker did not start in time. Retrying…";
+                recoveryCancellation?.Cancel();
+                recoveryCancellation?.Dispose();
+                recoveryCancellation = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
+                started = true;
                 return;
             }
 
@@ -924,7 +946,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             async (_, token) => await RecoverAttemptAsync(root, profileName, fingerprint, experimentalApi, token).ConfigureAwait(false),
             token => IsRecoveryTargetValidAsync(root, profileName, fingerprint, experimentalApi, token),
             cancellation.Token).ConfigureAwait(false);
-        await FinishRecoveryAsync(result).ConfigureAwait(false);
+        await FinishRecoveryCoreAsync(result, firstConnection).ConfigureAwait(false);
     }
 
     private bool HasDraftContent()
@@ -1076,7 +1098,10 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             && string.Equals(applied.ComputeFingerprint(), fingerprint, StringComparison.Ordinal);
     }
 
-    private async Task FinishRecoveryAsync(ConnectionRecoveryResult result)
+    private Task FinishRecoveryAsync(ConnectionRecoveryResult result)
+        => FinishRecoveryCoreAsync(result, firstConnection: false);
+
+    private async Task FinishRecoveryCoreAsync(ConnectionRecoveryResult result, bool firstConnection)
     {
         bool readyStateSynchronized = false;
         if (result.Outcome == ConnectionRecoveryOutcome.Reconnected)
@@ -1115,7 +1140,10 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                     RestoreRecoveredPlanMode(preservedPlanMode);
                     if (readyStateSynchronized)
                     {
-                        RecoveryStatusText = "Connection restored. Choose a conversation to inspect its history, then Join explicitly before sending.";
+                        // A first connection had no previous conversation to choose again.
+                        RecoveryStatusText = firstConnection
+                            ? string.Empty
+                            : "Connection restored. Choose a conversation to inspect its history, then Join explicitly before sending.";
                     }
                     break;
                 case ConnectionRecoveryOutcome.Cancelled:
@@ -2833,9 +2861,11 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             SetConnectedSandboxBackend(targetSandboxBackendId);
         }).ConfigureAwait(false);
         WorkerStatus result;
+        IWorkerBridge connectingBridge = bridge;
+        bool workerStartFailed = false;
         try
         {
-            result = await bridge.ConnectAsync(workingDirectory, settings.ExperimentalApiEnabled, lifetime.Token).ConfigureAwait(false);
+            result = await connectingBridge.ConnectAsync(workingDirectory, settings.ExperimentalApiEnabled, lifetime.Token).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
         {
@@ -2848,6 +2878,9 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         catch (Exception ex)
         {
             ExtensionDiagnostics.Write("Initial Worker connection failed", ex);
+
+            // A Worker that started too slowly or lost its transport is a transient failure.
+            workerStartFailed = ConnectionRecoveryCoordinator.IsTransientException(ex);
             result = new WorkerStatus
             {
                 State = WorkerConnectionState.Degraded,
@@ -2872,6 +2905,18 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         }).ConfigureAwait(false);
         if (!applied)
         {
+            return false;
+        }
+
+        if (workerStartFailed)
+        {
+            // Recovery validates its target against the current root, which a first start has
+            // not recorded yet. The episode waits for this connect to release profileOperationGate.
+            this.workingDirectory = workingDirectory;
+            _ = RecoverConnectionAsync(
+                connectingBridge,
+                WorkerRecoveryFailureKind.PeerUnresponsive,
+                firstConnectionRoot: workingDirectory);
             return false;
         }
 
