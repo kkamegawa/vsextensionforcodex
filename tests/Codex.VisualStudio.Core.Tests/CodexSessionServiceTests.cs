@@ -2809,6 +2809,161 @@ public sealed partial class CodexSessionServiceTests
         Assert.IsTrue(result.IsSupported);
         Assert.IsNull(result.Summary);
     }
+
+    [TestMethod]
+    public async Task LinkedForkRefusalReportsTheServerReasonWithoutCreatingAThread()
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method switch
+            {
+                "initialize" => JsonSerializer.SerializeToElement(new { userAgent = "codex-cli/0.166.0" }),
+                "thread/start" => JsonSerializer.SerializeToElement(new { thread = new { id = "parent" } }),
+                "thread/fork" => throw new JsonRpcRemoteException(-32600, "linked forks require persistent thread storage"),
+                _ => JsonSerializer.SerializeToElement(new { }),
+            },
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(experimentalApi: true), CancellationToken.None);
+        ThreadSummary parent = await service.StartThreadAsync(CancellationToken.None);
+
+        ForkThreadResult created = await service.ForkThreadAsync(
+            new ForkThreadRequest { ThreadId = parent.Id, CreateLinkedFork = true },
+            CancellationToken.None);
+
+        Assert.IsNull(created.Thread);
+        StringAssert.Contains(created.UnavailableReason, "refused the linked fork");
+        StringAssert.Contains(created.UnavailableReason, "persistent thread storage");
+        Assert.AreEqual("parent", service.ActiveThreadId);
+    }
+
+    [TestMethod]
+    public async Task WorkspaceRequestsAreNotSentWhenExperimentalApiIsDisabled()
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method switch
+            {
+                "initialize" => JsonSerializer.SerializeToElement(new { userAgent = "codex-cli/0.166.0" }),
+                "account/read" => JsonSerializer.SerializeToElement(new
+                {
+                    account = new { type = "chatgpt", email = "a@example.test", planType = "team" },
+                    workspaceRouting = new { chatgptAccountId = "workspace-a" },
+                }),
+                _ => JsonSerializer.SerializeToElement(new { }),
+            },
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        AccountStatus status = await service.GetAccountStatusAsync(CancellationToken.None);
+        await Assert.ThrowsExactlyAsync<InvalidOperationException>(
+            () => service.ListWorkspacesAsync(CancellationToken.None));
+        await Assert.ThrowsExactlyAsync<InvalidOperationException>(
+            () => service.SwitchWorkspaceAsync(
+                new SwitchWorkspaceRequest { SessionId = "session-1", AccountId = "workspace-b", UserConfirmed = true },
+                CancellationToken.None));
+        await Assert.ThrowsExactlyAsync<InvalidOperationException>(
+            () => service.CancelWorkspaceLoginAsync("login-1", CancellationToken.None));
+
+        Assert.AreEqual(AccountState.SignedIn, status.State);
+        Assert.IsNull(status.WorkspaceName);
+        Assert.IsFalse(connection.Requests.Any(item => item.Method is "accountSession/list" or "accountSession/switch" or "account/login/cancel"));
+    }
+
+    [TestMethod]
+    public async Task SameEmailAndPlanInAnotherWorkspaceRetiresTheOwner()
+    {
+        string workspaceId = "workspace-a";
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method switch
+            {
+                "initialize" => JsonSerializer.SerializeToElement(new { userAgent = "codex-cli/0.166.0" }),
+                "account/read" => JsonSerializer.SerializeToElement(new
+                {
+                    account = new { type = "chatgpt", email = "a@example.test", planType = "team" },
+                    workspaceRouting = new { chatgptAccountId = workspaceId },
+                }),
+                "accountSession/list" => WorkspaceSessions(workspaceId),
+                _ => JsonSerializer.SerializeToElement(new { }),
+            },
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(experimentalApi: true), CancellationToken.None);
+        long ownerGeneration = service.OwnerGeneration;
+
+        AccountStatus first = await service.GetAccountStatusAsync(CancellationToken.None);
+        workspaceId = "workspace-b";
+        AccountStatus second = await service.GetAccountStatusAsync(CancellationToken.None);
+
+        Assert.AreEqual(AccountState.SignedIn, first.State);
+        Assert.AreEqual(AccountState.Unavailable, second.State);
+        Assert.IsFalse(service.IsConnectionActive);
+        Assert.IsFalse(service.InvalidatedByOwnerAction);
+        Assert.AreNotEqual(ownerGeneration, service.OwnerGeneration);
+    }
+
+    [TestMethod]
+    public async Task ConfirmedWorkspaceSwitchRetiresTheOwnerAsAnOwnerAction()
+    {
+        string selected = "workspace-a";
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) =>
+            {
+                switch (method)
+                {
+                    case "initialize":
+                        return JsonSerializer.SerializeToElement(new { userAgent = "codex-cli/0.166.0" });
+                    case "thread/start":
+                        return JsonSerializer.SerializeToElement(new { thread = new { id = "thread-1" } });
+                    case "accountSession/switch":
+                        selected = "workspace-b";
+                        return WorkspaceSessions(selected);
+                    case "accountSession/list":
+                        return WorkspaceSessions(selected);
+                    default:
+                        return JsonSerializer.SerializeToElement(new { });
+                }
+            },
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(experimentalApi: true), CancellationToken.None);
+        await service.StartThreadAsync(CancellationToken.None);
+        long ownerGeneration = service.OwnerGeneration;
+
+        SwitchWorkspaceResult result = await service.SwitchWorkspaceAsync(
+            new SwitchWorkspaceRequest { SessionId = "session-1", AccountId = "workspace-b", UserConfirmed = true },
+            CancellationToken.None);
+
+        Assert.AreEqual(WorkspaceSwitchState.Switched, result.State);
+        Assert.IsFalse(service.IsConnectionActive);
+        Assert.IsTrue(service.InvalidatedByOwnerAction);
+        Assert.IsNull(service.ActiveThreadId);
+        Assert.AreNotEqual(ownerGeneration, service.OwnerGeneration);
+        Assert.AreEqual(1, connection.Requests.Count(item => item.Method == "accountSession/switch"));
+    }
+
+    private static JsonElement WorkspaceSessions(string selectedWorkspaceAccountId)
+        => JsonSerializer.SerializeToElement(new
+        {
+            activeSessionId = "session-1",
+            sessions = new[]
+            {
+                new
+                {
+                    sessionId = "session-1",
+                    selectedWorkspaceAccountId,
+                    workspaces = new[]
+                    {
+                        new { accountId = "workspace-a", name = "Team A" },
+                        new { accountId = "workspace-b", name = "Team B" },
+                    },
+                },
+            },
+        });
+
     [TestMethod]
     public async Task GetThreadUsage_ReadsMicrosAndKeepsNullUnknown()
     {
