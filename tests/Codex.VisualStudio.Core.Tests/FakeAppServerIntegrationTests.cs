@@ -71,6 +71,226 @@ public sealed class FakeAppServerIntegrationTests
     }
 
     [TestMethod]
+    [DataRow("Regression01650", true)]
+    [DataRow("Current01660", true)]
+    [DataRow("Current01660", false)]
+    public async Task FakeExperimentalMemoryHonorsVersionAndNegotiatedCapability(string scenario, bool experimental)
+    {
+        await using FakeAppServerProcess server = await FakeAppServerProcess.StartAsync(scenario);
+        await InitializeFakeAsync(server, 1, experimental);
+
+        await server.SendAsync(new { id = 2, method = "thread/start", @params = new { } });
+        using JsonDocument started = await ReadResponseAsync(server, 2);
+        string threadId = started.RootElement.GetProperty("result").GetProperty("thread").GetProperty("id").GetString()!;
+
+        await server.SendAsync(new { id = 3, method = "thread/memory/read", @params = new { threadId } });
+        using JsonDocument memory = await ReadResponseAsync(server, 3);
+        if (experimental && scenario is "Regression01650" or "Current01660")
+        {
+            Assert.AreEqual(JsonValueKind.Null, memory.RootElement.GetProperty("result").GetProperty("summary").ValueKind);
+        }
+        else
+        {
+            Assert.AreEqual(-32601, memory.RootElement.GetProperty("error").GetProperty("code").GetInt32());
+        }
+    }
+
+    [TestMethod]
+    public async Task FakeLinkedForksStayOutOfOrdinaryHistoryAndUseAttachedThreadFilter()
+    {
+        await using FakeAppServerProcess server = await FakeAppServerProcess.StartAsync("Current01660");
+        await InitializeFakeAsync(server, 1, experimental: true);
+
+        await server.SendAsync(new { id = 2, method = "thread/start", @params = new { } });
+        using JsonDocument started = await ReadResponseAsync(server, 2);
+        string parentId = started.RootElement.GetProperty("result").GetProperty("thread").GetProperty("id").GetString()!;
+
+        await server.SendAsync(new
+        {
+            id = 3,
+            method = "thread/fork",
+            @params = new { threadId = parentId, attachToSource = true, excludeTurns = true },
+        });
+        using JsonDocument forked = await ReadResponseAsync(server, 3);
+        string childId = forked.RootElement.GetProperty("result").GetProperty("thread").GetProperty("id").GetString()!;
+
+        await server.SendAsync(new { id = 4, method = "thread/list", @params = new { limit = 25 } });
+        using JsonDocument ordinary = await ReadResponseAsync(server, 4);
+        JsonElement ordinaryThreads = ordinary.RootElement.GetProperty("result").GetProperty("data");
+        Assert.IsFalse(ContainsThread(ordinaryThreads, childId), ordinaryThreads.ToString());
+        Assert.IsTrue(ContainsThread(ordinaryThreads, parentId), ordinaryThreads.ToString());
+
+        await server.SendAsync(new
+        {
+            id = 5,
+            method = "thread/list",
+            @params = new { attachedToThreadId = parentId, cursor = (string?)null, limit = 25 },
+        });
+        using JsonDocument children = await ReadResponseAsync(server, 5);
+        JsonElement childThreads = children.RootElement.GetProperty("result").GetProperty("data");
+        Assert.IsTrue(ContainsThread(childThreads, childId), childThreads.ToString());
+        Assert.IsFalse(ContainsThread(childThreads, parentId), childThreads.ToString());
+    }
+
+    [TestMethod]
+    public async Task FakeExperimentalRequestsRequireNegotiationButOrdinaryForkRemainsStable()
+    {
+        await using FakeAppServerProcess server = await FakeAppServerProcess.StartAsync("Current01660");
+        await InitializeFakeAsync(server, 1, experimental: false);
+
+        await server.SendAsync(new { id = 2, method = "thread/start", @params = new { } });
+        using JsonDocument started = await ReadResponseAsync(server, 2);
+        string threadId = started.RootElement.GetProperty("result").GetProperty("thread").GetProperty("id").GetString()!;
+
+        await server.SendAsync(new { id = 3, method = "thread/fork", @params = new { threadId } });
+        using JsonDocument ordinaryFork = await ReadResponseAsync(server, 3);
+        Assert.IsTrue(ordinaryFork.RootElement.TryGetProperty("result", out _));
+
+        await server.SendAsync(new
+        {
+            id = 4,
+            method = "thread/fork",
+            @params = new { threadId, attachToSource = true, excludeTurns = true },
+        });
+        using JsonDocument linkedFork = await ReadResponseAsync(server, 4);
+        Assert.AreEqual(-32601, linkedFork.RootElement.GetProperty("error").GetProperty("code").GetInt32());
+
+        await server.SendAsync(new { id = 5, method = "accountSession/list", @params = new { refreshWorkspaceMetadata = true } });
+        using JsonDocument sessions = await ReadResponseAsync(server, 5);
+        Assert.AreEqual(-32601, sessions.RootElement.GetProperty("error").GetProperty("code").GetInt32());
+    }
+
+    [TestMethod]
+    public async Task FakeWorkspaceSwitchUsesSameLoginAndDistinguishesWorkspaceIds()
+    {
+        await using FakeAppServerProcess server = await FakeAppServerProcess.StartAsync("Current01660,Issue243WorkspaceSwitch");
+        await InitializeFakeAsync(server, 1, experimental: true);
+        await server.SendAsync(new { id = 2, method = "account/read", @params = new { } });
+        using JsonDocument account = await ReadResponseAsync(server, 2);
+        Assert.AreEqual("plus", account.RootElement.GetProperty("result").GetProperty("account").GetProperty("planType").GetString());
+
+        await server.SendAsync(new { id = 3, method = "accountSession/list", @params = new { refreshWorkspaceMetadata = true } });
+        using JsonDocument sessions = await ReadResponseAsync(server, 3);
+        JsonElement session = sessions.RootElement.GetProperty("result").GetProperty("sessions")[0];
+        Assert.AreEqual("fake-account-session", session.GetProperty("sessionId").GetString());
+        Assert.AreEqual("same-user@example.test", session.GetProperty("email").GetString());
+        JsonElement workspaces = session.GetProperty("workspaces");
+        Assert.AreEqual(2, workspaces.GetArrayLength());
+        string personal = workspaces[0].GetProperty("accountId").GetString()!;
+        string team = workspaces[1].GetProperty("accountId").GetString()!;
+        Assert.AreNotEqual(personal, team);
+
+        await server.SendAsync(new
+        {
+            id = 4,
+            method = "accountSession/switch",
+            @params = new { sessionId = "fake-account-session", accountId = team, allowBrowserLogin = true },
+        });
+        using JsonDocument switched = await ReadResponseAsync(server, 4);
+        JsonElement switchedSession = switched.RootElement.GetProperty("result").GetProperty("sessions")[0];
+        Assert.AreEqual("same-user@example.test", switchedSession.GetProperty("email").GetString());
+        Assert.AreEqual(team, switchedSession.GetProperty("selectedWorkspaceAccountId").GetString());
+    }
+
+    [TestMethod]
+    public async Task FakeWorkspaceSwitchCoversSsoCancellationAndUnknownResultLookup()
+    {
+        await using FakeAppServerProcess sso = await FakeAppServerProcess.StartAsync("Current01660,Issue243SsoSwitch");
+        await InitializeFakeAsync(sso, 1, experimental: true);
+        await sso.SendAsync(new { id = 2, method = "accountSession/switch", @params = new { sessionId = "fake-account-session", accountId = "fake-team-workspace", allowBrowserLogin = true } });
+        using JsonDocument login = await ReadResponseAsync(sso, 2);
+        JsonElement loginResult = login.RootElement.GetProperty("result");
+        Assert.AreEqual("fake-workspace-login", loginResult.GetProperty("login_id").GetString());
+        Assert.IsTrue(Uri.TryCreate(loginResult.GetProperty("auth_url").GetString(), UriKind.Absolute, out Uri? authUrl));
+        Assert.AreEqual(Uri.UriSchemeHttps, authUrl!.Scheme);
+        await sso.SendAsync(new { id = 3, method = "account/login/cancel", @params = new { loginId = "fake-workspace-login" } });
+        using JsonDocument canceled = await ReadResponseAsync(sso, 3);
+        Assert.AreEqual("canceled", canceled.RootElement.GetProperty("result").GetProperty("outcome").GetString());
+
+        await using FakeAppServerProcess unknown = await FakeAppServerProcess.StartAsync("Current01660,Issue243UnknownSwitch");
+        await InitializeFakeAsync(unknown, 1, experimental: true);
+        await unknown.SendAsync(new { id = 2, method = "accountSession/switch", @params = new { sessionId = "fake-account-session", accountId = "fake-team-workspace", allowBrowserLogin = true } });
+        await unknown.SendAsync(new { id = 3, method = "accountSession/list", @params = new { refreshWorkspaceMetadata = true } });
+        using JsonDocument confirmed = await ReadResponseAsync(unknown, 3);
+        JsonElement active = confirmed.RootElement.GetProperty("result").GetProperty("sessions")[0];
+        Assert.AreEqual("fake-team-workspace", active.GetProperty("selectedWorkspaceAccountId").GetString());
+        await unknown.SendAsync(new { id = 4, method = "fake/experimental/state", @params = new { } });
+        using JsonDocument state = await ReadResponseAsync(unknown, 4);
+        Assert.AreEqual(1, state.RootElement.GetProperty("result").GetProperty("workspaceSwitchCount").GetInt32());
+    }
+
+    private static async Task InitializeFakeAsync(FakeAppServerProcess server, int id, bool experimental)
+    {
+        await server.SendAsync(new
+        {
+            id,
+            method = "initialize",
+            @params = new { capabilities = new { experimentalApi = experimental } },
+        });
+        using JsonDocument initialized = await ReadResponseAsync(server, id);
+        Assert.IsTrue(initialized.RootElement.TryGetProperty("result", out _), initialized.RootElement.ToString());
+    }
+
+    private static bool ContainsThread(JsonElement threads, string threadId)
+        => threads.EnumerateArray().Any(thread =>
+            string.Equals(thread.GetProperty("id").GetString(), threadId, StringComparison.Ordinal));
+
+    [TestMethod]
+    [DataRow("Issue244NativeUsd", 4_250_000L, false, false)]
+    [DataRow("Issue244ZeroUsd", 0L, false, false)]
+    [DataRow("Issue244NullUsd", 0L, false, true)]
+    [DataRow("Issue244MissingUsageValues", 0L, true, false)]
+    public async Task FakeThreadUsagePreservesNativeZeroAndUnknown(string scenario, long expectedNativeUsdMicros, bool expectMissing, bool expectNull)
+    {
+        await using FakeAppServerProcess server = await FakeAppServerProcess.StartAsync($"Current01660,{scenario}");
+        await InitializeFakeAsync(server, 1, experimental: false);
+        await server.SendAsync(new { id = 2, method = "account/usage/read", @params = new { threadId = "fake-thread-usage" } });
+        using JsonDocument usage = await ReadResponseAsync(server, 2);
+        JsonElement amounts = usage.RootElement.GetProperty("result").GetProperty("threadUsage");
+        if (expectMissing)
+        {
+            Assert.IsFalse(amounts.TryGetProperty("nativeUsageUsdMicros", out _), amounts.ToString());
+            Assert.AreEqual(JsonValueKind.Null, amounts.GetProperty("estimatedUsageUsdMicros").ValueKind);
+        }
+        else
+        {
+            JsonElement nativeUsage = amounts.GetProperty("nativeUsageUsdMicros");
+            if (expectNull)
+            {
+                Assert.AreEqual(JsonValueKind.Null, nativeUsage.ValueKind);
+            }
+            else
+            {
+                Assert.AreEqual(expectedNativeUsdMicros, nativeUsage.GetInt64());
+            }
+        }
+
+        Assert.AreEqual(0L, amounts.GetProperty("estimatedUsageCreditsMicros").GetInt64());
+    }
+
+    [TestMethod]
+    public async Task FakeProviderOnlyModelListOffersProviderModelsWithoutOpeningAuthWizards()
+    {
+        await using FakeAppServerProcess server = await FakeAppServerProcess.StartAsync("Issue244ProviderOnly");
+        await InitializeFakeAsync(server, 1, experimental: false);
+
+        await server.SendAsync(new { id = 2, method = "model/list", @params = new { } });
+        using JsonDocument models = await ReadResponseAsync(server, 2);
+        JsonElement catalog = models.RootElement.GetProperty("result").GetProperty("data");
+        Assert.AreEqual(2, catalog.GetArrayLength());
+        Assert.AreEqual("vertex-ai-gemini", catalog[0].GetProperty("model").GetString());
+        Assert.AreEqual("bedrock-claude", catalog[1].GetProperty("model").GetString());
+
+        await server.SendAsync(new { id = 3, method = "fake/experimental/state", @params = new { } });
+        using JsonDocument state = await ReadResponseAsync(server, 3);
+        string[] methods = state.RootElement.GetProperty("result").GetProperty("methods")
+            .EnumerateArray().Select(method => method.GetString()!).ToArray();
+        Assert.IsFalse(methods.Contains("account/gcp/setup", StringComparer.Ordinal));
+        Assert.IsFalse(methods.Contains("account/login/start", StringComparer.Ordinal));
+        Assert.IsFalse(methods.Contains("mcpServer/oauth/login", StringComparer.Ordinal));
+    }
+
+    [TestMethod]
     public async Task FakeReadStateContractSupportsUpdatesConflictsAndRegression01621()
     {
         await using FakeAppServerProcess current = await FakeAppServerProcess.StartAsync(string.Empty);

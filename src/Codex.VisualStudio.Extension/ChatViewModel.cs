@@ -264,6 +264,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         SendKeyCommand = new AsyncCommand(() => IsGoalPrimaryMode ? Task.CompletedTask : SendAsync(), () => !IsGoalPrimaryMode && CanSend());
         InterruptCommand = new AsyncCommand(InterruptAsync, CanInterruptSelectedThread);
         AccountCommand = new AsyncCommand(ExecuteAccountActionAsync, CanExecuteAccountAction);
+        InitializeWorkspaceCommands();
         ToggleHistoryCommand = new AsyncCommand(() =>
         {
             IsHistoryOpen = !IsHistoryOpen;
@@ -637,6 +638,9 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
     public bool ShowAccountAction => Account.ShowAction;
 
     [DataMember]
+    public bool ShowWorkspaceSwitcherButton => ShowWorkspaceSwitcher;
+
+    [DataMember]
     public string AccountActionText => Account.ActionText;
 
     [DataMember]
@@ -650,6 +654,10 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             long previousOwnerGeneration = observedOwnerGeneration;
             if (SetProperty(ref status, value))
             {
+                OnPropertyChanged(nameof(ShowWorkspaceSwitcherButton));
+                OpenWorkspacePickerCommand?.RaiseCanExecuteChanged();
+                RefreshWorkspacesCommand?.RaiseCanExecuteChanged();
+                SwitchWorkspaceCommand?.RaiseCanExecuteChanged();
                 string? currentPartition = value.Target?.StatePartitionFingerprint;
                 long currentOwnerGeneration = value.Target?.OwnerGeneration ?? 0;
                 long currentGeneration = value.Target?.Generation ?? 0;
@@ -658,6 +666,12 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                 if (!string.Equals(previousPartition, currentPartition, StringComparison.Ordinal)
                     || previousOwnerGeneration != currentOwnerGeneration)
                 {
+                    IsWorkspacePickerOpen = false;
+                    workspaces.Clear();
+                    SelectedWorkspace = null;
+                    workspaceSessionId = null;
+                    pendingWorkspaceLoginId = null;
+                    OnPropertyChanged(nameof(IsWorkspaceLoginPending));
                     if (QuarantinedDraft is null && HasDraftContent())
                     {
                         QuarantinedDraft = CaptureRecoveryDraft();
@@ -2141,6 +2155,11 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
 
     private void CloseOtherFlyouts(string keep)
     {
+        if (keep != nameof(IsWorkspacePickerOpen) && isWorkspacePickerOpen)
+        {
+            isWorkspacePickerOpen = false;
+            OnPropertyChanged(nameof(IsWorkspacePickerOpen));
+        }
         if (keep != nameof(IsHistoryOpen) && isHistoryOpen)
         {
             isHistoryOpen = false;
@@ -4736,7 +4755,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             : new HashSet<string>(StringComparer.Ordinal);
         foreach (ThreadSummary thread in pageThreads)
         {
-            if (existingIds.Add(thread.Id))
+            if (string.IsNullOrWhiteSpace(thread.LinkedParentThreadId) && existingIds.Add(thread.Id))
             {
                 Threads.Add(thread);
             }
@@ -7055,7 +7074,9 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             ? Task.CompletedTask
             : OnUiAsync(() =>
             {
-                if (IsCurrentOwner(owner) && !Threads.Any(existing => string.Equals(existing.Id, thread.Id, StringComparison.Ordinal)))
+                if (IsCurrentOwner(owner)
+                    && string.IsNullOrWhiteSpace(thread.LinkedParentThreadId)
+                    && !Threads.Any(existing => string.Equals(existing.Id, thread.Id, StringComparison.Ordinal)))
                 {
                     Threads.Insert(0, thread);
                 }
@@ -9795,7 +9816,23 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
     private void UpdateAccount(AccountStatus value)
     {
         bool wasSignedIn = Account.IsSignedIn;
+        string? previousWorkspaceId = Account.WorkspaceId;
         Account.Update(value);
+        OnPropertyChanged(nameof(CurrentWorkspaceText));
+        OnPropertyChanged(nameof(ShowWorkspaceSwitcher));
+        OnPropertyChanged(nameof(ShowWorkspaceSwitcherButton));
+        if (!string.Equals(previousWorkspaceId, Account.WorkspaceId, StringComparison.Ordinal))
+        {
+            workspaces.Clear();
+            SelectedWorkspace = null;
+            workspaceSessionId = null;
+            pendingWorkspaceLoginId = null;
+            OnPropertyChanged(nameof(IsWorkspaceLoginPending));
+            if (!Account.IsSignedIn)
+            {
+                IsWorkspacePickerOpen = false;
+            }
+        }
         if (!Account.IsSignedIn)
         {
             if (wasSignedIn)
@@ -9810,6 +9847,10 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         OnPropertyChanged(nameof(AccountActionText));
         OnPropertyChanged(nameof(IsUsageAvailable));
         AccountCommand.RaiseCanExecuteChanged();
+        OpenWorkspacePickerCommand?.RaiseCanExecuteChanged();
+        RefreshWorkspacesCommand?.RaiseCanExecuteChanged();
+        SwitchWorkspaceCommand?.RaiseCanExecuteChanged();
+        CancelWorkspaceLoginCommand?.RaiseCanExecuteChanged();
         ToggleUsageCommand.RaiseCanExecuteChanged();
     }
 
@@ -9852,6 +9893,10 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
 
     private void RaiseCommandStates()
     {
+        OpenWorkspacePickerCommand?.RaiseCanExecuteChanged();
+        RefreshWorkspacesCommand?.RaiseCanExecuteChanged();
+        SwitchWorkspaceCommand?.RaiseCanExecuteChanged();
+        CancelWorkspaceLoginCommand?.RaiseCanExecuteChanged();
         ConnectCommand.RaiseCanExecuteChanged();
         RestartCommand.RaiseCanExecuteChanged();
         NewThreadCommand.RaiseCanExecuteChanged();
@@ -9914,10 +9959,17 @@ public sealed class AccountPanelViewModel : ObservableObject
 
     public AccountState State => status.State;
 
+    public string? WorkspaceId => status.WorkspaceId;
+
+    public string? WorkspaceName => status.WorkspaceName;
+
     public string DisplayText => status.State switch
     {
         AccountState.SignedOut => "Not signed in",
         AccountState.SigningIn => "Signing in...",
+        AccountState.SignedIn when !string.IsNullOrWhiteSpace(status.WorkspaceName) && !string.IsNullOrWhiteSpace(status.PlanType)
+            => $"{status.WorkspaceName} \u00b7 {status.PlanType}",
+        AccountState.SignedIn when !string.IsNullOrWhiteSpace(status.WorkspaceName) => status.WorkspaceName,
         AccountState.SignedIn when !string.IsNullOrWhiteSpace(status.PlanType) => $"Signed in \u00b7 {status.PlanType}",
         AccountState.SignedIn => "Signed in",
         AccountState.Unavailable when !string.IsNullOrWhiteSpace(status.Message) => $"Account status unavailable \u00b7 {status.Message}",
@@ -9936,6 +9988,8 @@ public sealed class AccountPanelViewModel : ObservableObject
     public void Update(AccountStatus value)
     {
         status = value;
+        OnPropertyChanged(nameof(WorkspaceId));
+        OnPropertyChanged(nameof(WorkspaceName));
         OnPropertyChanged(nameof(DisplayText));
         OnPropertyChanged(nameof(ShowSignIn));
         OnPropertyChanged(nameof(IsSignedIn));
@@ -11578,4 +11632,10 @@ public sealed class AsyncCommand : ICommand, VSUI.IAsyncCommand, INotifyProperty
         CanExecuteChanged?.Invoke(this, EventArgs.Empty);
         PropertyChanged?.Invoke(this, CanExecuteChangedArgs);
     }
+}
+
+internal enum WorkspaceSwitchConfirmationChoice
+{
+    Continue,
+    Cancel,
 }

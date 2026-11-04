@@ -12,6 +12,11 @@ long nextReadStateRevision = 1;
 // revision allocation, comparison and mutation runs under this gate and returns detached snapshots.
 var readStateGate = new object();
 string scenario = Environment.GetEnvironmentVariable("CODEX_FAKE_SCENARIO") ?? string.Empty;
+var attachedThreadParents = new Dictionary<string, string>(StringComparer.Ordinal);
+var ephemeralThreads = new HashSet<string>(StringComparer.Ordinal);
+string selectedWorkspaceAccountId = "fake-personal-workspace";
+bool workspaceLoginPending = false;
+int workspaceSwitchCount = 0;
 var savedAttachments = new List<Dictionary<string, object?>>();
 var interactionResponses = new ConcurrentQueue<object>();
 var interactionMethods = new ConcurrentDictionary<string, string>(StringComparer.Ordinal);
@@ -57,6 +62,25 @@ while (await Console.In.ReadLineAsync().ConfigureAwait(false) is { } line)
     }
     if (!root.TryGetProperty("id", out JsonElement id))
     {
+        continue;
+    }
+
+    bool isAttachedFork = method == "thread/fork"
+        && root.GetProperty("params").TryGetProperty("attachToSource", out JsonElement attachToSource)
+        && attachToSource.ValueKind == JsonValueKind.True;
+    bool isAttachedThreadList = method == "thread/list"
+        && root.GetProperty("params").TryGetProperty("attachedToThreadId", out JsonElement attachedToThreadId)
+        && attachedToThreadId.ValueKind == JsonValueKind.String;
+    if ((method == "thread/memory/read" && !SupportsExperimentalMemory())
+        || ((isAttachedFork || isAttachedThreadList
+            || method is "accountSession/list" or "accountSession/switch")
+            && !SupportsExperimental0166()))
+    {
+        await WriteAsync(new
+        {
+            id = JsonSerializer.Deserialize<object>(id.GetRawText()),
+            error = new { code = -32601, message = "The requested experimental method or parameter is unavailable." },
+        }).ConfigureAwait(false);
         continue;
     }
 
@@ -112,6 +136,19 @@ while (await Console.In.ReadLineAsync().ConfigureAwait(false) is { } line)
         continue;
     }
 
+    if (method == "thread/fork"
+        && root.GetProperty("params").TryGetProperty("attachToSource", out JsonElement requestedAttach)
+        && requestedAttach.ValueKind == JsonValueKind.True
+        && !CanAttachThread(root.GetProperty("params")))
+    {
+        await WriteAsync(new
+        {
+            id = JsonSerializer.Deserialize<object>(id.GetRawText()),
+            error = new { code = -32602, message = "Linked forks require a loaded persistent source and cannot defer goal continuation." },
+        }).ConfigureAwait(false);
+        continue;
+    }
+
     object result = method switch
     {
         "initialize" => new
@@ -122,32 +159,27 @@ while (await Console.In.ReadLineAsync().ConfigureAwait(false) is { } line)
                     ? "codex-cli/0.162.1"
                     : IsScenario("Regression01630")
                         ? "codex-cli/0.163.0"
-                        : IsScenario("Current01660") ? "codex-cli/0.166.0" : "codex-cli/0.164.0",
+                        : IsScenario("Regression01650")
+                ? "codex-cli/0.165.0"
+                : IsScenario("Current01660") ? "codex-cli/0.166.0" : "codex-cli/0.164.0",
             codexHome = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".codex"),
             platformFamily = OperatingSystem.IsWindows() ? "windows" : "unix",
             platformOs = OperatingSystem.IsWindows() ? "windows" : OperatingSystem.IsMacOS() ? "macos" : "linux",
         },
-        "thread/start" => CreateThread(),
+        "thread/start" => CreateThread(root.GetProperty("params")),
         "thread/resume" => ResumeThread(root.GetProperty("params")),
-        "thread/fork" => ThreadResponse(
-            new { id = $"fake-thread-{nextThread++}", preview = "Forked fake thread", cwd = Environment.CurrentDirectory }),
-        "thread/list" => ListThreads(),
+        "thread/fork" => ForkThread(root.GetProperty("params")),
+        "thread/list" => ListThreads(root.GetProperty("params")),
+        "thread/memory/read" => ReadThreadMemory(root.GetProperty("params")),
+        "accountSession/list" => ListAccountSessions(),
+        "accountSession/switch" => SwitchAccountSession(root.GetProperty("params")),
+        "account/login/cancel" => CancelAccountSessionLogin(root.GetProperty("params")),
         "review/start" => new
         {
             reviewThreadId = root.GetProperty("params").GetProperty("threadId").GetString(),
             turn = new { id = $"fake-review-turn-{nextThread}" },
         },
-        "account/usage/read" => new
-        {
-            summary = new { },
-            threadUsage = new
-            {
-                threadId = root.GetProperty("params").GetProperty("threadId").GetString(),
-                groups = Array.Empty<object>(),
-                estimatedUsageCreditsMicros = 1_500_000L,
-                estimatedUsageUsdMicros = (long?)null,
-            },
-        },
+        "account/usage/read" => CreateThreadUsage(root.GetProperty("params")),
         "thread/read" => ReadThread(root.GetProperty("params")),
         "thread/attachment/list" => ListAttachments(root.GetProperty("params")),
         "thread/attachment/add" => AddAttachment(root.GetProperty("params")),
@@ -155,7 +187,9 @@ while (await Console.In.ReadLineAsync().ConfigureAwait(false) is { } line)
         "thread/shellCommand" => new { },
         "windowsSandbox/readiness" => new { status = IsScenario("Issue155SandboxUnsupported") ? "updateRequired" : "notConfigured" },
         "windowsSandbox/setupStart" => new { started = !IsScenario("Issue155SandboxStartedFalse") },
-        "model/list" => new
+        "model/list" => IsScenario("Issue244ProviderOnly")
+            ? CreateProviderOnlyModelList()
+            : new
         {
             data = new object[]
             {
@@ -285,11 +319,8 @@ while (await Console.In.ReadLineAsync().ConfigureAwait(false) is { } line)
         "thread/goal/clear" => ClearGoal(root.GetProperty("params")),
         "fake/goal/state" => new { methods = clientMethods.ToArray(), requests = goalRequests.ToArray(), activeTurns = goalTurns.Count },
         "fake/goal/continue" => new { started = IsGoalActive(root.GetProperty("params").GetProperty("threadId").GetString() ?? string.Empty) },
-        "account/read" => new
-        {
-            account = signedIn ? new { type = "chatgpt", planType = "plus" } : null,
-            requiresOpenaiAuth = true,
-        },
+        "account/read" => ReadAccount(),
+        "fake/experimental/state" => FakeExperimentalState(),
         "account/gatewayOAuth/read" => new
         {
             providerId = "fake",
@@ -322,6 +353,11 @@ while (await Console.In.ReadLineAsync().ConfigureAwait(false) is { } line)
     if (method == "windowsSandbox/setupStart" && IsScenario("Issue155SandboxCompletionBeforeAck"))
     {
         await WriteAsync(new { method = "windowsSandbox/setupCompleted", @params = new { mode = "unelevated", success = true, error = (string?)null } }).ConfigureAwait(false);
+    }
+
+    if (method == "accountSession/switch" && IsScenario("Issue243UnknownSwitch"))
+    {
+        continue;
     }
 
     await WriteAsync(new { id = JsonSerializer.Deserialize<object>(id.GetRawText()), result }).ConfigureAwait(false);
@@ -392,6 +428,12 @@ bool IsScenario(string name)
 bool SupportsReadState()
     => experimentalApiEnabled && !IsScenario("Regression01610") && !IsScenario("Regression01621");
 
+bool SupportsExperimentalMemory()
+    => experimentalApiEnabled && (IsScenario("Regression01650") || SupportsExperimental0166());
+
+bool SupportsExperimental0166()
+    => experimentalApiEnabled && IsScenario("Current01660");
+
 string NextReadStateRevision()
     => $"fake-revision-{nextReadStateRevision++}";
 
@@ -435,22 +477,216 @@ object ReadThreadReadStateData(Dictionary<string, object?> state)
         ? new { revision = 42, firstUnread = state.GetValueOrDefault("firstUnread") }
         : new { revision = (string?)state.GetValueOrDefault("revision"), firstUnread = state.GetValueOrDefault("firstUnread") };
 
-object ListThreads()
+string GetThreadId(object candidate)
 {
+    JsonElement thread = JsonSerializer.SerializeToElement(candidate);
+    return thread.GetProperty("id").GetString() ?? string.Empty;
+}
+
+object ForkThread(JsonElement parameters)
+{
+    string sourceThreadId = parameters.GetProperty("threadId").GetString() ?? string.Empty;
+    bool attachToSource = parameters.TryGetProperty("attachToSource", out JsonElement attach)
+        && attach.ValueKind == JsonValueKind.True;
+    if (!attachToSource)
+    {
+        return ThreadResponse(
+            new { id = $"fake-thread-{nextThread++}", preview = "Forked fake thread", cwd = Environment.CurrentDirectory });
+    }
+
+    string childThreadId = $"fake-thread-{nextThread++}";
+    object child = new { id = childThreadId, preview = "Linked fake fork", cwd = Environment.CurrentDirectory };
+    threads.Add(child);
+    attachedThreadParents[childThreadId] = sourceThreadId;
+    _ = SnapshotThreadReadState(childThreadId);
+    return ThreadResponse(child);
+}
+
+object ReadThreadMemory(JsonElement parameters)
+{
+    _ = parameters.GetProperty("threadId").GetString();
+    return new { summary = (string?)null };
+}
+
+object CreateThreadUsage(JsonElement parameters)
+{
+    string threadId = parameters.GetProperty("threadId").GetString() ?? string.Empty;
+    long? nativeUsageUsdMicros = IsScenario("Issue244NativeUsd")
+        ? 4_250_000L
+        : IsScenario("Issue244ZeroUsd")
+            ? 0L
+            : null;
+    if (IsScenario("Issue244MissingUsageValues"))
+    {
+        return new
+        {
+            summary = new { },
+            threadUsage = new
+            {
+                threadId,
+                groups = Array.Empty<object>(),
+                estimatedUsageCreditsMicros = 0L,
+                estimatedUsageUsdMicros = (long?)null,
+            },
+        };
+    }
+
+    return new
+    {
+        summary = new { },
+        threadUsage = new
+        {
+            threadId,
+            groups = Array.Empty<object>(),
+            estimatedUsageCreditsMicros = 0L,
+            estimatedUsageUsdMicros = (long?)null,
+            nativeUsageUsdMicros,
+        },
+    };
+}
+
+object CreateProviderOnlyModelList()
+    => new
+    {
+        data = new object[]
+        {
+            new
+            {
+                model = "vertex-ai-gemini",
+                displayName = "Vertex AI Gemini",
+                description = "Model offered through the configured provider.",
+                isDefault = true,
+                hidden = false,
+                defaultReasoningEffort = "medium",
+                supportedReasoningEfforts = new[]
+                {
+                    new { reasoningEffort = "medium", description = "Balanced reasoning." },
+                    new { reasoningEffort = "high", description = "Deeper reasoning." },
+                },
+                inputModalities = new[] { "text" },
+            },
+            new
+            {
+                model = "bedrock-claude",
+                displayName = "Amazon Bedrock Claude",
+                description = "Model offered through the configured provider.",
+                isDefault = false,
+                hidden = false,
+                defaultReasoningEffort = "medium",
+                supportedReasoningEfforts = new[]
+                {
+                    new { reasoningEffort = "medium", description = "Balanced reasoning." },
+                    new { reasoningEffort = "high", description = "Deeper reasoning." },
+                },
+                inputModalities = new[] { "text" },
+            },
+        },
+        nextCursor = (string?)null,
+    };
+
+bool CanAttachThread(JsonElement parameters)
+{
+    string sourceThreadId = parameters.GetProperty("threadId").GetString() ?? string.Empty;
+    bool sourceExists = threads.Any(candidate => string.Equals(GetThreadId(candidate), sourceThreadId, StringComparison.Ordinal));
+    bool deferGoalContinuation = parameters.TryGetProperty("deferGoalContinuation", out JsonElement defer)
+        && defer.ValueKind == JsonValueKind.True;
+    return sourceExists
+        && !ephemeralThreads.Contains(sourceThreadId)
+        && !deferGoalContinuation;
+}
+
+object ListAccountSessions()
+{
+    object[] workspaces =
+    [
+        new { accountId = "fake-personal-workspace", name = "Personal", imageUrl = (string?)null, kind = "personal" },
+        new { accountId = "fake-team-workspace", name = "Team", imageUrl = (string?)null, kind = "workspace" },
+    ];
+    object[] sessions =
+    [
+        new
+        {
+            sessionId = "fake-account-session",
+            isActive = true,
+            lastUsedAt = 1_800_000_000_000L,
+            userId = "fake-user",
+            email = "same-user@example.test",
+            displayName = "Fake User",
+            selectedWorkspaceAccountId,
+            workspaces,
+        },
+    ];
+    return new { activeSessionId = "fake-account-session", sessions };
+}
+
+object SwitchAccountSession(JsonElement parameters)
+{
+    workspaceSwitchCount++;
+    string sessionId = parameters.GetProperty("sessionId").GetString() ?? string.Empty;
+    string accountId = parameters.GetProperty("accountId").GetString() ?? string.Empty;
+    bool allowBrowserLogin = parameters.TryGetProperty("allowBrowserLogin", out JsonElement allowLogin)
+        && allowLogin.ValueKind == JsonValueKind.True;
+    if (!string.Equals(sessionId, "fake-account-session", StringComparison.Ordinal)
+        || accountId is not ("fake-personal-workspace" or "fake-team-workspace"))
+    {
+        return new { error = new { code = -32602, message = "The requested fake workspace is unavailable." } };
+    }
+
+    if (IsScenario("Issue243SsoSwitch") && accountId == "fake-team-workspace" && allowBrowserLogin)
+    {
+        workspaceLoginPending = true;
+        return new { login_id = "fake-workspace-login", auth_url = "https://example.test/workspace-login" };
+    }
+
+    selectedWorkspaceAccountId = accountId;
+    return ListAccountSessions();
+}
+
+object CancelAccountSessionLogin(JsonElement parameters)
+{
+    string loginId = parameters.GetProperty("loginId").GetString() ?? string.Empty;
+    bool canceled = workspaceLoginPending && string.Equals(loginId, "fake-workspace-login", StringComparison.Ordinal);
+    workspaceLoginPending = false;
+    return new { outcome = canceled ? "canceled" : "unknown" };
+}
+
+object ReadAccount()
+    => new
+    {
+        account = signedIn || IsScenario("Issue243WorkspaceSwitch") || IsScenario("Issue243SsoSwitch") || IsScenario("Issue243UnknownSwitch")
+            ? new { type = "chatgpt", planType = "plus" }
+            : null,
+        requiresOpenaiAuth = true,
+    };
+
+object FakeExperimentalState()
+    => new { methods = clientMethods.ToArray(), workspaceSwitchCount, selectedWorkspaceAccountId };
+
+object ListThreads(JsonElement parameters)
+{
+    string? attachedToThreadId = parameters.TryGetProperty("attachedToThreadId", out JsonElement attachedId)
+        ? attachedId.GetString()
+        : null;
+    object[] listedThreads = attachedToThreadId is null
+        ? threads.Where(candidate => !attachedThreadParents.ContainsKey(GetThreadId(candidate))).ToArray()
+        : threads.Where(candidate => attachedThreadParents.TryGetValue(GetThreadId(candidate), out string? parentId)
+                && string.Equals(parentId, attachedToThreadId, StringComparison.Ordinal))
+            .ToArray();
+
     if (!SupportsReadState())
     {
-        return new { data = threads, nextCursor = (string?)null };
+        return new { data = listedThreads, nextCursor = (string?)null };
     }
 
     if (IsScenario("ReadStateUnavailable"))
     {
-        return new { data = threads, nextCursor = (string?)null, readStates = (object?)null };
+        return new { data = listedThreads, nextCursor = (string?)null, readStates = (object?)null };
     }
 
     var readStates = new Dictionary<string, object>(StringComparer.Ordinal);
-    for (int index = 0; index < threads.Count; index++)
+    for (int index = 0; index < listedThreads.Length; index++)
     {
-        JsonElement thread = JsonSerializer.SerializeToElement(threads[index]);
+        JsonElement thread = JsonSerializer.SerializeToElement(listedThreads[index]);
         string threadId = thread.GetProperty("id").GetString() ?? string.Empty;
         if (IsScenario("ReadStateNotApplicable") && index == 0)
         {
@@ -460,7 +696,7 @@ object ListThreads()
         readStates[threadId] = SnapshotThreadReadState(threadId);
     }
 
-    return new { data = threads, nextCursor = (string?)null, readStates };
+    return new { data = listedThreads, nextCursor = (string?)null, readStates };
 }
 
 object ReadThread(JsonElement parameters)
@@ -683,11 +919,16 @@ async Task EmitShellEventsAsync(JsonElement parameters)
     await WriteAsync(new { method = "turn/completed", @params = new { threadId, turnId, turn = new { id = turnId, status = "completed" } } }).ConfigureAwait(false);
 }
 
-object CreateThread()
+object CreateThread(JsonElement parameters)
 {
-    var thread = new { id = $"fake-thread-{nextThread++}", preview = "Fake conversation", cwd = Environment.CurrentDirectory };
+    string threadId = $"fake-thread-{nextThread++}";
+    object thread = new { id = threadId, preview = "Fake conversation", cwd = Environment.CurrentDirectory };
+    if (parameters.TryGetProperty("ephemeral", out JsonElement ephemeral) && ephemeral.ValueKind == JsonValueKind.True)
+    {
+        ephemeralThreads.Add(threadId);
+    }
     threads.Add(thread);
-    _ = SnapshotThreadReadState(thread.id);
+    _ = SnapshotThreadReadState(threadId);
     return ThreadResponse(thread);
 }
 

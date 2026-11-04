@@ -2274,6 +2274,76 @@ public sealed partial class CodexSessionServiceTests
         Assert.AreEqual("user", service.EffectiveApprovalState!.ApprovalsReviewer);
     }
 
+    [TestMethod]
+    public async Task LinkedForkUsesPaginatedHistoryAndAttachedThreadFilterForRemoteExperimentalServer()
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method switch
+            {
+                "initialize" => JsonSerializer.SerializeToElement(new { userAgent = "codex-cli/0.166.0" }),
+                "thread/start" => JsonSerializer.SerializeToElement(new { thread = new { id = "parent" } }),
+                "thread/fork" => JsonSerializer.SerializeToElement(new { thread = new { id = "child" } }),
+                "thread/list" => JsonSerializer.SerializeToElement(new
+                {
+                    data = new[] { new { id = "child", preview = "child preview" } },
+                    nextCursor = "next-page",
+                }),
+                _ => JsonSerializer.SerializeToElement(new { }),
+            },
+        };
+        await using var service = CreateService();
+        WorkerOptions remoteOptions = Options(experimentalApi: true);
+        remoteOptions.RemoteEndpoint = "https://app-server.invalid";
+        remoteOptions.LocalRoot = Path.GetTempPath();
+        remoteOptions.ServerRoot = "/workspace";
+        await service.InitializeAsync(connection, remoteOptions, CancellationToken.None);
+
+        ThreadSummary parent = await service.StartThreadAsync(CancellationToken.None);
+        ForkThreadResult created = await service.ForkThreadAsync(
+            new ForkThreadRequest { ThreadId = parent.Id, CreateLinkedFork = true },
+            CancellationToken.None);
+        ForkThreadResult related = await service.ForkThreadAsync(
+            new ForkThreadRequest { ThreadId = parent.Id, ListLinkedForks = true, Cursor = "page-2" },
+            CancellationToken.None);
+
+        Assert.AreEqual("paginated", ParametersFor(connection, "thread/start").GetProperty("historyMode").GetString());
+        JsonElement forkParameters = ParametersFor(connection, "thread/fork");
+        Assert.IsTrue(forkParameters.GetProperty("attachToSource").GetBoolean());
+        Assert.IsTrue(forkParameters.GetProperty("excludeTurns").GetBoolean());
+        JsonElement listParameters = ParametersFor(connection, "thread/list");
+        Assert.AreEqual("parent", listParameters.GetProperty("attachedToThreadId").GetString());
+        Assert.AreEqual("page-2", listParameters.GetProperty("cursor").GetString());
+        Assert.IsFalse(listParameters.TryGetProperty("sourceKinds", out _), "The relation query must not apply an intersecting source-kind filter.");
+        Assert.AreEqual("parent", created.Thread!.LinkedParentThreadId);
+        Assert.AreEqual("parent", related.RelatedThreads.Single().LinkedParentThreadId);
+        Assert.AreEqual("next-page", related.NextCursor);
+    }
+
+    [TestMethod]
+    public async Task LinkedForkRequestsAreNotSentWhenExperimentalApiIsDisabled()
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "initialize"
+                ? JsonSerializer.SerializeToElement(new { userAgent = "codex-cli/0.166.0" })
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        ForkThreadResult created = await service.ForkThreadAsync(
+            new ForkThreadRequest { ThreadId = "parent", CreateLinkedFork = true },
+            CancellationToken.None);
+        ForkThreadResult related = await service.ForkThreadAsync(
+            new ForkThreadRequest { ThreadId = "parent", ListLinkedForks = true },
+            CancellationToken.None);
+
+        Assert.IsFalse(created.IsSupported);
+        Assert.IsFalse(related.IsSupported);
+        Assert.IsFalse(connection.Requests.Any(item => item.Method is "thread/fork" or "thread/list"));
+    }
+
     private static JsonElement EffectiveThreadResponse(string threadId, string profileId, string reviewer)
         => JsonSerializer.SerializeToElement(new
         {
@@ -2627,6 +2697,104 @@ public sealed partial class CodexSessionServiceTests
         Assert.AreEqual(1, connection.Requests.Count(item => item.Method == "thread/start"));
     }
 
+    [TestMethod]
+    public async Task ReadThreadMemory_BelowTierOrWithExperimentalDisabled_SendsNothing()
+    {
+        foreach ((string version, bool experimental) in new[]
+        {
+            ("0.164.0", true),
+            ("0.165.0", false),
+        })
+        {
+            var connection = new RecordingConnection
+            {
+                Handler = (method, _) => method == "initialize"
+                    ? JsonSerializer.SerializeToElement(new { userAgent = $"codex-cli/{version}" })
+                    : JsonSerializer.SerializeToElement(new { }),
+            };
+            await using CodexSessionService service = CreateService();
+            WorkerOptions options = Options();
+            options.ExperimentalApi = experimental;
+            await service.InitializeAsync(connection, options, CancellationToken.None);
+
+            ThreadMemoryResult result = await service.ReadThreadMemoryAsync("thread-1", CancellationToken.None);
+
+            Assert.IsFalse(result.IsSupported);
+            Assert.IsFalse(connection.Requests.Any(item => item.Method == "thread/memory/read"));
+        }
+    }
+
+    [TestMethod]
+    public async Task ReadThreadMemory_RequiresTheJoinedThread()
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "initialize"
+                ? JsonSerializer.SerializeToElement(new { userAgent = "codex-cli/0.165.0" })
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        WorkerOptions options = Options();
+        options.ExperimentalApi = true;
+        await using CodexSessionService service = CreateService();
+        await service.InitializeAsync(connection, options, CancellationToken.None);
+
+        ThreadMemoryResult result = await service.ReadThreadMemoryAsync("thread-1", CancellationToken.None);
+
+        Assert.IsFalse(result.IsSupported);
+        Assert.IsFalse(connection.Requests.Any(item => item.Method == "thread/memory/read"));
+    }
+
+    [TestMethod]
+    public async Task ReadThreadMemory_ReturnsSummaryForJoinedThread()
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method switch
+            {
+                "initialize" => JsonSerializer.SerializeToElement(new { userAgent = "codex-cli/0.165.0" }),
+                "thread/start" => ReviewThreadResponse("thread-memory"),
+                "thread/memory/read" => JsonSerializer.SerializeToElement(new { summary = "Stored memory." }),
+                _ => JsonSerializer.SerializeToElement(new { }),
+            },
+        };
+        WorkerOptions options = Options();
+        options.ExperimentalApi = true;
+        await using CodexSessionService service = CreateService();
+        await service.InitializeAsync(connection, options, CancellationToken.None);
+        await service.StartThreadAsync(CancellationToken.None);
+
+        ThreadMemoryResult result = await service.ReadThreadMemoryAsync("thread-memory", CancellationToken.None);
+
+        Assert.IsTrue(result.IsSupported);
+        Assert.AreEqual("thread-memory", result.ThreadId);
+        Assert.AreEqual("Stored memory.", result.Summary);
+        Assert.AreEqual("thread-memory", ParametersFor(connection, "thread/memory/read").GetProperty("threadId").GetString());
+    }
+
+    [TestMethod]
+    public async Task ReadThreadMemory_NullSummaryStaysUnavailableWithoutGuessing()
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method switch
+            {
+                "initialize" => JsonSerializer.SerializeToElement(new { userAgent = "codex-cli/0.166.0" }),
+                "thread/start" => ReviewThreadResponse("thread-memory"),
+                "thread/memory/read" => JsonSerializer.SerializeToElement(new { summary = (string?)null }),
+                _ => JsonSerializer.SerializeToElement(new { }),
+            },
+        };
+        WorkerOptions options = Options();
+        options.ExperimentalApi = true;
+        await using CodexSessionService service = CreateService();
+        await service.InitializeAsync(connection, options, CancellationToken.None);
+        await service.StartThreadAsync(CancellationToken.None);
+
+        ThreadMemoryResult result = await service.ReadThreadMemoryAsync("thread-memory", CancellationToken.None);
+
+        Assert.IsTrue(result.IsSupported);
+        Assert.IsNull(result.Summary);
+    }
     [TestMethod]
     public async Task GetThreadUsage_ReadsMicrosAndKeepsNullUnknown()
     {

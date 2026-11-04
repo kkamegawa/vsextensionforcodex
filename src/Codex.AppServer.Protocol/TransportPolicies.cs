@@ -64,6 +64,7 @@ public static class ReadOnlyRequestAllowlist
     {
         "account/rateLimits/read",
         "account/usage/read",
+        "thread/memory/read",
         "thread/list",
         "thread/goal/get",
         "model/list",
