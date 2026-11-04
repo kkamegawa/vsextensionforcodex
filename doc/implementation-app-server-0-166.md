@@ -42,7 +42,7 @@ Tracking: [#242](https://github.com/kkamegawa/vsextensionforcodex/issues/242). T
 - **Usage:** values stay `long?` micro-units. Limits may be cached for 60 seconds, but a different conversation always rereads its amounts.
 - **Diagnostics:** `BoundedProcessRunner` starts `/doctor` with no shell, bounded output, and a 60-second timeout that kills the process tree. `--no-color --ascii` keeps terminal codes out, and output passes through `ISecretRedactor`.
 
-Real CLI probes ran on 0.161.0 and 0.166.0 in a throwaway repository, and their test conversations were deleted. The 0.161.0 turn was stopped after 150 seconds, so that result covers the start and the history row only. Both 0.166.0 turns completed. The 0.166.0 CLI was installed with `scripts/install-codex.ps1`, which verified the pinned hashes. The protocol does not report which model a review turn used, so `review_model` precedence could not be observed. The Release VSIX inspection result is recorded in `doc/task.md`.
+Real CLI probes ran on 0.161.0 and 0.166.0 in a throwaway repository, and their test conversations were deleted. The 0.161.0 turn was stopped after 150 seconds, so that result covers the start and the history row only. Both 0.166.0 turns completed. The 0.166.0 CLI was installed with `scripts/install-codex.ps1`, which verified the pinned hashes. App Server responses do not expose the review model. A separate isolated 0.166.0 run captured the model in a loopback Responses request. The request used `review_model` when configured and the conversation model when omitted. The Release VSIX inspection result is recorded in `doc/task.md`.
 
 ### Stage 2 review follow-up
 
