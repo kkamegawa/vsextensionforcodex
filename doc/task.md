@@ -951,4 +951,4 @@ Tracking: [#242](https://github.com/kkamegawa/vsextensionforcodex/issues/242). A
 
 ### 2026-11-04: Conversation text fidelity
 
-Tracking: #250. Snapshot history text preserves literal code and command output after secret redaction. MCP text and fallback explanations remain visible, and credential-key detection does not match ordinary identifier suffixes. See the English and Japanese task records for verification and the remaining Experimental Instance check.
+Tracking: [#250](https://github.com/kkamegawa/vsextensionforcodex/issues/250). Snapshot history text preserves literal code and command output after secret redaction. MCP text and fallback explanations remain visible, and credential-key detection does not match ordinary identifier suffixes. See the English and Japanese task records for verification and the remaining Experimental Instance check.
