@@ -1,4 +1,4 @@
-using Codex.VisualStudio.Contracts;
+﻿using Codex.VisualStudio.Contracts;
 using Codex.VisualStudio.Worker;
 using System.Diagnostics;
 
@@ -20,6 +20,27 @@ public sealed class SecurityServicesTests
         Assert.IsFalse(result.Contains("sk-proj-test-secret-value", StringComparison.Ordinal));
         Assert.IsFalse(result.Contains("ghp_123456789012345678901234567890", StringComparison.Ordinal));
         Assert.IsTrue(result.Contains("normal=value", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    public void SecretRedactor_DoesNotRedactCredentialLikeIdentifierSuffixes()
+    {
+        var redactor = new SecretRedactor();
+        const string input = "cancellation_token: CancellationToken cancellation_token=value cancellation_token = value";
+
+        Assert.AreEqual(input, redactor.Redact(input));
+    }
+
+    [TestMethod]
+    public void SecretRedactor_RedactsCredentialKeysAndRegisteredSecrets()
+    {
+        var redactor = new SecretRedactor();
+        using IDisposable registeredSecret = redactor.RegisterSecret("custom-secret-value");
+        const string input = "token=secret api_key:api-value api-key = dash-value access_token=access-value client_secret:client-value password = password-value oauth-token=oauth-secret x-api-key=extended-value custom-secret-value";
+
+        string result = redactor.Redact(input);
+
+        Assert.AreEqual("token=[REDACTED] api_key:[REDACTED] api-key = [REDACTED] access_token=[REDACTED] client_secret:[REDACTED] password = [REDACTED] oauth-token=[REDACTED] x-api-key=[REDACTED] [REDACTED]", result);
     }
 
     [TestMethod]

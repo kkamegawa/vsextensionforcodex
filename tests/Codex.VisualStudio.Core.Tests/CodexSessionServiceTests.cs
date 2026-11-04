@@ -303,6 +303,11 @@ public sealed partial class CodexSessionServiceTests
                             completedAtMs = 41L,
                             item = new { id = "item-2", type = "agentMessage", text = "entry timestamp fallback" },
                         },
+                        new
+                        {
+                            turnId = "turn-1",
+                            item = new { id = "item-3", type = "futureItem" },
+                        },
                     },
                     nextCursor = "item-cursor",
                 }),
@@ -334,6 +339,9 @@ public sealed partial class CodexSessionServiceTests
         Assert.AreEqual(13L, items.Items[0].CompletedAtMs);
         Assert.AreEqual(31L, items.Items[1].StartedAtMs);
         Assert.AreEqual(41L, items.Items[1].CompletedAtMs);
+        Assert.IsNull(items.Items[2].Text);
+        Assert.AreEqual(ArtifactPartKind.Fallback, items.Items[2].Parts.Single().Kind);
+        StringAssert.Contains(items.Items[2].Parts.Single().Text, "futureItem");
         Assert.AreEqual("item-cursor", items.NextCursor);
         Assert.AreEqual(2, attachments.Attachments.Count);
         Assert.IsNotNull(attachments.Attachments[0].UnavailableReason);

@@ -948,3 +948,7 @@ Tracking: [#242](https://github.com/kkamegawa/vsextensionforcodex/issues/242). A
 - [x] `verify-contract-surface.ps1` passed for all six supported versions on both surfaces with `account/usage/read` in the method tables. The Worker only requests per-conversation USD on 0.166.0 or later.
 - [x] Real CLI checks covered the 0.161.0 review start and history row, and the 0.166.0 schema, completed reviews, and `codex doctor` run. The isolated 0.166.0 Responses request used the configured `review_model`, or the conversation model when omitted.
 - [ ] Experimental Instance acceptance remains open for the conversation text editor tab, history scope ComboBox, and restoration of a saved non-empty Reasoning summary. PR #248 records maintainer confirmation of `/doctor`, conversation search, Plan selection and copy, and High Contrast and Narrator.
+
+### 2026-11-04: Conversation text fidelity
+
+Tracking: #250. Snapshot history text preserves literal code and command output after secret redaction. MCP text and fallback explanations remain visible, and credential-key detection does not match ordinary identifier suffixes. See the English and Japanese task records for verification and the remaining Experimental Instance check.
