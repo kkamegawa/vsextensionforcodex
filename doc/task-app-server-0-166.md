@@ -81,4 +81,4 @@ Tracking: [#242](https://github.com/kkamegawa/vsextensionforcodex/issues/242). T
 - Preserve literal history text and display explanatory fallback and MCP text in the snapshot.
 - Avoid matching a credential key within an ordinary identifier while retaining credential redaction.
 - Release build passed with zero warnings and errors. Core tests passed 555 with 5 symbolic-link skips. UI tests passed 606 with 1 symbolic-link skip.
-- Experimental Instance verification with a real long history remains pending.
+- The maintainer confirmed a real long-history snapshot in the Visual Studio Experimental Instance. The submitted text preserved the reported code and command characters. The cause of each empty Reasoning item remains unverified.
