@@ -49,7 +49,11 @@ public sealed partial class CodexSessionService
                 : null;
         if (summary is { Length: > MaximumThreadMemoryCharacters })
         {
-            summary = string.Concat(summary.AsSpan(0, MaximumThreadMemoryCharacters), Environment.NewLine, "[Memory summary truncated]");
+            // Never split a surrogate pair at the cut.
+            int length = char.IsHighSurrogate(summary[MaximumThreadMemoryCharacters - 1])
+                ? MaximumThreadMemoryCharacters - 1
+                : MaximumThreadMemoryCharacters;
+            summary = string.Concat(summary.AsSpan(0, length), Environment.NewLine, "[Memory summary truncated]");
         }
         return new ThreadMemoryResult
         {

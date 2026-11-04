@@ -1,6 +1,8 @@
 ﻿using System.Collections.ObjectModel;
 using System.Runtime.Serialization;
 using Codex.VisualStudio.Contracts;
+using Microsoft.VisualStudio.Extensibility;
+using Microsoft.VisualStudio.Extensibility.Shell;
 
 namespace Codex.VisualStudio.Extension;
 

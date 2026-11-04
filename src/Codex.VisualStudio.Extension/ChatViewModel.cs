@@ -1938,6 +1938,12 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                 OnPropertyChanged(nameof(HasHistoryNotice));
                 OnGoalThreadChanged(value?.Id);
                 NotifyInterruptibilityChanged();
+                usageThreadId = null;
+                Usage.UpdateThreadUsage(null);
+                if (IsUsageOpen)
+                {
+                    _ = RefreshUsageAsync(force: false);
+                }
                 if (value is not null)
                 {
                     IsThreadJoined = false;
@@ -9817,6 +9823,12 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
     {
         bool wasSignedIn = Account.IsSignedIn;
         string? previousWorkspaceId = Account.WorkspaceId;
+        // The workspace name comes from the app-server and is shown in the account header.
+        if (!string.IsNullOrWhiteSpace(value.WorkspaceName))
+        {
+            value.WorkspaceName = ToSafeHeaderText(value.WorkspaceName);
+        }
+
         Account.Update(value);
         OnPropertyChanged(nameof(CurrentWorkspaceText));
         OnPropertyChanged(nameof(ShowWorkspaceSwitcher));

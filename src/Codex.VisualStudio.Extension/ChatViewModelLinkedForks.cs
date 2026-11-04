@@ -160,8 +160,11 @@ public sealed partial class ChatViewModel
 
             if (!result.IsSupported || result.Thread is null)
             {
-                LinkedForkStatusText = markdown.ToSafeText(
-                    result.UnavailableReason ?? "The app-server did not create a linked conversation.");
+                await SetLinkedForkStatusAsync(
+                    owner,
+                    parent.Id,
+                    requestGeneration,
+                    markdown.ToSafeText(result.UnavailableReason ?? "The app-server did not create a linked conversation.")).ConfigureAwait(false);
                 return;
             }
 
@@ -198,9 +201,22 @@ public sealed partial class ChatViewModel
             }
 
             ExtensionDiagnostics.Write("Linked conversation could not be created", ex);
-            LinkedForkStatusText = "The linked conversation could not be created. It requires a persistent paginated parent in local storage.";
+            await SetLinkedForkStatusAsync(
+                owner,
+                parent.Id,
+                requestGeneration,
+                "The linked conversation could not be created.").ConfigureAwait(false);
         }
     }
+
+    private Task SetLinkedForkStatusAsync(OwnerSnapshot owner, string threadId, long generation, string text)
+        => OnUiAsync(() =>
+        {
+            if (IsCurrentLinkedForkRequest(owner, threadId, generation))
+            {
+                LinkedForkStatusText = text;
+            }
+        });
 
     private async Task LoadRelatedConversationsAsync()
     {
@@ -210,13 +226,16 @@ public sealed partial class ChatViewModel
             return;
         }
 
-        Interlocked.Increment(ref linkedForkRequestGeneration);
-        relatedConversationsParentId = parent.Id;
-        relatedConversationsNextCursor = null;
-        RelatedConversations.Clear();
-        OnPropertyChanged(nameof(HasRelatedConversations));
-        OnPropertyChanged(nameof(HasMoreRelatedConversations));
-        LinkedForkStatusText = string.Empty;
+        await OnUiAsync(() =>
+        {
+            Interlocked.Increment(ref linkedForkRequestGeneration);
+            relatedConversationsParentId = parent.Id;
+            relatedConversationsNextCursor = null;
+            RelatedConversations.Clear();
+            OnPropertyChanged(nameof(HasRelatedConversations));
+            OnPropertyChanged(nameof(HasMoreRelatedConversations));
+            LinkedForkStatusText = string.Empty;
+        }).ConfigureAwait(false);
         await LoadRelatedConversationsPageAsync(parent.Id, cursor: null).ConfigureAwait(false);
     }
 
@@ -254,8 +273,11 @@ public sealed partial class ChatViewModel
 
             if (!result.IsSupported)
             {
-                LinkedForkStatusText = markdown.ToSafeText(
-                    result.UnavailableReason ?? "Related conversations are not available.");
+                await SetLinkedForkStatusAsync(
+                    owner,
+                    parentId,
+                    requestGeneration,
+                    markdown.ToSafeText(result.UnavailableReason ?? "Related conversations are not available.")).ConfigureAwait(false);
                 return;
             }
 
@@ -296,21 +318,21 @@ public sealed partial class ChatViewModel
             }
 
             ExtensionDiagnostics.Write("Related conversations could not be loaded", ex);
-            LinkedForkStatusText = "Related conversations could not be loaded.";
+            await SetLinkedForkStatusAsync(owner, parentId, requestGeneration, "Related conversations could not be loaded.").ConfigureAwait(false);
         }
     }
 
     private Task SelectRelatedConversationAsync(ThreadSummary thread)
-    {
-        if (!IsLinkedForkFeatureAvailable)
+        => OnUiAsync(() =>
         {
-            return Task.CompletedTask;
-        }
+            if (!IsLinkedForkFeatureAvailable)
+            {
+                return;
+            }
 
-        SelectedThread = thread;
-        IsHistoryOpen = true;
-        return Task.CompletedTask;
-    }
+            SelectedThread = thread;
+            IsHistoryOpen = true;
+        });
 
     private async Task ReturnToLinkedParentAsync()
     {
@@ -329,15 +351,30 @@ public sealed partial class ChatViewModel
                 ThreadReadResult read = await bridge.ReadThreadAsync(
                     StampOwner(new ReadThreadRequest { ThreadId = parentId }, owner),
                     lifetime.Token).ConfigureAwait(false);
-                if (!IsCurrentOwner(owner)
-                    || !MatchesOwner(read, owner)
-                    || !string.Equals(SelectedThread?.LinkedParentThreadId, parentId, StringComparison.Ordinal))
+                bool inserted = false;
+                await OnUiAsync(() =>
+                {
+                    if (!IsCurrentOwner(owner)
+                        || !MatchesOwner(read, owner)
+                        || read.Thread is null
+                        || !string.Equals(SelectedThread?.LinkedParentThreadId, parentId, StringComparison.Ordinal))
+                    {
+                        return;
+                    }
+
+                    parent = Threads.FirstOrDefault(item => string.Equals(item.Id, parentId, StringComparison.Ordinal));
+                    if (parent is null)
+                    {
+                        parent = read.Thread;
+                        Threads.Insert(0, parent);
+                    }
+
+                    inserted = true;
+                }).ConfigureAwait(false);
+                if (!inserted)
                 {
                     return;
                 }
-
-                parent = read.Thread;
-                Threads.Insert(0, parent);
             }
             catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
             {
@@ -346,7 +383,13 @@ public sealed partial class ChatViewModel
             catch (Exception ex)
             {
                 ExtensionDiagnostics.Write("Linked conversation parent could not be opened", ex);
-                LinkedForkStatusText = "The parent conversation could not be opened.";
+                await OnUiAsync(() =>
+                {
+                    if (IsCurrentOwner(owner))
+                    {
+                        LinkedForkStatusText = "The parent conversation could not be opened.";
+                    }
+                }).ConfigureAwait(false);
                 return;
             }
         }

@@ -63,7 +63,7 @@ internal sealed class ConversationTextStore
 
     public void RemoveUnused(DateTimeOffset now)
     {
-        if (!Directory.Exists(root))
+        if (!Directory.Exists(root) || IsRedirected(root))
         {
             return;
         }
@@ -72,8 +72,18 @@ internal sealed class ConversationTextStore
         {
             foreach (string directory in Directory.EnumerateDirectories(root))
             {
+                if (IsRedirected(root) || IsRedirected(directory))
+                {
+                    continue;
+                }
+
                 foreach (string file in Directory.EnumerateFiles(directory, "*.txt"))
                 {
+                    if (IsRedirected(root) || IsRedirected(directory))
+                    {
+                        break;
+                    }
+
                     bool open;
                     lock (gate)
                     {
@@ -86,7 +96,7 @@ internal sealed class ConversationTextStore
                     }
                 }
 
-                if (!Directory.EnumerateFileSystemEntries(directory).Any())
+                if (!IsRedirected(root) && !IsRedirected(directory) && !Directory.EnumerateFileSystemEntries(directory).Any())
                 {
                     Directory.Delete(directory);
                 }
@@ -113,6 +123,18 @@ internal sealed class ConversationTextStore
             {
                 throw new IOException("The conversation text folder is redirected.");
             }
+        }
+    }
+
+    private static bool IsRedirected(string directory)
+    {
+        try
+        {
+            return (File.GetAttributes(directory) & FileAttributes.ReparsePoint) != 0;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or SecurityException)
+        {
+            return true;
         }
     }
 

@@ -971,7 +971,7 @@
                     Command="{Binding ToggleHistoryCommand}"
                     Style="{StaticResource IconButtonStyle}" />
             <Popup IsOpen="{Binding IsHistoryOpen, Mode=TwoWay}"
-                   StaysOpen="False"
+                   StaysOpen="True"
                    Placement="Bottom"
                    VerticalOffset="2"
                    AllowsTransparency="True"
@@ -993,6 +993,11 @@
                             ToolTip="Conversations to list"
                             AutomationProperties.Name="Conversation history scope"
                             AutomationProperties.HelpText="Choose which conversations the history lists." />
+                  <Button DockPanel.Dock="Top" Margin="0,0,0,6" HorizontalAlignment="Right"
+                          Content="Close history"
+                          Command="{Binding CloseHistoryCommand}"
+                          AutomationProperties.Name="Close conversation history"
+                          Style="{StaticResource SmallRoundButtonStyle}" />
                   <StackPanel DockPanel.Dock="Top" Margin="0,0,0,6"
                               Visibility="{Binding IsLinkedForkFeatureAvailable, Converter={StaticResource BoolToVis}}">
                     <TextBlock Margin="2,2" FontWeight="SemiBold" Text="Related conversations" />
@@ -1032,7 +1037,8 @@
                     <TextBlock Margin="2,2" Text="{Binding LinkedForkStatusText}"
                                TextWrapping="Wrap"
                                AutomationProperties.LiveSetting="Polite" />
-                  </StackPanel>                  <StackPanel DockPanel.Dock="Bottom" Margin="0,6,0,0">
+                  </StackPanel>
+                  <StackPanel DockPanel.Dock="Bottom" Margin="0,6,0,0">
                     <TextBlock Margin="2,4" Text="{Binding HistoryStatusText}" TextWrapping="Wrap"
                                Visibility="{Binding HasHistoryNotice, Converter={StaticResource BoolToVis}}"
                                AutomationProperties.LiveSetting="Polite" />

@@ -1,4 +1,4 @@
-using Codex.VisualStudio.Contracts;
+﻿using Codex.VisualStudio.Contracts;
 
 namespace Codex.VisualStudio.Extension;
 

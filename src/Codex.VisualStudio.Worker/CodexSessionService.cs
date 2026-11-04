@@ -463,7 +463,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
 
     public bool IsNewerThanVerifiedVersion { get; private set; }
 
-    public EffectiveApprovalState? EffectiveApprovalState { get; private set; }
+    public EffectiveApprovalState? EffectiveApprovalState => effectiveThreadPermissions?.Approval;
 
     public string? EffectiveReasoningEffort { get; private set; }
 
@@ -551,7 +551,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         CodexVersion = null;
         FeatureTier = CodexFeatureTier.Unsupported;
         IsNewerThanVerifiedVersion = false;
-        EffectiveApprovalState = null;
+        effectiveThreadPermissions = null;
         EffectiveReasoningEffort = null;
         EffectiveServiceTier = null;
         effectiveThreadModelId = null;
@@ -1339,7 +1339,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
                 ? new { cwd = MapLocalPathForServer(options.WorkingDirectory), historyMode = "paginated" }
                 : new { cwd = MapLocalPathForServer(options.WorkingDirectory) };
         JsonElement result = await SendAsync("thread/start", parameters, cancellationToken).ConfigureAwait(false);
-        EffectiveApprovalState = ReadEffectiveApprovalState(result);
+        effectiveThreadPermissions = ReadEffectiveThreadPermissions(result);
         ReadEffectiveTurnSettings(result, out string? reasoningEffort, out string? serviceTier);
         EffectiveReasoningEffort = reasoningEffort;
         EffectiveServiceTier = serviceTier;
@@ -1533,7 +1533,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
     public async Task<ThreadSummary> ResumeThreadAsync(string threadId, CancellationToken cancellationToken)
     {
         JsonElement result = await SendAsync("thread/resume", new { threadId, excludeTurns = true }, cancellationToken).ConfigureAwait(false);
-        EffectiveApprovalState = ReadEffectiveApprovalState(result);
+        effectiveThreadPermissions = ReadEffectiveThreadPermissions(result);
         ReadEffectiveTurnSettings(result, out string? reasoningEffort, out string? serviceTier);
         EffectiveReasoningEffort = reasoningEffort;
         EffectiveServiceTier = serviceTier;
@@ -2395,7 +2395,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             WorkerDiagnostics.Write("linked fork was rejected", ex);
             return new ForkThreadResult
             {
-                UnavailableReason = "The app-server refused the linked fork. Linked forks require persistent paginated history in local storage.",
+                UnavailableReason = redactor.Redact($"The app-server refused the linked fork: {BoundMessage(ex.Message)}"),
             };
         }
 
@@ -2404,7 +2404,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             return Unsupported<ForkThreadResult>("Thread forking is not supported by this app-server.");
         }
 
-        EffectiveApprovalState = ReadEffectiveApprovalState(call.Result);
+        effectiveThreadPermissions = ReadEffectiveThreadPermissions(call.Result);
         ReadEffectiveTurnSettings(call.Result, out string? reasoningEffort, out string? serviceTier);
         EffectiveReasoningEffort = reasoningEffort;
         EffectiveServiceTier = serviceTier;
@@ -4085,7 +4085,8 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             if (isActiveThread && hasSettings)
             {
                 EnsureCurrent(context);
-                EffectiveApprovalState = ReadEffectiveApprovalState(threadSettings);
+                EffectiveThreadPermissions updatedPermissions = ReadEffectiveThreadPermissions(threadSettings);
+                effectiveThreadPermissions = updatedPermissions;
                 ReadEffectiveTurnSettings(threadSettings, out string? reasoningEffort, out string? serviceTier);
                 EffectiveReasoningEffort = reasoningEffort;
                 EffectiveServiceTier = serviceTier;
@@ -4098,7 +4099,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
                 }
                 if (EffectiveApprovalStateChanged is not null)
                 {
-                    await EffectiveApprovalStateChanged(EffectiveApprovalState, cancellationToken).ConfigureAwait(false);
+                    await EffectiveApprovalStateChanged(updatedPermissions.Approval, cancellationToken).ConfigureAwait(false);
                     EnsureCurrent(context);
                 }
 
@@ -4809,7 +4810,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         FeatureTier = CodexFeatureTier.Unsupported;
         IsNewerThanVerifiedVersion = false;
         InitializationMetadata = null;
-        EffectiveApprovalState = null;
+        effectiveThreadPermissions = null;
         EffectiveReasoningEffort = null;
         EffectiveServiceTier = null;
         effectiveThreadModelId = null;
@@ -5304,7 +5305,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             ?? GetString(value, "service_tier"));
     }
 
-    private static EffectiveApprovalState ReadEffectiveApprovalState(JsonElement value)
+    private static EffectiveThreadPermissions ReadEffectiveThreadPermissions(JsonElement value)
     {
         string? activePermissionProfile = null;
         if (value.TryGetProperty("activePermissionProfile", out JsonElement activeProfile))
@@ -5321,13 +5322,17 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         bool hasSandbox = (value.TryGetProperty("sandbox", out sandbox)
                 || value.TryGetProperty("sandboxPolicy", out sandbox))
             && sandbox.ValueKind == JsonValueKind.Object;
-        return new EffectiveApprovalState
-        {
-            ActivePermissionProfile = activePermissionProfile,
-            ApprovalPolicy = NormalizeWireIdentifier(GetString(value, "approvalPolicy")),
-            ApprovalsReviewer = NormalizeWireIdentifier(GetString(value, "approvalsReviewer")),
-            SandboxMode = hasSandbox ? NormalizeWireIdentifier(GetString(sandbox, "type")) : null,
-        };
+        return new EffectiveThreadPermissions(
+            new EffectiveApprovalState
+            {
+                ActivePermissionProfile = activePermissionProfile,
+                ApprovalPolicy = NormalizeWireIdentifier(GetString(value, "approvalPolicy")),
+                ApprovalsReviewer = NormalizeWireIdentifier(GetString(value, "approvalsReviewer")),
+                SandboxMode = hasSandbox ? NormalizeWireIdentifier(GetString(sandbox, "type")) : null,
+            },
+            hasSandbox ? sandbox.Clone() : null,
+            activeProfile.ValueKind is not (JsonValueKind.Undefined or JsonValueKind.Null)
+                && activePermissionProfile is null);
     }
 
     private bool ReadPermissionProfiles(

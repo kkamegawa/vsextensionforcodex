@@ -538,7 +538,10 @@ object CreateThreadUsage(JsonElement parameters)
         {
             threadId,
             groups = Array.Empty<object>(),
-            estimatedUsageCreditsMicros = 0L,
+            // Native-USD scenarios isolate the native amount; the default keeps a credit estimate.
+            estimatedUsageCreditsMicros = IsScenario("Issue244NativeUsd") || IsScenario("Issue244ZeroUsd") || IsScenario("Issue244NullUsd")
+                ? 0L
+                : 1_500_000L,
             estimatedUsageUsdMicros = (long?)null,
             nativeUsageUsdMicros,
         },

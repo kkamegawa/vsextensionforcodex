@@ -204,10 +204,16 @@ public sealed partial class ChatViewModel
             return;
         }
 
-        Interlocked.Increment(ref conversationMemoryRequestGeneration);
-        ConversationMemoryText = string.Empty;
-        ConversationMemoryStatusText = string.Empty;
-        IsConversationMemoryOpen = false;
+        // Ordinary status churn (turn start, token updates) keeps the pane. Only a different
+        // conversation, a lost join, a lost connection, or a lost capability invalidates what it shows.
+        bool invalidated = args.PropertyName != nameof(Status)
+            || !IsConversationMemoryFeatureAvailable
+            || Status.State is not (WorkerConnectionState.Ready or WorkerConnectionState.Busy);
+        if (invalidated)
+        {
+            CloseConversationMemory();
+        }
+
         OnPropertyChanged(nameof(IsConversationMemoryFeatureAvailable));
         ReadConversationMemoryCommand.RaiseCanExecuteChanged();
     }

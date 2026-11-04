@@ -39,6 +39,7 @@ public sealed partial class CodexSessionService
 
         // Set synchronously before the first await so concurrent calls cannot issue two switches.
         context.WorkspaceOperationInProgress = true;
+        bool switchConfirmed = false;
         try
         {
             JsonElement listResponse = await context.Connection.SendReadOnlyRequestAsync(
@@ -89,7 +90,9 @@ public sealed partial class CodexSessionService
             }
             catch (Exception ex) when (IsUnknownOperationOutcome(ex, cancellationToken))
             {
-                return await ConfirmUnknownWorkspaceSwitchAsync(context, request, cancellationToken).ConfigureAwait(false);
+                SwitchWorkspaceResult confirmed = await ConfirmUnknownWorkspaceSwitchAsync(context, request, cancellationToken).ConfigureAwait(false);
+                switchConfirmed = confirmed.State == WorkspaceSwitchState.Switched;
+                return confirmed;
             }
 
             EnsureCurrent(context);
@@ -154,6 +157,7 @@ public sealed partial class CodexSessionService
                 };
             }
 
+            switchConfirmed = true;
             await RetireWorkspaceOwnerAsync(context, cancellationToken).ConfigureAwait(false);
             return new SwitchWorkspaceResult { State = WorkspaceSwitchState.Switched };
         }
@@ -169,6 +173,13 @@ public sealed partial class CodexSessionService
         }
         finally
         {
+            // A confirmed switch keeps the flag so the following account change is attributed to
+            // this owner action; every other exit, including unexpected exceptions, clears it.
+            if (!switchConfirmed)
+            {
+                context.WorkspaceSwitchRequested = false;
+            }
+
             context.WorkspaceOperationInProgress = false;
         }
     }
@@ -259,8 +270,9 @@ public sealed partial class CodexSessionService
 
             return new SwitchWorkspaceResult { State = WorkspaceSwitchState.Switched };
         }
-        catch (JsonRpcConnectionClosedException)
+        catch (Exception ex) when (ex is JsonRpcConnectionClosedException or JsonRpcRemoteException or JsonException)
         {
+            // The switch may have happened, so a failed confirmation is never reported as a rejection.
             context.WorkspaceSwitchRequested = false;
             return new SwitchWorkspaceResult
             {

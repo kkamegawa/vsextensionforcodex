@@ -64,7 +64,6 @@ public static class ReadOnlyRequestAllowlist
     {
         "account/rateLimits/read",
         "account/usage/read",
-        "thread/memory/read",
         "thread/list",
         "thread/goal/get",
         "model/list",
@@ -78,6 +77,7 @@ public static class ReadOnlyRequestAllowlist
         .. UnconditionalMethods,
         "skills/list",
         "thread/read",
+        "thread/memory/read",
         "thread/turns/list",
         "thread/items/list",
         "thread/attachment/list",
@@ -103,6 +103,9 @@ public static class ReadOnlyRequestAllowlist
 
             // forceReload can clear the skills cache and rescan discovery; it is sent once.
             "skills/list" => HasExplicitFalse(parameters, "forceReload"),
+
+            // A memory read is only a pure read of one explicitly named conversation.
+            "thread/memory/read" => HasNonEmptyString(parameters, "threadId"),
             _ => false,
         };
     }
@@ -120,6 +123,22 @@ public static class ReadOnlyRequestAllowlist
         return element.ValueKind == JsonValueKind.Object
             && element.TryGetProperty(property, out JsonElement value)
             && value.ValueKind == JsonValueKind.False;
+    }
+
+    private static bool HasNonEmptyString(object? parameters, string property)
+    {
+        if (parameters is null)
+        {
+            return false;
+        }
+
+        JsonElement element = parameters is JsonElement json
+            ? json
+            : JsonSerializer.SerializeToElement(parameters, parameters.GetType());
+        return element.ValueKind == JsonValueKind.Object
+            && element.TryGetProperty(property, out JsonElement value)
+            && value.ValueKind == JsonValueKind.String
+            && !string.IsNullOrWhiteSpace(value.GetString());
     }
 
     private static bool HasSafeHistoryReadParameters(string method, object? parameters)

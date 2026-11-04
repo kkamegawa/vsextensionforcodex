@@ -3870,7 +3870,8 @@ public sealed partial class ViewModelTests
             typeof(AppServerNoticePresentationViewModel), typeof(ArtifactPartPresentationViewModel),
             typeof(RemoteProfilesPresentationViewModel), typeof(RemoteProfileViewModel),
             typeof(ConnectionHealthPresentationViewModel), typeof(ConnectionTargetSnapshot),
-            typeof(PresetSlotViewModel),
+            typeof(PresetSlotViewModel), typeof(LinkedForkConversationViewModel),
+            typeof(AccountWorkspacePresentationViewModel),
         ];
 
     [TestMethod]
@@ -9339,6 +9340,33 @@ public sealed partial class ViewModelTests
 
         public Task<StartAccountLoginResult> StartAccountLoginAsync(StartAccountLoginRequest request, CancellationToken cancellationToken)
             => Task.FromResult(new StartAccountLoginResult());
+
+        public List<ListWorkspacesRequest> ListWorkspacesRequests { get; } = [];
+
+        public List<SwitchWorkspaceRequest> SwitchWorkspaceRequests { get; } = [];
+
+        public List<GetThreadMemoryRequest> ThreadMemoryRequests { get; } = [];
+
+        public Task<ListWorkspacesResult> ListWorkspacesAsync(ListWorkspacesRequest request, CancellationToken cancellationToken)
+        {
+            ListWorkspacesRequests.Add(request);
+            return Task.FromResult(new ListWorkspacesResult());
+        }
+
+        public Task<SwitchWorkspaceResult> SwitchWorkspaceAsync(SwitchWorkspaceRequest request, CancellationToken cancellationToken)
+        {
+            SwitchWorkspaceRequests.Add(request);
+            return Task.FromResult(new SwitchWorkspaceResult());
+        }
+
+        public Task<SwitchWorkspaceResult> CancelWorkspaceLoginAsync(CancelWorkspaceLoginRequest request, CancellationToken cancellationToken)
+            => Task.FromResult(new SwitchWorkspaceResult());
+
+        public Task<ThreadMemoryResult> GetThreadMemoryAsync(GetThreadMemoryRequest request, CancellationToken cancellationToken)
+        {
+            ThreadMemoryRequests.Add(request);
+            return Task.FromResult(new ThreadMemoryResult());
+        }
 
         public Task<AccountStatus> LogoutAccountAsync(LogoutAccountRequest request, CancellationToken cancellationToken)
         {

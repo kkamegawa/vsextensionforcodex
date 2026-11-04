@@ -337,8 +337,6 @@ public sealed class ListThreadsRequest : OwnerScopedRequest
 {
     public string? Cursor { get; set; }
 
-    public string? AttachedToThreadId { get; set; }
-
     // Server paths fixed when paging starts. Null lists every conversation.
     public IReadOnlyList<string>? WorkingDirectories { get; set; }
 }
@@ -1065,11 +1063,22 @@ public sealed class ForkThreadRequest : OwnerScopedRequest
 {
     public string ThreadId { get; set; } = string.Empty;
     public bool CreateLinkedFork { get; set; }
+
+    // Lists the linked children of ThreadId through thread/list.attachedToThreadId instead of forking.
+    public bool ListLinkedForks { get; set; }
+
+    public string? Cursor { get; set; }
 }
 
 public sealed class ForkThreadResult : AppServerOperationResult
 {
     public ThreadSummary? Thread { get; set; }
+
+    public IReadOnlyList<ThreadSummary> RelatedThreads { get; set; } = Array.Empty<ThreadSummary>();
+
+    public string? NextCursor { get; set; }
+
+    public string? ParentThreadId { get; set; }
 }
 
 public sealed class ThreadGoalInfo

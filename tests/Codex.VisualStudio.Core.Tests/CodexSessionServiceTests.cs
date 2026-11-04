@@ -2543,13 +2543,21 @@ public sealed partial class CodexSessionServiceTests
             Target = new ReviewTarget { Kind = ReviewTargetKind.UncommittedChanges },
         };
 
-    private static JsonElement ReviewThreadResponse(string threadId, string sandbox = "readOnly", string approval = "on-request")
+    private static JsonElement ReviewThreadResponse(
+        string threadId,
+        string sandbox = "readOnly",
+        string approval = "on-request",
+        string? reviewer = null,
+        string? profile = null,
+        bool networkAccess = false)
         => JsonSerializer.SerializeToElement(new
         {
             thread = new { id = threadId, preview = string.Empty, createdAt = 1L, updatedAt = 1L },
             model = "gpt-test",
+            approvalsReviewer = reviewer,
+            activePermissionProfile = profile,
             approvalPolicy = approval,
-            sandbox = new { type = sandbox },
+            sandbox = new { type = sandbox, networkAccess },
         });
 
     private static async Task<CodexSessionService> StartSourceThreadForReviewAsync(RecordingConnection connection, JsonElement newThread)
@@ -2633,12 +2641,18 @@ public sealed partial class CodexSessionServiceTests
     }
 
     [TestMethod]
-    public async Task StartReviewNewThread_WiderReportedPermissions_DoNotStartReview()
+    [DataRow("dangerFullAccess", null, null, false)]
+    [DataRow("readOnly", "auto_review", null, false)]
+    [DataRow("readOnly", null, "unexpected-profile", false)]
+    [DataRow("readOnly", null, "", false)]
+    [DataRow("readOnly", null, null, true)]
+    public async Task StartReviewNewThread_DifferentReportedPermissions_DoNotStartReview(
+        string sandbox, string? reviewer, string? profile, bool networkAccess)
     {
         var connection = new RecordingConnection();
         await using CodexSessionService service = await StartSourceThreadForReviewAsync(
             connection,
-            ReviewThreadResponse("thread-review", sandbox: "dangerFullAccess"));
+            ReviewThreadResponse("thread-review", sandbox: sandbox, reviewer: reviewer, profile: profile, networkAccess: networkAccess));
 
         StartReviewResult result = await service.StartReviewAsync(NewThreadReview(), CancellationToken.None);
 
