@@ -952,3 +952,9 @@ Tracking: [#242](https://github.com/kkamegawa/vsextensionforcodex/issues/242). A
 ### 2026-11-04: Conversation text fidelity
 
 Tracking: [#250](https://github.com/kkamegawa/vsextensionforcodex/issues/250). Snapshot history text preserves literal code and command output after secret redaction. MCP text and fallback explanations remain visible, and credential-key detection does not match ordinary identifier suffixes. See the English and Japanese task records for the confirmed Experimental Instance check and the remaining investigation of empty Reasoning items.
+
+### 2026-11-04: Validation policy
+
+Tracking: [#240](https://github.com/kkamegawa/vsextensionforcodex/issues/240) and [#244](https://github.com/kkamegawa/vsextensionforcodex/issues/244). Added [ADR-021](adr/ADR-021-validation-policy.md) and README limitations in English and Japanese. Enterprise and workspace-switching environments are unverified; experimental features receive minimal testing. Symbolic-link cases are excluded from 0.166 release verification and remain recorded as skips. The maintainer confirmed an Experimental Instance check; this does not establish that every individual UI scenario was tested. Issue #250's unresolved empty-content behavior is deferred until it recurs.
+
+Validation: reviewed the bilingual policy text, links, and document-only diff. No new runtime tests were run.

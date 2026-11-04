@@ -5010,6 +5010,54 @@ public sealed partial class ViewModelTests
     }
 
     [TestMethod]
+    public async Task ChatViewModel_QueuedNewThreadCustomReviewRunsAfterTurnCompletionAndJoinsNewConversation()
+    {
+        var bridge = new FakeWorkerBridge
+        {
+            StartReviewHandler = (request, _) =>
+            {
+                Assert.AreEqual(ReviewPlacement.NewThread, request.Placement);
+                Assert.AreEqual(ReviewTargetKind.Custom, request.Target.Kind);
+                Assert.AreEqual("check the queued review", request.Target.Value);
+                return Task.FromResult(new StartReviewResult
+                {
+                    ReviewThreadId = "thread-review",
+                    TurnId = "turn-review",
+                    CreatedThread = new ThreadSummary { Id = "thread-review" },
+                });
+            },
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false)
+        {
+            SelectedThread = new ThreadSummary { Id = "thread-1" },
+            ComposerText = "/review --new-thread custom check the queued review",
+        };
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready, ThreadId = "thread-1" });
+        await RunCommandAsync(vm.JoinThreadCommand);
+        await bridge.PublishStateAsync(new WorkerStatus
+        {
+            State = WorkerConnectionState.Busy,
+            ThreadId = "thread-1",
+            TurnId = "turn-1",
+        });
+
+        await InvokeComposerSendAsync(vm);
+        Assert.AreEqual(0, bridge.ReviewCallCount);
+        Assert.IsNull(bridge.LastSteerTurnRequest);
+
+        await bridge.PublishStateAsync(new WorkerStatus
+        {
+            State = WorkerConnectionState.Ready,
+            ThreadId = "thread-1",
+        });
+        await WaitForAsync(() => bridge.ReviewCallCount == 1 && vm.SelectedThread?.Id == "thread-review");
+
+        Assert.AreEqual(1, bridge.ReviewCallCount);
+        Assert.IsTrue(vm.IsThreadJoined);
+        Assert.IsTrue(vm.Threads.Any(thread => thread.Id == "thread-review"));
+    }
+
+    [TestMethod]
     public async Task ChatViewModel_NextTurnSettings_ApplyOnlyToNextSuccessfulTurn()
     {
         var bridge = new FakeWorkerBridge

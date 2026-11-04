@@ -224,6 +224,8 @@ Each stage can be released on its own.
 
 ## 9. Verification and completion
 
+The checks below are subject to [ADR-021](adr/ADR-021-validation-policy.md): unavailable enterprise environments and real workspace switching are unverified, experimental features receive minimal testing, and symbolic-link cases are outside the 0.166 release verification scope. Record skipped and unperformed checks accurately.
+
 - **Contract:** all six versions on both surfaces, version boundaries and prereleases, no experimental request while disabled, and fork rejection for unsupported storage.
 - **Review:** separate-conversation review on every supported version, inherited settings without wider permissions, stopping when a setting cannot be inherited, failure after creation, disconnect and unknown outcome, duplicate prevention, the original conversation staying selected on failure, and the history list appearance.
 - **History and forks:** multiple worktrees, subfolders, no Git, hidden remote scope, path normalization, responses during a scope change, paging, linked forks versus subagents, and parent and child navigation.

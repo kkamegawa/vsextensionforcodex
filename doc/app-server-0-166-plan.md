@@ -57,6 +57,8 @@ These behaviors are confirmed on a real CLI in the named stage. If one differs f
 
 ## Acceptance checks
 
+Apply [ADR-021](adr/ADR-021-validation-policy.md) to the checks below. Unavailable enterprise environments and real workspace switching are unverified; experimental features receive minimal testing; symbolic-link cases are outside the 0.166 release verification scope. Do not report unperformed checks as passed.
+
 - **Contract:**
   - The scripts validate all six versions on both surfaces and report each regression difference with its version.
   - Manifest validation fails when the package asset or hash is missing.
