@@ -65,8 +65,8 @@
 
 ### 未確認
 
-- [ ] 空でない Reasoning 要約が保存された会話を Visual Studio で復元する。隔離した 0.166.0 の実 CLI では `model_reasoning_summary="auto"` がループバックの Responses 要求に反映された。以前の Visual Studio セッションで記録された `none` は CLI の記録不具合による。`TurnContext::to_turn_context_item` が `ReasoningSummaryConfig::None` を固定値として書き込んでいる（openai/codex#57472、`rust-v0.166.0` のソースで確認）。保存された要約が空なのはモデルの応答によるもの（openai/codex#38160 を参照）。どちらも README の制限事項に記載した。
-- [ ] 会話テキストのエディタータブで選択、コピー、Ctrl+F、F3、日本語、長い履歴、閉じた際のファイル削除を確認する。
+- [ ] 空でない Reasoning 要約が保存された会話を Visual Studio で復元する。隔離した 0.166.0 の実 CLI では `model_reasoning_summary="auto"` がループバックの Responses 要求に反映された。以前の Visual Studio セッションで `none` が記録された原因は未確認。
+- [x] 会話テキストのエディタータブで選択、コピー、Ctrl+F、F3、日本語、長い履歴、閉じた際のファイル削除を確認する。PR #248 で管理者が受け入れを確認。
 
 ### Stage 2 のレビュー対応
 
@@ -74,7 +74,7 @@
 - [x] 会話を切り替えると直前の会話の使用量を消去し、使用量ポップアップが開いていれば選択先の使用量を取得する。
 - [x] 履歴スコープの選択中も履歴ポップアップを維持する。Escape または Close history で閉じられる。
 - [x] 会話テキストの自動削除では、リダイレクトされた保存先ルートとオーナーフォルダーを対象から外す。外部の古いファイルを含む junction で回帰を検証。
-- [ ] Visual Studio Experimental Instance で履歴スコープの ComboBox を確認する。
+- [x] 履歴スコープの ComboBox は、開いている履歴ポップアップを維持したまま開いて選択できることを PR #248 で管理者が確認。
 
 ## Stage 3: Experimental 機能
 

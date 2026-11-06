@@ -3030,7 +3030,11 @@ public sealed partial class CodexSessionServiceTests
         {
             arguments = args;
             Assert.IsTrue(timeout > TimeSpan.Zero);
-            return Task.FromResult(new BoundedProcessResult(0, "token sk-abcdefghijklmnopqrstuvwxyz0123456789", string.Empty, TimedOut: false));
+            return Task.FromResult(new BoundedProcessResult(
+                0,
+                "token sk-abcdefghijklmnopqrstuvwxyz0123456789 HTTP 403: <body>private challenge content</body>",
+                string.Empty,
+                TimedOut: false));
         };
         await service.InitializeAsync(connection, Options(), CancellationToken.None);
 
@@ -3038,6 +3042,23 @@ public sealed partial class CodexSessionServiceTests
 
         CollectionAssert.AreEqual(new[] { "doctor", "--network-only", "--no-color", "--ascii" }, arguments!.ToArray());
         Assert.IsFalse(result.Output.Contains("sk-abcdefghijklmnopqrstuvwxyz0123456789", StringComparison.Ordinal));
+        StringAssert.Contains(result.Output, "[HTML response omitted]");
+        Assert.IsFalse(result.Output.Contains("private challenge content", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    public async Task NetworkDiagnostics_BoundsOutput()
+    {
+        var connection = new RecordingConnection();
+        await using CodexSessionService service = CreateService();
+        service.NetworkDiagnosticsRun = (_, _, _, _, _) =>
+            Task.FromResult(new BoundedProcessResult(0, new string('x', 4000), string.Empty, TimedOut: false));
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        NetworkDiagnosticsResult result = await service.RunNetworkDiagnosticsAsync(CancellationToken.None);
+
+        Assert.IsTrue(result.Output.Length <= CodexErrorClassifier.MaximumDiagnosticCharacters);
+        Assert.EndsWith(" [truncated]", result.Output);
     }
 
     [TestMethod]

@@ -2788,7 +2788,8 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             {
                 ExitCode = result.ExitCode,
                 TimedOut = result.TimedOut,
-                Output = redactor.Redact(string.Join("\n", new[] { result.StandardOutput, result.StandardError }.Where(text => text.Length > 0))),
+                Output = CodexErrorClassifier.FormatStandardError(
+                    redactor.Redact(string.Join("\n", new[] { result.StandardOutput, result.StandardError }.Where(text => text.Length > 0)))),
             };
         }
         catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException or IOException)
