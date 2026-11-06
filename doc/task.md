@@ -958,3 +958,9 @@ Tracking: [#250](https://github.com/kkamegawa/vsextensionforcodex/issues/250). S
 Tracking: [#240](https://github.com/kkamegawa/vsextensionforcodex/issues/240) and [#244](https://github.com/kkamegawa/vsextensionforcodex/issues/244). Added [ADR-021](adr/ADR-021-validation-policy.md) and README limitations in English and Japanese. Enterprise and workspace-switching environments are unverified; experimental features receive minimal testing. Symbolic-link cases are excluded from 0.166 release verification and remain recorded as skips. The maintainer confirmed an Experimental Instance check; this does not establish that every individual UI scenario was tested. Issue #250's unresolved empty-content behavior is deferred until it recurs.
 
 Validation: reviewed the bilingual policy text, links, and document-only diff. No new runtime tests were run.
+
+### 2026-11-06: Issue #252 active-turn lifecycle
+
+Tracking: [#252](https://github.com/kkamegawa/vsextensionforcodex/issues/252). The Worker now tracks `turn.id` and `rootTurnId` as aliases, clears the active turn when either ID completes, resets stale state when adopting another thread, and prevents inline review responses from reviving completed turns. A Fake App Server process regression reproduces the mismatched IDs; UI regressions cover queued review dispatch after the turn returns to idle. Detailed acceptance evidence is in [the 0.166 task record](task-app-server-0-166.md).
+
+Validation: Release solution build passed with 0 warnings and 0 errors. Core tests passed 560 with 5 symbolic-link skips; UI tests passed 607 with 1 symbolic-link skip. Post-fix Visual Studio Experimental Instance verification of the same-window inline-review/new-thread-review flow remains pending.

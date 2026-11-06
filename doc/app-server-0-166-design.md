@@ -201,6 +201,8 @@ The size limit and secret removal stay in force.
 
 ### Generation checks
 
+Turn identity is scoped by connection generation and thread. The active turn records the server's `turn.id` and optional `rootTurnId` as identifiers for the same turn. A completion matching either identifier clears that active turn and records both identifiers so a late start response cannot revive it. A completion for another turn does not clear the active turn. Successfully starting or resuming a different thread resets the previous thread's active, pending, and unconfirmed turn state before adopting the new thread. Inline review responses use the same completed-turn guard as ordinary turns.
+
 Every asynchronous operation checks the owner, connection, request, and selection generations. Marking a conversation read happens only on explicit action.
 
 ### Contract manifest v4

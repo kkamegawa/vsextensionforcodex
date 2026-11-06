@@ -322,6 +322,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
     private readonly GitWorktreeScope gitWorktreeScope = new();
     private readonly object turnStateLock = new();
     private readonly HashSet<TurnKey> completedTurnIds = new();
+    private string? activeRootTurnId;
     // Thread whose turn/start request is in flight. Its turn notifications can arrive before the
     // response updates ActiveThreadId, so they must not be treated as another thread's events.
     private string? pendingTurnThreadId;
@@ -586,6 +587,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             unconfirmedTurnThreadId = null;
             ActiveThreadId = null;
             ActiveTurnId = null;
+            activeRootTurnId = null;
         }
         string overflowDirectory = Path.Combine(
             Path.GetTempPath(),
@@ -1334,7 +1336,11 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             EffectiveApprovalState,
             EffectiveReasoningEffort,
             EffectiveServiceTier);
-        ActiveThreadId = summary.Id;
+        lock (turnStateLock)
+        {
+            ResetTurnStateForThread(summary.Id);
+            ActiveThreadId = summary.Id;
+        }
         effectiveThreadModelId = summary.EffectiveModelId ?? ReadEffectiveModelId(result);
         activeThreadInheritsDefaultModel = effectiveThreadModelId is null;
         return summary;
@@ -1524,7 +1530,11 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             EffectiveApprovalState,
             EffectiveReasoningEffort,
             EffectiveServiceTier);
-        ActiveThreadId = summary.Id;
+        lock (turnStateLock)
+        {
+            ResetTurnStateForThread(summary.Id);
+            ActiveThreadId = summary.Id;
+        }
         effectiveThreadModelId = summary.EffectiveModelId ?? ReadEffectiveModelId(result);
         summary.EffectiveModelId = effectiveThreadModelId;
         activeThreadInheritsDefaultModel = false;
@@ -2132,13 +2142,17 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
                 ClearUnconfirmedTurnLocked(request.ThreadId);
                 // A completion notification may legally race the response to turn/start.
                 // Never resurrect a turn that the server has already completed.
-                if (startedTurnId is not null && !completedTurnIds.Contains(new TurnKey(context.Generation, request.ThreadId, startedTurnId)))
+                string? startedRootTurnId = GetString(result.GetProperty("turn"), "rootTurnId");
+                if (startedTurnId is not null
+                    && !IsTurnCompletedLocked(context.Generation, request.ThreadId, startedTurnId, startedRootTurnId))
                 {
                     ActiveTurnId = startedTurnId;
+                    activeRootTurnId = startedRootTurnId;
                 }
                 else
                 {
                     ActiveTurnId = null;
+                    activeRootTurnId = null;
                 }
             }
         }
@@ -2249,6 +2263,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         CompactThreadRequest request,
         CancellationToken cancellationToken)
     {
+        ConnectionContext context = RequireContext();
         OperationCallResult call = await TrySendOperationAsync(
             "thread/compact/start",
             new { threadId = request.ThreadId },
@@ -2272,6 +2287,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             return await StartReviewInNewThreadAsync(request, cancellationToken).ConfigureAwait(false);
         }
 
+        ConnectionContext context = RequireContext();
         object target = CreateReviewTarget(request.Target);
         OperationCallResult call = await TrySendOperationAsync(
             "review/start",
@@ -2292,8 +2308,25 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         string? turnId = call.Result.TryGetProperty("turn", out JsonElement turn)
             ? GetString(turn, "id")
             : null;
-        ActiveThreadId = reviewThreadId ?? request.ThreadId;
-        ActiveTurnId = turnId;
+        string? rootTurnId = call.Result.TryGetProperty("turn", out turn)
+            ? GetString(turn, "rootTurnId")
+            : null;
+        string targetThreadId = reviewThreadId ?? request.ThreadId;
+        lock (turnStateLock)
+        {
+            if (IsCurrent(context))
+            {
+                ResetTurnStateForThread(targetThreadId);
+                ActiveThreadId = targetThreadId;
+                if (turnId is not null
+                    && !IsTurnCompletedLocked(context.Generation, targetThreadId, turnId, rootTurnId)
+                    && !IsTurnCompletedLocked(context.Generation, request.ThreadId, turnId, rootTurnId))
+                {
+                    ActiveTurnId = turnId;
+                    activeRootTurnId = rootTurnId;
+                }
+            }
+        }
         return new StartReviewResult
         {
             ReviewThreadId = reviewThreadId,
@@ -2326,10 +2359,19 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
                 EffectiveReasoningEffort,
                 EffectiveServiceTier)
             : null;
-        ActiveThreadId = thread?.Id ?? ActiveThreadId;
+        lock (turnStateLock)
+        {
+            if (thread?.Id is { } forkedThreadId)
+            {
+                ResetTurnStateForThread(forkedThreadId);
+                ActiveThreadId = forkedThreadId;
+            }
+
+            ActiveTurnId = null;
+            activeRootTurnId = null;
+        }
         effectiveThreadModelId = thread?.EffectiveModelId ?? ReadEffectiveModelId(call.Result) ?? effectiveThreadModelId;
         activeThreadInheritsDefaultModel = false;
-        ActiveTurnId = null;
         return new ForkThreadResult { Thread = thread };
     }
 
@@ -3852,14 +3894,16 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         {
             threadId ??= GetString(startedTurn, "threadId");
             string? startedTurnId = GetString(startedTurn, "id");
+            string? startedRootTurnId = GetString(startedTurn, "rootTurnId");
             lock (turnStateLock)
             {
                 // A late turn/started notification must not revive a completed turn.
                 if (startedTurnId is not null
                     && IsTrackedTurnThreadLocked(threadId)
-                    && !completedTurnIds.Contains(new TurnKey(context.Generation, threadId, startedTurnId)))
+                    && !IsTurnCompletedLocked(context.Generation, threadId, startedTurnId, startedRootTurnId))
                 {
                     ActiveTurnId = startedTurnId;
+                    activeRootTurnId = startedRootTurnId;
                     turnId = startedTurnId;
                     ClearUnconfirmedTurnLocked(threadId);
                 }
@@ -3877,20 +3921,22 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
                 ?? (parameters.TryGetProperty("turn", out JsonElement completedTurn)
                     ? GetString(completedTurn, "id")
                     : null);
+            string? completedRootTurnId = parameters.TryGetProperty("turn", out JsonElement completedTurnForRoot)
+                ? GetString(completedTurnForRoot, "rootTurnId")
+                : null;
             bool otherThread;
             lock (turnStateLock)
             {
                 otherThread = !IsTrackedTurnThreadLocked(threadId);
                 completedId ??= otherThread ? null : ActiveTurnId;
-                if (completedId is not null)
-                {
-                    completedTurnIds.Add(new TurnKey(context.Generation, threadId, completedId));
-                }
+                RecordCompletedTurnLocked(context.Generation, threadId, completedId, completedRootTurnId);
 
                 if (!otherThread
-                    && (completedId is null || string.Equals(ActiveTurnId, completedId, StringComparison.Ordinal)))
+                    && (completedId is null && completedRootTurnId is null
+                        || IsActiveTurnMatch(completedId, completedRootTurnId)))
                 {
                     ActiveTurnId = null;
+                    activeRootTurnId = null;
                 }
 
                 if (!otherThread)
@@ -3910,10 +3956,14 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         else if (method == "thread/closed")
         {
             context.ApprovalGrants.EndThread(threadId);
-            if (string.Equals(ActiveThreadId, threadId, StringComparison.Ordinal))
+            lock (turnStateLock)
             {
-                ActiveThreadId = null;
-                ActiveTurnId = null;
+                if (string.Equals(ActiveThreadId, threadId, StringComparison.Ordinal))
+                {
+                    ActiveThreadId = null;
+                    ActiveTurnId = null;
+                    activeRootTurnId = null;
+                }
             }
         }
 
@@ -4520,6 +4570,48 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             || string.Equals(pendingTurnThreadId, threadId, StringComparison.Ordinal)
             || string.Equals(unconfirmedTurnThreadId, threadId, StringComparison.Ordinal);
 
+    private void ResetTurnStateForThread(string threadId)
+    {
+        lock (turnStateLock)
+        {
+            if (string.Equals(ActiveThreadId, threadId, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            ActiveTurnId = null;
+            activeRootTurnId = null;
+            pendingTurnThreadId = null;
+            unconfirmedTurnThreadId = null;
+        }
+    }
+
+    private bool IsTurnCompletedLocked(long generation, string? threadId, string turnId, string? rootTurnId)
+        => completedTurnIds.Contains(new TurnKey(generation, threadId, turnId))
+            || (rootTurnId is not null && completedTurnIds.Contains(new TurnKey(generation, threadId, rootTurnId)));
+
+    private void RecordCompletedTurnLocked(long generation, string? threadId, string? turnId, string? rootTurnId)
+    {
+        if (turnId is not null)
+        {
+            completedTurnIds.Add(new TurnKey(generation, threadId, turnId));
+        }
+
+        if (rootTurnId is not null)
+        {
+            completedTurnIds.Add(new TurnKey(generation, threadId, rootTurnId));
+        }
+    }
+
+    private bool IsActiveTurnMatch(string? turnId, string? rootTurnId)
+        => (turnId is null && rootTurnId is null)
+            || (turnId is not null
+                && (string.Equals(ActiveTurnId, turnId, StringComparison.Ordinal)
+                    || string.Equals(activeRootTurnId, turnId, StringComparison.Ordinal)))
+            || (rootTurnId is not null
+                && (string.Equals(ActiveTurnId, rootTurnId, StringComparison.Ordinal)
+                    || string.Equals(activeRootTurnId, rootTurnId, StringComparison.Ordinal)));
+
     private void ClearUnconfirmedTurnLocked(string? threadId)
     {
         if (threadId is null || string.Equals(unconfirmedTurnThreadId, threadId, StringComparison.Ordinal))
@@ -4730,6 +4822,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             unconfirmedTurnThreadId = null;
             ActiveThreadId = null;
             ActiveTurnId = null;
+            activeRootTurnId = null;
         }
 
         long nextOwnerGeneration = Interlocked.Increment(ref ownerGeneration);

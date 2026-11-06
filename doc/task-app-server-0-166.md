@@ -82,3 +82,13 @@ Tracking: [#242](https://github.com/kkamegawa/vsextensionforcodex/issues/242). T
 - Avoid matching a credential key within an ordinary identifier while retaining credential redaction.
 - Release build passed with zero warnings and errors. Core tests passed 555 with 5 symbolic-link skips. UI tests passed 606 with 1 symbolic-link skip.
 - The maintainer confirmed a real long-history snapshot in the Visual Studio Experimental Instance. The submitted text preserved the reported code and command characters. The cause of each empty Reasoning item remains unverified.
+
+### Issue #252: active-turn completion and conversation changes
+
+Tracking: [#252](https://github.com/kkamegawa/vsextensionforcodex/issues/252).
+
+- [x] Updated the design to treat `turn.id` and `rootTurnId` as aliases for an active turn, clear it when completion matches either alias, reset turn state when starting or resuming a different thread, and guard inline review responses against reviving completed turns.
+- [x] Added a Fake App Server process scenario with distinct `turn.id` and `rootTurnId`; the Worker integration test confirms completion by the root ID returns `ActiveTurnId` to idle.
+- [x] Added Core regressions for both completion aliases, late `turn/started`, different-thread resume and new-thread start, and inline review response races. UI regressions confirm queued `/review` and `/review --new-thread custom ...` commands run after the active turn ends.
+- [ ] Verify in the Visual Studio Experimental Instance that an inline `/review` followed by `/review --new-thread custom ...` starts the separate conversation in the same window.
+- [x] Release solution build passed with 0 warnings and 0 errors. Core tests passed 560 with 5 symbolic-link skips; UI tests passed 607 with 1 symbolic-link skip.
