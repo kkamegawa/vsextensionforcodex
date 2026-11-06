@@ -850,7 +850,7 @@ Tracking: [#195](https://github.com/kkamegawa/vsextensionforcodex/issues/195), [
 
 ### 2026-10-31: Codex App Server 0.166.0 compatibility
 
-Tracking: [#241](https://github.com/kkamegawa/vsextensionforcodex/issues/241). Task and acceptance evidence: [English](task-app-server-0-166.md) · [日本語](task-app-server-0-166_ja.md). Detailed implementation evidence: [English](implementation-app-server-0-166.md) · [日本語](implementation-app-server-0-166_ja.md). The issue checklist is complete. The separate Visual Studio screenshot acceptance remains pending because the Computer Use app-list request timed out on its permitted retries.
+Tracking: [#241](https://github.com/kkamegawa/vsextensionforcodex/issues/241). Task and acceptance evidence: [English](task-app-server-0-166.md) · [日本語](task-app-server-0-166_ja.md). Detailed implementation evidence: [English](implementation-app-server-0-166.md) · [日本語](implementation-app-server-0-166_ja.md). The issue checklist is complete. Maintainer visual acceptance is recorded in #242 and #244; the earlier Computer Use timeout means this entry does not claim a screenshot was captured in that session.
 
 ### 2026-10-14: Preserve ordinary Interrupt after Plan implementation and questions
 
