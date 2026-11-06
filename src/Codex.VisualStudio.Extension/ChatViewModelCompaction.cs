@@ -124,6 +124,18 @@ public sealed partial class ChatViewModel
 
     private string DescribeResumeFailure(Exception error)
     {
+        if (GetProviderErrorCode(error) is { } providerErrorCode)
+        {
+            string providerMessage = providerErrorCode switch
+            {
+                ProviderErrorCodes.ModelProviderMismatch => "The conversation's saved model uses a provider that does not match the current configuration.",
+                ProviderErrorCodes.ModelProviderNotConfigured => "The provider required by this conversation is not configured.",
+                _ => "The conversation's provider conflicts with the current policy.",
+            };
+            return markdown.ToSafeText(
+                $"{providerMessage} The transcript is opening read-only. You can still interrupt an active turn and use /goal pause or /goal clear.");
+        }
+
         string message = markdown.ToSafeText(error.Message).Trim();
         if (message.Length > 512)
         {
@@ -134,4 +146,9 @@ public sealed partial class ChatViewModel
             ? $"The conversation could not be resumed: {message} {CompressedHistoryResumeNote}"
             : $"The conversation could not be resumed: {message}";
     }
+
+    private static string? GetProviderErrorCode(Exception error)
+        => error is StreamJsonRpc.RemoteInvocationException { ErrorCode: WorkerErrorCodes.UpstreamOperationFailed } remote
+            ? ProviderErrorCodes.Normalize(remote.ErrorData?.ToString()?.Trim('"'))
+            : null;
 }

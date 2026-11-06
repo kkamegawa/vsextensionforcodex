@@ -88,6 +88,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
     private InterruptibilityDiagnostic? lastInterruptibilityDiagnostic;
     private WorkerStatus status = new() { State = WorkerConnectionState.Disconnected, Message = "Open Codex to connect." };
     private ThreadSummary? selectedThread;
+    private string? providerRejectedThreadId;
     private long selectedThreadGeneration;
     private string composerText = string.Empty;
     private string? nextCursor;
@@ -1776,6 +1777,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         }
 
         ClearLocalTurnTracking();
+        providerRejectedThreadId = null;
         OnPropertyChanged(nameof(SelectedThread));
         ThreadReadStateStatusText = string.Empty;
         NotifySelectedThreadReadStateChanged();
@@ -3372,14 +3374,27 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         }).ConfigureAwait(false);
         if (!joined && resumeRejection is not null)
         {
+            string? providerErrorCode = GetProviderErrorCode(resumeRejection);
+            string recoveryText = DescribeResumeFailure(resumeRejection);
             // The history row is kept and the resume is not retried automatically.
             await OnUiAsync(() =>
             {
                 if (IsCurrentOwner(owner))
                 {
-                    HistoryStatusText = DescribeResumeFailure(resumeRejection);
+                    if (providerErrorCode is not null
+                        && string.Equals(SelectedThread?.Id, thread.Id, StringComparison.Ordinal))
+                    {
+                        providerRejectedThreadId = thread.Id;
+                    }
+                    HistoryStatusText = recoveryText;
+                    NotifyInterruptibilityChanged();
+                    RaiseCommandStates();
                 }
             }).ConfigureAwait(false);
+            if (providerErrorCode is not null)
+            {
+                await ReadSelectedThreadHistoryAsync(thread, recoveryText).ConfigureAwait(false);
+            }
             return;
         }
 
@@ -3400,6 +3415,8 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             {
                 thread.EffectiveApprovalState = resumed.EffectiveApprovalState;
             }
+
+            providerRejectedThreadId = null;
 
             string? settingsNotice = null;
             if (resumed.HasAuthoritativeTurnSettings)
@@ -3434,7 +3451,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         await DrainSlashQueuesAsync(thread.Id).ConfigureAwait(false);
     }
 
-    private async Task ReadSelectedThreadHistoryAsync(ThreadSummary thread)
+    private async Task ReadSelectedThreadHistoryAsync(ThreadSummary thread, string? completionStatusText = null)
     {
         OwnerSnapshot owner = CaptureOwnerSnapshot();
         long selectionGeneration = Interlocked.Read(ref selectedThreadGeneration);
@@ -3495,7 +3512,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                     MergeHistoryItem(thread.Id, item, owner, prepend: false);
                 }
 
-                MergeThreadTurns(turns.Turns.Reverse(), prepend: false);
+                MergeThreadTurns(thread.Id, turns.Turns.Reverse(), owner, prepend: false);
 
                 foreach (ThreadAttachmentMetadata attachment in attachments)
                 {
@@ -3510,7 +3527,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                 isHistoryLoading = false;
                 HistoryStatusText = IsHistoryStale
                     ? "History synchronization was incomplete. Refresh to load a consistent transcript."
-                    : "Read-only history. Join explicitly before sending or controlling this conversation.";
+                    : completionStatusText ?? "Read-only history. Join explicitly before sending or controlling this conversation.";
                 RefreshAttachmentsCommand.RaiseCanExecuteChanged();
                 DrainPendingHistoryEvents(owner, thread.Id);
             }).ConfigureAwait(false);
@@ -3582,7 +3599,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                     MergeHistoryItem(thread.Id, item, owner, prepend: true);
                 }
 
-                MergeThreadTurns(turns?.Turns ?? Array.Empty<ThreadTurnSummary>(), prepend: true);
+                MergeThreadTurns(thread.Id, turns?.Turns ?? Array.Empty<ThreadTurnSummary>(), owner, prepend: true);
 
                 threadItemsCursor = page?.NextCursor is null ? null : new ThreadItemCursor { Kind = ThreadItemCursorKind.Opaque, Value = page.NextCursor };
                 threadTurnsCursor = turns?.NextCursor;
@@ -3671,12 +3688,13 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         }
 
         string type = historyItem.Type.ToLowerInvariant();
-        string role = type.Contains("user", StringComparison.Ordinal) ? "You"
+        string role = historyItem.ErrorReason is not null ? "Error"
+            : type.Contains("user", StringComparison.Ordinal) ? "You"
             : type.Contains("command", StringComparison.Ordinal) ? "Command"
             : type.Contains("reason", StringComparison.Ordinal) ? "Reasoning"
             : type.Contains("agent", StringComparison.Ordinal) || type.Contains("assistant", StringComparison.Ordinal) ? "Codex"
             : "History";
-        ConversationEventKind kind = role switch
+        ConversationEventKind kind = historyItem.ErrorReason is not null ? ConversationEventKind.Error : role switch
         {
             "You" => ConversationEventKind.ItemCompleted,
             "Command" => ConversationEventKind.CommandOutputDelta,
@@ -3995,7 +4013,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         Items.Clear();
     }
 
-    private void MergeThreadTurns(IEnumerable<ThreadTurnSummary> turns, bool prepend)
+    private void MergeThreadTurns(string threadId, IEnumerable<ThreadTurnSummary> turns, OwnerSnapshot owner, bool prepend)
     {
         var knownIds = ThreadTurns.Select(static turn => turn.Id).ToHashSet(StringComparer.Ordinal);
         foreach (ThreadTurnSummary turn in turns)
@@ -4010,8 +4028,47 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                 {
                     ThreadTurns.Add(turn);
                 }
+
+                // A turn's failure lives on the turn, not on an item, so replay adds its own row.
+                if (turn.ErrorText is not null)
+                {
+                    MergeHistoryItem(
+                        threadId,
+                        new ThreadHistoryItem
+                        {
+                            Id = TurnErrorItemId(turn.Id),
+                            TurnId = turn.Id,
+                            Type = "error",
+                            Text = turn.ErrorText,
+                            ErrorReason = turn.ErrorReason,
+                        },
+                        owner,
+                        prepend);
+                }
             }
         }
+    }
+
+    private static string TurnErrorItemId(string? turnId) => $"turn-error-{turnId}";
+
+    private void ShowTurnError(ConversationEvent value, WorkerNotification<ConversationEvent> notification)
+    {
+        string itemId = TurnErrorItemId(value.TurnId);
+        if (Items.Any(item => string.Equals(item.ItemId, itemId, StringComparison.Ordinal)))
+        {
+            return;
+        }
+
+        Items.Add(new ChatItemViewModel("Error", markdown.ToSafeText(value.Text ?? string.Empty).Trim(), ConversationEventKind.Error)
+        {
+            ItemId = itemId,
+            ThreadId = value.ThreadId,
+            TurnId = value.TurnId,
+            StatePartitionFingerprint = notification.StatePartitionFingerprint,
+            OwnerGeneration = notification.OwnerGeneration,
+            ConnectionGeneration = notification.ConnectionGeneration,
+        });
+        TrimHistoryWindow();
     }
 
     // Attachment refreshes are single-flight. A request that arrives while a scan runs is
@@ -6277,7 +6334,8 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             return false;
         }
 
-        if (SelectedThread is not null && !IsThreadJoined)
+        bool providerGoalRecoveryCommand = IsProviderGoalRecoveryCommand(invocation);
+        if (SelectedThread is not null && !IsThreadJoined && !providerGoalRecoveryCommand)
         {
             await ShowSlashFailureAsync("This conversation is read-only. Join it explicitly before running commands.").ConfigureAwait(false);
             return false;
@@ -6318,6 +6376,13 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             return false;
         }
 
+        if (providerGoalRecoveryCommand)
+        {
+            // Goal pause and clear do not send model input and remain available while a provider
+            // configuration error keeps the conversation in read-only history mode.
+            return await ExecuteSlashCommandAsync(invocation, targetThreadId, owner).ConfigureAwait(false);
+        }
+
         SlashCommandQueueDecision decision = slashCommandCoordinator.Schedule(
             invocation,
             targetThreadId,
@@ -6349,6 +6414,21 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             or SlashCommandId.Shell
             || (invocation.Definition.Id == SlashCommandId.Plan
                 && !string.IsNullOrWhiteSpace(invocation.Arguments));
+
+    private bool IsProviderGoalRecoveryCommand(SlashCommandInvocation invocation)
+        => IsProviderRejectedThread(SelectedThread?.Id)
+            && invocation.Definition.Id == SlashCommandId.Goal
+            && SlashCommandArgumentParser.TryParseGoal(invocation.Arguments, out GoalCommandArguments? arguments, out _)
+            && arguments?.Operation is GoalCommandOperation.Pause or GoalCommandOperation.Clear;
+
+    private bool IsProviderGoalRecoveryComposerText()
+        => IsProviderRejectedThread(SelectedThread?.Id)
+            && slashCommandParser.Parse(ComposerText) is { Kind: SlashCommandParseKind.Command, Invocation: { } invocation }
+            && IsProviderGoalRecoveryCommand(invocation);
+
+    private bool IsProviderRejectedThread(string? threadId)
+        => !string.IsNullOrWhiteSpace(threadId)
+            && string.Equals(providerRejectedThreadId, threadId, StringComparison.Ordinal);
 
     private static bool RequiresWorkerConnection(SlashCommandId commandId)
         => commandId is
@@ -8047,6 +8127,16 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                 return;
             }
 
+            if (value.Kind == ConversationEventKind.ThreadClosed)
+            {
+                IsThreadJoined = false;
+                providerRejectedThreadId = null;
+                HistoryStatusText = "The conversation was closed by the app-server and is available to join again.";
+                NotifyInterruptibilityChanged();
+                RaiseCommandStates();
+                return;
+            }
+
             if (isTurnCompleted)
             {
                 OnGoalConversationCompleted(value);
@@ -8069,6 +8159,14 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                 bufferedEventCount++;
                 bufferedEventBytes += eventBytes;
                 return;
+            }
+
+            // The error notification and turn/completed can report the same failure; one row shows it.
+            if (value.Kind is ConversationEventKind.Error or ConversationEventKind.TurnCompleted
+                && value.ErrorReason is not null
+                && !string.IsNullOrWhiteSpace(value.Text))
+            {
+                ShowTurnError(value, notification);
             }
 
             if (ApplyDailyUseEvent(value, notification))
@@ -9372,7 +9470,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             ? CanStopThreadGoal()
             : (!string.IsNullOrWhiteSpace(ComposerText) || (Status.TurnId is null && (HasPendingAttachments || HasPendingSkill)))
         && !IsRecovering
-        && (SelectedThread is null || IsThreadJoined)
+        && (SelectedThread is null || IsThreadJoined || IsProviderGoalRecoveryComposerText())
         && !HasComposerAdmissionReason
         && !(HasPendingSkill && (Status.State is WorkerConnectionState.Busy or WorkerConnectionState.WaitingForApproval))
         && (Status.State is WorkerConnectionState.Ready or WorkerConnectionState.Busy
@@ -9383,8 +9481,8 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
     {
         if (IsGoalPrimaryMode
             || IsRecovering
-            || !IsThreadJoined
             || SelectedThread is null
+            || (!IsThreadJoined && !IsProviderRejectedThread(SelectedThread.Id))
             || Status.State is not (WorkerConnectionState.Busy or WorkerConnectionState.WaitingForApproval)
             || string.IsNullOrWhiteSpace(Status.ThreadId)
             || string.IsNullOrWhiteSpace(Status.TurnId)
@@ -9393,7 +9491,10 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             return false;
         }
 
-        return IsStatusTurnLocallyStarted();
+        // A typed provider rejection prevents resume and keeps the selected transcript read-only.
+        // If the app-server still reports an active turn on that exact thread, Interrupt remains
+        // available as the recovery action even though this view did not start the turn.
+        return IsProviderRejectedThread(SelectedThread.Id) || IsStatusTurnLocallyStarted();
     }
 
     private void RaiseCommandStates()

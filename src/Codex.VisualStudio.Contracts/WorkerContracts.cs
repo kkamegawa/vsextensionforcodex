@@ -5,7 +5,7 @@ namespace Codex.VisualStudio.Contracts;
 
 public static class ContractVersions
 {
-    public const int Current = 26;
+    public const int Current = 27;
 }
 
 public enum GoalStopStepOutcome
@@ -46,6 +46,23 @@ public enum ThreadItemCursorKind
 {
     Opaque,
     ExclusiveItem,
+}
+
+// The app-server's ModelProviderError types. The Worker sends one as the error data of a rejected
+// resume, because a plain string survives the StreamJsonRpc formatter on both ends.
+public static class ProviderErrorCodes
+{
+    public const string ModelProviderMismatch = "modelProviderMismatch";
+
+    public const string ModelProviderNotConfigured = "modelProviderNotConfigured";
+
+    public const string ModelProviderPolicyConflict = "modelProviderPolicyConflict";
+
+    public static string? Normalize(string? value) => value switch
+    {
+        ModelProviderMismatch or ModelProviderNotConfigured or ModelProviderPolicyConflict => value,
+        _ => null,
+    };
 }
 
 // JSON-RPC error codes the Worker uses for failures the Extension presents specifically. They
@@ -104,6 +121,7 @@ public enum ConversationEventKind
     TurnCompleted,
     Error,
     Unknown,
+    ThreadClosed,
 }
 
 public enum ApprovalRiskCategory
@@ -148,10 +166,10 @@ public enum ReviewTargetKind
     Custom,
 }
 
-public enum ReviewDelivery
+public enum ReviewPlacement
 {
-    Inline,
-    Detached,
+    CurrentThread,
+    NewThread,
 }
 
 public enum ThreadGoalStatus
@@ -554,6 +572,12 @@ public sealed class ThreadTurnSummary
 
     [DataMember]
     public long? CompletedAt { get; set; }
+
+    [DataMember]
+    public string? ErrorReason { get; set; }
+
+    [DataMember]
+    public string? ErrorText { get; set; }
 }
 
 [DataContract]
@@ -592,6 +616,9 @@ public sealed class ThreadHistoryItem
 
     [DataMember]
     public long? CompletedAtMs { get; set; }
+
+    [DataMember]
+    public string? ErrorReason { get; set; }
 }
 
 [DataContract]
@@ -906,7 +933,7 @@ public sealed class StartReviewRequest : OwnerScopedRequest
 
     public ReviewTarget Target { get; set; } = new();
 
-    public ReviewDelivery Delivery { get; set; } = ReviewDelivery.Inline;
+    public ReviewPlacement Placement { get; set; } = ReviewPlacement.CurrentThread;
 }
 
 public sealed class StartReviewResult : AppServerOperationResult
@@ -1276,6 +1303,10 @@ public sealed class ConversationEvent
     public string? OverflowFile { get; set; }
 
     public string? ErrorReason { get; set; }
+
+    public long? StartedAtMs { get; set; }
+
+    public long? CompletedAtMs { get; set; }
 
     public TurnPlanSnapshot? Plan { get; set; }
 

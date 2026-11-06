@@ -628,3 +628,7 @@ Implementation and verification: [English](implementation-app-server-0-163.md) �
 ## Codex App Server 0.164.0
 
 Implementation and verification: [English](implementation-app-server-0-164.md) · [日本語](implementation-app-server-0-164_ja.md). Contract, build, test, VSIX, and real CLI checks for 0.161.0 through 0.164.0 passed. The 2026-10-31 local diagnostics and preset checks passed; the maintainer accepted the remaining Experimental Instance visual criteria after the 300px header fix.
+
+## Codex App Server 0.166.0
+
+Implementation and verification: [English](implementation-app-server-0-166.md) · [日本語](implementation-app-server-0-166_ja.md). See the task record for the completed #241 checklist. Debug and Release builds and test suites passed; pinned complete-package CLI, schema, unload/resume, and Release VSIX checks passed. Live Visual Studio screenshot acceptance could not be completed in this session.

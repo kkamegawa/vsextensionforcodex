@@ -1157,8 +1157,17 @@ public sealed partial class CodexSessionService
 
     internal static string? ReadTurnErrorReason(JsonElement parameters)
     {
-        if (parameters.ValueKind != JsonValueKind.Object
-            || !parameters.TryGetProperty("error", out JsonElement error)
+        if (parameters.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+
+        // turn/completed nests the error in its turn; the error notification and a history turn
+        // carry it directly.
+        JsonElement container = parameters.TryGetProperty("turn", out JsonElement turn) && turn.ValueKind == JsonValueKind.Object
+            ? turn
+            : parameters;
+        if (!container.TryGetProperty("error", out JsonElement error)
             || error.ValueKind != JsonValueKind.Object
             || !error.TryGetProperty("codexErrorInfo", out JsonElement info))
         {
@@ -1171,8 +1180,22 @@ public sealed partial class CodexSessionService
             JsonValueKind.Object => info.EnumerateObject().Select(static property => property.Name).FirstOrDefault(),
             _ => null,
         };
-        return code is "flexUnavailable" or "tooManyDenials" ? code : null;
+        return code?.ToLowerInvariant() switch
+        {
+            "flexunavailable" => "flexUnavailable",
+            "toomanydenials" => "tooManyDenials",
+            "policycapacityunavailable" => "policyCapacityUnavailable",
+            _ => null,
+        };
     }
+
+    internal static string? DescribeTurnErrorReason(string? reason) => reason switch
+    {
+        "flexUnavailable" => "The selected model's Flex service is currently unavailable. No retry was started.",
+        "tooManyDenials" => "The request was stopped after too many denials. No retry was started.",
+        "policyCapacityUnavailable" => "Policy-restricted model capacity is temporarily unavailable. Try again later.",
+        _ => null,
+    };
 
     private static string PlanDeltaBufferKey(string threadId, string turnId, string itemId)
         => $"plan-delta:{threadId}:{turnId}:{itemId}";

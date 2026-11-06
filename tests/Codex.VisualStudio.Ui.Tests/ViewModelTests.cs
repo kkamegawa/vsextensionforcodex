@@ -6070,6 +6070,120 @@ public sealed partial class ViewModelTests
     }
 
     [TestMethod]
+    public async Task ChatViewModel_ProviderResumeRejectionLoadsHistoryAndKeepsRecoveryControlsAvailable()
+    {
+        const string threadId = "thread-provider";
+        var bridge = new FakeWorkerBridge
+        {
+            ResumeThreadHandler = (_, _) => Task.FromException<ThreadSummary>(
+                new StreamJsonRpc.RemoteInvocationException(
+                    "provider rejected this conversation",
+                    WorkerErrorCodes.UpstreamOperationFailed,
+                    ProviderErrorCodes.ModelProviderNotConfigured)),
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false)
+        {
+            SelectedThread = new ThreadSummary { Id = threadId },
+        };
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready, ThreadId = threadId });
+        int historyReadsBeforeJoin = bridge.ReadThreadCallCount;
+
+        await RunCommandAsync(vm.JoinThreadCommand);
+
+        Assert.IsTrue(vm.IsHistoryOnly);
+        Assert.IsTrue(bridge.ReadThreadCallCount > historyReadsBeforeJoin, "Provider rejection should open the transcript through thread/read.");
+        StringAssert.Contains(vm.HistoryStatusText, "not configured");
+        StringAssert.Contains(vm.HistoryStatusText, "/goal pause");
+
+        await bridge.PublishStateAsync(new WorkerStatus
+        {
+            State = WorkerConnectionState.Busy,
+            ThreadId = threadId,
+            TurnId = "turn-provider",
+        });
+        await bridge.PublishConversationEventAsync(new ConversationEvent
+        {
+            Kind = ConversationEventKind.TurnStarted,
+            ThreadId = threadId,
+            TurnId = "turn-provider",
+        });
+        Assert.IsTrue(vm.InterruptCommand.CanExecute, "An active provider-rejected turn remains interruptible.");
+
+        bridge.CurrentThreadGoal = new ThreadGoalInfo
+        {
+            ThreadId = threadId,
+            Objective = "Recover provider configuration",
+            Status = ThreadGoalStatus.Active,
+        };
+        vm.ComposerText = "ordinary prompt";
+        Assert.IsFalse(vm.SendCommand.CanExecute, "Model input stays blocked in read-only history.");
+
+        vm.ComposerText = "/goal pause";
+        Assert.IsTrue(vm.SendCommand.CanExecute, "Goal pause stays reachable from the composer.");
+        await RunCommandAsync(vm.SendCommand);
+        Assert.AreEqual(ThreadGoalStatus.Paused, bridge.CurrentThreadGoal?.Status);
+
+        vm.ComposerText = "/goal clear";
+        Assert.IsTrue(vm.SendCommand.CanExecute, "Goal clear stays reachable from the composer.");
+        await RunCommandAsync(vm.SendCommand);
+        Assert.IsNull(bridge.CurrentThreadGoal);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_TurnErrorReasonShowsOneRowForLiveEventsAndReplay()
+    {
+        const string threadId = "thread-capacity";
+        const string errorText = "Policy-restricted model capacity is temporarily unavailable. Try again later.";
+        var bridge = new FakeWorkerBridge();
+        using var vm = new ChatViewModel(bridge, autoConnect: false)
+        {
+            SelectedThread = new ThreadSummary { Id = threadId },
+        };
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready, ThreadId = threadId });
+        await RunCommandAsync(vm.JoinThreadCommand);
+
+        foreach (ConversationEventKind kind in new[] { ConversationEventKind.Error, ConversationEventKind.TurnCompleted })
+        {
+            await bridge.PublishConversationEventAsync(new ConversationEvent
+            {
+                Kind = kind,
+                ThreadId = threadId,
+                TurnId = "turn-capacity",
+                ErrorReason = "policyCapacityUnavailable",
+                Text = errorText,
+            });
+        }
+
+        Assert.AreEqual(1, vm.Items.Count(item => item.Kind == ConversationEventKind.Error && item.Text == errorText));
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_ThreadClosedMakesJoinedConversationExplicitlyResumable()
+    {
+        const string threadId = "thread-unloaded";
+        var bridge = new FakeWorkerBridge();
+        using var vm = new ChatViewModel(bridge, autoConnect: false)
+        {
+            SelectedThread = new ThreadSummary { Id = threadId },
+        };
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready, ThreadId = threadId });
+        await RunCommandAsync(vm.JoinThreadCommand);
+        Assert.IsFalse(vm.IsHistoryOnly);
+
+        await bridge.PublishConversationEventAsync(new ConversationEvent
+        {
+            Kind = ConversationEventKind.ThreadClosed,
+            ThreadId = threadId,
+        });
+
+        Assert.IsTrue(vm.IsHistoryOnly);
+        StringAssert.Contains(vm.HistoryStatusText, "available to join again");
+        await RunCommandAsync(vm.JoinThreadCommand);
+        Assert.AreEqual(threadId, bridge.LastResumedThreadId);
+        Assert.IsFalse(vm.IsHistoryOnly);
+    }
+
+    [TestMethod]
     public async Task ChatViewModel_ModelCommandMatchesCatalogCaseInsensitively()
     {
         var bridge = new FakeWorkerBridge();

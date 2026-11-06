@@ -12,11 +12,13 @@ public sealed class SecurityServicesTests
     {
         var redactor = new SecretRedactor();
 
-        string result = redactor.Redact("Authorization: Bearer abc123 token=secret password:hunter2 normal=value");
+        string result = redactor.Redact("Authorization: Bearer abc123 token=secret password:hunter2 sk-proj-test-secret-value ghp_123456789012345678901234567890 normal=value");
 
         Assert.IsFalse(result.Contains("abc123", StringComparison.Ordinal));
         Assert.IsFalse(result.Contains("secret", StringComparison.Ordinal));
         Assert.IsFalse(result.Contains("hunter2", StringComparison.Ordinal));
+        Assert.IsFalse(result.Contains("sk-proj-test-secret-value", StringComparison.Ordinal));
+        Assert.IsFalse(result.Contains("ghp_123456789012345678901234567890", StringComparison.Ordinal));
         Assert.IsTrue(result.Contains("normal=value", StringComparison.Ordinal));
     }
 
