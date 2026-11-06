@@ -650,7 +650,7 @@ object CancelAccountSessionLogin(JsonElement parameters)
     string loginId = parameters.GetProperty("loginId").GetString() ?? string.Empty;
     bool canceled = workspaceLoginPending && string.Equals(loginId, "fake-workspace-login", StringComparison.Ordinal);
     workspaceLoginPending = false;
-    return new { outcome = canceled ? "canceled" : "unknown" };
+    return new { status = canceled ? "canceled" : "notFound" };
 }
 
 object ReadAccount()

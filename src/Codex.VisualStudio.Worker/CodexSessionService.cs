@@ -2331,7 +2331,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             return new ForkThreadResult
             {
                 IsSupported = false,
-                UnavailableReason = "Linked conversations require a local 0.166 or later App Server with Experimental API enabled.",
+                UnavailableReason = "Linked conversations require a 0.166 or later App Server with Experimental API enabled.",
             };
         }
 
@@ -5194,6 +5194,10 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
                 };
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (JsonRpcConnectionClosedException) when (!IsCurrent(context))
         {
             throw;
         }

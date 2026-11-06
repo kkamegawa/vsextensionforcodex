@@ -7,7 +7,7 @@ public sealed partial class WorkerRpcService
     public Task<ThreadMemoryResult> GetThreadMemoryAsync(
         GetThreadMemoryRequest request,
         CancellationToken cancellationToken)
-        => ExecuteOwnerScopedAsync(
+        => ExecuteOwnerScopedGenerationAsync(
             request,
             () => session.ReadThreadMemoryAsync(request.ThreadId, cancellationToken),
             cancellationToken);

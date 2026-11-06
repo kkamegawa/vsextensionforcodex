@@ -205,7 +205,7 @@ public sealed class FakeAppServerIntegrationTests
         Assert.AreEqual(Uri.UriSchemeHttps, authUrl!.Scheme);
         await sso.SendAsync(new { id = 3, method = "account/login/cancel", @params = new { loginId = "fake-workspace-login" } });
         using JsonDocument canceled = await ReadResponseAsync(sso, 3);
-        Assert.AreEqual("canceled", canceled.RootElement.GetProperty("result").GetProperty("outcome").GetString());
+        Assert.AreEqual("canceled", canceled.RootElement.GetProperty("result").GetProperty("status").GetString());
 
         await using FakeAppServerProcess unknown = await FakeAppServerProcess.StartAsync("Current01660,Issue243UnknownSwitch");
         await InitializeFakeAsync(unknown, 1, experimental: true);
