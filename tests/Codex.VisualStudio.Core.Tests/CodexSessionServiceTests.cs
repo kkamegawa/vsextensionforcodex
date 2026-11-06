@@ -1014,6 +1014,7 @@ public sealed partial class CodexSessionServiceTests
         Directory.CreateDirectory(root);
         string localFile = Path.Combine(root, "history.txt");
         await File.WriteAllTextAsync(localFile, "history");
+        const string artifactCredential = "sk-abcdefghijklmnopqrstuvwxyz0123456789";
         var connection = new RecordingConnection
         {
             Handler = (method, _) => method == "thread/items/list"
@@ -1027,7 +1028,7 @@ public sealed partial class CodexSessionServiceTests
                             item = new
                             {
                                 id = "file-change-1", type = "fileChange", status = "completed",
-                                changes = new[] { new { path = localFile, diff = "+history", kind = new { type = "update", move_path = (string?)null } } },
+                                changes = new[] { new { path = localFile, diff = "+history", kind = new { type = artifactCredential, move_path = (string?)null } } },
                             },
                         },
                         new
@@ -1147,7 +1148,10 @@ public sealed partial class CodexSessionServiceTests
 
         ThreadHistoryItem fileItem = page.Items.Single(item => item.Type == "fileChange");
         Assert.IsNotNull(fileItem.Parts.Single().ActionId);
-        Assert.IsFalse(JsonSerializer.Serialize(fileItem).Contains(localFile, StringComparison.Ordinal));
+        string serializedFileItem = JsonSerializer.Serialize(fileItem);
+        Assert.IsFalse(serializedFileItem.Contains(localFile, StringComparison.Ordinal));
+        Assert.IsFalse(serializedFileItem.Contains(artifactCredential, StringComparison.Ordinal));
+        StringAssert.Contains(serializedFileItem, "[REDACTED]");
         ThreadHistoryItem userMessageItem = page.Items.Single(item => item.Id == "user-message-1");
         Assert.AreEqual("ユーザーからの依頼: 旧形式の入力テキスト", userMessageItem.Text);
         Assert.AreEqual(userMessageItem.Text, userMessageItem.Parts.Single(part => part.Kind == ArtifactPartKind.Text).Text);
