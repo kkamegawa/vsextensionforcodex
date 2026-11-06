@@ -292,16 +292,33 @@ internal static class ConversationTextFormatter
             }
 
             text.Append(" ---\r\n");
-            string body = markdown.ToSafeText(item.Text ?? string.Empty).Trim();
-            if (body.Length > 0)
-            {
-                text.Append(body).Append("\r\n");
-            }
+            // History text has already passed through ISecretRedactor in the worker. Keep it
+            // as plain text here: Markdown parsing changes literal command and code characters.
+            text.Append(item.Text ?? string.Empty).Append("\r\n");
 
-            foreach (ArtifactPart part in item.Parts.Where(part => part.Kind != ArtifactPartKind.Text))
+            foreach (ArtifactPart part in item.Parts)
             {
+                if (part.Kind == ArtifactPartKind.Text)
+                {
+                    // MCP history can expose content only through ordered text parts. When the
+                    // item already has that same body, avoid writing its projected copy twice.
+                    if (!string.IsNullOrEmpty(part.Text)
+                        && !string.Equals(item.Text, part.Text, StringComparison.Ordinal))
+                    {
+                        text.Append(part.Text).Append("\r\n");
+                    }
+
+                    continue;
+                }
+
                 string name = markdown.ToSafeText(part.DisplayName ?? string.Empty).Trim();
                 text.Append(FormattableString.Invariant($"[{part.Kind}{(name.Length > 0 ? ": " : string.Empty)}{name}]")).Append("\r\n");
+                if (!string.IsNullOrEmpty(part.Text))
+                {
+                    // Artifact text is also redacted by the worker. It is explanatory plain
+                    // text (including fallback reasons), so do not run it through Markdown.
+                    text.Append(part.Text).Append("\r\n");
+                }
             }
         }
 

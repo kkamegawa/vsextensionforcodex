@@ -74,6 +74,13 @@ Tracking: [#242](https://github.com/kkamegawa/vsextensionforcodex/issues/242). T
 - [x] Skip redirected conversation-text roots and owner directories during automatic cleanup. Cover junctions with a stale external file in the regression test.
 - [x] Verify the scope ComboBox in the Visual Studio Experimental Instance; the maintainer confirmed it opens and selects without closing the history flyout in PR #248.
 
+### Issue #250: conversation text fidelity
+
+- Preserve literal history text and display explanatory fallback and MCP text in the snapshot.
+- Avoid matching a credential key within an ordinary identifier while retaining credential redaction.
+- Release build passed with zero warnings and errors. Core tests passed 555 with 5 symbolic-link skips. UI tests passed 606 with 1 symbolic-link skip.
+- The maintainer confirmed a real long-history snapshot in the Visual Studio Experimental Instance. The submitted text preserved the reported code and command characters. After the fix, the maintainer checked accessible histories and found no empty Reasoning entries; the original cause remains undetermined.
+
 ## Stage 3: experimental features
 
 Tracking: [#243](https://github.com/kkamegawa/vsextensionforcodex/issues/243). This stage stays open until the items under Not yet verified are done.

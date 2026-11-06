@@ -303,6 +303,11 @@ public sealed partial class CodexSessionServiceTests
                             completedAtMs = 41L,
                             item = new { id = "item-2", type = "agentMessage", text = "entry timestamp fallback" },
                         },
+                        new
+                        {
+                            turnId = "turn-1",
+                            item = new { id = "item-3", type = "futureItem" },
+                        },
                     },
                     nextCursor = "item-cursor",
                 }),
@@ -334,6 +339,9 @@ public sealed partial class CodexSessionServiceTests
         Assert.AreEqual(13L, items.Items[0].CompletedAtMs);
         Assert.AreEqual(31L, items.Items[1].StartedAtMs);
         Assert.AreEqual(41L, items.Items[1].CompletedAtMs);
+        Assert.IsNull(items.Items[2].Text);
+        Assert.AreEqual(ArtifactPartKind.Fallback, items.Items[2].Parts.Single().Kind);
+        StringAssert.Contains(items.Items[2].Parts.Single().Text, "futureItem");
         Assert.AreEqual("item-cursor", items.NextCursor);
         Assert.AreEqual(2, attachments.Attachments.Count);
         Assert.IsNotNull(attachments.Attachments[0].UnavailableReason);
@@ -1006,6 +1014,7 @@ public sealed partial class CodexSessionServiceTests
         Directory.CreateDirectory(root);
         string localFile = Path.Combine(root, "history.txt");
         await File.WriteAllTextAsync(localFile, "history");
+        const string artifactCredential = "sk-abcdefghijklmnopqrstuvwxyz0123456789";
         var connection = new RecordingConnection
         {
             Handler = (method, _) => method == "thread/items/list"
@@ -1019,7 +1028,7 @@ public sealed partial class CodexSessionServiceTests
                             item = new
                             {
                                 id = "file-change-1", type = "fileChange", status = "completed",
-                                changes = new[] { new { path = localFile, diff = "+history", kind = new { type = "update", move_path = (string?)null } } },
+                                changes = new[] { new { path = localFile, diff = "+history", kind = new { type = artifactCredential, move_path = (string?)null } } },
                             },
                         },
                         new
@@ -1139,7 +1148,10 @@ public sealed partial class CodexSessionServiceTests
 
         ThreadHistoryItem fileItem = page.Items.Single(item => item.Type == "fileChange");
         Assert.IsNotNull(fileItem.Parts.Single().ActionId);
-        Assert.IsFalse(JsonSerializer.Serialize(fileItem).Contains(localFile, StringComparison.Ordinal));
+        string serializedFileItem = JsonSerializer.Serialize(fileItem);
+        Assert.IsFalse(serializedFileItem.Contains(localFile, StringComparison.Ordinal));
+        Assert.IsFalse(serializedFileItem.Contains(artifactCredential, StringComparison.Ordinal));
+        StringAssert.Contains(serializedFileItem, "[REDACTED]");
         ThreadHistoryItem userMessageItem = page.Items.Single(item => item.Id == "user-message-1");
         Assert.AreEqual("ユーザーからの依頼: 旧形式の入力テキスト", userMessageItem.Text);
         Assert.AreEqual(userMessageItem.Text, userMessageItem.Parts.Single(part => part.Kind == ArtifactPartKind.Text).Text);

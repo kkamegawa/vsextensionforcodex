@@ -6215,6 +6215,11 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
 
     private static string? ReadHistoryText(JsonElement item, string itemType)
     {
+        if (itemType is not ("agentMessage" or "plan" or "reasoning" or "commandExecution" or "userMessage"))
+        {
+            return null;
+        }
+
         var text = new StringBuilder();
         if (itemType is "agentMessage" or "plan" && GetString(item, "text") is { } agentText)
         {

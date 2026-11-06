@@ -118,7 +118,7 @@ public sealed partial class SecretRedactor : ISecretRedactor
     [GeneratedRegex(@"(?i)(authorization\s*:\s*(?:bearer|basic)\s+)[^\s]+")]
     private static partial Regex AuthorizationRegex();
 
-    [GeneratedRegex(@"(?i)((?:api[_-]?key|token|password|client[_-]?secret|access[_-]?token)\s*[=:]\s*)[^\s;,""]+")]
+    [GeneratedRegex(@"(?i)(?<![\p{L}\p{N}_])((?:api[_-]?key|token|password|client[_-]?secret|access[_-]?token)(?![\p{L}\p{N}_])\s*[=:]\s*)[^\s;,""]+")]
     private static partial Regex KeyValueSecretRegex();
 
     [GeneratedRegex(@"(?i)\b(?:sk-[a-z0-9_-]{16,}|gh[pousr]_[a-z0-9]{20,})\b")]

@@ -830,13 +830,13 @@ public sealed partial class CodexSessionService
                 {
                     string? path = GetString(change, "path");
                     string? changeKind = change.TryGetProperty("kind", out JsonElement kind)
-                        ? GetString(kind, "type")
+                        ? GetBoundedString(kind, "type", 128)
                         : null;
                     var filePart = new ArtifactPart
                     {
                         Kind = ArtifactPartKind.File,
                         DisplayName = path is null ? "Changed file" : redactor.Redact(GetServerPathDisplayName(path)),
-                        Text = changeKind is null ? "File change" : $"File {changeKind}.",
+                        Text = changeKind is null ? "File change" : BoundAndRedact($"File {changeKind}.", 256),
                     };
                     if (changeKind is not "delete" && path is not null)
                     {

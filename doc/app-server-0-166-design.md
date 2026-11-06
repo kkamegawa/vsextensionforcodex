@@ -137,7 +137,7 @@ Open conversation text shows the conversation in a read-only Visual Studio edito
 - **Snapshot:** paging reads the whole history into a fixed snapshot, with progress and cancellation. A failure opens nothing incomplete, and the content does not update live.
 - **Refresh:** each refresh is a separate snapshot file.
 - **Linked forks:** a child contains only the child's history.
-- **Content:** generated from sanitized display text with secrets removed. Images and similar items appear as descriptions.
+- **Content:** generate plain text from the history item source, with secrets removed by `ISecretRedactor`. Preserve literal command text, command output, and code, including Markdown and HTML syntax. Keep agent and public reasoning text when supplied. Images and similar items appear as descriptions. Credential key detection respects identifier boundaries so ordinary identifiers remain intact.
 - **Storage:** reuses the `ArtifactPreviewCache` owner separation, in a location only the current user can read. The file name never contains the conversation title, and `CustomDocumentWindowCaption` provides the tab name.
 - **Read-only:** uses `IsUserReadonly`.
 - **Cleanup:** `SubscribeAsync` and `ClosedAsync` remove a closed file. Startup removes unused files older than 24 hours.
@@ -223,6 +223,8 @@ Each stage can be released on its own.
 | 4. Integration and records | Per-stage real CLI and UI acceptance, VSIX inspection, design, implementation, and task records | [#244](https://github.com/kkamegawa/vsextensionforcodex/issues/244) |
 
 ## 9. Verification and completion
+
+The checks below are subject to [ADR-021](adr/ADR-021-validation-policy.md): unavailable enterprise environments and real workspace switching are unverified, experimental features receive minimal testing, and symbolic-link cases are outside the 0.166 release verification scope. Record skipped and unperformed checks accurately.
 
 - **Contract:** all six versions on both surfaces, version boundaries and prereleases, no experimental request while disabled, and fork rejection for unsupported storage.
 - **Review:** separate-conversation review on every supported version, inherited settings without wider permissions, stopping when a setting cannot be inherited, failure after creation, disconnect and unknown outcome, duplicate prevention, the original conversation staying selected on failure, and the history list appearance.
