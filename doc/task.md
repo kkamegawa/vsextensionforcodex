@@ -942,12 +942,12 @@ Tracking: [#240](https://github.com/kkamegawa/vsextensionforcodex/issues/240) wi
 
 ### 2026-11-01: Codex App Server 0.166.0 stable features
 
-Tracking: [#242](https://github.com/kkamegawa/vsextensionforcodex/issues/242). All seven tasks are implemented and pass automated tests, but the stage stays open. Task and acceptance evidence: [English](task-app-server-0-166.md) · [日本語](task-app-server-0-166_ja.md). Implementation record: [English](implementation-app-server-0-166.md) · [日本語](implementation-app-server-0-166_ja.md).
+Tracking: [#242](https://github.com/kkamegawa/vsextensionforcodex/issues/242). All seven tasks and maintainer acceptance are complete. Task and acceptance evidence: [English](task-app-server-0-166.md) · [日本語](task-app-server-0-166_ja.md). Implementation record: [English](implementation-app-server-0-166.md) · [日本語](implementation-app-server-0-166_ja.md). Detailed runtime combinations accepted as untested are listed under ADR-021.
 
-- [x] Commit `b3b23e4` passed Debug and Release builds with zero warnings and errors, the Release VSIX inspection, and contract validation. Each configuration had 553 passing Core tests and 602 passing UI tests, with no failures. Five Core and one UI symbolic-link cases were skipped because Windows denied link creation. The strict release gate remains blocked.
+- [x] Commit `b3b23e4` passed Debug and Release builds with zero warnings and errors, the Release VSIX inspection, and contract validation. Each configuration had 553 passing Core tests and 602 passing UI tests, with no failures. Five Core and one UI symbolic-link cases were skipped because Windows denied link creation; ADR-021 excludes these cases from 0.166 release verification, so the skips do not block acceptance.
 - [x] `verify-contract-surface.ps1` passed for all six supported versions on both surfaces with `account/usage/read` in the method tables. The Worker only requests per-conversation USD on 0.166.0 or later.
 - [x] Real CLI checks covered the 0.161.0 review start and history row, and the 0.166.0 schema, completed reviews, and `codex doctor` run. The isolated 0.166.0 Responses request used the configured `review_model`, or the conversation model when omitted.
-- [ ] Experimental Instance acceptance remains open for the conversation text editor tab, history scope ComboBox, and restoration of a saved non-empty Reasoning summary. PR #248 records maintainer confirmation of `/doctor`, conversation search, Plan selection and copy, and High Contrast and Narrator.
+- [x] Experimental Instance acceptance for the conversation text editor tab, history scope ComboBox, and restoration of a saved non-empty Reasoning summary is recorded in Issue #242 and PR #248. The maintainer supplied a restored conversation with a non-empty saved summary; the editor and scope checks were also accepted.
 
 ### 2026-11-04: Conversation text fidelity
 
@@ -955,7 +955,7 @@ Tracking: [#250](https://github.com/kkamegawa/vsextensionforcodex/issues/250). S
 
 ### 2026-11-04: Validation policy
 
-Tracking: [#240](https://github.com/kkamegawa/vsextensionforcodex/issues/240) and [#244](https://github.com/kkamegawa/vsextensionforcodex/issues/244). Added [ADR-021](adr/ADR-021-validation-policy.md) and README limitations in English and Japanese. Enterprise and workspace-switching environments are unverified; experimental features receive minimal testing. Symbolic-link cases are excluded from 0.166 release verification and remain recorded as skips. The maintainer confirmed an Experimental Instance check; this does not establish that every individual UI scenario was tested. Issue #250's unresolved empty-content behavior is deferred until it recurs.
+Tracking: [#240](https://github.com/kkamegawa/vsextensionforcodex/issues/240) and [#244](https://github.com/kkamegawa/vsextensionforcodex/issues/244). Added [ADR-021](adr/ADR-021-validation-policy.md) and README limitations in English and Japanese. Enterprise and workspace-switching environments are unverified; experimental features receive minimal testing. Symbolic-link cases are excluded from 0.166 release verification and remain recorded as skips. On 2026-11-06 the maintainer accepted the listed fine-grained runtime combinations without additional manual testing; they remain functional expectations and are reproduced if an issue is reported or encountered. Existing 60-second idle close/resume evidence is retained in #241. Issue #250's unresolved empty-content behavior is deferred until it recurs.
 
 Validation: reviewed the bilingual policy text, links, and document-only diff. No new runtime tests were run.
 
