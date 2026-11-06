@@ -13,15 +13,15 @@
 - [x] contract / 互換性テスト、Debug / Release の Core・UI テスト、警告・エラー 0 件の Debug / Release ビルド、Release VSIX 検査に成功。
 - [x] 0.166.0、0.165.0、および古い回帰対象バージョンで実 CLI の `initialize` に成功。
 
-## 保留中のメンテナー受け入れ確認
+## Visual Studio の受け入れ確認
 
-- [ ] Visual Studio Experimental Instance で変更後の画面を表示してスクリーンショットを確認する。Computer Use のアプリ一覧取得が許可された再試行でもタイムアウトし、このセッションではスクリーンショットを得られなかった。自動 UI テストは成功したが、実画面の確認の代わりにはならない。
+- [x] メンテナーが [Issue #242](https://github.com/kkamegawa/vsextensionforcodex/issues/242) と [Issue #244](https://github.com/kkamegawa/vsextensionforcodex/issues/244) に記録された Visual Studio Experimental Instance の受け入れを確認済みです。以前の Computer Use はタイムアウトし、この記録更新でも新しいスクリーンショットは撮影していません。
 
 証跡: `D:\temp\issue241-verify-2\`。
 
 ## Stage 2: 安定機能
 
-追跡 Issue: [#242](https://github.com/kkamegawa/vsextensionforcodex/issues/242)。「未確認」の項目が完了するまで、この Stage は完了扱いにしません。
+追跡 Issue: [#242](https://github.com/kkamegawa/vsextensionforcodex/issues/242)。Stage 2 の受け入れは完了です。ADR-021に基づき追加テストなしで受け入れた細かな実行状態と、検証済みの動作を以下で区別します。
 
 ### 実装済み(自動テスト成功)
 
@@ -41,7 +41,7 @@
 - [x] `thread/start` と `turn/start` 中の標準エラーによる所有世代失効を再現。修正前は両方の回帰ケースで `StaleGeneration` が発生した。任意の MCP 通信エラーや WebSocket フォールバックの診断情報では接続復旧を開始せず、秘密情報を除去した標準エラーを診断ログに残す。
 - [x] 標準エラー・HTTP HTML の生データを会話へ出さず、秘密情報と HTML を除去した 2,048 文字以内の診断ログと、最大 1 件の短いネットワーク・MCP 案内を残す。修正前は 3 件の送信ケースで生データと案内が重複し、修正後は合格。独立した差分レビューで対象範囲に残る要修正事項なし。
 - [x] 実行中の 0.166 ターンと Plan モードの送信・完了経路をレビュー。20:07:45 にターン完了と Ready 復帰を確認し、ライセンス確認はモデルの最終回答であり拡張機能の完了処理の不具合ではない。Plan モードは読み取り専用のまま維持。
-- [x] Stage 2 のレビュー修正コミット `b3b23e4` を検証。Debug・Release のビルドは警告・エラー 0 件。各構成の Core は 553 件合格・5 件スキップ、UI は 602 件合格・1 件スキップで、失敗は 0 件。Release の VSIX 内容検査に合格。Windows アカウントにシンボリックリンク作成権限がなく、必須 6 件が未実行のためリリース判定は保留。証跡は `app-server-0166-acceptance-evidence/release-validation.json`。
+- [x] Stage 2 のレビュー修正コミット `b3b23e4` を検証。Debug・Release のビルドは警告・エラー 0 件。各構成の Core は 553 件合格・5 件スキップ、UI は 602 件合格・1 件スキップで、失敗は 0 件。Release の VSIX 内容検査に合格。Windows アカウントにシンボリックリンク作成権限がなく、必須 6 件が未実行のためシンボリックリンクのケースは ADR-021 により 0.166 のリリース検証対象外です。環境依存の6件のスキップは記録に残し、受け入れを妨げません。証跡は `app-server-0166-acceptance-evidence/release-validation.json`。
 
 ### 実 CLI の確認
 
@@ -74,6 +74,13 @@
 - [x] 会話テキストの自動削除では、リダイレクトされた保存先ルートとオーナーフォルダーを対象から外す。外部の古いファイルを含む junction で回帰を検証。
 - [x] 履歴スコープの ComboBox は、開いている履歴ポップアップを維持したまま開いて選択できることを PR #248 で管理者が確認。
 
+### テストなしで受け入れた実行状態のシナリオ
+
+- 会話中の reasoning effort 変更、および resume / fork 後の承認設定は、個別の手動テストを必須にしません。追加テストなしで受け入れ、Issue が報告された場合またはメンテナーが問題に遭遇した場合に再現します。
+- Stop / Plan 変更時の保留操作と安全ブロックも、個別の手動テストを必須にしません。追加テストなしで受け入れ、問題が報告・発生した場合に再現します。
+- 約60秒のアイドル後に届く `thread/closed` と同じ thread の再開は、固定した 0.166.0 CLI で確認済みで、上記および Issue #241 に記録されています。再テストしません。
+- 以前未確認だった Reasoning、会話テキストエディター、履歴スコープの受け入れ確認は、Issue #242 と PR #248 のメンテナー証拠に基づき完了しています。Issue #250 で記録した修正後の履歴確認では空の Reasoning 項目は見つかっておらず、元の原因は未特定です。
+
 ### Issue #250: 会話テキストの文字保持
 
 - スナップショットで履歴本文の文字を保持し、フォールバックの説明と MCP のテキストを表示する。
@@ -81,9 +88,24 @@
 - Release ビルドは警告・エラー 0 件。Core テストは 555 件合格・シンボリックリンク関連 5 件スキップ、UI テストは 606 件合格・同 1 件スキップ。
 - 管理者が Visual Studio Experimental Instance で実際の長い履歴のスナップショットを確認。提出されたテキストでは、報告されたコードとコマンドの文字が保持されていた。修正後、管理者が参照できる履歴を確認し、空の Reasoning 項目は再現しなかった。元の原因は特定していない。
 
+### Issue #252: ターン完了と会話切り替え
+
+追跡先: [#252](https://github.com/kkamegawa/vsextensionforcodex/issues/252)。
+
+- [x] `turn.id` と `rootTurnId` をアクティブターンの別名として扱い、どちらかに一致する完了で解除する設計に更新。別スレッドの開始・再開時にターン状態をリセットし、完了済みターンをインラインレビュー応答で復活させない。
+- [x] `turn.id` と `rootTurnId` が異なる Fake App Server プロセスのシナリオを追加。Worker 統合テストで root ID による完了後に `ActiveTurnId` が idle へ戻ることを確認。
+- [x] 両方の完了 ID、遅れて届く `turn/started`、別スレッドの再開・新規開始、インラインレビュー応答の競合を Core テストで回帰確認。UI テストではターン終了後に保留中の `/review` と `/review --new-thread custom ...` が実行されることを確認。
+- [x] 管理者が Visual Studio Experimental Instance で、会話履歴からインライン `/review` の後に `/review --new-thread custom ...` を実行し、同じウィンドウで別会話が開始することを確認。
+- [x] Release ソリューションビルド成功、警告 0・エラー 0。Core テスト 560 件合格・シンボリックリンク関連 5 件スキップ、UI テスト 607 件合格・同 1 件スキップ。
+
+### PR #254 レビュー対応
+
+- [x] コミット `e7e9a18` で Release の Worker/Core コンパイルが成功し、ターン状態とレビューの focused test 7 件（新規 3 件、関連する既存テスト 4 件）が合格。`git diff --check` も成功。
+- 上記の Core 560 件 / UI 607 件というテスト数は、PR #254 のレビュー修正より前に行った Issue #252 実装時の検証結果。`e7e9a18` では全テストスイートを再実行していない。
+
 ## Stage 3: Experimental 機能
 
-追跡: [#243](https://github.com/kkamegawa/vsextensionforcodex/issues/243)。未確認の項目が完了するまで、この段階は完了扱いにしない。
+追跡: [#243](https://github.com/kkamegawa/vsextensionforcodex/issues/243)。合意した Stage 3 の範囲は受け入れ済み。以下の未確認シナリオは ADR-021 に従って未検証のまま記録し、問題が報告された場合または遭遇した場合に再現確認する。
 
 ### 実装済みで自動テストに合格
 

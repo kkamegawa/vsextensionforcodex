@@ -201,6 +201,8 @@ The size limit and secret removal stay in force.
 
 ### Generation checks
 
+Turn identity is scoped by connection generation and thread. The active turn records the server's `turn.id` and optional `rootTurnId` as identifiers for the same turn. A completion matching either identifier clears that active turn and records both identifiers so a late start response cannot revive it. A completion for another turn does not clear the active turn. Successfully starting or resuming a different thread resets the previous thread's active, pending, and unconfirmed turn state before adopting the new thread. Inline review responses use the same completed-turn guard as ordinary turns.
+
 Every asynchronous operation checks the owner, connection, request, and selection generations. Marking a conversation read happens only on explicit action.
 
 ### Contract manifest v4
@@ -224,20 +226,20 @@ Each stage can be released on its own.
 
 ## 9. Verification and completion
 
-The checks below are subject to [ADR-021](adr/ADR-021-validation-policy.md): unavailable enterprise environments and real workspace switching are unverified, experimental features receive minimal testing, and symbolic-link cases are outside the 0.166 release verification scope. Record skipped and unperformed checks accurately.
+The checks below are subject to [ADR-021](adr/ADR-021-validation-policy.md): unavailable enterprise environments and real workspace switching are unverified, experimental features receive minimal testing, and symbolic-link cases are outside the 0.166 release verification scope. The detailed runtime combinations identified below do not require additional dedicated manual tests under the maintainer decision of 2026-11-06. Keep them as functional expectations and record any scenario without direct evidence as accepted but untested. Reproduce them if an issue is reported or the maintainer encounters a problem. The approximately 60-second idle `thread/closed` and same-thread resume behavior was already checked in stage 1 and recorded in [#241](https://github.com/kkamegawa/vsextensionforcodex/issues/241); no repeat is required. Record skipped and unperformed checks accurately.
 
 - **Contract:** all six versions on both surfaces, version boundaries and prereleases, no experimental request while disabled, and fork rejection for unsupported storage.
 - **Review:** separate-conversation review on every supported version, inherited settings without wider permissions, stopping when a setting cannot be inherited, failure after creation, disconnect and unknown outcome, duplicate prevention, the original conversation staying selected on failure, and the history list appearance.
 - **History and forks:** multiple worktrees, subfolders, no Git, hidden remote scope, path normalization, responses during a scope change, paging, linked forks versus subagents, and parent and child navigation.
 - **Account:** switching between workspaces with the same email and plan, the confirmation dialog, SSO and cancellation, failure, unknown outcome, external change, late responses, invalidated queues, and `thread/closed` after a switch.
 - **Display:** question Markdown and submitted values, selection, copy, and search across the whole history, Japanese text, long histories, a separate file on refresh, deletion on close, cleanup, missing times, and USD actual, estimated, zero, and unknown values.
-- **Runtime state:** reasoning effort changes during a conversation, approval settings after resume and fork, pending operations after Stop and Plan changes, safety blocks, read-only display on provider rejection, and `thread/closed` and resume after the 60-second unload. Internal CLI fixes are not reimplemented.
+- **Runtime state:** reasoning effort changes during a conversation, approval settings after resume and fork, pending operations after Stop and Plan changes, and safety blocks remain functional expectations. These detailed combinations do not require dedicated manual acceptance tests; without direct evidence they are accepted but untested and are reproduced if an issue is reported or encountered. Read-only display on provider rejection remains a stage 1 acceptance check. The approximately 60-second idle `thread/closed` and same-thread resume behavior was already checked and recorded in [#241](https://github.com/kkamegawa/vsextensionforcodex/issues/241), so no repeat is required. Internal CLI fixes are not reimplemented.
 - **Quality:** Core, UI, and Fake tests, Debug and Release builds with zero warnings, the VSIX content inspection, and real CLI connections to 0.165, 0.166, and the existing versions.
 - **UI acceptance:** a real Visual Studio Experimental Instance in Light, Dark, and High Contrast, with Japanese text, a narrow width, keyboard operation, and Narrator, with screenshots and a verdict recorded.
 
 ### Real environment boundary
 
-An unperformed check in stage 1 or stage 2 blocks completion. The following environments complete with passing Fake tests and an explicit unverified entry in the release record:
+An unperformed required check in stage 1 or stage 2 blocks completion. The detailed runtime combinations explicitly accepted under ADR-021 are not required checks and do not block completion; record them as untested unless direct evidence exists. The following environments complete with passing Fake tests and an explicit unverified entry in the release record:
 
 - A workspace that requires SSO.
 - Multiple workspaces with the same email and plan.

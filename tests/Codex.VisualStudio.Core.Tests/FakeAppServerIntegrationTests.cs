@@ -647,6 +647,39 @@ public sealed class FakeAppServerIntegrationTests
     }
 
     [TestMethod]
+    public async Task FakeRootTurnIdCompletionReturnsActiveTurnToIdle()
+    {
+        await using FakeAppServerProcess server = await FakeAppServerProcess.StartAsync("Issue252RootTurnId");
+        await using JsonLineRpcConnection connection = await server.ConnectAsync();
+        await using var service = new CodexSessionService(new ApprovalPolicyEngine(new PathAccessPolicy()), new SecretRedactor());
+        var completed = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+        service.ConversationEventReceived += (value, _) =>
+        {
+            if (value.Kind == ConversationEventKind.TurnCompleted && value.TurnId is { } completedTurnId)
+            {
+                completed.TrySetResult(completedTurnId);
+            }
+
+            return Task.CompletedTask;
+        };
+        await service.InitializeAsync(connection, new WorkerOptions
+        {
+            WorkingDirectory = Environment.CurrentDirectory,
+            ExtensionVersion = "issue-252-integration-test",
+        }, CancellationToken.None);
+        ThreadSummary thread = await service.StartThreadAsync(CancellationToken.None);
+
+        string startedTurnId = await service.StartTurnAsync(
+            new StartTurnRequest { ThreadId = thread.Id, Text = "exercise distinct root turn id" },
+            CancellationToken.None);
+
+        Assert.AreEqual("fake-turn-1", startedTurnId);
+        Assert.AreEqual(startedTurnId, service.ActiveTurnId);
+        Assert.AreEqual("fake-root-turn-2", await completed.Task.WaitAsync(TimeSpan.FromSeconds(10)));
+        Assert.IsNull(service.ActiveTurnId);
+    }
+
+    [TestMethod]
     public async Task FakeEmitsMixedMcpAndArtifactItemsWithStableIds()
     {
         await using FakeAppServerProcess server = await FakeAppServerProcess.StartAsync("Issue155MixedArtifacts");

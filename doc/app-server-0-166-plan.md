@@ -20,7 +20,7 @@ This plan delivers [app-server-0-166-design.md](app-server-0-166-design.md) unde
 | 1. Compatibility | Raise the manifest to schema v4 with the complete package asset and hash. Confirm the package for 0.162.1, 0.163.0, and 0.165.0. Move the install helper and real verification to the complete package. Compare stable and experimental schemas for the six versions. Add tiers 0.165 and 0.166 and fix `GetFeatureTier`. Raise the Worker contract to v27, replace `ReviewDelivery` with `ReviewPlacement`, and remove `Detached`. Project item times, structured provider errors, and `policyCapacityUnavailable`. Open read-only history on provider rejection. Verify the 60-second unload. | [#241](https://github.com/kkamegawa/vsextensionforcodex/issues/241) |
 | 2. Stable features | Add `/review --new-thread`, the history scopes, question Markdown, read-only conversation text, USD usage, and network diagnostics. | [#242](https://github.com/kkamegawa/vsextensionforcodex/issues/242) |
 | 3. Experimental features | Add linked forks with parent and child navigation, the memory view, and workspace switching with SSO, the confirmation dialog, and the fingerprint change. | [#243](https://github.com/kkamegawa/vsextensionforcodex/issues/243) |
-| 4. Integration and records | Exercise all versions with Fake and real App Servers, take Experimental Instance screenshots, inspect the VSIX, and update the implementation and task records with evidence. | [#244](https://github.com/kkamegawa/vsextensionforcodex/issues/244) |
+| 4. Integration and records | Run required per-stage checks, inspect the VSIX, and update the implementation and task records with evidence. Apply ADR-021 to accepted-not-tested scenarios; detailed runtime combinations do not require dedicated tests unless an issue is reported or the maintainer encounters a problem. | [#244](https://github.com/kkamegawa/vsextensionforcodex/issues/244) |
 
 Representative files:
 
@@ -57,7 +57,7 @@ These behaviors are confirmed on a real CLI in the named stage. If one differs f
 
 ## Acceptance checks
 
-Apply [ADR-021](adr/ADR-021-validation-policy.md) to the checks below. Unavailable enterprise environments and real workspace switching are unverified; experimental features receive minimal testing; symbolic-link cases are outside the 0.166 release verification scope. Do not report unperformed checks as passed.
+Apply [ADR-021](adr/ADR-021-validation-policy.md) to the checks below. Unavailable enterprise environments and real workspace switching are unverified; experimental features receive minimal testing; symbolic-link cases are outside the 0.166 release verification scope. The fine-grained runtime combinations accepted on 2026-11-06 need no additional manual tests; report them as untested unless direct evidence exists. The existing 60-second idle close/resume check is recorded in #241. Do not report unperformed checks as passed.
 
 - **Contract:**
   - The scripts validate all six versions on both surfaces and report each regression difference with its version.
@@ -72,7 +72,7 @@ Apply [ADR-021](adr/ADR-021-validation-policy.md) to the checks below. Unavailab
   - No code path can send `detached`.
   - Item times, provider errors, and `policyCapacityUnavailable` are projected in live notifications and in replay.
   - Provider rejection opens read-only history and leaves interrupt and goal pause or clear available.
-  - `thread/closed` after the 60-second unload leaves the conversation resumable.
+  - `thread/closed` after the 60-second unload leaves the conversation resumable. This was checked in stage 1 and is recorded in #241; do not repeat it for stage 4.
 - **Review:**
   - Inherited settings never widen permissions.
   - A setting that cannot be inherited stops before a conversation exists.
@@ -100,8 +100,8 @@ Apply [ADR-021](adr/ADR-021-validation-policy.md) to the checks below. Unavailab
   - Core, UI, and Fake test suites and the Debug and Release builds complete with zero warnings.
   - The VSIX inspection passes.
   - Experimental Instance screenshots validate each theme, a narrow width, Japanese text, keyboard operation, and screen-reader output.
-- **Records:** the English and Japanese design, plan, ADR, implementation, and task records use UTF-8 with BOM. Issue checklists reflect only verified scenarios.
+- **Records:** the English and Japanese design, plan, ADR, implementation, and task records use UTF-8 with BOM. Issue checklists distinguish verified evidence from accepted-not-tested scenarios.
 
 ## Verification evidence
 
-After each stage, record the exact commands, configurations, totals, skips, versions, asset hashes, and screenshot paths in `doc/task.md` and `doc/implementation.md`. A stage 1 or stage 2 check that is blocked or skipped keeps that stage open. Stage 3 environments named in the design's real environment boundary may close on Fake coverage, with the unverified state in the release record.
+After each stage, record the exact commands, configurations, totals, skips, versions, asset hashes, and available screenshot paths in `doc/task.md` and `doc/implementation.md`. A required stage 1 or stage 2 check that is blocked or skipped keeps that stage open; scenarios explicitly accepted as untested under ADR-021 do not. Stage 3 environments named in the design's real environment boundary may close on Fake coverage, with the unverified state in the release record.

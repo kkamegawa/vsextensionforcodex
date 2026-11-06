@@ -4377,6 +4377,234 @@ public sealed partial class CodexSessionServiceTests
     }
 
     [TestMethod]
+    public async Task CompletionByRootTurnIdClearsActiveTurnAndGuardsBothAliases()
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "turn/start"
+                ? JsonSerializer.SerializeToElement(new { turn = new { id = "turn-id", rootTurnId = "root-id" } })
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        await service.StartTurnAsync(new StartTurnRequest { ThreadId = "thread-1", Text = "hello" }, CancellationToken.None);
+        Assert.AreEqual("turn-id", service.ActiveTurnId);
+        await connection.EmitNotificationAsync(
+            "turn/completed",
+            new { threadId = "thread-1", turn = new { id = "root-id", status = "completed" } });
+
+        Assert.IsNull(service.ActiveTurnId);
+        await connection.EmitNotificationAsync(
+            "turn/started",
+            new { threadId = "thread-1", turn = new { id = "turn-id", rootTurnId = "root-id" } });
+        Assert.IsNull(service.ActiveTurnId);
+    }
+
+    [TestMethod]
+    public async Task CompletionByTurnIdGuardsTheOtherActiveAlias()
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "turn/start"
+                ? JsonSerializer.SerializeToElement(new { turn = new { id = "turn-id", rootTurnId = "root-id" } })
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        await service.StartTurnAsync(new StartTurnRequest { ThreadId = "thread-1", Text = "hello" }, CancellationToken.None);
+        await connection.EmitNotificationAsync(
+            "turn/completed",
+            new { threadId = "thread-1", turn = new { id = "turn-id", status = "completed" } });
+
+        Assert.IsNull(service.ActiveTurnId);
+        await connection.EmitNotificationAsync(
+            "turn/started",
+            new { threadId = "thread-1", turn = new { id = "root-id" } });
+
+        Assert.IsNull(service.ActiveTurnId);
+    }
+
+    [TestMethod]
+    public async Task ResumingDifferentThreadClearsPreviousActiveTurn()
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method switch
+            {
+                "turn/start" => JsonSerializer.SerializeToElement(new { turn = new { id = "old-turn" } }),
+                "thread/resume" => JsonSerializer.SerializeToElement(new { thread = new { id = "thread-2" } }),
+                _ => JsonSerializer.SerializeToElement(new { }),
+            },
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+        await service.StartTurnAsync(new StartTurnRequest { ThreadId = "thread-1", Text = "hello" }, CancellationToken.None);
+        Assert.AreEqual("old-turn", service.ActiveTurnId);
+
+        await service.ResumeThreadAsync("thread-2", CancellationToken.None);
+
+        Assert.AreEqual("thread-2", service.ActiveThreadId);
+        Assert.IsNull(service.ActiveTurnId);
+    }
+
+    [TestMethod]
+    public async Task StartingNewThreadClearsPreviousActiveTurn()
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method switch
+            {
+                "thread/resume" => JsonSerializer.SerializeToElement(new { thread = new { id = "thread-1" } }),
+                "turn/start" => JsonSerializer.SerializeToElement(new { turn = new { id = "old-turn" } }),
+                "thread/start" => JsonSerializer.SerializeToElement(new { thread = new { id = "thread-2" } }),
+                _ => JsonSerializer.SerializeToElement(new { }),
+            },
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+        await service.ResumeThreadAsync("thread-1", CancellationToken.None);
+        await service.StartTurnAsync(new StartTurnRequest { ThreadId = "thread-1", Text = "hello" }, CancellationToken.None);
+        Assert.AreEqual("old-turn", service.ActiveTurnId);
+
+        await service.StartThreadAsync(CancellationToken.None);
+
+        Assert.AreEqual("thread-2", service.ActiveThreadId);
+        Assert.IsNull(service.ActiveTurnId);
+    }
+
+    [TestMethod]
+    public async Task InlineReviewResponseDoesNotReviveTurnCompletedBeforeResponse()
+    {
+        var reviewStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var reviewResponse = new TaskCompletionSource<JsonElement>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var connection = new RecordingConnection
+        {
+            AsyncHandler = (method, _, _) =>
+            {
+                if (method == "review/start")
+                {
+                    reviewStarted.TrySetResult();
+                    return reviewResponse.Task;
+                }
+
+                return Task.FromResult(JsonSerializer.SerializeToElement(new { }));
+            },
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        Task<StartReviewResult> start = service.StartReviewAsync(
+            new StartReviewRequest
+            {
+                ThreadId = "thread-1",
+                Placement = ReviewPlacement.CurrentThread,
+                Target = new ReviewTarget { Kind = ReviewTargetKind.BaseBranch, Value = "main" },
+            },
+            CancellationToken.None);
+        await reviewStarted.Task;
+        await connection.EmitNotificationAsync(
+            "turn/completed",
+            new { threadId = "thread-1", turn = new { id = "review-root", status = "completed" } });
+        reviewResponse.TrySetResult(JsonSerializer.SerializeToElement(new
+        {
+            reviewThreadId = "thread-1",
+            turn = new { id = "review-turn", rootTurnId = "review-root" },
+        }));
+
+        Assert.AreEqual("review-turn", (await start).TurnId);
+        Assert.IsNull(service.ActiveTurnId);
+    }
+
+    [TestMethod]
+    public async Task InlineReviewWithCompletedResponseClearsPreviousActiveAliasesOnSameThread()
+    {
+        var reviewStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var reviewResponse = new TaskCompletionSource<JsonElement>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var connection = new RecordingConnection
+        {
+            AsyncHandler = (method, parameters, _) =>
+            {
+                if (method == "review/start")
+                {
+                    reviewStarted.TrySetResult();
+                    return reviewResponse.Task;
+                }
+
+                return Task.FromResult(method == "turn/start"
+                    ? JsonSerializer.SerializeToElement(new { turn = new { id = "previous-turn", rootTurnId = "previous-root" } })
+                    : JsonSerializer.SerializeToElement(new { }));
+            },
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+        await service.StartTurnAsync(
+            new StartTurnRequest { ThreadId = "thread-1", Text = "hello" },
+            CancellationToken.None);
+
+        Task<StartReviewResult> start = service.StartReviewAsync(
+            new StartReviewRequest
+            {
+                ThreadId = "thread-1",
+                Placement = ReviewPlacement.CurrentThread,
+                Target = new ReviewTarget { Kind = ReviewTargetKind.BaseBranch, Value = "main" },
+            },
+            CancellationToken.None);
+        await reviewStarted.Task;
+        await connection.EmitNotificationAsync(
+            "turn/completed",
+            new { threadId = "thread-1", turn = new { id = "completed-review-turn", status = "completed" } });
+        reviewResponse.TrySetResult(JsonSerializer.SerializeToElement(new
+        {
+            reviewThreadId = "thread-1",
+            turn = new { id = "completed-review-turn" },
+        }));
+
+        Assert.AreEqual("completed-review-turn", (await start).TurnId);
+        Assert.IsNull(service.ActiveTurnId);
+    }
+
+    [TestMethod]
+    public async Task StartReviewNewThreadResponseWithCompletedRootDoesNotReviveTurn()
+    {
+        var reviewStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var reviewResponse = new TaskCompletionSource<JsonElement>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var connection = new RecordingConnection();
+        await using CodexSessionService service = await StartSourceThreadForReviewAsync(
+            connection,
+            ReviewThreadResponse("thread-review"));
+        connection.AsyncHandler = (method, parameters, _) =>
+        {
+            if (method == "review/start")
+            {
+                reviewStarted.TrySetResult();
+                return reviewResponse.Task;
+            }
+
+            return Task.FromResult(connection.Handler(method, parameters));
+        };
+
+        Task<StartReviewResult> start = service.StartReviewAsync(NewThreadReview(), CancellationToken.None);
+        await reviewStarted.Task;
+        await connection.EmitNotificationAsync(
+            "turn/completed",
+            new { threadId = "thread-review", turn = new { id = "review-root", status = "completed" } });
+        reviewResponse.TrySetResult(JsonSerializer.SerializeToElement(new
+        {
+            turn = new { id = "review-turn", rootTurnId = "review-root" },
+        }));
+
+        Assert.AreEqual("review-turn", (await start).TurnId);
+        Assert.AreEqual("thread-review", service.ActiveThreadId);
+        Assert.IsNull(service.ActiveTurnId);
+        await connection.EmitNotificationAsync(
+            "turn/started",
+            new { threadId = "thread-review", turn = new { id = "review-turn", rootTurnId = "review-root" } });
+        Assert.IsNull(service.ActiveTurnId);
+    }
+
+    [TestMethod]
     public async Task OldGenerationResponseAndNotificationCannotChangeCurrentState()
     {
         var requestStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);

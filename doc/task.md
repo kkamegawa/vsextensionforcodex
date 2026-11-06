@@ -850,7 +850,7 @@ Tracking: [#195](https://github.com/kkamegawa/vsextensionforcodex/issues/195), [
 
 ### 2026-10-31: Codex App Server 0.166.0 compatibility
 
-Tracking: [#241](https://github.com/kkamegawa/vsextensionforcodex/issues/241). Task and acceptance evidence: [English](task-app-server-0-166.md) · [日本語](task-app-server-0-166_ja.md). Detailed implementation evidence: [English](implementation-app-server-0-166.md) · [日本語](implementation-app-server-0-166_ja.md). The issue checklist is complete. The separate Visual Studio screenshot acceptance remains pending because the Computer Use app-list request timed out on its permitted retries.
+Tracking: [#241](https://github.com/kkamegawa/vsextensionforcodex/issues/241). Task and acceptance evidence: [English](task-app-server-0-166.md) · [日本語](task-app-server-0-166_ja.md). Detailed implementation evidence: [English](implementation-app-server-0-166.md) · [日本語](implementation-app-server-0-166_ja.md). The issue checklist is complete. Maintainer visual acceptance is recorded in #242 and #244; the earlier Computer Use timeout means this entry does not claim a screenshot was captured in that session.
 
 ### 2026-10-14: Preserve ordinary Interrupt after Plan implementation and questions
 
@@ -942,9 +942,9 @@ Tracking: [#240](https://github.com/kkamegawa/vsextensionforcodex/issues/240) wi
 
 ### 2026-11-01: Codex App Server 0.166.0 stable features
 
-Tracking: [#242](https://github.com/kkamegawa/vsextensionforcodex/issues/242). All seven tasks are implemented and pass automated tests, but the stage stays open. Task and acceptance evidence: [English](task-app-server-0-166.md) · [日本語](task-app-server-0-166_ja.md). Implementation record: [English](implementation-app-server-0-166.md) · [日本語](implementation-app-server-0-166_ja.md).
+Tracking: [#242](https://github.com/kkamegawa/vsextensionforcodex/issues/242). All seven tasks and maintainer acceptance are complete. Task and acceptance evidence: [English](task-app-server-0-166.md) · [日本語](task-app-server-0-166_ja.md). Implementation record: [English](implementation-app-server-0-166.md) · [日本語](implementation-app-server-0-166_ja.md). Detailed runtime combinations accepted as untested are listed under ADR-021.
 
-- [x] Commit `b3b23e4` passed Debug and Release builds with zero warnings and errors, the Release VSIX inspection, and contract validation. Each configuration had 553 passing Core tests and 602 passing UI tests, with no failures. Five Core and one UI symbolic-link cases were skipped because Windows denied link creation. The strict release gate remains blocked.
+- [x] Commit `b3b23e4` passed Debug and Release builds with zero warnings and errors, the Release VSIX inspection, and contract validation. Each configuration had 553 passing Core tests and 602 passing UI tests, with no failures. Five Core and one UI symbolic-link cases were skipped because Windows denied link creation; ADR-021 excludes these cases from 0.166 release verification, so the skips do not block acceptance.
 - [x] `verify-contract-surface.ps1` passed for all six supported versions on both surfaces with `account/usage/read` in the method tables. The Worker only requests per-conversation USD on 0.166.0 or later.
 - [x] Real CLI checks covered the 0.161.0 review start and history row, and the 0.166.0 schema, completed reviews, and `codex doctor` run. The isolated 0.166.0 Responses request used the configured `review_model`, or the conversation model when omitted.
 - [x] Experimental Instance acceptance was completed for the conversation text editor tab, history scope ComboBox, and restoration of a saved non-empty Reasoning summary; PR #248 records these maintainer checks alongside /doctor, conversation search, Plan selection and copy, High Contrast, and Narrator.
@@ -955,6 +955,12 @@ Tracking: [#250](https://github.com/kkamegawa/vsextensionforcodex/issues/250). S
 
 ### 2026-11-04: Validation policy
 
-Tracking: [#240](https://github.com/kkamegawa/vsextensionforcodex/issues/240) and [#244](https://github.com/kkamegawa/vsextensionforcodex/issues/244). Added [ADR-021](adr/ADR-021-validation-policy.md) and README limitations in English and Japanese. Enterprise and workspace-switching environments are unverified; experimental features receive minimal testing. Symbolic-link cases are excluded from 0.166 release verification and remain recorded as skips. The maintainer confirmed an Experimental Instance check; this does not establish that every individual UI scenario was tested. Issue #250's unresolved empty-content behavior is deferred until it recurs.
+Tracking: [#240](https://github.com/kkamegawa/vsextensionforcodex/issues/240) and [#244](https://github.com/kkamegawa/vsextensionforcodex/issues/244). Added [ADR-021](adr/ADR-021-validation-policy.md) and README limitations in English and Japanese. Enterprise and workspace-switching environments are unverified; experimental features receive minimal testing. Symbolic-link cases are excluded from 0.166 release verification and remain recorded as skips. On 2026-11-06 the maintainer accepted the listed fine-grained runtime combinations without additional manual testing; they remain functional expectations and are reproduced if an issue is reported or encountered. Existing 60-second idle close/resume evidence is retained in #241. Issue #250's unresolved empty-content behavior is deferred until it recurs.
 
 Validation: reviewed the bilingual policy text, links, and document-only diff. No new runtime tests were run.
+
+### 2026-11-06: Issue #252 active-turn lifecycle
+
+Tracking: [#252](https://github.com/kkamegawa/vsextensionforcodex/issues/252). The Worker now tracks `turn.id` and `rootTurnId` as aliases, clears the active turn when either ID completes, resets stale state when adopting another thread, and prevents inline review responses from reviving completed turns. A Fake App Server process regression reproduces the mismatched IDs; UI regressions cover queued review dispatch after the turn returns to idle. Detailed acceptance evidence is in [the 0.166 task record](task-app-server-0-166.md).
+
+Validation: Before PR #254 review fixes, the Release solution build passed with 0 warnings and 0 errors; Core tests passed 560 with 5 symbolic-link skips; UI tests passed 607 with 1 symbolic-link skip. After commit `e7e9a18`, Release Worker/Core compilation and 7 focused active-turn/review tests passed (3 new and 4 existing related tests); `git diff --check` passed. The maintainer confirmed in the Visual Studio Experimental Instance that an inline `/review` followed by `/review --new-thread custom ...` from conversation history starts the separate conversation in the same window.

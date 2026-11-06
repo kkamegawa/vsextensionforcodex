@@ -13,15 +13,15 @@ Tracking: [#241](https://github.com/kkamegawa/vsextensionforcodex/issues/241). D
 - [x] Pass contract and compatibility tests, Debug and Release Core/UI test suites, Debug and Release solution builds with zero warnings and errors, and Release VSIX inspection.
 - [x] Pass real CLI `initialize` checks for 0.166.0, 0.165.0, and the older regression versions.
 
-## Pending maintainer acceptance
+## Visual acceptance
 
-- [ ] Capture and inspect the changed behavior in the Visual Studio Experimental Instance. The Computer Use app-list request timed out on its permitted retries, so this session could not obtain a screenshot. Automated UI tests passed; this does not replace the requested visual check.
+- [x] The maintainer confirmed the Visual Studio Experimental Instance acceptance recorded in [Issue #242](https://github.com/kkamegawa/vsextensionforcodex/issues/242) and [Issue #244](https://github.com/kkamegawa/vsextensionforcodex/issues/244). The earlier Computer Use attempt timed out and produced no screenshot; no new screenshot is claimed by this record update.
 
 Evidence is under `D:\temp\issue241-verify-2\`.
 
 ## Stage 2: stable features
 
-Tracking: [#242](https://github.com/kkamegawa/vsextensionforcodex/issues/242). This stage stays open until the items under Not yet verified are done.
+Tracking: [#242](https://github.com/kkamegawa/vsextensionforcodex/issues/242). Stage 2 acceptance is complete. The detailed runtime combinations accepted under ADR-021 are not required tests; the record below distinguishes them from verified behavior.
 
 ### Implemented and passing automated tests
 
@@ -41,7 +41,7 @@ Tracking: [#242](https://github.com/kkamegawa/vsextensionforcodex/issues/242). T
 - [x] Reproduce stderr-triggered owner invalidation during `thread/start` and `turn/start`: both regression cases failed with `StaleGeneration` before the fix. Keep optional MCP network errors and WebSocket fallback diagnostics from triggering connection recovery, and persist redacted stderr for diagnosis.
 - [x] Stop forwarding raw stderr/HTTP HTML to the transcript; retain redacted diagnostics with HTML removed and a 2,048-character limit, plus one short network/MCP notice. Three send cases failed with duplicate raw transcript errors before the fix and pass afterward. Independent diff review found no remaining actionable defect in this scope.
 - [x] Review Plan-mode mode serialization and completion against the running 0.166 turn: the turn completed and returned to Ready at 20:07:45; the license question was final model prose, not an extension lifecycle failure. Plan mode remains read-only.
-- [x] Stage 2 review fixes, commit `b3b23e4`: Debug and Release builds had zero warnings and errors. Each configuration reported Core 553 passed and 5 skipped, UI 602 passed and 1 skipped, and no failures. Release VSIX inspection passed. The release gate remains blocked by six required symbolic-link cases because this Windows account lacks link creation privilege. Evidence: `app-server-0166-acceptance-evidence/release-validation.json`.
+- [x] Stage 2 review fixes, commit `b3b23e4`: Debug and Release builds had zero warnings and errors. Each configuration reported Core 553 passed and 5 skipped, UI 602 passed and 1 skipped, and no failures. Release VSIX inspection passed. Symbolic-link cases are excluded from 0.166 release verification by ADR-021; the six environment-dependent skips remain recorded and do not block acceptance. Evidence: `app-server-0166-acceptance-evidence/release-validation.json`.
 
 ### Real CLI confirmations
 
@@ -74,6 +74,13 @@ Tracking: [#242](https://github.com/kkamegawa/vsextensionforcodex/issues/242). T
 - [x] Skip redirected conversation-text roots and owner directories during automatic cleanup. Cover junctions with a stale external file in the regression test.
 - [x] Verify the scope ComboBox in the Visual Studio Experimental Instance; the maintainer confirmed it opens and selects without closing the history flyout in PR #248.
 
+### Accepted-not-tested runtime scenarios
+
+- No dedicated manual test is required for changing reasoning effort during a conversation or for approval settings after resume/fork. These combinations are accepted without additional testing; reproduce them if an issue is reported or the maintainer encounters a problem.
+- No dedicated manual test is required for pending operations across Stop/Plan changes or safety blocks. These combinations are accepted without additional testing; reproduce them if an issue is reported or the maintainer encounters a problem.
+- The approximately 60-second idle `thread/closed` and same-thread resume behavior was already tested with the pinned 0.166.0 CLI and is recorded above and in Issue #241. No repeat is required.
+- The Reasoning, conversation-text editor, and history-scope acceptance checks are complete per Issue #242 and PR #248. This does not change the separately recorded Issue #250 finding that accessible histories contained no empty Reasoning entries after the fix, while the original cause remains undetermined.
+
 ### Issue #250: conversation text fidelity
 
 - Preserve literal history text and display explanatory fallback and MCP text in the snapshot.
@@ -81,9 +88,24 @@ Tracking: [#242](https://github.com/kkamegawa/vsextensionforcodex/issues/242). T
 - Release build passed with zero warnings and errors. Core tests passed 555 with 5 symbolic-link skips. UI tests passed 606 with 1 symbolic-link skip.
 - The maintainer confirmed a real long-history snapshot in the Visual Studio Experimental Instance. The submitted text preserved the reported code and command characters. After the fix, the maintainer checked accessible histories and found no empty Reasoning entries; the original cause remains undetermined.
 
+### Issue #252: active-turn completion and conversation changes
+
+Tracking: [#252](https://github.com/kkamegawa/vsextensionforcodex/issues/252).
+
+- [x] Updated the design to treat `turn.id` and `rootTurnId` as aliases for an active turn, clear it when completion matches either alias, reset turn state when starting or resuming a different thread, and guard inline review responses against reviving completed turns.
+- [x] Added a Fake App Server process scenario with distinct `turn.id` and `rootTurnId`; the Worker integration test confirms completion by the root ID returns `ActiveTurnId` to idle.
+- [x] Added Core regressions for both completion aliases, late `turn/started`, different-thread resume and new-thread start, and inline review response races. UI regressions confirm queued `/review` and `/review --new-thread custom ...` commands run after the active turn ends.
+- [x] The maintainer confirmed in the Visual Studio Experimental Instance that an inline `/review` followed by `/review --new-thread custom ...` from conversation history starts the separate conversation in the same window.
+- [x] Release solution build passed with 0 warnings and 0 errors. Core tests passed 560 with 5 symbolic-link skips; UI tests passed 607 with 1 symbolic-link skip.
+
+### PR #254 review follow-up
+
+- [x] After commit `e7e9a18`, Release Worker/Core compilation passed and 7 focused active-turn and review regressions passed (3 new and 4 existing related tests). `git diff --check` passed.
+- The 560 Core / 607 UI suite totals above are from the earlier Issue #252 implementation verification, before the PR #254 review fixes; the full suites were not rerun on `e7e9a18`.
+
 ## Stage 3: experimental features
 
-Tracking: [#243](https://github.com/kkamegawa/vsextensionforcodex/issues/243). This stage stays open until the items under Not yet verified are done.
+Tracking: [#243](https://github.com/kkamegawa/vsextensionforcodex/issues/243). The agreed Stage 3 scope is accepted. The items under Not yet verified remain unverified under ADR-021 and will be reproduced if reported or encountered.
 
 ### Implemented and passing automated tests
 

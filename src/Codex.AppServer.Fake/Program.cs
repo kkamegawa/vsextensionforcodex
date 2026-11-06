@@ -970,11 +970,22 @@ object StartTurn(JsonElement request)
         ? GetOptionalString(sandbox, "type")
         : null;
     string turnId = $"fake-turn-{nextTurn++}";
+    string? rootTurnId = IsScenario("Issue252RootTurnId") ? $"fake-root-turn-{nextTurn++}" : null;
+    string eventTurnId = rootTurnId ?? turnId;
+    object startedTurn = rootTurnId is null
+        ? new { id = turnId }
+        : new { id = turnId, rootTurnId };
+    object completedTurn = rootTurnId is null
+        ? new { id = turnId, status = "completed" }
+        : new { id = rootTurnId, status = "completed" };
+    object responseTurn = rootTurnId is null
+        ? new { id = turnId, status = "inProgress" }
+        : new { id = turnId, rootTurnId, status = "inProgress" };
     Console.Error.WriteLine($"fake turn/start model={Sanitize(model) ?? "(default)"} approvalPolicy={Sanitize(approvalPolicy) ?? "(default)"} approvalsReviewer={Sanitize(approvalsReviewer) ?? "(default)"} sandbox={Sanitize(sandboxMode) ?? "(default)"} permissions={Sanitize(permissions) ?? "(default)"} effort={Sanitize(effort) ?? "(default)"} serviceTier={Sanitize(serviceTier) ?? "(default)"}");
     _ = Task.Run(async () =>
     {
         await Task.Delay(25).ConfigureAwait(false);
-        await WriteAsync(new { method = "turn/started", @params = new { threadId, turnId, turn = new { id = turnId } } }).ConfigureAwait(false);
+        await WriteAsync(new { method = "turn/started", @params = new { threadId, turnId = eventTurnId, turn = startedTurn } }).ConfigureAwait(false);
         await WriteAsync(new
         {
             method = "thread/settings/updated",
@@ -994,33 +1005,33 @@ object StartTurn(JsonElement request)
         }).ConfigureAwait(false);
         if (IsScenario("Issue155PlanDeltaFinal"))
         {
-            await EmitIssue155PlanAsync(threadId, turnId, includeDelta: true).ConfigureAwait(false);
+            await EmitIssue155PlanAsync(threadId, eventTurnId, includeDelta: true).ConfigureAwait(false);
         }
         else if (IsScenario("Issue155PlanWithoutDelta"))
         {
-            await EmitIssue155PlanAsync(threadId, turnId, includeDelta: false).ConfigureAwait(false);
+            await EmitIssue155PlanAsync(threadId, eventTurnId, includeDelta: false).ConfigureAwait(false);
         }
 
         if (IsScenario("Issue155NoticeBurst"))
         {
-            await EmitIssue155NoticeBurstAsync(threadId, turnId).ConfigureAwait(false);
+            await EmitIssue155NoticeBurstAsync(threadId, eventTurnId).ConfigureAwait(false);
         }
 
         if (IsScenario("Issue155MixedArtifacts"))
         {
-            await EmitIssue155MixedArtifactsAsync(threadId, turnId).ConfigureAwait(false);
+            await EmitIssue155MixedArtifactsAsync(threadId, eventTurnId).ConfigureAwait(false);
         }
 
-        await WriteAsync(new { method = "item/agentMessage/delta", @params = new { threadId, turnId, itemId = "agent-1", delta = "Hello from the fake app-server." } }).ConfigureAwait(false);
+        await WriteAsync(new { method = "item/agentMessage/delta", @params = new { threadId, turnId = eventTurnId, itemId = "agent-1", delta = "Hello from the fake app-server." } }).ConfigureAwait(false);
         if (SupportsReadState())
         {
-            object readState = SetThreadUnread(threadId, turnId);
+            object readState = SetThreadUnread(threadId, eventTurnId);
             await WriteAsync(new { method = "thread/readState/changed", @params = new { threadId, readState } }).ConfigureAwait(false);
         }
 
-        await WriteAsync(new { method = "turn/completed", @params = new { threadId, turnId, turn = new { id = turnId, status = "completed" } } }).ConfigureAwait(false);
+        await WriteAsync(new { method = "turn/completed", @params = new { threadId, turnId = eventTurnId, turn = completedTurn } }).ConfigureAwait(false);
     });
-    return new { turn = new { id = turnId, status = "inProgress" } };
+    return new { turn = responseTurn };
 }
 
 async Task EmitIssue155PlanAsync(string threadId, string turnId, bool includeDelta)
