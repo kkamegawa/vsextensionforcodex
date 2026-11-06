@@ -147,6 +147,7 @@ public sealed partial class ChatViewModel
     {
         if (threadListWorkingDirectories is not null
             && selectedThread is { } selected
+            && string.IsNullOrWhiteSpace(selected.LinkedParentThreadId)
             && !Threads.Any(thread => string.Equals(thread.Id, selected.Id, StringComparison.Ordinal)))
         {
             Threads.Insert(0, selected);

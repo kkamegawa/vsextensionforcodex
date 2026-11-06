@@ -8,6 +8,8 @@ public sealed class CodexErrorClassifierTests
     [TestMethod]
     [DataRow("<html>")]
     [DataRow("<!DOCTYPE html><HTML>")]
+    [DataRow("<body>")]
+    [DataRow("<script type=\"text/javascript\">")]
     public void StandardErrorOmitsHtmlResponseBody(string opening)
     {
         string diagnostic = CodexErrorClassifier.FormatStandardError($"ERROR rmcp: HTTP 403: {opening}private-challenge-body</html>");

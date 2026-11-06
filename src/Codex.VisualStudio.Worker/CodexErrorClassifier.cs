@@ -7,6 +7,7 @@
 internal static class CodexErrorClassifier
 {
     internal const int MaximumDiagnosticCharacters = 2048;
+    private static readonly string[] HtmlResponseStarts = ["<!doctype html", "<html", "<body", "<script"];
 
     public const string McpAccessDeniedMessage =
         "An MCP service rejected its connection (HTTP 403). Open MCP details to review the affected service. The conversation can continue.";
@@ -21,9 +22,16 @@ internal static class CodexErrorClassifier
     // Keep only the diagnostic prefix and status in persisted/output diagnostics.
     public static string FormatStandardError(string line)
     {
-        int html = line.IndexOf("<html", StringComparison.OrdinalIgnoreCase);
-        int doctype = line.IndexOf("<!doctype html", StringComparison.OrdinalIgnoreCase);
-        int bodyStart = html < 0 ? doctype : doctype < 0 ? html : Math.Min(html, doctype);
+        int bodyStart = -1;
+        foreach (string marker in HtmlResponseStarts)
+        {
+            int markerIndex = line.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
+            if (markerIndex >= 0 && (bodyStart < 0 || markerIndex < bodyStart))
+            {
+                bodyStart = markerIndex;
+            }
+        }
+
         string diagnostic = bodyStart < 0
             ? line
             : string.Concat(line.AsSpan(0, bodyStart), "[HTML response omitted]");

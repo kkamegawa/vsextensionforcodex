@@ -670,6 +670,50 @@
                   Style="{StaticResource SmallRoundButtonStyle}" Margin="0,0,8,0"
                   Visibility="{Binding ShowAccountAction, Converter={StaticResource BoolToVis}}" />
 
+          <Grid Margin="0,0,6,0"
+                Visibility="{Binding ShowWorkspaceSwitcherButton, Converter={StaticResource BoolToVis}}">
+            <Button Content="{Binding CurrentWorkspaceText}"
+                    Command="{Binding OpenWorkspacePickerCommand}"
+                    ToolTip="Switch the ChatGPT workspace"
+                    AutomationProperties.Name="{Binding CurrentWorkspaceText}"
+                    AutomationProperties.HelpText="Select a workspace for this Codex app-server session."
+                    Style="{StaticResource SmallRoundButtonStyle}" />
+            <Popup IsOpen="{Binding IsWorkspacePickerOpen, Mode=TwoWay}"
+                   StaysOpen="False"
+                   Placement="Bottom"
+                   VerticalOffset="2"
+                   AllowsTransparency="True"
+                   PopupAnimation="Fade"
+                   Focusable="True">
+              <Border Width="340" MaxHeight="480" Padding="12" CornerRadius="6" BorderThickness="1"
+                      Background="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBackgroundBrushKey}}"
+                      BorderBrush="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBorderBrushKey}}"
+                      AutomationProperties.Name="Switch workspace">
+                <StackPanel>
+                  <TextBlock Text="Switching stops loaded conversations. On a remote server, other clients may also be affected."
+                             TextWrapping="Wrap" Margin="0,0,0,8" />
+                  <ListBox ItemsSource="{Binding Workspaces}"
+                           SelectedItem="{Binding SelectedWorkspace, Mode=TwoWay}"
+                           DisplayMemberPath="Name"
+                           MaxHeight="230"
+                           AutomationProperties.Name="Available workspaces" />
+                  <TextBlock Text="{Binding WorkspaceStatusText}" TextWrapping="Wrap" Margin="0,8,0,4" />
+                  <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                    <Button Content="Refresh" Command="{Binding RefreshWorkspacesCommand}"
+                            Style="{StaticResource SmallRoundButtonStyle}" Margin="0,0,6,0" />
+                    <Button Content="Cancel sign-in" Command="{Binding CancelWorkspaceLoginCommand}"
+                            Visibility="{Binding IsWorkspaceLoginPending, Converter={StaticResource BoolToVis}}"
+                            Style="{StaticResource SmallRoundButtonStyle}" Margin="0,0,6,0" />
+                    <Button Content="Switch" Command="{Binding SwitchWorkspaceCommand}"
+                            Style="{StaticResource SmallRoundButtonStyle}" Margin="0,0,6,0" />
+                    <Button Content="Close" Command="{Binding CloseWorkspacePickerCommand}"
+                            Style="{StaticResource SmallRoundButtonStyle}" />
+                  </StackPanel>
+                </StackPanel>
+              </Border>
+            </Popup>
+          </Grid>
+
           <!-- Connection-target flyout (design.md section 12). The button shows where turns
                run; the flyout edits saved remote profiles and applies one on request. -->
           <Grid Margin="0,0,6,0">
@@ -954,6 +998,46 @@
                           Command="{Binding CloseHistoryCommand}"
                           AutomationProperties.Name="Close conversation history"
                           Style="{StaticResource SmallRoundButtonStyle}" />
+                  <StackPanel DockPanel.Dock="Top" Margin="0,0,0,6"
+                              Visibility="{Binding IsLinkedForkFeatureAvailable, Converter={StaticResource BoolToVis}}">
+                    <TextBlock Margin="2,2" FontWeight="SemiBold" Text="Related conversations" />
+                    <WrapPanel>
+                      <Button Margin="0,0,4,4" Content="Create linked fork"
+                              Command="{Binding CreateLinkedForkCommand}"
+                              Style="{StaticResource SmallRoundButtonStyle}"
+                              AutomationProperties.Name="Create linked fork from selected conversation"
+                              AutomationProperties.HelpText="Creates a persistent child conversation with its own history." />
+                      <Button Margin="0,0,4,4" Content="Show related"
+                              Command="{Binding LoadRelatedConversationsCommand}"
+                              Style="{StaticResource SmallRoundButtonStyle}"
+                              AutomationProperties.Name="Show linked conversations" />
+                      <Button Margin="0,0,4,4" Content="Return to parent"
+                              Command="{Binding ReturnToLinkedParentCommand}"
+                              Style="{StaticResource SmallRoundButtonStyle}"
+                              AutomationProperties.Name="Return to parent conversation" />
+                      <Button Margin="0,0,4,4" Content="Load more related"
+                              Command="{Binding LoadMoreRelatedConversationsCommand}"
+                              Visibility="{Binding HasMoreRelatedConversations, Converter={StaticResource BoolToVis}}"
+                              Style="{StaticResource SmallRoundButtonStyle}"
+                              AutomationProperties.Name="Load more linked conversations" />
+                    </WrapPanel>
+                    <ItemsControl MaxHeight="120" ItemsSource="{Binding RelatedConversations}"
+                                  Visibility="{Binding HasRelatedConversations, Converter={StaticResource BoolToVis}}"
+                                  AutomationProperties.Name="Related conversations">
+                      <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                          <Button Margin="2,1" HorizontalContentAlignment="Left"
+                                  Content="{Binding Preview}"
+                                  Command="{Binding NavigateCommand}"
+                                  Style="{StaticResource SmallRoundButtonStyle}"
+                                  AutomationProperties.Name="{Binding Preview}" />
+                        </DataTemplate>
+                      </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                    <TextBlock Margin="2,2" Text="{Binding LinkedForkStatusText}"
+                               TextWrapping="Wrap"
+                               AutomationProperties.LiveSetting="Polite" />
+                  </StackPanel>
                   <StackPanel DockPanel.Dock="Bottom" Margin="0,6,0,0">
                     <TextBlock Margin="2,4" Text="{Binding HistoryStatusText}" TextWrapping="Wrap"
                                Visibility="{Binding HasHistoryNotice, Converter={StaticResource BoolToVis}}"
@@ -997,6 +1081,47 @@
                               Visibility="{Binding IsHistoryOnly, Converter={StaticResource BoolToVis}}"
                               Style="{StaticResource SmallRoundButtonStyle}"
                               AutomationProperties.Name="Join selected conversation" />
+                      <Grid Margin="0,0,4,4"
+                            Visibility="{Binding IsConversationMemoryFeatureAvailable, Converter={StaticResource BoolToVis}}">
+                        <Button Content="This conversation's memory"
+                                Command="{Binding ReadConversationMemoryCommand}"
+                                Style="{StaticResource SmallRoundButtonStyle}"
+                                AutomationProperties.Name="Read this conversation's memory"
+                                AutomationProperties.HelpText="Reads and displays the selected joined conversation's memory summary." />
+                        <Popup IsOpen="{Binding IsConversationMemoryOpen, Mode=TwoWay}"
+                               StaysOpen="False"
+                               Placement="Bottom"
+                               VerticalOffset="2"
+                               AllowsTransparency="True"
+                               PopupAnimation="Fade">
+                          <Border Width="340" MaxHeight="460" CornerRadius="6" BorderThickness="1"
+                                  Background="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBackgroundBrushKey}}"
+                                  BorderBrush="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBorderBrushKey}}">
+                            <StackPanel Margin="8">
+                              <TextBlock Text="This conversation's memory"
+                                         FontWeight="SemiBold"
+                                         Margin="2,0,2,6" />
+                              <TextBlock Text="{Binding ConversationMemoryStatusText}"
+                                         TextWrapping="Wrap"
+                                         AutomationProperties.LiveSetting="Polite" />
+                              <TextBox Text="{Binding ConversationMemoryText, Mode=OneWay}"
+                                       IsReadOnly="True"
+                                       TextWrapping="Wrap"
+                                       VerticalScrollBarVisibility="Auto"
+                                       MaxHeight="350"
+                                       Visibility="{Binding HasConversationMemoryText, Converter={StaticResource BoolToVis}}"
+                                       AutomationProperties.Name="Conversation memory summary"
+                                       AutomationProperties.HelpText="Read-only memory summary for the joined conversation." />
+                              <Button Content="Close"
+                                      HorizontalAlignment="Right"
+                                      Margin="0,8,0,0"
+                                      Command="{Binding CloseConversationMemoryCommand}"
+                                      Style="{StaticResource SmallRoundButtonStyle}"
+                                      AutomationProperties.Name="Close conversation memory" />
+                            </StackPanel>
+                          </Border>
+                        </Popup>
+                      </Grid>
                       <Button Margin="0,0,4,4" Content="Open conversation text"
                               Command="{Binding OpenConversationTextCommand}"
                               Style="{StaticResource SmallRoundButtonStyle}"

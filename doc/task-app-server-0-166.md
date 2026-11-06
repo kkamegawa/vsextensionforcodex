@@ -63,12 +63,8 @@ Tracking: [#242](https://github.com/kkamegawa/vsextensionforcodex/issues/242). S
 
 - [x] PR #248 records maintainer acceptance of long-history search, generated Plan selection and copy, High Contrast, Narrator, Japanese conversation selection and copy, and restored Command content in the tool window.
 
-### Accepted-not-tested runtime scenarios
-
-- No dedicated manual test is required for changing reasoning effort during a conversation or for approval settings after resume/fork. These combinations are accepted without additional testing; reproduce them if an issue is reported or the maintainer encounters a problem.
-- No dedicated manual test is required for pending operations across Stop/Plan changes or safety blocks. These combinations are accepted without additional testing; reproduce them if an issue is reported or the maintainer encounters a problem.
-- The approximately 60-second idle `thread/closed` and same-thread resume behavior was already tested with the pinned 0.166.0 CLI and is recorded above and in Issue #241. No repeat is required.
-- The previously open Reasoning, conversation-text editor, and history-scope acceptance checks are complete per Issue #242 and the maintainer evidence recorded there. This does not change the separate deferred investigation of empty history bodies under Issue #250.
+- [x] Restore a conversation with a saved non-empty Reasoning summary in Visual Studio; accepted by the maintainer on 2026-11-04 (see #242).
+- [x] Verify selection, copy, Ctrl+F, F3, Japanese text, long histories, and file removal on close in the conversation text editor tab; accepted by the maintainer in PR #248.
 
 ### Stage 2 review follow-up
 
@@ -76,14 +72,21 @@ Tracking: [#242](https://github.com/kkamegawa/vsextensionforcodex/issues/242). S
 - [x] Clear conversation-specific usage when the selection changes and refresh it while the usage popup is open.
 - [x] Keep the history popup open during scope selection. Escape and Close history dismiss it.
 - [x] Skip redirected conversation-text roots and owner directories during automatic cleanup. Cover junctions with a stale external file in the regression test.
-- [x] Verify the scope ComboBox in the Visual Studio Experimental Instance (maintainer acceptance recorded in Issue #242).
+- [x] Verify the scope ComboBox in the Visual Studio Experimental Instance; the maintainer confirmed it opens and selects without closing the history flyout in PR #248.
+
+### Accepted-not-tested runtime scenarios
+
+- No dedicated manual test is required for changing reasoning effort during a conversation or for approval settings after resume/fork. These combinations are accepted without additional testing; reproduce them if an issue is reported or the maintainer encounters a problem.
+- No dedicated manual test is required for pending operations across Stop/Plan changes or safety blocks. These combinations are accepted without additional testing; reproduce them if an issue is reported or the maintainer encounters a problem.
+- The approximately 60-second idle `thread/closed` and same-thread resume behavior was already tested with the pinned 0.166.0 CLI and is recorded above and in Issue #241. No repeat is required.
+- The Reasoning, conversation-text editor, and history-scope acceptance checks are complete per Issue #242 and PR #248. This does not change the separately recorded Issue #250 finding that accessible histories contained no empty Reasoning entries after the fix, while the original cause remains undetermined.
 
 ### Issue #250: conversation text fidelity
 
 - Preserve literal history text and display explanatory fallback and MCP text in the snapshot.
 - Avoid matching a credential key within an ordinary identifier while retaining credential redaction.
 - Release build passed with zero warnings and errors. Core tests passed 555 with 5 symbolic-link skips. UI tests passed 606 with 1 symbolic-link skip.
-- The maintainer confirmed a real long-history snapshot in the Visual Studio Experimental Instance. The submitted text preserved the reported code and command characters. The cause of each empty Reasoning item remains unverified.
+- The maintainer confirmed a real long-history snapshot in the Visual Studio Experimental Instance. The submitted text preserved the reported code and command characters. After the fix, the maintainer checked accessible histories and found no empty Reasoning entries; the original cause remains undetermined.
 
 ### Issue #252: active-turn completion and conversation changes
 
@@ -99,3 +102,24 @@ Tracking: [#252](https://github.com/kkamegawa/vsextensionforcodex/issues/252).
 
 - [x] After commit `e7e9a18`, Release Worker/Core compilation passed and 7 focused active-turn and review regressions passed (3 new and 4 existing related tests). `git diff --check` passed.
 - The 560 Core / 607 UI suite totals above are from the earlier Issue #252 implementation verification, before the PR #254 review fixes; the full suites were not rerun on `e7e9a18`.
+
+## Stage 3: experimental features
+
+Tracking: [#243](https://github.com/kkamegawa/vsextensionforcodex/issues/243). The agreed Stage 3 scope is accepted. The items under Not yet verified remain unverified under ADR-021 and will be reproduced if reported or encountered.
+
+### Implemented and passing automated tests
+
+- [x] Create linked forks on 0.166 and later with `thread/fork.attachToSource` and `excludeTurns`, and list children with `thread/list.attachedToThreadId` without a `sourceKinds` filter. Children are opened with paginated history and stay out of the ordinary history list.
+- [x] Navigate from a parent to its related conversations and back. A refused linked fork shows the redacted server reason and leaves the parent selected.
+- [x] Show the memory of a joined conversation through `thread/memory/read` in a separate pane on explicit request. A `null` summary shows that no memory is available. Long summaries are truncated without splitting a surrogate pair, and the read is retried only for an explicit thread.
+- [x] Switch workspaces with `accountSession/list` and `accountSession/switch` after a confirmation dialog. Local SSO opens only secure URLs through the existing browser path and can be cancelled with `account/login/cancel`. An unknown outcome is confirmed through `accountSession/list` and never retried.
+- [x] Add the workspace ID to the account fingerprint. A switch, or an account read that shows another workspace with the same email and plan, retires the owner. Pending operations are cancelled, late results are dropped, and recovery reloads the account, model, permission, and usage catalogs. MCP status has no cache and is read again on the next request.
+- [x] Experimental off, or a version below the introduction version, sends none of the linked fork, memory, or workspace requests.
+- [x] Workspace names are sanitized once before display.
+- [x] Release build with zero warnings and errors; Core 576 passed and 5 skipped, UI 602 passed and 1 skipped, no failures; Release VSIX inspection passed. The skipped cases need symbolic-link creation privilege on this Windows account.
+
+### Not yet verified
+
+- [ ] Check the `attachedToThreadId` query, with no `sourceKinds` filter, against a real 0.166.0 CLI.
+- [ ] Check linked forks, the memory pane, and the workspace picker in the Visual Studio Experimental Instance.
+- [ ] Real environments for an SSO-required workspace and for multiple workspaces with the same email and plan are not available. Fake coverage passes; these remain unverified in the release record.

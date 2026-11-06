@@ -190,6 +190,6 @@ internal static class ConnectionRecoveryCoordinator
         return TimeSpan.FromSeconds(seconds);
     }
 
-    private static bool IsTransientException(Exception exception)
+    internal static bool IsTransientException(Exception exception)
         => exception is IOException or TimeoutException or ObjectDisposedException;
 }
