@@ -29,11 +29,11 @@ item の `startedAtMs` と `completedAtMs` は、値がない場合に entry の
 
 ## Visual acceptance の制約
 
-変更対象に Visual Studio の UI 状態が含まれます。このセッションでは Computer Use で Visual Studio を確認しようとしましたが、`sky.list_apps()` が 2 回タイムアウトしました。skill の復旧手順に従い再試行後に停止したため、スクリーンショットによる表示確認はできていません。自動 UI テストは成功していますが、メンテナーの実画面確認は保留です。
+変更対象に Visual Studio の UI 状態が含まれます。このセッションでは Computer Use のアプリ一覧取得が2回タイムアウトし、スクリーンショットを取得できませんでした。その後、メンテナーが [Issue #242](https://github.com/kkamegawa/vsextensionforcodex/issues/242) と [Issue #244](https://github.com/kkamegawa/vsextensionforcodex/issues/244) に記録された Visual Studio Experimental Instance の受け入れを確認しています。この更新で新しいスクリーンショットを撮影したとは記録しません。ADR-021で受け入れた細かな実行状態の組み合わせは追加の手動受け入れ条件ではありません。証拠と受け入れ済み・未テスト項目は作業記録に記載します。
 
 ## Stage 2: 安定機能
 
-追跡 Issue: [#242](https://github.com/kkamegawa/vsextensionforcodex/issues/242)。設計どおり Worker contract は v27 のままです。未完了の項目は[作業記録](task-app-server-0-166_ja.md)にあります。
+追跡 Issue: [#242](https://github.com/kkamegawa/vsextensionforcodex/issues/242)。設計どおり Worker contract は v27 のままです。メンテナーの受け入れは #242 に記録済みです。作業記録では検証済みの証拠と、未テストのまま受け入れた細かな実行状態の組み合わせを区別します。
 
 - **レビュー:** `ReviewPlacement.NewThread` は `CodexSessionService.Review.cs` で処理します。設定は有効な会話の実効状態から取得し、対応付けられない値があれば `thread/start` の前に止めます。名前付きプロファイルの項目は Experimental 面にしかないため、Stable 面では `sandbox` を送ります。応答は元の会話と比較し、異なる権限が報告された場合は会話を残してレビューを開始しません。`ActiveThreadId` は `review/start` の成功後にのみ移動します。結果は Started、NotCreated、CreatedNotStarted、Unknown に分かれ、自動再送はしません。
 - **履歴スコープ:** `GitWorktreeScope` は読み取り専用の Git コマンドをタイムアウト付きで実行し、失敗時はスコープを表示しません。フォルダーの組はスコープ選択時に固定し、スコープを変えるとカーソルを破棄し、遅れた応答は世代で破棄します。絞り込み中の一覧を根拠に、キュー済みコマンドを削除扱いで取り消すことはありません。開いている会話の行も残します。
