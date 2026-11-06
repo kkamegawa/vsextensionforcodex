@@ -3870,7 +3870,8 @@ public sealed partial class ViewModelTests
             typeof(AppServerNoticePresentationViewModel), typeof(ArtifactPartPresentationViewModel),
             typeof(RemoteProfilesPresentationViewModel), typeof(RemoteProfileViewModel),
             typeof(ConnectionHealthPresentationViewModel), typeof(ConnectionTargetSnapshot),
-            typeof(PresetSlotViewModel),
+            typeof(PresetSlotViewModel), typeof(LinkedForkConversationViewModel),
+            typeof(AccountWorkspacePresentationViewModel),
         ];
 
     [TestMethod]
@@ -7442,6 +7443,8 @@ public sealed partial class ViewModelTests
         Assert.AreEqual("Build box", vm.Status.Target?.DisplayName);
         Assert.AreEqual(0, vm.Status.Target?.Generation);
         Assert.AreEqual("Reconnect remote app-server", vm.RestartActionText);
+        Assert.AreEqual(vm.Status.Message, vm.StatusDetailText, "A failed connection never shows the account placeholder.");
+        Assert.IsFalse(vm.IsRecovering, "A non-transient first-start failure does not retry automatically.");
 
         bridge.ConnectHandler = null;
         await RunCommandAsync(vm.RestartCommand);
@@ -7450,6 +7453,40 @@ public sealed partial class ViewModelTests
         Assert.AreEqual(0, bridge.ReconnectRequests.Count, "No generation snapshot exists to reconnect.");
         Assert.AreEqual(2, bridge.ConnectCallCount, "Recovery reruns the saved-profile connect.");
         Assert.AreEqual(WorkerConnectionState.Ready, vm.Status.State);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_FirstWorkerStartTimeout_RecoversWithoutDraftIsolationOrConversationSelection()
+    {
+        var bridge = new FakeWorkerBridge
+        {
+            ConnectHandler = () => Task.FromException<WorkerStatus>(new TimeoutException("The operation has timed out.")),
+        };
+        var replacement = new FakeWorkerBridge
+        {
+            ListThreadsHandler = (_, _) => Task.FromResult(new ThreadPage
+            {
+                Threads = [new ThreadSummary { Id = "thread-first" }],
+            }),
+        };
+        using var vm = new ChatViewModel(
+            bridge,
+            autoConnect: false,
+            settingsStore: new MemorySettingsStore(new ExtensionSettings()),
+            bridgeFactory: () => replacement);
+
+        // No working directory is recorded yet, as on a real cold start.
+        vm.ComposerText = "typed before the Worker started";
+
+        Assert.IsFalse(await ConnectDirectlyAsync(vm, Path.GetTempPath()));
+        await WaitForAsync(() => vm.Status.State == WorkerConnectionState.Ready && !vm.IsRecovering);
+
+        Assert.AreEqual(1, replacement.ConnectCallCount, "The first recovery attempt runs without a delay.");
+        Assert.AreEqual("thread-first", vm.Threads.Single().Id);
+        Assert.IsNull(vm.QuarantinedDraft, "No previous owner exists, so the composer is not isolated.");
+        Assert.AreEqual("typed before the Worker started", vm.ComposerText);
+        Assert.AreEqual(string.Empty, vm.RecoveryStatusText, "A first connection has no conversation to choose again.");
+        Assert.AreNotEqual("Checking account...", vm.StatusDetailText);
     }
 
     [TestMethod]
@@ -9387,6 +9424,33 @@ public sealed partial class ViewModelTests
 
         public Task<StartAccountLoginResult> StartAccountLoginAsync(StartAccountLoginRequest request, CancellationToken cancellationToken)
             => Task.FromResult(new StartAccountLoginResult());
+
+        public List<ListWorkspacesRequest> ListWorkspacesRequests { get; } = [];
+
+        public List<SwitchWorkspaceRequest> SwitchWorkspaceRequests { get; } = [];
+
+        public List<GetThreadMemoryRequest> ThreadMemoryRequests { get; } = [];
+
+        public Task<ListWorkspacesResult> ListWorkspacesAsync(ListWorkspacesRequest request, CancellationToken cancellationToken)
+        {
+            ListWorkspacesRequests.Add(request);
+            return Task.FromResult(new ListWorkspacesResult());
+        }
+
+        public Task<SwitchWorkspaceResult> SwitchWorkspaceAsync(SwitchWorkspaceRequest request, CancellationToken cancellationToken)
+        {
+            SwitchWorkspaceRequests.Add(request);
+            return Task.FromResult(new SwitchWorkspaceResult());
+        }
+
+        public Task<SwitchWorkspaceResult> CancelWorkspaceLoginAsync(CancelWorkspaceLoginRequest request, CancellationToken cancellationToken)
+            => Task.FromResult(new SwitchWorkspaceResult());
+
+        public Task<ThreadMemoryResult> GetThreadMemoryAsync(GetThreadMemoryRequest request, CancellationToken cancellationToken)
+        {
+            ThreadMemoryRequests.Add(request);
+            return Task.FromResult(new ThreadMemoryResult());
+        }
 
         public Task<AccountStatus> LogoutAccountAsync(LogoutAccountRequest request, CancellationToken cancellationToken)
         {

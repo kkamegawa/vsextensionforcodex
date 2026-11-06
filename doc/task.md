@@ -947,11 +947,11 @@ Tracking: [#242](https://github.com/kkamegawa/vsextensionforcodex/issues/242). A
 - [x] Commit `b3b23e4` passed Debug and Release builds with zero warnings and errors, the Release VSIX inspection, and contract validation. Each configuration had 553 passing Core tests and 602 passing UI tests, with no failures. Five Core and one UI symbolic-link cases were skipped because Windows denied link creation. The strict release gate remains blocked.
 - [x] `verify-contract-surface.ps1` passed for all six supported versions on both surfaces with `account/usage/read` in the method tables. The Worker only requests per-conversation USD on 0.166.0 or later.
 - [x] Real CLI checks covered the 0.161.0 review start and history row, and the 0.166.0 schema, completed reviews, and `codex doctor` run. The isolated 0.166.0 Responses request used the configured `review_model`, or the conversation model when omitted.
-- [ ] Experimental Instance acceptance remains open for the conversation text editor tab, history scope ComboBox, and restoration of a saved non-empty Reasoning summary. PR #248 records maintainer confirmation of `/doctor`, conversation search, Plan selection and copy, and High Contrast and Narrator.
+- [x] Experimental Instance acceptance was completed for the conversation text editor tab, history scope ComboBox, and restoration of a saved non-empty Reasoning summary; PR #248 records these maintainer checks alongside /doctor, conversation search, Plan selection and copy, High Contrast, and Narrator.
 
 ### 2026-11-04: Conversation text fidelity
 
-Tracking: [#250](https://github.com/kkamegawa/vsextensionforcodex/issues/250). Snapshot history text preserves literal code and command output after secret redaction. MCP text and fallback explanations remain visible, and credential-key detection does not match ordinary identifier suffixes. See the English and Japanese task records for the confirmed Experimental Instance check and the remaining investigation of empty Reasoning items.
+Tracking: [#250](https://github.com/kkamegawa/vsextensionforcodex/issues/250). Snapshot history text preserves literal code and command output after secret redaction. MCP text and fallback explanations remain visible, and credential-key detection does not match ordinary identifier suffixes. The maintainer confirmed a real long-history snapshot and later found no empty Reasoning entries in accessible histories after the fix; the original cause remains undetermined. See the English and Japanese task records for evidence.
 
 ### 2026-11-04: Validation policy
 

@@ -18,14 +18,14 @@ public sealed class TransportPoliciesTests
     ];
 
     [TestMethod]
-    public void Allowlist_ContainsExactlyTheTwelveReviewedReadOnlyMethods()
+    public void Allowlist_ContainsExactlyTheFourteenReviewedReadOnlyMethods()
     {
         CollectionAssert.AreEquivalent(
             new[]
             {
                 "account/read", "account/rateLimits/read", "account/usage/read", "thread/list", "thread/goal/get",
                 "model/list", "permissionProfile/list", "mcpServerStatus/list", "skills/list",
-                "thread/read", "thread/turns/list", "thread/items/list", "thread/attachment/list",
+                "thread/read", "thread/memory/read", "thread/turns/list", "thread/items/list", "thread/attachment/list",
             },
             ReadOnlyRequestAllowlist.Methods.ToArray());
     }
@@ -95,6 +95,14 @@ public sealed class TransportPoliciesTests
         Assert.IsFalse(ReadOnlyRequestAllowlist.IsRetryable("skills/list", new { forceReload = (bool?)null }));
         Assert.IsFalse(ReadOnlyRequestAllowlist.IsRetryable("skills/list", new { forceReload = "false" }));
         Assert.IsFalse(ReadOnlyRequestAllowlist.IsRetryable("skills/list", null));
+    }
+
+    [TestMethod]
+    public void Allowlist_ThreadMemoryReadIsRetryableForAnExplicitThread()
+    {
+        Assert.IsTrue(ReadOnlyRequestAllowlist.IsRetryable("thread/memory/read", new { threadId = "thread-1" }));
+        Assert.IsFalse(ReadOnlyRequestAllowlist.IsRetryable("thread/memory/read", new { threadId = "" }));
+        Assert.IsFalse(ReadOnlyRequestAllowlist.IsRetryable("thread/memory/read", null));
     }
 
     [TestMethod]

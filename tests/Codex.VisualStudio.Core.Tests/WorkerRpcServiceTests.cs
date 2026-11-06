@@ -157,6 +157,13 @@ public sealed class WorkerRpcServiceTests
         Assert.AreEqual(status.Target.Generation, page.ConnectionGeneration);
         Assert.AreEqual(status.Target.StatePartitionFingerprint, page.StatePartitionFingerprint);
 
+        ThreadMemoryResult memory = await worker.GetThreadMemoryAsync(
+            Scoped(worker, new GetThreadMemoryRequest { ThreadId = "thread-1" }),
+            CancellationToken.None);
+        Assert.AreEqual(status.Target.OwnerGeneration, memory.OwnerGeneration);
+        Assert.AreEqual(status.Target.Generation, memory.ConnectionGeneration);
+        Assert.AreEqual(status.Target.StatePartitionFingerprint, memory.StatePartitionFingerprint);
+
         int resumeCallsBefore = connection.Methods.Count(method => method == "thread/resume");
         await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => worker.ResumeThreadAsync(
             Scoped(worker, new ResumeThreadRequest { ThreadId = "thread-1" }),

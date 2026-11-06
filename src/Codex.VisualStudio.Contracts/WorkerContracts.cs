@@ -461,6 +461,67 @@ public sealed class AccountStatus
     public string? PlanType { get; set; }
 
     public string? Message { get; set; }
+
+    public string? WorkspaceId { get; set; }
+
+    public string? WorkspaceName { get; set; }
+}
+
+public sealed class ListWorkspacesRequest : OwnerScopedRequest
+{
+}
+
+public sealed class ListWorkspacesResult : WorkerGenerationResult
+{
+    public bool IsSupported { get; set; }
+
+    public string? UnavailableReason { get; set; }
+
+    public string? SessionId { get; set; }
+
+    public string? SelectedWorkspaceAccountId { get; set; }
+
+    public IReadOnlyList<AccountWorkspace> Workspaces { get; set; } = Array.Empty<AccountWorkspace>();
+}
+
+public sealed class AccountWorkspace
+{
+    public string AccountId { get; set; } = string.Empty;
+
+    public string Name { get; set; } = string.Empty;
+}
+
+public sealed class SwitchWorkspaceRequest : OwnerScopedRequest
+{
+    public string SessionId { get; set; } = string.Empty;
+
+    public string AccountId { get; set; } = string.Empty;
+
+    public bool UserConfirmed { get; set; }
+}
+
+public enum WorkspaceSwitchState
+{
+    Switched,
+    BrowserLoginRequired,
+    Unknown,
+    Failed,
+}
+
+public sealed class SwitchWorkspaceResult
+{
+    public WorkspaceSwitchState State { get; set; }
+
+    public string? Message { get; set; }
+
+    public string? LoginId { get; set; }
+
+    public string? AuthUrl { get; set; }
+}
+
+public sealed class CancelWorkspaceLoginRequest : OwnerScopedRequest
+{
+    public string LoginId { get; set; } = string.Empty;
 }
 
 public sealed class StartAccountLoginResult
@@ -499,6 +560,9 @@ public sealed class ThreadSummary
 
     [DataMember]
     public string? EffectiveModelId { get; set; }
+
+    [DataMember]
+    public string? LinkedParentThreadId { get; set; }
 
     // True when a 0.164.0+ resume returned the thread's saved settings. Model, reasoning effort,
     // and service tier then replace the composer settings together; a null tier means normal
@@ -998,11 +1062,23 @@ public sealed class StartReviewResult : AppServerOperationResult
 public sealed class ForkThreadRequest : OwnerScopedRequest
 {
     public string ThreadId { get; set; } = string.Empty;
+    public bool CreateLinkedFork { get; set; }
+
+    // Lists the linked children of ThreadId through thread/list.attachedToThreadId instead of forking.
+    public bool ListLinkedForks { get; set; }
+
+    public string? Cursor { get; set; }
 }
 
 public sealed class ForkThreadResult : AppServerOperationResult
 {
     public ThreadSummary? Thread { get; set; }
+
+    public IReadOnlyList<ThreadSummary> RelatedThreads { get; set; } = Array.Empty<ThreadSummary>();
+
+    public string? NextCursor { get; set; }
+
+    public string? ParentThreadId { get; set; }
 }
 
 public sealed class ThreadGoalInfo
@@ -1582,6 +1658,18 @@ public interface ICodexWorkerClient
 
     [JsonRpcMethod("worker/account/logout")]
     Task<AccountStatus> LogoutAccountAsync(LogoutAccountRequest request, CancellationToken cancellationToken);
+
+    [JsonRpcMethod("worker/account/workspaces/list")]
+    Task<ListWorkspacesResult> ListWorkspacesAsync(ListWorkspacesRequest request, CancellationToken cancellationToken);
+
+    [JsonRpcMethod("worker/account/workspace/switch")]
+    Task<SwitchWorkspaceResult> SwitchWorkspaceAsync(SwitchWorkspaceRequest request, CancellationToken cancellationToken);
+
+    [JsonRpcMethod("worker/account/workspace/cancelLogin")]
+    Task<SwitchWorkspaceResult> CancelWorkspaceLoginAsync(CancelWorkspaceLoginRequest request, CancellationToken cancellationToken);
+
+    [JsonRpcMethod("worker/thread/memory/read")]
+    Task<ThreadMemoryResult> GetThreadMemoryAsync(GetThreadMemoryRequest request, CancellationToken cancellationToken);
 
     [JsonRpcMethod("worker/thread/start")]
     Task<ThreadSummary> StartThreadAsync(StartThreadRequest request, CancellationToken cancellationToken);
