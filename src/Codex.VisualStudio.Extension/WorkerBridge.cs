@@ -8,7 +8,7 @@ using StreamJsonRpc;
 
 namespace Codex.VisualStudio.Extension;
 
-internal interface IWorkerBridge : IAsyncDisposable
+internal partial interface IWorkerBridge : IAsyncDisposable
 {
     event Action<WorkerRecoveryFailureKind>? ConnectionLost;
 
@@ -65,6 +65,14 @@ internal interface IWorkerBridge : IAsyncDisposable
     Task<ConnectionDiagnosticsResult> DiagnoseConnectionAsync(ConnectionDiagnosticsRequest request, CancellationToken cancellationToken);
 
     Task<AccountStatus> GetAccountStatusAsync(CancellationToken cancellationToken);
+
+    Task<ListWorkspacesResult> ListWorkspacesAsync(ListWorkspacesRequest request, CancellationToken cancellationToken);
+
+    Task<SwitchWorkspaceResult> SwitchWorkspaceAsync(SwitchWorkspaceRequest request, CancellationToken cancellationToken);
+
+    Task<SwitchWorkspaceResult> CancelWorkspaceLoginAsync(CancelWorkspaceLoginRequest request, CancellationToken cancellationToken);
+
+    Task<ThreadMemoryResult> GetThreadMemoryAsync(GetThreadMemoryRequest request, CancellationToken cancellationToken);
 
     Task<StartAccountLoginResult> StartAccountLoginAsync(StartAccountLoginRequest request, CancellationToken cancellationToken);
 
@@ -190,9 +198,11 @@ internal interface IWorkerBridge : IAsyncDisposable
     Task DismissMcpOAuthLoginAsync(DismissMcpOAuthLoginRequest request, CancellationToken cancellationToken);
 }
 
-public sealed class WorkerBridge : IWorkerBridge, ICodexWorkerObserver
+public sealed partial class WorkerBridge : IWorkerBridge, ICodexWorkerObserver
 {
     private static readonly TimeSpan ModelListTimeout = TimeSpan.FromSeconds(20);
+
+    internal const int WorkerPipeConnectTimeoutMilliseconds = 30_000;
 
     private readonly OutputChannel? log;
     private readonly SemaphoreSlim lifecycleGate = new(1, 1);
@@ -846,7 +856,8 @@ public sealed class WorkerBridge : IWorkerBridge, ICodexWorkerObserver
         try
         {
             pipe = new NamedPipeClientStream(".", pipeName, PipeDirection.InOut, PipeOptions.Asynchronous);
-            await Task.Run(() => pipe.Connect(15_000), cancellationToken).ConfigureAwait(false);
+            // A newly installed Worker can start slowly while Visual Studio loads a solution.
+            await pipe.ConnectAsync(WorkerPipeConnectTimeoutMilliseconds, cancellationToken).ConfigureAwait(false);
             ExtensionDiagnostics.Write("Worker pipe connected");
             var workerRpc = new JsonRpc(pipe);
             workerRpc.AddLocalRpcTarget<ICodexWorkerObserver>(this, null);

@@ -129,6 +129,15 @@ public partial interface ICodexSessionService : IAsyncDisposable
 
     Task<AccountStatus> GetAccountStatusAsync(CancellationToken cancellationToken);
 
+    Task<ListWorkspacesResult> ListWorkspacesAsync(CancellationToken cancellationToken)
+        => Task.FromResult(new ListWorkspacesResult { IsSupported = false, UnavailableReason = "Workspace switching is not supported by this session." });
+
+    Task<SwitchWorkspaceResult> SwitchWorkspaceAsync(SwitchWorkspaceRequest request, CancellationToken cancellationToken)
+        => Task.FromResult(new SwitchWorkspaceResult { State = WorkspaceSwitchState.Failed, Message = "Workspace switching is not supported by this session." });
+
+    Task<SwitchWorkspaceResult> CancelWorkspaceLoginAsync(string loginId, CancellationToken cancellationToken)
+        => Task.FromResult(new SwitchWorkspaceResult { State = WorkspaceSwitchState.Failed, Message = "Workspace login cancellation is not supported by this session." });
+
     Task<StartAccountLoginResult> StartAccountLoginAsync(CancellationToken cancellationToken);
 
     Task<AccountStatus> LogoutAccountAsync(CancellationToken cancellationToken);
@@ -1324,7 +1333,12 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
 
     public async Task<ThreadSummary> StartThreadAsync(CancellationToken cancellationToken)
     {
-        JsonElement result = await SendAsync("thread/start", new { cwd = MapLocalPathForServer(options.WorkingDirectory) }, cancellationToken).ConfigureAwait(false);
+        ConnectionContext context = RequireContext();
+        object parameters = context.FeatureTier >= CodexFeatureTier.Tier166
+            && context.ExperimentalApi
+                ? new { cwd = MapLocalPathForServer(options.WorkingDirectory), historyMode = "paginated" }
+                : new { cwd = MapLocalPathForServer(options.WorkingDirectory) };
+        JsonElement result = await SendAsync("thread/start", parameters, cancellationToken).ConfigureAwait(false);
         effectiveThreadPermissions = ReadEffectiveThreadPermissions(result);
         ReadEffectiveTurnSettings(result, out string? reasoningEffort, out string? serviceTier);
         EffectiveReasoningEffort = reasoningEffort;
@@ -1354,12 +1368,16 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
                 cancellationToken).ConfigureAwait(false);
             EnsureCurrent(context);
             AccountStatus status = ReadAccountStatus(result);
+            if (context.ExperimentalApi && context.FeatureTier >= CodexFeatureTier.Tier166)
+            {
+                status = await PopulateWorkspaceNameAsync(context, status, cancellationToken).ConfigureAwait(false);
+            }
             WorkerDiagnostics.Write($"account status read completed state={status.State} plan={status.PlanType ?? "none"}");
 
             // The owner's first read records its account fingerprint. A later read that returns a
             // different account is an owner boundary: the new account's status is never published
             // under the old owner.
-            string fingerprint = ComputeAccountFingerprint(result);
+            string fingerprint = ComputeAccountFingerprint(result, context);
             string? recorded = context.AccountFingerprint;
             if (recorded is null)
             {
@@ -1368,9 +1386,9 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             else if (!string.Equals(recorded, fingerprint, StringComparison.Ordinal))
             {
                 WorkerDiagnostics.Write("account identity changed; retiring the owner");
-                bool ownLogout = context.LogoutRequested;
-                invalidatedAccountState = ownLogout ? AccountState.SignedOut : AccountState.Unavailable;
-                invalidatedByOwnerAction = ownLogout;
+                bool ownAccountChange = context.LogoutRequested || context.WorkspaceSwitchRequested;
+                invalidatedAccountState = context.LogoutRequested ? AccountState.SignedOut : AccountState.Unavailable;
+                invalidatedByOwnerAction = ownAccountChange;
                 await InvalidateOwnerPartitionAsync(context, cancellationToken).ConfigureAwait(false);
                 var changed = new AccountStatus
                 {
@@ -2305,11 +2323,82 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         ForkThreadRequest request,
         CancellationToken cancellationToken)
     {
-        OperationCallResult call = await TrySendOperationAsync(
-            "thread/fork",
-            new { threadId = request.ThreadId },
-            TimeSpan.FromSeconds(60),
-            cancellationToken).ConfigureAwait(false);
+        ConnectionContext context = RequireContext();
+        bool linkedForkAvailable = context.FeatureTier >= CodexFeatureTier.Tier166
+            && context.ExperimentalApi;
+        if ((request.CreateLinkedFork || request.ListLinkedForks) && !linkedForkAvailable)
+        {
+            return new ForkThreadResult
+            {
+                IsSupported = false,
+                UnavailableReason = "Linked conversations require a 0.166 or later App Server with Experimental API enabled.",
+            };
+        }
+
+        if (request.CreateLinkedFork && request.ListLinkedForks)
+        {
+            return new ForkThreadResult
+            {
+                IsSupported = false,
+                UnavailableReason = "Choose either Create linked fork or list related conversations.",
+            };
+        }
+
+        if (request.ListLinkedForks)
+        {
+            var listParameters = new Dictionary<string, object?>
+            {
+                ["attachedToThreadId"] = request.ThreadId,
+                ["cursor"] = request.Cursor,
+                ["limit"] = 25,
+            };
+            JsonElement listResult = await SendReadOnlyAsync(
+                "thread/list",
+                listParameters,
+                cancellationToken).ConfigureAwait(false);
+            EnsureCurrent(context);
+
+            var relatedThreads = new List<ThreadSummary>();
+            if (listResult.TryGetProperty("data", out JsonElement listData)
+                && listData.ValueKind == JsonValueKind.Array)
+            {
+                foreach (JsonElement item in listData.EnumerateArray())
+                {
+                    ThreadSummary related = ReadThread(item);
+                    related.LinkedParentThreadId = request.ThreadId;
+                    relatedThreads.Add(related);
+                }
+            }
+
+            return new ForkThreadResult
+            {
+                RelatedThreads = relatedThreads,
+                NextCursor = GetString(listResult, "nextCursor"),
+                ParentThreadId = request.ThreadId,
+            };
+        }
+
+        object parameters = request.CreateLinkedFork
+            ? new { threadId = request.ThreadId, attachToSource = true, excludeTurns = true }
+            : new { threadId = request.ThreadId };
+        OperationCallResult call;
+        try
+        {
+            call = await TrySendOperationAsync(
+                "thread/fork",
+                parameters,
+                TimeSpan.FromSeconds(60),
+                cancellationToken).ConfigureAwait(false);
+        }
+        catch (JsonRpcRemoteException ex) when (request.CreateLinkedFork)
+        {
+            WorkerDiagnostics.Write("linked fork was rejected", ex);
+            return new ForkThreadResult
+            {
+                UnavailableReason = redactor.Redact($"The app-server refused the linked fork: {BoundMessage(ex.Message)}"),
+            };
+        }
+
         if (!call.IsSupported)
         {
             return Unsupported<ForkThreadResult>("Thread forking is not supported by this app-server.");
@@ -2326,13 +2415,17 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
                 EffectiveReasoningEffort,
                 EffectiveServiceTier)
             : null;
+        if (request.CreateLinkedFork && thread is not null)
+        {
+            thread.LinkedParentThreadId = request.ThreadId;
+        }
+
         ActiveThreadId = thread?.Id ?? ActiveThreadId;
         effectiveThreadModelId = thread?.EffectiveModelId ?? ReadEffectiveModelId(call.Result) ?? effectiveThreadModelId;
         activeThreadInheritsDefaultModel = false;
         ActiveTurnId = null;
         return new ForkThreadResult { Thread = thread };
     }
-
     // Every goal mutation the extension sends comes from an explicit user action. 0.162.1 treats a
     // missing origin as "no user authorization", and older servers ignore the unknown field.
     private const string UserGoalMutationOrigin = "user";
@@ -5038,7 +5131,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             cancellationToken) ?? Task.CompletedTask;
 
     // A Worker-only digest of the account identity fields. It never leaves the Worker.
-    private static string ComputeAccountFingerprint(JsonElement result)
+    private static string ComputeAccountFingerprint(JsonElement result, ConnectionContext context)
     {
         if (!result.TryGetProperty("account", out JsonElement account)
             || account.ValueKind != JsonValueKind.Object)
@@ -5058,9 +5151,62 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             builder.Append(value.Length).Append(':').Append(value).Append('\0');
         }
 
+        string? workspaceId = context.ExperimentalApi && context.FeatureTier >= CodexFeatureTier.Tier166
+            ? ReadWorkspaceAccountId(result)
+            : null;
+        if (!string.IsNullOrWhiteSpace(workspaceId))
+        {
+            builder.Append(workspaceId.Length).Append(':').Append(workspaceId).Append('\0');
+        }
         return Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(builder.ToString())));
     }
 
+    private async Task<AccountStatus> PopulateWorkspaceNameAsync(
+        ConnectionContext context,
+        AccountStatus status,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(status.WorkspaceId))
+        {
+            return status;
+        }
+
+        try
+        {
+            JsonElement result = await context.Connection.SendReadOnlyRequestAsync(
+                "accountSession/list",
+                new { refreshWorkspaceMetadata = true },
+                TimeSpan.FromSeconds(15),
+                cancellationToken).ConfigureAwait(false);
+            EnsureCurrent(context);
+            ListWorkspacesResult workspaces = ReadWorkspaces(result);
+            AccountWorkspace? activeWorkspace = workspaces.Workspaces.FirstOrDefault(workspace =>
+                string.Equals(workspace.AccountId, workspaces.SelectedWorkspaceAccountId, StringComparison.Ordinal)
+                && string.Equals(workspace.AccountId, status.WorkspaceId, StringComparison.Ordinal));
+            return activeWorkspace is null
+                ? status
+                : new AccountStatus
+                {
+                    State = status.State,
+                    PlanType = status.PlanType,
+                    WorkspaceId = status.WorkspaceId,
+                    WorkspaceName = activeWorkspace.Name,
+                    Message = status.Message,
+                };
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (JsonRpcConnectionClosedException) when (!IsCurrent(context))
+        {
+            throw;
+        }
+        catch (Exception)
+        {
+            return status;
+        }
+    }
     private static AccountStatus ReadAccountStatus(JsonElement result)
     {
         if (!result.TryGetProperty("account", out JsonElement account)
@@ -5077,9 +5223,17 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         {
             State = AccountState.SignedIn,
             PlanType = planType,
+            WorkspaceId = ReadWorkspaceAccountId(result),
+            WorkspaceName = GetString(account, "workspaceName"),
         };
     }
-
+    private static string? ReadWorkspaceAccountId(JsonElement account)
+    {
+        return account.TryGetProperty("workspaceRouting", out JsonElement workspaceRouting)
+            && workspaceRouting.ValueKind == JsonValueKind.Object
+                ? GetString(workspaceRouting, "chatgptAccountId")
+                : null;
+    }
     private static bool IsSecureAbsoluteUrl(string? value)
         => Uri.TryCreate(value, UriKind.Absolute, out Uri? uri)
         && string.Equals(uri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase);
@@ -6458,8 +6612,11 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         public bool NotifyPendingResolution { get; set; }
         public bool OwnerInvalidated { get; set; }
         public string? PendingLoginId { get; set; }
+        public bool WorkspaceOperationInProgress { get; set; }
+
         public string? AccountFingerprint { get; set; }
         public bool LogoutRequested { get; set; }
+        public bool WorkspaceSwitchRequested { get; set; }
         public bool GatewayOAuthRequired { get; set; }
         public bool GatewayOAuthReady { get; set; }
         public bool GatewayOAuthReadSucceeded { get; set; }

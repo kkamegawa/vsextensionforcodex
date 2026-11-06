@@ -264,6 +264,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         SendKeyCommand = new AsyncCommand(() => IsGoalPrimaryMode ? Task.CompletedTask : SendAsync(), () => !IsGoalPrimaryMode && CanSend());
         InterruptCommand = new AsyncCommand(InterruptAsync, CanInterruptSelectedThread);
         AccountCommand = new AsyncCommand(ExecuteAccountActionAsync, CanExecuteAccountAction);
+        InitializeWorkspaceCommands();
         ToggleHistoryCommand = new AsyncCommand(() =>
         {
             IsHistoryOpen = !IsHistoryOpen;
@@ -533,11 +534,13 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
     // Intentionally NOT a DataMember: the XAML binds the flattened Account* properties below.
     public AccountPanelViewModel Account { get; } = new();
 
-    // Shown beneath the connection status. Before the first connection attempt the account
-    // has never been checked, so showing "Checking account..." would look like a stuck
-    // loading state; show the connection status's own guidance message instead.
+    // Shown beneath the connection status. The account is never checked without a connected
+    // Worker, so before the first connection or after a failed one "Checking account..." would
+    // look like a stuck loading state; show the connection status's own message instead.
     [DataMember]
-    public string StatusDetailText => Status.State == WorkerConnectionState.Disconnected && Account.State == AccountState.Checking
+    public string StatusDetailText => Status.State is WorkerConnectionState.Disconnected or WorkerConnectionState.Degraded
+        && Account.State == AccountState.Checking
+        && !string.IsNullOrEmpty(Status.Message)
         ? Status.Message
         : Account.DisplayText;
 
@@ -637,6 +640,9 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
     public bool ShowAccountAction => Account.ShowAction;
 
     [DataMember]
+    public bool ShowWorkspaceSwitcherButton => ShowWorkspaceSwitcher;
+
+    [DataMember]
     public string AccountActionText => Account.ActionText;
 
     [DataMember]
@@ -650,6 +656,10 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             long previousOwnerGeneration = observedOwnerGeneration;
             if (SetProperty(ref status, value))
             {
+                OnPropertyChanged(nameof(ShowWorkspaceSwitcherButton));
+                OpenWorkspacePickerCommand?.RaiseCanExecuteChanged();
+                RefreshWorkspacesCommand?.RaiseCanExecuteChanged();
+                SwitchWorkspaceCommand?.RaiseCanExecuteChanged();
                 string? currentPartition = value.Target?.StatePartitionFingerprint;
                 long currentOwnerGeneration = value.Target?.OwnerGeneration ?? 0;
                 long currentGeneration = value.Target?.Generation ?? 0;
@@ -658,6 +668,12 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                 if (!string.Equals(previousPartition, currentPartition, StringComparison.Ordinal)
                     || previousOwnerGeneration != currentOwnerGeneration)
                 {
+                    IsWorkspacePickerOpen = false;
+                    workspaces.Clear();
+                    SelectedWorkspace = null;
+                    workspaceSessionId = null;
+                    pendingWorkspaceLoginId = null;
+                    OnPropertyChanged(nameof(IsWorkspaceLoginPending));
                     if (QuarantinedDraft is null && HasDraftContent())
                     {
                         QuarantinedDraft = CaptureRecoveryDraft();
@@ -836,7 +852,15 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         source.ApprovalAuditReceived -= OnApprovalAuditReceivedAsync;
     }
 
-    private async Task HandleConnectionLostAsync(IWorkerBridge source, WorkerRecoveryFailureKind failureKind)
+    private Task HandleConnectionLostAsync(IWorkerBridge source, WorkerRecoveryFailureKind failureKind)
+        => RecoverConnectionAsync(source, failureKind, firstConnectionRoot: null);
+
+    // A non-null firstConnectionRoot marks a failed first Worker start: no owner existed yet, so
+    // there is no draft to isolate, no operation to mark uncertain, and no owner state to clear.
+    private async Task RecoverConnectionAsync(
+        IWorkerBridge source,
+        WorkerRecoveryFailureKind failureKind,
+        string? firstConnectionRoot)
     {
         if (!ConnectionRecoveryCoordinator.IsTransient(failureKind) || lifetime.IsCancellationRequested)
         {
@@ -845,7 +869,8 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             return;
         }
 
-        string? root = workingDirectory;
+        bool firstConnection = firstConnectionRoot is not null;
+        string? root = firstConnectionRoot ?? workingDirectory;
         string? profileName = connectedProfileName;
         string? fingerprint = profileName is null
             ? null
@@ -856,6 +881,17 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         {
             if (!ReferenceEquals(source, bridge) || IsRecovering)
             {
+                return;
+            }
+
+            if (firstConnection)
+            {
+                IsRecovering = true;
+                RecoveryStatusText = "The Codex Worker did not start in time. Retrying…";
+                recoveryCancellation?.Cancel();
+                recoveryCancellation?.Dispose();
+                recoveryCancellation = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
+                started = true;
                 return;
             }
 
@@ -910,7 +946,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             async (_, token) => await RecoverAttemptAsync(root, profileName, fingerprint, experimentalApi, token).ConfigureAwait(false),
             token => IsRecoveryTargetValidAsync(root, profileName, fingerprint, experimentalApi, token),
             cancellation.Token).ConfigureAwait(false);
-        await FinishRecoveryAsync(result).ConfigureAwait(false);
+        await FinishRecoveryCoreAsync(result, firstConnection).ConfigureAwait(false);
     }
 
     private bool HasDraftContent()
@@ -1062,7 +1098,10 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             && string.Equals(applied.ComputeFingerprint(), fingerprint, StringComparison.Ordinal);
     }
 
-    private async Task FinishRecoveryAsync(ConnectionRecoveryResult result)
+    private Task FinishRecoveryAsync(ConnectionRecoveryResult result)
+        => FinishRecoveryCoreAsync(result, firstConnection: false);
+
+    private async Task FinishRecoveryCoreAsync(ConnectionRecoveryResult result, bool firstConnection)
     {
         bool readyStateSynchronized = false;
         if (result.Outcome == ConnectionRecoveryOutcome.Reconnected)
@@ -1101,7 +1140,10 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                     RestoreRecoveredPlanMode(preservedPlanMode);
                     if (readyStateSynchronized)
                     {
-                        RecoveryStatusText = "Connection restored. Choose a conversation to inspect its history, then Join explicitly before sending.";
+                        // A first connection had no previous conversation to choose again.
+                        RecoveryStatusText = firstConnection
+                            ? string.Empty
+                            : "Connection restored. Choose a conversation to inspect its history, then Join explicitly before sending.";
                     }
                     break;
                 case ConnectionRecoveryOutcome.Cancelled:
@@ -2147,6 +2189,11 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
 
     private void CloseOtherFlyouts(string keep)
     {
+        if (keep != nameof(IsWorkspacePickerOpen) && isWorkspacePickerOpen)
+        {
+            isWorkspacePickerOpen = false;
+            OnPropertyChanged(nameof(IsWorkspacePickerOpen));
+        }
         if (keep != nameof(IsHistoryOpen) && isHistoryOpen)
         {
             isHistoryOpen = false;
@@ -2814,9 +2861,11 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             SetConnectedSandboxBackend(targetSandboxBackendId);
         }).ConfigureAwait(false);
         WorkerStatus result;
+        IWorkerBridge connectingBridge = bridge;
+        bool workerStartFailed = false;
         try
         {
-            result = await bridge.ConnectAsync(workingDirectory, settings.ExperimentalApiEnabled, lifetime.Token).ConfigureAwait(false);
+            result = await connectingBridge.ConnectAsync(workingDirectory, settings.ExperimentalApiEnabled, lifetime.Token).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
         {
@@ -2829,6 +2878,9 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         catch (Exception ex)
         {
             ExtensionDiagnostics.Write("Initial Worker connection failed", ex);
+
+            // A Worker that started too slowly or lost its transport is a transient failure.
+            workerStartFailed = ConnectionRecoveryCoordinator.IsTransientException(ex);
             result = new WorkerStatus
             {
                 State = WorkerConnectionState.Degraded,
@@ -2853,6 +2905,18 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         }).ConfigureAwait(false);
         if (!applied)
         {
+            return false;
+        }
+
+        if (workerStartFailed)
+        {
+            // Recovery validates its target against the current root, which a first start has
+            // not recorded yet. The episode waits for this connect to release profileOperationGate.
+            this.workingDirectory = workingDirectory;
+            _ = RecoverConnectionAsync(
+                connectingBridge,
+                WorkerRecoveryFailureKind.PeerUnresponsive,
+                firstConnectionRoot: workingDirectory);
             return false;
         }
 
@@ -4742,7 +4806,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             : new HashSet<string>(StringComparer.Ordinal);
         foreach (ThreadSummary thread in pageThreads)
         {
-            if (existingIds.Add(thread.Id))
+            if (string.IsNullOrWhiteSpace(thread.LinkedParentThreadId) && existingIds.Add(thread.Id))
             {
                 Threads.Add(thread);
             }
@@ -7061,7 +7125,9 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             ? Task.CompletedTask
             : OnUiAsync(() =>
             {
-                if (IsCurrentOwner(owner) && !Threads.Any(existing => string.Equals(existing.Id, thread.Id, StringComparison.Ordinal)))
+                if (IsCurrentOwner(owner)
+                    && string.IsNullOrWhiteSpace(thread.LinkedParentThreadId)
+                    && !Threads.Any(existing => string.Equals(existing.Id, thread.Id, StringComparison.Ordinal)))
                 {
                     Threads.Insert(0, thread);
                 }
@@ -9801,7 +9867,34 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
     private void UpdateAccount(AccountStatus value)
     {
         bool wasSignedIn = Account.IsSignedIn;
-        Account.Update(value);
+        string? previousWorkspaceId = Account.WorkspaceId;
+        // The workspace name comes from the app-server and is shown in the account header.
+        // Sanitize a copy once here; readers use Account.WorkspaceName as is.
+        Account.Update(new AccountStatus
+        {
+            State = value.State,
+            PlanType = value.PlanType,
+            Message = value.Message,
+            WorkspaceId = value.WorkspaceId,
+            WorkspaceName = string.IsNullOrWhiteSpace(value.WorkspaceName)
+                ? value.WorkspaceName
+                : ToSafeHeaderText(value.WorkspaceName),
+        });
+        OnPropertyChanged(nameof(CurrentWorkspaceText));
+        OnPropertyChanged(nameof(ShowWorkspaceSwitcher));
+        OnPropertyChanged(nameof(ShowWorkspaceSwitcherButton));
+        if (!string.Equals(previousWorkspaceId, Account.WorkspaceId, StringComparison.Ordinal))
+        {
+            workspaces.Clear();
+            SelectedWorkspace = null;
+            workspaceSessionId = null;
+            pendingWorkspaceLoginId = null;
+            OnPropertyChanged(nameof(IsWorkspaceLoginPending));
+            if (!Account.IsSignedIn)
+            {
+                IsWorkspacePickerOpen = false;
+            }
+        }
         if (!Account.IsSignedIn)
         {
             if (wasSignedIn)
@@ -9816,6 +9909,10 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         OnPropertyChanged(nameof(AccountActionText));
         OnPropertyChanged(nameof(IsUsageAvailable));
         AccountCommand.RaiseCanExecuteChanged();
+        OpenWorkspacePickerCommand?.RaiseCanExecuteChanged();
+        RefreshWorkspacesCommand?.RaiseCanExecuteChanged();
+        SwitchWorkspaceCommand?.RaiseCanExecuteChanged();
+        CancelWorkspaceLoginCommand?.RaiseCanExecuteChanged();
         ToggleUsageCommand.RaiseCanExecuteChanged();
     }
 
@@ -9858,6 +9955,10 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
 
     private void RaiseCommandStates()
     {
+        OpenWorkspacePickerCommand?.RaiseCanExecuteChanged();
+        RefreshWorkspacesCommand?.RaiseCanExecuteChanged();
+        SwitchWorkspaceCommand?.RaiseCanExecuteChanged();
+        CancelWorkspaceLoginCommand?.RaiseCanExecuteChanged();
         ConnectCommand.RaiseCanExecuteChanged();
         RestartCommand.RaiseCanExecuteChanged();
         NewThreadCommand.RaiseCanExecuteChanged();
@@ -9920,10 +10021,17 @@ public sealed class AccountPanelViewModel : ObservableObject
 
     public AccountState State => status.State;
 
+    public string? WorkspaceId => status.WorkspaceId;
+
+    public string? WorkspaceName => status.WorkspaceName;
+
     public string DisplayText => status.State switch
     {
         AccountState.SignedOut => "Not signed in",
         AccountState.SigningIn => "Signing in...",
+        AccountState.SignedIn when !string.IsNullOrWhiteSpace(status.WorkspaceName) && !string.IsNullOrWhiteSpace(status.PlanType)
+            => $"{status.WorkspaceName} \u00b7 {status.PlanType}",
+        AccountState.SignedIn when !string.IsNullOrWhiteSpace(status.WorkspaceName) => status.WorkspaceName,
         AccountState.SignedIn when !string.IsNullOrWhiteSpace(status.PlanType) => $"Signed in \u00b7 {status.PlanType}",
         AccountState.SignedIn => "Signed in",
         AccountState.Unavailable when !string.IsNullOrWhiteSpace(status.Message) => $"Account status unavailable \u00b7 {status.Message}",
@@ -9942,6 +10050,8 @@ public sealed class AccountPanelViewModel : ObservableObject
     public void Update(AccountStatus value)
     {
         status = value;
+        OnPropertyChanged(nameof(WorkspaceId));
+        OnPropertyChanged(nameof(WorkspaceName));
         OnPropertyChanged(nameof(DisplayText));
         OnPropertyChanged(nameof(ShowSignIn));
         OnPropertyChanged(nameof(IsSignedIn));
@@ -11584,4 +11694,10 @@ public sealed class AsyncCommand : ICommand, VSUI.IAsyncCommand, INotifyProperty
         CanExecuteChanged?.Invoke(this, EventArgs.Empty);
         PropertyChanged?.Invoke(this, CanExecuteChangedArgs);
     }
+}
+
+internal enum WorkspaceSwitchConfirmationChoice
+{
+    Continue,
+    Cancel,
 }

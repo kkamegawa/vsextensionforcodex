@@ -63,10 +63,8 @@ Tracking: [#242](https://github.com/kkamegawa/vsextensionforcodex/issues/242). T
 
 - [x] PR #248 records maintainer acceptance of long-history search, generated Plan selection and copy, High Contrast, Narrator, Japanese conversation selection and copy, and restored Command content in the tool window.
 
-### Not yet verified
-
-- [ ] Restore a conversation with a saved non-empty Reasoning summary in Visual Studio. An isolated 0.166.0 CLI passed `model_reasoning_summary="auto"` through to its loopback Responses request. The earlier Visual Studio turn contexts that recorded `none` have no confirmed cause.
-- [ ] Verify selection, copy, Ctrl+F, F3, Japanese text, long histories, and file removal on close in the conversation text editor tab.
+- [x] Restore a conversation with a saved non-empty Reasoning summary in Visual Studio; accepted by the maintainer on 2026-11-04 (see #242).
+- [x] Verify selection, copy, Ctrl+F, F3, Japanese text, long histories, and file removal on close in the conversation text editor tab; accepted by the maintainer in PR #248.
 
 ### Stage 2 review follow-up
 
@@ -74,4 +72,25 @@ Tracking: [#242](https://github.com/kkamegawa/vsextensionforcodex/issues/242). T
 - [x] Clear conversation-specific usage when the selection changes and refresh it while the usage popup is open.
 - [x] Keep the history popup open during scope selection. Escape and Close history dismiss it.
 - [x] Skip redirected conversation-text roots and owner directories during automatic cleanup. Cover junctions with a stale external file in the regression test.
-- [ ] Verify the scope ComboBox in the Visual Studio Experimental Instance.
+- [x] Verify the scope ComboBox in the Visual Studio Experimental Instance; the maintainer confirmed it opens and selects without closing the history flyout in PR #248.
+
+## Stage 3: experimental features
+
+Tracking: [#243](https://github.com/kkamegawa/vsextensionforcodex/issues/243). This stage stays open until the items under Not yet verified are done.
+
+### Implemented and passing automated tests
+
+- [x] Create linked forks on 0.166 and later with `thread/fork.attachToSource` and `excludeTurns`, and list children with `thread/list.attachedToThreadId` without a `sourceKinds` filter. Children are opened with paginated history and stay out of the ordinary history list.
+- [x] Navigate from a parent to its related conversations and back. A refused linked fork shows the redacted server reason and leaves the parent selected.
+- [x] Show the memory of a joined conversation through `thread/memory/read` in a separate pane on explicit request. A `null` summary shows that no memory is available. Long summaries are truncated without splitting a surrogate pair, and the read is retried only for an explicit thread.
+- [x] Switch workspaces with `accountSession/list` and `accountSession/switch` after a confirmation dialog. Local SSO opens only secure URLs through the existing browser path and can be cancelled with `account/login/cancel`. An unknown outcome is confirmed through `accountSession/list` and never retried.
+- [x] Add the workspace ID to the account fingerprint. A switch, or an account read that shows another workspace with the same email and plan, retires the owner. Pending operations are cancelled, late results are dropped, and recovery reloads the account, model, permission, and usage catalogs. MCP status has no cache and is read again on the next request.
+- [x] Experimental off, or a version below the introduction version, sends none of the linked fork, memory, or workspace requests.
+- [x] Workspace names are sanitized once before display.
+- [x] Release build with zero warnings and errors; Core 576 passed and 5 skipped, UI 602 passed and 1 skipped, no failures; Release VSIX inspection passed. The skipped cases need symbolic-link creation privilege on this Windows account.
+
+### Not yet verified
+
+- [ ] Check the `attachedToThreadId` query, with no `sourceKinds` filter, against a real 0.166.0 CLI.
+- [ ] Check linked forks, the memory pane, and the workspace picker in the Visual Studio Experimental Instance.
+- [ ] Real environments for an SSO-required workspace and for multiple workspaces with the same email and plan are not available. Fake coverage passes; these remain unverified in the release record.

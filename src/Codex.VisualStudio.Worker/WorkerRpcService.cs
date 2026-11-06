@@ -6,7 +6,7 @@ using System.Diagnostics;
 
 namespace Codex.VisualStudio.Worker;
 
-public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
+public sealed partial class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
 {
     private readonly ISecretRedactor redactor;
     private readonly ICodexProcessHost processHost;
@@ -2297,5 +2297,7 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
         State = accountStatus.State,
         PlanType = accountStatus.PlanType,
         Message = accountStatus.Message,
+        WorkspaceId = accountStatus.WorkspaceId,
+        WorkspaceName = accountStatus.WorkspaceName,
     };
 }

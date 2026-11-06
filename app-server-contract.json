@@ -853,6 +853,7 @@
       "experimental": {
         "clientRequests": [
           "initialize",
+          "thread/memory/read",
           "thread/start",
           "thread/resume",
           "thread/list",
@@ -944,6 +945,7 @@
       "stable": {
         "clientRequests": [
           "initialize",
+          "account/login/cancel",
           "thread/start",
           "thread/resume",
           "thread/list",
@@ -1031,6 +1033,10 @@
       "experimental": {
         "clientRequests": [
           "initialize",
+          "thread/memory/read",
+          "accountSession/list",
+          "accountSession/switch",
+          "account/login/cancel",
           "thread/start",
           "thread/resume",
           "thread/list",
