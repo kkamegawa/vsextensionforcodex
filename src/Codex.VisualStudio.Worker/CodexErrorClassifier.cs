@@ -64,15 +64,11 @@ internal static class CodexErrorClassifier
                 }
             }
 
-            int bodyStart = FindHtmlResponseStart(line);
-            if (bodyStart >= 0)
-            {
-                insideHtml = FindHtmlResponseEnd(line, bodyStart) < 0;
-                line = string.Concat(line.AsSpan(0, bodyStart), "[HTML response omitted]");
-            }
+            line = OmitHtmlResponses(line, out insideHtml);
 
-            // Room for the truncation notice is always reserved, so the result never exceeds the limit.
-            int capacity = MaximumDiagnosticReportCharacters - DiagnosticReportTruncated.Length;
+            // Room for either closing notice is always reserved, so the result never exceeds the limit.
+            int capacity = MaximumDiagnosticReportCharacters
+                - Math.Max(DiagnosticReportTruncated.Length, UnterminatedHtmlOmitted.Length);
             if (report.Length + line.Length + 1 > capacity)
             {
                 int remaining = Math.Max(0, capacity - report.Length);
@@ -93,6 +89,34 @@ internal static class CodexErrorClassifier
         return report.ToString().TrimEnd();
     }
 
+    // Replaces every HTML response on one line with a placeholder and keeps the text around it,
+    // such as a status that follows a closing tag on the same line.
+    private static string OmitHtmlResponses(string line, out bool unterminated)
+    {
+        var kept = new System.Text.StringBuilder();
+        string rest = line;
+        unterminated = false;
+        while (true)
+        {
+            int start = FindHtmlResponseStart(rest);
+            if (start < 0)
+            {
+                kept.Append(rest);
+                return kept.ToString();
+            }
+
+            kept.Append(rest.AsSpan(0, start)).Append("[HTML response omitted]");
+            int end = FindHtmlResponseEnd(rest, start);
+            if (end < 0)
+            {
+                unterminated = true;
+                return kept.ToString();
+            }
+
+            rest = rest[end..];
+        }
+    }
+
     private static int FindHtmlResponseStart(string line)
     {
         int bodyStart = -1;
@@ -108,14 +132,16 @@ internal static class CodexErrorClassifier
         return bodyStart;
     }
 
-    // Returns the index just after the last closing tag, or -1 when the body does not end here.
+    // Returns the index just after this response's closing tags (the later of the first </body> and
+    // the first </html> after startIndex), or -1 when the body does not end on this line. A later
+    // response on the same line is left for the caller to find.
     private static int FindHtmlResponseEnd(string line, int startIndex)
     {
         int end = -1;
         foreach (string marker in HtmlResponseEnds)
         {
-            int markerIndex = line.LastIndexOf(marker, StringComparison.OrdinalIgnoreCase);
-            if (markerIndex >= startIndex)
+            int markerIndex = line.IndexOf(marker, startIndex, StringComparison.OrdinalIgnoreCase);
+            if (markerIndex >= 0)
             {
                 end = Math.Max(end, markerIndex + marker.Length);
             }

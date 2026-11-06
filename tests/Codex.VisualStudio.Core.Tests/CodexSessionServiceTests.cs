@@ -3178,6 +3178,23 @@ public sealed partial class CodexSessionServiceTests
 
         string unterminated = CodexErrorClassifier.FormatDiagnosticReport("DNS: ok\nProxy: <html>\n<p>challenge\nWebSocket: failed");
         Assert.AreEqual("DNS: ok\nProxy: [HTML response omitted]\n" + CodexErrorClassifier.UnterminatedHtmlOmitted, unterminated);
+
+        for (int prefixLength = limit - 120; prefixLength <= limit; prefixLength++)
+        {
+            string report = CodexErrorClassifier.FormatDiagnosticReport(new string('a', prefixLength) + "\nProxy: <html>\nbody");
+            Assert.IsTrue(report.Length <= limit, $"A prefix of {prefixLength} characters before unterminated HTML produced {report.Length}.");
+        }
+    }
+
+    [TestMethod]
+    public void DiagnosticReport_KeepsTextAfterSameLineHtmlResponse()
+    {
+        string report = CodexErrorClassifier.FormatDiagnosticReport(
+            "Proxy: HTTP 403 <html><body>challenge</body></html> WebSocket: failed <html>x</html> done");
+
+        Assert.AreEqual(
+            "Proxy: HTTP 403 [HTML response omitted] WebSocket: failed [HTML response omitted] done",
+            report);
     }
 
     [TestMethod]
