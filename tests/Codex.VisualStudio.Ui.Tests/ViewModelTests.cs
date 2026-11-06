@@ -1065,6 +1065,10 @@ public sealed partial class ViewModelTests
         await WaitForAsync(() => vm.CanLoadOlderHistory);
 
         CollectionAssert.AreEqual(new List<string> { "h2", "h3" }, HistoryItemIds(vm));
+        ChatItemViewModel historicalAssistant = vm.Items.Single(item => item.ItemId == "h2");
+        Assert.IsTrue(historicalAssistant.UsesBlockRendering);
+        Assert.IsTrue(historicalAssistant.Blocks.Any(block => block.IsParagraph && block.Text == "h2"),
+            "History assistant messages use the Markdown block renderer and must populate blocks when loaded.");
         CollectionAssert.AreEqual(new List<string> { "turn-2", "turn-3" }, vm.ThreadTurns.Select(static turn => turn.Id).ToList());
         await RunCommandAsync(vm.LoadOlderHistoryCommand);
         CollectionAssert.AreEqual(new List<string> { "h0", "h1", "h2", "h3" }, HistoryItemIds(vm));
@@ -1073,6 +1077,50 @@ public sealed partial class ViewModelTests
         await RunCommandAsync(vm.NewThreadCommand);
         Assert.AreEqual("thread-1", vm.SelectedThread!.Id);
         Assert.IsFalse(vm.CanLoadOlderHistory, "A new conversation must not inherit the previous thread's cursor.");
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_HistoryRebuildsReasoningMarkdownBlocksAndExplainsMissingSummary()
+    {
+        var bridge = new FakeWorkerBridge();
+        bridge.ListThreadItemsHandler = (_, _) => Task.FromResult(new ThreadItemsPage
+        {
+            Items =
+            [
+                new ThreadHistoryItem
+                {
+                    Id = "reasoning-with-summary",
+                    TurnId = "reasoning-turn",
+                    Type = "reasoning_summary",
+                    Text = "## Summary\n\nBecause the request needs analysis.",
+                },
+                new ThreadHistoryItem
+                {
+                    Id = "reasoning-without-summary",
+                    TurnId = "reasoning-turn",
+                    Type = "reasoning_summary",
+                    Text = string.Empty,
+                },
+            ],
+        });
+
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready });
+        var thread = new ThreadSummary { Id = "thread-reasoning-history" };
+        vm.Threads.Add(thread);
+        vm.SelectedThread = thread;
+        await WaitForAsync(() => vm.Items.Count == 2);
+
+        ChatItemViewModel withSummary = vm.Items.Single(item => item.ItemId == "reasoning-with-summary");
+        Assert.IsTrue(withSummary.UsesBlockRendering);
+        Assert.IsTrue(withSummary.Blocks.Any(block => block.IsHeading && block.IsH2 && block.Text == "Summary"));
+        Assert.IsTrue(withSummary.Blocks.Any(block => block.IsParagraph && block.Text == "Because the request needs analysis."));
+
+        ChatItemViewModel withoutSummary = vm.Items.Single(item => item.ItemId == "reasoning-without-summary");
+        Assert.AreEqual("No reasoning summary was saved for this item.", withoutSummary.Text);
+        Assert.IsFalse(withoutSummary.IsCollapsed,
+            "A missing-summary explanation must be visible without asking the user to expand an otherwise empty reasoning card.");
+        Assert.IsTrue(withoutSummary.Blocks.Any(block => block.IsParagraph && block.Text == withoutSummary.Text));
     }
 
     [TestMethod]
@@ -3806,7 +3854,7 @@ public sealed partial class ViewModelTests
     // object and every binding to it fails silently (blank text, empty button content).
     private static readonly Type[] RemoteUiContextTypes =
         [
-            typeof(ChatViewModel), typeof(ChatItemViewModel), typeof(ChatBlockViewModel), typeof(ApprovalViewModel),
+            typeof(ChatViewModel), typeof(ChatItemViewModel), typeof(ChatBlockViewModel), typeof(TranscriptSearchResultViewModel), typeof(ApprovalViewModel),
             typeof(InteractionCardViewModel), typeof(ApprovalChoiceViewModel), typeof(PermissionSelectionViewModel),
             typeof(PermissionGrantOptionViewModel), typeof(McpElicitationViewModel), typeof(McpElicitationFieldViewModel),
             typeof(McpElicitationChoiceViewModel), typeof(InteractionAuthStatusPresentationViewModel),
@@ -4779,12 +4827,24 @@ public sealed partial class ViewModelTests
     [TestMethod]
     public async Task ChatViewModel_TransientRecoveryAppliesReplacementWorkerWithLowerGenerations()
     {
-        var bridge = new FakeWorkerBridge();
+        var bridge = new FakeWorkerBridge
+        {
+            ModelListResult = new ListModelsResult
+            {
+                Models = [new ModelInfo { Id = "gpt-6-luna" }],
+                DefaultModel = "gpt-6-luna",
+            },
+        };
         WorkerStatus recovered = OwnerStatus("worker-b-owner", 2, 1);
         recovered.CodexVersion = "0.163.0";
         var replacement = new FakeWorkerBridge
         {
             ConnectHandler = () => Task.FromResult(recovered),
+            ModelListResult = new ListModelsResult
+            {
+                Models = [new ModelInfo { Id = "gpt-6.1-sol" }, new ModelInfo { Id = "gpt-6-luna" }],
+                DefaultModel = "gpt-6.1-sol",
+            },
             ListThreadsHandler = (_, _) => Task.FromResult(new ThreadPage
             {
                 Threads = [new ThreadSummary { Id = "thread-recovered" }],
@@ -4800,6 +4860,8 @@ public sealed partial class ViewModelTests
         // The retired Worker restarted its app-server before it exited, so its owner and connection
         // generations are higher than the ones a fresh replacement Worker process starts from.
         await bridge.PublishStateAsync(OwnerStatus("worker-a-owner", 4, 3));
+        await vm.PopulateModelsAsync();
+        Assert.AreEqual("gpt-6-luna", vm.SelectedModel);
         WorkerStatus degraded = OwnerStatus("worker-a-owner", 4, 3);
         degraded.State = WorkerConnectionState.Degraded;
         degraded.RecoveryFailureKind = WorkerRecoveryFailureKind.WorkerProcessExit;
@@ -4813,6 +4875,15 @@ public sealed partial class ViewModelTests
         Assert.AreEqual(2, vm.Status.Target.OwnerGeneration);
         Assert.IsFalse(vm.IsRecovering);
         Assert.AreEqual("thread-recovered", vm.Threads.Single().Id);
+        Assert.AreEqual(1, replacement.ModelListCallCount, "A replacement owner must load its own catalog before recovery completes.");
+        string[] expectedModels = ["gpt-6.1-sol", "gpt-6-luna"];
+        CollectionAssert.AreEqual(expectedModels, vm.Models.ToArray());
+        Assert.AreEqual("gpt-6-luna", vm.SelectedModel, "Keep the draft's model when the replacement still offers it.");
+
+        await RunCommandAsync(vm.NewThreadCommand);
+        CollectionAssert.AreEqual(expectedModels, vm.Models.ToArray());
+        Assert.AreEqual("gpt-6-luna", vm.SelectedModel);
+        Assert.AreEqual(1, replacement.ModelListCallCount, "A new conversation preserves the initialized catalog.");
 
         // Later replacement notifications stay current instead of being dropped as stale.
         WorkerStatus busy = OwnerStatus("worker-b-owner", 2, 1);
@@ -9280,9 +9351,17 @@ public sealed partial class ViewModelTests
 
         public Func<LogoutAccountRequest, CancellationToken, Task<AccountStatus>>? LogoutHandler { get; set; }
 
+        public ThreadListScopesResult ThreadListScopesResult { get; set; } = new();
+
+        public List<IReadOnlyList<string>?> ListedWorkingDirectories { get; } = [];
+
+        public Task<ThreadListScopesResult> GetThreadListScopesAsync(GetThreadListScopesRequest request, CancellationToken cancellationToken)
+            => Task.FromResult(ThreadListScopesResult);
+
         public async Task<ThreadPage> ListThreadsAsync(ListThreadsRequest request, CancellationToken cancellationToken)
         {
             ListThreadsCallCount++;
+            ListedWorkingDirectories.Add(request.WorkingDirectories);
             ThreadPage page = await (ListThreadsHandler?.Invoke(request.Cursor, cancellationToken)
                 ?? Task.FromResult(new ThreadPage()));
             if (!PreserveThreadPageOwner)
@@ -9484,10 +9563,13 @@ public sealed partial class ViewModelTests
         public Task<CompactThreadResult> CompactThreadAsync(CompactThreadRequest request, CancellationToken cancellationToken)
             => CompactThreadHandler?.Invoke(request, cancellationToken) ?? Task.FromResult(new CompactThreadResult());
 
+        public Func<StartReviewRequest, CancellationToken, Task<StartReviewResult>>? StartReviewHandler { get; set; }
+
         public Task<StartReviewResult> StartReviewAsync(StartReviewRequest request, CancellationToken cancellationToken)
         {
             ReviewCallCount++;
-            return Task.FromResult(new StartReviewResult { TurnId = "turn-review" });
+            return StartReviewHandler?.Invoke(request, cancellationToken)
+                ?? Task.FromResult(new StartReviewResult { TurnId = "turn-review" });
         }
 
         public List<ForkThreadRequest> ForkThreadRequests { get; } = [];
@@ -9563,6 +9645,21 @@ public sealed partial class ViewModelTests
         {
             RateLimitCallCount++;
             return RateLimitHandler?.Invoke(RateLimitCallCount) ?? Task.FromResult(RateLimitsResult);
+        }
+
+        public NetworkDiagnosticsResult NetworkDiagnosticsResult { get; set; } = new();
+
+        public Task<NetworkDiagnosticsResult> RunNetworkDiagnosticsAsync(RunNetworkDiagnosticsRequest request, CancellationToken cancellationToken)
+            => Task.FromResult(NetworkDiagnosticsResult);
+
+        public ThreadUsageResult ThreadUsageResult { get; set; } = new() { IsSupported = false };
+
+        public List<string> ThreadUsageRequests { get; } = [];
+
+        public Task<ThreadUsageResult> GetThreadUsageAsync(GetThreadUsageRequest request, CancellationToken cancellationToken)
+        {
+            ThreadUsageRequests.Add(request.ThreadId);
+            return Task.FromResult(ThreadUsageResult);
         }
 
         public Task ResolveApprovalAsync(ResolveApprovalRequest request, CancellationToken cancellationToken)

@@ -62,8 +62,8 @@ Decisions are recorded in [ADR-020](adr/ADR-020-app-server-0-166.md) and the ADR
 `/review --new-thread [uncommitted|base <branch>|commit <sha>|custom <instructions>]` runs a review in a new conversation. `/review` without that option keeps reviewing in the current conversation. The option appears in the input candidates and hints.
 
 - **Protocol:** on every supported version, the extension sends `thread/start` and then `review/start` with `inline` delivery to the new thread ID. It never sends `detached`.
-- **Inherited settings:** working directory, model, service tier, approval policy, approvals reviewer, and sandbox mode or permission profile. Permissions are never widened. If a setting cannot be inherited, no conversation is created and the reason is displayed.
-- **History:** the new conversation does not inherit the source history. A user who needs it runs `/fork` and gives the instruction there.
+- **Inherited settings:** working directory, model, service tier, approval policy, approvals reviewer, and sandbox mode or permission profile. A named profile exists only on the experimental surface, so it is sent as `permissions` when experimental is negotiated, and the stable surface sends `sandbox`. Permissions are never widened. If a setting cannot be inherited, no conversation is created and the reason is displayed. If `thread/start` reports other permissions, the conversation is kept and the review does not start.
+- **History:** the new conversation does not inherit the source history. A user who needs it runs `/fork` and gives the instruction there. The history list shows it by its preview, which is the review prompt, because the server gives it no name.
 - **Selection:** the UI selection and `ActiveThreadId` stay on the original conversation until the review has started. On success, the extension switches to the new conversation, joins it, and shows progress.
 - **Failure:** a failure after the conversation is created keeps the conversation and explains what happened. Nothing is deleted or resent automatically.
 - **Unknown outcome:** a disconnect or missing response is not treated as started. The user is guided to the history.
@@ -128,6 +128,10 @@ Question text, option descriptions, and answer display use the safe Markdown pat
 
 ### Conversation text
 
+The conversation tool window provides a Search conversation button that opens an in-window search. Search covers the whole conversation, including history outside the visible window. Matching content appears in a keyboard-accessible results pane without changing the transcript position. A failed or cancelled history read does not present partial results as complete.
+
+Conversation text, including generated plans, is read-only and supports text selection and copying directly in the tool window.
+
 Open conversation text shows the conversation in a read-only Visual Studio editor tab, which provides selection, Ctrl+C, Ctrl+F, F3, and word and line movement.
 
 - **Snapshot:** paging reads the whole history into a fixed snapshot, with progress and cancellation. A failure opens nothing incomplete, and the content does not update live.
@@ -154,7 +158,13 @@ On 0.166 or later, `account/usage/read` receives `threadId`.
 
 ### Network diagnostics
 
-Local connections on 0.166 or later run `codex doctor --network-only` with the resolved CLI path, a timeout, and `ISecretRedactor`. Remote connections show the procedure to run on the server.
+The `/doctor` slash command starts the check. Local connections on 0.166 or later run `codex doctor --network-only` with the resolved CLI path, a timeout, and `ISecretRedactor`. Remote connections show the procedure to run on the server.
+
+Network messages on app-server stderr are diagnostic output. Optional MCP failures and WebSocket fallback messages do not invalidate the connection owner or trigger reconnection. Recovery is driven by transport closure, process exit, or a failed liveness watchdog.
+
+Raw stderr is not conversation content. Diagnostics are redacted, HTML response bodies are omitted, and each line is limited to 2,048 characters. A network diagnostic produces at most one short notice per connection; an MCP HTTP 403 points to MCP details without including the server's HTML response.
+
+After recovery replaces the Worker, the extension refreshes account state, models, permission profiles, and usage through the same initialization path as an ordinary connection before enabling the composer. It then synchronizes history without joining or replaying a conversation. A new conversation retains the initialized model catalog and the selected model when offered by that catalog.
 
 ## 7. Contract and implementation structure
 

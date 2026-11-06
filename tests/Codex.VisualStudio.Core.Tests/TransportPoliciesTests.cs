@@ -9,6 +9,7 @@ public sealed class TransportPoliciesTests
     private static readonly string[] UnconditionalMethods =
     [
         "account/rateLimits/read",
+        "account/usage/read",
         "thread/list",
         "thread/goal/get",
         "model/list",
@@ -22,7 +23,7 @@ public sealed class TransportPoliciesTests
         CollectionAssert.AreEquivalent(
             new[]
             {
-                "account/read", "account/rateLimits/read", "thread/list", "thread/goal/get",
+                "account/read", "account/rateLimits/read", "account/usage/read", "thread/list", "thread/goal/get",
                 "model/list", "permissionProfile/list", "mcpServerStatus/list", "skills/list",
                 "thread/read", "thread/turns/list", "thread/items/list", "thread/attachment/list",
             },

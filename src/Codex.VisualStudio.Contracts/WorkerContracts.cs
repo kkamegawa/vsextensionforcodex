@@ -172,6 +172,15 @@ public enum ReviewPlacement
     NewThread,
 }
 
+// How a review start ended. Anything but Started leaves the active conversation unchanged.
+public enum ReviewStartOutcome
+{
+    Started,
+    NotCreated,
+    CreatedNotStarted,
+    Unknown,
+}
+
 public enum ThreadGoalStatus
 {
     Active,
@@ -327,6 +336,21 @@ public sealed class StartAccountLoginRequest : OwnerScopedRequest
 public sealed class ListThreadsRequest : OwnerScopedRequest
 {
     public string? Cursor { get; set; }
+
+    // Server paths fixed when paging starts. Null lists every conversation.
+    public IReadOnlyList<string>? WorkingDirectories { get; set; }
+}
+
+public sealed class GetThreadListScopesRequest : OwnerScopedRequest
+{
+}
+
+public sealed class ThreadListScopesResult
+{
+    public string? CurrentFolder { get; set; }
+
+    // Empty unless this is a local connection inside a Git repository.
+    public IReadOnlyList<string> WorktreeFolders { get; set; } = [];
 }
 
 public sealed class ReadThreadRequest : OwnerScopedRequest
@@ -403,6 +427,27 @@ public sealed class ListSkillsRequest : OwnerScopedRequest
 
 public sealed class GetRateLimitsRequest : OwnerScopedRequest
 {
+}
+
+public sealed class RunNetworkDiagnosticsRequest : OwnerScopedRequest
+{
+}
+
+public sealed class NetworkDiagnosticsResult : AppServerOperationResult
+{
+    // A remote app-server cannot be diagnosed from here, so its procedure is shown instead.
+    public bool RequiresServerRun { get; set; }
+
+    public bool TimedOut { get; set; }
+
+    public int? ExitCode { get; set; }
+
+    public string Output { get; set; } = string.Empty;
+}
+
+public sealed class GetThreadUsageRequest : OwnerScopedRequest
+{
+    public string ThreadId { get; set; } = string.Empty;
 }
 
 public sealed class LogoutAccountRequest : OwnerScopedRequest
@@ -941,6 +986,13 @@ public sealed class StartReviewResult : AppServerOperationResult
     public string? ReviewThreadId { get; set; }
 
     public string? TurnId { get; set; }
+
+    public ReviewStartOutcome Outcome { get; set; } = ReviewStartOutcome.Started;
+
+    // The conversation created for a NewThread review, when one is known to exist.
+    public ThreadSummary? CreatedThread { get; set; }
+
+    public string? FailureReason { get; set; }
 }
 
 public sealed class ForkThreadRequest : OwnerScopedRequest
@@ -1241,6 +1293,18 @@ public sealed class RateLimitInfo
     public CreditsInfo? Credits { get; set; }
 }
 
+// Integer micro-units as reported by the server. A null value is unknown and is never zero.
+public sealed class ThreadUsageResult : AppServerOperationResult
+{
+    public string ThreadId { get; set; } = string.Empty;
+
+    public long? NativeUsageUsdMicros { get; set; }
+
+    public long? EstimatedUsageUsdMicros { get; set; }
+
+    public long? EstimatedUsageCreditsMicros { get; set; }
+}
+
 public sealed class RateLimitsResult : AppServerOperationResult
 {
     public RateLimitInfo? RateLimits { get; set; }
@@ -1528,6 +1592,9 @@ public interface ICodexWorkerClient
     [JsonRpcMethod("worker/thread/list")]
     Task<ThreadPage> ListThreadsAsync(ListThreadsRequest request, CancellationToken cancellationToken);
 
+    [JsonRpcMethod("worker/threads/scopes")]
+    Task<ThreadListScopesResult> GetThreadListScopesAsync(GetThreadListScopesRequest request, CancellationToken cancellationToken);
+
     [JsonRpcMethod("worker/thread/read")]
     Task<ThreadReadResult> ReadThreadAsync(ReadThreadRequest request, CancellationToken cancellationToken);
 
@@ -1620,6 +1687,12 @@ public interface ICodexWorkerClient
 
     [JsonRpcMethod("worker/account/rateLimits")]
     Task<RateLimitsResult> GetRateLimitsAsync(GetRateLimitsRequest request, CancellationToken cancellationToken);
+
+    [JsonRpcMethod("worker/diagnostics/network")]
+    Task<NetworkDiagnosticsResult> RunNetworkDiagnosticsAsync(RunNetworkDiagnosticsRequest request, CancellationToken cancellationToken);
+
+    [JsonRpcMethod("worker/account/threadUsage")]
+    Task<ThreadUsageResult> GetThreadUsageAsync(GetThreadUsageRequest request, CancellationToken cancellationToken);
 
     [JsonRpcMethod("worker/approval/resolve")]
     Task ResolveApprovalAsync(ResolveApprovalRequest request, CancellationToken cancellationToken);

@@ -16,7 +16,7 @@ The implementation is tracked by GitHub Issue #46 and its four sub-issues.
 | App Server operations | `/compact`, `/feedback`, `/fork`, `/goal`, `/mcp`, `/review`, `/shell` | Invoke dedicated typed Worker RPC methods. `/shell` executes only through explicit invocation and confirmation. |
 | Next-turn settings | `/fast`, `/model`, `/permissions` (`/approve` alias), `/personality`, `/reasoning` | Update typed fields used by the next `turn/start`. Except for picker selections, these settings are consumed by the next started turn. |
 | Conversation mode | `/plan` | Enable persistent Plan mode, shared with the composer checkbox, until explicitly unchecked. |
-| Visual Studio operations | `/ide-context`, `/init`, `/status` | Toggle bounded editor context, safely create `AGENTS.md`, or show local session state. |
+| Visual Studio operations | `/ide-context`, `/init`, `/status`, `/doctor` | Toggle bounded editor context, safely create `AGENTS.md`, show local session state, or check network access with `codex doctor --network-only` on 0.166 or later. A remote connection shows the procedure to run on the server. |
 
 The following commands remain hidden because the app-server or the current
 single-thread UI cannot preserve their official semantics:
@@ -24,7 +24,8 @@ single-thread UI cannot preserve their official semantics:
 and `/side`. Direct input produces a local unsupported message.
 
 `/review` supports uncommitted changes, a base branch, a commit, or custom
-instructions. `/goal` supports show (alias: get), set, edit, pause, resume,
+instructions. A leading `--new-thread` runs the review in a new conversation with
+the same settings. `/goal` supports show (alias: get), set, edit, pause, resume,
 and clear. Goal objectives contain between 1 and 4,000 characters. `/model`
 matches the catalog case-insensitively and applies the canonical model id.
 

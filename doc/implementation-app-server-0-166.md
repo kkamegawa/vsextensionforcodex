@@ -30,3 +30,22 @@ Evidence files are under `D:\temp\issue241-verify-2\`, including the six pinned 
 ## Visual acceptance limit
 
 The changed behavior includes a Visual Studio UI state. This session attempted to inspect the Visual Studio surface with Computer Use, but `sky.list_apps()` timed out twice. The skill's recovery instructions required stopping after that retry, so no screenshot-based display judgment was made. Automated UI tests passed; maintainer visual acceptance remains pending.
+
+## Stage 2: stable features
+
+Tracking: [#242](https://github.com/kkamegawa/vsextensionforcodex/issues/242). The Worker contract stays at v27, as the design defines. Open items are listed in the [task record](task-app-server-0-166.md).
+
+- **Review:** `ReviewPlacement.NewThread` runs in `CodexSessionService.Review.cs`. Settings come from the active conversation's effective state, and an unmappable value stops before `thread/start`. The named profile field exists only on the experimental surface, so the stable surface sends `sandbox`. The response is compared with the source, and a different report keeps the conversation without starting the review. `ActiveThreadId` moves only after `review/start` succeeds. The result separates Started, NotCreated, CreatedNotStarted, and Unknown, and nothing is resent.
+- **History scope:** `GitWorktreeScope` runs read-only Git commands with a timeout, and any failure hides the scope. The folder set is fixed when a scope is chosen, a scope change discards the cursor, and a late response is dropped by generation. A filtered list never cancels queued commands as missing, and the open conversation keeps its row.
+- **Questions:** question text and option descriptions use `ToSafeTextAndBlocks`. `AppendUserInputResultItem` shows a submitted answer only as a fixed confirmation, and a synthetic reply is sent as a user message through the existing `ToSafeText` path, so no answer needs its own rendering.
+- **Conversation text:** the whole history is paged into memory first, so a failure or cancellation opens nothing. `ConversationTextStore` writes a generated file name under an owner-separated temporary folder. Closing the tab deletes the file, and startup removes unused files older than 24 hours.
+- **Usage:** values stay `long?` micro-units. Limits may be cached for 60 seconds, but a different conversation always rereads its amounts.
+- **Diagnostics:** `BoundedProcessRunner` starts `/doctor` with no shell, bounded output, and a 60-second timeout that kills the process tree. `--no-color --ascii` keeps terminal codes out, and output passes through `ISecretRedactor`.
+
+Real CLI probes ran on 0.161.0 and 0.166.0 in a throwaway repository, and their test conversations were deleted. The 0.161.0 turn was stopped after 150 seconds, so that result covers the start and the history row only. Both 0.166.0 turns completed. The 0.166.0 CLI was installed with `scripts/install-codex.ps1`, which verified the pinned hashes. App Server responses do not expose the review model. A separate isolated 0.166.0 run captured the model in a loopback Responses request. The request used `review_model` when configured and the conversation model when omitted. The Release VSIX inspection result is recorded in `doc/task.md`.
+
+### Stage 2 review follow-up
+
+The Worker retains the server-reported sandbox object alongside the approval state. A separate review starts only when the new conversation reports the same effective policy, reviewer, permission profile, and sandbox settings and the source selection is still current. A failed comparison leaves the new conversation in history and leaves the source selected.
+
+Selecting a conversation clears the previous conversation's usage amount. An open usage popup refreshes the amount for the new selection. The history popup stays open while choosing a scope and provides an explicit close action. Automatic snapshot cleanup skips redirected roots and owner directories.

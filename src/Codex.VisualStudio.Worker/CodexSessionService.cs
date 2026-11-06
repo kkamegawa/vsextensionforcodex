@@ -139,6 +139,10 @@ public partial interface ICodexSessionService : IAsyncDisposable
 
     Task<ThreadPage> ListThreadsAsync(string? cursor, CancellationToken cancellationToken);
 
+    Task<ThreadPage> ListThreadsAsync(string? cursor, IReadOnlyList<string>? workingDirectories, CancellationToken cancellationToken);
+
+    Task<ThreadListScopesResult> GetThreadListScopesAsync(CancellationToken cancellationToken);
+
     Task<ThreadSummary> ReadThreadAsync(string threadId, CancellationToken cancellationToken)
         => throw new NotSupportedException();
 
@@ -206,6 +210,10 @@ public partial interface ICodexSessionService : IAsyncDisposable
     Task<UploadFeedbackResult> UploadFeedbackAsync(UploadFeedbackRequest request, CancellationToken cancellationToken);
 
     Task<RateLimitsResult> GetRateLimitsAsync(CancellationToken cancellationToken);
+
+    Task<ThreadUsageResult> GetThreadUsageAsync(string threadId, CancellationToken cancellationToken);
+
+    Task<NetworkDiagnosticsResult> RunNetworkDiagnosticsAsync(CancellationToken cancellationToken);
 
     Task ResolveApprovalAsync(ResolveApprovalRequest request, CancellationToken cancellationToken);
 
@@ -309,6 +317,9 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
     private readonly PendingInteractionRegistry pendingInteractions;
     private readonly ProtectedAuthorizationUrlStore authorizationUrls = new();
     private readonly AsyncLocal<ConnectionContext?> emittingContext = new();
+    private static readonly string[] NetworkDiagnosticsArguments = ["doctor", "--network-only", "--no-color", "--ascii"];
+    private static readonly TimeSpan NetworkDiagnosticsTimeout = TimeSpan.FromSeconds(60);
+    private readonly GitWorktreeScope gitWorktreeScope = new();
     private readonly object turnStateLock = new();
     private readonly HashSet<TurnKey> completedTurnIds = new();
     // Thread whose turn/start request is in flight. Its turn notifications can arrive before the
@@ -426,6 +437,9 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
 
     public string? EffectiveModelId => effectiveThreadModelId;
 
+    // Tests replace the process start; production runs the resolved CLI.
+    internal BoundedProcessRun NetworkDiagnosticsRun { get; set; } = BoundedProcessRunner.RunAsync;
+
     internal long ConnectionGeneration => Interlocked.Read(ref connectionGeneration);
 
     private string? effectiveThreadModelId;
@@ -440,7 +454,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
 
     public bool IsNewerThanVerifiedVersion { get; private set; }
 
-    public EffectiveApprovalState? EffectiveApprovalState { get; private set; }
+    public EffectiveApprovalState? EffectiveApprovalState => effectiveThreadPermissions?.Approval;
 
     public string? EffectiveReasoningEffort { get; private set; }
 
@@ -528,7 +542,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         CodexVersion = null;
         FeatureTier = CodexFeatureTier.Unsupported;
         IsNewerThanVerifiedVersion = false;
-        EffectiveApprovalState = null;
+        effectiveThreadPermissions = null;
         EffectiveReasoningEffort = null;
         EffectiveServiceTier = null;
         effectiveThreadModelId = null;
@@ -1311,7 +1325,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
     public async Task<ThreadSummary> StartThreadAsync(CancellationToken cancellationToken)
     {
         JsonElement result = await SendAsync("thread/start", new { cwd = MapLocalPathForServer(options.WorkingDirectory) }, cancellationToken).ConfigureAwait(false);
-        EffectiveApprovalState = ReadEffectiveApprovalState(result);
+        effectiveThreadPermissions = ReadEffectiveThreadPermissions(result);
         ReadEffectiveTurnSettings(result, out string? reasoningEffort, out string? serviceTier);
         EffectiveReasoningEffort = reasoningEffort;
         EffectiveServiceTier = serviceTier;
@@ -1501,7 +1515,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
     public async Task<ThreadSummary> ResumeThreadAsync(string threadId, CancellationToken cancellationToken)
     {
         JsonElement result = await SendAsync("thread/resume", new { threadId, excludeTurns = true }, cancellationToken).ConfigureAwait(false);
-        EffectiveApprovalState = ReadEffectiveApprovalState(result);
+        effectiveThreadPermissions = ReadEffectiveThreadPermissions(result);
         ReadEffectiveTurnSettings(result, out string? reasoningEffort, out string? serviceTier);
         EffectiveReasoningEffort = reasoningEffort;
         EffectiveServiceTier = serviceTier;
@@ -1519,13 +1533,43 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         return summary;
     }
 
-    public async Task<ThreadPage> ListThreadsAsync(string? cursor, CancellationToken cancellationToken)
+    public Task<ThreadPage> ListThreadsAsync(string? cursor, CancellationToken cancellationToken)
+        => ListThreadsAsync(cursor, null, cancellationToken);
+
+    public async Task<ThreadListScopesResult> GetThreadListScopesAsync(CancellationToken cancellationToken)
     {
         ConnectionContext context = RequireContext();
-        JsonElement result = await SendReadOnlyAsync(
-            "thread/list",
-            new { cursor, limit = 25, sourceKinds = ThreadSourceKinds },
-            cancellationToken).ConfigureAwait(false);
+        var result = new ThreadListScopesResult
+        {
+            CurrentFolder = TryMapLocalPathForServer(options.WorkingDirectory, out string serverPath) ? serverPath : null,
+        };
+        if (context.IsLocal)
+        {
+            result.WorktreeFolders = await gitWorktreeScope.ResolveAsync(options.WorkingDirectory, cancellationToken).ConfigureAwait(false);
+            EnsureCurrent(context);
+        }
+
+        return result;
+    }
+
+    public async Task<ThreadPage> ListThreadsAsync(
+        string? cursor,
+        IReadOnlyList<string>? workingDirectories,
+        CancellationToken cancellationToken)
+    {
+        ConnectionContext context = RequireContext();
+        var parameters = new Dictionary<string, object?>
+        {
+            ["cursor"] = cursor,
+            ["limit"] = 25,
+            ["sourceKinds"] = ThreadSourceKinds,
+        };
+        if (workingDirectories is not null)
+        {
+            parameters["cwd"] = workingDirectories;
+        }
+
+        JsonElement result = await SendReadOnlyAsync("thread/list", parameters, cancellationToken).ConfigureAwait(false);
         var threads = new List<ThreadSummary>();
         if (result.TryGetProperty("data", out JsonElement data))
         {
@@ -2223,9 +2267,9 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         StartReviewRequest request,
         CancellationToken cancellationToken)
     {
-        if (request.Placement != ReviewPlacement.CurrentThread)
+        if (request.Placement == ReviewPlacement.NewThread)
         {
-            throw new InvalidOperationException("Starting a review in a separate conversation is not supported by this Worker.");
+            return await StartReviewInNewThreadAsync(request, cancellationToken).ConfigureAwait(false);
         }
 
         object target = CreateReviewTarget(request.Target);
@@ -2271,7 +2315,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             return Unsupported<ForkThreadResult>("Thread forking is not supported by this app-server.");
         }
 
-        EffectiveApprovalState = ReadEffectiveApprovalState(call.Result);
+        effectiveThreadPermissions = ReadEffectiveThreadPermissions(call.Result);
         ReadEffectiveTurnSettings(call.Result, out string? reasoningEffort, out string? serviceTier);
         EffectiveReasoningEffort = reasoningEffort;
         EffectiveServiceTier = serviceTier;
@@ -2585,6 +2629,81 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         }
 
         return ReadRateLimitsResult(call.Result);
+    }
+
+    public async Task<ThreadUsageResult> GetThreadUsageAsync(string threadId, CancellationToken cancellationToken)
+    {
+        if (RequireContext().FeatureTier < CodexFeatureTier.Tier166)
+        {
+            return Unsupported<ThreadUsageResult>("Conversation usage amounts require Codex CLI 0.166.0 or later.");
+        }
+
+        OperationCallResult call = await TrySendOperationAsync(
+            "account/usage/read",
+            new { threadId },
+            TimeSpan.FromSeconds(15),
+            cancellationToken).ConfigureAwait(false);
+        if (!call.IsSupported)
+        {
+            return Unsupported<ThreadUsageResult>("Conversation usage amounts are not supported by this app-server.");
+        }
+
+        var result = new ThreadUsageResult { ThreadId = threadId };
+        if (call.Result.ValueKind == JsonValueKind.Object
+            && call.Result.TryGetProperty("threadUsage", out JsonElement usage)
+            && usage.ValueKind == JsonValueKind.Object)
+        {
+            result.NativeUsageUsdMicros = GetInt64(usage, "nativeUsageUsdMicros");
+            result.EstimatedUsageUsdMicros = GetInt64(usage, "estimatedUsageUsdMicros");
+            result.EstimatedUsageCreditsMicros = GetInt64(usage, "estimatedUsageCreditsMicros");
+        }
+
+        return result;
+    }
+
+    public async Task<NetworkDiagnosticsResult> RunNetworkDiagnosticsAsync(CancellationToken cancellationToken)
+    {
+        ConnectionContext context = RequireContext();
+        if (context.FeatureTier < CodexFeatureTier.Tier166)
+        {
+            return Unsupported<NetworkDiagnosticsResult>("Network diagnostics require Codex CLI 0.166.0 or later.");
+        }
+
+        if (!context.IsLocal)
+        {
+            return new NetworkDiagnosticsResult { RequiresServerRun = true };
+        }
+
+        string codexPath = CodexExecutableResolver.Resolve(options.CodexPath);
+        (string fileName, string[] arguments) = CodexProcessHost.IsCommandScript(codexPath)
+            ? (Environment.GetEnvironmentVariable("ComSpec") ?? "cmd.exe",
+                ["/d", "/s", "/c", $"\"\"{codexPath}\" {string.Join(' ', NetworkDiagnosticsArguments)}\""])
+            : (codexPath, NetworkDiagnosticsArguments);
+        string workingDirectory = Directory.Exists(options.WorkingDirectory)
+            ? options.WorkingDirectory
+            : Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        try
+        {
+            BoundedProcessResult result = await NetworkDiagnosticsRun(
+                fileName,
+                arguments,
+                workingDirectory,
+                NetworkDiagnosticsTimeout,
+                cancellationToken).ConfigureAwait(false);
+            EnsureCurrent(context);
+            return new NetworkDiagnosticsResult
+            {
+                ExitCode = result.ExitCode,
+                TimedOut = result.TimedOut,
+                Output = CodexErrorClassifier.FormatStandardError(
+                    redactor.Redact(string.Join("\n", new[] { result.StandardOutput, result.StandardError }.Where(text => text.Length > 0)))),
+            };
+        }
+        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException or IOException)
+        {
+            WorkerDiagnostics.Write($"Network diagnostics could not start ({ex.GetType().Name}).");
+            return new NetworkDiagnosticsResult { Output = "The Codex CLI could not be started for network diagnostics." };
+        }
     }
 
     public async Task ResolveApprovalAsync(ResolveApprovalRequest request, CancellationToken cancellationToken)
@@ -3874,7 +3993,8 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             if (isActiveThread && hasSettings)
             {
                 EnsureCurrent(context);
-                EffectiveApprovalState = ReadEffectiveApprovalState(threadSettings);
+                EffectiveThreadPermissions updatedPermissions = ReadEffectiveThreadPermissions(threadSettings);
+                effectiveThreadPermissions = updatedPermissions;
                 ReadEffectiveTurnSettings(threadSettings, out string? reasoningEffort, out string? serviceTier);
                 EffectiveReasoningEffort = reasoningEffort;
                 EffectiveServiceTier = serviceTier;
@@ -3887,7 +4007,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
                 }
                 if (EffectiveApprovalStateChanged is not null)
                 {
-                    await EffectiveApprovalStateChanged(EffectiveApprovalState, cancellationToken).ConfigureAwait(false);
+                    await EffectiveApprovalStateChanged(updatedPermissions.Approval, cancellationToken).ConfigureAwait(false);
                     EnsureCurrent(context);
                 }
 
@@ -4598,7 +4718,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         FeatureTier = CodexFeatureTier.Unsupported;
         IsNewerThanVerifiedVersion = false;
         InitializationMetadata = null;
-        EffectiveApprovalState = null;
+        effectiveThreadPermissions = null;
         EffectiveReasoningEffort = null;
         EffectiveServiceTier = null;
         effectiveThreadModelId = null;
@@ -5036,7 +5156,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             ?? GetString(value, "service_tier"));
     }
 
-    private static EffectiveApprovalState ReadEffectiveApprovalState(JsonElement value)
+    private static EffectiveThreadPermissions ReadEffectiveThreadPermissions(JsonElement value)
     {
         string? activePermissionProfile = null;
         if (value.TryGetProperty("activePermissionProfile", out JsonElement activeProfile))
@@ -5053,13 +5173,17 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         bool hasSandbox = (value.TryGetProperty("sandbox", out sandbox)
                 || value.TryGetProperty("sandboxPolicy", out sandbox))
             && sandbox.ValueKind == JsonValueKind.Object;
-        return new EffectiveApprovalState
-        {
-            ActivePermissionProfile = activePermissionProfile,
-            ApprovalPolicy = NormalizeWireIdentifier(GetString(value, "approvalPolicy")),
-            ApprovalsReviewer = NormalizeWireIdentifier(GetString(value, "approvalsReviewer")),
-            SandboxMode = hasSandbox ? NormalizeWireIdentifier(GetString(sandbox, "type")) : null,
-        };
+        return new EffectiveThreadPermissions(
+            new EffectiveApprovalState
+            {
+                ActivePermissionProfile = activePermissionProfile,
+                ApprovalPolicy = NormalizeWireIdentifier(GetString(value, "approvalPolicy")),
+                ApprovalsReviewer = NormalizeWireIdentifier(GetString(value, "approvalsReviewer")),
+                SandboxMode = hasSandbox ? NormalizeWireIdentifier(GetString(sandbox, "type")) : null,
+            },
+            hasSandbox ? sandbox.Clone() : null,
+            activeProfile.ValueKind is not (JsonValueKind.Undefined or JsonValueKind.Null)
+                && activePermissionProfile is null);
     }
 
     private bool ReadPermissionProfiles(
@@ -5942,13 +6066,37 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         {
             AppendBoundedHistoryText(text, agentText);
         }
+        else if (itemType == "reasoning")
+        {
+            // The summary is the user-facing representation. The content field can
+            // contain private reasoning and must not be exposed in restored history.
+            AppendHistoryStringArray(text, item, "summary");
+        }
+        else if (itemType == "commandExecution")
+        {
+            if (GetString(item, "command") is { } command)
+            {
+                AppendBoundedHistoryText(text, command);
+            }
+
+            if (GetString(item, "aggregatedOutput") is { Length: > 0 } output)
+            {
+                if (text.Length > 0)
+                {
+                    AppendBoundedHistoryText(text, Environment.NewLine);
+                }
+
+                AppendBoundedHistoryText(text, output);
+            }
+        }
         else if (itemType == "userMessage"
             && item.TryGetProperty("content", out JsonElement content)
             && content.ValueKind == JsonValueKind.Array)
         {
-            foreach (JsonElement part in content.EnumerateArray())
+            foreach (JsonElement part in content.EnumerateArray().Take(512))
             {
-                if (GetString(part, "type") == "inputText" && GetString(part, "text") is { } userText)
+                if (GetString(part, "type") is "text" or "inputText"
+                    && GetString(part, "text") is { } userText)
                 {
                     AppendBoundedHistoryText(text, userText);
                     if (Encoding.UTF8.GetByteCount(text.ToString()) >= MaxHistoryTextBytes)
@@ -5960,6 +6108,33 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         }
 
         return text.ToString();
+    }
+
+    private static void AppendHistoryStringArray(StringBuilder target, JsonElement item, string propertyName)
+    {
+        if (!item.TryGetProperty(propertyName, out JsonElement values) || values.ValueKind != JsonValueKind.Array)
+        {
+            return;
+        }
+
+        foreach (JsonElement value in values.EnumerateArray().Take(512))
+        {
+            if (value.ValueKind != JsonValueKind.String || string.IsNullOrEmpty(value.GetString()))
+            {
+                continue;
+            }
+
+            if (target.Length > 0)
+            {
+                AppendBoundedHistoryText(target, Environment.NewLine);
+            }
+
+            AppendBoundedHistoryText(target, value.GetString()!);
+            if (Encoding.UTF8.GetByteCount(target.ToString()) >= MaxHistoryTextBytes)
+            {
+                break;
+            }
+        }
     }
 
     private static void AppendBoundedHistoryText(StringBuilder target, string value)

@@ -939,3 +939,12 @@ Tracking: [#240](https://github.com/kkamegawa/vsextensionforcodex/issues/240) wi
 - [x] Created the parent Issue and four native sub-issues with their blocking order, and read back the hierarchy (`subIssuesSummary.total` = 4).
 - [x] Published the plan to the wiki as `codex-cli-0-166-support` in English and Japanese, added both Home rows, and passed the wiki route validation.
 - [x] Addressed the PR review of the feature tier table: question Markdown and conversation text stay in Baseline, and the adopted-changes table in both design documents now states that they apply to every supported version with no version gate. The approved scope is unchanged.
+
+### 2026-11-01: Codex App Server 0.166.0 stable features
+
+Tracking: [#242](https://github.com/kkamegawa/vsextensionforcodex/issues/242). All seven tasks are implemented and pass automated tests, but the stage stays open. Task and acceptance evidence: [English](task-app-server-0-166.md) · [日本語](task-app-server-0-166_ja.md). Implementation record: [English](implementation-app-server-0-166.md) · [日本語](implementation-app-server-0-166_ja.md).
+
+- [x] Commit `b3b23e4` passed Debug and Release builds with zero warnings and errors, the Release VSIX inspection, and contract validation. Each configuration had 553 passing Core tests and 602 passing UI tests, with no failures. Five Core and one UI symbolic-link cases were skipped because Windows denied link creation. The strict release gate remains blocked.
+- [x] `verify-contract-surface.ps1` passed for all six supported versions on both surfaces with `account/usage/read` in the method tables. The Worker only requests per-conversation USD on 0.166.0 or later.
+- [x] Real CLI checks covered the 0.161.0 review start and history row, and the 0.166.0 schema, completed reviews, and `codex doctor` run. The isolated 0.166.0 Responses request used the configured `review_model`, or the conversation model when omitted.
+- [ ] Experimental Instance acceptance remains open for the conversation text editor tab, history scope ComboBox, and restoration of a saved non-empty Reasoning summary. PR #248 records maintainer confirmation of `/doctor`, conversation search, Plan selection and copy, and High Contrast and Narrator.

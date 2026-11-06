@@ -7,6 +7,7 @@ public sealed class SlashCommandTests
 {
     // Prefix matches first, then the substring match /presets.
     private static readonly string[] ReFilterCommands = ["reasoning", "review", "presets"];
+    private static readonly string[] DoctorCommand = ["doctor"];
 
     private readonly SlashCommandCatalog catalog = new();
 
@@ -147,6 +148,14 @@ public sealed class SlashCommandTests
     }
 
     [TestMethod]
+    public void Catalog_FilterIncludesDoctorForExactCommandName()
+    {
+        IReadOnlyList<SlashCommandDefinition> results = catalog.Filter("/doctor");
+
+        CollectionAssert.AreEqual(DoctorCommand, results.Select(static command => command.Name).ToArray());
+    }
+
+    [TestMethod]
     public void ArgumentParser_ParsesGoalOperationsAndEnforcesLimit()
     {
         Assert.IsTrue(SlashCommandArgumentParser.TryParseGoal(string.Empty, out GoalCommandArguments? get, out _));
@@ -184,6 +193,26 @@ public sealed class SlashCommandTests
         Assert.IsTrue(SlashCommandArgumentParser.TryParseReview("custom focus on concurrency\nand cancellation", out ReviewCommandArguments? custom, out _));
         Assert.AreEqual(ReviewCommandTargetKind.Custom, custom!.Target);
         Assert.AreEqual("focus on concurrency\nand cancellation", custom.Value);
+    }
+
+    [TestMethod]
+    public void ArgumentParser_ParsesNewThreadReviewOption()
+    {
+        Assert.IsTrue(SlashCommandArgumentParser.TryParseReview("--new-thread", out ReviewCommandArguments? bare, out _));
+        Assert.AreEqual(ReviewCommandTargetKind.UncommittedChanges, bare!.Target);
+        Assert.IsTrue(bare.NewThread);
+
+        Assert.IsTrue(SlashCommandArgumentParser.TryParseReview("--new-thread base main", out ReviewCommandArguments? branch, out _));
+        Assert.AreEqual(ReviewCommandTargetKind.BaseBranch, branch!.Target);
+        Assert.AreEqual("main", branch.Value);
+        Assert.IsTrue(branch.NewThread);
+
+        Assert.IsTrue(SlashCommandArgumentParser.TryParseReview("custom --new-thread is only text", out ReviewCommandArguments? custom, out _));
+        Assert.AreEqual("--new-thread is only text", custom!.Value);
+        Assert.IsFalse(custom.NewThread);
+
+        Assert.IsFalse(SlashCommandArgumentParser.TryParseReview("--new-thread nonsense value", out _, out string? error));
+        StringAssert.Contains(error, "--new-thread");
     }
 
     [TestMethod]

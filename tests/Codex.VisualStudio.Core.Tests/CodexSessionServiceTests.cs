@@ -1027,6 +1027,106 @@ public sealed partial class CodexSessionServiceTests
                             turnId = "turn-1",
                             item = new { id = "plan-1", type = "plan", text = "final history plan" },
                         },
+                        new
+                        {
+                            turnId = "turn-1",
+                            item = new
+                            {
+                                id = "user-message-1", type = "userMessage",
+                                content = new object[]
+                                {
+                                    new { type = "text", text = "ユーザーからの依頼: " },
+                                    new { type = "inputText", text = "旧形式の入力テキスト" },
+                                },
+                            },
+                        },
+                        new
+                        {
+                            turnId = "turn-1",
+                            item = new
+                            {
+                                id = "user-message-long-1", type = "userMessage",
+                                content = new[] { new { type = "text", text = new string('あ', 22_000) } },
+                            },
+                        },
+                        new
+                        {
+                            turnId = "turn-1",
+                            item = new
+                            {
+                                id = "user-message-empty-prefix-1", type = "userMessage",
+                                content = Enumerable.Repeat(new { type = "text", text = string.Empty }, 512)
+                                    .Append(new { type = "text", text = "beyond item bound" })
+                                    .ToArray(),
+                            },
+                        },
+                        new
+                        {
+                            turnId = "turn-1",
+                            item = new
+                            {
+                                id = "reasoning-1", type = "reasoning",
+                                summary = new[] { "日本語の要約", "Second summary line" },
+                                content = new[] { "Private reasoning that must not be displayed" },
+                            },
+                        },
+                        new
+                        {
+                            turnId = "turn-1",
+                            item = new
+                            {
+                                id = "reasoning-empty-summary-1", type = "reasoning",
+                                summary = Array.Empty<string>(),
+                                content = new[] { "Private reasoning is not a summary" },
+                            },
+                        },
+                        new
+                        {
+                            turnId = "turn-1",
+                            item = new
+                            {
+                                id = "command-1", type = "commandExecution",
+                                command = "dotnet build",
+                                aggregatedOutput = "Build succeeded. token sk-abcdefghijklmnopqrstuvwxyz0123456789",
+                            },
+                        },
+                        new
+                        {
+                            turnId = "turn-1",
+                            item = new
+                            {
+                                id = "reasoning-long-1", type = "reasoning",
+                                summary = new[] { new string('あ', 22_000) },
+                            },
+                        },
+                        new
+                        {
+                            turnId = "turn-1",
+                            item = new
+                            {
+                                id = "reasoning-boundary-1", type = "reasoning",
+                                summary = new[] { "12345", new string('x', 64 * 1024 - 5) },
+                            },
+                        },
+                        new
+                        {
+                            turnId = "turn-1",
+                            item = new
+                            {
+                                id = "reasoning-empty-prefix-1", type = "reasoning",
+                                summary = Enumerable.Repeat(string.Empty, 512).Append("beyond item bound").ToArray(),
+                            },
+                        },
+                        new
+                        {
+                            turnId = "turn-1",
+                            item = new
+                            {
+                                id = "command-boundary-1", type = "commandExecution",
+                                command = "12345",
+                                aggregatedOutput = new string('x', 64 * 1024 - 5),
+                            },
+                        },
                     },
                     nextCursor = (string?)null,
                 })
@@ -1035,14 +1135,49 @@ public sealed partial class CodexSessionServiceTests
         await using var service = CreateService();
         await service.InitializeAsync(connection, Options(root), CancellationToken.None);
 
-        ThreadItemsPage page = await service.ListThreadItemsAsync("thread-1", "turn-1", null, 10, CancellationToken.None);
+        ThreadItemsPage page = await service.ListThreadItemsAsync("thread-1", "turn-1", null, 20, CancellationToken.None);
 
         ThreadHistoryItem fileItem = page.Items.Single(item => item.Type == "fileChange");
         Assert.IsNotNull(fileItem.Parts.Single().ActionId);
         Assert.IsFalse(JsonSerializer.Serialize(fileItem).Contains(localFile, StringComparison.Ordinal));
+        ThreadHistoryItem userMessageItem = page.Items.Single(item => item.Id == "user-message-1");
+        Assert.AreEqual("ユーザーからの依頼: 旧形式の入力テキスト", userMessageItem.Text);
+        Assert.AreEqual(userMessageItem.Text, userMessageItem.Parts.Single(part => part.Kind == ArtifactPartKind.Text).Text);
+        ThreadHistoryItem longUserMessageItem = page.Items.Single(item => item.Id == "user-message-long-1");
+        Assert.IsTrue(longUserMessageItem.Parts.Single(part => part.Kind == ArtifactPartKind.Text).IsLocallyTruncated);
+        Assert.IsTrue(System.Text.Encoding.UTF8.GetByteCount(longUserMessageItem.Text!) <= 64 * 1024);
+        ThreadHistoryItem userMessageEmptyPrefixItem = page.Items.Single(item => item.Id == "user-message-empty-prefix-1");
+        Assert.AreEqual(string.Empty, userMessageEmptyPrefixItem.Text);
+        Assert.AreEqual(string.Empty, userMessageEmptyPrefixItem.Parts.Single(part => part.Kind == ArtifactPartKind.Text).Text);
+        Assert.IsFalse(userMessageEmptyPrefixItem.Parts.Single(part => part.Kind == ArtifactPartKind.Text).IsLocallyTruncated);
         ThreadHistoryItem planItem = page.Items.Single(item => item.Type == "plan");
         Assert.IsTrue(planItem.Plan?.IsComplete);
         Assert.AreEqual("final history plan", planItem.Plan?.Explanation);
+        ThreadHistoryItem reasoningItem = page.Items.Single(item => item.Id == "reasoning-1");
+        Assert.AreEqual($"日本語の要約{Environment.NewLine}Second summary line", reasoningItem.Text);
+        Assert.IsFalse(reasoningItem.Text!.Contains("Private reasoning", StringComparison.Ordinal));
+        Assert.AreEqual(reasoningItem.Text, reasoningItem.Parts.Single(part => part.Kind == ArtifactPartKind.Text).Text);
+        ThreadHistoryItem reasoningEmptySummaryItem = page.Items.Single(item => item.Id == "reasoning-empty-summary-1");
+        Assert.AreEqual(string.Empty, reasoningEmptySummaryItem.Text);
+        Assert.AreEqual(string.Empty, reasoningEmptySummaryItem.Parts.Single(part => part.Kind == ArtifactPartKind.Text).Text);
+        Assert.IsFalse(reasoningEmptySummaryItem.Text!.Contains("Private reasoning", StringComparison.Ordinal));
+        ThreadHistoryItem commandItem = page.Items.Single(item => item.Id == "command-1");
+        StringAssert.StartsWith(commandItem.Text!, $"dotnet build{Environment.NewLine}Build succeeded.");
+        Assert.IsFalse(commandItem.Text!.Contains("sk-abcdefghijklmnopqrstuvwxyz0123456789", StringComparison.Ordinal));
+        StringAssert.Contains(commandItem.Text, "[REDACTED]");
+        Assert.AreEqual(commandItem.Text, commandItem.Parts.Single(part => part.Kind == ArtifactPartKind.Text).Text);
+        ThreadHistoryItem longReasoningItem = page.Items.Single(item => item.Id == "reasoning-long-1");
+        Assert.IsTrue(longReasoningItem.Parts.Single(part => part.Kind == ArtifactPartKind.Text).IsLocallyTruncated);
+        Assert.IsTrue(System.Text.Encoding.UTF8.GetByteCount(longReasoningItem.Text!) <= 64 * 1024);
+        ThreadHistoryItem reasoningBoundaryItem = page.Items.Single(item => item.Id == "reasoning-boundary-1");
+        Assert.IsTrue(reasoningBoundaryItem.Parts.Single(part => part.Kind == ArtifactPartKind.Text).IsLocallyTruncated);
+        Assert.IsTrue(System.Text.Encoding.UTF8.GetByteCount(reasoningBoundaryItem.Text!) <= 64 * 1024);
+        ThreadHistoryItem reasoningEmptyPrefixItem = page.Items.Single(item => item.Id == "reasoning-empty-prefix-1");
+        Assert.IsFalse(reasoningEmptyPrefixItem.Parts.Single(part => part.Kind == ArtifactPartKind.Text).IsLocallyTruncated);
+        Assert.AreEqual(string.Empty, reasoningEmptyPrefixItem.Text);
+        ThreadHistoryItem commandBoundaryItem = page.Items.Single(item => item.Id == "command-boundary-1");
+        Assert.IsTrue(commandBoundaryItem.Parts.Single(part => part.Kind == ArtifactPartKind.Text).IsLocallyTruncated);
+        Assert.IsTrue(System.Text.Encoding.UTF8.GetByteCount(commandBoundaryItem.Text!) <= 64 * 1024);
 
         await connection.EmitNotificationAsync("item/plan/delta", new
         {
@@ -2330,24 +2465,321 @@ public sealed partial class CodexSessionServiceTests
         Assert.IsFalse(feedbackParameters.GetProperty("includeLogs").GetBoolean());
     }
 
+    private static StartReviewRequest NewThreadReview(string threadId = "thread-source")
+        => new()
+        {
+            ThreadId = threadId,
+            Placement = ReviewPlacement.NewThread,
+            Target = new ReviewTarget { Kind = ReviewTargetKind.UncommittedChanges },
+        };
+
+    private static JsonElement ReviewThreadResponse(
+        string threadId,
+        string sandbox = "readOnly",
+        string approval = "on-request",
+        string? reviewer = null,
+        string? profile = null,
+        bool networkAccess = false)
+        => JsonSerializer.SerializeToElement(new
+        {
+            thread = new { id = threadId, preview = string.Empty, createdAt = 1L, updatedAt = 1L },
+            model = "gpt-test",
+            approvalsReviewer = reviewer,
+            activePermissionProfile = profile,
+            approvalPolicy = approval,
+            sandbox = new { type = sandbox, networkAccess },
+        });
+
+    private static async Task<CodexSessionService> StartSourceThreadForReviewAsync(RecordingConnection connection, JsonElement newThread)
+    {
+        int starts = 0;
+        Func<string, object?, JsonElement> inner = connection.Handler;
+        connection.Handler = (method, parameters) =>
+        {
+            if (method == "thread/start")
+            {
+                starts++;
+                return starts == 1 ? ReviewThreadResponse("thread-source") : newThread;
+            }
+
+            return inner(method, parameters);
+        };
+        CodexSessionService service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+        await service.StartThreadAsync(CancellationToken.None);
+        return service;
+    }
+
     [TestMethod]
-    public async Task StartReviewRejectsNewThreadPlacementWithoutSendingDetached()
+    public async Task StartReviewNewThread_InheritsSettingsAndMovesActiveThreadOnlyAfterStart()
+    {
+        string? activeDuringReviewStart = null;
+        CodexSessionService? session = null;
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) =>
+            {
+                if (method == "review/start")
+                {
+                    activeDuringReviewStart = session!.ActiveThreadId;
+                    return JsonSerializer.SerializeToElement(new { reviewThreadId = "thread-review", turn = new { id = "turn-review" } });
+                }
+
+                return JsonSerializer.SerializeToElement(new { });
+            },
+        };
+        await using CodexSessionService service = await StartSourceThreadForReviewAsync(connection, ReviewThreadResponse("thread-review"));
+        session = service;
+
+        StartReviewResult result = await service.StartReviewAsync(NewThreadReview(), CancellationToken.None);
+
+        Assert.AreEqual(ReviewStartOutcome.Started, result.Outcome);
+        Assert.AreEqual("thread-review", result.CreatedThread?.Id);
+        Assert.AreEqual("thread-source", activeDuringReviewStart);
+        Assert.AreEqual("thread-review", service.ActiveThreadId);
+        Assert.AreEqual("turn-review", service.ActiveTurnId);
+        JsonElement start = JsonSerializer.SerializeToElement(
+            connection.Requests.Last(item => item.Method == "thread/start").Parameters,
+            WireJsonOptions);
+        Assert.AreEqual("on-request", start.GetProperty("approvalPolicy").GetString());
+        Assert.AreEqual("read-only", start.GetProperty("sandbox").GetString());
+        JsonElement review = ParametersFor(connection, "review/start");
+        Assert.AreEqual("thread-review", review.GetProperty("threadId").GetString());
+        Assert.AreEqual("inline", review.GetProperty("delivery").GetString());
+    }
+
+    [TestMethod]
+    public async Task StartReviewNewThread_UnmappableSandbox_CreatesNothing()
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "thread/start"
+                ? ReviewThreadResponse("thread-source", sandbox: "externalSandbox")
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        await using CodexSessionService service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+        await service.StartThreadAsync(CancellationToken.None);
+        int startsBefore = connection.Requests.Count(item => item.Method == "thread/start");
+
+        StartReviewResult result = await service.StartReviewAsync(NewThreadReview(), CancellationToken.None);
+
+        Assert.AreEqual(ReviewStartOutcome.NotCreated, result.Outcome);
+        Assert.AreEqual(startsBefore, connection.Requests.Count(item => item.Method == "thread/start"));
+        Assert.IsFalse(connection.Requests.Any(item => item.Method == "review/start"));
+        Assert.AreEqual("thread-source", service.ActiveThreadId);
+    }
+
+    [TestMethod]
+    [DataRow("dangerFullAccess", null, null, false)]
+    [DataRow("readOnly", "auto_review", null, false)]
+    [DataRow("readOnly", null, "unexpected-profile", false)]
+    [DataRow("readOnly", null, "", false)]
+    [DataRow("readOnly", null, null, true)]
+    public async Task StartReviewNewThread_DifferentReportedPermissions_DoNotStartReview(
+        string sandbox, string? reviewer, string? profile, bool networkAccess)
     {
         var connection = new RecordingConnection();
-        await using var service = CreateService();
+        await using CodexSessionService service = await StartSourceThreadForReviewAsync(
+            connection,
+            ReviewThreadResponse("thread-review", sandbox: sandbox, reviewer: reviewer, profile: profile, networkAccess: networkAccess));
+
+        StartReviewResult result = await service.StartReviewAsync(NewThreadReview(), CancellationToken.None);
+
+        Assert.AreEqual(ReviewStartOutcome.CreatedNotStarted, result.Outcome);
+        Assert.AreEqual("thread-review", result.CreatedThread?.Id);
+        Assert.IsFalse(connection.Requests.Any(item => item.Method == "review/start"));
+        Assert.AreEqual("thread-source", service.ActiveThreadId);
+    }
+
+    [TestMethod]
+    public async Task StartReviewNewThread_ReviewRejected_KeepsConversationAndSelection()
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "review/start"
+                ? throw new JsonRpcRemoteException(-32000, "rejected")
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        await using CodexSessionService service = await StartSourceThreadForReviewAsync(connection, ReviewThreadResponse("thread-review"));
+
+        StartReviewResult result = await service.StartReviewAsync(NewThreadReview(), CancellationToken.None);
+
+        Assert.AreEqual(ReviewStartOutcome.CreatedNotStarted, result.Outcome);
+        Assert.AreEqual("thread-review", result.CreatedThread?.Id);
+        Assert.AreEqual("thread-source", service.ActiveThreadId);
+        Assert.AreEqual(1, connection.Requests.Count(item => item.Method == "review/start"));
+    }
+
+    [TestMethod]
+    public async Task StartReviewNewThread_Disconnect_IsUnknownAndNotResent()
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "review/start"
+                ? throw new JsonRpcConnectionClosedException("closed")
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        await using CodexSessionService service = await StartSourceThreadForReviewAsync(connection, ReviewThreadResponse("thread-review"));
+
+        StartReviewResult result = await service.StartReviewAsync(NewThreadReview(), CancellationToken.None);
+
+        Assert.AreEqual(ReviewStartOutcome.Unknown, result.Outcome);
+        Assert.AreEqual("thread-source", service.ActiveThreadId);
+        Assert.AreEqual(1, connection.Requests.Count(item => item.Method == "review/start"));
+    }
+
+    [TestMethod]
+    public async Task StartReviewNewThread_NotActiveSource_CreatesNothing()
+    {
+        var connection = new RecordingConnection();
+        await using CodexSessionService service = await StartSourceThreadForReviewAsync(connection, ReviewThreadResponse("thread-review"));
+
+        StartReviewResult result = await service.StartReviewAsync(NewThreadReview("thread-other"), CancellationToken.None);
+
+        Assert.AreEqual(ReviewStartOutcome.NotCreated, result.Outcome);
+        Assert.AreEqual(1, connection.Requests.Count(item => item.Method == "thread/start"));
+    }
+
+    [TestMethod]
+    public async Task GetThreadUsage_ReadsMicrosAndKeepsNullUnknown()
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "account/usage/read"
+                ? JsonSerializer.SerializeToElement(new
+                {
+                    summary = new { },
+                    threadUsage = new { nativeUsageUsdMicros = 2_500_000L, estimatedUsageUsdMicros = (long?)null, estimatedUsageCreditsMicros = 0L },
+                })
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        await using CodexSessionService service = CreateService();
         await service.InitializeAsync(connection, Options(), CancellationToken.None);
 
-        await Assert.ThrowsExactlyAsync<InvalidOperationException>(
-            () => service.StartReviewAsync(
-                new StartReviewRequest
-                {
-                    ThreadId = "thread-1",
-                    Placement = ReviewPlacement.NewThread,
-                    Target = new ReviewTarget { Kind = ReviewTargetKind.UncommittedChanges },
-                },
-                CancellationToken.None));
+        ThreadUsageResult result = await service.GetThreadUsageAsync("thread-1", CancellationToken.None);
 
-        Assert.IsFalse(connection.Requests.Any(item => item.Method == "review/start"));
+        Assert.AreEqual(2_500_000L, result.NativeUsageUsdMicros);
+        Assert.IsNull(result.EstimatedUsageUsdMicros);
+        Assert.AreEqual(0L, result.EstimatedUsageCreditsMicros);
+        Assert.AreEqual("thread-1", ParametersFor(connection, "account/usage/read").GetProperty("threadId").GetString());
+    }
+
+    [TestMethod]
+    public async Task GetThreadUsage_BelowTier166_SendsNothing()
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "initialize"
+                ? JsonSerializer.SerializeToElement(new { userAgent = "codex-cli/0.165.0" })
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        await using CodexSessionService service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        ThreadUsageResult result = await service.GetThreadUsageAsync("thread-1", CancellationToken.None);
+
+        Assert.IsFalse(result.IsSupported);
+        Assert.IsFalse(connection.Requests.Any(item => item.Method == "account/usage/read"));
+    }
+
+    [TestMethod]
+    public async Task ListThreads_SendsFixedFolderArray()
+    {
+        var connection = new RecordingConnection();
+        await using CodexSessionService service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        await service.ListThreadsAsync("cursor", [@"C:\repo", @"C:\repo-wt"], CancellationToken.None);
+
+        JsonElement parameters = ParametersFor(connection, "thread/list");
+        Assert.AreEqual(2, parameters.GetProperty("cwd").GetArrayLength());
+        Assert.AreEqual("cursor", parameters.GetProperty("cursor").GetString());
+    }
+
+    [TestMethod]
+    public async Task NetworkDiagnostics_RedactsOutputAndUsesNetworkOnlyArguments()
+    {
+        IReadOnlyList<string>? arguments = null;
+        var connection = new RecordingConnection();
+        await using CodexSessionService service = CreateService();
+        service.NetworkDiagnosticsRun = (_, args, _, timeout, _) =>
+        {
+            arguments = args;
+            Assert.IsTrue(timeout > TimeSpan.Zero);
+            return Task.FromResult(new BoundedProcessResult(
+                0,
+                "token sk-abcdefghijklmnopqrstuvwxyz0123456789 HTTP 403: <body>private challenge content</body>",
+                string.Empty,
+                TimedOut: false));
+        };
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        NetworkDiagnosticsResult result = await service.RunNetworkDiagnosticsAsync(CancellationToken.None);
+
+        CollectionAssert.AreEqual(new[] { "doctor", "--network-only", "--no-color", "--ascii" }, arguments!.ToArray());
+        Assert.IsFalse(result.Output.Contains("sk-abcdefghijklmnopqrstuvwxyz0123456789", StringComparison.Ordinal));
+        StringAssert.Contains(result.Output, "[HTML response omitted]");
+        Assert.IsFalse(result.Output.Contains("private challenge content", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    public async Task NetworkDiagnostics_BoundsOutput()
+    {
+        var connection = new RecordingConnection();
+        await using CodexSessionService service = CreateService();
+        service.NetworkDiagnosticsRun = (_, _, _, _, _) =>
+            Task.FromResult(new BoundedProcessResult(0, new string('x', 4000), string.Empty, TimedOut: false));
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        NetworkDiagnosticsResult result = await service.RunNetworkDiagnosticsAsync(CancellationToken.None);
+
+        Assert.IsTrue(result.Output.Length <= CodexErrorClassifier.MaximumDiagnosticCharacters);
+        Assert.EndsWith(" [truncated]", result.Output);
+    }
+
+    [TestMethod]
+    public void GitWorktreeScope_ParsesPorcelainAndSkipsBareAndPrunable()
+    {
+        const string Porcelain = "worktree C:/repo\nHEAD 1\nbranch refs/heads/main\n\nworktree C:/bare\nbare\n\nworktree C:/gone\nprunable gitdir file\n\nworktree C:/repo-wt\nHEAD 2\ndetached\n";
+
+        CollectionAssert.AreEqual(new[] { "C:/repo", "C:/repo-wt" }, GitWorktreeScope.ParseWorktreeRoots(Porcelain).ToArray());
+    }
+
+    [TestMethod]
+    public void GitWorktreeScope_AppliesSubfolderAndKeepsSessionSpellingAndRemovesDuplicates()
+    {
+        string working = Path.Combine(Path.GetTempPath(), "Repo", "src", "app");
+        string root = Path.Combine(Path.GetTempPath(), "Repo");
+        string other = Path.Combine(Path.GetTempPath(), "repo-wt");
+
+        IReadOnlyList<string> paths = GitWorktreeScope.BuildPaths(working, "src/app/", [root, root + Path.DirectorySeparatorChar, other]);
+
+        Assert.AreEqual(2, paths.Count);
+        Assert.AreEqual(working, paths[0]);
+        Assert.AreEqual(Path.GetFullPath(Path.Combine(other, "src", "app")), paths[1], ignoreCase: true);
+    }
+
+    [TestMethod]
+    public async Task GitWorktreeScope_OutsideGit_OffersNothing()
+    {
+        var scope = new GitWorktreeScope((_, _, _, _, _) => Task.FromResult(new BoundedProcessResult(128, string.Empty, "not a git repository", TimedOut: false)));
+
+        Assert.AreEqual(0, (await scope.ResolveAsync(Path.GetTempPath(), CancellationToken.None)).Count);
+    }
+
+    [TestMethod]
+    public async Task BoundedProcessRunner_KillsOnTimeout()
+    {
+        BoundedProcessResult result = await BoundedProcessRunner.RunAsync(
+            "cmd.exe",
+            ["/d", "/c", "ping -n 30 127.0.0.1"],
+            Path.GetTempPath(),
+            TimeSpan.FromMilliseconds(300),
+            CancellationToken.None);
+
+        Assert.IsTrue(result.TimedOut);
+        Assert.IsNull(result.ExitCode);
     }
 
     [TestMethod]

@@ -72,6 +72,8 @@ internal interface IWorkerBridge : IAsyncDisposable
 
     Task<ThreadPage> ListThreadsAsync(ListThreadsRequest request, CancellationToken cancellationToken);
 
+    Task<ThreadListScopesResult> GetThreadListScopesAsync(GetThreadListScopesRequest request, CancellationToken cancellationToken);
+
     Task<ThreadReadResult> ReadThreadAsync(ReadThreadRequest request, CancellationToken cancellationToken);
 
     Task<UpdateThreadReadStateResult> UpdateThreadReadStateAsync(UpdateThreadReadStateRequest request, CancellationToken cancellationToken);
@@ -162,6 +164,10 @@ internal interface IWorkerBridge : IAsyncDisposable
         });
 
     Task<RateLimitsResult> GetRateLimitsAsync(GetRateLimitsRequest request, CancellationToken cancellationToken);
+
+    Task<ThreadUsageResult> GetThreadUsageAsync(GetThreadUsageRequest request, CancellationToken cancellationToken);
+
+    Task<NetworkDiagnosticsResult> RunNetworkDiagnosticsAsync(RunNetworkDiagnosticsRequest request, CancellationToken cancellationToken);
 
     Task ResolveApprovalAsync(ResolveApprovalRequest request, CancellationToken cancellationToken);
 
@@ -318,7 +324,7 @@ public sealed class WorkerBridge : IWorkerBridge, ICodexWorkerObserver
     }
 
     public Task<AccountStatus> GetAccountStatusAsync(CancellationToken cancellationToken)
-        => rpc!.InvokeWithCancellationAsync<AccountStatus>("worker/account/status", Array.Empty<object>(), cancellationToken);
+        => RequireRpc().InvokeWithCancellationAsync<AccountStatus>("worker/account/status", Array.Empty<object>(), cancellationToken);
 
     public async Task<StartAccountLoginResult> StartAccountLoginAsync(StartAccountLoginRequest request, CancellationToken cancellationToken)
     {
@@ -359,7 +365,10 @@ public sealed class WorkerBridge : IWorkerBridge, ICodexWorkerObserver
     }
 
     public Task<ThreadPage> ListThreadsAsync(ListThreadsRequest request, CancellationToken cancellationToken)
-        => rpc!.InvokeWithCancellationAsync<ThreadPage>("worker/thread/list", new object[] { request }, cancellationToken);
+        => RequireRpc().InvokeWithCancellationAsync<ThreadPage>("worker/thread/list", new object[] { request }, cancellationToken);
+
+    public Task<ThreadListScopesResult> GetThreadListScopesAsync(GetThreadListScopesRequest request, CancellationToken cancellationToken)
+        => RequireRpc().InvokeWithCancellationAsync<ThreadListScopesResult>("worker/threads/scopes", new object[] { request }, cancellationToken);
 
     public Task<ThreadReadResult> ReadThreadAsync(ReadThreadRequest request, CancellationToken cancellationToken)
         => RequireRpc().InvokeWithCancellationAsync<ThreadReadResult>(
@@ -452,19 +461,19 @@ public sealed class WorkerBridge : IWorkerBridge, ICodexWorkerObserver
             cancellationToken);
 
     public Task<ThreadSummary> StartThreadAsync(StartThreadRequest request, CancellationToken cancellationToken)
-        => rpc!.InvokeWithCancellationAsync<ThreadSummary>("worker/thread/start", new object[] { request }, cancellationToken);
+        => RequireRpc().InvokeWithCancellationAsync<ThreadSummary>("worker/thread/start", new object[] { request }, cancellationToken);
 
     public Task<ThreadSummary> ResumeThreadAsync(ResumeThreadRequest request, CancellationToken cancellationToken)
-        => rpc!.InvokeWithCancellationAsync<ThreadSummary>("worker/thread/resume", new object[] { request }, cancellationToken);
+        => RequireRpc().InvokeWithCancellationAsync<ThreadSummary>("worker/thread/resume", new object[] { request }, cancellationToken);
 
     public Task<string> StartTurnAsync(StartTurnRequest request, CancellationToken cancellationToken)
-        => rpc!.InvokeWithCancellationAsync<string>("worker/turn/start", new object[] { request }, cancellationToken);
+        => RequireRpc().InvokeWithCancellationAsync<string>("worker/turn/start", new object[] { request }, cancellationToken);
 
     public Task<string> SteerTurnAsync(SteerTurnRequest request, CancellationToken cancellationToken)
-        => rpc!.InvokeWithCancellationAsync<string>("worker/turn/steer", new object[] { request }, cancellationToken);
+        => RequireRpc().InvokeWithCancellationAsync<string>("worker/turn/steer", new object[] { request }, cancellationToken);
 
     public Task InterruptTurnAsync(InterruptTurnRequest request, CancellationToken cancellationToken)
-        => rpc!.InvokeWithCancellationAsync("worker/turn/interrupt", new object[] { request }, cancellationToken);
+        => RequireRpc().InvokeWithCancellationAsync("worker/turn/interrupt", new object[] { request }, cancellationToken);
 
     public Task<CompactThreadResult> CompactThreadAsync(CompactThreadRequest request, CancellationToken cancellationToken)
         => RequireRpc().InvokeWithCancellationAsync<CompactThreadResult>(
@@ -550,17 +559,29 @@ public sealed class WorkerBridge : IWorkerBridge, ICodexWorkerObserver
             new object[] { request },
             cancellationToken);
 
+    public Task<NetworkDiagnosticsResult> RunNetworkDiagnosticsAsync(RunNetworkDiagnosticsRequest request, CancellationToken cancellationToken)
+        => RequireRpc().InvokeWithCancellationAsync<NetworkDiagnosticsResult>(
+            "worker/diagnostics/network",
+            new object[] { request },
+            cancellationToken);
+
+    public Task<ThreadUsageResult> GetThreadUsageAsync(GetThreadUsageRequest request, CancellationToken cancellationToken)
+        => RequireRpc().InvokeWithCancellationAsync<ThreadUsageResult>(
+            "worker/account/threadUsage",
+            new object[] { request },
+            cancellationToken);
+
     public Task ResolveApprovalAsync(ResolveApprovalRequest request, CancellationToken cancellationToken)
-        => rpc!.InvokeWithCancellationAsync("worker/approval/resolve", new object[] { request }, cancellationToken);
+        => RequireRpc().InvokeWithCancellationAsync("worker/approval/resolve", new object[] { request }, cancellationToken);
 
     public Task ResolveUserInputAsync(ResolveUserInputRequest request, CancellationToken cancellationToken)
-        => rpc!.InvokeWithCancellationAsync("worker/userInput/resolve", new object[] { request }, cancellationToken);
+        => RequireRpc().InvokeWithCancellationAsync("worker/userInput/resolve", new object[] { request }, cancellationToken);
 
     public Task ResolvePermissionSelectionAsync(ResolvePermissionSelectionRequest request, CancellationToken cancellationToken)
-        => rpc!.InvokeWithCancellationAsync("worker/permissionSelection/resolve", new object[] { request }, cancellationToken);
+        => RequireRpc().InvokeWithCancellationAsync("worker/permissionSelection/resolve", new object[] { request }, cancellationToken);
 
     public Task ResolveMcpElicitationAsync(ResolveMcpElicitationRequest request, CancellationToken cancellationToken)
-        => rpc!.InvokeWithCancellationAsync("worker/mcpElicitation/resolve", new object[] { request }, cancellationToken);
+        => RequireRpc().InvokeWithCancellationAsync("worker/mcpElicitation/resolve", new object[] { request }, cancellationToken);
 
     public Task<InteractionAuthStatus> ReadGatewayOAuthAsync(ReadGatewayOAuthRequest request, CancellationToken cancellationToken)
         => RequireRpc().InvokeWithCancellationAsync<InteractionAuthStatus>(
@@ -774,7 +795,7 @@ public sealed class WorkerBridge : IWorkerBridge, ICodexWorkerObserver
                 return;
             }
 
-            if (rpc is not null)
+            if (Volatile.Read(ref rpc) is not null)
             {
                 // The Worker process exited or its RPC transport closed. Retire the dead
                 // transport so an explicit Connect starts a new Worker instead of invoking
@@ -827,10 +848,11 @@ public sealed class WorkerBridge : IWorkerBridge, ICodexWorkerObserver
             pipe = new NamedPipeClientStream(".", pipeName, PipeDirection.InOut, PipeOptions.Asynchronous);
             await Task.Run(() => pipe.Connect(15_000), cancellationToken).ConfigureAwait(false);
             ExtensionDiagnostics.Write("Worker pipe connected");
-            rpc = new JsonRpc(pipe);
-            rpc.AddLocalRpcTarget<ICodexWorkerObserver>(this, null);
-            rpc.Disconnected += OnRpcDisconnected;
-            rpc.StartListening();
+            var workerRpc = new JsonRpc(pipe);
+            workerRpc.AddLocalRpcTarget<ICodexWorkerObserver>(this, null);
+            workerRpc.Disconnected += OnRpcDisconnected;
+            workerRpc.StartListening();
+            Volatile.Write(ref rpc, workerRpc);
             ExtensionDiagnostics.Write("Worker RPC listening");
         }
         catch (Exception ex)
@@ -900,12 +922,12 @@ public sealed class WorkerBridge : IWorkerBridge, ICodexWorkerObserver
     }
 
     private bool IsWorkerUsable()
-        => rpc is { } current
+        => Volatile.Read(ref rpc) is { } current
             && !current.Completion.IsCompleted
             && Volatile.Read(ref connectionLossReported) == 0;
 
     private JsonRpc RequireRpc()
-        => rpc ?? throw new InvalidOperationException("The Codex Worker RPC connection is unavailable.");
+        => Volatile.Read(ref rpc) ?? throw new WorkerRpcUnavailableException();
 
     private void OnWorkerProcessExited(object? sender, EventArgs eventArgs)
         => ReportConnectionLost(WorkerRecoveryFailureKind.WorkerProcessExit);
@@ -931,5 +953,13 @@ public sealed class WorkerBridge : IWorkerBridge, ICodexWorkerObserver
             // the process or JSON-RPC callback thread.
             ExtensionDiagnostics.Write("Worker connection-loss event handler failed");
         }
+    }
+}
+
+internal sealed class WorkerRpcUnavailableException : InvalidOperationException
+{
+    public WorkerRpcUnavailableException()
+        : base("The Codex Worker RPC connection is unavailable. The request was not dispatched.")
+    {
     }
 }

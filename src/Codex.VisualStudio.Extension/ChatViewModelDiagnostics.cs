@@ -20,6 +20,11 @@ public sealed partial class ChatViewModel
     private const string DiagnosticsTierRequiredText =
         "Saving a diagnostic ZIP requires Codex CLI 0.164.0 or later.";
 
+    private const string DoctorTierRequiredText =
+        "Network diagnostics require Codex CLI 0.166.0 or later.";
+
+    private const int MaximumDoctorOutputCharacters = 32 * 1024;
+
     // Tests replace the Visual Studio prompt; production uses the shell prompt.
     internal Func<string, Task<DiagnosticsSaveChoice>>? DiagnosticsConfirmationOverride { get; set; }
 
@@ -120,6 +125,62 @@ public sealed partial class ChatViewModel
                 await ShowSlashFailureAsync(result.Message ?? "The app-server did not save the diagnostic ZIP.").ConfigureAwait(false);
                 return false;
         }
+    }
+
+    private async Task<bool> ExecuteDoctorAsync()
+    {
+        OwnerSnapshot owner = CaptureOwnerSnapshot();
+        if (Status.FeatureTier < CodexFeatureTier.Tier166)
+        {
+            await ShowSlashFailureAsync(DoctorTierRequiredText).ConfigureAwait(false);
+            return false;
+        }
+
+        await ShowSlashStatusAsync("Checking network access with codex doctor.").ConfigureAwait(false);
+        NetworkDiagnosticsResult result = await bridge.RunNetworkDiagnosticsAsync(
+            StampOwner(new RunNetworkDiagnosticsRequest(), owner),
+            lifetime.Token).ConfigureAwait(false);
+        if (!IsCurrentOwner(owner))
+        {
+            return false;
+        }
+
+        if (!result.IsSupported)
+        {
+            await ShowSlashFailureAsync(result.UnavailableReason ?? DoctorTierRequiredText).ConfigureAwait(false);
+            return false;
+        }
+
+        if (result.RequiresServerRun)
+        {
+            await ShowSlashStatusAsync(
+                "This connection is remote, so run the check on the app-server host: codex doctor --network-only").ConfigureAwait(false);
+            return true;
+        }
+
+        string output = SafeMarkdownService.ToSafeLiteralText(result.Output).Trim();
+        if (output.Length > MaximumDoctorOutputCharacters)
+        {
+            output = string.Concat(output.AsSpan(0, MaximumDoctorOutputCharacters), "\r\n[Output truncated]");
+        }
+
+        string summary = result.TimedOut
+            ? "The network check timed out."
+            : result.ExitCode == 0
+                ? "The network check finished."
+                : "The network check reported a problem.";
+        await OnUiAsync(() =>
+        {
+            if (IsCurrentOwner(owner))
+            {
+                SlashCommands.ShowStatus(summary);
+                Items.Add(new ChatItemViewModel(
+                    result.ExitCode == 0 ? "Status" : "Error",
+                    output.Length == 0 ? summary : string.Concat(summary, "\r\n", output),
+                    result.ExitCode == 0 ? ConversationEventKind.ItemCompleted : ConversationEventKind.Error));
+            }
+        }).ConfigureAwait(false);
+        return result.ExitCode == 0;
     }
 
     private async Task<DiagnosticsSaveChoice> ConfirmDiagnosticsSaveAsync(string message)

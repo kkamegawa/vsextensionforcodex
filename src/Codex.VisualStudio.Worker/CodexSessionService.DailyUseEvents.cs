@@ -1271,10 +1271,40 @@ public sealed partial class CodexSessionService
 
     private static int GetHistoryTextByteCount(JsonElement item, string itemType)
     {
-        if (itemType == "agentMessage")
+        if (itemType is "agentMessage" or "plan")
         {
             string? text = GetString(item, "text");
             return text is null ? 0 : Encoding.UTF8.GetByteCount(text);
+        }
+
+        if (itemType == "commandExecution")
+        {
+            int bytes = 0;
+            string? command = GetString(item, "command");
+            string? output = GetString(item, "aggregatedOutput");
+            if (command is not null)
+            {
+                bytes = AddBoundedHistoryByteCount(bytes, command);
+            }
+
+            if (!string.IsNullOrEmpty(output))
+            {
+                if (command is { Length: > 0 })
+                {
+                    bytes = AddBoundedHistoryByteCount(bytes, Environment.NewLine);
+                }
+
+                bytes = AddBoundedHistoryByteCount(bytes, output);
+            }
+
+            return bytes;
+        }
+
+        if (itemType == "reasoning"
+            && item.TryGetProperty("summary", out JsonElement summary)
+            && summary.ValueKind == JsonValueKind.Array)
+        {
+            return GetHistoryStringArrayByteCount(summary);
         }
 
         if (itemType == "userMessage"
@@ -1284,7 +1314,8 @@ public sealed partial class CodexSessionService
             int bytes = 0;
             foreach (JsonElement part in content.EnumerateArray().Take(512))
             {
-                if (GetString(part, "type") == "inputText" && GetString(part, "text") is { } text)
+                if (GetString(part, "type") is "text" or "inputText"
+                    && GetString(part, "text") is { } text)
                 {
                     bytes = Math.Min(MaxHistoryTextBytes + 1, bytes + Encoding.UTF8.GetByteCount(text));
                     if (bytes > MaxHistoryTextBytes)
@@ -1305,6 +1336,34 @@ public sealed partial class CodexSessionService
         int index = Math.Max(path.LastIndexOf('/'), path.LastIndexOf('\\'));
         return index >= 0 && index + 1 < path.Length ? path[(index + 1)..] : path;
     }
+
+    private static int GetHistoryStringArrayByteCount(JsonElement values)
+    {
+        int bytes = 0;
+        foreach (JsonElement value in values.EnumerateArray().Take(512))
+        {
+            if (value.ValueKind != JsonValueKind.String || string.IsNullOrEmpty(value.GetString()))
+            {
+                continue;
+            }
+
+            if (bytes > 0)
+            {
+                bytes = AddBoundedHistoryByteCount(bytes, Environment.NewLine);
+            }
+
+            bytes = AddBoundedHistoryByteCount(bytes, value.GetString()!);
+            if (bytes > MaxHistoryTextBytes)
+            {
+                break;
+            }
+        }
+
+        return bytes;
+    }
+
+    private static int AddBoundedHistoryByteCount(int currentBytes, string text)
+        => Math.Min(MaxHistoryTextBytes + 1, currentBytes + Encoding.UTF8.GetByteCount(text));
 
     private readonly record struct ThreadStatusKey(long Generation, string ThreadId);
 

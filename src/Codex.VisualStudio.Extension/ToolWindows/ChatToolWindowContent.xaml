@@ -12,10 +12,60 @@
        process), so the view model exposes pre-computed bool flags for BooleanToVisibility. -->
   <Grid MinWidth="300"
         MinHeight="360"
+        FocusManager.IsFocusScope="True"
         Background="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBackgroundBrushKey}}"
         TextElement.Foreground="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowTextBrushKey}}">
+    <Grid.Style>
+      <Style TargetType="Grid">
+        <Style.Triggers>
+          <DataTrigger Binding="{Binding IsVisible, ElementName=TranscriptSearchInput}" Value="True">
+            <Setter Property="FocusManager.FocusedElement" Value="{Binding ElementName=TranscriptSearchInput}" />
+          </DataTrigger>
+        </Style.Triggers>
+      </Style>
+    </Grid.Style>
     <Grid.Resources>
       <BooleanToVisibilityConverter x:Key="BoolToVis" />
+
+      <!-- Sanitized Markdown blocks inside question cards. Text inherits the card's font size. -->
+      <DataTemplate x:Key="QuestionBlockTemplate">
+        <Grid Margin="0,1">
+          <TextBlock Text="{Binding Text}" TextWrapping="Wrap">
+            <TextBlock.Style>
+              <Style TargetType="TextBlock">
+                <Setter Property="Foreground" Value="{DynamicResource {x:Static styles:VsBrushes.WindowTextKey}}" />
+                <Style.Triggers>
+                  <DataTrigger Binding="{Binding IsHeading}" Value="True">
+                    <Setter Property="FontWeight" Value="SemiBold" />
+                  </DataTrigger>
+                  <DataTrigger Binding="{Binding IsListItem}" Value="True">
+                    <Setter Property="Margin" Value="12,0,0,0" />
+                  </DataTrigger>
+                  <DataTrigger Binding="{Binding IsCodeBlock}" Value="True">
+                    <Setter Property="Visibility" Value="Collapsed" />
+                  </DataTrigger>
+                  <DataTrigger Binding="{Binding IsSeparator}" Value="True">
+                    <Setter Property="Visibility" Value="Collapsed" />
+                  </DataTrigger>
+                </Style.Triggers>
+              </Style>
+            </TextBlock.Style>
+          </TextBlock>
+          <TextBlock FontFamily="Consolas, Courier New, monospace" Text="{Binding Code}" TextWrapping="Wrap">
+            <TextBlock.Style>
+              <Style TargetType="TextBlock">
+                <Setter Property="Visibility" Value="Collapsed" />
+                <Setter Property="Foreground" Value="{DynamicResource {x:Static styles:VsBrushes.WindowTextKey}}" />
+                <Style.Triggers>
+                  <DataTrigger Binding="{Binding IsCodeBlock}" Value="True">
+                    <Setter Property="Visibility" Value="Visible" />
+                  </DataTrigger>
+                </Style.Triggers>
+              </Style>
+            </TextBlock.Style>
+          </TextBlock>
+        </Grid>
+      </DataTemplate>
 
       <!-- Themed ComboBox (mode / model pickers) — re-based on the VS style so it renders
            correctly in dark/light/high-contrast themes. -->
@@ -325,6 +375,114 @@
            This explicit style avoids the implicit TextBlock foreground overriding state colors. -->
       <Style x:Key="SelectableContentTextStyle" TargetType="TextBlock">
         <Setter Property="TextOptions.TextFormattingMode" Value="Display" />
+      </Style>
+
+      <!-- Transcript content is presented as immutable text while retaining native TextBox
+           selection, copy, keyboard focus, and UI Automation behavior. -->
+      <Style x:Key="SelectableTranscriptTextStyle"
+             TargetType="TextBox"
+             BasedOn="{StaticResource {x:Static styles:VsResourceKeys.TextBoxStyleKey}}">
+        <Setter Property="Background" Value="Transparent" />
+        <Setter Property="BorderThickness" Value="0" />
+        <Setter Property="Padding" Value="0" />
+        <Setter Property="MinHeight" Value="0" />
+        <Setter Property="VerticalContentAlignment" Value="Top" />
+        <Setter Property="HorizontalAlignment" Value="Stretch" />
+        <Setter Property="AcceptsReturn" Value="True" />
+        <Setter Property="IsReadOnly" Value="True" />
+        <Setter Property="IsReadOnlyCaretVisible" Value="True" />
+        <Setter Property="IsTabStop" Value="True" />
+        <Setter Property="VerticalScrollBarVisibility" Value="Disabled" />
+        <Setter Property="HorizontalScrollBarVisibility" Value="Disabled" />
+        <Setter Property="Foreground" Value="{DynamicResource {x:Static styles:VsBrushes.WindowTextKey}}" />
+      </Style>
+
+      <!-- Keep Remote UI TextBox styles as keyed resources referenced directly from controls.
+           Inline BasedOn styles did not materialize transcript TextBoxes in the tool-window UI. -->
+      <Style x:Key="SelectableMarkdownHeadingTextStyle"
+             TargetType="TextBox"
+             BasedOn="{StaticResource SelectableTranscriptTextStyle}">
+        <Setter Property="Visibility" Value="Collapsed" />
+        <Setter Property="TextOptions.TextFormattingMode" Value="Display" />
+        <Setter Property="FontWeight" Value="SemiBold" />
+        <Setter Property="FontSize" Value="13" />
+        <Setter Property="Margin" Value="0,6,0,2" />
+        <Style.Triggers>
+          <DataTrigger Binding="{Binding IsHeading}" Value="True">
+            <Setter Property="Visibility" Value="Visible" />
+          </DataTrigger>
+          <DataTrigger Binding="{Binding IsH1}" Value="True">
+            <Setter Property="FontSize" Value="18" />
+            <Setter Property="Margin" Value="0,8,0,4" />
+          </DataTrigger>
+          <DataTrigger Binding="{Binding IsH2}" Value="True">
+            <Setter Property="FontSize" Value="15" />
+          </DataTrigger>
+          <DataTrigger Binding="{Binding IsH3}" Value="True">
+            <Setter Property="FontSize" Value="13" />
+          </DataTrigger>
+        </Style.Triggers>
+      </Style>
+
+      <Style x:Key="SelectableMarkdownParagraphTextStyle"
+             TargetType="TextBox"
+             BasedOn="{StaticResource SelectableTranscriptTextStyle}">
+        <Setter Property="Visibility" Value="Collapsed" />
+        <Setter Property="TextOptions.TextFormattingMode" Value="Display" />
+        <Style.Triggers>
+          <DataTrigger Binding="{Binding IsParagraph}" Value="True">
+            <Setter Property="Visibility" Value="Visible" />
+          </DataTrigger>
+        </Style.Triggers>
+      </Style>
+
+      <Style x:Key="SelectableMarkdownListItemTextStyle"
+             TargetType="TextBox"
+             BasedOn="{StaticResource SelectableTranscriptTextStyle}">
+        <Setter Property="Visibility" Value="Collapsed" />
+        <Setter Property="Margin" Value="12,0,0,0" />
+        <Setter Property="TextOptions.TextFormattingMode" Value="Display" />
+        <Style.Triggers>
+          <DataTrigger Binding="{Binding IsListItem}" Value="True">
+            <Setter Property="Visibility" Value="Visible" />
+          </DataTrigger>
+          <!-- Nested list levels use fixed indentation to avoid converters in Remote UI. -->
+          <DataTrigger Binding="{Binding IsNestedListItem}" Value="True">
+            <Setter Property="Margin" Value="28,0,0,0" />
+          </DataTrigger>
+          <DataTrigger Binding="{Binding IsDeeplyNestedListItem}" Value="True">
+            <Setter Property="Margin" Value="44,0,0,0" />
+          </DataTrigger>
+        </Style.Triggers>
+      </Style>
+
+      <Style x:Key="SelectableTranscriptBodyTextStyle"
+             TargetType="TextBox"
+             BasedOn="{StaticResource SelectableTranscriptTextStyle}">
+        <Setter Property="TextOptions.TextFormattingMode" Value="Display" />
+        <Setter Property="Visibility" Value="Visible" />
+        <Style.Triggers>
+          <DataTrigger Binding="{Binding IsPlanItem}" Value="True">
+            <Setter Property="Visibility" Value="Collapsed" />
+          </DataTrigger>
+          <DataTrigger Binding="{Binding UsesBlockRendering}" Value="True">
+            <Setter Property="Visibility" Value="Collapsed" />
+          </DataTrigger>
+          <DataTrigger Binding="{Binding IsCommandItem}" Value="True">
+            <Setter Property="Visibility" Value="Collapsed" />
+          </DataTrigger>
+          <MultiDataTrigger>
+            <MultiDataTrigger.Conditions>
+              <Condition Binding="{Binding IsReasoningItem}" Value="True" />
+              <Condition Binding="{Binding IsCollapsed}" Value="True" />
+            </MultiDataTrigger.Conditions>
+            <Setter Property="Visibility" Value="Collapsed" />
+          </MultiDataTrigger>
+          <DataTrigger Binding="{Binding IsDiffItem}" Value="True">
+            <Setter Property="FontFamily" Value="Consolas, Courier New, monospace" />
+            <Setter Property="FontSize" Value="11" />
+          </DataTrigger>
+        </Style.Triggers>
       </Style>
 
       <!-- ── Accent icon button (Send / Steer) ── -->
@@ -737,6 +895,8 @@
                              Visibility="{Binding Usage.HasSecondary, Converter={StaticResource BoolToVis}}" />
                   <TextBlock Margin="0,4,0,0" TextWrapping="Wrap" Text="{Binding Usage.CreditsText}"
                              Visibility="{Binding Usage.HasCredits, Converter={StaticResource BoolToVis}}" />
+                  <TextBlock Margin="0,4,0,0" TextWrapping="Wrap" Text="{Binding Usage.ThreadUsageText}"
+                             Visibility="{Binding Usage.HasThreadUsage, Converter={StaticResource BoolToVis}}" />
                   <TextBlock Margin="0,8,0,0" FontSize="10" TextWrapping="Wrap" Text="{Binding Usage.UpdatedText}" />
                   <WrapPanel Margin="0,12,0,0">
                     <Button Content="Open usage dashboard"
@@ -767,7 +927,7 @@
                     Command="{Binding ToggleHistoryCommand}"
                     Style="{StaticResource IconButtonStyle}" />
             <Popup IsOpen="{Binding IsHistoryOpen, Mode=TwoWay}"
-                   StaysOpen="False"
+                   StaysOpen="True"
                    Placement="Bottom"
                    VerticalOffset="2"
                    AllowsTransparency="True"
@@ -781,9 +941,25 @@
                   <KeyBinding Key="Escape" Command="{Binding CloseHistoryCommand}" />
                 </Border.InputBindings>
                 <DockPanel Margin="6">
+                  <ComboBox DockPanel.Dock="Top" Margin="0,0,0,6"
+                            ItemsSource="{Binding ThreadListScopes}"
+                            DisplayMemberPath="DisplayText"
+                            SelectedValuePath="Id"
+                            SelectedValue="{Binding SelectedThreadListScopeId, Mode=TwoWay}"
+                            ToolTip="Conversations to list"
+                            AutomationProperties.Name="Conversation history scope"
+                            AutomationProperties.HelpText="Choose which conversations the history lists." />
+                  <Button DockPanel.Dock="Top" Margin="0,0,0,6" HorizontalAlignment="Right"
+                          Content="Close history"
+                          Command="{Binding CloseHistoryCommand}"
+                          AutomationProperties.Name="Close conversation history"
+                          Style="{StaticResource SmallRoundButtonStyle}" />
                   <StackPanel DockPanel.Dock="Bottom" Margin="0,6,0,0">
                     <TextBlock Margin="2,4" Text="{Binding HistoryStatusText}" TextWrapping="Wrap"
                                Visibility="{Binding HasHistoryNotice, Converter={StaticResource BoolToVis}}"
+                               AutomationProperties.LiveSetting="Polite" />
+                    <TextBlock Margin="2,4" Text="{Binding ConversationTextStatusText}" TextWrapping="Wrap"
+                               Visibility="{Binding HasConversationTextStatus, Converter={StaticResource BoolToVis}}"
                                AutomationProperties.LiveSetting="Polite" />
                     <TextBlock Margin="2,2,2,4" Opacity="0.75"
                                Text="Unread markers and read-state controls are available on a compatible App Server with Experimental API enabled. New replies stay unread until you mark them read."
@@ -821,6 +997,16 @@
                               Visibility="{Binding IsHistoryOnly, Converter={StaticResource BoolToVis}}"
                               Style="{StaticResource SmallRoundButtonStyle}"
                               AutomationProperties.Name="Join selected conversation" />
+                      <Button Margin="0,0,4,4" Content="Open conversation text"
+                              Command="{Binding OpenConversationTextCommand}"
+                              Style="{StaticResource SmallRoundButtonStyle}"
+                              AutomationProperties.Name="Open conversation text"
+                              AutomationProperties.HelpText="Opens a fixed copy of the whole conversation in a read-only editor tab." />
+                      <Button Margin="0,0,4,4" Content="Cancel"
+                              Command="{Binding CancelConversationTextCommand}"
+                              Visibility="{Binding IsConversationTextLoading, Converter={StaticResource BoolToVis}}"
+                              Style="{StaticResource SmallRoundButtonStyle}"
+                              AutomationProperties.Name="Cancel opening conversation text" />
                       <Button Margin="0,0,4,4" Content="Load older"
                               Command="{Binding LoadOlderHistoryCommand}"
                               Style="{StaticResource SmallRoundButtonStyle}" />
@@ -911,6 +1097,10 @@
             </Popup>
           </Grid>
 
+          <Button Content="&#xE721;" ToolTip="Search conversation" Margin="2,0,0,0"
+                  AutomationProperties.Name="Search conversation"
+                  Command="{Binding OpenTranscriptSearchCommand}"
+                  Style="{StaticResource IconButtonStyle}" />
           <Button Content="&#xE710;" ToolTip="New thread" Margin="2,0,0,0"
                   Command="{Binding NewThreadCommand}"
                   Style="{StaticResource IconButtonStyle}" />
@@ -1111,6 +1301,10 @@
                   <TextBlock FontWeight="SemiBold"
                              Foreground="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowTextBrushKey}}"
                              Text="{Binding DisplayRole}" />
+                  <TextBlock FontSize="10" TextWrapping="Wrap"
+                             Foreground="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowTextBrushKey}}"
+                             Text="{Binding TimingText}"
+                             Visibility="{Binding HasTiming, Converter={StaticResource BoolToVis}}" />
 
                   <Border Margin="0,6,0,0"
                           Padding="6,4"
@@ -1178,72 +1372,14 @@
                     <ItemsControl.ItemTemplate>
                       <DataTemplate>
                         <Grid Margin="0,2,0,2" HorizontalAlignment="Stretch">
-                          <TextBlock Text="{Binding Text}" TextWrapping="Wrap">
-                            <TextBlock.Style>
-                              <Style TargetType="TextBlock">
-                                <Setter Property="Visibility" Value="Collapsed" />
-                                <Setter Property="Foreground" Value="{DynamicResource {x:Static styles:VsBrushes.WindowTextKey}}" />
-                                <Setter Property="TextOptions.TextFormattingMode" Value="Display" />
-                                <Setter Property="FontWeight" Value="SemiBold" />
-                                <Setter Property="FontSize" Value="13" />
-                                <Setter Property="Margin" Value="0,6,0,2" />
-                                <Style.Triggers>
-                                  <DataTrigger Binding="{Binding IsHeading}" Value="True">
-                                    <Setter Property="Visibility" Value="Visible" />
-                                  </DataTrigger>
-                                  <DataTrigger Binding="{Binding IsH1}" Value="True">
-                                    <Setter Property="FontSize" Value="18" />
-                                    <Setter Property="Margin" Value="0,8,0,4" />
-                                  </DataTrigger>
-                                  <DataTrigger Binding="{Binding IsH2}" Value="True">
-                                    <Setter Property="FontSize" Value="15" />
-                                  </DataTrigger>
-                                  <DataTrigger Binding="{Binding IsH3}" Value="True">
-                                    <Setter Property="FontSize" Value="13" />
-                                  </DataTrigger>
-                                </Style.Triggers>
-                              </Style>
-                            </TextBlock.Style>
-                          </TextBlock>
+                          <TextBox Style="{StaticResource SelectableMarkdownHeadingTextStyle}"
+                                   Text="{Binding Text, Mode=OneWay}" TextWrapping="Wrap" />
 
-                          <TextBlock Text="{Binding Text}" TextWrapping="Wrap">
-                            <TextBlock.Style>
-                              <Style TargetType="TextBlock">
-                                <Setter Property="Visibility" Value="Collapsed" />
-                                <Setter Property="Foreground" Value="{DynamicResource {x:Static styles:VsBrushes.WindowTextKey}}" />
-                                <Setter Property="TextOptions.TextFormattingMode" Value="Display" />
-                                <Style.Triggers>
-                                  <DataTrigger Binding="{Binding IsParagraph}" Value="True">
-                                    <Setter Property="Visibility" Value="Visible" />
-                                  </DataTrigger>
-                                </Style.Triggers>
-                              </Style>
-                            </TextBlock.Style>
-                          </TextBlock>
+                          <TextBox Style="{StaticResource SelectableMarkdownParagraphTextStyle}"
+                                   Text="{Binding Text, Mode=OneWay}" TextWrapping="Wrap" />
 
-                          <TextBlock Text="{Binding Text}" TextWrapping="Wrap">
-                            <TextBlock.Style>
-                              <Style TargetType="TextBlock">
-                                <Setter Property="Visibility" Value="Collapsed" />
-                                <Setter Property="Margin" Value="12,0,0,0" />
-                                <Setter Property="Foreground" Value="{DynamicResource {x:Static styles:VsBrushes.WindowTextKey}}" />
-                                <Setter Property="TextOptions.TextFormattingMode" Value="Display" />
-                                <Style.Triggers>
-                                  <DataTrigger Binding="{Binding IsListItem}" Value="True">
-                                    <Setter Property="Visibility" Value="Visible" />
-                                  </DataTrigger>
-                                  <!-- Nested list levels get a fixed extra indent step (converters are
-                                       unavailable in Remote UI, so each depth flag maps to a margin). -->
-                                  <DataTrigger Binding="{Binding IsNestedListItem}" Value="True">
-                                    <Setter Property="Margin" Value="28,0,0,0" />
-                                  </DataTrigger>
-                                  <DataTrigger Binding="{Binding IsDeeplyNestedListItem}" Value="True">
-                                    <Setter Property="Margin" Value="44,0,0,0" />
-                                  </DataTrigger>
-                                </Style.Triggers>
-                              </Style>
-                            </TextBlock.Style>
-                          </TextBlock>
+                          <TextBox Style="{StaticResource SelectableMarkdownListItemTextStyle}"
+                                   Text="{Binding Text, Mode=OneWay}" TextWrapping="Wrap" />
 
                           <Separator Margin="0,6,0,6">
                             <Separator.Style>
@@ -1290,11 +1426,12 @@
                               <ScrollViewer HorizontalScrollBarVisibility="Auto"
                                             VerticalScrollBarVisibility="Disabled"
                                             AutomationProperties.Name="{Binding CodeBlockAutomationName}">
-                                <TextBlock FontFamily="Consolas, Courier New, monospace"
-                                           FontSize="11"
-                                           Text="{Binding Code}"
-                                           TextWrapping="NoWrap"
-                                           Foreground="{DynamicResource {x:Static styles:VsBrushes.WindowTextKey}}" />
+                                <TextBox Style="{StaticResource SelectableTranscriptTextStyle}"
+                                         FontFamily="Consolas, Courier New, monospace"
+                                         FontSize="11"
+                                         Text="{Binding Code, Mode=OneWay}"
+                                         TextWrapping="NoWrap"
+                                         AutomationProperties.Name="{Binding CodeBlockAutomationName}" />
                               </ScrollViewer>
                             </StackPanel>
                           </Border>
@@ -1324,12 +1461,12 @@
                         </Style.Triggers>
                       </Style>
                     </ScrollViewer.Style>
-                    <TextBlock FontFamily="Consolas, Courier New, monospace"
-                               FontSize="11"
-                               Foreground="{DynamicResource {x:Static styles:VsBrushes.WindowTextKey}}"
-                               Text="{Binding Text}"
-                               TextOptions.TextFormattingMode="Display"
-                               TextWrapping="NoWrap" />
+                    <TextBox Style="{StaticResource SelectableTranscriptTextStyle}"
+                             FontFamily="Consolas, Courier New, monospace"
+                             FontSize="11"
+                             Text="{Binding Text, Mode=OneWay}"
+                             TextOptions.TextFormattingMode="Display"
+                             TextWrapping="NoWrap" />
                   </ScrollViewer>
 
                   <Expander Margin="0,4,0,0"
@@ -1355,12 +1492,12 @@
                                   HorizontalScrollBarVisibility="Auto"
                                   VerticalScrollBarVisibility="Auto"
                                   AutomationProperties.Name="Buffered command output">
-                      <TextBlock FontFamily="Consolas, Courier New, monospace"
-                                 FontSize="11"
-                                 Foreground="{DynamicResource {x:Static styles:VsBrushes.WindowTextKey}}"
-                                 Text="{Binding Text}"
-                                 TextOptions.TextFormattingMode="Display"
-                                 TextWrapping="NoWrap" />
+                      <TextBox Style="{StaticResource SelectableTranscriptTextStyle}"
+                               FontFamily="Consolas, Courier New, monospace"
+                               FontSize="11"
+                               Text="{Binding Text, Mode=OneWay}"
+                               TextOptions.TextFormattingMode="Display"
+                               TextWrapping="NoWrap" />
                     </ScrollViewer>
                   </Expander>
 
@@ -1383,51 +1520,18 @@
                         </Style.Triggers>
                       </Style>
                     </ScrollViewer.Style>
-                    <TextBlock FontFamily="Consolas, Courier New, monospace"
-                               FontSize="11"
-                               Foreground="{DynamicResource {x:Static styles:VsBrushes.WindowTextKey}}"
-                               Text="{Binding Text}"
-                               TextOptions.TextFormattingMode="Display"
-                               TextWrapping="NoWrap" />
+                    <TextBox Style="{StaticResource SelectableTranscriptTextStyle}"
+                             FontFamily="Consolas, Courier New, monospace"
+                             FontSize="11"
+                             Text="{Binding Text, Mode=OneWay}"
+                             TextOptions.TextFormattingMode="Display"
+                             TextWrapping="NoWrap" />
                   </ScrollViewer>
 
                   <!-- Main text content: plain, monospace diff, or hidden (command/plan/block rendering/collapsed reasoning). -->
-                  <TextBlock Margin="0,4,0,0" TextWrapping="Wrap" Text="{Binding Text}">
-                    <TextBlock.Style>
-                      <Style TargetType="TextBlock">
-                        <Setter Property="Foreground" Value="{DynamicResource {x:Static styles:VsBrushes.WindowTextKey}}" />
-                        <Setter Property="TextOptions.TextFormattingMode" Value="Display" />
-                        <Setter Property="Visibility" Value="Visible" />
-                        <Style.Triggers>
-                          <!-- Plan items use a structured step list instead. -->
-                          <DataTrigger Binding="{Binding IsPlanItem}" Value="True">
-                            <Setter Property="Visibility" Value="Collapsed" />
-                          </DataTrigger>
-                          <!-- Agent/reasoning items use the structured block renderer above. -->
-                          <DataTrigger Binding="{Binding UsesBlockRendering}" Value="True">
-                            <Setter Property="Visibility" Value="Collapsed" />
-                          </DataTrigger>
-                          <!-- Command output uses the bounded, horizontally scrollable surfaces above. -->
-                          <DataTrigger Binding="{Binding IsCommandItem}" Value="True">
-                            <Setter Property="Visibility" Value="Collapsed" />
-                          </DataTrigger>
-                          <!-- Collapsed reasoning hides its full text. -->
-                          <MultiDataTrigger>
-                            <MultiDataTrigger.Conditions>
-                              <Condition Binding="{Binding IsReasoningItem}" Value="True" />
-                              <Condition Binding="{Binding IsCollapsed}" Value="True" />
-                            </MultiDataTrigger.Conditions>
-                            <Setter Property="Visibility" Value="Collapsed" />
-                          </MultiDataTrigger>
-                          <!-- Diff rendered in monospace. -->
-                          <DataTrigger Binding="{Binding IsDiffItem}" Value="True">
-                            <Setter Property="FontFamily" Value="Consolas, Courier New, monospace" />
-                            <Setter Property="FontSize" Value="11" />
-                          </DataTrigger>
-                        </Style.Triggers>
-                      </Style>
-                    </TextBlock.Style>
-                  </TextBlock>
+                  <TextBox Margin="0,4,0,0"
+                           Style="{StaticResource SelectableTranscriptBodyTextStyle}"
+                           TextWrapping="Wrap" Text="{Binding Text, Mode=OneWay}" />
 
                   <!-- Plan step list — shown only for PlanUpdated items. -->
                   <ItemsControl Margin="0,4,0,0" MinHeight="0" ItemsSource="{Binding PlanSteps}">
@@ -1446,16 +1550,17 @@
                     </ItemsControl.Style>
                     <ItemsControl.ItemTemplate>
                       <DataTemplate>
-                        <TextBlock Margin="0,2" Text="{Binding}" TextWrapping="Wrap"
-                                   Foreground="{DynamicResource {x:Static styles:VsBrushes.WindowTextKey}}"
-                                   TextOptions.TextFormattingMode="Display" />
+                        <TextBox Margin="0,2" Style="{StaticResource SelectableTranscriptTextStyle}"
+                                 Text="{Binding ., Mode=OneWay}" TextWrapping="Wrap"
+                                 TextOptions.TextFormattingMode="Display" />
                       </DataTemplate>
                     </ItemsControl.ItemTemplate>
                   </ItemsControl>
 
-                  <TextBlock Margin="0,4,0,0" Text="{Binding PlanDeltaText}" TextWrapping="Wrap"
-                             Visibility="{Binding ShowPlanDeltaText, Converter={StaticResource BoolToVis}}"
-                             AutomationProperties.Name="Provisional plan update" />
+                  <TextBox Margin="0,4,0,0" Style="{StaticResource SelectableTranscriptTextStyle}"
+                           Text="{Binding PlanDeltaText, Mode=OneWay}" TextWrapping="Wrap"
+                           Visibility="{Binding ShowPlanDeltaText, Converter={StaticResource BoolToVis}}"
+                           AutomationProperties.Name="Provisional plan update" />
                   <TextBlock Margin="0,3,0,0" FontSize="11"
                              Text="Plan preview was truncated by the display size limit."
                              Visibility="{Binding PlanWasTruncated, Converter={StaticResource BoolToVis}}"
@@ -1471,7 +1576,8 @@
                             <ColumnDefinition Width="*" />
                           </Grid.ColumnDefinitions>
                           <TextBlock Margin="0,0,6,0" Grid.Column="0" FontWeight="SemiBold" Text="{Binding StatusText}" />
-                          <TextBlock Grid.Column="1" Text="{Binding Text}" TextWrapping="Wrap" />
+                          <TextBox Grid.Column="1" Style="{StaticResource SelectableTranscriptTextStyle}"
+                                   Text="{Binding Text, Mode=OneWay}" TextWrapping="Wrap" />
                         </Grid>
                       </DataTemplate>
                     </ItemsControl.ItemTemplate>
@@ -1489,8 +1595,9 @@
                                        Visibility="{Binding HasDisplayName, Converter={StaticResource BoolToVis}}" />
                             <TextBlock Margin="0,2,0,0" Text="{Binding MimeType}" FontSize="10" Opacity="0.75"
                                        Visibility="{Binding HasMimeType, Converter={StaticResource BoolToVis}}" />
-                            <TextBlock Margin="0,3,0,0" Text="{Binding Text}" TextWrapping="Wrap"
-                                       Visibility="{Binding HasText, Converter={StaticResource BoolToVis}}" />
+                            <TextBox Margin="0,3,0,0" Style="{StaticResource SelectableTranscriptTextStyle}"
+                                     Text="{Binding Text, Mode=OneWay}" TextWrapping="Wrap"
+                                     Visibility="{Binding HasText, Converter={StaticResource BoolToVis}}" />
                             <TextBlock Margin="0,3,0,0" Text="Artifact content was truncated by the server."
                                        Visibility="{Binding IsServerTruncated, Converter={StaticResource BoolToVis}}" />
                             <TextBlock Margin="0,3,0,0" Text="Artifact content was shortened for display."
@@ -1541,6 +1648,65 @@
             </DataTemplate>
           </ListBox.ItemTemplate>
         </ListBox>
+
+        <Border Panel.ZIndex="10" Margin="10" Padding="10" VerticalAlignment="Top" MaxHeight="440"
+                Background="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBackgroundBrushKey}}"
+                BorderBrush="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBorderBrushKey}}"
+                BorderThickness="1" CornerRadius="6"
+                Visibility="{Binding IsTranscriptSearchOpen, Converter={StaticResource BoolToVis}}"
+                AutomationProperties.Name="Search conversation">
+          <Grid>
+            <Grid.RowDefinitions>
+              <RowDefinition Height="Auto" />
+              <RowDefinition Height="Auto" />
+              <RowDefinition Height="Auto" />
+              <RowDefinition Height="*" />
+            </Grid.RowDefinitions>
+            <WrapPanel Grid.Row="0">
+              <TextBlock Text="Search conversation" FontWeight="SemiBold" VerticalAlignment="Center" />
+              <Button Margin="8,0,0,0" Content="Close" Command="{Binding CloseTranscriptSearchCommand}"
+                      Style="{StaticResource SmallRoundButtonStyle}" AutomationProperties.Name="Close conversation search" />
+            </WrapPanel>
+            <Grid Grid.Row="1" Margin="0,6,0,0">
+              <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+              </Grid.ColumnDefinitions>
+              <TextBox x:Name="TranscriptSearchInput" Grid.Column="0" MinWidth="60" Text="{Binding TranscriptSearchText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                       AutomationProperties.Name="Search conversation text">
+                <TextBox.InputBindings>
+                  <KeyBinding Key="Return" Command="{Binding SearchTranscriptCommand}" />
+                  <KeyBinding Key="Escape" Command="{Binding CloseTranscriptSearchCommand}" />
+                </TextBox.InputBindings>
+              </TextBox>
+              <Button Grid.Column="1" Margin="6,0,0,0" Content="Search" Command="{Binding SearchTranscriptCommand}"
+                      Style="{StaticResource SmallRoundButtonStyle}" AutomationProperties.Name="Find conversation matches" />
+            </Grid>
+            <WrapPanel Grid.Row="2" Margin="0,4,0,0">
+              <TextBlock Text="{Binding TranscriptSearchStatusText}" TextWrapping="Wrap" AutomationProperties.LiveSetting="Polite" />
+              <Button Margin="6,0,0,0" Content="Cancel" Command="{Binding CancelTranscriptSearchCommand}"
+                      Style="{StaticResource SmallRoundButtonStyle}"
+                      Visibility="{Binding IsTranscriptSearchLoading, Converter={StaticResource BoolToVis}}" />
+            </WrapPanel>
+            <ListBox Grid.Row="3" Margin="0,6,0,0" MaxHeight="300"
+                     ItemsSource="{Binding TranscriptSearchResults}"
+                     SelectedItem="{Binding SelectedTranscriptSearchResult, Mode=TwoWay}"
+                     ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                     VirtualizingPanel.IsVirtualizing="True"
+                     VirtualizingPanel.VirtualizationMode="Recycling"
+                     AutomationProperties.Name="Conversation search results">
+              <ListBox.ItemTemplate>
+                <DataTemplate>
+                  <StackPanel Margin="0,3">
+                    <TextBlock Text="{Binding PositionText}" />
+                    <TextBlock FontWeight="SemiBold" Text="{Binding Role}" />
+                    <TextBlock Text="{Binding Text}" TextWrapping="Wrap" />
+                  </StackPanel>
+                </DataTemplate>
+              </ListBox.ItemTemplate>
+            </ListBox>
+          </Grid>
+        </Border>
 
         <!-- Welcome / empty state — centered over the (empty) transcript. -->
         <StackPanel Visibility="{Binding IsThreadEmpty, Converter={StaticResource BoolToVis}}"
@@ -1650,8 +1816,11 @@
                       <DataTemplate>
                         <StackPanel Margin="0,8,0,0">
                           <TextBlock FontWeight="Bold" Text="{Binding Header}" TextWrapping="Wrap" />
-                          <TextBlock Margin="0,2,0,0" Text="{Binding Question}" TextWrapping="Wrap"
-                                     Visibility="{Binding HasQuestion, Converter={StaticResource BoolToVis}}" />
+                          <ItemsControl Margin="0,2,0,0" ItemsSource="{Binding QuestionBlocks}"
+                                        ItemTemplate="{StaticResource QuestionBlockTemplate}"
+                                        Visibility="{Binding HasQuestion, Converter={StaticResource BoolToVis}}"
+                                        Focusable="False"
+                                        AutomationProperties.Name="{Binding Question}" />
                           <TextBox Margin="0,5,0,0" MinHeight="50" TextWrapping="Wrap" AcceptsReturn="True"
                                    Text="{Binding FreeText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
                                    Visibility="{Binding IsFreeText, Converter={StaticResource BoolToVis}}" />
@@ -1662,7 +1831,10 @@
                                 <RadioButton Margin="0,2" IsChecked="{Binding IsSelected, Mode=TwoWay}">
                                   <StackPanel>
                                     <TextBlock Text="{Binding DisplayLabel}" TextWrapping="Wrap" />
-                                    <TextBlock FontSize="11" Opacity="0.75" Text="{Binding Description}" TextWrapping="Wrap" />
+                                    <ItemsControl FontSize="11" ItemsSource="{Binding DescriptionBlocks}"
+                                                  ItemTemplate="{StaticResource QuestionBlockTemplate}"
+                                                  Focusable="False"
+                                                  AutomationProperties.Name="{Binding Description}" />
                                   </StackPanel>
                                 </RadioButton>
                               </DataTemplate>

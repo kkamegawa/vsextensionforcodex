@@ -112,7 +112,7 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
         CancellationToken cancellationToken,
         string? connectingMessage = null)
     {
-        WorkerDiagnostics.Write("worker connect RPC received");
+        WorkerDiagnostics.Write($"worker connect RPC received build={System.Diagnostics.FileVersionInfo.GetVersionInfo(typeof(WorkerRpcService).Assembly.Location).ProductVersion} assembly={typeof(WorkerRpcService).Assembly.Location}");
         if (options.ContractVersion != ContractVersions.Current)
         {
             throw new InvalidOperationException($"Unsupported contract version {options.ContractVersion}.");
@@ -1048,8 +1048,11 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
     public Task<ThreadPage> ListThreadsAsync(ListThreadsRequest request, CancellationToken cancellationToken)
         => ExecuteOwnerScopedGenerationAsync(
             request,
-            () => session.ListThreadsAsync(request.Cursor, cancellationToken),
+            () => session.ListThreadsAsync(request.Cursor, request.WorkingDirectories, cancellationToken),
             cancellationToken);
+
+    public Task<ThreadListScopesResult> GetThreadListScopesAsync(GetThreadListScopesRequest request, CancellationToken cancellationToken)
+        => ExecuteOwnerScopedAsync(request, () => session.GetThreadListScopesAsync(cancellationToken), cancellationToken);
 
     public Task<ThreadReadResult> ReadThreadAsync(ReadThreadRequest request, CancellationToken cancellationToken)
         => ExecuteOwnerScopedGenerationAsync(
@@ -1352,8 +1355,9 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
         {
             StartReviewResult result = await session.StartReviewAsync(request, cancellationToken).ConfigureAwait(false);
             ValidateOwnerScope(request);
-            if (result.IsSupported)
+            if (result.IsSupported && result.Outcome == ReviewStartOutcome.Started)
             {
+                UpdateSessionIds();
                 await SetStatusAsync(WorkerConnectionState.Busy, "Code review in progress.", cancellationToken).ConfigureAwait(false);
             }
 
@@ -1431,6 +1435,12 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
 
     public Task<RateLimitsResult> GetRateLimitsAsync(GetRateLimitsRequest request, CancellationToken cancellationToken)
         => ExecuteOwnerScopedAsync(request, () => session.GetRateLimitsAsync(cancellationToken), cancellationToken);
+
+    public Task<NetworkDiagnosticsResult> RunNetworkDiagnosticsAsync(RunNetworkDiagnosticsRequest request, CancellationToken cancellationToken)
+        => ExecuteOwnerScopedAsync(request, () => session.RunNetworkDiagnosticsAsync(cancellationToken), cancellationToken);
+
+    public Task<ThreadUsageResult> GetThreadUsageAsync(GetThreadUsageRequest request, CancellationToken cancellationToken)
+        => ExecuteOwnerScopedAsync(request, () => session.GetThreadUsageAsync(request.ThreadId, cancellationToken), cancellationToken);
 
     public Task ResolveApprovalAsync(ResolveApprovalRequest request, CancellationToken cancellationToken)
         => ExecuteOwnerScopedAsync(request, () => session.ResolveApprovalAsync(request, cancellationToken), cancellationToken);
@@ -1674,28 +1684,21 @@ public sealed class WorkerRpcService : ICodexWorkerClient, IAsyncDisposable
 
     private async Task OnStandardErrorReceivedAsync(string text)
     {
-        // Forward the raw (already redacted) line to the transcript and output
-        // log, preserving existing behavior.
-        await PublishEventAsync(
-            new ConversationEvent { Kind = ConversationEventKind.Error, Text = text },
-            CancellationToken.None).ConfigureAwait(false);
+        string diagnostic = CodexErrorClassifier.FormatStandardError(redactor.Redact(text));
+        WorkerDiagnostics.Write($"app-server stderr: {diagnostic}");
 
-        // On the first network/DNS failure, surface a single actionable message
-        // and mark the connection degraded instead of flooding the transcript
-        // with repeated low-level errors.
+        // stderr also contains optional MCP failures and recoverable transport fallbacks.
+        // It does not prove that the app-server RPC connection was lost. Invalidating the
+        // owner here turns successful in-flight requests into StaleGeneration failures.
+        // Actual transport closure, process exit, and watchdog failure drive recovery.
         if (CodexErrorClassifier.IsNetworkFailure(text)
             && Interlocked.CompareExchange(ref networkFailureReported, 1, 0) == 0)
         {
-            await SetStatusAsync(
-                WorkerConnectionState.Degraded,
-                CodexErrorClassifier.NetworkFailureMessage,
-                CancellationToken.None,
-                WorkerRecoveryFailureKind.ServerUnavailable).ConfigureAwait(false);
             await PublishEventAsync(
                 new ConversationEvent
                 {
                     Kind = ConversationEventKind.Error,
-                    Text = CodexErrorClassifier.NetworkFailureMessage,
+                    Text = CodexErrorClassifier.GetNetworkFailureMessage(text),
                 },
                 CancellationToken.None).ConfigureAwait(false);
         }
