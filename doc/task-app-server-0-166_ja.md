@@ -13,15 +13,15 @@
 - [x] contract / 互換性テスト、Debug / Release の Core・UI テスト、警告・エラー 0 件の Debug / Release ビルド、Release VSIX 検査に成功。
 - [x] 0.166.0、0.165.0、および古い回帰対象バージョンで実 CLI の `initialize` に成功。
 
-## 保留中のメンテナー受け入れ確認
+## Visual Studio の受け入れ確認
 
-- [ ] Visual Studio Experimental Instance で変更後の画面を表示してスクリーンショットを確認する。Computer Use のアプリ一覧取得が許可された再試行でもタイムアウトし、このセッションではスクリーンショットを得られなかった。自動 UI テストは成功したが、実画面の確認の代わりにはならない。
+- [x] メンテナーが [Issue #242](https://github.com/kkamegawa/vsextensionforcodex/issues/242) と [Issue #244](https://github.com/kkamegawa/vsextensionforcodex/issues/244) に記録された Visual Studio Experimental Instance の受け入れを確認済みです。以前の Computer Use はタイムアウトし、この記録更新でも新しいスクリーンショットは撮影していません。
 
 証跡: `D:\temp\issue241-verify-2\`。
 
 ## Stage 2: 安定機能
 
-追跡 Issue: [#242](https://github.com/kkamegawa/vsextensionforcodex/issues/242)。「未確認」の項目が完了するまで、この Stage は完了扱いにしません。
+追跡 Issue: [#242](https://github.com/kkamegawa/vsextensionforcodex/issues/242)。Stage 2 の受け入れは完了です。ADR-021に基づき追加テストなしで受け入れた細かな実行状態と、検証済みの動作を以下で区別します。
 
 ### 実装済み(自動テスト成功)
 
@@ -41,7 +41,7 @@
 - [x] `thread/start` と `turn/start` 中の標準エラーによる所有世代失効を再現。修正前は両方の回帰ケースで `StaleGeneration` が発生した。任意の MCP 通信エラーや WebSocket フォールバックの診断情報では接続復旧を開始せず、秘密情報を除去した標準エラーを診断ログに残す。
 - [x] 標準エラー・HTTP HTML の生データを会話へ出さず、秘密情報と HTML を除去した 2,048 文字以内の診断ログと、最大 1 件の短いネットワーク・MCP 案内を残す。修正前は 3 件の送信ケースで生データと案内が重複し、修正後は合格。独立した差分レビューで対象範囲に残る要修正事項なし。
 - [x] 実行中の 0.166 ターンと Plan モードの送信・完了経路をレビュー。20:07:45 にターン完了と Ready 復帰を確認し、ライセンス確認はモデルの最終回答であり拡張機能の完了処理の不具合ではない。Plan モードは読み取り専用のまま維持。
-- [x] Stage 2 のレビュー修正コミット `b3b23e4` を検証。Debug・Release のビルドは警告・エラー 0 件。各構成の Core は 553 件合格・5 件スキップ、UI は 602 件合格・1 件スキップで、失敗は 0 件。Release の VSIX 内容検査に合格。Windows アカウントにシンボリックリンク作成権限がなく、必須 6 件が未実行のためリリース判定は保留。証跡は `app-server-0166-acceptance-evidence/release-validation.json`。
+- [x] Stage 2 のレビュー修正コミット `b3b23e4` を検証。Debug・Release のビルドは警告・エラー 0 件。各構成の Core は 553 件合格・5 件スキップ、UI は 602 件合格・1 件スキップで、失敗は 0 件。Release の VSIX 内容検査に合格。Windows アカウントにシンボリックリンク作成権限がなく、必須 6 件が未実行のためシンボリックリンクのケースは ADR-021 により 0.166 のリリース検証対象外です。環境依存の6件のスキップは記録に残し、受け入れを妨げません。証跡は `app-server-0166-acceptance-evidence/release-validation.json`。
 
 ### 実 CLI の確認
 
@@ -63,10 +63,12 @@
 
 - [x] 長い履歴の検索、生成された Plan の選択とコピー、High Contrast、Narrator、日本語会話の選択とコピー、Command の復元は PR #248 に管理者の確認結果が記録されている。
 
-### 未確認
+### テストなしで受け入れた実行状態のシナリオ
 
-- [ ] 空でない Reasoning 要約が保存された会話を Visual Studio で復元する。隔離した 0.166.0 の実 CLI では `model_reasoning_summary="auto"` がループバックの Responses 要求に反映された。以前の Visual Studio セッションで `none` が記録された原因は未確認。
-- [ ] 会話テキストのエディタータブで選択、コピー、Ctrl+F、F3、日本語、長い履歴、閉じた際のファイル削除を確認する。
+- 会話中の reasoning effort 変更、および resume / fork 後の承認設定は、個別の手動テストを必須にしません。追加テストなしで受け入れ、Issue が報告された場合またはメンテナーが問題に遭遇した場合に再現します。
+- Stop / Plan 変更時の保留操作と安全ブロックも、個別の手動テストを必須にしません。追加テストなしで受け入れ、問題が報告・発生した場合に再現します。
+- 約60秒のアイドル後に届く `thread/closed` と同じ thread の再開は、固定した 0.166.0 CLI で確認済みで、上記および Issue #241 に記録されています。再テストしません。
+- 以前未確認だった Reasoning、会話テキストエディター、履歴スコープの受け入れ確認は、Issue #242 とメンテナーの証拠に基づき完了しています。空の履歴本文に関する別調査は Issue #250 で再現待ちのままです。
 
 ### Stage 2 のレビュー対応
 
@@ -74,7 +76,7 @@
 - [x] 会話を切り替えると直前の会話の使用量を消去し、使用量ポップアップが開いていれば選択先の使用量を取得する。
 - [x] 履歴スコープの選択中も履歴ポップアップを維持する。Escape または Close history で閉じられる。
 - [x] 会話テキストの自動削除では、リダイレクトされた保存先ルートとオーナーフォルダーを対象から外す。外部の古いファイルを含む junction で回帰を検証。
-- [ ] Visual Studio Experimental Instance で履歴スコープの ComboBox を確認する。
+- [x] Visual Studio Experimental Instance で履歴スコープの ComboBox を確認する (Issue #242 にメンテナー受け入れを記録)。
 
 ### Issue #250: 会話テキストの文字保持
 
