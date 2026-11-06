@@ -13,15 +13,15 @@ Tracking: [#241](https://github.com/kkamegawa/vsextensionforcodex/issues/241). D
 - [x] Pass contract and compatibility tests, Debug and Release Core/UI test suites, Debug and Release solution builds with zero warnings and errors, and Release VSIX inspection.
 - [x] Pass real CLI `initialize` checks for 0.166.0, 0.165.0, and the older regression versions.
 
-## Pending maintainer acceptance
+## Visual acceptance
 
-- [ ] Capture and inspect the changed behavior in the Visual Studio Experimental Instance. The Computer Use app-list request timed out on its permitted retries, so this session could not obtain a screenshot. Automated UI tests passed; this does not replace the requested visual check.
+- [x] The maintainer confirmed the Visual Studio Experimental Instance acceptance recorded in [Issue #242](https://github.com/kkamegawa/vsextensionforcodex/issues/242) and [Issue #244](https://github.com/kkamegawa/vsextensionforcodex/issues/244). The earlier Computer Use attempt timed out and produced no screenshot; no new screenshot is claimed by this record update.
 
 Evidence is under `D:\temp\issue241-verify-2\`.
 
 ## Stage 2: stable features
 
-Tracking: [#242](https://github.com/kkamegawa/vsextensionforcodex/issues/242). This stage stays open until the items under Not yet verified are done.
+Tracking: [#242](https://github.com/kkamegawa/vsextensionforcodex/issues/242). Stage 2 acceptance is complete. The detailed runtime combinations accepted under ADR-021 are not required tests; the record below distinguishes them from verified behavior.
 
 ### Implemented and passing automated tests
 
@@ -41,7 +41,7 @@ Tracking: [#242](https://github.com/kkamegawa/vsextensionforcodex/issues/242). T
 - [x] Reproduce stderr-triggered owner invalidation during `thread/start` and `turn/start`: both regression cases failed with `StaleGeneration` before the fix. Keep optional MCP network errors and WebSocket fallback diagnostics from triggering connection recovery, and persist redacted stderr for diagnosis.
 - [x] Stop forwarding raw stderr/HTTP HTML to the transcript; retain redacted diagnostics with HTML removed and a 2,048-character limit, plus one short network/MCP notice. Three send cases failed with duplicate raw transcript errors before the fix and pass afterward. Independent diff review found no remaining actionable defect in this scope.
 - [x] Review Plan-mode mode serialization and completion against the running 0.166 turn: the turn completed and returned to Ready at 20:07:45; the license question was final model prose, not an extension lifecycle failure. Plan mode remains read-only.
-- [x] Stage 2 review fixes, commit `b3b23e4`: Debug and Release builds had zero warnings and errors. Each configuration reported Core 553 passed and 5 skipped, UI 602 passed and 1 skipped, and no failures. Release VSIX inspection passed. The release gate remains blocked by six required symbolic-link cases because this Windows account lacks link creation privilege. Evidence: `app-server-0166-acceptance-evidence/release-validation.json`.
+- [x] Stage 2 review fixes, commit `b3b23e4`: Debug and Release builds had zero warnings and errors. Each configuration reported Core 553 passed and 5 skipped, UI 602 passed and 1 skipped, and no failures. Release VSIX inspection passed. Symbolic-link cases are excluded from 0.166 release verification by ADR-021; the six environment-dependent skips remain recorded and do not block acceptance. Evidence: `app-server-0166-acceptance-evidence/release-validation.json`.
 
 ### Real CLI confirmations
 
@@ -63,10 +63,12 @@ Tracking: [#242](https://github.com/kkamegawa/vsextensionforcodex/issues/242). T
 
 - [x] PR #248 records maintainer acceptance of long-history search, generated Plan selection and copy, High Contrast, Narrator, Japanese conversation selection and copy, and restored Command content in the tool window.
 
-### Not yet verified
+### Accepted-not-tested runtime scenarios
 
-- [ ] Restore a conversation with a saved non-empty Reasoning summary in Visual Studio. An isolated 0.166.0 CLI passed `model_reasoning_summary="auto"` through to its loopback Responses request. The earlier Visual Studio turn contexts that recorded `none` have no confirmed cause.
-- [ ] Verify selection, copy, Ctrl+F, F3, Japanese text, long histories, and file removal on close in the conversation text editor tab.
+- No dedicated manual test is required for changing reasoning effort during a conversation or for approval settings after resume/fork. These combinations are accepted without additional testing; reproduce them if an issue is reported or the maintainer encounters a problem.
+- No dedicated manual test is required for pending operations across Stop/Plan changes or safety blocks. These combinations are accepted without additional testing; reproduce them if an issue is reported or the maintainer encounters a problem.
+- The approximately 60-second idle `thread/closed` and same-thread resume behavior was already tested with the pinned 0.166.0 CLI and is recorded above and in Issue #241. No repeat is required.
+- The previously open Reasoning, conversation-text editor, and history-scope acceptance checks are complete per Issue #242 and the maintainer evidence recorded there. This does not change the separate deferred investigation of empty history bodies under Issue #250.
 
 ### Stage 2 review follow-up
 
@@ -74,7 +76,7 @@ Tracking: [#242](https://github.com/kkamegawa/vsextensionforcodex/issues/242). T
 - [x] Clear conversation-specific usage when the selection changes and refresh it while the usage popup is open.
 - [x] Keep the history popup open during scope selection. Escape and Close history dismiss it.
 - [x] Skip redirected conversation-text roots and owner directories during automatic cleanup. Cover junctions with a stale external file in the regression test.
-- [ ] Verify the scope ComboBox in the Visual Studio Experimental Instance.
+- [x] Verify the scope ComboBox in the Visual Studio Experimental Instance (maintainer acceptance recorded in Issue #242).
 
 ### Issue #250: conversation text fidelity
 
