@@ -6,7 +6,8 @@
 version: 2
 updates:
   - package-ecosystem: "nuget"
-    directory: "/src" # Location of package manifests
+    directories:
+      - "/src/*"
     schedule:
       interval: "weekly"
     cooldown:
@@ -22,7 +23,8 @@ updates:
     commit-message:
       prefix: "chore(deps)"
   - package-ecosystem: "nuget"
-    directory: "/tests" # Location of package manifests
+    directories:
+      - "/tests/*"
     schedule:
       interval: "weekly"
     cooldown:
