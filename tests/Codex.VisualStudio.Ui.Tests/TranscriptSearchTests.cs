@@ -46,6 +46,38 @@ public sealed partial class ViewModelTests
     }
 
     [TestMethod]
+    public async Task TranscriptSearch_FindsLiteralCommandOutputAndCode()
+    {
+        var bridge = new FakeWorkerBridge
+        {
+            ListThreadItemsHandler = (_, _) => Task.FromResult(new ThreadItemsPage
+            {
+                Items =
+                [
+                    new ThreadHistoryItem
+                    {
+                        Id = "command",
+                        TurnId = "turn-1",
+                        Type = "commandExecution",
+                        Text = "rg ForkThreadAsync\n\u001b[32mTask<ForkThreadResult> ForkThreadAsync\u001b[0m in C:\\Users\\x\\.codex",
+                    },
+                ],
+            }),
+        };
+        using ChatViewModel vm = await CreateJoinedViewModelAsync(bridge);
+
+        vm.TranscriptSearchText = "Task<ForkThreadResult>";
+        await RunCommandAsync(vm.SearchTranscriptCommand);
+        Assert.AreEqual(1, vm.TranscriptSearchResults.Count);
+        StringAssert.Contains(vm.TranscriptSearchResults[0].Text, "Task<ForkThreadResult> ForkThreadAsync");
+        Assert.IsFalse(vm.TranscriptSearchResults[0].Text.Contains('\u001b'), "Results show literal text without ANSI escapes.");
+
+        vm.TranscriptSearchText = "C:\\Users\\x\\.codex";
+        await RunCommandAsync(vm.SearchTranscriptCommand);
+        Assert.AreEqual(1, vm.TranscriptSearchResults.Count);
+    }
+
+    [TestMethod]
     public async Task TranscriptSearch_FailedPageDoesNotPublishPartialResults()
     {
         var bridge = new FakeWorkerBridge

@@ -123,3 +123,17 @@ Tracking: [#243](https://github.com/kkamegawa/vsextensionforcodex/issues/243). T
 - [ ] Check the `attachedToThreadId` query, with no `sourceKinds` filter, against a real 0.166.0 CLI.
 - [ ] Check linked forks, the memory pane, and the workspace picker in the Visual Studio Experimental Instance.
 - [ ] Real environments for an SSO-required workspace and for multiple workspaces with the same email and plan are not available. Fake coverage passes; these remain unverified in the release record.
+
+## Post-merge review fixes
+
+Tracking: [#258](https://github.com/kkamegawa/vsextensionforcodex/issues/258). A review of the merged 0.166 work (PRs #245 to #257) found the defects below. The design was updated first.
+
+- [x] Secret redaction again covers credential keys with a `_` or `-` prefix (`DB_PASSWORD`, `GITHUB_TOKEN`, `AZURE_OPENAI_API_KEY`, `refresh_token`); `cancellation_token` is kept through an explicit allowlist.
+- [x] `/doctor` output keeps its line breaks, omits HTML bodies through their closing tag, reports a body that never closes, and never exceeds 32,768 characters.
+- [x] The conversation text snapshot removes ANSI escape sequences and control characters and keeps literal characters.
+- [x] Conversation search matches literal text, so command output and code such as `Task<ForkThreadResult>` are found.
+- [x] A separate-conversation review that was never dispatched is reported as not sent instead of an unknown outcome.
+- [x] The review `thread/start` sends `historyMode: "paginated"` on experimental 0.166, like an ordinary new conversation.
+- [x] Workspace switch admission is atomic; concurrent requests send at most one `accountSession/switch`.
+- Not changed: linked-fork children exclusion stays an accepted, unverified server behavior (#243); `refreshWorkspaceMetadata` on account reads follows the design; `Process.Kill` on an exited process does not throw on .NET 8.
+- [x] Debug build with 0 warnings and 0 errors. Core 595 passed and 5 skipped, UI 612 passed and 1 skipped, no failures. In one earlier full Core run, four Fake version user-agent tests timed out under load; they passed in two isolated runs and in the final full run. The skipped cases need symbolic-link creation privilege.

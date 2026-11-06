@@ -294,7 +294,8 @@ internal static class ConversationTextFormatter
             text.Append(" ---\r\n");
             // History text has already passed through ISecretRedactor in the worker. Keep it
             // as plain text here: Markdown parsing changes literal command and code characters.
-            text.Append(item.Text ?? string.Empty).Append("\r\n");
+            // The literal path still removes ANSI escape sequences and control characters.
+            text.Append(SafeMarkdownService.ToSafeLiteralText(item.Text ?? string.Empty)).Append("\r\n");
 
             foreach (ArtifactPart part in item.Parts)
             {
@@ -305,7 +306,7 @@ internal static class ConversationTextFormatter
                     if (!string.IsNullOrEmpty(part.Text)
                         && !string.Equals(item.Text, part.Text, StringComparison.Ordinal))
                     {
-                        text.Append(part.Text).Append("\r\n");
+                        text.Append(SafeMarkdownService.ToSafeLiteralText(part.Text)).Append("\r\n");
                     }
 
                     continue;
@@ -317,7 +318,7 @@ internal static class ConversationTextFormatter
                 {
                     // Artifact text is also redacted by the worker. It is explanatory plain
                     // text (including fallback reasons), so do not run it through Markdown.
-                    text.Append(part.Text).Append("\r\n");
+                    text.Append(SafeMarkdownService.ToSafeLiteralText(part.Text)).Append("\r\n");
                 }
             }
         }

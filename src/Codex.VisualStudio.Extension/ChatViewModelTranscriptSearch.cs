@@ -165,7 +165,9 @@ public sealed partial class ChatViewModel
                         historyItemIdentities.Add(GetTranscriptSearchIdentity(item.TurnId, item.Id));
                     }
 
-                    string safeText = markdown.ToSafeText(item.Text ?? string.Empty);
+                    // Match the same literal text as the conversation snapshot, so command output
+                    // and code such as Task<T> or C:\path are found as written.
+                    string safeText = SafeMarkdownService.ToSafeLiteralText(item.Text ?? string.Empty);
                     int matchCount = CountMatches(safeText, query);
                     if (matchCount > 0)
                     {
@@ -209,7 +211,8 @@ public sealed partial class ChatViewModel
                     && (item.ItemId is null || !historyItemIdentities.Contains(GetTranscriptSearchIdentity(item.TurnId, item.ItemId))))
                 {
                     liveItemCount++;
-                    string safeText = markdown.ToSafeText(item.Text);
+                    // Live rows already hold display-safe text; only control characters are removed.
+                    string safeText = SafeMarkdownService.ToSafeLiteralText(item.Text);
                     int matchCount = CountMatches(safeText, query);
                     if (matchCount > 0)
                     {

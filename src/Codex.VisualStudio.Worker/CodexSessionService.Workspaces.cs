@@ -28,7 +28,8 @@ public sealed partial class CodexSessionService
         }
 
         ConnectionContext context = RequireExperimentalWorkspaceContext();
-        if (context.PendingLoginId is not null || context.WorkspaceOperationInProgress)
+        // RPC calls can run concurrently, so admission is atomic: at most one switch is ever sent.
+        if (context.PendingLoginId is not null || !context.TryBeginWorkspaceOperation())
         {
             return new SwitchWorkspaceResult
             {
@@ -37,8 +38,6 @@ public sealed partial class CodexSessionService
             };
         }
 
-        // Set synchronously before the first await so concurrent calls cannot issue two switches.
-        context.WorkspaceOperationInProgress = true;
         bool switchConfirmed = false;
         try
         {
@@ -180,7 +179,7 @@ public sealed partial class CodexSessionService
                 context.WorkspaceSwitchRequested = false;
             }
 
-            context.WorkspaceOperationInProgress = false;
+            context.EndWorkspaceOperation();
         }
     }
     public async Task<SwitchWorkspaceResult> CancelWorkspaceLoginAsync(
