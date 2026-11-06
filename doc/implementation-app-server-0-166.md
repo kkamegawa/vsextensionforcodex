@@ -29,11 +29,11 @@ Evidence files are under `D:\temp\issue241-verify-2\`, including the six pinned 
 
 ## Visual acceptance limit
 
-The changed behavior includes a Visual Studio UI state. This session attempted to inspect the Visual Studio surface with Computer Use, but `sky.list_apps()` timed out twice. The skill's recovery instructions required stopping after that retry, so no screenshot-based display judgment was made. Automated UI tests passed; maintainer visual acceptance remains pending.
+The changed behavior includes a Visual Studio UI state. This session's Computer Use app discovery timed out twice, so no screenshot was captured in that session. The maintainer later confirmed the Visual Studio Experimental Instance acceptance recorded in [Issue #242](https://github.com/kkamegawa/vsextensionforcodex/issues/242) and [Issue #244](https://github.com/kkamegawa/vsextensionforcodex/issues/244); this update does not claim a new screenshot. The fine-grained runtime combinations accepted under ADR-021 are not additional manual acceptance requirements. See the task record for evidence and accepted-not-tested items.
 
 ## Stage 2: stable features
 
-Tracking: [#242](https://github.com/kkamegawa/vsextensionforcodex/issues/242). The Worker contract stays at v27, as the design defines. Open items are listed in the [task record](task-app-server-0-166.md).
+Tracking: [#242](https://github.com/kkamegawa/vsextensionforcodex/issues/242). The Worker contract stays at v27, as the design defines. Maintainer acceptance is recorded in #242; the task record separates verified evidence from fine-grained runtime combinations accepted as untested.
 
 - **Review:** `ReviewPlacement.NewThread` runs in `CodexSessionService.Review.cs`. Settings come from the active conversation's effective state, and an unmappable value stops before `thread/start`. The named profile field exists only on the experimental surface, so the stable surface sends `sandbox`. The response is compared with the source, and a different report keeps the conversation without starting the review. `ActiveThreadId` moves only after `review/start` succeeds. The result separates Started, NotCreated, CreatedNotStarted, and Unknown, and nothing is resent.
 - **History scope:** `GitWorktreeScope` runs read-only Git commands with a timeout, and any failure hides the scope. The folder set is fixed when a scope is chosen, a scope change discards the cursor, and a late response is dropped by generation. A filtered list never cancels queued commands as missing, and the open conversation keeps its row.
