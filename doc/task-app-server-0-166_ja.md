@@ -92,3 +92,8 @@
 - [x] 両方の完了 ID、遅れて届く `turn/started`、別スレッドの再開・新規開始、インラインレビュー応答の競合を Core テストで回帰確認。UI テストではターン終了後に保留中の `/review` と `/review --new-thread custom ...` が実行されることを確認。
 - [x] 管理者が Visual Studio Experimental Instance で、会話履歴からインライン `/review` の後に `/review --new-thread custom ...` を実行し、同じウィンドウで別会話が開始することを確認。
 - [x] Release ソリューションビルド成功、警告 0・エラー 0。Core テスト 560 件合格・シンボリックリンク関連 5 件スキップ、UI テスト 607 件合格・同 1 件スキップ。
+
+### PR #254 レビュー対応
+
+- [x] コミット `e7e9a18` で Release の Worker/Core コンパイルが成功し、ターン状態とレビューの focused test 7 件（新規 3 件、関連する既存テスト 4 件）が合格。`git diff --check` も成功。
+- 上記の Core 560 件 / UI 607 件というテスト数は、PR #254 のレビュー修正より前に行った Issue #252 実装時の検証結果。`e7e9a18` では全テストスイートを再実行していない。

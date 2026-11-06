@@ -92,3 +92,8 @@ Tracking: [#252](https://github.com/kkamegawa/vsextensionforcodex/issues/252).
 - [x] Added Core regressions for both completion aliases, late `turn/started`, different-thread resume and new-thread start, and inline review response races. UI regressions confirm queued `/review` and `/review --new-thread custom ...` commands run after the active turn ends.
 - [x] The maintainer confirmed in the Visual Studio Experimental Instance that an inline `/review` followed by `/review --new-thread custom ...` from conversation history starts the separate conversation in the same window.
 - [x] Release solution build passed with 0 warnings and 0 errors. Core tests passed 560 with 5 symbolic-link skips; UI tests passed 607 with 1 symbolic-link skip.
+
+### PR #254 review follow-up
+
+- [x] After commit `e7e9a18`, Release Worker/Core compilation passed and 7 focused active-turn and review regressions passed (3 new and 4 existing related tests). `git diff --check` passed.
+- The 560 Core / 607 UI suite totals above are from the earlier Issue #252 implementation verification, before the PR #254 review fixes; the full suites were not rerun on `e7e9a18`.
