@@ -90,5 +90,5 @@
 - [x] `turn.id` と `rootTurnId` をアクティブターンの別名として扱い、どちらかに一致する完了で解除する設計に更新。別スレッドの開始・再開時にターン状態をリセットし、完了済みターンをインラインレビュー応答で復活させない。
 - [x] `turn.id` と `rootTurnId` が異なる Fake App Server プロセスのシナリオを追加。Worker 統合テストで root ID による完了後に `ActiveTurnId` が idle へ戻ることを確認。
 - [x] 両方の完了 ID、遅れて届く `turn/started`、別スレッドの再開・新規開始、インラインレビュー応答の競合を Core テストで回帰確認。UI テストではターン終了後に保留中の `/review` と `/review --new-thread custom ...` が実行されることを確認。
-- [ ] Visual Studio Experimental Instance でインライン `/review` の後、同じウィンドウから `/review --new-thread custom ...` を実行し、別会話が開始することを確認。
+- [x] 管理者が Visual Studio Experimental Instance で、会話履歴からインライン `/review` の後に `/review --new-thread custom ...` を実行し、同じウィンドウで別会話が開始することを確認。
 - [x] Release ソリューションビルド成功、警告 0・エラー 0。Core テスト 560 件合格・シンボリックリンク関連 5 件スキップ、UI テスト 607 件合格・同 1 件スキップ。

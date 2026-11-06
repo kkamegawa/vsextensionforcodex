@@ -120,13 +120,17 @@ public sealed partial class CodexSessionService
             }
 
             string? turnId = started.TryGetProperty("turn", out JsonElement turn) ? GetString(turn, "id") : null;
+            string? rootTurnId = started.TryGetProperty("turn", out turn) ? GetString(turn, "rootTurnId") : null;
             lock (turnStateLock)
             {
                 EnsureCurrent(context);
                 ActiveThreadId = thread.Id;
-                ActiveTurnId = turnId is not null && !completedTurnIds.Contains(new TurnKey(context.Generation, thread.Id, turnId))
+                bool turnIsActive = turnId is not null
+                    && !IsTurnCompletedLocked(context.Generation, thread.Id, turnId, rootTurnId);
+                ActiveTurnId = turnIsActive
                     ? turnId
                     : null;
+                activeRootTurnId = turnIsActive ? rootTurnId : null;
             }
 
             effectiveThreadPermissions = createdPermissions;

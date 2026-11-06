@@ -2263,7 +2263,6 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         CompactThreadRequest request,
         CancellationToken cancellationToken)
     {
-        ConnectionContext context = RequireContext();
         OperationCallResult call = await TrySendOperationAsync(
             "thread/compact/start",
             new { threadId = request.ThreadId },
@@ -2318,6 +2317,8 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             {
                 ResetTurnStateForThread(targetThreadId);
                 ActiveThreadId = targetThreadId;
+                ActiveTurnId = null;
+                activeRootTurnId = null;
                 if (turnId is not null
                     && !IsTurnCompletedLocked(context.Generation, targetThreadId, turnId, rootTurnId)
                     && !IsTurnCompletedLocked(context.Generation, request.ThreadId, turnId, rootTurnId))
@@ -4600,6 +4601,19 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         if (rootTurnId is not null)
         {
             completedTurnIds.Add(new TurnKey(generation, threadId, rootTurnId));
+        }
+
+        if (IsTrackedTurnThreadLocked(threadId) && IsActiveTurnMatch(turnId, rootTurnId))
+        {
+            if (ActiveTurnId is not null)
+            {
+                completedTurnIds.Add(new TurnKey(generation, threadId, ActiveTurnId));
+            }
+
+            if (activeRootTurnId is not null)
+            {
+                completedTurnIds.Add(new TurnKey(generation, threadId, activeRootTurnId));
+            }
         }
     }
 
