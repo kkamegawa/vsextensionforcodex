@@ -2572,7 +2572,7 @@ public sealed partial class CodexSessionServiceTests
             sandbox = new { type = sandbox, networkAccess },
         });
 
-    private static async Task<CodexSessionService> StartSourceThreadForReviewAsync(RecordingConnection connection, JsonElement newThread)
+    private static async Task<CodexSessionService> StartSourceThreadForReviewAsync(RecordingConnection connection, JsonElement newThread, bool experimentalApi = false)
     {
         int starts = 0;
         Func<string, object?, JsonElement> inner = connection.Handler;
@@ -2587,9 +2587,39 @@ public sealed partial class CodexSessionServiceTests
             return inner(method, parameters);
         };
         CodexSessionService service = CreateService();
-        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+        await service.InitializeAsync(connection, Options(experimentalApi: experimentalApi), CancellationToken.None);
         await service.StartThreadAsync(CancellationToken.None);
         return service;
+    }
+
+    [TestMethod]
+    [DataRow(true)]
+    [DataRow(false)]
+    public async Task StartReviewNewThread_UsesPaginatedHistoryOnlyWithExperimental(bool experimentalApi)
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "review/start"
+                ? JsonSerializer.SerializeToElement(new { reviewThreadId = "thread-review", turn = new { id = "turn-review" } })
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        await using CodexSessionService service = await StartSourceThreadForReviewAsync(connection, ReviewThreadResponse("thread-review"), experimentalApi);
+
+        StartReviewResult result = await service.StartReviewAsync(NewThreadReview(), CancellationToken.None);
+
+        Assert.AreEqual(ReviewStartOutcome.Started, result.Outcome);
+        JsonElement[] starts = connection.Requests
+            .Where(item => item.Method == "thread/start")
+            .Select(item => JsonSerializer.SerializeToElement(item.Parameters, WireJsonOptions))
+            .ToArray();
+        Assert.AreEqual(2, starts.Length);
+        foreach (JsonElement start in starts)
+        {
+            Assert.AreEqual(
+                experimentalApi,
+                start.TryGetProperty("historyMode", out JsonElement mode) && mode.GetString() == "paginated",
+                "The review conversation uses the same history storage as an ordinary new conversation.");
+        }
     }
 
     [TestMethod]
@@ -2957,6 +2987,49 @@ public sealed partial class CodexSessionServiceTests
         Assert.AreEqual(1, connection.Requests.Count(item => item.Method == "accountSession/switch"));
     }
 
+    [TestMethod]
+    public async Task ConcurrentWorkspaceSwitchesSendAtMostOneSwitch()
+    {
+        using var listEntered = new ManualResetEventSlim();
+        using var releaseList = new ManualResetEventSlim();
+        int listCalls = 0;
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) =>
+            {
+                switch (method)
+                {
+                    case "initialize":
+                        return JsonSerializer.SerializeToElement(new { userAgent = "codex-cli/0.166.0" });
+                    case "accountSession/list":
+                        if (Interlocked.Increment(ref listCalls) == 1)
+                        {
+                            listEntered.Set();
+                            releaseList.Wait(TimeSpan.FromSeconds(10));
+                        }
+
+                        return WorkspaceSessions("workspace-a");
+                    case "accountSession/switch":
+                        return WorkspaceSessions("workspace-b");
+                    default:
+                        return JsonSerializer.SerializeToElement(new { });
+                }
+            },
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(experimentalApi: true), CancellationToken.None);
+        var request = new SwitchWorkspaceRequest { SessionId = "session-1", AccountId = "workspace-b", UserConfirmed = true };
+
+        Task<SwitchWorkspaceResult> first = Task.Run(() => service.SwitchWorkspaceAsync(request, CancellationToken.None));
+        Assert.IsTrue(listEntered.Wait(TimeSpan.FromSeconds(10)), "The first switch reaches its workspace check.");
+        SwitchWorkspaceResult second = await Task.Run(() => service.SwitchWorkspaceAsync(request, CancellationToken.None));
+        releaseList.Set();
+        await first;
+
+        Assert.AreEqual(WorkspaceSwitchState.Failed, second.State);
+        Assert.AreEqual(1, connection.Requests.Count(item => item.Method == "accountSession/switch"));
+    }
+
     private static JsonElement WorkspaceSessions(string selectedWorkspaceAccountId)
         => JsonSerializer.SerializeToElement(new
         {
@@ -3064,13 +3137,64 @@ public sealed partial class CodexSessionServiceTests
         var connection = new RecordingConnection();
         await using CodexSessionService service = CreateService();
         service.NetworkDiagnosticsRun = (_, _, _, _, _) =>
-            Task.FromResult(new BoundedProcessResult(0, new string('x', 4000), string.Empty, TimedOut: false));
+            Task.FromResult(new BoundedProcessResult(0, new string('x', 40_000), string.Empty, TimedOut: false));
         await service.InitializeAsync(connection, Options(), CancellationToken.None);
 
         NetworkDiagnosticsResult result = await service.RunNetworkDiagnosticsAsync(CancellationToken.None);
 
-        Assert.IsTrue(result.Output.Length <= CodexErrorClassifier.MaximumDiagnosticCharacters);
-        Assert.EndsWith(" [truncated]", result.Output);
+        Assert.IsTrue(result.Output.Length <= CodexErrorClassifier.MaximumDiagnosticReportCharacters);
+        Assert.EndsWith(CodexErrorClassifier.DiagnosticReportTruncated, result.Output);
+    }
+
+    [TestMethod]
+    public async Task NetworkDiagnostics_KeepsLineBreaksAndOmitsMultiLineHtmlBodies()
+    {
+        var connection = new RecordingConnection();
+        await using CodexSessionService service = CreateService();
+        service.NetworkDiagnosticsRun = (_, _, _, _, _) =>
+            Task.FromResult(new BoundedProcessResult(
+                1,
+                "DNS: ok\r\nHTTPS chatgpt.com: ok\nProxy: HTTP 403 <html>\n<script>challenge()</script>\n</html>\nWebSocket: failed",
+                "warning: retry",
+                TimedOut: false));
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        NetworkDiagnosticsResult result = await service.RunNetworkDiagnosticsAsync(CancellationToken.None);
+
+        Assert.AreEqual(
+            "DNS: ok\nHTTPS chatgpt.com: ok\nProxy: HTTP 403 [HTML response omitted]\nWebSocket: failed\nwarning: retry",
+            result.Output);
+    }
+
+    [TestMethod]
+    public void DiagnosticReport_NeverExceedsTheLimitAndReportsUnterminatedHtml()
+    {
+        int limit = CodexErrorClassifier.MaximumDiagnosticReportCharacters;
+        for (int firstLength = limit - 30; firstLength <= limit; firstLength++)
+        {
+            string report = CodexErrorClassifier.FormatDiagnosticReport(new string('a', firstLength) + "\nnext line");
+            Assert.IsTrue(report.Length <= limit, $"A first line of {firstLength} characters produced {report.Length}.");
+        }
+
+        string unterminated = CodexErrorClassifier.FormatDiagnosticReport("DNS: ok\nProxy: <html>\n<p>challenge\nWebSocket: failed");
+        Assert.AreEqual("DNS: ok\nProxy: [HTML response omitted]\n" + CodexErrorClassifier.UnterminatedHtmlOmitted, unterminated);
+
+        for (int prefixLength = limit - 120; prefixLength <= limit; prefixLength++)
+        {
+            string report = CodexErrorClassifier.FormatDiagnosticReport(new string('a', prefixLength) + "\nProxy: <html>\nbody");
+            Assert.IsTrue(report.Length <= limit, $"A prefix of {prefixLength} characters before unterminated HTML produced {report.Length}.");
+        }
+    }
+
+    [TestMethod]
+    public void DiagnosticReport_KeepsTextAfterSameLineHtmlResponse()
+    {
+        string report = CodexErrorClassifier.FormatDiagnosticReport(
+            "Proxy: HTTP 403 <html><body>challenge</body></html> WebSocket: failed <html>x</html> done");
+
+        Assert.AreEqual(
+            "Proxy: HTTP 403 [HTML response omitted] WebSocket: failed [HTML response omitted] done",
+            report);
     }
 
     [TestMethod]

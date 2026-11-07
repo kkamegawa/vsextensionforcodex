@@ -90,6 +90,39 @@ public sealed partial class ViewModelTests
     }
 
     [TestMethod]
+    public async Task ReviewNewThread_WorkerRpcUnavailable_IsReportedAsNotSent()
+    {
+        var bridge = new FakeWorkerBridge
+        {
+            StartReviewHandler = (_, _) => Task.FromException<StartReviewResult>(new WorkerRpcUnavailableException()),
+        };
+        using ChatViewModel vm = await CreateJoinedViewModelAsync(bridge);
+
+        await RunComposerAsync(vm, "/review --new-thread");
+        await WaitForAsync(() => vm.Items.Any(item => item.Text.Contains("was not sent", StringComparison.Ordinal)));
+
+        Assert.AreEqual("thread-1", vm.SelectedThread?.Id);
+        Assert.IsFalse(vm.Items.Any(item => item.Text.Contains("outcome is unknown", StringComparison.Ordinal)));
+        Assert.IsFalse(vm.Threads.Any(thread => thread.Id != "thread-1"));
+    }
+
+    [TestMethod]
+    public async Task ReviewNewThread_PreDispatchRejection_IsReportedAsNotSent()
+    {
+        var bridge = new FakeWorkerBridge
+        {
+            StartReviewHandler = (_, _) => Task.FromException<StartReviewResult>(
+                new StreamJsonRpc.RemoteInvocationException("Owner changed.", WorkerErrorCodes.PreDispatchRejected, errorData: null)),
+        };
+        using ChatViewModel vm = await CreateJoinedViewModelAsync(bridge);
+
+        await RunComposerAsync(vm, "/review --new-thread");
+        await WaitForAsync(() => vm.Items.Any(item => item.Text.Contains("rejected before it was sent", StringComparison.Ordinal)));
+
+        Assert.IsFalse(vm.Items.Any(item => item.Text.Contains("outcome is unknown", StringComparison.Ordinal)));
+    }
+
+    [TestMethod]
     public async Task ReviewNewThread_SecondStartIsBlockedWhileRunning()
     {
         var release = new TaskCompletionSource<StartReviewResult>(TaskCreationOptions.RunContinuationsAsynchronously);

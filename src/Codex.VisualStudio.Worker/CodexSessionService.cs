@@ -2831,7 +2831,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             {
                 ExitCode = result.ExitCode,
                 TimedOut = result.TimedOut,
-                Output = CodexErrorClassifier.FormatStandardError(
+                Output = CodexErrorClassifier.FormatDiagnosticReport(
                     redactor.Redact(string.Join("\n", new[] { result.StandardOutput, result.StandardError }.Where(text => text.Length > 0)))),
             };
         }
@@ -6724,7 +6724,13 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         public bool NotifyPendingResolution { get; set; }
         public bool OwnerInvalidated { get; set; }
         public string? PendingLoginId { get; set; }
-        public bool WorkspaceOperationInProgress { get; set; }
+        private int workspaceOperationInProgress;
+
+        public bool TryBeginWorkspaceOperation()
+            => Interlocked.CompareExchange(ref workspaceOperationInProgress, 1, 0) == 0;
+
+        public void EndWorkspaceOperation()
+            => Volatile.Write(ref workspaceOperationInProgress, 0);
 
         public string? AccountFingerprint { get; set; }
         public bool LogoutRequested { get; set; }

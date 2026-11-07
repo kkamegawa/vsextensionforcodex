@@ -22,6 +22,103 @@ internal static class CodexErrorClassifier
     // Keep only the diagnostic prefix and status in persisted/output diagnostics.
     public static string FormatStandardError(string line)
     {
+        int bodyStart = FindHtmlResponseStart(line);
+        string diagnostic = bodyStart < 0
+            ? line
+            : string.Concat(line.AsSpan(0, bodyStart), "[HTML response omitted]");
+        diagnostic = diagnostic.Replace('\r', ' ').Replace('\n', ' ').Trim();
+        const string Truncated = " [truncated]";
+        return diagnostic.Length <= MaximumDiagnosticCharacters
+            ? diagnostic
+            : string.Concat(diagnostic.AsSpan(0, MaximumDiagnosticCharacters - Truncated.Length), Truncated);
+    }
+
+    internal const int MaximumDiagnosticReportCharacters = 32 * 1024;
+    internal const string DiagnosticReportTruncated = "\n[Output truncated]";
+    internal const string UnterminatedHtmlOmitted = "[The rest of the output was omitted because an HTML response did not end.]";
+    private static readonly string[] HtmlResponseEnds = ["</html>", "</body>"];
+
+    // A multi-line diagnostic report, such as codex doctor output, keeps its line breaks. HTML
+    // response bodies are omitted from the line where they start through their closing tag, and
+    // the whole report is bounded.
+    public static string FormatDiagnosticReport(string text)
+    {
+        var report = new System.Text.StringBuilder();
+        bool insideHtml = false;
+        foreach (string rawLine in text.ReplaceLineEndings("\n").Split('\n'))
+        {
+            string line = rawLine;
+            if (insideHtml)
+            {
+                int end = FindHtmlResponseEnd(line, 0);
+                if (end < 0)
+                {
+                    continue;
+                }
+
+                insideHtml = false;
+                line = line[end..];
+                if (line.Trim().Length == 0)
+                {
+                    continue;
+                }
+            }
+
+            line = OmitHtmlResponses(line, out insideHtml);
+
+            // Room for either closing notice is always reserved, so the result never exceeds the limit.
+            int capacity = MaximumDiagnosticReportCharacters
+                - Math.Max(DiagnosticReportTruncated.Length, UnterminatedHtmlOmitted.Length);
+            if (report.Length + line.Length + 1 > capacity)
+            {
+                int remaining = Math.Max(0, capacity - report.Length);
+                report.Append(line.AsSpan(0, Math.Min(line.Length, remaining)));
+                report.Append(DiagnosticReportTruncated);
+                return report.ToString();
+            }
+
+            report.Append(line).Append('\n');
+        }
+
+        // An HTML body that never closed hid the rest of the report; say so instead of ending silently.
+        if (insideHtml)
+        {
+            report.Append(UnterminatedHtmlOmitted);
+        }
+
+        return report.ToString().TrimEnd();
+    }
+
+    // Replaces every HTML response on one line with a placeholder and keeps the text around it,
+    // such as a status that follows a closing tag on the same line.
+    private static string OmitHtmlResponses(string line, out bool unterminated)
+    {
+        var kept = new System.Text.StringBuilder();
+        string rest = line;
+        unterminated = false;
+        while (true)
+        {
+            int start = FindHtmlResponseStart(rest);
+            if (start < 0)
+            {
+                kept.Append(rest);
+                return kept.ToString();
+            }
+
+            kept.Append(rest.AsSpan(0, start)).Append("[HTML response omitted]");
+            int end = FindHtmlResponseEnd(rest, start);
+            if (end < 0)
+            {
+                unterminated = true;
+                return kept.ToString();
+            }
+
+            rest = rest[end..];
+        }
+    }
+
+    private static int FindHtmlResponseStart(string line)
+    {
         int bodyStart = -1;
         foreach (string marker in HtmlResponseStarts)
         {
@@ -32,14 +129,25 @@ internal static class CodexErrorClassifier
             }
         }
 
-        string diagnostic = bodyStart < 0
-            ? line
-            : string.Concat(line.AsSpan(0, bodyStart), "[HTML response omitted]");
-        diagnostic = diagnostic.Replace('\r', ' ').Replace('\n', ' ').Trim();
-        const string Truncated = " [truncated]";
-        return diagnostic.Length <= MaximumDiagnosticCharacters
-            ? diagnostic
-            : string.Concat(diagnostic.AsSpan(0, MaximumDiagnosticCharacters - Truncated.Length), Truncated);
+        return bodyStart;
+    }
+
+    // Returns the index just after this response's closing tags (the later of the first </body> and
+    // the first </html> after startIndex), or -1 when the body does not end on this line. A later
+    // response on the same line is left for the caller to find.
+    private static int FindHtmlResponseEnd(string line, int startIndex)
+    {
+        int end = -1;
+        foreach (string marker in HtmlResponseEnds)
+        {
+            int markerIndex = line.IndexOf(marker, startIndex, StringComparison.OrdinalIgnoreCase);
+            if (markerIndex >= 0)
+            {
+                end = Math.Max(end, markerIndex + marker.Length);
+            }
+        }
+
+        return end;
     }
 
     private static readonly string[] NetworkFailureSignatures =

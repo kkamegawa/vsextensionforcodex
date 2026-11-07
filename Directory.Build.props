@@ -6,6 +6,9 @@
     <Deterministic>true</Deterministic>
     <ContinuousIntegrationBuild Condition="'$(CI)' == 'true'">true</ContinuousIntegrationBuild>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <!-- Lets non-Windows tooling (for example GitHub's automatic NuGet dependency submission on
+         Linux) restore the Windows-targeting projects. Building and running them still needs Windows. -->
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
     <AnalysisLevel>latest-recommended</AnalysisLevel>
     <Authors>kkamegawa</Authors>
     <Company>kkamegawa</Company>

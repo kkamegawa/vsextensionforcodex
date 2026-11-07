@@ -61,12 +61,13 @@ Decisions are recorded in [ADR-020](adr/ADR-020-app-server-0-166.md) and the ADR
 
 `/review --new-thread [uncommitted|base <branch>|commit <sha>|custom <instructions>]` runs a review in a new conversation. `/review` without that option keeps reviewing in the current conversation. The option appears in the input candidates and hints.
 
-- **Protocol:** on every supported version, the extension sends `thread/start` and then `review/start` with `inline` delivery to the new thread ID. It never sends `detached`.
+- **Protocol:** on every supported version, the extension sends `thread/start` and then `review/start` with `inline` delivery to the new thread ID. It never sends `detached`. With experimental negotiated on 0.166 or later, `thread/start` also sends `historyMode: "paginated"`, the same as an ordinary new conversation, so the review conversation qualifies as a linked-fork source.
 - **Inherited settings:** working directory, model, service tier, approval policy, approvals reviewer, and sandbox mode or permission profile. A named profile exists only on the experimental surface, so it is sent as `permissions` when experimental is negotiated, and the stable surface sends `sandbox`. Permissions are never widened. If a setting cannot be inherited, no conversation is created and the reason is displayed. If `thread/start` reports other permissions, the conversation is kept and the review does not start.
 - **History:** the new conversation does not inherit the source history. A user who needs it runs `/fork` and gives the instruction there. The history list shows it by its preview, which is the review prompt, because the server gives it no name.
 - **Selection:** the UI selection and `ActiveThreadId` stay on the original conversation until the review has started. On success, the extension switches to the new conversation, joins it, and shows progress.
 - **Failure:** a failure after the conversation is created keeps the conversation and explains what happened. Nothing is deleted or resent automatically.
 - **Unknown outcome:** a disconnect or missing response is not treated as started. The user is guided to the history.
+- **Not sent:** a request that never left the extension (no Worker RPC during recovery, or a rejection before dispatch) is reported as not sent with no conversation created, and is never shown as an unknown outcome.
 - **Duplicates:** a second start is blocked while one is running.
 
 ## 3. Linked forks
@@ -110,6 +111,7 @@ The account area shows the current workspace name and a Switch action. The list 
 - **Confirmation:** switching stops all loaded conversations, so a dialog confirms it. On remote connections, the dialog also says other clients may be affected. Selecting the current workspace does nothing.
 - **Login:** local connections send `allowBrowserLogin: true`. When `loginId` is returned, SSO proceeds: the existing safe browser path opens `authUrl`, and the extension waits for `account/login/completed`. Cancellation uses `account/login/cancel`. Remote connections do not send `allowBrowserLogin`.
 - **Unknown outcome:** confirmed through `accountSession/list`. A switch is never retried automatically.
+- **One at a time:** the Worker admits one workspace operation atomically. A concurrent request is refused without sending `accountSession/switch`.
 - **Account fingerprint:** adds the workspace ID from `account/read.workspaceRouting.chatgptAccountId`. External switches are not detected while experimental is disabled.
 - **After success:** the owner boundary is updated, pending operations are cancelled, and the model list, usage, and MCP authentication state are read again.
 - **Closed conversations:** a conversation closed by `thread/closed` shows as resumable and never resumes automatically.
@@ -128,7 +130,7 @@ Question text, option descriptions, and answer display use the safe Markdown pat
 
 ### Conversation text
 
-The conversation tool window provides a Search conversation button that opens an in-window search. Search covers the whole conversation, including history outside the visible window. Matching content appears in a keyboard-accessible results pane without changing the transcript position. A failed or cancelled history read does not present partial results as complete.
+The conversation tool window provides a Search conversation button that opens an in-window search. Search covers the whole conversation, including history outside the visible window. Matching content appears in a keyboard-accessible results pane without changing the transcript position. A failed or cancelled history read does not present partial results as complete. Matching uses the same literal text as the conversation snapshot: ANSI escape sequences and control characters are removed, but Markdown and HTML syntax are not interpreted, so command text, command output, and code are found as written.
 
 Conversation text, including generated plans, is read-only and supports text selection and copying directly in the tool window.
 
@@ -137,7 +139,8 @@ Open conversation text shows the conversation in a read-only Visual Studio edito
 - **Snapshot:** paging reads the whole history into a fixed snapshot, with progress and cancellation. A failure opens nothing incomplete, and the content does not update live.
 - **Refresh:** each refresh is a separate snapshot file.
 - **Linked forks:** a child contains only the child's history.
-- **Content:** generate plain text from the history item source, with secrets removed by `ISecretRedactor`. Preserve literal command text, command output, and code, including Markdown and HTML syntax. Keep agent and public reasoning text when supplied. Images and similar items appear as descriptions. Credential key detection respects identifier boundaries so ordinary identifiers remain intact.
+- **Content:** generate plain text from the history item source, with secrets removed by `ISecretRedactor`. Preserve literal command text, command output, and code, including Markdown and HTML syntax. Keep agent and public reasoning text when supplied. Images and similar items appear as descriptions. Every body passes through `SafeMarkdownService.ToSafeLiteralText`, which removes ANSI escape sequences and control characters and keeps every other character.
+- **Credential keys:** a key name such as `token`, `password`, or `api_key` is redacted when it ends an identifier, including names with a `_` or `-` prefix such as `DB_PASSWORD`, `GITHUB_TOKEN`, and `refresh_token`. Over-redaction is the safe failure. Ordinary identifiers that are known not to hold secrets, such as `cancellation_token`, are kept through an explicit allowlist.
 - **Storage:** reuses the `ArtifactPreviewCache` owner separation, in a location only the current user can read. The file name never contains the conversation title, and `CustomDocumentWindowCaption` provides the tab name.
 - **Read-only:** uses `IsUserReadonly`.
 - **Cleanup:** `SubscribeAsync` and `ClosedAsync` remove a closed file. Startup removes unused files older than 24 hours.
@@ -158,7 +161,7 @@ On 0.166 or later, `account/usage/read` receives `threadId`.
 
 ### Network diagnostics
 
-The `/doctor` slash command starts the check. Local connections on 0.166 or later run `codex doctor --network-only` with the resolved CLI path, a timeout, and `ISecretRedactor`. Remote connections show the procedure to run on the server.
+The `/doctor` slash command starts the check. Local connections on 0.166 or later run `codex doctor --network-only` with the resolved CLI path, a timeout, and `ISecretRedactor`. Remote connections show the procedure to run on the server. The report keeps its line breaks. HTML response bodies are omitted through their closing tag, a body that never closes ends the report with a notice, and the whole report is limited to 32,768 characters with a truncation notice.
 
 Network messages on app-server stderr are diagnostic output. Optional MCP failures and WebSocket fallback messages do not invalidate the connection owner or trigger reconnection. Recovery is driven by transport closure, process exit, or a failed liveness watchdog.
 

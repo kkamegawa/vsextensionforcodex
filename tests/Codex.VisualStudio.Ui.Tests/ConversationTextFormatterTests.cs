@@ -46,6 +46,30 @@ public sealed class ConversationTextFormatterTests
     }
 
     [TestMethod]
+    public void Format_RemovesAnsiEscapesAndControlCharactersFromUntrustedText()
+    {
+        string snapshot = ConversationTextFormatter.Format(
+            "Conversation",
+            DateTimeOffset.UnixEpoch,
+            [new ThreadHistoryItem
+            {
+                Id = "command-1",
+                Type = "commandExecution",
+                Text = "dotnet test\n\u001b[32mPassed!\u001b[0m Task<int>\u0007 $_",
+                Parts =
+                [
+                    new ArtifactPart { Kind = ArtifactPartKind.Text, Text = "\u001b[31mpart\u001b[0m\u0000 <T>" },
+                ],
+            }],
+            new SafeMarkdownService());
+
+        StringAssert.Contains(snapshot, "dotnet test\r\nPassed! Task<int> $_");
+        StringAssert.Contains(snapshot, "part <T>");
+        Assert.IsFalse(snapshot.Contains('\u001b'), "ANSI escape sequences must not reach the editor tab.");
+        Assert.IsFalse(snapshot.Contains('\u0007') || snapshot.Contains('\u0000'));
+    }
+
+    [TestMethod]
     public void Format_IncludesFallbackExplanationAsLiteralText()
     {
         const string explanation = "This fallback preserves `literal` <tag> and $value.";

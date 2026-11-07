@@ -7077,6 +7077,23 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                     StampOwner(new StartReviewRequest { ThreadId = threadId, Target = target, Placement = ReviewPlacement.NewThread }, owner),
                     lifetime.Token).ConfigureAwait(false);
             }
+            catch (WorkerRpcUnavailableException)
+            {
+                // Nothing left the extension, so no conversation exists and there is nothing to check.
+                result = new StartReviewResult
+                {
+                    Outcome = ReviewStartOutcome.NotCreated,
+                    FailureReason = "The review was not sent because the Worker connection is restarting. Wait for it to reconnect, then try again.",
+                };
+            }
+            catch (StreamJsonRpc.RemoteInvocationException ex) when (ex.ErrorCode is WorkerErrorCodes.ConnectionOperationRejected or WorkerErrorCodes.PreDispatchRejected)
+            {
+                result = new StartReviewResult
+                {
+                    Outcome = ReviewStartOutcome.NotCreated,
+                    FailureReason = $"The review was rejected before it was sent: {ex.Message}",
+                };
+            }
             catch (Exception ex) when (!lifetime.IsCancellationRequested)
             {
                 // A lost response proves nothing about the server, so the start is never assumed or resent.

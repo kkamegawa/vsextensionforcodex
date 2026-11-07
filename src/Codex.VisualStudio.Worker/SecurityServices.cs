@@ -68,7 +68,7 @@ public sealed partial class SecretRedactor : ISecretRedactor
         }
 
         result = AuthorizationRegex().Replace(result, "$1[REDACTED]");
-        result = KeyValueSecretRegex().Replace(result, "$1[REDACTED]");
+        result = KeyValueSecretRegex().Replace(result, RedactKeyValue);
         result = TokenValueRegex().Replace(result, "[REDACTED]");
         result = PrivateKeyRegex().Replace(result, "-----BEGIN PRIVATE KEY-----[REDACTED]-----END PRIVATE KEY-----"); // gitleaks:allow
         return result;
@@ -118,7 +118,30 @@ public sealed partial class SecretRedactor : ISecretRedactor
     [GeneratedRegex(@"(?i)(authorization\s*:\s*(?:bearer|basic)\s+)[^\s]+")]
     private static partial Regex AuthorizationRegex();
 
-    [GeneratedRegex(@"(?i)(?<![\p{L}\p{N}_])((?:api[_-]?key|token|password|client[_-]?secret|access[_-]?token)(?![\p{L}\p{N}_])\s*[=:]\s*)[^\s;,""]+")]
+    // Over-redaction is the safe failure: any identifier that ends with a credential key name is
+    // redacted, including prefixed names such as DB_PASSWORD, GITHUB_TOKEN, or refresh_token.
+    // Only identifiers known never to hold a secret are kept.
+    private static string RedactKeyValue(Match match)
+    {
+        string key = match.Groups["key"].Value;
+        return IsNonSecretIdentifier(key)
+            ? match.Value
+            : string.Concat(key, match.Groups["separator"].Value, "[REDACTED]");
+    }
+
+    private static bool IsNonSecretIdentifier(string key)
+    {
+        string normalized = key.Replace("_", string.Empty, StringComparison.Ordinal)
+            .Replace("-", string.Empty, StringComparison.Ordinal);
+        return NonSecretIdentifiers.Contains(normalized);
+    }
+
+    private static readonly HashSet<string> NonSecretIdentifiers = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "cancellationtoken",
+    };
+
+    [GeneratedRegex(@"(?i)(?<![\p{L}\p{N}_-])(?<key>[\p{L}\p{N}_-]*(?:api[_-]?key|token|password|client[_-]?secret|access[_-]?token))(?<separator>\s*[=:]\s*)[^\s;,""]+")]
     private static partial Regex KeyValueSecretRegex();
 
     [GeneratedRegex(@"(?i)\b(?:sk-[a-z0-9_-]{16,}|gh[pousr]_[a-z0-9]{20,})\b")]

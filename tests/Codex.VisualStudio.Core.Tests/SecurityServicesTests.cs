@@ -32,6 +32,17 @@ public sealed class SecurityServicesTests
     }
 
     [TestMethod]
+    public void SecretRedactor_RedactsPrefixedCredentialKeys()
+    {
+        var redactor = new SecretRedactor();
+        const string input = "DB_PASSWORD=hunter2 GITHUB_TOKEN=gh-value AZURE_OPENAI_API_KEY=azure-value refresh_token: refresh-value --token=flag-value cancellationToken: CancellationToken.None";
+
+        string result = redactor.Redact(input);
+
+        Assert.AreEqual("DB_PASSWORD=[REDACTED] GITHUB_TOKEN=[REDACTED] AZURE_OPENAI_API_KEY=[REDACTED] refresh_token: [REDACTED] --token=[REDACTED] cancellationToken: CancellationToken.None", result);
+    }
+
+    [TestMethod]
     public void SecretRedactor_RedactsCredentialKeysAndRegisteredSecrets()
     {
         var redactor = new SecretRedactor();

@@ -198,6 +198,13 @@ public sealed partial class CodexSessionService
         }
 
         parameters["cwd"] = serverPath;
+
+        // Same storage as an ordinary new conversation, so the review can be a linked-fork source.
+        if (context.FeatureTier >= CodexFeatureTier.Tier166 && context.ExperimentalApi)
+        {
+            parameters["historyMode"] = "paginated";
+        }
+
         parameters["approvalPolicy"] = source.ApprovalPolicy;
         AddOptional(parameters, "approvalsReviewer", source.ApprovalsReviewer);
         AddOptional(parameters, "model", effectiveThreadModelId);
