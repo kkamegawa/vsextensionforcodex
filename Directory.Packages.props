@@ -6,7 +6,7 @@
   <ItemGroup>
     <PackageVersion Include="MessagePack" Version="2.5.307" />
     <PackageVersion Include="StreamJsonRpc" Version="2.26.150" />
-    <PackageVersion Include="Markdig" Version="1.4.0" />
+    <PackageVersion Include="Markdig" Version="1.5.1" />
     <!-- Traditional VSSDK (in-proc package) -->
     <PackageVersion Include="Microsoft.VisualStudio.SDK" Version="17.14.40265" />
     <PackageVersion Include="Microsoft.VSSDK.BuildTools" Version="17.14.2142" />
