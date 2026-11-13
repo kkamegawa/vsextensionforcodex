@@ -20,7 +20,7 @@
     <PackageVersion Include="MSTest" Version="4.5.1" />
     <!-- StreamJsonRpc 2.26 requires Pipelines 10.x in the extension; Contracts resolves its transitive dependencies separately. -->
     <PackageVersion Include="System.IO.Pipelines" Version="10.0.13" Condition="'$(MSBuildProjectName)' == 'Codex.VisualStudio.Extension'" />
-    <PackageVersion Include="System.Text.Encodings.Web" Version="9.0.21" Condition="'$(MSBuildProjectName)' == 'Codex.VisualStudio.Extension'" />
+    <PackageVersion Include="System.Text.Encodings.Web" Version="9.0.23" Condition="'$(MSBuildProjectName)' == 'Codex.VisualStudio.Extension'" />
     <PackageVersion Include="System.Text.Json" Version="9.0.21" Condition="'$(MSBuildProjectName)' == 'Codex.VisualStudio.Extension'" />
   </ItemGroup>
   <!-- Test tooling already requires 10.x; preserve that series without retargeting .NET 8. -->
