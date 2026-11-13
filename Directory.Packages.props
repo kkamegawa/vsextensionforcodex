@@ -19,7 +19,7 @@
     <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="18.11.0" />
     <PackageVersion Include="MSTest" Version="4.5.1" />
     <!-- StreamJsonRpc 2.26 requires Pipelines 10.x in the extension; Contracts resolves its transitive dependencies separately. -->
-    <PackageVersion Include="System.IO.Pipelines" Version="10.0.13" Condition="'$(MSBuildProjectName)' == 'Codex.VisualStudio.Extension'" />
+    <PackageVersion Include="System.IO.Pipelines" Version="10.0.15" Condition="'$(MSBuildProjectName)' == 'Codex.VisualStudio.Extension'" />
     <PackageVersion Include="System.Text.Encodings.Web" Version="9.0.21" Condition="'$(MSBuildProjectName)' == 'Codex.VisualStudio.Extension'" />
     <PackageVersion Include="System.Text.Json" Version="9.0.21" Condition="'$(MSBuildProjectName)' == 'Codex.VisualStudio.Extension'" />
   </ItemGroup>
