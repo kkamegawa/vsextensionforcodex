@@ -21,7 +21,7 @@ Every app-server method and field named in this document exists in the generated
 | Regression | 0.168.0, 0.167.2 |
 | Unsupported | Anything below 0.167.0 |
 
-Only the latest patch release of each minor series is pinned and verified. Every 0.167.x release may connect. The stable and experimental schemas generated from 0.167.0 and 0.167.2 are identical apart from the generator metadata, so 0.167.0 and 0.167.1 are protocol-compatible with the verified 0.167.2. 0.167.0 is not pinned.
+Only the latest patch release of each minor series is pinned and verified. Every 0.167.x release may connect by policy. The stable and experimental schemas generated from 0.167.0, 0.167.1, and 0.167.2 are identical apart from the generator metadata, so the three releases expose the same protocol surface. Runtime behavior is verified only on 0.167.2; 0.167.0 and 0.167.1 are not pinned and their runtime behavior is unverified.
 
 | Version | Release tag | `codex-x86_64-pc-windows-msvc.exe` SHA-256 | `codex-package-x86_64-pc-windows-msvc.tar.gz` SHA-256 |
 | --- | --- | --- | --- |
