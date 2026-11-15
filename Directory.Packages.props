@@ -52,20 +52,20 @@
     <PackageVersion Include="System.Threading.Tasks.Extensions" Version="4.6.3" />
   </ItemGroup>
   <ItemGroup Condition="'$(MSBuildProjectName)' == 'Codex.VisualStudio.Core.Tests' Or '$(MSBuildProjectName)' == 'Codex.VisualStudio.Ui.Tests'">
-    <PackageVersion Include="MSTest.Analyzers" Version="4.5.1" />
-    <PackageVersion Include="MSTest.TestAdapter" Version="4.5.1" />
-    <PackageVersion Include="MSTest.TestFramework" Version="4.5.1" />
+    <PackageVersion Include="MSTest.Analyzers" Version="4.5.3" />
+    <PackageVersion Include="MSTest.TestAdapter" Version="4.5.3" />
+    <PackageVersion Include="MSTest.TestFramework" Version="4.5.3" />
     <PackageVersion Include="Microsoft.CodeCoverage" Version="18.11.0" />
     <PackageVersion Include="Microsoft.DiaSymReader" Version="2.2.13" />
     <PackageVersion Include="Microsoft.Extensions.DependencyModel" Version="10.0.13" />
     <PackageVersion Include="Microsoft.TestPlatform.ObjectModel" Version="18.11.0" />
     <PackageVersion Include="Microsoft.TestPlatform.TestHost" Version="18.11.0" />
     <PackageVersion Include="Microsoft.Testing.Extensions.CodeCoverage" Version="18.12.0" />
-    <PackageVersion Include="Microsoft.Testing.Extensions.Telemetry" Version="2.5.1" />
-    <PackageVersion Include="Microsoft.Testing.Extensions.TrxReport" Version="2.5.1" />
-    <PackageVersion Include="Microsoft.Testing.Extensions.TrxReport.Abstractions" Version="2.5.1" />
-    <PackageVersion Include="Microsoft.Testing.Platform" Version="2.5.1" />
-    <PackageVersion Include="Microsoft.Testing.Platform.MSBuild" Version="2.5.1" />
+    <PackageVersion Include="Microsoft.Testing.Extensions.Telemetry" Version="2.5.3" />
+    <PackageVersion Include="Microsoft.Testing.Extensions.TrxReport" Version="2.5.3" />
+    <PackageVersion Include="Microsoft.Testing.Extensions.TrxReport.Abstractions" Version="2.5.3" />
+    <PackageVersion Include="Microsoft.Testing.Platform" Version="2.5.3" />
+    <PackageVersion Include="Microsoft.Testing.Platform.MSBuild" Version="2.5.3" />
     <!-- Approved test-only migration from the deprecated 5.x series to the .NET 8 series. -->
     <PackageVersion Include="System.Diagnostics.DiagnosticSource" Version="8.0.1" />
   </ItemGroup>
