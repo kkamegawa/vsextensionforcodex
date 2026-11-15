@@ -3,7 +3,7 @@
 ## 1. 概要
 
 ローカルにインストールされた **Codex app**（`codex app-server`）を呼び出し、Codex に
-コーディングを担当させる Visual Studio 2022+ 拡張機能を開発する。UI/UX は GitHub Copilot の
+コーディングを担当させる Visual Studio 2026（18.12 以降）専用の拡張機能を開発する。UI/UX は GitHub Copilot の
 Visual Studio 拡張機能（チャットツールウィンドウ + インライン補完 + スラッシュコマンド）に
 準拠する。
 
@@ -23,21 +23,26 @@ Visual Studio 拡張機能（チャットツールウィンドウ + インライ
 
 | 項目 | 決定 | 備考 |
 |------|------|------|
-| 拡張本体ランタイム | **.NET 8** (OOP) | `Microsoft.VisualStudio.Extensibility` SDK、net8.0-windows10.0.22621.0 |
-| in-process コンポーネント | **.NET Framework 4.7.2 許容** | 差分ビュー等 VSSDK 依存機能のみ（現在はプレースホルダ） |
-| 言語 | **C#** | — |
-| 対象 IDE | Visual Studio 2022 (17.x) 以降 | arm64 + amd64 |
+| 拡張本体ランタイム | **.NET 10** (OOP) | `Microsoft.VisualStudio.Extensibility` SDK 18.12、net10.0-windows10.0.22621.0 |
+| Worker ランタイム | **.NET 10** | net10.0、フレームワーク依存。Visual Studio が提供する `dotnet.exe` で起動し、`RollForward` は既定の `Minor` |
+| in-process コンポーネント | **なし** | 全機能を OOP で実装する |
+| 言語 | **C# 14** | .NET 10 と C# 14 の機能を前提にする |
+| 対象 IDE | Visual Studio 2026 (18.12 以降) のみ | arm64 + amd64 |
+| Codex CLI | 最低 0.167.0、ターゲット 0.169.0 | 回帰確認は 0.167.2 と 0.168.0。各マイナー系列の最新パッチだけを固定する |
 | 拡張モデル | **VisualStudio.Extensibility OOP 実装済み** | `CodexExtension : Extension`、コマンド・ツールウィンドウを同 SDK で実装 |
 | Codex 連携 | `codex app-server` を spawn、stdio で JSON-RPC 2.0 (JSONL) | WebSocket/Unix socket は将来検討 |
 | UI | Remote UI / WPF（テーマ対応、`EnvironmentColors`・`VsResourceKeys`） | 色のハードコード禁止 |
 | 設定 | 新 Unified Settings 体験 | レガシー `DialogPage` 単独は避ける |
 | パッケージ管理（エージェント資産） | **Microsoft apm**（`apm.yml` + `apm.lock.yaml`） | awesome-copilot をマーケットプレイスに登録 |
 
-### 標準からの逸脱（明記）
+### プラットフォームの決定
 
-- エージェント定義は **.NET 10 out-of-proc** を既定とするが、本件は **.NET 8** を採用する。
-  理由：ユーザー要件。`Microsoft.VisualStudio.Extensibility` SDK v17.14 の .NET 8 対応は検証済み。
-  VSSDK 依存の in-proc 機能（差分ビュー等）が必要になった場合のみ .NET Framework 4.7.2 フォールバックを使う。
+- Visual Studio 2026 は OOP の VisualStudio.Extensibility 拡張機能を .NET 10 で実行する。拡張機能は
+  Visual Studio 2026 18.12 以降と .NET 10 だけをサポートし、Visual Studio 2022 と .NET 8 はサポートしない
+  （[ADR-022](adr/ADR-022-visual-studio-2026-dotnet-10.md)）。
+- in-proc の VSSDK コンポーネントは持たない。`Codex.VisualStudio.Contracts` も net10.0 をターゲットにする。
+- Codex CLI のバージョン方針と機能ティアは [ADR-023](adr/ADR-023-codex-cli-0-167-minimum.md) と
+  [app-server-0-169-design.md](app-server-0-169-design.md) に従う。
 
 ## 4. アーキテクチャ
 
@@ -45,15 +50,12 @@ Visual Studio 拡張機能（チャットツールウィンドウ + インライ
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│ Visual Studio 2022+ (devenv.exe)                             │
-│  ┌───────────────────────────────────────────────────────┐  │
-│  │ Codex.VisualStudio.Package (net472, in-proc)          │  │
-│  │  ・将来の差分ビュー等 VSSDK 依存機能用プレースホルダ  │  │
-│  └───────────────────────────────────────────────────────┘  │
+│ Visual Studio 2026 18.12+ (devenv.exe)                       │
+│  Remote UI でツールウィンドウを描画                          │
 └─────────────────────────────────────────────────────────────┘
-          ↑ OOP ホスト接続（名前付きパイプ + StreamJsonRpc）
+          ↑ VisualStudio.Extensibility の OOP ホスト接続
 ┌─────────────────────────────────────────────────────────────┐
-│ Codex.VisualStudio.Extension (net8.0-windows, OOP プロセス) │
+│ Codex.VisualStudio.Extension (net10.0-windows, OOP プロセス)│
 │                                                             │
 │  UI Layer                                                   │
 │  ┌──────────────────┐   ┌───────────────────────────────┐  │
@@ -68,13 +70,18 @@ Visual Studio 拡張機能（チャットツールウィンドウ + インライ
 │           │                                                 │
 │  Application / Security / Protocol Layers                   │
 │  ┌────────▼────────────────────────────────────────────┐   │
-│  │ CodexSessionService / ApprovalPolicyEngine /         │   │
-│  │ AppServerClient / JsonRpcDispatcher / SecretRedactor │   │
+│  │ WorkerBridge                                         │   │
 │  └────────┬────────────────────────────────────────────┘   │
 └───────────┼─────────────────────────────────────────────────┘
-            │ stdin/stdout (JSONL)
+            │ 名前付きパイプ + StreamJsonRpc
+┌───────────▼─────────────────────────────────────────────────┐
+│ Codex.VisualStudio.Worker (net10.0, VS の dotnet.exe で起動)│
+│  CodexSessionService / ApprovalPolicyEngine /               │
+│  AppServerClient / JsonRpcDispatcher / SecretRedactor       │
+└───────────┬─────────────────────────────────────────────────┘
+            │ stdin/stdout (JSONL) またはリモート WebSocket
   ┌─────────▼──────────┐
-  │ codex app-server   │  ← ローカル Codex app
+  │ codex app-server   │  ← Codex CLI 0.167.0 以降
   │ (サブプロセス)      │
   └────────────────────┘
 ```
@@ -256,10 +263,15 @@ The current owner, contract v18, and disk-cache admission rules are defined in
 
 ## 10. 主要リスクと対応
 
-- **VisualStudio.Extensibility の .NET 8 対応範囲**: Phase 0 で検証。ギャップは in-proc
-  (.NET Framework 4.7.2) フォールバック。
-- **app-server プロトコルのバージョン差**: `codex app-server generate-json-schema` で
-  実行中バージョンのスキーマを取得し、クライアントの型を検証。
+- **Visual Studio の .NET ランタイム更新**: Worker は Visual Studio が提供する .NET 10 で動作し、
+  別のメジャーバージョンには roll forward しない。新しいメジャーバージョンだけを提供する Visual Studio には、
+  Extension と Worker のターゲット変更で対応する。
+- **Visual Studio 2022 利用者**: 新しいリリースはインストールできない。リリースノートとセットアップ文書に
+  Visual Studio 2026 18.12 以降が必要なことを明記する。
+- **app-server プロトコルのバージョン差**: 固定した各リリースから `codex app-server generate-json-schema` で
+  stable と experimental のスキーマを生成し、契約マニフェストの既知差分と比較する。ペイロードは JSON 要素として
+  読み取るため、形が変わった項目はスキーマとパーサーの対応表（[app-server-0-169-design.md](app-server-0-169-design.md)）で
+  扱いを決め、テストで確認する。0.167.0 未満の CLI は接続時に拒否する。
 - **承認フローの UX**: 破壊的操作は必ず承認 UI を経由。`acceptForSession` 等の粒度を UI に反映。
 - **`clientInfo.name`**: エンタープライズ利用時は OpenAI の known clients 登録が必要になる点を明記。
 - **サンドボックス/権限**: `thread/shellCommand`・`command/exec` はサンドボックス外実行があるため
@@ -308,3 +320,12 @@ The approved design and plan are in [English](app-server-0-162-1-plan.md) and [J
 - Send `origin: "user"` on every goal mutation, match MCP OAuth completion by `loginId`, treat skill paths as opaque identifiers, and read partial answers, lineage and unknown error variants without contract changes.
 - Add Follow Codex configuration / Prefer MXC / Require MXC for local stdio launches only, with diagnosis from readiness, effective configuration and managed policy.
 - Validate schema and contract scripts, smoke against both CLI versions, warning-free Debug/Release builds, Core/UI tests, VSIX integrity, off-screen renders, real Windows MXC acceptance and Experimental Instance visual/accessibility evidence.
+
+### Issue #268 — Visual Studio 2026, .NET 10, and Codex App Server 0.169.0
+
+The platform decision is [ADR-022](adr/ADR-022-visual-studio-2026-dotnet-10.md) ([日本語](adr/ADR-022-visual-studio-2026-dotnet-10_ja.md)); the CLI version policy is [ADR-023](adr/ADR-023-codex-cli-0-167-minimum.md) ([日本語](adr/ADR-023-codex-cli-0-167-minimum_ja.md)); the protocol and feature design is [app-server-0-169-design.md](app-server-0-169-design.md) ([日本語](app-server-0-169-design_ja.md)).
+
+- Support Visual Studio 2026 18.12+ and .NET 10 only, with every project on .NET 10 and C# 14 features adopted across the codebase.
+- Accept Codex CLI 0.167.0 and later, target 0.169.0, and pin 0.167.2 and 0.168.0 as regression versions. Feature tiers are `Baseline` (0.167), `Tier168`, and `Tier169`.
+- Add model provider switching, approval UI improvements, thread management, and diagnostics and status display.
+- Work order: design documents (#268), platform (#269), contract (#270), .NET 10 and C# 14 adoption (#271), features (#272). Each phase is a separate pull request.
