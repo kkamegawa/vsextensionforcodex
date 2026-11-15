@@ -48,3 +48,13 @@ Contract drift from the previous stable baseline becomes visible in tests and st
 - The target becomes 0.166.0 and the regression set becomes 0.165.0, 0.164.0, 0.163.0, 0.162.1, and 0.161.0. The minimum supported version stays 0.161.0.
 - Feature tiers 0.165 and 0.166 are added, and each tier compares with its own introduction version, not with the target.
 - Reason: helper executables changed repeatedly during 0.166 development, so a fixed list would break on the next release, and comparing tiers with the target would lower existing connections whenever the target moves. The other decisions stay unchanged.
+
+## Amendment (2026-11-16, minimum 0.167.0 and CLI 0.169.0)
+
+- Status: Accepted
+- Task: [Issue #268](https://github.com/kkamegawa/vsextensionforcodex/issues/268), Codex App Server 0.169.0 support ([design](../app-server-0-169-design.md), [ADR-023](ADR-023-codex-cli-0-167-minimum.md)).
+- The minimum supported version becomes 0.167.0 and the target becomes 0.169.0. Only the latest patch release of each minor series is pinned: 0.167.2 and 0.168.0 as regression versions and 0.169.0 as the target. Every 0.167.x release may connect.
+- Manifest validation changes: `minimumVersion` must be in the same minor series as the oldest pinned release and must not be above it. It is no longer required to be one of `regressionVersions` or the lowest pinned version. No pinned version may be below it.
+- Feature tiers are rebuilt as `Unsupported`, `Baseline` (0.167), `Tier168`, and `Tier169`. The 0.163 to 0.166 tiers and their fallbacks are removed. Each tier still compares with its own introduction version.
+- The schemas generated from 0.167.0 and 0.167.2 are identical on both surfaces apart from generator metadata. This is the recorded evidence that unpinned 0.167.x releases are protocol-compatible with 0.167.2.
+- Reason: pinning every patch release grows the regression matrix without adding protocol coverage, and the platform change in [ADR-022](ADR-022-visual-studio-2026-dotnet-10.md) already requires every user to install a new release. This supersedes the 2026-10-25 requirement that `minimumVersion` be the lowest pinned version and a regression version; the other decisions stay unchanged.

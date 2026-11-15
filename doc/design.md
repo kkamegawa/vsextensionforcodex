@@ -9,12 +9,14 @@ Session 1・2 での実装・修正作業から得た設計決定と教訓をま
 
 | プロジェクト | TFM | 役割 |
 |---|---|---|
-| `Codex.VisualStudio.Extension` | net8.0-windows10.0.22621.0 | OOP 拡張本体（コマンド・ツールウィンドウ・ビジネスロジック） |
-| `Codex.VisualStudio.Package` | net472 | in-proc プレースホルダ（将来の差分ビュー等 VSSDK 依存機能用） |
-| `Codex.VisualStudio.Worker` | net8.0 | 将来の app-server 仲介役候補（現在は Extension 内 WorkerBridge が直接 spawn） |
-| `Codex.VisualStudio.Contracts` | netstandard2.0 | Extension↔Worker 間 RPC 契約 |
-| `Codex.AppServer.Protocol` | net8.0 | Codex app-server JSON-RPC 型定義 |
-| `Codex.AppServer.Fake` | net8.0 | テスト用フェイク app-server |
+| `Codex.VisualStudio.Extension` | net10.0-windows10.0.22621.0 | OOP 拡張本体（コマンド・ツールウィンドウ・ViewModel・`WorkerBridge`） |
+| `Codex.VisualStudio.Worker` | net10.0 | app-server の仲介プロセス。`codex app-server` を起動・接続し、セッション・承認・秘匿化を担う |
+| `Codex.VisualStudio.Contracts` | net10.0 | Extension↔Worker 間 RPC 契約 |
+| `Codex.AppServer.Protocol` | net10.0 | Codex app-server JSON-RPC のトランスポートとメッセージ |
+| `Codex.AppServer.Fake` | net10.0 | テスト用フェイク app-server |
+| `Codex.AppServer.Poc` | net10.0 | app-server 接続の検証用コンソール |
+
+対象は Visual Studio 2026 18.12 以降（amd64・arm64）と .NET 10 だけである（[ADR-022](adr/ADR-022-visual-studio-2026-dotnet-10.md)）。in-proc のコンポーネントは持たない。
 
 ---
 
@@ -22,7 +24,7 @@ Session 1・2 での実装・修正作業から得た設計決定と教訓をま
 
 ### 2.1 Microsoft.VisualStudio.Extensibility SDK を採用した理由
 
-- Visual Studio 2022 の推奨拡張モデル。クラッシュ時に VS 本体を道連れにしない。
+- Visual Studio 2026 の推奨拡張モデル。OOP 拡張は .NET 10 で動作し、クラッシュ時に VS 本体を道連れにしない。
 - `RemoteUserControl` / Remote UI でツールウィンドウを VS の WPF プロセスにレンダリングできる。
 - `Command`、`ToolWindow` 等を `[VisualStudioContribution]` 属性で宣言的に登録できる。
 
@@ -43,7 +45,8 @@ public override ExtensionConfiguration ExtensionConfiguration => new()
 };
 ```
 
-`RequiresInProcessHosting = true`（in-proc hosted 拡張）にした場合は逆に `Metadata = null` でなければならない。
+実装は `CodexExtension.cs` で `ExtensionIdentity` の `MoreInfo`・`License`・`Icon`・`Tags` も設定する。
+本拡張は in-proc hosting を使わないため、`RequiresInProcessHosting` は既定の `false` のままにする。
 
 ### 2.3 アセンブリ名と SDK 基底クラス名の衝突
 
@@ -63,7 +66,7 @@ internal sealed class CodexExtension : VSX.Extension { ... }
 ### 2.4 CA1416（プラットフォーム互換性）の抑制方法
 
 `Microsoft.VisualStudio.Extensibility` SDK の型は「Windows 8.0 以降」とマークされている。
-OOP プロセスが `net8.0-windows10.0.22621.0` をターゲットにしているのに
+OOP プロセスが `net10.0-windows10.0.22621.0` をターゲットにしているのに
 `TreatWarningsAsErrors=true` のため CA1416 がエラーになる。
 
 **対処**: Extension エントリポイントファイルにアセンブリ属性を一度だけ宣言する。
@@ -147,11 +150,13 @@ Extension プロジェクトで参照できないため、BAML コンパイル�
 `Directory.Packages.props` でバージョンを一元管理。各 `.csproj` では `Version=` を省略する。
 
 ```xml
-<PackageVersion Include="Microsoft.VisualStudio.Extensibility" Version="17.14.2098" />
-<PackageVersion Include="Microsoft.VisualStudio.Extensibility.Sdk" Version="17.14.40608" />
-<PackageVersion Include="Microsoft.VisualStudio.Extensibility.Build" Version="17.14.40608" />
+<PackageVersion Include="Microsoft.VisualStudio.Extensibility" Version="18.12.*" />
+<PackageVersion Include="Microsoft.VisualStudio.Extensibility.Sdk" Version="18.12.*" />
+<PackageVersion Include="Microsoft.VisualStudio.Extensibility.Build" Version="18.12.*" />
 ```
 
+- 上の `18.12.*` は系列を示す表記で、実際の `Directory.Packages.props` には `nuget-validate` で検証した 18.12 系列の正確なバージョンを固定する。
+- Visual Studio SDK 系パッケージは Visual Studio 2026 18.12 に対応するバージョンにそろえる。.NET 8 互換のためのバージョン固定は行わない。
 - `Sdk` と `Build` は `<PrivateAssets>all</PrivateAssets>` を付ける（ビルド専用ツール）。
 - テストプロジェクトが Extension を ProjectReference で参照すると NU1603 が出る（安全な警告）→ `<NoWarn>` で抑制。
 - `Microsoft.Extensions.DependencyInjection.Abstractions` のバージョン競合（MSB3277）は
@@ -159,8 +164,12 @@ Extension プロジェクトで参照できないため、BAML コンパイル�
 
 ### 3.3 VSIX マニフェスト（source.extension.vsixmanifest）
 
-- `InstallationTarget` に amd64・arm64 の両 `<ProductArchitecture>` を追加する。
-- バージョン上限は `[17.9,)` に開放する（将来の VS をブロックしない）。
+VSIX マニフェストは Extensibility SDK がビルド時に生成する。ソース管理下の `source.extension.vsixmanifest` は持たない。
+
+- `InstallationTarget` は amd64・arm64 の両アーキテクチャで、バージョン範囲は `[18.12,)` とする。上限は開放し、将来の VS をブロックしない。
+- `DotnetTargetVersions` は `net10.0` とする。
+- `Prerequisite` の `Microsoft.VisualStudio.Component.CoreEditor` も `[18.12,)` とする。
+- これらの値は Extensibility SDK パッケージのバージョンとターゲットフレームワークから決まる。生成されたマニフェストが上記と一致しない場合に限り、プロジェクトで明示的に指定する。`scripts/Test-VsixContents.ps1` で生成結果を検査する。
 - Preview 段階は `<Preview>true</Preview>` を追加する。
 
 ### 3.4 Development and release version precedence
@@ -182,7 +191,7 @@ Extension プロジェクトの MSBuild ターゲットで Worker を VSIX に�
   <MSBuild Projects="../Codex.VisualStudio.Worker/Codex.VisualStudio.Worker.csproj"
            Targets="Build" Properties="Configuration=$(Configuration)" />
   <ItemGroup>
-    <VSIXSourceItem Include="../Codex.VisualStudio.Worker/bin/$(Configuration)/net8.0/**/*.*"
+    <VSIXSourceItem Include="../Codex.VisualStudio.Worker/bin/$(Configuration)/net10.0/**/*.*"
                     Exclude=".../**/*.pdb">
       <VSIXSubPath>Worker/%(RecursiveDir)</VSIXSubPath>
     </VSIXSourceItem>
@@ -195,6 +204,10 @@ Extension プロジェクトの MSBuild ターゲットで Worker を VSIX に�
 it starts the packaged Worker apphost. The Extension and Worker communicate through a
 named pipe and StreamJsonRpc. This avoids apphost runtime discovery in the Visual Studio
 debug environment while retaining support for runtime layouts without a `dotnet.exe` host.
+The Worker is framework-dependent and targets `net10.0`, so it runs on the .NET 10 runtime that
+Visual Studio 2026 provides. It keeps the default `RollForward` policy, `Minor`: it runs on the
+newest installed .NET 10 patch and never on another major version. The apphost fallback uses the
+machine-wide .NET 10 runtime under the same policy.
 
 For local JSONL and remote WebSocket transports, the receive path resolves client responses
 immediately. A bounded single-consumer queue delivers notifications in wire order and starts
@@ -214,8 +227,8 @@ instead of leaving it at Checking.
 
 | プロジェクト | TFM | 備考 |
 |---|---|---|
-| `Codex.VisualStudio.Core.Tests` | net8.0 | プロトコル・ロジックのユニットテスト |
-| `Codex.VisualStudio.Ui.Tests` | net8.0-windows10.0.22621.0 | ViewModel のユニットテスト |
+| `Codex.VisualStudio.Core.Tests` | net10.0 | プロトコル・ロジックのユニットテスト |
+| `Codex.VisualStudio.Ui.Tests` | net10.0-windows10.0.22621.0 | ViewModel のユニットテスト |
 
 UI テストは Extension への ProjectReference を持つため `UseWPF=true` が必要。
 NU1603・MSB3277 を `<NoWarn>` / `<MSBuildWarningsAsMessages>` で抑制する。
@@ -229,7 +242,6 @@ NU1603・MSB3277 を `<NoWarn>` / `<MSBuildWarningsAsMessages>` で抑制する�
 | `CommandPlacement.KnownPlacements.ToolsMenu` を使用中 → View メニューへ移動したい場合は `CommandGroupConfiguration` + `GroupPlacement.VsctParent(...)` で実装 | 暫定 | 低 |
 | `WorkerBridge` が Extension 内にある → 将来 Worker プロセスに移動して責務を分離 | 暫定 | 中 |
 | `ChatViewModel.OnUiAsync` の `Application.Current?.Dispatcher` → OOP プロセスでは null になるため直接実行（意図的） | 正常動作 | — |
-| `Codex.VisualStudio.Package` は空プレースホルダ → 差分ビュー等が必要になったときに実装 | 予定 | 低 |
 | DI コンテナへの `AppServerClient` / `CodexSessionService` 登録 → Phase 1 未完了 | 未着手 | 高 |
 
 ## 7. Approval mode picker
@@ -542,3 +554,7 @@ The approved [design and plan](interaction-theme-plan.md) ([日本語](interacti
 ## Codex App Server 0.162.1 support and MXC backend selection
 
 The approved [design and plan](app-server-0-162-1-plan.md) ([日本語](app-server-0-162-1-plan_ja.md)) and [ADR-018](adr/ADR-018-app-server-0-162-1.md) ([日本語](adr/ADR-018-app-server-0-162-1_ja.md)) target CLI 0.162.1 with 0.159.1 as the regression fixture. Every goal mutation sends `origin: "user"`; MCP OAuth completion is matched by `loginId` with a server-name fallback for servers that omit it; skill paths are opaque catalog identifiers; partial answers, turn lineage and unknown error variants are read without contract changes. The local app-server can follow the Codex configuration, prefer MXC, or require MXC through allow-listed launch overrides that apply on the next local start and never reach remote profiles. Sandbox status reports the effective configuration and managed policy without claiming which backend ran a command. Tracking: [Issue #198](https://github.com/kkamegawa/vsextensionforcodex/issues/198), with #199 for the contract baseline, #200 for MXC, #201 for goal origin and OAuth, #202 for receive-side changes and #203 for validation and documentation.
+
+## Codex App Server 0.169.0 support
+
+[Codex App Server 0.169.0 Support Design](app-server-0-169-design.md) ([日本語](app-server-0-169-design_ja.md)) defines the version policy (minimum 0.167.0, target 0.169.0, regression 0.167.2 and 0.168.0), the feature tiers `Baseline`, `Tier168`, and `Tier169`, the schema-to-parser mapping, and four feature groups: model provider switching, approval UI improvements, thread management, and diagnostics and status display. Decisions are in [ADR-022](adr/ADR-022-visual-studio-2026-dotnet-10.md) and [ADR-023](adr/ADR-023-codex-cli-0-167-minimum.md). Tracking: [Issue #268](https://github.com/kkamegawa/vsextensionforcodex/issues/268).

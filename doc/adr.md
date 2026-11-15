@@ -2,6 +2,24 @@
 
 The Codex App Server update decisions are split into phase-scoped ADR files because this historical index exceeds 200 lines: `doc/adr/ADR-011-app-server-contract.md` through `ADR-016-app-server-daily-features.md`. ADR-013 defines the Issue #152 owner partition and supersedes ADR-010's workspace-only skill snapshot key; its 2026-10-03 contract records why the pinned account schema requires volatile owner isolation.
 
+Phase-scoped ADR files:
+
+| ADR | Decision |
+| --- | --- |
+| [ADR-011](adr/ADR-011-app-server-contract.md) | App Server contract and request routing, with version amendments |
+| [ADR-012](adr/ADR-012-app-server-remote-transport.md) | Remote App Server transport |
+| [ADR-013](adr/ADR-013-app-server-path-state.md) | App Server path and state isolation |
+| [ADR-014](adr/ADR-014-app-server-recovery.md) | Reconnect and history recovery |
+| [ADR-015](adr/ADR-015-app-server-interaction.md) | Questions, approvals, and MCP interaction |
+| [ADR-016](adr/ADR-016-app-server-daily-features.md) | Daily-use App Server features |
+| [ADR-017](adr/ADR-017-development-vsix-version.md) | Development VSIX version follows the latest release |
+| [ADR-018](adr/ADR-018-app-server-0-162-1.md) | Codex App Server 0.162.1 contract and MXC backend selection |
+| [ADR-019](adr/ADR-019-app-server-0-164.md) | Codex App Server 0.164.0 support, version tiers, and shared presets |
+| [ADR-020](adr/ADR-020-app-server-0-166.md) | Codex App Server 0.166.0 support and per-version tiers |
+| [ADR-021](adr/ADR-021-validation-policy.md) | Validation policy for constrained and experimental features |
+| [ADR-022](adr/ADR-022-visual-studio-2026-dotnet-10.md) | Visual Studio 2026 18.12+ and .NET 10 only |
+| [ADR-023](adr/ADR-023-codex-cli-0-167-minimum.md) | Codex CLI minimum 0.167.0 and target 0.169.0 |
+
 ## ADR-001: File attachment interaction and trust boundaries
 
 - Date: 2026-07-19
