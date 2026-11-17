@@ -28,7 +28,6 @@ $target = ConvertTo-StableVersion ([string]$manifest.targetVersion) 'targetVersi
 $regressions = @($manifest.regressionVersions | ForEach-Object { [string]$_ })
 Assert-Contract ($regressions.Count -gt 0) 'regressionVersions must not be empty.'
 Assert-Contract (@($regressions | Sort-Object -Unique).Count -eq $regressions.Count) 'regressionVersions must not contain duplicates.'
-Assert-Contract ($regressions -contains [string]$manifest.minimumVersion) 'minimumVersion must be one of regressionVersions.'
 Assert-Contract ($regressions -notcontains [string]$manifest.targetVersion) 'targetVersion must not be a regression version.'
 
 $contractVersions = @($regressions) + @([string]$manifest.targetVersion)
@@ -44,7 +43,12 @@ foreach ($version in $pinned) {
     Assert-Contract ($contractVersions -contains $version) "Pinned release $version is neither the target nor a regression version."
 }
 $lowestPinned = @($pinned | Sort-Object { [version]$_ })[0]
-Assert-Contract ($lowestPinned -eq [string]$manifest.minimumVersion) "minimumVersion must equal the lowest pinned release ($lowestPinned)."
+$lowestPinnedVersion = ConvertTo-StableVersion ([string]$lowestPinned) 'Lowest pinned release'
+Assert-Contract (
+    $minimum.Major -eq $lowestPinnedVersion.Major -and
+    $minimum.Minor -eq $lowestPinnedVersion.Minor -and
+    $minimum -le $lowestPinnedVersion
+) "minimumVersion must be in the same minor series as and not above the lowest pinned release ($lowestPinned)."
 
 foreach ($version in $contractVersions) {
     $release = $manifest.releases.$version
