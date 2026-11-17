@@ -16,11 +16,9 @@ public sealed class FakeAppServerIntegrationTests
     };
 
     [TestMethod]
-    [DataRow("Regression01610", "codex-cli/0.161.0")]
-    [DataRow("Regression01621", "codex-cli/0.162.1")]
-    [DataRow("Regression01630", "codex-cli/0.163.0")]
-    [DataRow("", "codex-cli/0.164.0")]
-    [DataRow("Current01660", "codex-cli/0.166.0")]
+    [DataRow("Regression01672", "codex-cli/0.167.2")]
+    [DataRow("Regression01680", "codex-cli/0.168.0")]
+    [DataRow("Current01690", "codex-cli/0.169.0")]
     public async Task FakeReportsEachContractVersionInUserAgent(string scenario, string expectedUserAgent)
     {
         await using FakeAppServerProcess server = await FakeAppServerProcess.StartAsync(scenario);
@@ -32,7 +30,7 @@ public sealed class FakeAppServerIntegrationTests
     [TestMethod]
     public async Task FakeSeparateReviewAndUsageMatchTheStableSurface()
     {
-        await using FakeAppServerProcess server = await FakeAppServerProcess.StartAsync("Current01660");
+        await using FakeAppServerProcess server = await FakeAppServerProcess.StartAsync("Current01690");
         await server.SendAsync(new { id = 1, method = "initialize", @params = new { } });
         (await server.ReadAsync()).Dispose();
 
@@ -126,10 +124,10 @@ public sealed class FakeAppServerIntegrationTests
     }
 
     [TestMethod]
-    [DataRow("Regression01650", true)]
-    [DataRow("Current01660", true)]
-    [DataRow("Current01660", false)]
-    public async Task FakeExperimentalMemoryHonorsVersionAndNegotiatedCapability(string scenario, bool experimental)
+    [DataRow("Regression01672", true)]
+    [DataRow("Current01690", true)]
+    [DataRow("Current01690", false)]
+    public async Task FakeExperimentalMemoryHonorsNegotiatedCapability(string scenario, bool experimental)
     {
         await using FakeAppServerProcess server = await FakeAppServerProcess.StartAsync(scenario);
         await InitializeFakeAsync(server, 1, experimental);
@@ -140,7 +138,7 @@ public sealed class FakeAppServerIntegrationTests
 
         await server.SendAsync(new { id = 3, method = "thread/memory/read", @params = new { threadId } });
         using JsonDocument memory = await ReadResponseAsync(server, 3);
-        if (experimental && scenario is "Regression01650" or "Current01660")
+        if (experimental)
         {
             Assert.AreEqual(JsonValueKind.Null, memory.RootElement.GetProperty("result").GetProperty("summary").ValueKind);
         }
@@ -153,7 +151,7 @@ public sealed class FakeAppServerIntegrationTests
     [TestMethod]
     public async Task FakeLinkedForksStayOutOfOrdinaryHistoryAndUseAttachedThreadFilter()
     {
-        await using FakeAppServerProcess server = await FakeAppServerProcess.StartAsync("Current01660");
+        await using FakeAppServerProcess server = await FakeAppServerProcess.StartAsync("Current01690");
         await InitializeFakeAsync(server, 1, experimental: true);
 
         await server.SendAsync(new { id = 2, method = "thread/start", @params = new { } });
@@ -190,7 +188,7 @@ public sealed class FakeAppServerIntegrationTests
     [TestMethod]
     public async Task FakeExperimentalRequestsRequireNegotiationButOrdinaryForkRemainsStable()
     {
-        await using FakeAppServerProcess server = await FakeAppServerProcess.StartAsync("Current01660");
+        await using FakeAppServerProcess server = await FakeAppServerProcess.StartAsync("Current01690");
         await InitializeFakeAsync(server, 1, experimental: false);
 
         await server.SendAsync(new { id = 2, method = "thread/start", @params = new { } });
@@ -218,7 +216,7 @@ public sealed class FakeAppServerIntegrationTests
     [TestMethod]
     public async Task FakeWorkspaceSwitchUsesSameLoginAndDistinguishesWorkspaceIds()
     {
-        await using FakeAppServerProcess server = await FakeAppServerProcess.StartAsync("Current01660,Issue243WorkspaceSwitch");
+        await using FakeAppServerProcess server = await FakeAppServerProcess.StartAsync("Current01690,Issue243WorkspaceSwitch");
         await InitializeFakeAsync(server, 1, experimental: true);
         await server.SendAsync(new { id = 2, method = "account/read", @params = new { } });
         using JsonDocument account = await ReadResponseAsync(server, 2);
@@ -250,7 +248,7 @@ public sealed class FakeAppServerIntegrationTests
     [TestMethod]
     public async Task FakeWorkspaceSwitchCoversSsoCancellationAndUnknownResultLookup()
     {
-        await using FakeAppServerProcess sso = await FakeAppServerProcess.StartAsync("Current01660,Issue243SsoSwitch");
+        await using FakeAppServerProcess sso = await FakeAppServerProcess.StartAsync("Current01690,Issue243SsoSwitch");
         await InitializeFakeAsync(sso, 1, experimental: true);
         await sso.SendAsync(new { id = 2, method = "accountSession/switch", @params = new { sessionId = "fake-account-session", accountId = "fake-team-workspace", allowBrowserLogin = true } });
         using JsonDocument login = await ReadResponseAsync(sso, 2);
@@ -262,7 +260,7 @@ public sealed class FakeAppServerIntegrationTests
         using JsonDocument canceled = await ReadResponseAsync(sso, 3);
         Assert.AreEqual("canceled", canceled.RootElement.GetProperty("result").GetProperty("status").GetString());
 
-        await using FakeAppServerProcess unknown = await FakeAppServerProcess.StartAsync("Current01660,Issue243UnknownSwitch");
+        await using FakeAppServerProcess unknown = await FakeAppServerProcess.StartAsync("Current01690,Issue243UnknownSwitch");
         await InitializeFakeAsync(unknown, 1, experimental: true);
         await unknown.SendAsync(new { id = 2, method = "accountSession/switch", @params = new { sessionId = "fake-account-session", accountId = "fake-team-workspace", allowBrowserLogin = true } });
         await unknown.SendAsync(new { id = 3, method = "accountSession/list", @params = new { refreshWorkspaceMetadata = true } });
@@ -297,7 +295,7 @@ public sealed class FakeAppServerIntegrationTests
     [DataRow("Issue244MissingUsageValues", 0L, true, false)]
     public async Task FakeThreadUsagePreservesNativeZeroAndUnknown(string scenario, long expectedNativeUsdMicros, bool expectMissing, bool expectNull)
     {
-        await using FakeAppServerProcess server = await FakeAppServerProcess.StartAsync($"Current01660,{scenario}");
+        await using FakeAppServerProcess server = await FakeAppServerProcess.StartAsync($"Current01690,{scenario}");
         await InitializeFakeAsync(server, 1, experimental: false);
         await server.SendAsync(new { id = 2, method = "account/usage/read", @params = new { threadId = "fake-thread-usage" } });
         using JsonDocument usage = await ReadResponseAsync(server, 2);
@@ -346,7 +344,7 @@ public sealed class FakeAppServerIntegrationTests
     }
 
     [TestMethod]
-    public async Task FakeReadStateContractSupportsUpdatesConflictsAndRegression01621()
+    public async Task FakeReadStateContractSupportsUpdatesConflictsAndMinimumVersion()
     {
         await using FakeAppServerProcess current = await FakeAppServerProcess.StartAsync(string.Empty);
         await current.SendAsync(new
@@ -356,7 +354,7 @@ public sealed class FakeAppServerIntegrationTests
             @params = new { capabilities = new { experimentalApi = true } },
         });
         using JsonDocument initialized = await current.ReadAsync();
-        Assert.AreEqual("codex-cli/0.164.0", initialized.RootElement.GetProperty("result").GetProperty("userAgent").GetString());
+        Assert.AreEqual("codex-cli/0.169.0", initialized.RootElement.GetProperty("result").GetProperty("userAgent").GetString());
 
         await current.SendAsync(new { id = 2, method = "thread/start", @params = new { } });
         using JsonDocument started = await current.ReadAsync();
@@ -411,7 +409,7 @@ public sealed class FakeAppServerIntegrationTests
         Assert.AreEqual("readStateConflict", error.GetProperty("data").GetProperty("reason").GetString());
         Assert.IsTrue(error.GetProperty("data").GetProperty("readState").GetProperty("revision").GetString()!.Length > 0);
 
-        await using FakeAppServerProcess regression = await FakeAppServerProcess.StartAsync("Regression01621");
+        await using FakeAppServerProcess regression = await FakeAppServerProcess.StartAsync("Regression01672");
         await regression.SendAsync(new
         {
             id = 1,
@@ -419,18 +417,17 @@ public sealed class FakeAppServerIntegrationTests
             @params = new { capabilities = new { experimentalApi = true } },
         });
         using JsonDocument regressionInitialized = await regression.ReadAsync();
-        Assert.AreEqual("codex-cli/0.162.1", regressionInitialized.RootElement.GetProperty("result").GetProperty("userAgent").GetString());
+        Assert.AreEqual("codex-cli/0.167.2", regressionInitialized.RootElement.GetProperty("result").GetProperty("userAgent").GetString());
         await regression.SendAsync(new { id = 2, method = "thread/list", @params = new { } });
         using JsonDocument regressionList = await regression.ReadAsync();
-        Assert.IsFalse(regressionList.RootElement.GetProperty("result").TryGetProperty("readStates", out _));
+        Assert.IsTrue(regressionList.RootElement.GetProperty("result").TryGetProperty("readStates", out _));
     }
 
     [TestMethod]
-    [DataRow("Regression01610", "codex-cli/0.161.0", false)]
-    [DataRow("Regression01621", "codex-cli/0.162.1", false)]
-    [DataRow("Regression01630", "codex-cli/0.163.0", true)]
-    [DataRow("", "codex-cli/0.164.0", true)]
-    public async Task FakeThreadListExposesReadStatesOnlyFrom0163(string scenario, string expectedUserAgent, bool expectReadStates)
+    [DataRow("Regression01672", "codex-cli/0.167.2", true)]
+    [DataRow("Regression01680", "codex-cli/0.168.0", true)]
+    [DataRow("Current01690", "codex-cli/0.169.0", true)]
+    public async Task FakeThreadListExposesReadStatesOnSupportedVersions(string scenario, string expectedUserAgent, bool expectReadStates)
     {
         await using FakeAppServerProcess server = await FakeAppServerProcess.StartAsync(scenario);
         await server.SendAsync(new

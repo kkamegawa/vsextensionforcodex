@@ -5,7 +5,7 @@ using Codex.VisualStudio.Extension;
 
 namespace Codex.VisualStudio.Ui.Tests;
 
-// Separate-conversation review, history scope, conversation text, and the other 0.166 stable features.
+// Separate-conversation review, history scope, and conversation text.
 public sealed partial class ViewModelTests
 {
     private static readonly string[] WorktreeFolders = [@"C:\repo", @"C:\repo-wt"];

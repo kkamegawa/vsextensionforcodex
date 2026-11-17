@@ -4837,7 +4837,7 @@ public sealed partial class ViewModelTests
             },
         };
         WorkerStatus recovered = OwnerStatus("worker-b-owner", 2, 1);
-        recovered.CodexVersion = "0.163.0";
+        recovered.CodexVersion = SupportedCodexVersions.Target;
         var replacement = new FakeWorkerBridge
         {
             ConnectHandler = () => Task.FromResult(recovered),

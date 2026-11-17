@@ -83,7 +83,7 @@ public sealed partial class ViewModelTests
     [DataRow(McpRuntimeStatus.AuthenticationRequired, "oAuth", 3, null, "authentication sign-in required; runtime authentication required; 3 tools")]
     [DataRow(McpRuntimeStatus.Unknown, "", 1, null, "authentication unknown; runtime unknown; 1 tool")]
     [DataRow(McpRuntimeStatus.Failed, "notLoggedIn", 0, "listing failed", "runtime failed; tool discovery failed: listing failed")]
-    public void McpStatus_Tier164ShowsThreeSeparateValues(McpRuntimeStatus runtime, string auth, int tools, string? toolsError, string expected)
+    public void McpStatus_ShowsThreeSeparateValues(McpRuntimeStatus runtime, string auth, int tools, string? toolsError, string expected)
     {
         string text = ChatViewModel.FormatMcpServerStatus(new McpServerStatusInfo
         {
@@ -146,7 +146,7 @@ public sealed partial class ViewModelTests
             confirmation = message;
             return Task.FromResult(ChatViewModel.DiagnosticsSaveChoice.WithoutLogs);
         };
-        await bridge.PublishStateAsync(Tier164Status());
+        await bridge.PublishStateAsync(SupportedVersionStatus());
 
         await RunComposerAsync(vm, "/diagnostics");
 
@@ -167,7 +167,7 @@ public sealed partial class ViewModelTests
             var bridge = new FakeWorkerBridge();
             using ChatViewModel vm = CreateDiagnosticsViewModel(bridge, existing);
             vm.DiagnosticsConfirmationOverride = _ => Task.FromResult(ChatViewModel.DiagnosticsSaveChoice.WithoutLogs);
-            await bridge.PublishStateAsync(Tier164Status());
+            await bridge.PublishStateAsync(SupportedVersionStatus());
 
             await RunComposerAsync(vm, "/diagnostics");
 
@@ -186,7 +186,7 @@ public sealed partial class ViewModelTests
         var bridge = new FakeWorkerBridge();
         using ChatViewModel vm = CreateDiagnosticsViewModel(bridge, savePath: null);
         vm.DiagnosticsConfirmationOverride = _ => Task.FromResult(ChatViewModel.DiagnosticsSaveChoice.WithLogs);
-        WorkerStatus remote = Tier164Status();
+        WorkerStatus remote = SupportedVersionStatus();
         remote.Target = new ConnectionTargetSnapshot { Kind = ConnectionTargetKind.Remote, DisplayName = "devbox" };
         await bridge.PublishStateAsync(remote);
 
@@ -214,7 +214,7 @@ public sealed partial class ViewModelTests
         };
         using ChatViewModel vm = CreateDiagnosticsViewModel(bridge, Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N") + ".zip"));
         vm.DiagnosticsConfirmationOverride = _ => Task.FromResult(ChatViewModel.DiagnosticsSaveChoice.WithoutLogs);
-        await bridge.PublishStateAsync(Tier164Status());
+        await bridge.PublishStateAsync(SupportedVersionStatus());
 
         await RunComposerAsync(vm, "/diagnostics");
 
@@ -228,7 +228,7 @@ public sealed partial class ViewModelTests
         var bridge = new FakeWorkerBridge();
         using ChatViewModel vm = CreateDiagnosticsViewModel(bridge, Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N") + ".zip"));
         vm.DiagnosticsConfirmationOverride = _ => Task.FromResult(ChatViewModel.DiagnosticsSaveChoice.Cancel);
-        await bridge.PublishStateAsync(Tier164Status());
+        await bridge.PublishStateAsync(SupportedVersionStatus());
 
         await RunComposerAsync(vm, "/diagnostics");
 

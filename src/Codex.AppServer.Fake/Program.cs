@@ -71,10 +71,11 @@ while (await Console.In.ReadLineAsync().ConfigureAwait(false) is { } line)
     bool isAttachedThreadList = method == "thread/list"
         && root.GetProperty("params").TryGetProperty("attachedToThreadId", out JsonElement attachedToThreadId)
         && attachedToThreadId.ValueKind == JsonValueKind.String;
-    if ((method == "thread/memory/read" && !SupportsExperimentalMemory())
-        || ((isAttachedFork || isAttachedThreadList
-            || method is "accountSession/list" or "accountSession/switch")
-            && !SupportsExperimental0166()))
+    if (((method is "thread/memory/read" or "thread/readState/update")
+            || isAttachedFork
+            || isAttachedThreadList
+            || (method is "accountSession/list" or "accountSession/switch"))
+        && !SupportsExperimentalApi())
     {
         await WriteAsync(new
         {
@@ -86,16 +87,6 @@ while (await Console.In.ReadLineAsync().ConfigureAwait(false) is { } line)
 
     if (method == "thread/readState/update")
     {
-        if (!SupportsReadState())
-        {
-            await WriteAsync(new
-            {
-                id = JsonSerializer.Deserialize<object>(id.GetRawText()),
-                error = new { code = -32601, message = "Experimental thread read state is unavailable." },
-            }).ConfigureAwait(false);
-            continue;
-        }
-
         JsonElement parameters = root.GetProperty("params");
         string threadId = parameters.GetProperty("threadId").GetString() ?? string.Empty;
         string expectedRevision = parameters.GetProperty("expectedRevision").GetString() ?? string.Empty;
@@ -153,17 +144,11 @@ while (await Console.In.ReadLineAsync().ConfigureAwait(false) is { } line)
     {
         "initialize" => new
         {
-            userAgent = IsScenario("Regression01610")
-                ? "codex-cli/0.161.0"
-                : IsScenario("Regression01621")
-                    ? "codex-cli/0.162.1"
-                    : IsScenario("Regression01630")
-                        ? "codex-cli/0.163.0"
-                        : IsScenario("Regression01650")
-                ? "codex-cli/0.165.0"
-                : IsScenario("Current01660")
-                    ? "codex-cli/0.166.0"
-                    : IsScenario("Issue292") ? "codex-cli/0.167.2" : "codex-cli/0.164.0",
+            userAgent = IsScenario("Regression01672") || IsScenario("Issue292")
+                ? "codex-cli/0.167.2"
+                : IsScenario("Regression01680")
+                    ? "codex-cli/0.168.0"
+                    : "codex-cli/0.169.0",
             codexHome = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".codex"),
             platformFamily = OperatingSystem.IsWindows() ? "windows" : "unix",
             platformOs = OperatingSystem.IsWindows() ? "windows" : OperatingSystem.IsMacOS() ? "macos" : "linux",
@@ -428,14 +413,11 @@ bool IsScenario(string name)
     => scenario.Split([',', ';', '+'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
         .Contains(name, StringComparer.Ordinal);
 
+bool SupportsExperimentalApi()
+    => experimentalApiEnabled;
+
 bool SupportsReadState()
-    => experimentalApiEnabled && !IsScenario("Regression01610") && !IsScenario("Regression01621");
-
-bool SupportsExperimentalMemory()
-    => experimentalApiEnabled && (IsScenario("Regression01650") || SupportsExperimental0166());
-
-bool SupportsExperimental0166()
-    => experimentalApiEnabled && IsScenario("Current01660");
+    => SupportsExperimentalApi();
 
 string NextReadStateRevision()
     => $"fake-revision-{nextReadStateRevision++}";

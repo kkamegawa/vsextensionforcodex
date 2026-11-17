@@ -38,7 +38,7 @@ public sealed class WorkerRpcServiceTests
     }
 
     [TestMethod]
-    [DataRow("codex-cli/0.159.1", "version 0.159.1")]
+    [DataRow("codex-cli/0.166.0", "version 0.166.0")]
     [DataRow("unparseable", "an unknown version")]
     public async Task LocalConnectToAnUnsupportedServerStopsWithoutRetryAndReportsTheVersion(string userAgent, string detected)
     {
@@ -577,7 +577,7 @@ public sealed class WorkerRpcServiceTests
         {
             Handler = method => method switch
             {
-                "initialize" => JsonSerializer.SerializeToElement(new { userAgent = "codex-cli/0.166.0" }),
+                "initialize" => JsonSerializer.SerializeToElement(new { userAgent = $"codex-cli/{SupportedCodexVersions.Target}" }),
                 "thread/resume" => throw new JsonRpcRemoteException(
                     -32000,
                     "provider rejected the saved model",
@@ -612,7 +612,7 @@ public sealed class WorkerRpcServiceTests
         {
             Handler = method => method switch
             {
-                "initialize" => JsonSerializer.SerializeToElement(new { userAgent = "codex-cli/0.166.0" }),
+                "initialize" => JsonSerializer.SerializeToElement(new { userAgent = $"codex-cli/{SupportedCodexVersions.Target}" }),
                 "thread/resume" => throw new JsonRpcRemoteException(
                     -32000,
                     "Unknown provider failure " + secret + " " + new string('x', 1000),
