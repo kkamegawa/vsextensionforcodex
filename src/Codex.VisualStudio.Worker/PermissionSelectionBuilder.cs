@@ -1,5 +1,6 @@
 ﻿using System.Text.Json;
 using Codex.VisualStudio.Contracts;
+using static Codex.VisualStudio.Worker.JsonElementPropertyValidation;
 
 namespace Codex.VisualStudio.Worker;
 
@@ -400,21 +401,6 @@ internal static class PermissionSelectionBuilder
         return false;
     }
 
-    private static bool OnlyProperties(JsonElement element, params string[] allowed)
-    {
-        var set = new HashSet<string>(allowed, StringComparer.Ordinal);
-        var seen = new HashSet<string>(StringComparer.Ordinal);
-        foreach (JsonProperty property in element.EnumerateObject())
-        {
-            if (!set.Contains(property.Name) || !seen.Add(property.Name))
-            {
-                return false;
-            }
-        }
-
-        return true;
-    }
-
     private static string Bound(string? value)
     {
         value ??= string.Empty;
@@ -615,21 +601,6 @@ internal static class PermissionSubsetValidator
         JsonProperty[] rightProperties = right.EnumerateObject().OrderBy(item => item.Name, StringComparer.Ordinal).ToArray();
         return leftProperties.Length == rightProperties.Length
             && leftProperties.Zip(rightProperties).All(pair => pair.First.Name == pair.Second.Name && JsonEqual(pair.First.Value, pair.Second.Value));
-    }
-
-    private static bool OnlyProperties(JsonElement element, params string[] allowed)
-    {
-        var set = new HashSet<string>(allowed, StringComparer.Ordinal);
-        var seen = new HashSet<string>(StringComparer.Ordinal);
-        foreach (JsonProperty property in element.EnumerateObject())
-        {
-            if (!set.Contains(property.Name) || !seen.Add(property.Name))
-            {
-                return false;
-            }
-        }
-
-        return true;
     }
 
     private static string? GetString(JsonElement element, string name)

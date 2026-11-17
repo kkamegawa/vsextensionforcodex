@@ -943,11 +943,22 @@ object CreateThread(JsonElement parameters)
 // Platform-native absolute paths (not hardcoded POSIX strings) so manual verification on
 // Windows exercises the same path shapes CodexSessionService.NormalizeSkillPath sees from a
 // real codex app-server, instead of masking Windows-specific path-handling issues.
-static string RepoSkillPath(params string[] segments)
-    => Path.Combine([Environment.CurrentDirectory, ".codex", "skills", .. segments]);
+static string RepoSkillPath(params ReadOnlySpan<string> segments)
+    => CombineSkillPath(Environment.CurrentDirectory, segments);
 
-static string UserSkillPath(params string[] segments)
-    => Path.Combine([Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".codex", "skills", .. segments]);
+static string UserSkillPath(params ReadOnlySpan<string> segments)
+    => CombineSkillPath(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), segments);
+
+static string CombineSkillPath(string root, ReadOnlySpan<string> segments)
+{
+    string path = Path.Combine(root, ".codex", "skills");
+    foreach (string segment in segments)
+    {
+        path = Path.Combine(path, segment);
+    }
+
+    return path;
+}
 
 // activePermissionProfile exists only on the experimental surface, as on a real app-server.
 object ThreadResponse(object thread) => new
