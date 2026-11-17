@@ -39,7 +39,6 @@ public sealed partial class ChatViewModel
     [DataMember]
     public bool ShowWorkspaceSwitcher
         => Account.IsSignedIn
-            && Status.FeatureTier >= CodexFeatureTier.Baseline
             && Status.Target?.ExperimentalApi == true;
 
     [DataMember]

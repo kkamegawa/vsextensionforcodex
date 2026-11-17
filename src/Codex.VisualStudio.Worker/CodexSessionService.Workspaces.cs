@@ -229,9 +229,9 @@ public sealed partial class CodexSessionService
     private ConnectionContext RequireExperimentalWorkspaceContext()
     {
         ConnectionContext context = RequireContext();
-        if (!context.ExperimentalApi || context.FeatureTier < CodexFeatureTier.Baseline)
+        if (!context.ExperimentalApi)
         {
-            throw new InvalidOperationException("Workspace switching requires Codex CLI 0.166 or later and Experimental API.");
+            throw new InvalidOperationException("Workspace switching requires the Experimental API to be enabled.");
         }
 
         return context;

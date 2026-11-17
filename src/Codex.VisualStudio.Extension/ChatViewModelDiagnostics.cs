@@ -6,8 +6,8 @@ using Microsoft.VisualStudio.Extensibility.Shell;
 
 namespace Codex.VisualStudio.Extension;
 
-// "Save diagnostic ZIP" through feedback/save (0.164 tier). The server writes the file on its own
-// host and never overwrites one, so the save is sent once and never resent automatically.
+// "Save diagnostic ZIP" through feedback/save. The server writes the file on its own host and never
+// overwrites one, so the save is sent once and never resent automatically.
 public sealed partial class ChatViewModel
 {
     internal enum DiagnosticsSaveChoice
@@ -17,12 +17,6 @@ public sealed partial class ChatViewModel
         WithLogs,
     }
 
-    private const string DiagnosticsTierRequiredText =
-        "Saving a diagnostic ZIP requires Codex CLI 0.164.0 or later.";
-
-    private const string DoctorTierRequiredText =
-        "Network diagnostics require Codex CLI 0.166.0 or later.";
-
     private const int MaximumDoctorOutputCharacters = 32 * 1024;
 
     // Tests replace the Visual Studio prompt; production uses the shell prompt.
@@ -31,12 +25,6 @@ public sealed partial class ChatViewModel
     private async Task<bool> ExecuteDiagnosticsAsync(string arguments, string? threadId)
     {
         OwnerSnapshot owner = CaptureOwnerSnapshot();
-        if (Status.FeatureTier < CodexFeatureTier.Baseline)
-        {
-            await ShowSlashFailureAsync(DiagnosticsTierRequiredText).ConfigureAwait(false);
-            return false;
-        }
-
         bool remote = IsRemoteTarget;
         string? savePath;
         if (remote)
@@ -104,7 +92,7 @@ public sealed partial class ChatViewModel
 
         if (!result.IsSupported)
         {
-            await ShowSlashFailureAsync(result.UnavailableReason ?? DiagnosticsTierRequiredText).ConfigureAwait(false);
+            await ShowSlashFailureAsync(result.UnavailableReason ?? "The app-server does not support saving a diagnostic ZIP.").ConfigureAwait(false);
             return false;
         }
 
@@ -130,12 +118,6 @@ public sealed partial class ChatViewModel
     private async Task<bool> ExecuteDoctorAsync()
     {
         OwnerSnapshot owner = CaptureOwnerSnapshot();
-        if (Status.FeatureTier < CodexFeatureTier.Baseline)
-        {
-            await ShowSlashFailureAsync(DoctorTierRequiredText).ConfigureAwait(false);
-            return false;
-        }
-
         await ShowSlashStatusAsync("Checking network access with codex doctor.").ConfigureAwait(false);
         NetworkDiagnosticsResult result = await bridge.RunNetworkDiagnosticsAsync(
             StampOwner(new RunNetworkDiagnosticsRequest(), owner),
@@ -147,7 +129,7 @@ public sealed partial class ChatViewModel
 
         if (!result.IsSupported)
         {
-            await ShowSlashFailureAsync(result.UnavailableReason ?? DoctorTierRequiredText).ConfigureAwait(false);
+            await ShowSlashFailureAsync(result.UnavailableReason ?? "Network diagnostics are unavailable for this connection.").ConfigureAwait(false);
             return false;
         }
 

@@ -6196,22 +6196,6 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             isAvailable = false;
             unavailableReason = "The selected model did not report a fast service tier.";
         }
-        else if (definition.Id == SlashCommandId.Presets && IsPresetsConnectionReady && !ArePresetsAvailable)
-        {
-            isAvailable = false;
-            unavailableReason = PresetsTierRequiredText;
-        }
-        else if (definition.Id == SlashCommandId.Diagnostics && IsPresetsConnectionReady && !ArePresetsAvailable)
-        {
-            isAvailable = false;
-            unavailableReason = DiagnosticsTierRequiredText;
-        }
-        else if (definition.Id == SlashCommandId.Doctor && IsPresetsConnectionReady && Status.FeatureTier < CodexFeatureTier.Baseline)
-        {
-            isAvailable = false;
-            unavailableReason = DoctorTierRequiredText;
-        }
-
         string argumentHint = definition.Id switch
         {
             SlashCommandId.Feedback => "Feedback reason",
@@ -9655,7 +9639,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
     {
         string? threadId = SelectedThread?.Id;
         ThreadUsageResult? result = null;
-        if (threadId is not null && Status.FeatureTier >= CodexFeatureTier.Baseline)
+        if (threadId is not null)
         {
             try
             {

@@ -20,7 +20,7 @@ public sealed partial class ViewModelTests
     }
 
     [TestMethod]
-    public async Task Resume_Tier164AppliesSavedSettingsWithNullMeaningDefaults()
+    public async Task Resume_AppliesSavedSettingsWithNullMeaningDefaults()
     {
         FakeWorkerBridge bridge = CreateModelCommandBridge();
         bridge.ResumeThreadHandler = (request, _) => Task.FromResult(new ThreadSummary
@@ -45,30 +45,7 @@ public sealed partial class ViewModelTests
     }
 
     [TestMethod]
-    public async Task Resume_OlderTierKeepsComposerSettings()
-    {
-        FakeWorkerBridge bridge = CreateModelCommandBridge();
-        bridge.ResumeThreadHandler = (request, _) => Task.FromResult(new ThreadSummary
-        {
-            Id = request.ThreadId,
-            EffectiveModelId = "model-b",
-            EffectiveReasoningEffort = "high",
-        });
-        using ChatViewModel vm = await CreateJoinableViewModelAsync(
-            bridge,
-            CodexFeatureTier.Baseline,
-            new ExtensionSettings { ServiceTierId = "priority" });
-
-        await RunCommandAsync(vm.JoinThreadCommand);
-        await SendMessageAsync(vm, "hello", clearComposer: false);
-
-        Assert.AreEqual("model-a", vm.SelectedModel);
-        Assert.AreEqual("priority", bridge.LastStartTurnRequest!.ServiceTier);
-        Assert.AreEqual("high", vm.SelectedThread!.EffectiveReasoningEffort);
-    }
-
-    [TestMethod]
-    public async Task Resume_OlderTierFailureMentionsCompressedHistories()
+    public async Task Resume_FailureDoesNotMentionACliVersion()
     {
         var bridge = new FakeWorkerBridge
         {
@@ -80,13 +57,13 @@ public sealed partial class ViewModelTests
         await RunCommandAsync(vm.JoinThreadCommand);
 
         StringAssert.Contains(vm.HistoryStatusText, "history could not be loaded");
-        StringAssert.Contains(vm.HistoryStatusText, "0.164.0");
+        Assert.IsFalse(vm.HistoryStatusText.Contains("Codex CLI", StringComparison.Ordinal));
         Assert.IsFalse(vm.IsThreadJoined);
         Assert.AreEqual("thread-saved", vm.SelectedThread?.Id, "The history row stays selected.");
     }
 
     [TestMethod]
-    public async Task Resume_OlderTierConnectionFailureMentionsCompressedHistories()
+    public async Task Resume_ConnectionFailureDoesNotMentionACliVersion()
     {
         var bridge = new FakeWorkerBridge
         {
@@ -97,7 +74,7 @@ public sealed partial class ViewModelTests
         await RunCommandAsync(vm.JoinThreadCommand);
 
         StringAssert.Contains(vm.HistoryStatusText, "the connection closed");
-        StringAssert.Contains(vm.HistoryStatusText, "0.164.0");
+        Assert.IsFalse(vm.HistoryStatusText.Contains("Codex CLI", StringComparison.Ordinal));
         Assert.IsFalse(vm.IsThreadJoined);
     }
 
@@ -156,19 +133,6 @@ public sealed partial class ViewModelTests
             bridge,
             autoConnect: false,
             filePickerService: new FakeFilePickerService([], savePath));
-
-    [TestMethod]
-    public async Task Diagnostics_BelowTier164IsExplainedWithoutRequest()
-    {
-        var bridge = new FakeWorkerBridge();
-        using ChatViewModel vm = CreateDiagnosticsViewModel(bridge, Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N") + ".zip"));
-        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready, FeatureTier = CodexFeatureTier.Unsupported });
-
-        await RunComposerAsync(vm, "/diagnostics");
-
-        Assert.AreEqual(0, bridge.SaveFeedbackRequests.Count);
-        Assert.IsTrue(vm.Items.Any(item => item.Text.Contains("0.164.0", StringComparison.Ordinal)));
-    }
 
     [TestMethod]
     public async Task Diagnostics_LocalSaveUsesPickerAndExcludesLogsByDefault()

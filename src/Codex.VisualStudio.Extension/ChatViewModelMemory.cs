@@ -42,8 +42,7 @@ public sealed partial class ChatViewModel
     }
     [DataMember]
     public bool IsConversationMemoryFeatureAvailable
-        => Status.FeatureTier >= CodexFeatureTier.Baseline
-            && Status.Target?.ExperimentalApi == true;
+        => Status.Target?.ExperimentalApi == true;
 
     [DataMember]
     public bool IsConversationMemoryOpen

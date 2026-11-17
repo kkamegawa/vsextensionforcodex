@@ -17,23 +17,16 @@ public partial interface ICodexSessionService
         => throw new NotSupportedException();
 }
 
-// 0.164.0 operations: diagnostic ZIP saving and presets shared with the CLI through tui.presets.
+// Diagnostic ZIP saving and presets shared with the CLI through tui.presets.
 public sealed partial class CodexSessionService
 {
     private const int MaxSavePathLength = 1024;
     private const int MaxPresetLabelLength = 256;
     private const string PresetKeyPrefix = "tui.presets.";
 
-    private const string Tier164Required = "This feature requires Codex CLI 0.164.0 or later.";
-
     public async Task<SaveFeedbackResult> SaveFeedbackAsync(SaveFeedbackRequest request, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(request);
-        if (RequireContext().FeatureTier < CodexFeatureTier.Baseline)
-        {
-            return Unsupported<SaveFeedbackResult>(Tier164Required);
-        }
-
         ValidateFeedbackClassification(request.Classification);
         ValidateFeedbackReason(request.Reason);
         string savePath = request.SavePath?.Trim() ?? string.Empty;
@@ -98,11 +91,6 @@ public sealed partial class CodexSessionService
 
     public async Task<ListPresetsResult> ListPresetsAsync(CancellationToken cancellationToken)
     {
-        if (RequireContext().FeatureTier < CodexFeatureTier.Baseline)
-        {
-            return Unsupported<ListPresetsResult>(Tier164Required);
-        }
-
         PresetLayers? layers = await ReadPresetLayersAsync(cancellationToken).ConfigureAwait(false);
         if (layers is null)
         {
@@ -119,11 +107,6 @@ public sealed partial class CodexSessionService
     public async Task<WritePresetResult> WritePresetAsync(WritePresetRequest request, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(request);
-        if (RequireContext().FeatureTier < CodexFeatureTier.Baseline)
-        {
-            return Unsupported<WritePresetResult>(Tier164Required);
-        }
-
         if (!PresetRules.IsSlot(request.Slot))
         {
             return Rejected("The preset slot must be 1 through 9 or 0.");

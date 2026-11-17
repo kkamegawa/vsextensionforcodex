@@ -804,22 +804,9 @@ public sealed partial class CodexSessionService
             AddServerPathPart(context, parts, GetString(item, "path"), ArtifactPartKind.Image,
                 [ArtifactActionKind.Preview, ArtifactActionKind.Open, ArtifactActionKind.Reveal]);
         }
-        else if (itemType == "imageGeneration" && context.FeatureTier >= CodexFeatureTier.Baseline)
-        {
-            ProjectGeneratedImage(context, parts, item);
-        }
         else if (itemType == "imageGeneration")
         {
-            string? savedPath = GetString(item, "savedPath");
-            if (savedPath is not null)
-            {
-                AddServerPathPart(context, parts, savedPath, ArtifactPartKind.Image,
-                    [ArtifactActionKind.Preview, ArtifactActionKind.Open, ArtifactActionKind.Reveal]);
-            }
-            else
-            {
-                AddImageGenerationFallback(context, parts, GetString(item, "result"));
-            }
+            ProjectGeneratedImage(context, parts, item);
         }
         else if (itemType == "fileChange")
         {
@@ -1068,10 +1055,10 @@ public sealed partial class CodexSessionService
         string? encoded = mimeType == "image/png" ? result![pngPrefix.Length..]
             : mimeType == "image/jpeg" ? result![jpegPrefix.Length..]
             : null;
-        if (encoded is null && context.FeatureTier >= CodexFeatureTier.Baseline && result is not null)
+        if (encoded is null && result is not null)
         {
-            // 0.164.0 sends raw standard Base64. The leading characters identify the format;
-            // AddInlineImagePart still bounds the size and verifies the decoded signature.
+            // Raw standard Base64 is identified by its leading characters; AddInlineImagePart
+            // still bounds the size and verifies the decoded signature.
             mimeType = result.StartsWith("iVBORw0KGgo", StringComparison.Ordinal) ? "image/png"
                 : result.StartsWith("/9j/", StringComparison.Ordinal) ? "image/jpeg"
                 : null;

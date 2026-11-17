@@ -4,13 +4,10 @@ using Codex.VisualStudio.Contracts;
 
 namespace Codex.VisualStudio.Extension;
 
-// Presets shared with the Codex CLI through the connected server's tui.presets (0.164 tier only).
+// Presets shared with the Codex CLI through the connected server's tui.presets.
 // Recall copies a preset into the composer and never sends it.
 public sealed partial class ChatViewModel
 {
-    private const string PresetsTierRequiredText =
-        "Presets require Codex CLI 0.164.0 or later. Update Codex CLI and reconnect to use presets.";
-
     private enum PresetConfirmationKind
     {
         None,
@@ -44,13 +41,7 @@ public sealed partial class ChatViewModel
     }
 
     [DataMember]
-    public bool ArePresetsAvailable => Status.FeatureTier >= CodexFeatureTier.Baseline;
-
-    [DataMember]
-    public bool ShowPresetsTierNotice => IsPresetsPanelOpen && IsPresetsConnectionReady && !ArePresetsAvailable;
-
-    [DataMember]
-    public string PresetsTierNoticeText { get; } = PresetsTierRequiredText;
+    public bool ArePresetsAvailable => IsPresetsConnectionReady;
 
     [DataMember]
     public bool ShowPresetSlots => IsPresetsPanelOpen && ArePresetsAvailable && PresetSlots.Count > 0;
@@ -226,7 +217,7 @@ public sealed partial class ChatViewModel
             IsPresetsLoading = false;
             if (result is null || !result.IsSupported)
             {
-                PresetsStatusText = ToSafePresetStatus(failure ?? result?.UnavailableReason ?? PresetsTierRequiredText);
+                PresetsStatusText = ToSafePresetStatus(failure ?? result?.UnavailableReason ?? "Could not load presets.");
             }
             else
             {
@@ -430,7 +421,7 @@ public sealed partial class ChatViewModel
             }
             else if (!result.IsSupported)
             {
-                PresetsStatusText = ToSafePresetStatus(result.UnavailableReason ?? PresetsTierRequiredText);
+                PresetsStatusText = ToSafePresetStatus(result.UnavailableReason ?? "Could not update presets.");
             }
             else
             {
@@ -501,7 +492,8 @@ public sealed partial class ChatViewModel
     // Slots and the user-layer version belong to one connection and are never reused across one.
     private void OnPresetsStatusChanged(long? previousGeneration, WorkerStatus value)
     {
-        if (previousGeneration != value.Target?.Generation || value.FeatureTier < CodexFeatureTier.Baseline)
+        if (previousGeneration != value.Target?.Generation
+            || value.State is not (WorkerConnectionState.Ready or WorkerConnectionState.Busy or WorkerConnectionState.WaitingForApproval))
         {
             ResetPresets();
         }
@@ -523,7 +515,6 @@ public sealed partial class ChatViewModel
     private void RaisePresetStates()
     {
         OnPropertyChanged(nameof(ArePresetsAvailable));
-        OnPropertyChanged(nameof(ShowPresetsTierNotice));
         OnPropertyChanged(nameof(ShowPresetSlots));
         ClosePresetsCommand?.RaiseCanExecuteChanged();
         RefreshPresetsCommand?.RaiseCanExecuteChanged();

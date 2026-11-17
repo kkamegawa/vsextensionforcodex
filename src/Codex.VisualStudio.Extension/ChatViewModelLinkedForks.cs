@@ -82,8 +82,7 @@ public sealed partial class ChatViewModel
 
     [DataMember]
     public bool IsLinkedForkFeatureAvailable
-        => Status.FeatureTier >= CodexFeatureTier.Baseline
-            && Status.Target?.ExperimentalApi == true;
+        => Status.Target?.ExperimentalApi == true;
 
     [DataMember]
     public string LinkedForkStatusText

@@ -634,15 +634,6 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             throw new UnsupportedCodexVersionException(DescribeUnsupportedVersion(detectedVersion, context.IsLocal));
         }
 
-        if (context.IsLocal
-            && context.SandboxBackend == WindowsSandboxBackendPreference.DisableMxc
-            && featureTier < CodexFeatureTier.Baseline)
-        {
-            await RetireRejectedConnectionAsync(context).ConfigureAwait(false);
-            throw new InvalidOperationException(
-                $"The local MXC opt-out requires Codex CLI 0.163.0 or later; detected {detectedVersion}. Update Codex and connect again.");
-        }
-
         context.FeatureTier = featureTier;
         FeatureTier = featureTier;
         IsNewerThanVerifiedVersion = detectedVersion!.IsNewerThanTarget;
@@ -1336,10 +1327,9 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
     public async Task<ThreadSummary> StartThreadAsync(CancellationToken cancellationToken)
     {
         ConnectionContext context = RequireContext();
-        object parameters = context.FeatureTier >= CodexFeatureTier.Baseline
-            && context.ExperimentalApi
-                ? new { cwd = MapLocalPathForServer(options.WorkingDirectory), historyMode = "paginated" }
-                : new { cwd = MapLocalPathForServer(options.WorkingDirectory) };
+        object parameters = context.ExperimentalApi
+            ? new { cwd = MapLocalPathForServer(options.WorkingDirectory), historyMode = "paginated" }
+            : new { cwd = MapLocalPathForServer(options.WorkingDirectory) };
         JsonElement result = await SendAsync("thread/start", parameters, cancellationToken).ConfigureAwait(false);
         effectiveThreadPermissions = ReadEffectiveThreadPermissions(result);
         ReadEffectiveTurnSettings(result, out string? reasoningEffort, out string? serviceTier);
@@ -1374,7 +1364,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
                 cancellationToken).ConfigureAwait(false);
             EnsureCurrent(context);
             AccountStatus status = ReadAccountStatus(result);
-            if (context.ExperimentalApi && context.FeatureTier >= CodexFeatureTier.Baseline)
+            if (context.ExperimentalApi)
             {
                 status = await PopulateWorkspaceNameAsync(context, status, cancellationToken).ConfigureAwait(false);
             }
@@ -1556,8 +1546,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         effectiveThreadModelId = summary.EffectiveModelId ?? ReadEffectiveModelId(result);
         summary.EffectiveModelId = effectiveThreadModelId;
         activeThreadInheritsDefaultModel = false;
-        // 0.164.0 restores the saved thread settings on resume; older servers report defaults.
-        summary.HasAuthoritativeTurnSettings = RequireContext().FeatureTier >= CodexFeatureTier.Baseline;
+        summary.HasAuthoritativeTurnSettings = true;
         return summary;
     }
 
@@ -2358,14 +2347,13 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         CancellationToken cancellationToken)
     {
         ConnectionContext context = RequireContext();
-        bool linkedForkAvailable = context.FeatureTier >= CodexFeatureTier.Baseline
-            && context.ExperimentalApi;
+        bool linkedForkAvailable = context.ExperimentalApi;
         if ((request.CreateLinkedFork || request.ListLinkedForks) && !linkedForkAvailable)
         {
             return new ForkThreadResult
             {
                 IsSupported = false,
-                UnavailableReason = "Linked conversations require a 0.166 or later App Server with Experimental API enabled.",
+                UnavailableReason = "Linked conversations require Experimental API to be enabled.",
             };
         }
 
@@ -2548,7 +2536,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
 
         return new McpServerListResult
         {
-            Servers = ReadMcpServers(call.Result, RequireContext().FeatureTier >= CodexFeatureTier.Baseline),
+            Servers = ReadMcpServers(call.Result),
         };
     }
 
@@ -2769,11 +2757,6 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
 
     public async Task<ThreadUsageResult> GetThreadUsageAsync(string threadId, CancellationToken cancellationToken)
     {
-        if (RequireContext().FeatureTier < CodexFeatureTier.Baseline)
-        {
-            return Unsupported<ThreadUsageResult>("Conversation usage amounts require Codex CLI 0.166.0 or later.");
-        }
-
         OperationCallResult call = await TrySendOperationAsync(
             "account/usage/read",
             new { threadId },
@@ -2800,11 +2783,6 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
     public async Task<NetworkDiagnosticsResult> RunNetworkDiagnosticsAsync(CancellationToken cancellationToken)
     {
         ConnectionContext context = RequireContext();
-        if (context.FeatureTier < CodexFeatureTier.Baseline)
-        {
-            return Unsupported<NetworkDiagnosticsResult>("Network diagnostics require Codex CLI 0.166.0 or later.");
-        }
-
         if (!context.IsLocal)
         {
             return new NetworkDiagnosticsResult { RequiresServerRun = true };
@@ -5258,7 +5236,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             builder.Append(value.Length).Append(':').Append(value).Append('\0');
         }
 
-        string? workspaceId = context.ExperimentalApi && context.FeatureTier >= CodexFeatureTier.Baseline
+        string? workspaceId = context.ExperimentalApi
             ? ReadWorkspaceAccountId(result)
             : null;
         if (!string.IsNullOrWhiteSpace(workspaceId))
@@ -5979,7 +5957,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
     private const int MaxMcpToolsErrorLength = 512;
 
     // toolListMeta is opaque server metadata and is deliberately never read.
-    internal IReadOnlyList<McpServerStatusInfo> ReadMcpServers(JsonElement result, bool includeRuntimeDetails)
+    internal IReadOnlyList<McpServerStatusInfo> ReadMcpServers(JsonElement result)
     {
         if (!result.TryGetProperty("data", out JsonElement data) || data.ValueKind != JsonValueKind.Array)
         {
@@ -6018,10 +5996,10 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
                 ResourceTemplateCount = GetArrayLength(server, "resourceTemplates"),
                 HttpOrigin = ReadHttpOrigin(server),
                 ServerCapabilities = ReadMcpServerCapabilities(server),
-                HasRuntimeDetails = includeRuntimeDetails,
-                RuntimeStatus = includeRuntimeDetails ? ReadMcpRuntimeStatus(server) : McpRuntimeStatus.Unknown,
+                HasRuntimeDetails = true,
+                RuntimeStatus = ReadMcpRuntimeStatus(server),
                 ToolCount = tools.Count,
-                ToolsError = includeRuntimeDetails ? ReadMcpToolsError(server) : null,
+                ToolsError = ReadMcpToolsError(server),
             });
         }
 
