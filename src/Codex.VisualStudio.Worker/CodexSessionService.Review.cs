@@ -200,7 +200,7 @@ public sealed partial class CodexSessionService
         parameters["cwd"] = serverPath;
 
         // Same storage as an ordinary new conversation, so the review can be a linked-fork source.
-        if (context.FeatureTier >= CodexFeatureTier.Tier166 && context.ExperimentalApi)
+        if (context.FeatureTier >= CodexFeatureTier.Baseline && context.ExperimentalApi)
         {
             parameters["historyMode"] = "paginated";
         }

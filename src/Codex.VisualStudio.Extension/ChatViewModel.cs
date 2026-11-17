@@ -6206,7 +6206,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             isAvailable = false;
             unavailableReason = DiagnosticsTierRequiredText;
         }
-        else if (definition.Id == SlashCommandId.Doctor && IsPresetsConnectionReady && Status.FeatureTier < CodexFeatureTier.Tier166)
+        else if (definition.Id == SlashCommandId.Doctor && IsPresetsConnectionReady && Status.FeatureTier < CodexFeatureTier.Baseline)
         {
             isAvailable = false;
             unavailableReason = DoctorTierRequiredText;
@@ -9655,7 +9655,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
     {
         string? threadId = SelectedThread?.Id;
         ThreadUsageResult? result = null;
-        if (threadId is not null && Status.FeatureTier >= CodexFeatureTier.Tier166)
+        if (threadId is not null && Status.FeatureTier >= CodexFeatureTier.Baseline)
         {
             try
             {

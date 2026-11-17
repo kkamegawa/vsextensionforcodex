@@ -16,7 +16,7 @@ public sealed partial class CodexSessionService
     {
         ValidateHistoryId(threadId, nameof(threadId));
         ConnectionContext context = RequireContext();
-        if (context.FeatureTier < CodexFeatureTier.Tier165 || !context.ExperimentalApi)
+        if (context.FeatureTier < CodexFeatureTier.Baseline || !context.ExperimentalApi)
         {
             return new ThreadMemoryResult
             {

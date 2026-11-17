@@ -11,7 +11,7 @@ public sealed partial class ViewModelTests
     private static readonly string[] WorktreeFolders = [@"C:\repo", @"C:\repo-wt"];
     private static readonly string[] OpaqueOptionIds = ["opaque-id"];
 
-    private static async Task<ChatViewModel> CreateJoinedViewModelAsync(FakeWorkerBridge bridge, CodexFeatureTier tier = CodexFeatureTier.Tier166)
+    private static async Task<ChatViewModel> CreateJoinedViewModelAsync(FakeWorkerBridge bridge, CodexFeatureTier tier = CodexFeatureTier.Baseline)
     {
         var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()))
         {
@@ -474,7 +474,7 @@ public sealed partial class ViewModelTests
     public async Task Doctor_RequiresTier166()
     {
         var bridge = new FakeWorkerBridge();
-        using ChatViewModel vm = await CreateJoinedViewModelAsync(bridge, CodexFeatureTier.Tier165);
+        using ChatViewModel vm = await CreateJoinedViewModelAsync(bridge, CodexFeatureTier.Unsupported);
 
         await RunComposerAsync(vm, "/doctor");
         await WaitForAsync(() => vm.Items.Any(item => item.Text.Contains("0.166.0", StringComparison.Ordinal)));

@@ -142,7 +142,7 @@ public sealed partial class ChatViewModel
             message = string.Concat(message.AsSpan(0, 512), "…");
         }
 
-        return Status.FeatureTier < CodexFeatureTier.Tier164
+        return Status.FeatureTier < CodexFeatureTier.Baseline
             ? $"The conversation could not be resumed: {message} {CompressedHistoryResumeNote}"
             : $"The conversation could not be resumed: {message}";
     }

@@ -33,7 +33,7 @@ public sealed partial class ViewModelTests
         });
         using ChatViewModel vm = await CreateJoinableViewModelAsync(
             bridge,
-            CodexFeatureTier.Tier164,
+            CodexFeatureTier.Baseline,
             new ExtensionSettings { ReasoningEffortId = "low", ServiceTierId = "priority" });
 
         await RunCommandAsync(vm.JoinThreadCommand);
@@ -56,7 +56,7 @@ public sealed partial class ViewModelTests
         });
         using ChatViewModel vm = await CreateJoinableViewModelAsync(
             bridge,
-            CodexFeatureTier.Tier163,
+            CodexFeatureTier.Baseline,
             new ExtensionSettings { ServiceTierId = "priority" });
 
         await RunCommandAsync(vm.JoinThreadCommand);
@@ -75,7 +75,7 @@ public sealed partial class ViewModelTests
             ResumeThreadHandler = (_, _) => Task.FromException<ThreadSummary>(
                 new StreamJsonRpc.RemoteInvocationException("history could not be loaded", -32000, errorData: null)),
         };
-        using ChatViewModel vm = await CreateJoinableViewModelAsync(bridge, CodexFeatureTier.Tier163);
+        using ChatViewModel vm = await CreateJoinableViewModelAsync(bridge, CodexFeatureTier.Unsupported);
 
         await RunCommandAsync(vm.JoinThreadCommand);
 
@@ -92,7 +92,7 @@ public sealed partial class ViewModelTests
         {
             ResumeThreadHandler = (_, _) => Task.FromException<ThreadSummary>(new IOException("the connection closed")),
         };
-        using ChatViewModel vm = await CreateJoinableViewModelAsync(bridge, CodexFeatureTier.Tier163);
+        using ChatViewModel vm = await CreateJoinableViewModelAsync(bridge, CodexFeatureTier.Unsupported);
 
         await RunCommandAsync(vm.JoinThreadCommand);
 
@@ -162,7 +162,7 @@ public sealed partial class ViewModelTests
     {
         var bridge = new FakeWorkerBridge();
         using ChatViewModel vm = CreateDiagnosticsViewModel(bridge, Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N") + ".zip"));
-        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready, FeatureTier = CodexFeatureTier.Tier163 });
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready, FeatureTier = CodexFeatureTier.Unsupported });
 
         await RunComposerAsync(vm, "/diagnostics");
 
