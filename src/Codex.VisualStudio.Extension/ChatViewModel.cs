@@ -85,7 +85,6 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
     // The turn's agent messages in arrival order, bounded so a long turn cannot grow memory unbounded.
     private readonly BoundedOrderedMap<string, StringBuilder> agentRawText = new(MaximumEarlierAgentMessages + 1, StringComparer.Ordinal);
     private readonly Dictionary<string, StringBuilder> itemRawText = new(StringComparer.Ordinal);
-    private static readonly Regex HeaderWhitespace = new(@"\s+", RegexOptions.Compiled | RegexOptions.CultureInvariant);
     private InteractionAuthStatus? interactionAuthStatus;
     private string? lastAgentRawKey;
     private int disposed;
@@ -754,7 +753,10 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
     }
 
     private string ToSafeHeaderText(string? value)
-        => HeaderWhitespace.Replace(markdown.ToSafeText(value ?? string.Empty), " ").Trim();
+        => HeaderWhitespace().Replace(markdown.ToSafeText(value ?? string.Empty), " ").Trim();
+
+    [GeneratedRegex(@"\s+", RegexOptions.CultureInvariant)]
+    private static partial Regex HeaderWhitespace();
 
     private OwnerSnapshot CaptureOwnerSnapshot()
     {
@@ -9956,7 +9958,7 @@ public sealed class SuggestionChip
 }
 
 [DataContract]
-public sealed class ChatItemViewModel : ObservableObject
+public sealed partial class ChatItemViewModel : ObservableObject
 {
     internal const int CommandPreviewLineLimit = 3;
     internal const int CommandPreviewCharacterLimit = 4 * 1024;
@@ -10532,10 +10534,7 @@ public sealed class ChatItemViewModel : ObservableObject
     }
 
     // Matches a JSON string property: "fieldName":"value" (handles \" and \\ escapes inside value).
-    private static readonly Regex TitlePattern = new(@"""title""\s*:\s*""((?:[^\\""]|\\.)*)""", RegexOptions.Compiled | RegexOptions.CultureInvariant);
-    private static readonly Regex DescriptionPattern = new(@"""description""\s*:\s*""((?:[^\\""]|\\.)*)""", RegexOptions.Compiled | RegexOptions.CultureInvariant);
-    private static readonly Regex TextFieldPattern = new(@"""text""\s*:\s*""((?:[^\\""]|\\.)*)""", RegexOptions.Compiled | RegexOptions.CultureInvariant);
-    private static readonly Regex[] StepFieldPatterns = [TitlePattern, DescriptionPattern, TextFieldPattern];
+    private static readonly Regex[] StepFieldPatterns = [TitlePattern(), DescriptionPattern(), TextFieldPattern()];
 
     public static IReadOnlyList<string> ParsePlanSteps(string? payloadJson)
     {
@@ -10555,6 +10554,15 @@ public sealed class ChatItemViewModel : ObservableObject
         }
         return [];
     }
+
+    [GeneratedRegex(@"""title""\s*:\s*""((?:[^\\""]|\\.)*)""", RegexOptions.CultureInvariant)]
+    private static partial Regex TitlePattern();
+
+    [GeneratedRegex(@"""description""\s*:\s*""((?:[^\\""]|\\.)*)""", RegexOptions.CultureInvariant)]
+    private static partial Regex DescriptionPattern();
+
+    [GeneratedRegex(@"""text""\s*:\s*""((?:[^\\""]|\\.)*)""", RegexOptions.CultureInvariant)]
+    private static partial Regex TextFieldPattern();
 }
 
 [DataContract]
