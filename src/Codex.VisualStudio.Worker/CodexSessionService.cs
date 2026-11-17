@@ -2075,7 +2075,6 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             parameters["effort"] = request.Effort;
         }
 
-        AddOptional(parameters, "personality", request.Personality);
         if (request.HasServiceTier)
         {
             parameters["serviceTier"] = request.ServiceTier;
@@ -5553,7 +5552,6 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             AvailableAccessPrograms = ReadModelAccessPrograms(model),
             DefaultReasoningEffort = NormalizeWireIdentifier(GetString(model, "defaultReasoningEffort")),
             SupportedReasoningEfforts = ReadReasoningEfforts(model),
-            SupportsPersonality = GetBool(model, "supportsPersonality") == true,
             DefaultServiceTier = NormalizeWireIdentifier(GetString(model, "defaultServiceTier")),
             ServiceTiers = ReadServiceTiers(model),
         };

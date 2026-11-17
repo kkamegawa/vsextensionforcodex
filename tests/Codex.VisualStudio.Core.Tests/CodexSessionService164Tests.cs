@@ -133,6 +133,7 @@ public sealed partial class CodexSessionServiceTests
         using JsonDocument save = JsonDocument.Parse(JsonSerializer.Serialize(writes[0], wireOptions));
         JsonElement edit = save.RootElement.GetProperty("edits").EnumerateArray().Single();
         Assert.AreEqual("tui.presets.7", edit.GetProperty("keyPath").GetString());
+        Assert.IsFalse(edit.GetProperty("keyPath").GetString() is "features.multi_agent" or "agents.enabled");
         Assert.AreEqual("replace", edit.GetProperty("mergeStrategy").GetString());
         Assert.AreEqual("Explain this file", edit.GetProperty("value").GetProperty("input").GetString());
         Assert.AreEqual(string.Empty, edit.GetProperty("value").GetProperty("label").GetString(), "A missing label is written as an explicit empty string.");
@@ -140,6 +141,7 @@ public sealed partial class CodexSessionServiceTests
         using JsonDocument delete = JsonDocument.Parse(JsonSerializer.Serialize(writes[1], wireOptions));
         JsonElement deleteEdit = delete.RootElement.GetProperty("edits").EnumerateArray().Single();
         Assert.AreEqual("tui.presets.1", deleteEdit.GetProperty("keyPath").GetString());
+        Assert.IsFalse(deleteEdit.GetProperty("keyPath").GetString() is "features.multi_agent" or "agents.enabled");
         Assert.IsTrue(deleteEdit.TryGetProperty("value", out JsonElement deleteValue), "A delete must send an explicit null value.");
         Assert.AreEqual(JsonValueKind.Null, deleteValue.ValueKind);
     }

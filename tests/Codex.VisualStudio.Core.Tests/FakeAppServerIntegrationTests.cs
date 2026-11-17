@@ -53,6 +53,61 @@ public sealed class FakeAppServerIntegrationTests
         Assert.AreEqual(JsonValueKind.Null, amounts.GetProperty("estimatedUsageUsdMicros").ValueKind);
     }
 
+    [TestMethod]
+    public async Task Fake167ProtocolReplayRetainsRolledBackTurnsAndTerminalErrors()
+    {
+        await using FakeAppServerProcess server = await FakeAppServerProcess.StartAsync("Issue292");
+        await using JsonLineRpcConnection connection = await server.ConnectAsync();
+        await using var service = new CodexSessionService(new ApprovalPolicyEngine(new PathAccessPolicy()), new SecretRedactor());
+        var terminalEvents = new System.Collections.Concurrent.ConcurrentQueue<ConversationEvent>();
+        var terminalEventsReceived = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        service.ConversationEventReceived += (value, _) =>
+        {
+            if (value.ErrorReason is not null)
+            {
+                terminalEvents.Enqueue(value);
+                if (terminalEvents.Count == 2)
+                {
+                    terminalEventsReceived.TrySetResult();
+                }
+            }
+
+            return Task.CompletedTask;
+        };
+        await service.InitializeAsync(connection, new WorkerOptions
+        {
+            ExperimentalApi = true,
+            WorkingDirectory = Environment.CurrentDirectory,
+            ExtensionVersion = "issue-292-integration-test",
+        }, CancellationToken.None);
+
+        ThreadSummary started = await service.StartThreadAsync(CancellationToken.None);
+        Assert.AreEqual("read-only", started.EffectiveApprovalState!.ActivePermissionProfile);
+        ThreadSummary resumed = await service.ResumeThreadAsync(started.Id, CancellationToken.None);
+        Assert.AreEqual("read-only", resumed.EffectiveApprovalState!.ActivePermissionProfile);
+
+        _ = await service.StartTurnAsync(new StartTurnRequest
+        {
+            ThreadId = started.Id,
+            Text = "exercise terminal errors",
+            Model = "gpt-5.1-codex-max",
+        }, CancellationToken.None);
+        await terminalEventsReceived.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.IsTrue(terminalEvents.Any(value => value.ErrorReason == "sessionBudgetExceeded" && value.Text is not null));
+        Assert.IsTrue(terminalEvents.Any(value => value.ErrorReason == "inferenceHookDenied" && value.Text is not null));
+        Assert.AreEqual("read-only", service.EffectiveApprovalState!.ActivePermissionProfile);
+
+        ThreadTurnsPage history = await service.ListThreadTurnsAsync(started.Id, cursor: null, limit: 10, CancellationToken.None);
+        Assert.AreEqual("rolledBack", history.Turns[0].Status);
+        Assert.AreEqual("sessionBudgetExceeded", history.Turns[1].ErrorReason);
+        Assert.AreEqual("inferenceHookDenied", history.Turns[2].ErrorReason);
+
+        JsonElement state = await connection.SendRequestAsync("fake/goal/state", new { }, TimeSpan.FromSeconds(10), CancellationToken.None);
+        string[] methods = state.GetProperty("methods").EnumerateArray().Select(value => value.GetString()!).ToArray();
+        Assert.IsFalse(methods.Contains("thread/rollback", StringComparer.Ordinal));
+        Assert.AreEqual(1, methods.Count(method => method == "turn/start"), "Terminal errors are not automatically retried.");
+    }
+
     // Notifications may precede a response, so messages are read until the id matches.
     private static async Task<JsonDocument> ReadResponseAsync(FakeAppServerProcess server, int id)
     {
