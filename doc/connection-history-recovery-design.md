@@ -72,7 +72,7 @@ Add only thread/read, thread/turns/list, thread/items/list, and thread/attachmen
 
 ## Draft isolation and uncertain operations
 
-At the first eligible connection loss, freeze the old owner's in-memory draft as an immutable RecoveryDraft. It contains composer text, attachment descriptors needed to reconstruct the draft, selected skill identity, and next-turn model/reasoning/speed/personality choices. Keep it only while the Visual Studio surface lives. Do not store it on disk.
+At the first eligible connection loss, freeze the old owner's in-memory draft as an immutable RecoveryDraft. It contains composer text, attachment descriptors needed to reconstruct the draft, selected skill identity, and next-turn model/reasoning/speed choices. Keep it only while the Visual Studio surface lives. Do not store it on disk.
 
 The snapshot excludes credentials, token contents, cookies, approval grants/audit, pending approval or MCP answers, user-verification proofs, and other secrets. It is never copied into a replacement owner's composer automatically. Because the CLI cannot prove account continuity and reconnect requires a fresh thread list, restoration requires all of these user actions: confirm the active connection/profile, select a conversation from the refreshed list, then choose Restore draft or Discard draft.
 
