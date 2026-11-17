@@ -38,10 +38,10 @@ public sealed partial class CodexSessionService
             throw new ArgumentException("The diagnostic ZIP path must be an absolute path on the app-server host.", nameof(request));
         }
 
-        OperationCallResult call;
+        JsonElement result;
         try
         {
-            call = await TrySendOperationAsync(
+            result = await SendRequiredOperationAsync(
                 "feedback/save",
                 new
                 {
@@ -74,12 +74,7 @@ public sealed partial class CodexSessionService
             };
         }
 
-        if (!call.IsSupported)
-        {
-            return Unsupported<SaveFeedbackResult>("Saving a diagnostic ZIP is not supported by this app-server.");
-        }
-
-        string? savedPath = GetString(call.Result, "savedPath");
+        string? savedPath = GetString(result, "savedPath");
         return new SaveFeedbackResult
         {
             Outcome = SaveFeedbackOutcome.Saved,
@@ -91,11 +86,7 @@ public sealed partial class CodexSessionService
 
     public async Task<ListPresetsResult> ListPresetsAsync(CancellationToken cancellationToken)
     {
-        PresetLayers? layers = await ReadPresetLayersAsync(cancellationToken).ConfigureAwait(false);
-        if (layers is null)
-        {
-            return Unsupported<ListPresetsResult>("Reading presets is not supported by this app-server.");
-        }
+        PresetLayers layers = await ReadPresetLayersAsync(cancellationToken).ConfigureAwait(false);
 
         return new ListPresetsResult
         {
@@ -125,11 +116,7 @@ public sealed partial class CodexSessionService
         }
 
         // Re-read the layers so the edit rules hold even if the Extension's view is stale.
-        PresetLayers? layers = await ReadPresetLayersAsync(cancellationToken).ConfigureAwait(false);
-        if (layers is null)
-        {
-            return Unsupported<WritePresetResult>("Reading presets is not supported by this app-server.");
-        }
+        PresetLayers layers = await ReadPresetLayersAsync(cancellationToken).ConfigureAwait(false);
 
         if (layers.IsUserLayerVersionUnknown)
         {
@@ -167,7 +154,7 @@ public sealed partial class CodexSessionService
         };
         try
         {
-            OperationCallResult call = await TrySendOperationAsync(
+            await SendRequiredOperationAsync(
                 "config/batchWrite",
                 new
                 {
@@ -176,10 +163,6 @@ public sealed partial class CodexSessionService
                 },
                 TimeSpan.FromSeconds(30),
                 cancellationToken).ConfigureAwait(false);
-            if (!call.IsSupported)
-            {
-                return Unsupported<WritePresetResult>("Writing presets is not supported by this app-server.");
-            }
         }
         catch (JsonRpcRemoteException ex)
         {
@@ -201,14 +184,14 @@ public sealed partial class CodexSessionService
             => new() { Outcome = WritePresetOutcome.Rejected, Message = message };
     }
 
-    private async Task<PresetLayers?> ReadPresetLayersAsync(CancellationToken cancellationToken)
+    private async Task<PresetLayers> ReadPresetLayersAsync(CancellationToken cancellationToken)
     {
-        OperationCallResult call = await TrySendOperationAsync(
+        JsonElement result = await SendRequiredOperationAsync(
             "config/read",
             new { includeLayers = true, cwd = MapLocalPathForServer(options.WorkingDirectory) },
             TimeSpan.FromSeconds(30),
             cancellationToken).ConfigureAwait(false);
-        return call.IsSupported ? PresetLayers.Read(call.Result) : null;
+        return PresetLayers.Read(result);
     }
 
     private static string BoundMessage(string message)

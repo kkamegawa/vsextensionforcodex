@@ -49,7 +49,7 @@ public sealed partial class CodexSessionService
         bool goalStateKnown = false;
         try
         {
-            OperationCallResult read = await SendGoalStopOperationAsync(
+            JsonElement read = await SendGoalStopOperationAsync(
                 context,
                 "thread/goal/get",
                 request.ThreadId,
@@ -58,16 +58,7 @@ public sealed partial class CodexSessionService
                 readOnly: true,
                 cancellationToken).ConfigureAwait(false);
             EnsureGoalStopScope(context, request.ThreadId);
-            if (!read.IsSupported)
-            {
-                // Nothing was attempted: goals are unavailable on this app-server.
-                result.IsSupported = false;
-                result.UnavailableReason = "Thread goals are not supported by this app-server.";
-                result.Message = result.UnavailableReason;
-                return result;
-            }
-
-            goal = ReadOptionalGoal(read.Result);
+            goal = ReadOptionalGoal(read);
             goalStateKnown = true;
             result.Goal = goal;
         }
@@ -83,7 +74,7 @@ public sealed partial class CodexSessionService
         {
             try
             {
-                OperationCallResult pause = await SendGoalStopOperationAsync(
+                JsonElement pause = await SendGoalStopOperationAsync(
                     context,
                     "thread/goal/set",
                     request.ThreadId,
@@ -92,29 +83,18 @@ public sealed partial class CodexSessionService
                     readOnly: false,
                     cancellationToken).ConfigureAwait(false);
                 EnsureGoalStopScope(context, request.ThreadId);
-                if (!pause.IsSupported)
+                ThreadGoalInfo? pausedGoal = ReadOptionalGoal(pause);
+                if (pausedGoal is not null)
                 {
-                    // The interrupt below is still attempted, so the result stays supported and
-                    // reports the pause stage as a definitive failure.
-                    result.UnavailableReason = "Pausing thread goals is not supported by this app-server.";
-                    result.PauseOutcome = GoalStopStepOutcome.Failed;
-                    result.Message = result.UnavailableReason;
+                    result.Goal = pausedGoal;
                 }
-                else
-                {
-                    ThreadGoalInfo? pausedGoal = ReadOptionalGoal(pause.Result);
-                    if (pausedGoal is not null)
-                    {
-                        result.Goal = pausedGoal;
-                    }
 
-                    result.PauseOutcome = pausedGoal?.Status == ThreadGoalStatus.Paused
-                        ? GoalStopStepOutcome.Succeeded
-                        : GoalStopStepOutcome.OutcomeUnknown;
-                    if (result.PauseOutcome == GoalStopStepOutcome.OutcomeUnknown)
-                    {
-                        result.Message = "The app-server did not confirm that the goal was paused.";
-                    }
+                result.PauseOutcome = pausedGoal?.Status == ThreadGoalStatus.Paused
+                    ? GoalStopStepOutcome.Succeeded
+                    : GoalStopStepOutcome.OutcomeUnknown;
+                if (result.PauseOutcome == GoalStopStepOutcome.OutcomeUnknown)
+                {
+                    result.Message = "The app-server did not confirm that the goal was paused.";
                 }
             }
             catch (Exception ex) when (IsGoalStopStepFailure(ex, cancellationToken))
@@ -239,7 +219,7 @@ public sealed partial class CodexSessionService
         }
     }
 
-    private async Task<OperationCallResult> SendGoalStopOperationAsync(
+    private async Task<JsonElement> SendGoalStopOperationAsync(
         ConnectionContext context,
         string method,
         string threadId,
@@ -249,36 +229,11 @@ public sealed partial class CodexSessionService
         CancellationToken cancellationToken)
     {
         EnsureGoalStopScope(context, threadId);
-        lock (context.UnsupportedMethodsLock)
-        {
-            if (context.UnsupportedMethods.Contains(method))
-            {
-                return OperationCallResult.Unsupported;
-            }
-        }
-
-        try
-        {
-            EnsureGoalStopScope(context, threadId);
-            JsonElement response = readOnly
-                ? await context.Connection.SendReadOnlyRequestAsync(method, parameters, timeout, cancellationToken).ConfigureAwait(false)
-                : await context.Connection.SendRequestAsync(method, parameters, timeout, cancellationToken).ConfigureAwait(false);
-            EnsureCurrent(context);
-            return new OperationCallResult(true, response);
-        }
-        catch (JsonRpcRemoteException ex) when (ex.Code == -32601)
-        {
-            lock (context.UnsupportedMethodsLock)
-            {
-                if (IsCurrent(context))
-                {
-                    context.UnsupportedMethods.Add(method);
-                }
-            }
-
-            WorkerDiagnostics.Write($"app-server method disabled for this session method={method}", ex);
-            return OperationCallResult.Unsupported;
-        }
+        JsonElement response = readOnly
+            ? await context.Connection.SendReadOnlyRequestAsync(method, parameters, timeout, cancellationToken).ConfigureAwait(false)
+            : await context.Connection.SendRequestAsync(method, parameters, timeout, cancellationToken).ConfigureAwait(false);
+        EnsureCurrent(context);
+        return response;
     }
 
     private static GoalStopStepOutcome ClassifyGoalStopFailure(Exception exception)

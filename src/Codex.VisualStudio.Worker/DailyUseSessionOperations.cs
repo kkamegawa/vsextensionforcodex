@@ -619,11 +619,6 @@ public sealed partial class CodexSessionService
         }
         catch (JsonRpcRemoteException ex)
         {
-            if (ex.Code == -32601)
-            {
-                return new SavedAttachmentMutationResult { IsSupported = false, UnavailableReason = "This app-server does not support saved attachments." };
-            }
-
             return new SavedAttachmentMutationResult { Outcome = AttachmentMutationOutcome.Rejected, ErrorMessage = SafeError(ex.Message) };
         }
         catch (Exception ex)
@@ -756,11 +751,6 @@ public sealed partial class CodexSessionService
         }
         catch (JsonRpcRemoteException ex)
         {
-            if (ex.Code == -32601)
-            {
-                return new SavedAttachmentMutationResult { IsSupported = false, UnavailableReason = "This app-server does not support saved attachments." };
-            }
-
             return new SavedAttachmentMutationResult { Outcome = AttachmentMutationOutcome.Rejected, ErrorMessage = SafeError(ex.Message) };
         }
         catch (Exception ex)
@@ -798,15 +788,8 @@ public sealed partial class CodexSessionService
             };
         }
 
-        JsonElement response;
-        try
-        {
-            response = await context.Connection.SendRequestAsync("windowsSandbox/readiness", null, TimeSpan.FromSeconds(10), cancellationToken).ConfigureAwait(false);
-        }
-        catch (JsonRpcRemoteException ex) when (ex.Code == -32601)
-        {
-            return new WindowsSandboxReadinessResult { IsSupported = false, UnavailableReason = "This app-server does not support Windows sandbox readiness.", IsWindows = true, IsLocalStdio = true };
-        }
+        JsonElement response = await context.Connection.SendRequestAsync(
+            "windowsSandbox/readiness", null, TimeSpan.FromSeconds(10), cancellationToken).ConfigureAwait(false);
         EnsureCurrent(context);
         ValidateDailyUseOwner(request, context);
         string? readiness = GetString(response, "status");
@@ -829,7 +812,7 @@ public sealed partial class CodexSessionService
     }
 
     // Reads the effective configuration and managed policy that decide the local backend. Either
-    // read may fail or be unsupported; the result then reports the value as unknown, never guessed.
+    // read may fail; the result then reports the value as unknown, never guessed.
     private static async Task ReadWindowsSandboxBackendDiagnosticsAsync(
         ConnectionContext context,
         WindowsSandboxReadinessResult result,
@@ -1057,24 +1040,6 @@ public sealed partial class CodexSessionService
                 new { mode = setupMode, cwd },
                 TimeSpan.FromSeconds(15),
                 cancellationToken).ConfigureAwait(false);
-        }
-        catch (JsonRpcRemoteException ex) when (ex.Code == -32601)
-        {
-            lock (dailyUseGate)
-            {
-                if (IsCurrentWindowsSandboxAttemptLocked(context)
-                    && windowsSandboxSetupState == WindowsSandboxSetupState.Starting)
-                {
-                    windowsSandboxSetupState = WindowsSandboxSetupState.Unsupported;
-                }
-
-                if (!IsCurrentWindowsSandboxAttemptLocked(context))
-                {
-                    return new WindowsSandboxSetupStartResult { State = WindowsSandboxSetupState.NotObserved, Started = false, Message = "The setup attempt belongs to a previous connection owner." };
-                }
-
-                return new WindowsSandboxSetupStartResult { IsSupported = false, State = windowsSandboxSetupState, Started = false, Message = "This app-server does not support Windows sandbox setup." };
-            }
         }
         catch (JsonRpcRemoteException ex)
         {
