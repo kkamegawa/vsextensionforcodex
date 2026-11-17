@@ -227,7 +227,7 @@ public sealed partial class CodexSessionService
     private const int MaxThreadAttachments = 100;
     private const int MaxThreadAttachmentsPerPage = 50;
     private const int MaxSavedAttachmentIdentityLength = 256;
-    private readonly object dailyUseGate = new();
+    private readonly Lock dailyUseGate = new();
     private readonly Dictionary<string, ShellConfirmationEntry> shellConfirmations = new(StringComparer.Ordinal);
     private readonly Dictionary<string, PendingShellSubmission> pendingShellSubmissions = new(StringComparer.Ordinal);
     private long windowsSandboxAttemptGeneration = -1;

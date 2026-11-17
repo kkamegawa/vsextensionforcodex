@@ -8,7 +8,7 @@ namespace Codex.VisualStudio.Extension;
 // corrupt file never blocks the tool window.
 public sealed class ExtensionSettings
 {
-    private static readonly object SettingsGate = new();
+    private static readonly Lock SettingsGate = new();
     // Opts the codex app-server into experimental APIs (e.g. request_user_input interactive
     // choices). Off by default; enabling it takes effect at the next app-server initialize.
     public bool ExperimentalApiEnabled { get; set; }

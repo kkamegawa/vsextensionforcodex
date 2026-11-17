@@ -68,8 +68,8 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
     // OnUiAsync runs inline on the calling thread in the OOP host, so worker notifications and
     // response continuations can interleave. This gate makes each check-then-apply step on the
     // thread rows and read-state sequences atomic.
-    private readonly object threadHistoryStateGate = new();
-    private readonly object threadListRequestGate = new();
+    private readonly Lock threadHistoryStateGate = new();
+    private readonly Lock threadListRequestGate = new();
     private ThreadListRequestLease? activeThreadListRequest;
     private const string ImplementPlanRequestPrefix = "implement-plan:";
     private const int MaximumTrackedLocalTurns = 32;
@@ -157,7 +157,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
 
     // Status callbacks are not serialized, so publishing and clearing a connection-failure banner
     // decide against the current bridge and status under one gate.
-    private readonly object connectionFailureBannerGate = new();
+    private readonly Lock connectionFailureBannerGate = new();
     private bool isRecovering;
     private bool historyIsStale;
     private bool isHistoryLoading;
@@ -168,7 +168,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
     private string? threadTurnsCursor;
     private ThreadItemCursor? threadItemsCursor;
     private readonly HashSet<string> deletedAttachmentIds = new(StringComparer.Ordinal);
-    private readonly object attachmentRefreshGate = new();
+    private readonly Lock attachmentRefreshGate = new();
     private bool attachmentRefreshRunning;
     private bool attachmentRefreshRequested;
     private readonly HashSet<string> historyItemKeys = new(StringComparer.Ordinal);
