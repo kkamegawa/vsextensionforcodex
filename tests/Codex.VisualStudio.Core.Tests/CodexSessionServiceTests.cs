@@ -3231,8 +3231,8 @@ public sealed partial class CodexSessionServiceTests
     public async Task BoundedProcessRunner_KillsOnTimeout()
     {
         BoundedProcessResult result = await BoundedProcessRunner.RunAsync(
-            "cmd.exe",
-            ["/d", "/c", "ping -n 30 127.0.0.1"],
+            "powershell.exe",
+            ["-NoProfile", "-Command", "Start-Sleep -Seconds 30"],
             Path.GetTempPath(),
             TimeSpan.FromMilliseconds(300),
             CancellationToken.None);

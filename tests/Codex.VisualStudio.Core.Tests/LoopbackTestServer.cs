@@ -207,7 +207,7 @@ internal sealed class LoopbackTestServer : IAsyncDisposable
 
         // Round-trip through PFX so SChannel can use the private key. Without PersistKeySet the
         // imported key is removed when the certificate is disposed; no store or trust changes.
-        return new X509Certificate2(created.Export(X509ContentType.Pfx), (string?)null, X509KeyStorageFlags.Exportable);
+        return X509CertificateLoader.LoadPkcs12(created.Export(X509ContentType.Pfx), password: null, keyStorageFlags: X509KeyStorageFlags.Exportable);
     }
 }
 

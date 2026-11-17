@@ -976,3 +976,16 @@ Tracking: [#268](https://github.com/kkamegawa/vsextensionforcodex/issues/268) wi
 - [x] The maintainer approved the feature design in the 0.169 design document on 2026-11-16.
 
 Validation: document-only change. Checked the design document names against the 0.169.0 schema, the links, and the absence of statements that Visual Studio 2022, 17.x, or .NET 8 is supported. No build or tests were run.
+
+### 2026-11-17: Phase 1 — Visual Studio 2026 and .NET 10
+
+Tracking: [Issue #269](https://github.com/kkamegawa/vsextensionforcodex/issues/269). Approved plan: `plan/2026-11-15/vs2026-dotnet10-codex-cli-0-169`.
+
+- [x] Retargeted all solution projects to .NET 10 (`net10.0` or `net10.0-windows10.0.22621.0`), moved Contracts from `netstandard2.0` to `net10.0`, removed the unused `net472` in-process placeholder, and configured the framework-dependent Worker for `RollForward=Minor`.
+- [x] Aligned the Visual Studio Extensibility SDK package baseline to 18.12; the VSIX requires `[18.12,)` and declares `amd64` and `arm64` targets. Updated CI, release, Dependabot, and VSIX content validation.
+- [x] Adapted SDK analyzer/API changes and updated the affected unit tests. Updated README, CLI setup guides, implementation notes, and repository agent guidance for the new platform baseline.
+- [x] Release solution build: 0 warnings and 0 errors.
+- [x] Release tests: Core 594 passed / 7 skipped / 0 failed; UI 611 passed / 3 skipped / 0 failed.
+- [x] Release VSIX content inspection passed, including Visual Studio `[18.12,)`, `amd64`/`arm64`, `.NET 10`, packaged dependencies and Worker `RollForward=Minor`.
+- [x] `git diff --check` passed.
+- [x] Visual Studio Enterprise 2026 Insiders 18.13.12409.143: F5 built and deployed the VSIX to the Experimental Instance; the solution loaded and the Codex tool window rendered. It reported `Ready · Codex 0.161.0` and `Signed in · plus`. The screen was visually inspected. The Windows sandbox setup card showed no active solution root; its readiness check was not run.

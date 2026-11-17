@@ -101,15 +101,25 @@ public sealed class SecurityServicesTests
         Directory.CreateDirectory(workspace);
         Directory.CreateDirectory(outside);
         string link = Path.Combine(workspace, "linked");
-        CreateDirectoryLink(link, outside);
-        var policy = new PathAccessPolicy();
+        try
+        {
+            CreateDirectoryLink(link, outside);
+            var policy = new PathAccessPolicy();
 
-        PathAccessResult result = policy.Evaluate(Path.Combine(link, "secret.txt"), workspace);
+            PathAccessResult result = policy.Evaluate(Path.Combine(link, "secret.txt"), workspace);
 
-        Assert.IsTrue(result.IsValid);
-        Assert.IsFalse(result.IsWithinWorkspace);
-        Directory.Delete(link);
-        Directory.Delete(testRoot, recursive: true);
+            Assert.IsTrue(result.IsValid);
+            Assert.IsFalse(result.IsWithinWorkspace);
+        }
+        finally
+        {
+            if (Directory.Exists(link))
+            {
+                Directory.Delete(link);
+            }
+
+            Directory.Delete(testRoot, recursive: true);
+        }
     }
 
     [TestMethod]
@@ -244,17 +254,19 @@ public sealed class SecurityServicesTests
 
         using var process = Process.Start(new ProcessStartInfo
         {
-            FileName = "cmd.exe",
+            FileName = Path.Combine(Environment.SystemDirectory, "cmd.exe"),
             UseShellExecute = false,
             CreateNoWindow = true,
             RedirectStandardError = true,
             RedirectStandardOutput = true,
-            ArgumentList = { "/c", "mklink", "/J", link, target },
+            ArgumentList = { "/d", "/c", "mklink", "/J", link, target },
         }) ?? throw new InvalidOperationException("Failed to start mklink.");
+        process.StandardOutput.ReadToEnd();
+        string error = process.StandardError.ReadToEnd();
         process.WaitForExit();
-        if (process.ExitCode != 0)
+        if (process.ExitCode != 0 || !Directory.Exists(link))
         {
-            throw new InvalidOperationException(process.StandardError.ReadToEnd());
+            Assert.Inconclusive($"Directory junctions are unavailable (exit code {process.ExitCode}): {error}");
         }
     }
 }

@@ -193,15 +193,8 @@ public static class RemoteProfileFingerprint
         Append(builder, localRoot);
         Append(builder, serverRoot);
         Append(builder, enabled ? "1" : "0");
-        using SHA256 sha = SHA256.Create();
-        byte[] hash = sha.ComputeHash(Encoding.UTF8.GetBytes(builder.ToString()));
-        var hex = new StringBuilder(hash.Length * 2);
-        foreach (byte b in hash)
-        {
-            hex.Append(b.ToString("x2", System.Globalization.CultureInfo.InvariantCulture));
-        }
-
-        return hex.ToString();
+        byte[] hash = SHA256.HashData(Encoding.UTF8.GetBytes(builder.ToString()));
+        return Convert.ToHexString(hash).ToLowerInvariant();
     }
 
     // Length-prefixed fields keep ("ab", "c") and ("a", "bc") distinct.

@@ -7,9 +7,8 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
-$extensionOutput = Join-Path $root "src/Codex.VisualStudio.Extension/bin/$Configuration/net8.0-windows10.0.22621.0"
-$workerOutput = Join-Path $root "src/Codex.VisualStudio.Worker/bin/$Configuration/net8.0"
-$contractsOutput = Join-Path $root "src/Codex.VisualStudio.Contracts/bin/$Configuration/net8.0"
+$extensionOutput = Join-Path $root "src/Codex.VisualStudio.Extension/bin/$Configuration/net10.0-windows10.0.22621.0"
+$workerOutput = Join-Path $root "src/Codex.VisualStudio.Worker/bin/$Configuration/net10.0"
 $package = Get-ChildItem -LiteralPath (Join-Path $root "src/Codex.VisualStudio.Extension/bin/$Configuration") -Filter '*.vsix' -Recurse |
     Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
 if ($null -eq $package) { throw "No VSIX was produced for $Configuration." }
@@ -26,6 +25,35 @@ try {
     try { $vsixManifest = [xml]$reader.ReadToEnd() } finally { $reader.Dispose() }
     $namespaces = [Xml.XmlNamespaceManager]::new($vsixManifest.NameTable)
     $namespaces.AddNamespace('v', 'http://schemas.microsoft.com/developer/vsx-schema/2011')
+    $installationTargets = @($vsixManifest.SelectNodes('/v:PackageManifest/v:Installation/v:InstallationTarget', $namespaces))
+    if ($installationTargets.Count -eq 0) { throw 'VSIX installation targets are missing.' }
+    $invalidInstallationTargets = @($installationTargets | Where-Object { $_.GetAttribute('Version') -cne '[18.12,)' })
+    if ($invalidInstallationTargets.Count -gt 0) {
+        $versions = @($installationTargets | ForEach-Object { $_.GetAttribute('Version') } | Sort-Object -Unique) -join ', '
+        throw "All VSIX installation targets must use '[18.12,)', found: $versions."
+    }
+    $targetArchitectures = @($installationTargets | ForEach-Object {
+        $architecture = $_.SelectSingleNode('v:ProductArchitecture', $namespaces)
+        if ($null -ne $architecture) { $architecture.InnerText.Trim() }
+    } | Sort-Object -Unique)
+    $requiredArchitectures = @('amd64', 'arm64')
+    $missingArchitectures = @($requiredArchitectures | Where-Object { $_ -notin $targetArchitectures })
+    if ($missingArchitectures.Count -gt 0) {
+        throw "VSIX installation targets are missing product architectures: $($missingArchitectures -join ', ')."
+    }
+    $dotnetTargetVersions = $vsixManifest.SelectSingleNode('/v:PackageManifest/v:Installation/v:DotnetTargetVersions', $namespaces)
+    if ($null -eq $dotnetTargetVersions -or $dotnetTargetVersions.InnerText.Trim() -cne 'net10.0') {
+        $actualDotnetTarget = if ($null -eq $dotnetTargetVersions) { '<missing>' } else { $dotnetTargetVersions.InnerText.Trim() }
+        throw "VSIX .NET target must be 'net10.0', found '$actualDotnetTarget'."
+    }
+    $coreEditorPrerequisites = @($vsixManifest.SelectNodes('/v:PackageManifest/v:Prerequisites/v:Prerequisite[@Id="Microsoft.VisualStudio.Component.CoreEditor"]', $namespaces))
+    $invalidCoreEditorPrerequisites = @($coreEditorPrerequisites | Where-Object { $_.GetAttribute('Version') -cne '[18.12,)' })
+    if ($coreEditorPrerequisites.Count -eq 0 -or $invalidCoreEditorPrerequisites.Count -gt 0) {
+        throw 'VSIX Core Editor prerequisite must use version range [18.12,).'
+    }
+    $checks.Add([ordered]@{ installationTargetVersion = '[18.12,)'; architectures = $targetArchitectures; count = $installationTargets.Count; status = 'passed' })
+    $checks.Add([ordered]@{ dotnetTargetVersions = 'net10.0'; status = 'passed' })
+    $checks.Add([ordered]@{ prerequisite = 'Microsoft.VisualStudio.Component.CoreEditor'; version = '[18.12,)'; status = 'passed' })
     $identity = $vsixManifest.SelectSingleNode('//v:PackageManifest/v:Metadata/v:Identity', $namespaces)
     if ($null -eq $identity) { throw 'VSIX identity is missing.' }
     $identitySource = Get-Content -LiteralPath (Join-Path $root 'src/Codex.VisualStudio.Extension/CodexExtension.cs') -Raw
@@ -87,6 +115,17 @@ try {
         if ($packagedHash -ne $builtHash) { throw "VSIX Worker payload '$entryName' differs from build output." }
         $checks.Add([ordered]@{ entry = $entryName; sha256 = $packagedHash; status = 'passed' })
     }
+
+    $workerRuntimeConfigEntry = $entries['Worker/Codex.VisualStudio.Worker.runtimeconfig.json']
+    if ($null -eq $workerRuntimeConfigEntry) { throw 'VSIX is missing the Worker runtimeconfig file.' }
+    $runtimeConfigReader = [IO.StreamReader]::new($workerRuntimeConfigEntry.Open())
+    try { $workerRuntimeConfig = ConvertFrom-Json -InputObject $runtimeConfigReader.ReadToEnd() -ErrorAction Stop }
+    finally { $runtimeConfigReader.Dispose() }
+    if ($workerRuntimeConfig.runtimeOptions.rollForward -cne 'Minor') {
+        $rollForward = if ($null -eq $workerRuntimeConfig.runtimeOptions.rollForward) { '<missing>' } else { [string]$workerRuntimeConfig.runtimeOptions.rollForward }
+        throw "Packaged Worker runtimeconfig must set runtimeOptions.rollForward to 'Minor', found '$rollForward'."
+    }
+    $checks.Add([ordered]@{ entry = 'Worker/Codex.VisualStudio.Worker.runtimeconfig.json'; rollForward = 'Minor'; status = 'passed' })
 
     $xamlPath = Join-Path $root 'src/Codex.VisualStudio.Extension/ToolWindows/ChatToolWindowContent.xaml'
     $extensionDll = Join-Path $extensionOutput 'Codex.VisualStudio.Extension.dll'

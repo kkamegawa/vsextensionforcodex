@@ -113,7 +113,7 @@ public sealed class ProtectedDirectoryPolicy : IProtectedDirectoryPolicy
             string candidate = path;
             if (candidate.StartsWith(@"\\?\UNC\", StringComparison.OrdinalIgnoreCase))
             {
-                candidate = @"\\" + candidate.Substring(8);
+                candidate = string.Concat(@"\\", candidate.AsSpan(8));
             }
             else if (candidate.StartsWith(@"\\?\", StringComparison.OrdinalIgnoreCase))
             {

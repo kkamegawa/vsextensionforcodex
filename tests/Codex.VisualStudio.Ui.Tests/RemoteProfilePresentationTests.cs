@@ -140,7 +140,7 @@ public sealed class RemoteProfilePresentationTests
             TokenFilePath = "C:\\tokens\\second.token",
         });
         var store = new RecordingSettingsStore();
-        using var gate = new SemaphoreSlim(1, 1);
+        using var gate = ExtensionConcurrency.CreateSemaphore();
         var presentation = new RemoteProfilesPresentationViewModel(settings, store, gate);
         RemoteProfileViewModel first = presentation.Profiles[0];
         RemoteProfileViewModel second = presentation.Profiles[1];
@@ -149,10 +149,31 @@ public sealed class RemoteProfilePresentationTests
         // user selects the second row; the queued save must still save the first row only.
         first.ServerRoot = "/workspace-moved";
         second.ServerRoot = "/second-moved";
-        await gate.WaitAsync();
+        var saveGateEntered = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseSaveGate = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        Task saveGateHolder = gate.ExecuteAsync(async () =>
+        {
+            saveGateEntered.SetResult(true);
+            // This test releases the barrier from a separate task; the callback has no UI-affine work.
+#pragma warning disable VSTHRD003
+            await releaseSaveGate.Task;
+#pragma warning restore VSTHRD003
+        });
+        var saveGateHolderCompletion = new TaskCompletionSource<Exception?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _ = saveGateHolder.ContinueWith(
+            completed => saveGateHolderCompletion.TrySetResult(
+                completed.IsFaulted ? completed.Exception!.GetBaseException()
+                : completed.IsCanceled ? new TaskCanceledException(completed)
+                : null),
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
+        await saveGateEntered.Task;
         Task save = RunAsync(presentation.SaveCommand);
         presentation.SelectedProfile = second;
-        gate.Release();
+        releaseSaveGate.SetResult(true);
+        Exception? saveGateHolderFailure = await saveGateHolderCompletion.Task;
+        Assert.IsNull(saveGateHolderFailure);
         await save;
 
         Assert.AreEqual("/workspace-moved", store.Saved!.RemoteProfiles.Single(static p => p.Name == "Saved profile").ServerRoot);
@@ -160,10 +181,31 @@ public sealed class RemoteProfilePresentationTests
         Assert.AreSame(second, presentation.SelectedProfile);
 
         // Remove is invoked for the second row, then the selection moves back to the first.
-        await gate.WaitAsync();
+        var removeGateEntered = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseRemoveGate = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        Task removeGateHolder = gate.ExecuteAsync(async () =>
+        {
+            removeGateEntered.SetResult(true);
+            // This test releases the barrier from a separate task; the callback has no UI-affine work.
+#pragma warning disable VSTHRD003
+            await releaseRemoveGate.Task;
+#pragma warning restore VSTHRD003
+        });
+        var removeGateHolderCompletion = new TaskCompletionSource<Exception?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _ = removeGateHolder.ContinueWith(
+            completed => removeGateHolderCompletion.TrySetResult(
+                completed.IsFaulted ? completed.Exception!.GetBaseException()
+                : completed.IsCanceled ? new TaskCanceledException(completed)
+                : null),
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
+        await removeGateEntered.Task;
         Task remove = RunAsync(presentation.RemoveCommand);
         presentation.SelectedProfile = first;
-        gate.Release();
+        releaseRemoveGate.SetResult(true);
+        Exception? removeGateHolderFailure = await removeGateHolderCompletion.Task;
+        Assert.IsNull(removeGateHolderFailure);
         await remove;
 
         CollectionAssert.AreEqual(new[] { first }, presentation.Profiles.ToArray());
@@ -175,21 +217,42 @@ public sealed class RemoteProfilePresentationTests
     public async Task SelectionChange_RaisesSaveAndRemoveStatesWhileTheGateIsBusy()
     {
         var store = new RecordingSettingsStore();
-        using var gate = new SemaphoreSlim(1, 1);
+        using var gate = ExtensionConcurrency.CreateSemaphore();
         var presentation = new RemoteProfilesPresentationViewModel(SavedSettings(), store, gate);
         var raised = new List<string>();
         presentation.SaveCommand.PropertyChanged += (_, e) => raised.Add("save:" + e.PropertyName);
         presentation.RemoveCommand.PropertyChanged += (_, e) => raised.Add("remove:" + e.PropertyName);
 
         // A connect holds the gate, so selection persistence is queued behind it.
-        await gate.WaitAsync();
+        var gateEntered = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseGate = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        Task gateHolder = gate.ExecuteAsync(async () =>
+        {
+            gateEntered.SetResult(true);
+            // This test releases the barrier from a separate task; the callback has no UI-affine work.
+#pragma warning disable VSTHRD003
+            await releaseGate.Task;
+#pragma warning restore VSTHRD003
+        });
+        var gateHolderCompletion = new TaskCompletionSource<Exception?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _ = gateHolder.ContinueWith(
+            completed => gateHolderCompletion.TrySetResult(
+                completed.IsFaulted ? completed.Exception!.GetBaseException()
+                : completed.IsCanceled ? new TaskCanceledException(completed)
+                : null),
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
+        await gateEntered.Task;
         presentation.ClearSelection();
 
         Assert.IsFalse(presentation.SaveCommand.CanExecute);
         Assert.IsFalse(presentation.RemoveCommand.CanExecute);
         CollectionAssert.Contains(raised, "save:" + nameof(Codex.VisualStudio.Extension.AsyncCommand.CanExecute));
         CollectionAssert.Contains(raised, "remove:" + nameof(Codex.VisualStudio.Extension.AsyncCommand.CanExecute));
-        gate.Release();
+        releaseGate.SetResult(true);
+        Exception? gateHolderFailure = await gateHolderCompletion.Task;
+        Assert.IsNull(gateHolderFailure);
     }
 
     private static Task RunAsync(IAsyncCommand command)

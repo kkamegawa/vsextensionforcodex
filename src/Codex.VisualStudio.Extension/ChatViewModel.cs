@@ -15,6 +15,7 @@ using Microsoft.VisualStudio.Extensibility;
 using Microsoft.VisualStudio.Extensibility.Documents;
 using Microsoft.VisualStudio.Extensibility.Shell;
 using VSUI = Microsoft.VisualStudio.Extensibility.UI;
+using ReentrantSemaphore = Microsoft.VisualStudio.Threading.ReentrantSemaphore;
 
 namespace Codex.VisualStudio.Extension;
 
@@ -45,14 +46,14 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
     private readonly IExtensionSettingsStore settingsStore;
     private readonly IExternalLinkOpener externalLinkOpener;
     private readonly Func<DateTimeOffset> utcNow;
-    private readonly SemaphoreSlim usageRefreshGate = new(1, 1);
+    private readonly ReentrantSemaphore usageRefreshGate = ExtensionConcurrency.CreateSemaphore();
     private int reviewThreadStartInFlight;
     private string? usageThreadId;
     private readonly ExtensionSettings settings;
     private readonly RemoteProfilesPresentationViewModel remoteProfiles;
     // One gate for every same-instance profile/settings mutation, reconnect snapshot validation,
     // and the Worker RPC dispatch that follows (design: profile freshness).
-    private readonly SemaphoreSlim profileOperationGate = new(1, 1);
+    private readonly ReentrantSemaphore profileOperationGate = ExtensionConcurrency.CreateSemaphore();
     private readonly ConnectionHealthPresentationViewModel connectionHealth;
     private RemoteProfileViewModel? observedHealthProfile;
     private readonly Dictionary<string, InteractionCardViewModel> interactionCards = new(StringComparer.Ordinal);
@@ -983,8 +984,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         bool experimentalApi,
         CancellationToken cancellationToken)
     {
-        await profileOperationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
-        try
+        return await profileOperationGate.ExecuteAsync(async () =>
         {
             if (!IsRecoveryTargetValid(root, profileName, fingerprint, experimentalApi))
             {
@@ -1027,11 +1027,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
 
             workingDirectory = root;
             return result;
-        }
-        finally
-        {
-            profileOperationGate.Release();
-        }
+        }, cancellationToken).ConfigureAwait(false);
     }
 
     // A replacement Worker numbers owner and connection generations from zero and salts its state
@@ -1067,15 +1063,9 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         bool experimentalApi,
         CancellationToken cancellationToken)
     {
-        await profileOperationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
-        try
-        {
-            return IsRecoveryTargetValid(root, profileName, fingerprint, experimentalApi);
-        }
-        finally
-        {
-            profileOperationGate.Release();
-        }
+        return await profileOperationGate.ExecuteAsync(
+            () => ValueTask.FromResult(IsRecoveryTargetValid(root, profileName, fingerprint, experimentalApi)),
+            cancellationToken).ConfigureAwait(false);
     }
 
     private bool IsRecoveryTargetValid(string root, string? profileName, string? fingerprint, bool experimentalApi)
@@ -2791,45 +2781,34 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
     /// </summary>
     private async Task<bool> ConnectWithDirectoryAsync(string workingDirectory, bool reloadThreads = false, bool profileGateHeld = false)
     {
-        // The bridge reads the saved profile selection, so every connect runs under the profile
-        // operation gate (gated callers already hold it). An ungated caller takes the gate before
-        // the connect guard and keeps it until the guard is cleared, so a profile action queued
-        // behind this connect never finds the guard still set and silently drops its dispatch.
-        bool enteredGate = false;
-        if (!profileGateHeld)
+        if (profileGateHeld)
         {
-            if (!await TryEnterProfileGateAsync().ConfigureAwait(false))
-            {
-                return false;
-            }
+            return await ConnectWithDirectoryUnderGateAsync(workingDirectory, reloadThreads).ConfigureAwait(false);
+        }
 
-            enteredGate = true;
+        // Keep the profile operation exclusive until the connect guard is cleared, so a queued
+        // profile action never observes an in-flight connect and silently drops its dispatch.
+        return await profileOperationGate.ExecuteAsync(
+            () => new ValueTask<bool>(ConnectWithDirectoryUnderGateAsync(workingDirectory, reloadThreads)),
+            lifetime.Token).ConfigureAwait(false);
+    }
+
+    private async Task<bool> ConnectWithDirectoryUnderGateAsync(string workingDirectory, bool reloadThreads)
+    {
+        // The auto-connect watcher and a user-initiated Send/Connect can both reach here; the
+        // guard ensures only one connect attempt runs at a time so we never spawn two workers.
+        if (Interlocked.CompareExchange(ref connecting, 1, 0) != 0)
+        {
+            return false;
         }
 
         try
         {
-            // The auto-connect watcher and a user-initiated Send/Connect can both reach here; the
-            // guard ensures only one connect attempt runs at a time so we never spawn two workers.
-            if (Interlocked.CompareExchange(ref connecting, 1, 0) != 0)
-            {
-                return false;
-            }
-
-            try
-            {
-                return await ConnectUnderGateAsync(workingDirectory, reloadThreads).ConfigureAwait(false);
-            }
-            finally
-            {
-                Interlocked.Exchange(ref connecting, 0);
-            }
+            return await ConnectUnderGateAsync(workingDirectory, reloadThreads).ConfigureAwait(false);
         }
         finally
         {
-            if (enteredGate)
-            {
-                profileOperationGate.Release();
-            }
+            Interlocked.Exchange(ref connecting, 0);
         }
     }
 
@@ -2954,12 +2933,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
     {
         // Capture the row Apply was invoked for; the selection may change while this waits.
         RemoteProfileViewModel? invoked = remoteProfiles.SelectedProfile;
-        if (!await TryEnterProfileGateAsync().ConfigureAwait(false))
-        {
-            return;
-        }
-
-        try
+        await profileOperationGate.ExecuteAsync(async () =>
         {
             if (!remoteProfiles.TryGetApplicableProfile(invoked, out string profileName, out string error))
             {
@@ -2972,64 +2946,25 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             remoteProfiles.PersistAppliedSelectionUnderGate(invoked!);
 
             await ReconnectForProfileAsync($"Connected with remote profile '{profileName}'.").ConfigureAwait(false);
-        }
-        finally
-        {
-            profileOperationGate.Release();
-        }
+        }, lifetime.Token).ConfigureAwait(false);
     }
 
     private async Task UseLocalAppServerAsync()
     {
-        if (!await TryEnterProfileGateAsync().ConfigureAwait(false))
-        {
-            return;
-        }
-
-        try
+        await profileOperationGate.ExecuteAsync(async () =>
         {
             // Persist the local selection before the Worker bridge reads settings for connect.
             remoteProfiles.ClearSelectionUnderGate();
             await ReconnectForProfileAsync("Connected to the local codex app-server.").ConfigureAwait(false);
-        }
-        finally
-        {
-            profileOperationGate.Release();
-        }
+        }, lifetime.Token).ConfigureAwait(false);
     }
 
     private async Task RetrySavedProfileConnectAsync()
     {
-        if (!await TryEnterProfileGateAsync().ConfigureAwait(false))
-        {
-            return;
-        }
-
-        try
+        await profileOperationGate.ExecuteAsync(async () =>
         {
             await ReconnectForProfileAsync("Connected with the saved remote profile.").ConfigureAwait(false);
-        }
-        finally
-        {
-            profileOperationGate.Release();
-        }
-    }
-
-    private async Task<bool> TryEnterProfileGateAsync()
-    {
-        try
-        {
-            await profileOperationGate.WaitAsync(lifetime.Token).ConfigureAwait(false);
-            return true;
-        }
-        catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
-        {
-            return false;
-        }
-        catch (ObjectDisposedException)
-        {
-            return false;
-        }
+        }, lifetime.Token).ConfigureAwait(false);
     }
 
     private async Task ReconnectForProfileAsync(string successText)
@@ -3114,12 +3049,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
     // still saved, enabled, unedited, and unchanged before the Worker reads the token again.
     private async Task ReconnectRemoteAsync()
     {
-        if (!await TryEnterProfileGateAsync().ConfigureAwait(false))
-        {
-            return;
-        }
-
-        try
+        await profileOperationGate.ExecuteAsync(async () =>
         {
             ConnectionTargetSnapshot? appliedTarget = Status.Target;
             if (!TryCreateReconnectRequest(appliedTarget, out RemoteReconnectRequest? request, out ConnectionOperationRejectionReason reason))
@@ -3174,11 +3104,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                 unavailableSlashCommands.Clear();
                 await RefreshReadyStateAsync(reloadThreads: true).ConfigureAwait(false);
             }
-        }
-        finally
-        {
-            profileOperationGate.Release();
-        }
+        }, lifetime.Token).ConfigureAwait(false);
     }
 
     // Called under profileOperationGate. Never reads a token file.
@@ -9763,88 +9689,87 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
     {
         try
         {
-            await usageRefreshGate.WaitAsync(lifetime.Token).ConfigureAwait(false);
+            await usageRefreshGate.ExecuteAsync(async () =>
+            {
+                long generation = Volatile.Read(ref usageConnectionGeneration);
+                try
+                {
+                    if (!IsUsageAvailable)
+                    {
+                        return;
+                    }
+
+                    generation = Volatile.Read(ref usageConnectionGeneration);
+                    DateTimeOffset requestedAt = utcNow();
+                    OwnerSnapshot usageOwner = CaptureOwnerSnapshot();
+                    if (!force
+                        && usageFetchedGeneration == generation
+                        && latestRateLimitsAt.HasValue
+                        && requestedAt - latestRateLimitsAt.Value < TimeSpan.FromSeconds(60))
+                    {
+                        // Account limits may be cached, but amounts belong to one conversation.
+                        if (!string.Equals(usageThreadId, SelectedThread?.Id, StringComparison.Ordinal))
+                        {
+                            await RefreshThreadUsageAsync(generation, usageOwner).ConfigureAwait(false);
+                        }
+
+                        return;
+                    }
+
+                    long pushVersion = Volatile.Read(ref rateLimitPushVersion);
+                    await OnUiAsync(() =>
+                    {
+                        if (generation == Volatile.Read(ref usageConnectionGeneration) && IsUsageAvailable)
+                        {
+                            Usage.SetLoading(true);
+                        }
+                    }).ConfigureAwait(false);
+                    RateLimitsResult result;
+                    try
+                    {
+                        result = await bridge.GetRateLimitsAsync(StampOwner(new GetRateLimitsRequest(), usageOwner), lifetime.Token).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+                    {
+                        return;
+                    }
+                    catch (Exception ex)
+                    {
+                        ExtensionDiagnostics.Write($"Usage lookup failed ({ex.GetType().Name}).");
+                        return;
+                    }
+
+                    await OnUiAsync(() =>
+                    {
+                        if (generation != Volatile.Read(ref usageConnectionGeneration)
+                            || !IsUsageAvailable
+                            || pushVersion != Volatile.Read(ref rateLimitPushVersion))
+                        {
+                            return;
+                        }
+
+                        DateTimeOffset refreshedAt = utcNow();
+                        latestRateLimits = result;
+                        latestRateLimitsAt = refreshedAt;
+                        usageFetchedGeneration = generation;
+                        Usage.Update(result, refreshedAt, markdown);
+                    }).ConfigureAwait(false);
+                    await RefreshThreadUsageAsync(generation, usageOwner).ConfigureAwait(false);
+                }
+                finally
+                {
+                    await OnUiAsync(() =>
+                    {
+                        if (generation == Volatile.Read(ref usageConnectionGeneration))
+                        {
+                            Usage.SetLoading(false);
+                        }
+                    }).ConfigureAwait(false);
+                }
+            }, lifetime.Token).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
         {
-            return;
-        }
-
-        long generation = Volatile.Read(ref usageConnectionGeneration);
-        try
-        {
-            if (!IsUsageAvailable)
-            {
-                return;
-            }
-
-            generation = Volatile.Read(ref usageConnectionGeneration);
-            DateTimeOffset requestedAt = utcNow();
-            OwnerSnapshot usageOwner = CaptureOwnerSnapshot();
-            if (!force
-                && usageFetchedGeneration == generation
-                && latestRateLimitsAt.HasValue
-                && requestedAt - latestRateLimitsAt.Value < TimeSpan.FromSeconds(60))
-            {
-                // Account limits may be cached, but amounts belong to one conversation.
-                if (!string.Equals(usageThreadId, SelectedThread?.Id, StringComparison.Ordinal))
-                {
-                    await RefreshThreadUsageAsync(generation, usageOwner).ConfigureAwait(false);
-                }
-
-                return;
-            }
-
-            long pushVersion = Volatile.Read(ref rateLimitPushVersion);
-            await OnUiAsync(() =>
-            {
-                if (generation == Volatile.Read(ref usageConnectionGeneration) && IsUsageAvailable)
-                {
-                    Usage.SetLoading(true);
-                }
-            }).ConfigureAwait(false);
-            RateLimitsResult result;
-            try
-            {
-                result = await bridge.GetRateLimitsAsync(StampOwner(new GetRateLimitsRequest(), usageOwner), lifetime.Token).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
-            {
-                return;
-            }
-            catch (Exception ex)
-            {
-                ExtensionDiagnostics.Write($"Usage lookup failed ({ex.GetType().Name}).");
-                return;
-            }
-
-            await OnUiAsync(() =>
-            {
-                if (generation != Volatile.Read(ref usageConnectionGeneration)
-                    || !IsUsageAvailable
-                    || pushVersion != Volatile.Read(ref rateLimitPushVersion))
-                {
-                    return;
-                }
-
-                DateTimeOffset refreshedAt = utcNow();
-                latestRateLimits = result;
-                latestRateLimitsAt = refreshedAt;
-                usageFetchedGeneration = generation;
-                Usage.Update(result, refreshedAt, markdown);
-            }).ConfigureAwait(false);
-            await RefreshThreadUsageAsync(generation, usageOwner).ConfigureAwait(false);
-        }
-        finally
-        {
-            await OnUiAsync(() =>
-            {
-                if (generation == Volatile.Read(ref usageConnectionGeneration))
-                {
-                    Usage.SetLoading(false);
-                }
-            }).ConfigureAwait(false);
-            usageRefreshGate.Release();
         }
     }
 

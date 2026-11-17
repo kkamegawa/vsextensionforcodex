@@ -1,4 +1,4 @@
-<Solution>
+﻿<Solution>
   <Folder Name="/src/">
     <Project Path="src/Codex.AppServer.Protocol/Codex.AppServer.Protocol.csproj" />
     <Project Path="src/Codex.VisualStudio.Contracts/Codex.VisualStudio.Contracts.csproj" />
@@ -8,7 +8,6 @@
     <Project Path="src/Codex.VisualStudio.Extension/Codex.VisualStudio.Extension.csproj">
       <Deploy />
     </Project>
-    <Project Path="src/Codex.VisualStudio.Package/Codex.VisualStudio.Package.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/Codex.VisualStudio.Core.Tests/Codex.VisualStudio.Core.Tests.csproj" />

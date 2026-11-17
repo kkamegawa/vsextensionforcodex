@@ -26,7 +26,7 @@ internal static class IdeContextCaptureService
         try
         {
             activeView = await clientContext.GetActiveTextViewAsync(cancellationToken).ConfigureAwait(false);
-            selectedPath = await clientContext.GetSelectedPathAsync(cancellationToken).ConfigureAwait(false);
+            selectedPath = await clientContext.GetActiveDocumentUriAsync(cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
