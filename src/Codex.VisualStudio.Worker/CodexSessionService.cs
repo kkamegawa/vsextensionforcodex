@@ -1,4 +1,6 @@
-﻿using System.Collections.Concurrent;
+﻿using System.Buffers;
+using System.Collections.Concurrent;
+using System.Collections.Frozen;
 using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
@@ -294,6 +296,25 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
     private const int MaxAttachmentIdentityBytes = 256;
     private const int MaxThreadPreviewBytes = 8 * 1024;
     private const int MaxHistoryTextBytes = 64 * 1024;
+
+    private static readonly SearchValues<char> ControlCharacters = CreateControlCharacterSearchValues();
+    private static readonly SearchValues<char> WireIdentifierCharacters =
+        SearchValues.Create("0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_-");
+    private static readonly FrozenDictionary<string, ConversationEventKind> NotificationKinds =
+        new Dictionary<string, ConversationEventKind>(StringComparer.Ordinal)
+        {
+            ["item/started"] = ConversationEventKind.ItemStarted,
+            ["item/completed"] = ConversationEventKind.ItemCompleted,
+            ["item/agentMessage/delta"] = ConversationEventKind.AgentMessageDelta,
+            ["item/reasoning/summaryTextDelta"] = ConversationEventKind.ReasoningSummaryDelta,
+            ["item/commandExecution/outputDelta"] = ConversationEventKind.CommandOutputDelta,
+            ["turn/diff/updated"] = ConversationEventKind.DiffUpdated,
+            ["turn/plan/updated"] = ConversationEventKind.PlanUpdated,
+            ["turn/started"] = ConversationEventKind.TurnStarted,
+            ["turn/completed"] = ConversationEventKind.TurnCompleted,
+            ["error"] = ConversationEventKind.Error,
+            ["thread/closed"] = ConversationEventKind.ThreadClosed,
+        }.ToFrozenDictionary(StringComparer.Ordinal);
 
     private static readonly string[] ThreadSourceKinds = ["cli", "vscode", "appServer"];
     private const int PermissionProfilePageSize = 100;
@@ -843,7 +864,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
     {
         ArgumentNullException.ThrowIfNull(request);
         string serverName = request.ServerName.Trim();
-        if (serverName.Length is 0 or > 256 || serverName.Any(char.IsControl))
+        if (serverName.Length is 0 or > 256 || ContainsControlCharacter(serverName.AsSpan()))
         {
             throw new ArgumentException("The MCP server name is invalid.", nameof(request));
         }
@@ -4448,7 +4469,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         }
 
         string text = value.GetString() ?? string.Empty;
-        if (text.Length is 0 or > 256 || text.Any(char.IsControl))
+        if (text.Length is 0 or > 256 || ContainsControlCharacter(text.AsSpan()))
         {
             return false;
         }
@@ -5241,7 +5262,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
     private static string? NormalizePlanType(string? value)
         => !string.IsNullOrWhiteSpace(value)
         && value.Length <= 64
-        && value.All(character => char.IsAsciiLetterOrDigit(character) || character is '_' or '-')
+        && ContainsOnlyWireIdentifierCharacters(value.AsSpan())
             ? value
             : null;
 
@@ -5400,7 +5421,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
 
         string trimmed = value.Trim();
         return trimmed.Length <= MaxPermissionProfileIdLength
-            && trimmed.All(character => !char.IsControl(character))
+            && !ContainsControlCharacter(trimmed.AsSpan())
                 ? trimmed
                 : null;
     }
@@ -5413,7 +5434,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         }
 
         string trimmed = value.Trim();
-        return trimmed.Length <= 128 && trimmed.All(character => !char.IsControl(character))
+        return trimmed.Length <= 128 && !ContainsControlCharacter(trimmed.AsSpan())
             ? trimmed
             : null;
     }
@@ -5421,7 +5442,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
     private static string? NormalizeCursor(string? value)
         => !string.IsNullOrEmpty(value)
             && value.Length <= 512
-            && value.All(character => !char.IsControl(character))
+            && !ContainsControlCharacter(value.AsSpan())
                 ? value
                 : null;
 
@@ -5847,7 +5868,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         // names may legitimately contain other characters (spaces, dots, etc.), and applying that
         // narrower charset here would silently drop otherwise-valid skills.
         string trimmed = value.Trim();
-        return trimmed.Length <= MaxSkillNameLength && trimmed.All(character => !char.IsControl(character))
+        return trimmed.Length <= MaxSkillNameLength && !ContainsControlCharacter(trimmed.AsSpan())
             ? trimmed
             : null;
     }
@@ -5856,7 +5877,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
     {
         if (string.IsNullOrEmpty(value)
             || value.Length > MaxSkillPathLength
-            || value.Any(char.IsControl))
+            || ContainsControlCharacter(value.AsSpan()))
         {
             return null;
         }
@@ -6054,7 +6075,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         }
 
         string trimmed = value.Trim();
-        return trimmed.Length <= 128 && trimmed.All(character => !char.IsControl(character))
+        return trimmed.Length <= 128 && !ContainsControlCharacter(trimmed.AsSpan())
             ? trimmed
             : null;
     }
@@ -6112,6 +6133,38 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         return values;
     }
 
+    private static SearchValues<char> CreateControlCharacterSearchValues()
+    {
+        Span<char> characters = stackalloc char[65];
+        for (int value = 0; value < 32; value++)
+        {
+            characters[value] = (char)value;
+        }
+
+        for (int value = 127; value < 160; value++)
+        {
+            characters[value - 95] = (char)value;
+        }
+
+        return SearchValues.Create(characters);
+    }
+
+    private static bool ContainsControlCharacter(ReadOnlySpan<char> value)
+        => value.IndexOfAny(ControlCharacters) >= 0;
+
+    private static bool ContainsOnlyWireIdentifierCharacters(ReadOnlySpan<char> value)
+    {
+        foreach (char character in value)
+        {
+            if (!WireIdentifierCharacters.Contains(character))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
     private static string? NormalizeWireIdentifier(string? value)
     {
         if (string.IsNullOrWhiteSpace(value))
@@ -6121,7 +6174,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
 
         string trimmed = value.Trim();
         return trimmed.Length <= 128
-            && trimmed.All(character => char.IsAsciiLetterOrDigit(character) || character is '_' or '-')
+            && ContainsOnlyWireIdentifierCharacters(trimmed.AsSpan())
                 ? trimmed
                 : null;
     }
@@ -6524,21 +6577,10 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
     private static JsonElement EmptyUserInputResponse()
         => JsonSerializer.SerializeToElement(new { answers = new Dictionary<string, object>(StringComparer.Ordinal) });
 
-    private static ConversationEventKind MapKind(string method) => method switch
-    {
-        "item/started" => ConversationEventKind.ItemStarted,
-        "item/completed" => ConversationEventKind.ItemCompleted,
-        "item/agentMessage/delta" => ConversationEventKind.AgentMessageDelta,
-        "item/reasoning/summaryTextDelta" => ConversationEventKind.ReasoningSummaryDelta,
-        "item/commandExecution/outputDelta" => ConversationEventKind.CommandOutputDelta,
-        "turn/diff/updated" => ConversationEventKind.DiffUpdated,
-        "turn/plan/updated" => ConversationEventKind.PlanUpdated,
-        "turn/started" => ConversationEventKind.TurnStarted,
-        "turn/completed" => ConversationEventKind.TurnCompleted,
-        "error" => ConversationEventKind.Error,
-        "thread/closed" => ConversationEventKind.ThreadClosed,
-        _ => ConversationEventKind.Unknown,
-    };
+    private static ConversationEventKind MapKind(string method)
+        => NotificationKinds.TryGetValue(method, out ConversationEventKind kind)
+            ? kind
+            : ConversationEventKind.Unknown;
 
     private sealed class McpOAuthOperation(string operationId, string serverName, string? threadId)
     {
