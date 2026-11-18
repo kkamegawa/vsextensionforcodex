@@ -1,4 +1,6 @@
 ﻿using System.Text;
+using System.Text.Json;
+using Microsoft.VisualStudio.Extensibility;
 using System.IO;
 using Codex.VisualStudio.Contracts;
 using Codex.VisualStudio.Extension;
@@ -35,6 +37,26 @@ public sealed class IdeContextCaptureServiceTests
 
         Assert.IsNotNull(context);
         CollectionAssert.AreEqual(new[] { selected }, context!.ReferencedFilePaths.ToArray());
+    }
+
+    [TestMethod]
+    public void GetSelectedWorkspacePathFromShellContext_UsesSolutionExplorerSelection()
+    {
+        string root = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "workspace"));
+        string activeDocument = Path.Combine(root, "src", "Program.cs");
+        string selectedFile = Path.Combine(root, "README.md");
+        string shellContext = JsonSerializer.Serialize(new Dictionary<string, string>
+        {
+            [ClientContextKey.Shell.ActiveSelectionPath.ToString()] = selectedFile,
+        });
+
+        string? capturedPath = IdeContextCaptureService.GetSelectedWorkspacePathFromShellContext(shellContext);
+        IdeContextInfo? context = IdeContextCaptureService.Build(root, activeDocument, capturedPath, null);
+
+        Assert.AreEqual(selectedFile, capturedPath);
+        Assert.IsNotNull(context);
+        CollectionAssert.AreEqual(new[] { selectedFile }, context!.ReferencedFilePaths.ToArray());
+        Assert.AreEqual(activeDocument, context.ActiveDocumentPath);
     }
 
     [TestMethod]
