@@ -13,6 +13,16 @@
   Worker manages the local `codex app-server` child process or connects to a configured remote server.
 - The Extension and Worker communicate over a named pipe. The Worker uses stdio (JSONL) for a local App Server and WebSocket for a configured remote server.
 
+## Current Codex CLI contract
+
+The extension requires Codex CLI 0.167.0 or later. Version 0.169.0 is the recommended
+and verified target; 0.167.2 and 0.168.0 are regression baselines. These values are
+maintained in `app-server-contract.json` and drive the schema-generation and build
+workflows. Generated stable and experimental schema caches are stored under
+`schemas/<version>/<surface>/` and are excluded from source control. CI verifies the
+used method surface for each baseline and the target, then compares each baseline
+surface with the target.
+
 > The implementation notes that follow are historical snapshots unless a later dated update says otherwise. Some describe superseded runtime or packaging details; the current baseline is defined by Runtime Boundaries above and the latest dated update at the end.
 
 The publisher is `kkamegawa` (see CLAUDE.md for the current VSIX identity string).

@@ -13,14 +13,14 @@
 
 - Windows (x64 または Arm64)
 - Visual Studio 2026 18.12 以降 (Community / Professional / Enterprise)
-- [rust-v0.166.0 リリース](https://github.com/openai/codex/releases/tag/rust-v0.166.0) に含まれる公式 Windows 版 Codex CLI 0.166.0 実行ファイル (x64 または Arm64)。0.161.0〜0.165.0 も接続できますが、古い版では機能が限定されます。それより古い版は拒否されます
+- [rust-v0.169.0 リリース](https://github.com/openai/codex/releases/tag/rust-v0.169.0) に含まれる公式 Windows 版 Codex CLI 0.169.0 実行ファイル (x64 または Arm64)。最低対応バージョンは 0.167.0、推奨・検証済みの契約バージョンは 0.169.0 です。
 - `codex login` でサインインできる ChatGPT アカウント
 
 ## セットアップ
 
 詳しい手順は [Codex CLI の設定・利用ガイド](doc/codex-cli-setup_ja.md)を参照してください。CLI の導入・認証・設定ファイル、Connection target の全項目、リモートサーバーの準備、接続と診断を説明しています。
 
-1. [Codex 0.166.0 リリース](https://github.com/openai/codex/releases/tag/rust-v0.166.0) から、使用しているマシンに合った Windows パッケージをダウンロードしてローカルディレクトリへ展開します。x64 では `codex-package-x86_64-pc-windows-msvc.tar.gz`、Arm64 では `codex-package-aarch64-pc-windows-msvc.tar.gz` です。下のスクリプトは自動で適切なほうを選びます。単体の `codex-*.exe` ではなく、必ずパッケージを使ってください。Codex はツールを補助プログラム（`bin\codex-code-mode-host.exe`、`codex-resources\codex-command-runner.exe`、Windows サンドボックスのセットアップ）経由で実行します。これらは `codex.exe` と同じ場所に置く必要があり、単体の exe ではすべてのツール呼び出しが "failed to spawn code-mode host" で失敗します。winget は不要です。winget のパッケージは固定リリースより遅れることがあります。0.166.0 は本拡張が検証している app-server 契約なので、`latest` ではなくこのリリースを固定して使用してください。
+1. [Codex 0.169.0 リリース](https://github.com/openai/codex/releases/tag/rust-v0.169.0) から、使用しているマシンに合った Windows パッケージをダウンロードしてローカルディレクトリへ展開します。x64 では `codex-package-x86_64-pc-windows-msvc.tar.gz`、Arm64 では `codex-package-aarch64-pc-windows-msvc.tar.gz` です。下のスクリプトは自動で適切なほうを選びます。単体の `codex-*.exe` ではなく、必ずパッケージを使ってください。Codex はツールを補助プログラム（`bin\codex-code-mode-host.exe`、`codex-resources\codex-command-runner.exe`、Windows サンドボックスのセットアップ）経由で実行します。これらは `codex.exe` と同じ場所に置く必要があり、単体の exe ではすべてのツール呼び出しが "failed to spawn code-mode host" で失敗します。winget は不要です。winget のパッケージは固定リリースより遅れることがあります。0.169.0 は推奨 app-server 契約バージョン、0.167.0 は最低対応バージョンです。
 
    ```powershell
    $arch = if ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture -eq 'Arm64') { 'aarch64' } else { 'x86_64' }
@@ -28,7 +28,7 @@
    $codexRoot = Join-Path $env:LOCALAPPDATA 'OpenAI\Codex'
    New-Item -ItemType Directory -Force -Path $codexRoot | Out-Null
    $archive = Join-Path $env:TEMP $package
-   Invoke-WebRequest -Uri "https://github.com/openai/codex/releases/download/rust-v0.166.0/$package" -OutFile $archive
+   Invoke-WebRequest -Uri "https://github.com/openai/codex/releases/download/rust-v0.169.0/$package" -OutFile $archive
    Get-FileHash $archive -Algorithm SHA256
    tar -xzf $archive -C $codexRoot
    [Environment]::SetEnvironmentVariable('CODEX_PATH', (Join-Path $codexRoot 'bin\codex.exe'), 'User')
@@ -36,7 +36,7 @@
 
    先に進む前に、表示された SHA-256 をリリースページのそのアセットの値と照合してください。CI とスキーマ生成は `app-server-contract.json` で固定した単体の x64 実行ファイルを使います。スキーマ生成と `initialize` の完了にはそれで足ります。どちらのアーキテクチャのパッケージも同じ app-server 契約を公開しています。
 
-2. Visual Studio を再起動し、実行ファイルが 0.166.0 を報告することを確認します。
+2. Visual Studio を再起動し、実行ファイルが 0.169.0 を報告することを確認します。
 
    ```powershell
    $codexExe = [Environment]::GetEnvironmentVariable('CODEX_PATH', 'User')
@@ -79,7 +79,7 @@
 ## 制限事項
 
 - **検証上の制限:** SSO を含むエンタープライズ環境は、プロジェクトで利用できないためテストしません。ワークスペース切り替えは、複数のワークスペースを利用できないためテストしません。experimental 機能は実装しますが、テストは最小限にとどまり、期待どおりに動作しない場合があります。[ADR-021](doc/adr/ADR-021-validation-policy_ja.md) に記載した細かな実行状態の組み合わせは事前に網羅テストせず、Issue が報告された場合または問題に遭遇した場合に再現します。Visual Studio Experimental Instance はテスト用の実行環境であり、Codex の experimental 機能とは別です。
-- **他の Codex CLI バージョンは対象契約ではありません。** 動作確認済みバージョンは 0.166.0、最低対応バージョンは 0.161.0 です。リモート app-server が古い版のまま動作している場合があるため、0.165.0、0.164.0、0.163.0、0.162.1、0.161.0 を回帰比較の基準として保持します。0.161.0 より古いサーバーと、バージョンを判定できないサーバーには、接続時に拒否します。その他のビルドは app-server のプロトコル形状が異なるため、`initialize` や `turn/start` が失敗したり、イベントが欠落したりします。
+- **他の Codex CLI バージョンは対象契約ではありません。** 推奨・検証済みバージョンは 0.169.0、最低対応バージョンは 0.167.0 です。0.167.2 と 0.168.0 を回帰比較の基準として保持します。0.167.0 より古いサーバーと、バージョンを判定できないサーバーには、接続時に拒否します。その他のビルドは app-server のプロトコル形状が異なるため、`initialize` や `turn/start` が失敗したり、イベントが欠落したりします。
 - **codex が複数インストールされていると、意図しないバージョンが起動することがあります。**
   バージョン管理ツール (mise)、winget、npm、Codex デスクトップアプリはそれぞれ別の場所に `codex`実行ファイルを配置し、`PATH` 上で先に見つかるものが最新とは限りません。ワーカーは次の順序で実行ファイルを解決します。
   1. 環境変数 `CODEX_PATH`
@@ -93,7 +93,7 @@
   未実装の場合、`Skills` グループにはカタログが利用できない旨が表示され、そのセッションの間は組み込み
   コマンドのみでスラッシュメニューが動作します。`interface.iconSmall` で宣言されたスキルアイコンは
   描画されず、すべての行が固定グリフを使用します。スキル固有の承認要求は許可せず拒否します。
-- app-server 契約は 0.166.0 を基準に検証しています。CI は最新安定版も取得し、`codex app-server` の起動と `initialize` 完了だけを確認する非ブロッキングの smoke テストを実行します。したがって新しいリリースについて分かるのは起動できることだけで、契約に一致することではありません。schema 生成とビルドは manifest の固定バージョンを使用します。ローカル実行ファイルは必ず `codex --version` で確認してください。
+- app-server 契約は 0.169.0 を基準に検証しています。CI は最新安定版も取得し、`codex app-server` の起動と `initialize` 完了だけを確認する非ブロッキングの smoke テストを実行します。したがって新しいリリースについて分かるのは起動できることだけで、契約に一致することではありません。schema 生成とビルドは manifest の固定バージョンを使用します。ローカル実行ファイルは必ず `codex --version` で確認してください。
 - 本拡張は Windows 上の Visual Studio 専用です。Visual Studio Code 版やクロスプラットフォーム版はありません。
 
 ## FAQ
@@ -103,12 +103,12 @@ Visual Studio 2026 18.12 以降であること、**拡張機能 > 拡張機能�
 なっていることを確認し、VSIX インストール後に Visual Studio を一度再起動してください。
 
 **チャットが応答しない、またはワーカーがすぐ終了します。**
-ほとんどの場合は拡張ではなく Codex CLI 側の問題です。ターミナルで `codex --version` (0.166.0)
+ほとんどの場合は拡張ではなく Codex CLI 側の問題です。ターミナルで `codex --version` (0.169.0)
 と `codex login` を確認してください。ターミナルでは成功するのに Visual Studio では失敗する場合は、
 別の `codex` が起動しています。[制限事項](#制限事項)のとおり `CODEX_PATH` で固定してください。
 
 **ChatGPT で使える gpt-6.1 などのモデルがモデル選択に出てきません。**
-モデル選択には Codex CLI の `model/list` が返したモデルがそのまま表示されます。Codex のモデル一覧は CLI のバージョンごとに配信されるため、`gpt-6.1-sol` は Codex CLI 0.159.1 以降でのみ表示されます。`codex --version` で確認し、0.166.0 に更新してから Visual Studio を再起動してください。
+モデル選択には Codex CLI の `model/list` が返したモデルがそのまま表示されます。Codex のモデル一覧は CLI のバージョンごとに配信されるため、`gpt-6.1-sol` は Codex CLI 0.159.1 以降でのみ表示されます。`codex --version` で確認し、0.169.0 に更新してから Visual Studio を再起動してください。
 
 **Codex は応答するのに、ファイル編集やコマンドが "failed to spawn code-mode host" ですべて失敗します。**
 `CODEX_PATH` が補助プログラムのない単体の `codex.exe` を指しています。[セットアップ](#セットアップ) の手順でリリースパッケージを展開し、`bin\codex-code-mode-host.exe` と `codex-resources\` が `codex.exe` と同じ構成で並ぶようにしてから、Visual Studio を再起動してください。
@@ -156,7 +156,7 @@ Worker は現在の接続所有者のスキルカタログを 60 秒間メモリ
 | Follow Codex configuration（既定） | なし | Codex 設定と管理ポリシーの `windows.sandbox` と features を使用します。 |
 | Prefer MXC | `-c features.prefer_mxc=true` | 管理ポリシーが MXC を許可し、`allowLocalBinding=false` を設定していない場合に MXC を使用します。それ以外は設定済みのバックエンドを維持します。 |
 | Require MXC | `-c windows.sandbox=mxc` | MXC を要求します。`windows.allow_mxc=false` または管理ポリシーと矛盾すると、Codex が起動を拒否することがあります。 |
-| Do not use MXC | `-c windows.allow_mxc=false` | ローカル app-server で MXC を無効にします。CLI 0.163.0 以上が必要です。MXC を必須とするポリシーでは Codex が起動を拒否することがあります。 |
+| Do not use MXC | `-c windows.allow_mxc=false` | ローカル app-server で MXC を無効にします。CLI 0.167.0 以上が必要です。MXC を必須とするポリシーでは Codex が起動を拒否することがあります。 |
 
 変更は次回のローカル app-server 起動時に反映されます。再接続が必要な間はパネルにその旨が表示されます。リモートプロファイルは変更しません。**Check sandbox status** は `windows.allow_mxc` が取得できる場合に報告し、管理要件も表示します。値がない場合は不明です。App Server は MXC が必須かどうかを公開しません。また、特定のコマンドがどのバックエンドで実行されたかも証明できません。MXC には setup は不要です。選択欄の下にある elevated／unelevated の setup は、それらの legacy バックエンド専用です。選択によって起動できない場合は、サニタイズ済み CLI エラーと設定を確認してください。
 
@@ -167,9 +167,9 @@ Worker は現在の接続所有者のスキルカタログを 60 秒間メモリ
 
 開発時の前提条件:
 
-- Visual Studio 2026 18.12 以降 (Visual Studio 拡張機能開発ワークロード)
+- Visual Studio 2026 18.12 or later with the Visual Studio extension development workload
 - .NET 10 SDK
-- 公式 Codex CLI 0.166.0 実行ファイル (ビルド時の対象プロトコル schema 生成に使用)
+- 公式 Codex CLI 0.169.0 実行ファイル (ビルド時の対象プロトコル schema 生成に使用)
 
 復元とビルド:
 
@@ -179,13 +179,13 @@ dotnet build CodexForVisualStudio.slnx -c Release --no-restore
 ```
 
 `schemas/` は Apache-2.0 ライセンスの Codex CLI が生成する出力であり、MIT ライセンスの本リポジトリ
-からは意図的に除外しています。cache は `schemas/<version>/<stable|experimental>/` に分離し、CLI version、surface、generator arguments、metadata、schema sentinel がすべて一致する場合だけ再利用します。`schemas/0.166.0/stable/codex_app_server_protocol.schemas.json` が存在しないか古い場合、Windows 上での `Codex.AppServer.Protocol` のビルドが次と同等の処理を自動実行します。
+からは意図的に除外しています。cache は `schemas/<version>/<stable|experimental>/` に分離し、CLI version、surface、generator arguments、metadata、schema sentinel がすべて一致する場合だけ再利用します。`schemas/0.169.0/stable/codex_app_server_protocol.schemas.json` が存在しないか古い場合、Windows 上での `Codex.AppServer.Protocol` のビルドが次と同等の処理を自動実行します。
 
 ```powershell
-pwsh -NoProfile -File scripts/generate-schemas.ps1 -OutputDirectory schemas -Version 0.166.0 -Surface stable -CodexPath $env:CODEX_PATH
+pwsh -NoProfile -File scripts/generate-schemas.ps1 -OutputDirectory schemas -Version 0.169.0 -Surface stable -CodexPath $env:CODEX_PATH
 ```
 
-generator は `CODEX_PATH` を優先し、未設定時は `PATH` 上の `codex` を参照します。選択した stable manifest entry と異なる version は拒否します。CI は `scripts/validate-contract-manifest.ps1` で `app-server-contract.json`（`minimumVersion` を含むスキーマバージョン 3）を検証し、固定した Windows x64 の 0.161.0 / 0.162.1 / 0.163.0 / 0.166.0 公式 release asset を取得して、manifest の SHA-256 を検証したうえで 4 版すべての stable / experimental を生成し、各回帰版との差分を個別に確認します。build と release job は固定した 0.166.0 実行ファイルを `CODEX_PATH` として渡します。CI の build job はさらに最新安定版の Windows x64 実行ファイルを runner のローカル一時ディレクトリへ取得し、`scripts/smoke-app-server.ps1` を非ブロッキングの確認として実行します。ローカル schema ビルドでは公式 0.166.0 実行ファイルを `CODEX_PATH` に設定してください。
+generator は `CODEX_PATH` を優先し、未設定時は `PATH` 上の `codex` を参照します。選択した stable manifest entry と異なる version は拒否します。CI は `scripts/validate-contract-manifest.ps1` で `app-server-contract.json`（`minimumVersion` を含むスキーマバージョン 4）を検証し、固定した Windows x64 の 0.167.2 / 0.168.0 / 0.169.0 公式 release asset を取得して、manifest の SHA-256 を検証したうえで 3 版すべての stable / experimental を生成し、各回帰版との差分を個別に確認します。build と release job は固定した 0.169.0 実行ファイルを `CODEX_PATH` として渡します。CI の build job はさらに最新安定版の Windows x64 実行ファイルを runner のローカル一時ディレクトリへ取得し、`scripts/smoke-app-server.ps1` を非ブロッキングの確認として実行します。ローカル schema ビルドでは公式 0.169.0 実行ファイルを `CODEX_PATH` に設定してください。
 
 ```powershell
 $env:CODEX_PATH = "C:\path\to\codex.exe"
