@@ -13,6 +13,8 @@
   Worker manages the local `codex app-server` child process or connects to a configured remote server.
 - The Extension and Worker communicate over a named pipe. The Worker uses stdio (JSONL) for a local App Server and WebSocket for a configured remote server.
 
+> The implementation notes that follow are historical snapshots unless a later dated update says otherwise. Some describe superseded runtime or packaging details; the current baseline is defined by Runtime Boundaries above and the latest dated update at the end.
+
 The publisher is `kkamegawa` (see CLAUDE.md for the current VSIX identity string).
 
 ## Issue #152: Path mapping and connection state isolation
