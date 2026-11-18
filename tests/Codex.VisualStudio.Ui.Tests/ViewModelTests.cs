@@ -6955,6 +6955,40 @@ public sealed partial class ViewModelTests
     }
 
     [TestMethod]
+    public async Task ChatViewModel_DefaultWorkspaceSearchUsesInjectedTimeProviderForCacheExpiry()
+    {
+        string directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        string programPath = Path.Combine(directory, "Program.cs");
+        string readmePath = Path.Combine(directory, "README.md");
+        await File.WriteAllTextAsync(programPath, "class Program { }");
+        try
+        {
+            var timeProvider = new ManualTimeProvider(DateTimeOffset.UnixEpoch);
+            using var vm = new ChatViewModel(
+                new FakeWorkerBridge(),
+                autoConnect: false,
+                protectedDirectoryPolicy: new ProtectedDirectoryPolicy([]),
+                timeProvider: timeProvider);
+            SetWorkingDirectory(vm, directory);
+
+            vm.ComposerText = "review #program";
+            await WaitForAsync(() => vm.FileSuggestions.Suggestions.Any(suggestion => suggestion.FullPath == programPath));
+
+            await File.WriteAllTextAsync(readmePath, "notes");
+            timeProvider.Advance(TimeSpan.FromSeconds(31));
+            vm.ComposerText = "review #readme";
+            await WaitForAsync(() => vm.FileSuggestions.Suggestions.Any(suggestion => suggestion.FullPath == readmePath));
+
+            Assert.AreEqual(readmePath, vm.FileSuggestions.Suggestions.Single().FullPath);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [TestMethod]
     public async Task ChatViewModel_DiscardsFileSuggestionsCompletedForPreviousOwner()
     {
         var response = new TaskCompletionSource<IReadOnlyList<WorkspaceFileSearchResult>>(TaskCreationOptions.RunContinuationsAsynchronously);
