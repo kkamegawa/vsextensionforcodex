@@ -29,7 +29,7 @@ public sealed class WorkspaceFileSearchService : IWorkspaceFileSearchService
     };
 
     private readonly VisualStudioExtensibility? extensibility;
-    private readonly object cacheLock = new();
+    private readonly Lock cacheLock = new();
     private CacheEntry? cache;
 
     public WorkspaceFileSearchService(VisualStudioExtensibility? extensibility)

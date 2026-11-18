@@ -20,14 +20,14 @@ public sealed partial class WorkerRpcService : ICodexWorkerClient, IAsyncDisposa
 
     // Canceled first on dispose so an owner-change reconnect cannot delay Worker shutdown.
     private readonly CancellationTokenSource lifetime = new();
-    private readonly object targetGate = new();
+    private readonly Lock targetGate = new();
     private readonly AsyncLocal<ConnectionTargetSnapshot?> processEmissionTarget = new();
     private readonly AsyncLocal<ConnectionTargetSnapshot?> requestEmissionTarget = new();
     private readonly SortedDictionary<long, ConnectionTargetSnapshot> ownerTargetHistory = new();
     // Queued close and watchdog callbacks. They run outside the transition gate and are drained
     // after the gate is released during disposal.
     private readonly List<Task> trackedCallbacks = [];
-    private readonly object trackedCallbacksGate = new();
+    private readonly Lock trackedCallbacksGate = new();
     // Cleared under trackedCallbacksGate when DisposeAsync snapshots the callbacks to drain.
     private bool acceptingCallbacks = true;
     private WorkerOptions? options;

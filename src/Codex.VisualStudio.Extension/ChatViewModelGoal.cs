@@ -21,7 +21,7 @@ public sealed partial class ChatViewModel
 
     // Goal state is updated from the Worker notification thread and from RPC continuations, so
     // every read-modify-write runs under this lock. Change notifications are raised after release.
-    private readonly object goalStateLock = new();
+    private readonly Lock goalStateLock = new();
     private readonly ReentrantSemaphore goalOperationGate = ExtensionConcurrency.CreateSemaphore();
     private readonly HashSet<string> completedGoalTurnIds = new(StringComparer.Ordinal);
     private ThreadGoalInfo? selectedThreadGoal;

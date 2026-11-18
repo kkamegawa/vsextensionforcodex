@@ -24,7 +24,7 @@ public interface ISecretRedactor
 
 public sealed partial class SecretRedactor : ISecretRedactor
 {
-    private readonly object secretsGate = new();
+    private readonly Lock secretsGate = new();
     private readonly Dictionary<string, int> registeredSecrets = new(StringComparer.Ordinal);
     private string[] secretSnapshot = [];
 
@@ -486,7 +486,7 @@ public sealed record ApprovalGrant(
 public sealed class ApprovalGrantStore
 {
     private readonly List<ApprovalGrant> grants = [];
-    private readonly object gate = new();
+    private readonly Lock gate = new();
 
     public void Add(ApprovalRequest request, ApprovalScope scope)
     {

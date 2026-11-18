@@ -1741,7 +1741,7 @@ public sealed class WorkerRpcServiceTests
 
         private sealed class Observer
         {
-            private readonly object gate = new();
+            private readonly Lock gate = new();
             private readonly List<WorkerStatus> stateChanges = [];
             private readonly List<ConversationEvent> conversationEvents = [];
             private readonly TaskCompletionSource<WorkerStatus> turnIdSeen =

@@ -7,7 +7,7 @@ internal sealed class ProtectedAuthorizationUrlStore
 {
     private const int MaximumUrlLength = 8192;
     private const int MaximumEntries = 128;
-    private readonly object gate = new();
+    private readonly Lock gate = new();
     private readonly Dictionary<(long Generation, string ActionId), ProtectedAuthorizationUrl> urls = new();
     private bool disposed;
     private long retiredGenerationCutoff;

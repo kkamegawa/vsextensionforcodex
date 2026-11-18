@@ -489,7 +489,7 @@ internal sealed class SlashCommandCoordinator
     public const int MaximumQueuedCommands = 10;
 
     private const string SessionQueueKey = "<session>";
-    private readonly object gate = new();
+    private readonly Lock gate = new();
     private readonly Dictionary<string, List<SlashCommandInvocation>> queues = new(StringComparer.Ordinal);
 
     public SlashCommandQueueDecision Schedule(

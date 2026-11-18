@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.IO;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -8,7 +8,7 @@ namespace Codex.VisualStudio.Extension;
 
 internal static class ExtensionDiagnostics
 {
-    private static readonly object FileLock = new();
+    private static readonly Lock FileLock = new();
     private static readonly Regex UrlPattern = new(@"https?://\S+", RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
     private static readonly Regex CredentialPattern = new(
         @"(?i)(authorization|api[_-]?key|access[_-]?token|refresh[_-]?token|bearer)\s*[:=]\s*\S+",

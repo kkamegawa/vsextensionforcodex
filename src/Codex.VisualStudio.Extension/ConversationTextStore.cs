@@ -18,7 +18,7 @@ internal sealed class ConversationTextStore
 {
     internal static readonly TimeSpan MaximumUnusedAge = TimeSpan.FromHours(24);
 
-    private readonly object gate = new();
+    private readonly Lock gate = new();
     private readonly HashSet<string> openFiles = new(StringComparer.OrdinalIgnoreCase);
     private readonly string root;
 
@@ -161,7 +161,7 @@ internal sealed class ConversationTextDocuments : IConversationTextDocuments, ID
 {
     private readonly VisualStudioExtensibility? extensibility;
     private readonly ClosedDocumentListener listener = new();
-    private readonly object gate = new();
+    private readonly Lock gate = new();
     private Task<IDisposable>? subscription;
 
     public ConversationTextDocuments(VisualStudioExtensibility? extensibility)
@@ -227,7 +227,7 @@ internal sealed class ConversationTextDocuments : IConversationTextDocuments, ID
 
     private sealed class ClosedDocumentListener : IDocumentEventsListener
     {
-        private readonly object gate = new();
+        private readonly Lock gate = new();
         private readonly Dictionary<string, (string Path, Action<string> Closed)> callbacks = new(StringComparer.OrdinalIgnoreCase);
 
         public void Add(string path, Action<string> closed)

@@ -28,7 +28,7 @@ public sealed class StreamingBuffer : IAsyncDisposable
     public void Append(string key, ConversationEvent template, string text, int limit)
     {
         Entry entry = entries.GetOrAdd(key, _ => new Entry(template, limit));
-        lock (entry)
+        lock (entry.SyncLock)
         {
             int remaining = Math.Max(0, entry.Limit - entry.VisibleWritten);
             if (remaining > 0)
@@ -73,7 +73,7 @@ public sealed class StreamingBuffer : IAsyncDisposable
             {
                 ConversationEvent? outgoing = null;
                 string? overflow = null;
-                lock (entry)
+                lock (entry.SyncLock)
                 {
                     if (!entry.Dirty)
                     {
@@ -137,6 +137,8 @@ public sealed class StreamingBuffer : IAsyncDisposable
 
     private sealed class Entry
     {
+        public Lock SyncLock { get; } = new();
+
         public Entry(ConversationEvent template, int limit)
         {
             Template = template;

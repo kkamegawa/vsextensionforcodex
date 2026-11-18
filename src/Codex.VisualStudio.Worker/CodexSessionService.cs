@@ -329,7 +329,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
     private static readonly string[] NetworkDiagnosticsArguments = ["doctor", "--network-only", "--no-color", "--ascii"];
     private static readonly TimeSpan NetworkDiagnosticsTimeout = TimeSpan.FromSeconds(60);
     private readonly GitWorktreeScope gitWorktreeScope = new();
-    private readonly object turnStateLock = new();
+    private readonly Lock turnStateLock = new();
     private readonly HashSet<TurnKey> completedTurnIds = new();
     private string? activeRootTurnId;
     // Thread whose turn/start request is in flight. Its turn notifications can arrive before the
@@ -346,7 +346,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
     private readonly TimeProvider timeProvider;
     private readonly ISkillCatalogStore skillCatalogStore;
     private readonly Action<Uri> authorizationUrlOpener;
-    private readonly object skillsBackgroundRefreshLock = new();
+    private readonly Lock skillsBackgroundRefreshLock = new();
     private CancellationTokenSource skillsBackgroundRefreshCancellation = new();
     private Task? skillsBackgroundRefreshTask;
     private ListSkillsResult? skillsSnapshot;
@@ -6568,7 +6568,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
 
         // Guards LoginId, ResponseReceived and EarlyCompletion between the login response and
         // the completion notification, which are processed on different tasks.
-        public object Gate { get; } = new();
+        public Lock Gate { get; } = new();
     }
 
     private sealed record McpOAuthEarlyCompletion(string LoginId, bool Succeeded);
@@ -6635,7 +6635,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         public string? GatewayOAuthOriginDisplay { get; set; }
         public string? GatewayLoginAttemptId { get; set; }
         public InteractionAuthState GatewayOAuthState { get; set; } = InteractionAuthState.Checking;
-        public object InteractionAuthLock { get; } = new();
+        public Lock InteractionAuthLock { get; } = new();
         public ConcurrentDictionary<string, McpServerAuthStatus> McpAuthStatuses { get; } = new(StringComparer.Ordinal);
         public ConcurrentDictionary<string, McpOAuthOperation> McpOAuthOperations { get; } = new(StringComparer.Ordinal);
         public ConcurrentDictionary<string, string> McpOAuthOperationsByServer { get; } = new(StringComparer.Ordinal);

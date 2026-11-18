@@ -95,7 +95,7 @@ internal sealed class PendingInteractionRegistry : IDisposable
     private readonly ConcurrentDictionary<PendingInteractionKey, byte> externallyResolvedBeforeRegistration = new();
     private readonly Dictionary<PendingInteractionKey, long> recentlyCompleted = new();
     private readonly Queue<(PendingInteractionKey Key, long Version)> recentlyCompletedOrder = new();
-    private readonly object registrationGate = new();
+    private readonly Lock registrationGate = new();
     private readonly TimeProvider timeProvider;
     private int disposed;
     private long retiredGenerationCutoff;

@@ -10,7 +10,7 @@ var threadReadStates = new Dictionary<string, Dictionary<string, object?>>(Strin
 long nextReadStateRevision = 1;
 // Turn completion updates read state from a background task, so every read-state access,
 // revision allocation, comparison and mutation runs under this gate and returns detached snapshots.
-var readStateGate = new object();
+var readStateGate = new Lock();
 string scenario = Environment.GetEnvironmentVariable("CODEX_FAKE_SCENARIO") ?? string.Empty;
 var attachedThreadParents = new Dictionary<string, string>(StringComparer.Ordinal);
 var ephemeralThreads = new HashSet<string>(StringComparer.Ordinal);
