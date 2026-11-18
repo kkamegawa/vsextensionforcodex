@@ -864,7 +864,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
     {
         ArgumentNullException.ThrowIfNull(request);
         string serverName = request.ServerName.Trim();
-        if (serverName.Length is 0 or > 256 || ContainsControlCharacter(serverName.AsSpan()))
+        if (serverName.Length is 0 or > 256 || serverName.Any(char.IsControl))
         {
             throw new ArgumentException("The MCP server name is invalid.", nameof(request));
         }
@@ -4178,7 +4178,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             return;
         }
 
-        ConversationEventKind kind = MapKind(method);
+        ConversationEventKind kind = MapNotificationKind(method);
         if (kind == ConversationEventKind.Unknown)
         {
             WorkerDiagnostics.Write($"Ignoring unsupported app-server notification method={redactor.Redact(method)}");
@@ -4469,7 +4469,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         }
 
         string text = value.GetString() ?? string.Empty;
-        if (text.Length is 0 or > 256 || ContainsControlCharacter(text.AsSpan()))
+        if (text.Length is 0 or > 256 || text.Any(char.IsControl))
         {
             return false;
         }
@@ -5262,7 +5262,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
     private static string? NormalizePlanType(string? value)
         => !string.IsNullOrWhiteSpace(value)
         && value.Length <= 64
-        && ContainsOnlyWireIdentifierCharacters(value.AsSpan())
+        && value.All(character => char.IsAsciiLetterOrDigit(character) || character is '_' or '-')
             ? value
             : null;
 
@@ -5421,7 +5421,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
 
         string trimmed = value.Trim();
         return trimmed.Length <= MaxPermissionProfileIdLength
-            && !ContainsControlCharacter(trimmed.AsSpan())
+            && trimmed.All(character => !char.IsControl(character))
                 ? trimmed
                 : null;
     }
@@ -5434,7 +5434,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         }
 
         string trimmed = value.Trim();
-        return trimmed.Length <= 128 && !ContainsControlCharacter(trimmed.AsSpan())
+        return trimmed.Length <= 128 && trimmed.All(character => !char.IsControl(character))
             ? trimmed
             : null;
     }
@@ -5442,7 +5442,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
     private static string? NormalizeCursor(string? value)
         => !string.IsNullOrEmpty(value)
             && value.Length <= 512
-            && !ContainsControlCharacter(value.AsSpan())
+            && value.All(character => !char.IsControl(character))
                 ? value
                 : null;
 
@@ -5868,7 +5868,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         // names may legitimately contain other characters (spaces, dots, etc.), and applying that
         // narrower charset here would silently drop otherwise-valid skills.
         string trimmed = value.Trim();
-        return trimmed.Length <= MaxSkillNameLength && !ContainsControlCharacter(trimmed.AsSpan())
+        return trimmed.Length <= MaxSkillNameLength && trimmed.All(character => !char.IsControl(character))
             ? trimmed
             : null;
     }
@@ -5877,7 +5877,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
     {
         if (string.IsNullOrEmpty(value)
             || value.Length > MaxSkillPathLength
-            || ContainsControlCharacter(value.AsSpan()))
+            || value.Any(char.IsControl))
         {
             return null;
         }
@@ -6075,7 +6075,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         }
 
         string trimmed = value.Trim();
-        return trimmed.Length <= 128 && !ContainsControlCharacter(trimmed.AsSpan())
+        return trimmed.Length <= 128 && !trimmed.AsSpan().ContainsAny(ControlCharacters)
             ? trimmed
             : null;
     }
@@ -6135,34 +6135,20 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
 
     private static SearchValues<char> CreateControlCharacterSearchValues()
     {
+        // Unicode control characters are the C0 range, DEL, and the C1 range.
         Span<char> characters = stackalloc char[65];
-        for (int value = 0; value < 32; value++)
+        int index = 0;
+        for (char value = '\u0000'; value <= '\u001F'; value++)
         {
-            characters[value] = (char)value;
+            characters[index++] = value;
         }
 
-        for (int value = 127; value < 160; value++)
+        for (char value = '\u007F'; value <= '\u009F'; value++)
         {
-            characters[value - 95] = (char)value;
+            characters[index++] = value;
         }
 
         return SearchValues.Create(characters);
-    }
-
-    private static bool ContainsControlCharacter(ReadOnlySpan<char> value)
-        => value.IndexOfAny(ControlCharacters) >= 0;
-
-    private static bool ContainsOnlyWireIdentifierCharacters(ReadOnlySpan<char> value)
-    {
-        foreach (char character in value)
-        {
-            if (!WireIdentifierCharacters.Contains(character))
-            {
-                return false;
-            }
-        }
-
-        return true;
     }
 
     private static string? NormalizeWireIdentifier(string? value)
@@ -6174,7 +6160,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
 
         string trimmed = value.Trim();
         return trimmed.Length <= 128
-            && ContainsOnlyWireIdentifierCharacters(trimmed.AsSpan())
+            && !trimmed.AsSpan().ContainsAnyExcept(WireIdentifierCharacters)
                 ? trimmed
                 : null;
     }
@@ -6577,7 +6563,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
     private static JsonElement EmptyUserInputResponse()
         => JsonSerializer.SerializeToElement(new { answers = new Dictionary<string, object>(StringComparer.Ordinal) });
 
-    private static ConversationEventKind MapKind(string method)
+    internal static ConversationEventKind MapNotificationKind(string method)
         => NotificationKinds.TryGetValue(method, out ConversationEventKind kind)
             ? kind
             : ConversationEventKind.Unknown;

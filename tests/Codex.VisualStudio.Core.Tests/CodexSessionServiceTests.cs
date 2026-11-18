@@ -18,6 +18,102 @@ public sealed partial class CodexSessionServiceTests
     private static readonly string[] CreativeOnly = ["Creative"];
 
     [TestMethod]
+    [DataRow("item/started", ConversationEventKind.ItemStarted)]
+    [DataRow("item/completed", ConversationEventKind.ItemCompleted)]
+    [DataRow("item/agentMessage/delta", ConversationEventKind.AgentMessageDelta)]
+    [DataRow("item/reasoning/summaryTextDelta", ConversationEventKind.ReasoningSummaryDelta)]
+    [DataRow("item/commandExecution/outputDelta", ConversationEventKind.CommandOutputDelta)]
+    [DataRow("turn/diff/updated", ConversationEventKind.DiffUpdated)]
+    [DataRow("turn/plan/updated", ConversationEventKind.PlanUpdated)]
+    [DataRow("turn/started", ConversationEventKind.TurnStarted)]
+    [DataRow("turn/completed", ConversationEventKind.TurnCompleted)]
+    [DataRow("error", ConversationEventKind.Error)]
+    [DataRow("thread/closed", ConversationEventKind.ThreadClosed)]
+    [DataRow("ITEM/STARTED", ConversationEventKind.Unknown)]
+    [DataRow("future/notification", ConversationEventKind.Unknown)]
+    [DataRow("", ConversationEventKind.Unknown)]
+    public void NotificationMethodMapsToExpectedConversationEventKind(string method, ConversationEventKind expectedKind)
+        => Assert.AreEqual(expectedKind, CodexSessionService.MapNotificationKind(method));
+
+    [TestMethod]
+    public async Task ModelIdValidationRejectsEveryControlCharacterAndAllowsAdjacentCharacters()
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "thread/start"
+                ? JsonSerializer.SerializeToElement(new { thread = new { id = "thread-1" } })
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+        await service.StartThreadAsync(CancellationToken.None);
+
+        foreach (int codePoint in Enumerable.Range(0, 32).Concat(Enumerable.Range(127, 33)))
+        {
+            string modelId = $"model{(char)codePoint}id";
+            await connection.EmitNotificationAsync("thread/settings/updated", new
+            {
+                threadId = "thread-1",
+                threadSettings = new { model = modelId },
+            });
+
+            Assert.IsNull(service.EffectiveModelId, $"U+{codePoint:X4} must be rejected.");
+        }
+
+        foreach (char allowedCharacter in new[] { ' ', '~', '\u00A0' })
+        {
+            string modelId = $"model{allowedCharacter}id";
+            await connection.EmitNotificationAsync("thread/settings/updated", new
+            {
+                threadId = "thread-1",
+                threadSettings = new { model = modelId },
+            });
+
+            Assert.AreEqual(modelId, service.EffectiveModelId, $"U+{(int)allowedCharacter:X4} must remain allowed.");
+        }
+    }
+
+    [TestMethod]
+    public async Task RateLimitWireIdentifierValidationKeepsAllowedAsciiSetAndLengthBoundary()
+    {
+        var connection = new RecordingConnection();
+        await using var service = CreateService();
+        var updates = new List<RateLimitsResult>();
+        service.RateLimitsChanged += (value, _) =>
+        {
+            updates.Add(value);
+            return Task.CompletedTask;
+        };
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        async Task<string?> ReadPlanTypeAsync(string value)
+        {
+            updates.Clear();
+            await connection.EmitNotificationAsync("account/rateLimits/updated", new
+            {
+                rateLimits = new { planType = value },
+            });
+
+            RateLimitInfo? rateLimits = updates.Single().RateLimits;
+            Assert.IsNotNull(rateLimits);
+            return rateLimits.PlanType;
+        }
+
+        const string allowedCharacters = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_-";
+        Assert.AreEqual(allowedCharacters, await ReadPlanTypeAsync(allowedCharacters));
+
+        string maxLengthIdentifier = new('a', 128);
+        Assert.AreEqual(maxLengthIdentifier, await ReadPlanTypeAsync(maxLengthIdentifier));
+
+        Assert.IsNull(await ReadPlanTypeAsync(new string('a', 129)));
+
+        foreach (string invalidIdentifier in new[] { "has space", "has.dot", "has/slash", "café", "has~tilde" })
+        {
+            Assert.IsNull(await ReadPlanTypeAsync(invalidIdentifier), $"'{invalidIdentifier}' contains a disallowed character.");
+        }
+    }
+
+    [TestMethod]
     public async Task RetiredSessionNeverPublishesQueuedStreamingDeltaIntoReplacementOwner()
     {
         var oldConnection = new RecordingConnection();
