@@ -1006,5 +1006,6 @@ Tracking: [Issue #299](https://github.com/kkamegawa/vsextensionforcodex/issues/2
 
 - [x] Routed remaining production clock and elapsed-time operations through injected `TimeProvider`: chat usage and skill-cache timestamps, monotonic recovery deadlines and timeout sources, workspace file-search cache expiry, approval-grant timestamps, and streaming flush timers.
 - [x] Added deterministic `TimeProvider` coverage for approval timestamps, recovery episode deadlines, workspace cache expiry, and chat usage refreshes.
+- [x] Copilot review follow-up: pass the view model's injected clock to its default workspace search service and cover the wiring through the view model.
 
 Validation: Release solution build passed with 0 warnings and 0 errors. UI tests passed 613/613. The Core suite passed 610/611 in each of three full local runs; each run had one different timing-sensitive integration test failure. All three tests passed when rerun together in isolation (3/3). `SecurityServicesTests` passed 15/15 and `git diff --check` passed. The full Core suite remains nondeterministic in this local environment.
