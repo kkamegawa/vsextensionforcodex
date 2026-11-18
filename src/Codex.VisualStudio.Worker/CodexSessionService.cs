@@ -636,7 +636,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
 
         if (context.IsLocal
             && context.SandboxBackend == WindowsSandboxBackendPreference.DisableMxc
-            && featureTier < CodexFeatureTier.Tier163)
+            && featureTier < CodexFeatureTier.Baseline)
         {
             await RetireRejectedConnectionAsync(context).ConfigureAwait(false);
             throw new InvalidOperationException(
@@ -1336,7 +1336,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
     public async Task<ThreadSummary> StartThreadAsync(CancellationToken cancellationToken)
     {
         ConnectionContext context = RequireContext();
-        object parameters = context.FeatureTier >= CodexFeatureTier.Tier166
+        object parameters = context.FeatureTier >= CodexFeatureTier.Baseline
             && context.ExperimentalApi
                 ? new { cwd = MapLocalPathForServer(options.WorkingDirectory), historyMode = "paginated" }
                 : new { cwd = MapLocalPathForServer(options.WorkingDirectory) };
@@ -1374,7 +1374,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
                 cancellationToken).ConfigureAwait(false);
             EnsureCurrent(context);
             AccountStatus status = ReadAccountStatus(result);
-            if (context.ExperimentalApi && context.FeatureTier >= CodexFeatureTier.Tier166)
+            if (context.ExperimentalApi && context.FeatureTier >= CodexFeatureTier.Baseline)
             {
                 status = await PopulateWorkspaceNameAsync(context, status, cancellationToken).ConfigureAwait(false);
             }
@@ -1557,7 +1557,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         summary.EffectiveModelId = effectiveThreadModelId;
         activeThreadInheritsDefaultModel = false;
         // 0.164.0 restores the saved thread settings on resume; older servers report defaults.
-        summary.HasAuthoritativeTurnSettings = RequireContext().FeatureTier >= CodexFeatureTier.Tier164;
+        summary.HasAuthoritativeTurnSettings = RequireContext().FeatureTier >= CodexFeatureTier.Baseline;
         return summary;
     }
 
@@ -2358,7 +2358,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         CancellationToken cancellationToken)
     {
         ConnectionContext context = RequireContext();
-        bool linkedForkAvailable = context.FeatureTier >= CodexFeatureTier.Tier166
+        bool linkedForkAvailable = context.FeatureTier >= CodexFeatureTier.Baseline
             && context.ExperimentalApi;
         if ((request.CreateLinkedFork || request.ListLinkedForks) && !linkedForkAvailable)
         {
@@ -2548,7 +2548,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
 
         return new McpServerListResult
         {
-            Servers = ReadMcpServers(call.Result, RequireContext().FeatureTier >= CodexFeatureTier.Tier164),
+            Servers = ReadMcpServers(call.Result, RequireContext().FeatureTier >= CodexFeatureTier.Baseline),
         };
     }
 
@@ -2769,7 +2769,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
 
     public async Task<ThreadUsageResult> GetThreadUsageAsync(string threadId, CancellationToken cancellationToken)
     {
-        if (RequireContext().FeatureTier < CodexFeatureTier.Tier166)
+        if (RequireContext().FeatureTier < CodexFeatureTier.Baseline)
         {
             return Unsupported<ThreadUsageResult>("Conversation usage amounts require Codex CLI 0.166.0 or later.");
         }
@@ -2800,7 +2800,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
     public async Task<NetworkDiagnosticsResult> RunNetworkDiagnosticsAsync(CancellationToken cancellationToken)
     {
         ConnectionContext context = RequireContext();
-        if (context.FeatureTier < CodexFeatureTier.Tier166)
+        if (context.FeatureTier < CodexFeatureTier.Baseline)
         {
             return Unsupported<NetworkDiagnosticsResult>("Network diagnostics require Codex CLI 0.166.0 or later.");
         }
@@ -5258,7 +5258,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             builder.Append(value.Length).Append(':').Append(value).Append('\0');
         }
 
-        string? workspaceId = context.ExperimentalApi && context.FeatureTier >= CodexFeatureTier.Tier166
+        string? workspaceId = context.ExperimentalApi && context.FeatureTier >= CodexFeatureTier.Baseline
             ? ReadWorkspaceAccountId(result)
             : null;
         if (!string.IsNullOrWhiteSpace(workspaceId))

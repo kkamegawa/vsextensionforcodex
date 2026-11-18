@@ -94,8 +94,8 @@ public sealed partial class CodexSessionServiceTests
     }
 
     [TestMethod]
-    [DataRow("Codex Desktop/0.164.0 (Windows 10.0.26200; x86_64) xterm-256color (Codex Desktop; 1.0.0)")]
-    [DataRow("codex_vscode/0.164.0 (Windows 10.0.26200; x86_64) vscode/1.99.0")]
+    [DataRow("Codex Desktop/0.167.0 (Windows 10.0.26200; x86_64) xterm-256color (Codex Desktop; 1.0.0)")]
+    [DataRow("codex_vscode/0.167.0 (Windows 10.0.26200; x86_64) vscode/1.99.0")]
     public async Task InitializeReadsVersionWhenTheOriginatorContainsSpaces(string userAgent)
     {
         var connection = new RecordingConnection
@@ -108,8 +108,8 @@ public sealed partial class CodexSessionServiceTests
 
         await service.InitializeAsync(connection, Options(), CancellationToken.None);
 
-        Assert.AreEqual("0.164.0", service.CodexVersion);
-        Assert.AreEqual(CodexFeatureTier.Tier164, service.FeatureTier);
+        Assert.AreEqual("0.167.0", service.CodexVersion);
+        Assert.AreEqual(CodexFeatureTier.Baseline, service.FeatureTier);
     }
 
     [TestMethod]
@@ -170,22 +170,17 @@ public sealed partial class CodexSessionServiceTests
 
     [TestMethod]
     [DataRow("0.159.1", CodexFeatureTier.Unsupported, false)]
-    [DataRow("0.160.9", CodexFeatureTier.Unsupported, false)]
-    [DataRow("0.161.0-alpha.1", CodexFeatureTier.Unsupported, false)]
-    [DataRow("0.0.0", CodexFeatureTier.Unsupported, false)]
-    [DataRow("0.161.0", CodexFeatureTier.Baseline, false)]
-    [DataRow("0.162.1", CodexFeatureTier.Baseline, false)]
-    [DataRow("0.163.0-alpha.2", CodexFeatureTier.Baseline, false)]
-    [DataRow("0.163.0", CodexFeatureTier.Tier163, false)]
-    [DataRow("0.164.0-alpha.1", CodexFeatureTier.Tier163, false)]
-    [DataRow("0.164.0+build.7", CodexFeatureTier.Tier164, false)]
-    [DataRow("0.164.0", CodexFeatureTier.Tier164, false)]
-    [DataRow("0.165.0-alpha.1", CodexFeatureTier.Tier164, false)]
-    [DataRow("0.165.0", CodexFeatureTier.Tier165, false)]
-    [DataRow("0.166.0-alpha.1", CodexFeatureTier.Tier165, false)]
-    [DataRow("0.166.0+build.7", CodexFeatureTier.Tier166, false)]
-    [DataRow("0.166.0", CodexFeatureTier.Tier166, false)]
-    [DataRow("0.167.0", CodexFeatureTier.Tier166, true)]
+    [DataRow("0.166.9", CodexFeatureTier.Unsupported, false)]
+    [DataRow("0.167.0-alpha.1", CodexFeatureTier.Unsupported, false)]
+    [DataRow("0.167.0", CodexFeatureTier.Baseline, false)]
+    [DataRow("0.167.2", CodexFeatureTier.Baseline, false)]
+    [DataRow("0.168.0-alpha.1", CodexFeatureTier.Baseline, false)]
+    [DataRow("0.168.0+build.7", CodexFeatureTier.Tier168, false)]
+    [DataRow("0.168.0", CodexFeatureTier.Tier168, false)]
+    [DataRow("0.169.0-alpha.1", CodexFeatureTier.Tier168, false)]
+    [DataRow("0.169.0+build.7", CodexFeatureTier.Tier169, false)]
+    [DataRow("0.169.0", CodexFeatureTier.Tier169, false)]
+    [DataRow("0.170.0", CodexFeatureTier.Tier169, true)]
     public async Task InitializeAssignsTheFeatureTierOrRejectsTheServer(string version, CodexFeatureTier expected, bool newer)
     {
         var connection = new RecordingConnection

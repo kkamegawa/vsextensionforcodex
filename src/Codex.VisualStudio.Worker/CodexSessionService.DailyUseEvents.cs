@@ -804,7 +804,7 @@ public sealed partial class CodexSessionService
             AddServerPathPart(context, parts, GetString(item, "path"), ArtifactPartKind.Image,
                 [ArtifactActionKind.Preview, ArtifactActionKind.Open, ArtifactActionKind.Reveal]);
         }
-        else if (itemType == "imageGeneration" && context.FeatureTier >= CodexFeatureTier.Tier164)
+        else if (itemType == "imageGeneration" && context.FeatureTier >= CodexFeatureTier.Baseline)
         {
             ProjectGeneratedImage(context, parts, item);
         }
@@ -1068,7 +1068,7 @@ public sealed partial class CodexSessionService
         string? encoded = mimeType == "image/png" ? result![pngPrefix.Length..]
             : mimeType == "image/jpeg" ? result![jpegPrefix.Length..]
             : null;
-        if (encoded is null && context.FeatureTier >= CodexFeatureTier.Tier164 && result is not null)
+        if (encoded is null && context.FeatureTier >= CodexFeatureTier.Baseline && result is not null)
         {
             // 0.164.0 sends raw standard Base64. The leading characters identify the format;
             // AddInlineImagePart still bounds the size and verifies the decoded signature.

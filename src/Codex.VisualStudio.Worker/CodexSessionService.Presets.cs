@@ -29,7 +29,7 @@ public sealed partial class CodexSessionService
     public async Task<SaveFeedbackResult> SaveFeedbackAsync(SaveFeedbackRequest request, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(request);
-        if (RequireContext().FeatureTier < CodexFeatureTier.Tier164)
+        if (RequireContext().FeatureTier < CodexFeatureTier.Baseline)
         {
             return Unsupported<SaveFeedbackResult>(Tier164Required);
         }
@@ -98,7 +98,7 @@ public sealed partial class CodexSessionService
 
     public async Task<ListPresetsResult> ListPresetsAsync(CancellationToken cancellationToken)
     {
-        if (RequireContext().FeatureTier < CodexFeatureTier.Tier164)
+        if (RequireContext().FeatureTier < CodexFeatureTier.Baseline)
         {
             return Unsupported<ListPresetsResult>(Tier164Required);
         }
@@ -119,7 +119,7 @@ public sealed partial class CodexSessionService
     public async Task<WritePresetResult> WritePresetAsync(WritePresetRequest request, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(request);
-        if (RequireContext().FeatureTier < CodexFeatureTier.Tier164)
+        if (RequireContext().FeatureTier < CodexFeatureTier.Baseline)
         {
             return Unsupported<WritePresetResult>(Tier164Required);
         }

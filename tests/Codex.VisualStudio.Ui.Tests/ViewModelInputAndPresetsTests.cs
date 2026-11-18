@@ -248,7 +248,7 @@ public sealed partial class ViewModelTests
     }
 
     private static WorkerStatus Tier164Status(WorkerConnectionState state = WorkerConnectionState.Ready)
-        => new() { State = state, FeatureTier = CodexFeatureTier.Tier164, CodexVersion = SupportedCodexVersions.Target };
+        => new() { State = state, FeatureTier = CodexFeatureTier.Baseline, CodexVersion = SupportedCodexVersions.Target };
 
     private static ListPresetsResult PresetsResult(string version = "v1")
         => new()
@@ -285,7 +285,7 @@ public sealed partial class ViewModelTests
     {
         var bridge = new FakeWorkerBridge();
         using var vm = new ChatViewModel(bridge, autoConnect: false);
-        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready, FeatureTier = CodexFeatureTier.Tier163 });
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready, FeatureTier = CodexFeatureTier.Unsupported });
 
         await RunComposerAsync(vm, "/presets");
 

@@ -70,7 +70,7 @@ public sealed class WorkerRpcServiceTests
         var connection = new StubConnection
         {
             Handler = method => method == "initialize"
-                ? JsonSerializer.SerializeToElement(new { userAgent = "codex-cli/0.167.0" })
+                ? JsonSerializer.SerializeToElement(new { userAgent = "codex-cli/0.170.0" })
                 : JsonSerializer.SerializeToElement(new { }),
         };
         var session = new CodexSessionService(new ApprovalPolicyEngine(new PathAccessPolicy()), new SecretRedactor());
@@ -79,7 +79,7 @@ public sealed class WorkerRpcServiceTests
         WorkerStatus status = await worker.ConnectAsync(Options(), CancellationToken.None);
 
         Assert.AreEqual(WorkerConnectionState.Ready, status.State);
-        Assert.AreEqual(CodexFeatureTier.Tier166, status.FeatureTier);
+        Assert.AreEqual(CodexFeatureTier.Tier169, status.FeatureTier);
         Assert.IsTrue(status.IsNewerThanVerifiedVersion);
     }
 

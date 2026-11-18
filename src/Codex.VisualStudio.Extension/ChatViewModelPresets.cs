@@ -44,7 +44,7 @@ public sealed partial class ChatViewModel
     }
 
     [DataMember]
-    public bool ArePresetsAvailable => Status.FeatureTier >= CodexFeatureTier.Tier164;
+    public bool ArePresetsAvailable => Status.FeatureTier >= CodexFeatureTier.Baseline;
 
     [DataMember]
     public bool ShowPresetsTierNotice => IsPresetsPanelOpen && IsPresetsConnectionReady && !ArePresetsAvailable;
@@ -501,7 +501,7 @@ public sealed partial class ChatViewModel
     // Slots and the user-layer version belong to one connection and are never reused across one.
     private void OnPresetsStatusChanged(long? previousGeneration, WorkerStatus value)
     {
-        if (previousGeneration != value.Target?.Generation || value.FeatureTier < CodexFeatureTier.Tier164)
+        if (previousGeneration != value.Target?.Generation || value.FeatureTier < CodexFeatureTier.Baseline)
         {
             ResetPresets();
         }

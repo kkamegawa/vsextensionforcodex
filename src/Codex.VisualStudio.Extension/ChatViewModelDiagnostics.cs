@@ -31,7 +31,7 @@ public sealed partial class ChatViewModel
     private async Task<bool> ExecuteDiagnosticsAsync(string arguments, string? threadId)
     {
         OwnerSnapshot owner = CaptureOwnerSnapshot();
-        if (Status.FeatureTier < CodexFeatureTier.Tier164)
+        if (Status.FeatureTier < CodexFeatureTier.Baseline)
         {
             await ShowSlashFailureAsync(DiagnosticsTierRequiredText).ConfigureAwait(false);
             return false;
@@ -130,7 +130,7 @@ public sealed partial class ChatViewModel
     private async Task<bool> ExecuteDoctorAsync()
     {
         OwnerSnapshot owner = CaptureOwnerSnapshot();
-        if (Status.FeatureTier < CodexFeatureTier.Tier166)
+        if (Status.FeatureTier < CodexFeatureTier.Baseline)
         {
             await ShowSlashFailureAsync(DoctorTierRequiredText).ConfigureAwait(false);
             return false;
