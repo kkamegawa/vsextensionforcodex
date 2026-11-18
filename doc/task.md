@@ -984,7 +984,7 @@ Tracking: [Issue #269](https://github.com/kkamegawa/vsextensionforcodex/issues/2
 - [x] Retargeted all solution projects to .NET 10 (`net10.0` or `net10.0-windows10.0.22621.0`), moved Contracts from `netstandard2.0` to `net10.0`, removed the unused `net472` in-process placeholder, and configured the framework-dependent Worker for `RollForward=Minor`.
 - [x] Aligned the Visual Studio Extensibility SDK package baseline to 18.12; the VSIX requires `[18.12,)` and declares `amd64` and `arm64` targets. Updated CI, release, Dependabot, and VSIX content validation.
 - [x] Adapted SDK analyzer/API changes and updated the affected unit tests. Updated README, CLI setup guides, implementation notes, and repository agent guidance for the new platform baseline.
-- [x] Copilot review follow-up: preserve the Solution Explorer selection separately from the active document and identify older runtime/packaging notes as historical.
+- [x] Copilot review follow-up: read the Solution Explorer selection from the Shell client-context category while preserving the active document separately; add regression coverage and identify older runtime/packaging notes as historical.
 - [x] Release solution build: 0 warnings and 0 errors.
 - [x] Release tests: Core 594 passed / 7 skipped / 0 failed; UI 611 passed / 3 skipped / 0 failed.
 - [x] Release VSIX content inspection passed, including Visual Studio `[18.12,)`, `amd64`/`arm64`, `.NET 10`, packaged dependencies and Worker `RollForward=Minor`.
