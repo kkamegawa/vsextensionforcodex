@@ -17,6 +17,41 @@ public sealed class FileAttachmentServiceTests
     }
 
     [TestMethod]
+    public async Task WorkspaceFileSearchCacheExpiresUsingTimeProvider()
+    {
+        string workspace = Path.Combine(Path.GetTempPath(), "CodexVsTests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(workspace);
+        try
+        {
+            await File.WriteAllTextAsync(Path.Combine(workspace, "match-first.txt"), "first");
+            var timeProvider = new ManualTimeProvider(DateTimeOffset.UnixEpoch);
+            var service = new WorkspaceFileSearchService(null, timeProvider);
+
+            await service.SearchAsync(workspace, "match", CancellationToken.None);
+            string addedAfterIndex = Path.Combine(workspace, "match-second.txt");
+            await File.WriteAllTextAsync(addedAfterIndex, "second");
+            IReadOnlyList<WorkspaceFileSearchResult> cached = await service.SearchAsync(
+                workspace,
+                "match-second",
+                CancellationToken.None);
+
+            timeProvider.Advance(TimeSpan.FromSeconds(31));
+            IReadOnlyList<WorkspaceFileSearchResult> refreshed = await service.SearchAsync(
+                workspace,
+                "match-second",
+                CancellationToken.None);
+
+            Assert.AreEqual(0, cached.Count);
+            Assert.AreEqual(1, refreshed.Count);
+            Assert.AreEqual(addedAfterIndex, refreshed[0].Path);
+        }
+        finally
+        {
+            Directory.Delete(workspace, recursive: true);
+        }
+    }
+
+    [TestMethod]
     public async Task WorkspaceSearchUsesDiskFallbackExcludesGeneratedDirectoriesAndRanksMatches()
     {
         string workspace = CreateTemporaryDirectory();

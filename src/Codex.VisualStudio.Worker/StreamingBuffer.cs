@@ -13,14 +13,18 @@ public sealed class StreamingBuffer : IAsyncDisposable
     private readonly ConcurrentDictionary<string, Entry> entries = new();
     private readonly Func<ConversationEvent, CancellationToken, Task> sink;
     private readonly string overflowDirectory;
-    private readonly PeriodicTimer timer = new(TimeSpan.FromMilliseconds(75));
+    private readonly PeriodicTimer timer;
     private readonly CancellationTokenSource lifetime = new();
     private readonly Task flushLoop;
 
-    public StreamingBuffer(Func<ConversationEvent, CancellationToken, Task> sink, string overflowDirectory)
+    public StreamingBuffer(
+        Func<ConversationEvent, CancellationToken, Task> sink,
+        string overflowDirectory,
+        TimeProvider? timeProvider = null)
     {
         this.sink = sink;
         this.overflowDirectory = overflowDirectory;
+        timer = new PeriodicTimer(TimeSpan.FromMilliseconds(75), timeProvider ?? TimeProvider.System);
         Directory.CreateDirectory(overflowDirectory);
         flushLoop = Task.Run(() => FlushLoopAsync(lifetime.Token));
     }

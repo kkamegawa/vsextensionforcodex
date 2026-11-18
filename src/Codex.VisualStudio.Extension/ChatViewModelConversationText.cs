@@ -61,7 +61,7 @@ public sealed partial class ChatViewModel
             conversationTextCancellation?.Cancel();
             return Task.CompletedTask;
         }, () => IsConversationTextLoading);
-        _ = Task.Run(() => conversationTextStore.RemoveUnused(utcNow()));
+        _ = Task.Run(() => conversationTextStore.RemoveUnused(timeProvider.GetUtcNow()));
     }
 
     private async Task OpenConversationTextAsync()
@@ -86,7 +86,7 @@ public sealed partial class ChatViewModel
             List<ThreadHistoryItem> items = await ReadWholeHistoryAsync(thread.Id, owner, cancellation.Token).ConfigureAwait(false);
             items.Reverse();
             string title = GetConversationTextTitle(thread);
-            string text = ConversationTextFormatter.Format(title, utcNow(), items, markdown);
+            string text = ConversationTextFormatter.Format(title, timeProvider.GetUtcNow(), items, markdown);
             path = conversationTextStore.Write(ToArtifactOwner(owner), text);
             await ConversationTextDocuments.OpenAsync(path, title.Replace("%", string.Empty, StringComparison.Ordinal), conversationTextStore.Remove, cancellation.Token).ConfigureAwait(false);
             await SetConversationTextStatusAsync(string.Empty).ConfigureAwait(false);

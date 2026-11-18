@@ -1,5 +1,4 @@
-﻿using System.Diagnostics;
-using System.Net;
+﻿using System.Net;
 using System.Security.Authentication;
 using Codex.VisualStudio.Contracts;
 
@@ -155,13 +154,4 @@ internal static class HttpStatusText
 {
     public static bool IsAuthenticationFailure(int? status)
         => status is (int)HttpStatusCode.Unauthorized or (int)HttpStatusCode.Forbidden;
-}
-
-internal static class StopwatchDeadline
-{
-    public static TimeSpan Remaining(long start, TimeSpan budget)
-    {
-        TimeSpan remaining = budget - Stopwatch.GetElapsedTime(start);
-        return remaining < TimeSpan.Zero ? TimeSpan.Zero : remaining;
-    }
 }
