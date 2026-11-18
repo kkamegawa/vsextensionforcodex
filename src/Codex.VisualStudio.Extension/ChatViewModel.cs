@@ -210,11 +210,12 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         projectScaffolder = new ProjectScaffolder(extensibility);
         agentsFileInitializer = new AgentsFileInitializer(extensibility);
         this.filePickerService = filePickerService ?? new FilePickerService(extensibility);
-        this.workspaceFileSearchService = workspaceFileSearchService ?? new WorkspaceFileSearchService(extensibility);
+        this.timeProvider = timeProvider ?? TimeProvider.System;
+        this.workspaceFileSearchService = workspaceFileSearchService
+            ?? new WorkspaceFileSearchService(extensibility, this.timeProvider);
         this.protectedDirectoryPolicy = protectedDirectoryPolicy ?? new ProtectedDirectoryPolicy();
         this.settingsStore = settingsStore ?? new FileExtensionSettingsStore();
         this.externalLinkOpener = externalLinkOpener ?? new ExternalLinkOpener();
-        this.timeProvider = timeProvider ?? TimeProvider.System;
         InitializeConversationText();
         InitializeTranscriptSearch();
         settings = this.settingsStore.Load();
