@@ -22,11 +22,11 @@ internal static class IdeContextCaptureService
         }
 
         ITextViewSnapshot? activeView;
-        string? selectedPath;
+        Uri? selectedPath;
         try
         {
             activeView = await clientContext.GetActiveTextViewAsync(cancellationToken).ConfigureAwait(false);
-            selectedPath = clientContext[ClientContextKey.Shell.ActiveSelectionPath];
+            selectedPath = await clientContext.GetSelectedPathAsync(cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -47,7 +47,7 @@ internal static class IdeContextCaptureService
         return Build(
             normalizedRoot,
             activeView?.FilePath,
-            selectedPath,
+            selectedPath?.IsFile == true ? selectedPath.LocalPath : null,
             selectionText);
     }
 
