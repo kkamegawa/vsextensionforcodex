@@ -1196,24 +1196,6 @@ public sealed partial class CodexSessionServiceTests
     }
 
     [TestMethod]
-    public async Task ListModelsReturnsEmptyWhenAppServerDoesNotSupportMethod()
-    {
-        var connection = new RecordingConnection
-        {
-            Handler = (method, _) => method == "model/list"
-                ? throw new JsonRpcRemoteException(-32601, "Method not found")
-                : JsonSerializer.SerializeToElement(new { }),
-        };
-        await using var service = CreateService();
-        await service.InitializeAsync(connection, Options(), CancellationToken.None);
-
-        ListModelsResult result = await service.ListModelsAsync(CancellationToken.None);
-
-        Assert.AreEqual(0, result.Models.Count);
-        Assert.IsNull(result.DefaultModel);
-    }
-
-    [TestMethod]
     public async Task StartTurnForwardsModelAndModeOverridesWhenSet()
     {
         string activeDocument = Path.GetTempFileName();
@@ -1778,26 +1760,6 @@ public sealed partial class CodexSessionServiceTests
     }
 
     [TestMethod]
-    public async Task ListPermissionProfilesDegradesAndCachesMethodNotFound()
-    {
-        var connection = new RecordingConnection
-        {
-            Handler = (method, _) => method == "permissionProfile/list"
-                ? throw new JsonRpcRemoteException(-32601, "Method not found")
-                : JsonSerializer.SerializeToElement(new { }),
-        };
-        await using var service = CreateService();
-        await service.InitializeAsync(connection, Options(experimentalApi: true), CancellationToken.None);
-
-        ListPermissionProfilesResult first = await service.ListPermissionProfilesAsync(CancellationToken.None);
-        ListPermissionProfilesResult second = await service.ListPermissionProfilesAsync(CancellationToken.None);
-
-        Assert.IsFalse(first.IsSupported);
-        Assert.IsFalse(second.IsSupported);
-        Assert.AreEqual(1, connection.Requests.Count(item => item.Method == "permissionProfile/list"));
-    }
-
-    [TestMethod]
     public async Task ListPermissionProfilesDoesNotProbeWhenExperimentalApiIsDisabled()
     {
         var connection = new RecordingConnection();
@@ -2158,26 +2120,6 @@ public sealed partial class CodexSessionServiceTests
         Assert.AreEqual(50, result.Errors.Count);
         Assert.IsTrue(result.IsTruncated);
         Assert.IsFalse(result.Skills.Any(skill => skill.Name == "should-not-appear"));
-    }
-
-    [TestMethod]
-    public async Task ListSkills_ReturnsUnsupportedWhenMethodUnknown()
-    {
-        var connection = new RecordingConnection
-        {
-            Handler = (method, _) => method == "skills/list"
-                ? throw new JsonRpcRemoteException(-32601, "Method not found")
-                : JsonSerializer.SerializeToElement(new { }),
-        };
-        await using var service = CreateService();
-        await service.InitializeAsync(connection, Options(), CancellationToken.None);
-
-        ListSkillsResult first = await service.ListSkillsAsync(forceReload: false, CancellationToken.None);
-        ListSkillsResult second = await service.ListSkillsAsync(forceReload: false, CancellationToken.None);
-
-        Assert.IsFalse(first.IsSupported);
-        Assert.IsFalse(second.IsSupported);
-        Assert.AreEqual(1, connection.Requests.Count(item => item.Method == "skills/list"));
     }
 
     [TestMethod]
@@ -3238,35 +3180,6 @@ public sealed partial class CodexSessionServiceTests
     }
 
     [TestMethod]
-    public async Task MethodNotFoundDisablesOnlyThatOperationForTheSession()
-    {
-        var connection = new RecordingConnection
-        {
-            Handler = (method, _) => method == "thread/compact/start"
-                ? throw new JsonRpcRemoteException(-32601, "Method not found")
-                : method == "account/rateLimits/read"
-                    ? JsonSerializer.SerializeToElement(new { rateLimits = new { } })
-                    : JsonSerializer.SerializeToElement(new { }),
-        };
-        await using var service = CreateService();
-        await service.InitializeAsync(connection, Options(), CancellationToken.None);
-
-        CompactThreadResult first = await service.CompactThreadAsync(
-            new CompactThreadRequest { ThreadId = "thread-1" },
-            CancellationToken.None);
-        CompactThreadResult second = await service.CompactThreadAsync(
-            new CompactThreadRequest { ThreadId = "thread-1" },
-            CancellationToken.None);
-        RateLimitsResult otherOperation = await service.GetRateLimitsAsync(CancellationToken.None);
-
-        Assert.IsFalse(first.IsSupported);
-        Assert.IsFalse(second.IsSupported);
-        Assert.IsTrue(otherOperation.IsSupported);
-        Assert.AreEqual(1, connection.Requests.Count(item => item.Method == "thread/compact/start"));
-        Assert.AreEqual(1, connection.Requests.Count(item => item.Method == "account/rateLimits/read"));
-    }
-
-    [TestMethod]
     public async Task NonIdempotentSlashOperationIsNotRetried()
     {
         var connection = new RecordingConnection
@@ -4221,7 +4134,7 @@ public sealed partial class CodexSessionServiceTests
     }
 
     [TestMethod]
-    public async Task WindowsSandboxReadinessReportsUnknownWhenConfigReadsAreUnsupported()
+    public async Task WindowsSandboxReadinessReportsUnknownWhenConfigReadsFail()
     {
         var connection = new RecordingConnection
         {
@@ -4229,7 +4142,7 @@ public sealed partial class CodexSessionServiceTests
             {
                 "initialize" => JsonSerializer.SerializeToElement(new { platformFamily = "windows", platformOs = "windows-11" }),
                 "windowsSandbox/readiness" => JsonSerializer.SerializeToElement(new { status = "notConfigured" }),
-                "config/read" or "configRequirements/read" => throw new JsonRpcRemoteException(-32601, "Method not found"),
+                "config/read" or "configRequirements/read" => throw new JsonRpcRemoteException(-32000, "Read failed"),
                 _ => JsonSerializer.SerializeToElement(new { }),
             },
         };
@@ -5380,17 +5293,6 @@ public sealed partial class CodexSessionServiceTests
         Assert.AreEqual(GoalStopStepOutcome.Failed, result.PauseOutcome);
         Assert.AreEqual(GoalStopStepOutcome.Succeeded, result.InterruptOutcome);
         Assert.AreEqual(ThreadGoalStatus.Active, result.Goal?.Status, "A failed pause is never reported as Paused.");
-    }
-
-    [TestMethod]
-    public async Task GoalStopWithUnsupportedPauseStillInterruptsAndStaysSupported()
-    {
-        (StopThreadGoalResult result, _) = await RunGoalStopScenarioAsync(
-            method => method == "thread/goal/set" ? throw new JsonRpcRemoteException(-32601, "Method not found") : null);
-
-        Assert.IsTrue(result.IsSupported, "Unsupported means nothing was attempted; the interrupt was.");
-        Assert.AreEqual(GoalStopStepOutcome.Failed, result.PauseOutcome);
-        Assert.AreEqual(GoalStopStepOutcome.Succeeded, result.InterruptOutcome);
     }
 
     [TestMethod]

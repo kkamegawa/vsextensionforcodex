@@ -1997,25 +1997,20 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
 
         for (int page = 0; page < MaxPermissionProfilePages; page++)
         {
-            OperationCallResult call = await TrySendOperationAsync(
+            JsonElement result = await SendRequiredOperationAsync(
                 method,
                 new { cwd = MapLocalPathForServer(options.WorkingDirectory), cursor, limit = PermissionProfilePageSize },
                 TimeSpan.FromSeconds(15),
                 cancellationToken).ConfigureAwait(false);
-            if (!call.IsSupported)
-            {
-                return Unsupported<ListPermissionProfilesResult>(
-                    "Permission profiles are not supported by this app-server.");
-            }
 
-            bool pageWasTruncated = ReadPermissionProfiles(call.Result, profiles, seenIds);
+            bool pageWasTruncated = ReadPermissionProfiles(result, profiles, seenIds);
             if (profiles.Count >= MaxPermissionProfiles)
             {
-                truncated = pageWasTruncated || GetString(call.Result, "nextCursor") is not null;
+                truncated = pageWasTruncated || GetString(result, "nextCursor") is not null;
                 break;
             }
 
-            string? rawNextCursor = GetString(call.Result, "nextCursor");
+            string? rawNextCursor = GetString(result, "nextCursor");
             if (rawNextCursor is null)
             {
                 break;
@@ -2270,15 +2265,11 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         CompactThreadRequest request,
         CancellationToken cancellationToken)
     {
-        OperationCallResult call = await TrySendOperationAsync(
+        await SendRequiredOperationAsync(
             "thread/compact/start",
             new { threadId = request.ThreadId },
             TimeSpan.FromSeconds(60),
             cancellationToken).ConfigureAwait(false);
-        if (!call.IsSupported)
-        {
-            return Unsupported<CompactThreadResult>("Manual context compaction is not supported by this app-server.");
-        }
 
         ActiveThreadId = request.ThreadId;
         return new CompactThreadResult();
@@ -2295,7 +2286,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
 
         ConnectionContext context = RequireContext();
         object target = CreateReviewTarget(request.Target);
-        OperationCallResult call = await TrySendOperationAsync(
+        JsonElement result = await SendRequiredOperationAsync(
             "review/start",
             new
             {
@@ -2305,16 +2296,11 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             },
             TimeSpan.FromSeconds(60),
             cancellationToken).ConfigureAwait(false);
-        if (!call.IsSupported)
-        {
-            return Unsupported<StartReviewResult>("Code review is not supported by this app-server.");
-        }
-
-        string? reviewThreadId = GetString(call.Result, "reviewThreadId");
-        string? turnId = call.Result.TryGetProperty("turn", out JsonElement turn)
+        string? reviewThreadId = GetString(result, "reviewThreadId");
+        string? turnId = result.TryGetProperty("turn", out JsonElement turn)
             ? GetString(turn, "id")
             : null;
-        string? rootTurnId = call.Result.TryGetProperty("turn", out turn)
+        string? rootTurnId = result.TryGetProperty("turn", out turn)
             ? GetString(turn, "rootTurnId")
             : null;
         string targetThreadId = reviewThreadId ?? request.ThreadId;
@@ -2403,10 +2389,10 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         object parameters = request.CreateLinkedFork
             ? new { threadId = request.ThreadId, attachToSource = true, excludeTurns = true }
             : new { threadId = request.ThreadId };
-        OperationCallResult call;
+        JsonElement result;
         try
         {
-            call = await TrySendOperationAsync(
+            result = await SendRequiredOperationAsync(
                 "thread/fork",
                 parameters,
                 TimeSpan.FromSeconds(60),
@@ -2421,16 +2407,11 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             };
         }
 
-        if (!call.IsSupported)
-        {
-            return Unsupported<ForkThreadResult>("Thread forking is not supported by this app-server.");
-        }
-
-        effectiveThreadPermissions = ReadEffectiveThreadPermissions(call.Result);
-        ReadEffectiveTurnSettings(call.Result, out string? reasoningEffort, out string? serviceTier);
+        effectiveThreadPermissions = ReadEffectiveThreadPermissions(result);
+        ReadEffectiveTurnSettings(result, out string? reasoningEffort, out string? serviceTier);
         EffectiveReasoningEffort = reasoningEffort;
         EffectiveServiceTier = serviceTier;
-        ThreadSummary? thread = call.Result.TryGetProperty("thread", out JsonElement threadElement)
+        ThreadSummary? thread = result.TryGetProperty("thread", out JsonElement threadElement)
             ? ReadThread(
                 threadElement,
                 EffectiveApprovalState,
@@ -2453,7 +2434,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             ActiveTurnId = null;
             activeRootTurnId = null;
         }
-        effectiveThreadModelId = thread?.EffectiveModelId ?? ReadEffectiveModelId(call.Result) ?? effectiveThreadModelId;
+        effectiveThreadModelId = thread?.EffectiveModelId ?? ReadEffectiveModelId(result) ?? effectiveThreadModelId;
         activeThreadInheritsDefaultModel = false;
         return new ForkThreadResult { Thread = thread };
     }
@@ -2463,18 +2444,14 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
 
     public async Task<ThreadGoalResult> GetThreadGoalAsync(string threadId, CancellationToken cancellationToken)
     {
-        OperationCallResult call = await TrySendOperationAsync(
+        JsonElement result = await SendRequiredOperationAsync(
             "thread/goal/get",
             new { threadId },
             TimeSpan.FromSeconds(15),
             cancellationToken,
             allowUncredentialed: true).ConfigureAwait(false);
-        if (!call.IsSupported)
-        {
-            return Unsupported<ThreadGoalResult>("Thread goals are not supported by this app-server.");
-        }
 
-        return new ThreadGoalResult { Goal = ReadOptionalGoal(call.Result) };
+        return new ThreadGoalResult { Goal = ReadOptionalGoal(result) };
     }
 
     public async Task<ThreadGoalResult> SetThreadGoalAsync(
@@ -2482,7 +2459,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         CancellationToken cancellationToken)
     {
         ValidateGoalRequest(request);
-        OperationCallResult call = await TrySendOperationAsync(
+        JsonElement result = await SendRequiredOperationAsync(
             "thread/goal/set",
             new
             {
@@ -2494,29 +2471,19 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             },
             TimeSpan.FromSeconds(30),
             cancellationToken).ConfigureAwait(false);
-        if (!call.IsSupported)
-        {
-            return Unsupported<ThreadGoalResult>("Thread goals are not supported by this app-server.");
-        }
-
-        return new ThreadGoalResult { Goal = ReadOptionalGoal(call.Result) };
+        return new ThreadGoalResult { Goal = ReadOptionalGoal(result) };
     }
 
     public async Task<ThreadGoalResult> ClearThreadGoalAsync(string threadId, CancellationToken cancellationToken)
     {
-        OperationCallResult call = await TrySendOperationAsync(
+        JsonElement result = await SendRequiredOperationAsync(
             "thread/goal/clear",
             new { threadId, origin = UserGoalMutationOrigin },
             TimeSpan.FromSeconds(30),
             cancellationToken).ConfigureAwait(false);
-        if (!call.IsSupported)
-        {
-            return Unsupported<ThreadGoalResult>("Thread goals are not supported by this app-server.");
-        }
-
         return new ThreadGoalResult
         {
-            Cleared = GetBool(call.Result, "cleared") == true,
+            Cleared = GetBool(result, "cleared") == true,
         };
     }
 
@@ -2524,19 +2491,15 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         string? threadId,
         CancellationToken cancellationToken)
     {
-        OperationCallResult call = await TrySendOperationAsync(
+        JsonElement result = await SendRequiredOperationAsync(
             "mcpServerStatus/list",
             new { cursor = (string?)null, limit = 100, detail = "toolsAndAuthOnly", threadId },
             TimeSpan.FromSeconds(30),
             cancellationToken).ConfigureAwait(false);
-        if (!call.IsSupported)
-        {
-            return Unsupported<McpServerListResult>("MCP server status is not supported by this app-server.");
-        }
 
         return new McpServerListResult
         {
-            Servers = ReadMcpServers(call.Result),
+            Servers = ReadMcpServers(result),
         };
     }
 
@@ -2698,20 +2661,12 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
 
     private async Task<ListSkillsResult> ReadSkillsFromServerAsync(bool forceReload, CancellationToken cancellationToken)
     {
-        // No experimentalApi gate: nothing in the app-server protocol marks skills/list as
-        // experimental (unlike permissionProfile/list), and that gate's failure mode is sticky
-        // for the rest of the session. Rely purely on the -32601 capability probe below.
-        OperationCallResult call = await TrySendOperationAsync(
+        JsonElement result = await SendRequiredOperationAsync(
             "skills/list",
             new { cwds = Array.Empty<string>(), forceReload },
             TimeSpan.FromSeconds(30),
             cancellationToken).ConfigureAwait(false);
-        if (!call.IsSupported)
-        {
-            return Unsupported<ListSkillsResult>("Skills are not supported by this app-server.");
-        }
-
-        return ReadSkills(call.Result);
+        return ReadSkills(result);
     }
 
     public async Task<UploadFeedbackResult> UploadFeedbackAsync(
@@ -2719,7 +2674,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         CancellationToken cancellationToken)
     {
         ValidateFeedbackRequest(request);
-        OperationCallResult call = await TrySendOperationAsync(
+        JsonElement result = await SendRequiredOperationAsync(
             "feedback/upload",
             new
             {
@@ -2732,44 +2687,29 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             },
             TimeSpan.FromSeconds(60),
             cancellationToken).ConfigureAwait(false);
-        if (!call.IsSupported)
-        {
-            return Unsupported<UploadFeedbackResult>("Feedback upload is not supported by this app-server.");
-        }
-
-        return new UploadFeedbackResult { ThreadId = GetString(call.Result, "threadId") };
+        return new UploadFeedbackResult { ThreadId = GetString(result, "threadId") };
     }
 
     public async Task<RateLimitsResult> GetRateLimitsAsync(CancellationToken cancellationToken)
     {
-        OperationCallResult call = await TrySendOperationAsync(
+        JsonElement result = await SendRequiredOperationAsync(
             "account/rateLimits/read",
             new { },
             TimeSpan.FromSeconds(15),
             cancellationToken).ConfigureAwait(false);
-        if (!call.IsSupported)
-        {
-            return Unsupported<RateLimitsResult>("Rate-limit status is not supported by this app-server.");
-        }
-
-        return ReadRateLimitsResult(call.Result);
+        return ReadRateLimitsResult(result);
     }
 
     public async Task<ThreadUsageResult> GetThreadUsageAsync(string threadId, CancellationToken cancellationToken)
     {
-        OperationCallResult call = await TrySendOperationAsync(
+        JsonElement usageResult = await SendRequiredOperationAsync(
             "account/usage/read",
             new { threadId },
             TimeSpan.FromSeconds(15),
             cancellationToken).ConfigureAwait(false);
-        if (!call.IsSupported)
-        {
-            return Unsupported<ThreadUsageResult>("Conversation usage amounts are not supported by this app-server.");
-        }
-
         var result = new ThreadUsageResult { ThreadId = threadId };
-        if (call.Result.ValueKind == JsonValueKind.Object
-            && call.Result.TryGetProperty("threadUsage", out JsonElement usage)
+        if (usageResult.ValueKind == JsonValueKind.Object
+            && usageResult.TryGetProperty("threadUsage", out JsonElement usage)
             && usage.ValueKind == JsonValueKind.Object)
         {
             result.NativeUsageUsdMicros = GetInt64(usage, "nativeUsageUsdMicros");
@@ -4779,7 +4719,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         }
     }
 
-    private async Task<OperationCallResult> TrySendOperationAsync(
+    private async Task<JsonElement> SendRequiredOperationAsync(
         string method,
         object parameters,
         TimeSpan timeout,
@@ -4791,39 +4731,15 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         {
             EnsureCredentialReady(context);
         }
-        lock (context.UnsupportedMethodsLock)
-        {
-            if (context.UnsupportedMethods.Contains(method))
-            {
-                return OperationCallResult.Unsupported;
-            }
-        }
-
-        try
-        {
-            // SendReadOnlyRequestAsync owns retry eligibility through its exact method
-            // allowlist; every other method (including all mutations) is sent once.
-            JsonElement result = await context.Connection.SendReadOnlyRequestAsync(
-                method,
-                parameters,
-                timeout,
-                cancellationToken).ConfigureAwait(false);
-            EnsureCurrent(context);
-            return new OperationCallResult(true, result);
-        }
-        catch (JsonRpcRemoteException ex) when (ex.Code == -32601)
-        {
-            lock (context.UnsupportedMethodsLock)
-            {
-                if (IsCurrent(context))
-                {
-                    context.UnsupportedMethods.Add(method);
-                }
-            }
-
-            WorkerDiagnostics.Write($"app-server method disabled for this session method={method}", ex);
-            return OperationCallResult.Unsupported;
-        }
+        // SendReadOnlyRequestAsync owns retry eligibility through its exact method
+        // allowlist; every other method (including all mutations) is sent once.
+        JsonElement result = await context.Connection.SendReadOnlyRequestAsync(
+            method,
+            parameters,
+            timeout,
+            cancellationToken).ConfigureAwait(false);
+        EnsureCurrent(context);
+        return result;
     }
 
     private static void EnsureCredentialReady(ConnectionContext context)
@@ -5557,9 +5473,8 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         string? defaultModel = null;
         ModelInfo? defaultModelInfo = null;
 
-        // The codex app-server model/list response uses "data"; tolerate a legacy "models" key as well.
-        if ((result.TryGetProperty("data", out JsonElement modelArray)
-                || result.TryGetProperty("models", out modelArray))
+        // The codex app-server model/list response uses "data".
+        if (result.TryGetProperty("data", out JsonElement modelArray)
             && modelArray.ValueKind == JsonValueKind.Array)
         {
             foreach (JsonElement model in modelArray.EnumerateArray())
@@ -5569,8 +5484,8 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
                     continue;
                 }
 
-                // The "model" field carries the slug used for turn/start; fall back to "id" for older shapes.
-                string? id = NormalizeModelId(GetString(model, "model") ?? GetString(model, "id"));
+                // The "model" field carries the slug used for turn/start.
+                string? id = NormalizeModelId(GetString(model, "model"));
                 if (id is null)
                 {
                     continue;
@@ -5721,7 +5636,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
     // always called with cwds: [] in v1, so the app-server returns exactly one entry, but this
     // still walks the array defensively: the Fake app-server's unmatched-method fallback (`_ =>
     // new { }`) has no "data" property at all, and a naive result.GetProperty("data") would throw
-    // KeyNotFoundException outside the -32601 capability probe in TrySendOperationAsync.
+    // KeyNotFoundException when that Fake response is used.
     private ListSkillsResult ReadSkills(JsonElement result)
     {
         var skills = new List<SkillInfo>();
@@ -6697,8 +6612,6 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         public string? StatePartitionFingerprint { get; }
         public long OwnerGeneration { get; }
         public ApprovalGrantStore ApprovalGrants { get; } = new();
-        public object UnsupportedMethodsLock { get; } = new();
-        public HashSet<string> UnsupportedMethods { get; } = new(StringComparer.Ordinal);
         public bool NotifyPendingResolution { get; set; }
         public bool OwnerInvalidated { get; set; }
         public string? PendingLoginId { get; set; }
@@ -6748,8 +6661,4 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         }
     }
 
-    private readonly record struct OperationCallResult(bool IsSupported, JsonElement Result)
-    {
-        public static OperationCallResult Unsupported { get; } = new(false, default);
-    }
 }

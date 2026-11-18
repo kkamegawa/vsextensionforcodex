@@ -636,35 +636,6 @@ public sealed class WorkerRpcServiceTests
     }
 
     [TestMethod]
-    public async Task UnsupportedSlashOperationDoesNotDegradeConnection()
-    {
-        var connection = new StubConnection
-        {
-            Handler = method => method switch
-            {
-                "thread/compact/start" => throw new JsonRpcRemoteException(-32601, "Method not found"),
-                "account/read" => JsonSerializer.SerializeToElement(new { account = (object?)null }),
-                _ => JsonSerializer.SerializeToElement(new { }),
-            },
-        };
-        var session = new CodexSessionService(new ApprovalPolicyEngine(new PathAccessPolicy()), new SecretRedactor());
-        await using var worker = new WorkerRpcService(
-            new SecretRedactor(),
-            new FakeProcessHost(connection),
-            session);
-
-        WorkerStatus connected = await worker.ConnectAsync(Options(), CancellationToken.None);
-        CompactThreadResult result = await worker.CompactThreadAsync(
-            Scoped(worker, new CompactThreadRequest { ThreadId = "thread-1" }),
-            CancellationToken.None);
-        WorkerStatus afterOperation = await worker.GetStatusAsync(CancellationToken.None);
-
-        Assert.AreEqual(WorkerConnectionState.Ready, connected.State);
-        Assert.IsFalse(result.IsSupported);
-        Assert.AreEqual(WorkerConnectionState.Ready, afterOperation.State);
-    }
-
-    [TestMethod]
     public async Task CompactionCompletionRestoresReadyWhenNoTurnIsActive()
     {
         // thread/compact/start marks the worker Busy, but the app-server may report completion

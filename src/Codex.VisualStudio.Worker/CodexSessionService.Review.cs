@@ -39,10 +39,10 @@ public sealed partial class CodexSessionService
                 return ReviewNotCreated(reason);
             }
 
-            OperationCallResult created;
+            JsonElement created;
             try
             {
-                created = await TrySendOperationAsync("thread/start", parameters, TimeSpan.FromSeconds(60), cancellationToken).ConfigureAwait(false);
+                created = await SendRequiredOperationAsync("thread/start", parameters, TimeSpan.FromSeconds(60), cancellationToken).ConfigureAwait(false);
             }
             catch (JsonRpcRemoteException ex)
             {
@@ -55,15 +55,10 @@ public sealed partial class CodexSessionService
                 return new StartReviewResult { Outcome = ReviewStartOutcome.Unknown };
             }
 
-            if (!created.IsSupported)
-            {
-                return Unsupported<StartReviewResult>("Starting a new conversation is not supported by this app-server.");
-            }
-
-            EffectiveThreadPermissions createdPermissions = ReadEffectiveThreadPermissions(created.Result);
-            ReadEffectiveTurnSettings(created.Result, out string? reasoningEffort, out string? serviceTier);
-            ThreadSummary thread = ReadThread(created.Result.GetProperty("thread"), createdPermissions.Approval, reasoningEffort, serviceTier);
-            string? modelId = thread.EffectiveModelId ?? ReadEffectiveModelId(created.Result);
+            EffectiveThreadPermissions createdPermissions = ReadEffectiveThreadPermissions(created);
+            ReadEffectiveTurnSettings(created, out string? reasoningEffort, out string? serviceTier);
+            ThreadSummary thread = ReadThread(created.GetProperty("thread"), createdPermissions.Approval, reasoningEffort, serviceTier);
+            string? modelId = thread.EffectiveModelId ?? ReadEffectiveModelId(created);
             if (!string.Equals(request.ThreadId, ActiveThreadId, StringComparison.Ordinal)
                 || !ReferenceEquals(sourcePermissions, effectiveThreadPermissions))
             {
