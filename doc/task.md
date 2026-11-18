@@ -986,7 +986,7 @@ Tracking: [Issue #269](https://github.com/kkamegawa/vsextensionforcodex/issues/2
 - [x] Adapted SDK analyzer/API changes and updated the affected unit tests. Updated README, CLI setup guides, implementation notes, and repository agent guidance for the new platform baseline.
 - [x] Copilot review follow-up: read the Solution Explorer selection from the Shell client-context category while preserving the active document separately; add regression coverage and identify older runtime/packaging notes as historical.
 - [x] Release solution build: 0 warnings and 0 errors.
-- [x] Release tests: Core 594 passed / 7 skipped / 0 failed; UI 611 passed / 3 skipped / 0 failed.
+- [x] Release tests: Core 594 passed / 7 skipped / 0 failed; UI 612 passed / 3 skipped / 0 failed, including the Solution Explorer selection regression.
 - [x] Release VSIX content inspection passed, including Visual Studio `[18.12,)`, `amd64`/`arm64`, `.NET 10`, packaged dependencies and Worker `RollForward=Minor`.
 - [x] `git diff --check` passed.
 - [x] Visual Studio Enterprise 2026 Insiders 18.13.12409.143: F5 built and deployed the VSIX to the Experimental Instance; the solution loaded and the Codex tool window rendered. It reported `Ready · Codex 0.161.0` and `Signed in · plus`. The screen was visually inspected. The Windows sandbox setup card showed no active solution root; its readiness check was not run. No Codex turn was sent, so that acceptance criterion remains pending.
