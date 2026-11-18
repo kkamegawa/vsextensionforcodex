@@ -470,16 +470,6 @@ public sealed partial class ViewModelTests
         await WaitForAsync(() => vm.Items.Any(item => item.Text.Contains("app-server host", StringComparison.Ordinal)));
     }
 
-    [TestMethod]
-    public async Task Doctor_RequiresTier166()
-    {
-        var bridge = new FakeWorkerBridge();
-        using ChatViewModel vm = await CreateJoinedViewModelAsync(bridge, CodexFeatureTier.Unsupported);
-
-        await RunComposerAsync(vm, "/doctor");
-        await WaitForAsync(() => vm.Items.Any(item => item.Text.Contains("0.166.0", StringComparison.Ordinal)));
-    }
-
     private sealed class RecordingConversationTextDocuments : IConversationTextDocuments
     {
         public string? Path { get; private set; }

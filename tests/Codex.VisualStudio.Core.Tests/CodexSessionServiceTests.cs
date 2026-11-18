@@ -2288,7 +2288,7 @@ public sealed partial class CodexSessionServiceTests
         {
             Handler = (method, _) => method switch
             {
-                "initialize" => JsonSerializer.SerializeToElement(new { userAgent = "codex-cli/0.166.0" }),
+                "initialize" => JsonSerializer.SerializeToElement(new { userAgent = "codex-cli/0.167.2" }),
                 "thread/start" => JsonSerializer.SerializeToElement(new { thread = new { id = "parent" } }),
                 "thread/fork" => JsonSerializer.SerializeToElement(new { thread = new { id = "child" } }),
                 "thread/list" => JsonSerializer.SerializeToElement(new
@@ -2333,7 +2333,7 @@ public sealed partial class CodexSessionServiceTests
         var connection = new RecordingConnection
         {
             Handler = (method, _) => method == "initialize"
-                ? JsonSerializer.SerializeToElement(new { userAgent = "codex-cli/0.166.0" })
+                ? JsonSerializer.SerializeToElement(new { userAgent = "codex-cli/0.167.2" })
                 : JsonSerializer.SerializeToElement(new { }),
         };
         await using var service = CreateService();
@@ -2749,30 +2749,23 @@ public sealed partial class CodexSessionServiceTests
     }
 
     [TestMethod]
-    public async Task ReadThreadMemory_BelowTierOrWithExperimentalDisabled_SendsNothing()
+    public async Task ReadThreadMemory_IsUnavailableWhenExperimentalApiIsDisabled()
     {
-        foreach ((string version, bool experimental) in new[]
+        var connection = new RecordingConnection
         {
-            ("0.164.0", true),
-            ("0.165.0", false),
-        })
-        {
-            var connection = new RecordingConnection
-            {
-                Handler = (method, _) => method == "initialize"
-                    ? JsonSerializer.SerializeToElement(new { userAgent = $"codex-cli/{version}" })
-                    : JsonSerializer.SerializeToElement(new { }),
-            };
-            await using CodexSessionService service = CreateService();
-            WorkerOptions options = Options();
-            options.ExperimentalApi = experimental;
-            await service.InitializeAsync(connection, options, CancellationToken.None);
+            Handler = (method, _) => method == "initialize"
+                ? JsonSerializer.SerializeToElement(new { userAgent = "codex-cli/0.167.2" })
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        await using CodexSessionService service = CreateService();
+        WorkerOptions options = Options();
+        options.ExperimentalApi = false;
+        await service.InitializeAsync(connection, options, CancellationToken.None);
 
-            ThreadMemoryResult result = await service.ReadThreadMemoryAsync("thread-1", CancellationToken.None);
+        ThreadMemoryResult result = await service.ReadThreadMemoryAsync("thread-1", CancellationToken.None);
 
-            Assert.IsFalse(result.IsSupported);
-            Assert.IsFalse(connection.Requests.Any(item => item.Method == "thread/memory/read"));
-        }
+        Assert.IsFalse(result.IsSupported);
+        Assert.IsFalse(connection.Requests.Any(item => item.Method == "thread/memory/read"));
     }
 
     [TestMethod]
@@ -2781,7 +2774,7 @@ public sealed partial class CodexSessionServiceTests
         var connection = new RecordingConnection
         {
             Handler = (method, _) => method == "initialize"
-                ? JsonSerializer.SerializeToElement(new { userAgent = "codex-cli/0.165.0" })
+                ? JsonSerializer.SerializeToElement(new { userAgent = "codex-cli/0.167.2" })
                 : JsonSerializer.SerializeToElement(new { }),
         };
         WorkerOptions options = Options();
@@ -2802,7 +2795,7 @@ public sealed partial class CodexSessionServiceTests
         {
             Handler = (method, _) => method switch
             {
-                "initialize" => JsonSerializer.SerializeToElement(new { userAgent = "codex-cli/0.165.0" }),
+                "initialize" => JsonSerializer.SerializeToElement(new { userAgent = "codex-cli/0.167.2" }),
                 "thread/start" => ReviewThreadResponse("thread-memory"),
                 "thread/memory/read" => JsonSerializer.SerializeToElement(new { summary = "Stored memory." }),
                 _ => JsonSerializer.SerializeToElement(new { }),
@@ -2829,7 +2822,7 @@ public sealed partial class CodexSessionServiceTests
         {
             Handler = (method, _) => method switch
             {
-                "initialize" => JsonSerializer.SerializeToElement(new { userAgent = "codex-cli/0.166.0" }),
+                "initialize" => JsonSerializer.SerializeToElement(new { userAgent = "codex-cli/0.167.2" }),
                 "thread/start" => ReviewThreadResponse("thread-memory"),
                 "thread/memory/read" => JsonSerializer.SerializeToElement(new { summary = (string?)null }),
                 _ => JsonSerializer.SerializeToElement(new { }),
@@ -2854,7 +2847,7 @@ public sealed partial class CodexSessionServiceTests
         {
             Handler = (method, _) => method switch
             {
-                "initialize" => JsonSerializer.SerializeToElement(new { userAgent = "codex-cli/0.166.0" }),
+                "initialize" => JsonSerializer.SerializeToElement(new { userAgent = "codex-cli/0.167.2" }),
                 "thread/start" => JsonSerializer.SerializeToElement(new { thread = new { id = "parent" } }),
                 "thread/fork" => throw new JsonRpcRemoteException(-32600, "linked forks require persistent thread storage"),
                 _ => JsonSerializer.SerializeToElement(new { }),
@@ -2881,7 +2874,7 @@ public sealed partial class CodexSessionServiceTests
         {
             Handler = (method, _) => method switch
             {
-                "initialize" => JsonSerializer.SerializeToElement(new { userAgent = "codex-cli/0.166.0" }),
+                "initialize" => JsonSerializer.SerializeToElement(new { userAgent = "codex-cli/0.167.2" }),
                 "account/read" => JsonSerializer.SerializeToElement(new
                 {
                     account = new { type = "chatgpt", email = "a@example.test", planType = "team" },
@@ -2916,7 +2909,7 @@ public sealed partial class CodexSessionServiceTests
         {
             Handler = (method, _) => method switch
             {
-                "initialize" => JsonSerializer.SerializeToElement(new { userAgent = "codex-cli/0.166.0" }),
+                "initialize" => JsonSerializer.SerializeToElement(new { userAgent = "codex-cli/0.167.2" }),
                 "account/read" => JsonSerializer.SerializeToElement(new
                 {
                     account = new { type = "chatgpt", email = "a@example.test", planType = "team" },
@@ -2952,7 +2945,7 @@ public sealed partial class CodexSessionServiceTests
                 switch (method)
                 {
                     case "initialize":
-                        return JsonSerializer.SerializeToElement(new { userAgent = "codex-cli/0.166.0" });
+                        return JsonSerializer.SerializeToElement(new { userAgent = "codex-cli/0.167.2" });
                     case "thread/start":
                         return JsonSerializer.SerializeToElement(new { thread = new { id = "thread-1" } });
                     case "accountSession/switch":
@@ -2995,7 +2988,7 @@ public sealed partial class CodexSessionServiceTests
                 switch (method)
                 {
                     case "initialize":
-                        return JsonSerializer.SerializeToElement(new { userAgent = "codex-cli/0.166.0" });
+                        return JsonSerializer.SerializeToElement(new { userAgent = "codex-cli/0.167.2" });
                     case "accountSession/list":
                         if (Interlocked.Increment(ref listCalls) == 1)
                         {
@@ -3066,24 +3059,6 @@ public sealed partial class CodexSessionServiceTests
         Assert.IsNull(result.EstimatedUsageUsdMicros);
         Assert.AreEqual(0L, result.EstimatedUsageCreditsMicros);
         Assert.AreEqual("thread-1", ParametersFor(connection, "account/usage/read").GetProperty("threadId").GetString());
-    }
-
-    [TestMethod]
-    public async Task GetThreadUsage_BelowTier166_SendsNothing()
-    {
-        var connection = new RecordingConnection
-        {
-            Handler = (method, _) => method == "initialize"
-                ? JsonSerializer.SerializeToElement(new { userAgent = "codex-cli/0.165.0" })
-                : JsonSerializer.SerializeToElement(new { }),
-        };
-        await using CodexSessionService service = CreateService();
-        await service.InitializeAsync(connection, Options(), CancellationToken.None);
-
-        ThreadUsageResult result = await service.GetThreadUsageAsync("thread-1", CancellationToken.None);
-
-        Assert.IsFalse(result.IsSupported);
-        Assert.IsFalse(connection.Requests.Any(item => item.Method == "account/usage/read"));
     }
 
     [TestMethod]
@@ -4083,71 +4058,6 @@ public sealed partial class CodexSessionServiceTests
             "revision",
             markRead: true,
             cancellationToken: CancellationToken.None));
-    }
-
-    [TestMethod]
-    public async Task MxcOptOutRejectsUnknownOrPre163LocalServerBeforeInitialized()
-    {
-        var connection = new RecordingConnection
-        {
-            Handler = (method, _) => method == "initialize"
-                ? JsonSerializer.SerializeToElement(new { userAgent = "codex-cli/0.162.1" })
-                : JsonSerializer.SerializeToElement(new { }),
-        };
-        await using var service = CreateService();
-        WorkerOptions options = Options();
-        options.WindowsSandboxBackend = WindowsSandboxBackendPreference.DisableMxc;
-
-        InvalidOperationException error = await Assert.ThrowsExactlyAsync<InvalidOperationException>(
-            () => service.InitializeAsync(connection, options, CancellationToken.None));
-
-        StringAssert.Contains(error.Message, "requires Codex CLI 0.163.0 or later");
-        Assert.IsFalse(connection.Notifications.Any(notification => notification.Method == "initialized"));
-        Assert.IsNull(service.CodexVersion, "The rejected server's version must not remain observable.");
-        Assert.IsNull(service.InitializationMetadata);
-        await Assert.ThrowsExactlyAsync<InvalidOperationException>(
-            () => service.ListThreadsAsync(null, CancellationToken.None),
-            "The rejected connection context must be retired.");
-    }
-
-    [TestMethod]
-    [DataRow("codex-cli/0.163.0+build.5")]
-    [DataRow("codex-cli/0.163.0+build-5")]
-    [DataRow("codex-cli/0.164.0-alpha.1+build.5")]
-    public async Task MxcOptOutAcceptsSupportedVersionWithBuildMetadata(string userAgent)
-    {
-        var connection = new RecordingConnection
-        {
-            Handler = (method, _) => method == "initialize"
-                ? JsonSerializer.SerializeToElement(new { userAgent })
-                : JsonSerializer.SerializeToElement(new { }),
-        };
-        await using var service = CreateService();
-        WorkerOptions options = Options();
-        options.WindowsSandboxBackend = WindowsSandboxBackendPreference.DisableMxc;
-
-        await service.InitializeAsync(connection, options, CancellationToken.None);
-
-        Assert.IsTrue(connection.Notifications.Any(notification => notification.Method == "initialized"));
-    }
-
-    [TestMethod]
-    public async Task MxcOptOutRejectsMinimumPrereleaseWithBuildMetadata()
-    {
-        var connection = new RecordingConnection
-        {
-            Handler = (method, _) => method == "initialize"
-                ? JsonSerializer.SerializeToElement(new { userAgent = "codex-cli/0.163.0-alpha.2+build.5" })
-                : JsonSerializer.SerializeToElement(new { }),
-        };
-        await using var service = CreateService();
-        WorkerOptions options = Options();
-        options.WindowsSandboxBackend = WindowsSandboxBackendPreference.DisableMxc;
-
-        InvalidOperationException error = await Assert.ThrowsExactlyAsync<InvalidOperationException>(
-            () => service.InitializeAsync(connection, options, CancellationToken.None));
-
-        StringAssert.Contains(error.Message, "requires Codex CLI 0.163.0 or later");
     }
 
     [TestMethod]

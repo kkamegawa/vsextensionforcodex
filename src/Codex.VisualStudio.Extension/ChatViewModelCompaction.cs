@@ -10,9 +10,6 @@ public sealed partial class ChatViewModel
 {
     internal const string CompactionFailedText = "Compaction failed.";
 
-    internal const string CompressedHistoryResumeNote =
-        "If this conversation was compacted, Codex CLI 0.164.0 or later can resume compressed histories.";
-
     // Registered before thread/compact/start is dispatched: the outcome notification can arrive
     // while that request is still awaiting its response. All access is on the UI thread.
     private CompactionOperation? pendingCompaction;
@@ -142,9 +139,7 @@ public sealed partial class ChatViewModel
             message = string.Concat(message.AsSpan(0, 512), "…");
         }
 
-        return Status.FeatureTier < CodexFeatureTier.Baseline
-            ? $"The conversation could not be resumed: {message} {CompressedHistoryResumeNote}"
-            : $"The conversation could not be resumed: {message}";
+        return $"The conversation could not be resumed: {message}";
     }
 
     private static string? GetProviderErrorCode(Exception error)

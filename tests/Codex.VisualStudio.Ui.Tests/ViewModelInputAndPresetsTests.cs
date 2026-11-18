@@ -281,21 +281,6 @@ public sealed partial class ViewModelTests
     }
 
     [TestMethod]
-    public async Task Presets_BelowTier164ExplainsRequirementWithoutReading()
-    {
-        var bridge = new FakeWorkerBridge();
-        using var vm = new ChatViewModel(bridge, autoConnect: false);
-        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready, FeatureTier = CodexFeatureTier.Unsupported });
-
-        await RunComposerAsync(vm, "/presets");
-
-        Assert.IsTrue(vm.IsPresetsPanelOpen);
-        Assert.IsTrue(vm.ShowPresetsTierNotice);
-        Assert.AreEqual(0, bridge.ListPresetsCallCount);
-        Assert.IsFalse(vm.ShowPresetSlots);
-    }
-
-    [TestMethod]
     public async Task Presets_RecallFillsEmptyComposerWithRawInputWithoutSending()
     {
         var bridge = new FakeWorkerBridge { ListPresetsHandler = (_, _) => Task.FromResult(PresetsResult()) };

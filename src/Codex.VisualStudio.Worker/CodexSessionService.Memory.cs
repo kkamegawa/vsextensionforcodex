@@ -16,12 +16,12 @@ public sealed partial class CodexSessionService
     {
         ValidateHistoryId(threadId, nameof(threadId));
         ConnectionContext context = RequireContext();
-        if (context.FeatureTier < CodexFeatureTier.Baseline || !context.ExperimentalApi)
+        if (!context.ExperimentalApi)
         {
             return new ThreadMemoryResult
             {
                 IsSupported = false,
-                UnavailableReason = "Conversation memory requires Codex CLI 0.165.0 or later with the Experimental API enabled.",
+                UnavailableReason = "Conversation memory requires the Experimental API to be enabled.",
                 ThreadId = threadId,
             };
         }
