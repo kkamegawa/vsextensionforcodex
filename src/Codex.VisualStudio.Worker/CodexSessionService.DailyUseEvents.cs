@@ -1172,6 +1172,8 @@ public sealed partial class CodexSessionService
             "flexunavailable" => "flexUnavailable",
             "toomanydenials" => "tooManyDenials",
             "policycapacityunavailable" => "policyCapacityUnavailable",
+            "sessionbudgetexceeded" => "sessionBudgetExceeded",
+            "inferencehookdenied" => "inferenceHookDenied",
             _ => null,
         };
     }
@@ -1181,6 +1183,8 @@ public sealed partial class CodexSessionService
         "flexUnavailable" => "The selected model's Flex service is currently unavailable. No retry was started.",
         "tooManyDenials" => "The request was stopped after too many denials. No retry was started.",
         "policyCapacityUnavailable" => "Policy-restricted model capacity is temporarily unavailable. Try again later.",
+        "sessionBudgetExceeded" => "The session budget was reached. Start a new conversation or increase its budget. No retry was started.",
+        "inferenceHookDenied" => "The organization's inference hook denied the request. No retry was started.",
         _ => null,
     };
 

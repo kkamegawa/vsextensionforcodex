@@ -610,7 +610,6 @@ public sealed partial class CodexSessionServiceTests
                                 new { reasoningEffort = "medium", description = "Balanced" },
                                 new { reasoningEffort = "high", description = "Deep" },
                             },
-                            supportsPersonality = true,
                             defaultServiceTier = "priority",
                             serviceTiers = new[]
                             {
@@ -624,7 +623,6 @@ public sealed partial class CodexSessionServiceTests
                             isDefault = true,
                             defaultReasoningEffort = "medium",
                             supportedReasoningEfforts = Array.Empty<object>(),
-                            supportsPersonality = false,
                             defaultServiceTier = (string?)null,
                             serviceTiers = Array.Empty<object>(),
                         },
@@ -644,7 +642,6 @@ public sealed partial class CodexSessionServiceTests
         Assert.AreEqual("high", result.Models[0].DefaultReasoningEffort);
         Assert.AreEqual(2, result.Models[0].SupportedReasoningEfforts.Count);
         Assert.AreEqual("medium", result.Models[0].SupportedReasoningEfforts[0].Id);
-        Assert.IsTrue(result.Models[0].SupportsPersonality);
         Assert.AreEqual("priority", result.Models[0].DefaultServiceTier);
         Assert.AreEqual("priority", result.Models[0].ServiceTiers[0].Id);
     }
@@ -1220,7 +1217,6 @@ public sealed partial class CodexSessionServiceTests
                 SandboxMode = "readOnly",
                 HasEffort = true,
                 Effort = "high",
-                Personality = "friendly",
                 HasServiceTier = true,
                 ServiceTier = "priority",
                 CollaborationMode = new CollaborationModeInfo
@@ -1247,7 +1243,7 @@ public sealed partial class CodexSessionServiceTests
         Assert.AreEqual("user", parameters.GetProperty("approvalsReviewer").GetString());
         Assert.AreEqual("readOnly", parameters.GetProperty("sandboxPolicy").GetProperty("type").GetString());
         Assert.AreEqual("high", parameters.GetProperty("effort").GetString());
-        Assert.AreEqual("friendly", parameters.GetProperty("personality").GetString());
+        Assert.IsFalse(parameters.TryGetProperty("personality", out _));
         Assert.AreEqual("priority", parameters.GetProperty("serviceTier").GetString());
         JsonElement collaborationMode = parameters.GetProperty("collaborationMode");
         Assert.AreEqual("plan", collaborationMode.GetProperty("mode").GetString());
@@ -2145,6 +2141,7 @@ public sealed partial class CodexSessionServiceTests
 
         ThreadSummary thread = await service.StartThreadAsync(CancellationToken.None);
 
+        Assert.IsFalse(ParametersFor(connection, "thread/start").TryGetProperty("personality", out _));
         Assert.AreEqual("review", thread.EffectiveApprovalState!.ActivePermissionProfile);
         Assert.AreEqual("auto_review", service.EffectiveApprovalState!.ApprovalsReviewer);
         Assert.AreEqual("medium", thread.EffectiveReasoningEffort);
@@ -2215,6 +2212,7 @@ public sealed partial class CodexSessionServiceTests
             new ForkThreadRequest { ThreadId = "thread-resumed" },
             CancellationToken.None);
 
+        Assert.IsFalse(ParametersFor(connection, "thread/resume").TryGetProperty("personality", out _));
         Assert.AreEqual("resume-profile", resumed.EffectiveApprovalState!.ActivePermissionProfile);
         Assert.AreEqual("auto_review", resumed.EffectiveApprovalState.ApprovalsReviewer);
         Assert.AreEqual("high", resumed.EffectiveReasoningEffort);

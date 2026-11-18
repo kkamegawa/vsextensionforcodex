@@ -107,7 +107,7 @@ The Worker reads payloads as JSON elements, so each changed shape that the Worke
 | `item/commandExecution/requestApproval` `kind` | `CodexSessionService.CreateApprovalRequest`, `OfferedCommandChoiceSet` | Read. `command` keeps the existing card. `writeStdin` shows the card as input to a running terminal. `humanCommand` shows the organization checkpoint in section 4. An unknown value shows the ordinary card without session grants |
 | `mcpServer/elicitation/request` `_meta` | `McpElicitationFormParser` | Read `tool_name` and `tool_annotations` as described in section 4 |
 | `item/completed` `contentTokenCount` | `CodexSessionService.DispatchNotificationAsync` | Read on `Tier168` for `agentMessage` items |
-| `codexErrorInfo` `inferenceHookDenied`, `sessionBudgetExceeded` | `CodexSessionService.ReadTurnErrorReason` | Recognized in addition to `flexUnavailable`, `tooManyDenials`, and `policyCapacityUnavailable` |
+| `codexErrorInfo` `inferenceHookDenied`, `sessionBudgetExceeded` in live and replayed turns | `CodexSessionService.ReadTurnErrorReason` and live/replay turn readers | Recognized; raw payload text is redacted and display uses a safe static description; the turn is never resent automatically |
 | `model/list` `modelProvider` | `CodexSessionService.ListModelsAsync` | Sent on `Tier169` when a provider other than the default is selected |
 | `thread/start` `modelProvider` | `CodexSessionService.StartThreadAsync` | Sent on `Tier169` when a provider is selected for the new conversation |
 | `account/read` `userId` | `CodexSessionService.ReadAccountStatus` | Read on `Tier169` to bind the security reminder |
@@ -115,16 +115,19 @@ The Worker reads payloads as JSON elements, so each changed shape that the Worke
 | `account/gatewayOAuth/changed` `loginId` | Gateway OAuth notification handler | Ignored; completion is matched by `providerId` |
 | `thread/section/changed` | New notification handler | Updates the section of a listed thread |
 | `ThreadItem` `agentMessage.moderation` | Typed item reader | Ignored; the extension does not apply `AgentMessageDisplay` actions |
-| `turn/start` `personality` | `CodexSessionService.StartTurnAsync` | Never sent; see section 3 |
+| `thread/start`, `thread/resume`, `turn/start` `personality` | `CodexSessionService` thread and turn request builders | Never serialized; `/personality` and draft state are removed |
+| `thread/rollback` and replayed rolled-back history | `ReadThread` and turn-history readers | The method is never requested; existing history still loads; `threadRollbackFailed` remains an ordinary error |
+| `thread/start`, `thread/resume`, `thread/settings/updated` permission fields | `ReadThread`, `ReadEffectiveThreadPermissions`, and settings notification handler | Project `activePermissionProfile` and `sandbox` into the effective approval mode; retain schema-defined filesystem `read`/`write` forms |
+| Preset `config/batchWrite` | `WritePresetAsync` | Writes preset keys only; never writes `features.multi_agent` or `agents.enabled` |
 | Every other row in the shape change table | — | Not sent and not read |
 
 ## 3. Required protocol follow-ups
 
-- **`personality`.** `Personality` values no longer select a style, and `Model.supportsPersonality` is always `false`. The `/personality` slash command, `StartTurnRequest.Personality`, the draft restore of the selection, and the read of `supportsPersonality` are removed. `turn/start` never sends `personality`.
-- **`thread/rollback`.** The method is absent from every supported schema and the extension does not use it. The `CodexErrorInfo` value `threadRollbackFailed` still exists and displays as an ordinary error. Contract tests assert that the method is never sent.
-- **Default thread permissions.** A thread created with default permissions stores its permissions as a permission profile (openai/codex#60472). The response shapes are unchanged: the Worker reads `activePermissionProfile` (an object with `id`, or a string) and the `sandbox` object as before. Real CLI tests on 0.167.2 and 0.169.0 resume a conversation created with default permissions and check the projected approval mode.
-- **`features.multi_agent`.** The flag is deprecated in favour of `agents.enabled` (openai/codex#59479), and the CLI writes a warning to stderr when the flag is configured. The extension never writes either key. The warning is diagnostic output under the existing stderr rules and is not a connection failure.
-- **Terminal errors.** A provider `budget_reached` error arrives as `sessionBudgetExceeded` (openai/codex#59228). Access program and workspace access denials arrive with existing `codexErrorInfo` values and a server message (openai/codex#60476, #60480). `inferenceHookDenied` is new in 0.169 (openai/codex#60511). None of them is retried by the server, so the extension never resends the turn automatically.
+- **`personality`.** `Personality` values are never serialized in thread or turn requests. The `/personality` slash command, `StartTurnRequest.Personality`, draft state, and the read of `supportsPersonality` are removed.
+- **`thread/rollback`.** The method is absent from every supported schema, so the extension never requests it. Existing history that contains rolled-back turns still loads. `threadRollbackFailed` is handled as an ordinary error.
+- **Default thread permissions.** A thread created with default permissions stores its permissions as a permission profile (openai/codex#60472). The Worker reads `activePermissionProfile` and `sandbox` and projects them into the effective approval mode. It also reads the schema-defined filesystem permission `read` and `write` forms.
+- **`features.multi_agent`.** The flag is deprecated in favour of `agents.enabled` (openai/codex#59479), and the CLI writes a warning to stderr when it is configured. Preset `config/batchWrite` writes preset keys only and never writes either `features.multi_agent` or `agents.enabled`. The warning is diagnostic output under the existing stderr rules and is not a connection failure.
+- **Terminal errors.** A provider `budget_reached` error arrives as `sessionBudgetExceeded` (openai/codex#59228). The live notification and replay readers recognize `sessionBudgetExceeded` and `inferenceHookDenied` and show safe static descriptions without exposing raw payload text (openai/codex#60511). Access program and workspace denials are handled through existing error values and redacted messages (openai/codex#60476, #60480). The extension never resends the turn automatically.
 
 ## 4. Features
 

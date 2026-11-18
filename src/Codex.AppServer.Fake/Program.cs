@@ -161,7 +161,9 @@ while (await Console.In.ReadLineAsync().ConfigureAwait(false) is { } line)
                         ? "codex-cli/0.163.0"
                         : IsScenario("Regression01650")
                 ? "codex-cli/0.165.0"
-                : IsScenario("Current01660") ? "codex-cli/0.166.0" : "codex-cli/0.164.0",
+                : IsScenario("Current01660")
+                    ? "codex-cli/0.166.0"
+                    : IsScenario("Issue292") ? "codex-cli/0.167.2" : "codex-cli/0.164.0",
             codexHome = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".codex"),
             platformFamily = OperatingSystem.IsWindows() ? "windows" : "unix",
             platformOs = OperatingSystem.IsWindows() ? "windows" : OperatingSystem.IsMacOS() ? "macos" : "linux",
@@ -181,6 +183,7 @@ while (await Console.In.ReadLineAsync().ConfigureAwait(false) is { } line)
         },
         "account/usage/read" => CreateThreadUsage(root.GetProperty("params")),
         "thread/read" => ReadThread(root.GetProperty("params")),
+        "thread/turns/list" => ListThreadTurns(root.GetProperty("params")),
         "thread/attachment/list" => ListAttachments(root.GetProperty("params")),
         "thread/attachment/add" => AddAttachment(root.GetProperty("params")),
         "thread/attachment/remove" => RemoveAttachment(root.GetProperty("params")),
@@ -730,6 +733,26 @@ object ReadThread(JsonElement parameters)
     return new { thread, readState };
 }
 
+object ListThreadTurns(JsonElement parameters)
+{
+    _ = parameters.GetProperty("threadId").GetString();
+    if (!IsScenario("Issue292"))
+    {
+        return new { data = Array.Empty<object>(), nextCursor = (string?)null };
+    }
+
+    return new
+    {
+        data = new object[]
+        {
+            new { id = "rolled-back-turn", status = "rolledBack" },
+            new { id = "budget-turn", status = "failed", error = new { codexErrorInfo = "sessionBudgetExceeded" } },
+            new { id = "inference-hook-turn", status = "failed", error = new { codexErrorInfo = new { inferenceHookDenied = new { } } } },
+        },
+        nextCursor = (string?)null,
+    };
+}
+
 object ResumeThread(JsonElement parameters)
 {
     string threadId = parameters.GetProperty("threadId").GetString() ?? string.Empty;
@@ -948,7 +971,9 @@ static string UserSkillPath(params string[] segments)
 object ThreadResponse(object thread) => new
 {
     thread,
-    activePermissionProfile = experimentalApiEnabled ? new { id = ":workspace" } : null,
+    activePermissionProfile = experimentalApiEnabled
+        ? IsScenario("Issue292") ? new { id = "read-only" } : new { id = ":workspace" }
+        : null,
     approvalPolicy = "on-request",
     approvalsReviewer = "user",
     sandbox = new { type = "workspaceWrite" },
@@ -994,7 +1019,9 @@ object StartTurn(JsonElement request)
                 threadId,
                 threadSettings = new
                 {
-                    activePermissionProfile = permissions is null ? null : new { id = permissions },
+                    activePermissionProfile = permissions is null
+                        ? IsScenario("Issue292") ? new { id = "read-only" } : null
+                        : new { id = permissions },
                     approvalPolicy = approvalPolicy ?? "on-request",
                     approvalsReviewer = approvalsReviewer ?? "user",
                     sandboxPolicy = new { type = sandboxMode ?? "workspaceWrite" },
@@ -1003,6 +1030,36 @@ object StartTurn(JsonElement request)
                 },
             },
         }).ConfigureAwait(false);
+        if (IsScenario("Issue292"))
+        {
+            await WriteAsync(new
+            {
+                method = "error",
+                @params = new
+                {
+                    threadId,
+                    turnId = eventTurnId,
+                    error = new { codexErrorInfo = "sessionBudgetExceeded", message = "budget_reached" },
+                },
+            }).ConfigureAwait(false);
+            await WriteAsync(new
+            {
+                method = "turn/completed",
+                @params = new
+                {
+                    threadId,
+                    turnId = eventTurnId,
+                    turn = new
+                    {
+                        id = eventTurnId,
+                        status = "failed",
+                        error = new { codexErrorInfo = new { inferenceHookDenied = new { } }, message = "inference_hook_denied" },
+                    },
+                },
+            }).ConfigureAwait(false);
+            return;
+        }
+
         if (IsScenario("Issue155PlanDeltaFinal"))
         {
             await EmitIssue155PlanAsync(threadId, eventTurnId, includeDelta: true).ConfigureAwait(false);

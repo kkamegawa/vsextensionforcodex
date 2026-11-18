@@ -14,7 +14,7 @@ The implementation is tracked by GitHub Issue #46 and its four sub-issues.
 | Category | Commands | Behavior |
 |---|---|---|
 | App Server operations | `/compact`, `/feedback`, `/fork`, `/goal`, `/mcp`, `/review`, `/shell` | Invoke dedicated typed Worker RPC methods. `/shell` executes only through explicit invocation and confirmation. |
-| Next-turn settings | `/fast`, `/model`, `/permissions` (`/approve` alias), `/personality`, `/reasoning` | Update typed fields used by the next `turn/start`. Except for picker selections, these settings are consumed by the next started turn. |
+| Next-turn settings | `/fast`, `/model`, `/permissions` (`/approve` alias), `/reasoning` | Update typed fields used by the next `turn/start`. Except for picker selections, these settings are consumed by the next started turn. |
 | Conversation mode | `/plan` | Enable persistent Plan mode, shared with the composer checkbox, until explicitly unchecked. |
 | Visual Studio operations | `/ide-context`, `/init`, `/status`, `/doctor` | Toggle bounded editor context, safely create `AGENTS.md`, show local session state, or check network access with `codex doctor --network-only` on 0.166 or later. A remote connection shows the procedure to run on the server. |
 
@@ -86,9 +86,9 @@ invalidation, and exact live identity validation. Version 9 added the validated 
 `WorkerStatus` for Remote UI status presentation. Version 8 added typed DTOs
 and RPC methods for compact, review, fork, goals, MCP status, feedback, and
 rate limits. `StartTurnRequest` includes
-reasoning effort, personality, service tier, collaboration mode, and bounded
+reasoning effort, service tier, collaboration mode, and bounded
 IDE context. Model entries include supported reasoning efforts, the default
-effort, personality support, and service tiers.
+effort and service tiers.
 
 App-server error `-32601` disables only the affected command for the current
 session. It does not degrade the entire connection. Non-idempotent command

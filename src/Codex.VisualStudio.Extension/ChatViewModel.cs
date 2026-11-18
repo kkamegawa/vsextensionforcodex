@@ -122,7 +122,6 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
     private string? workingDirectory;
     private readonly Dictionary<string, PendingReasoningOverride> pendingReasoningByThread = new(StringComparer.Ordinal);
     private readonly Dictionary<string, string?> reasoningRestoreByThread = new(StringComparer.Ordinal);
-    private string? nextPersonality;
     private bool unassignedPlanModeEnabled;
     private RecoveryPlanModeSnapshot? recoveryPlanMode;
     private readonly HashSet<string> planModeThreads = new(StringComparer.Ordinal);
@@ -952,7 +951,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
 
     private bool HasDraftContent()
         => ComposerText.Length > 0 || HasPendingAttachments || HasPendingSkill
-            || nextPersonality is not null || inFlightMutations.Count > 0
+            || inFlightMutations.Count > 0
             || Items.Any(static item => item.IsDeliveryUnknown);
 
     private RecoveryDraftViewModel CaptureRecoveryDraft()
@@ -968,7 +967,6 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             selectedModel,
             selectedReasoningEffortId,
             selectedServiceTierId,
-            nextPersonality,
             PlanModeEnabled,
             skillCopy,
             uncertain,
@@ -1419,19 +1417,6 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                 settingsRestoreFailed = true;
             }
 
-            if (draft.Personality is not null)
-            {
-                if (GetSelectedModelInfo()?.SupportsPersonality == true
-                    && (draft.Personality is "none" or "friendly" or "pragmatic"))
-                {
-                    nextPersonality = draft.Personality;
-                }
-                else
-                {
-                    settingsRestoreFailed = true;
-                }
-            }
-
             if (draft.PlanModeEnabled && !IsPlanModeAvailable)
             {
                 settingsRestoreFailed = true;
@@ -1814,7 +1799,6 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         pendingServiceTierByThread.Clear();
         serviceTierRestoreByThread.Clear();
         modelCommandServiceTier = null;
-        nextPersonality = null;
         planModeThreads.Clear();
         unassignedPlanModeEnabled = false;
         planModeTurnIds.Clear();
@@ -5369,7 +5353,6 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             Permissions = GetTurnPermissions(),
             HasEffort = reasoning.HasValue,
             Effort = reasoning.Value,
-            Personality = nextPersonality,
             HasServiceTier = serviceTier.HasValue,
             ServiceTier = serviceTier.Value,
             CollaborationMode = sendCollaborationMode
@@ -5417,11 +5400,6 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             && string.Equals(reasoningRestore, request.Effort, StringComparison.Ordinal))
         {
             reasoningRestoreByThread.Remove(request.ThreadId);
-        }
-
-        if (string.Equals(nextPersonality, request.Personality, StringComparison.Ordinal))
-        {
-            nextPersonality = null;
         }
 
         if (pendingServiceTierByThread.TryGetValue(request.ThreadId, out PendingServiceTierOverride? pending)
@@ -6162,12 +6140,6 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             SlashCommandId.Model => Models
                 .Select(model => new SlashCommandOptionDescriptor(model, model))
                 .ToArray(),
-            SlashCommandId.Personality =>
-            [
-                new("none", "None"),
-                new("friendly", "Friendly"),
-                new("pragmatic", "Pragmatic"),
-            ],
             SlashCommandId.Reasoning => ReasoningEfforts
                 .Skip(1)
                 .Select(effort => new SlashCommandOptionDescriptor(
@@ -6181,12 +6153,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             _ => null,
         };
 
-        if (definition.Id == SlashCommandId.Personality && GetSelectedModelInfo()?.SupportsPersonality != true)
-        {
-            isAvailable = false;
-            unavailableReason = "The selected model does not support personality settings.";
-        }
-        else if (definition.Id == SlashCommandId.Reasoning && (options is null || options.Length == 0))
+        if (definition.Id == SlashCommandId.Reasoning && (options is null || options.Length == 0))
         {
             isAvailable = false;
             unavailableReason = "The selected model did not report supported reasoning efforts.";
@@ -6590,7 +6557,6 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                 SlashCommandId.Review => await ExecuteReviewAsync(targetThreadId!, invocation.Arguments, dispatchFence).ConfigureAwait(false),
                 SlashCommandId.Fast => await ExecuteFastAsync(targetThreadId!).ConfigureAwait(false),
                 SlashCommandId.Model => await ExecuteModelAsync(invocation.Arguments).ConfigureAwait(false),
-                SlashCommandId.Personality => await ExecutePersonalityAsync(invocation.Arguments).ConfigureAwait(false),
                 SlashCommandId.Plan => await ExecutePlanAsync(targetThreadId, invocation.Arguments, dispatchFence).ConfigureAwait(false),
                 SlashCommandId.Reasoning => await ExecuteReasoningAsync(targetThreadId!, invocation.Arguments).ConfigureAwait(false),
                 SlashCommandId.IdeContext => await ExecuteIdeContextAsync().ConfigureAwait(false),
@@ -7418,21 +7384,6 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         settingsStore.Save(settings);
     }
 
-    private async Task<bool> ExecutePersonalityAsync(string arguments)
-    {
-        string personality = arguments.Trim().ToLowerInvariant();
-        if (GetSelectedModelInfo()?.SupportsPersonality != true
-            || personality is not ("none" or "friendly" or "pragmatic"))
-        {
-            await ShowSlashFailureAsync("Select none, friendly, or pragmatic for a model that supports personalities.").ConfigureAwait(false);
-            return false;
-        }
-
-        nextPersonality = personality;
-        await ShowSlashStatusAsync($"Personality set to {personality} for the next turn.").ConfigureAwait(false);
-        return true;
-    }
-
     // Argumentless /plan needs no conversation: a null target enables the threadless composer,
     // whose selection moves to the conversation created from it. /plan <prompt> always has one.
     private async Task<bool> ExecutePlanAsync(string? threadId, string arguments, long goalStopFence)
@@ -7675,7 +7626,6 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             $"Desired reasoning effort: {desiredReasoning}",
             $"Effective reasoning effort: {GetEffectiveReasoningEffort(threadId ?? string.Empty) ?? "(not reported)"}",
             $"Next-turn reasoning effort: {nextReasoningText}",
-            $"Personality: {nextPersonality ?? "(default)"}",
             $"Desired service tier: {desiredServiceTier}",
             $"Effective service tier: {effectiveServiceTier}",
             $"Pending service-tier override: {pendingServiceTier}",
@@ -11386,7 +11336,6 @@ public sealed class RecoveryDraftViewModel
         string? model,
         string? reasoningEffort,
         string? serviceTier,
-        string? personality,
         bool planModeEnabled,
         SkillInvocationInfo? skill,
         bool hasUncertainDelivery,
@@ -11399,12 +11348,11 @@ public sealed class RecoveryDraftViewModel
         TextPreview = safeText.Length > 512 ? string.Concat(safeText.AsSpan(0, 512), "…") : safeText;
         AttachmentSummary = attachmentNames.Length == 0 ? "No file attachments" : string.Join(", ", attachmentNames.Select(markdown.ToSafeText));
         string? skillSummary = skill is null ? null : $"Skill: {skill.Name} ({skill.Scope})";
-        SettingsSummary = markdown.ToSafeText(string.Join(" · ", new[] { model, reasoningEffort, serviceTier, personality, planModeEnabled ? "Plan mode" : null, skillSummary }.Where(static value => !string.IsNullOrWhiteSpace(value))));
+        SettingsSummary = markdown.ToSafeText(string.Join(" · ", new[] { model, reasoningEffort, serviceTier, planModeEnabled ? "Plan mode" : null, skillSummary }.Where(static value => !string.IsNullOrWhiteSpace(value))));
         this.attachmentPaths = attachmentPaths;
         Model = model;
         ReasoningEffort = reasoningEffort;
         ServiceTier = serviceTier;
-        Personality = personality;
         PlanModeEnabled = planModeEnabled;
         Skill = skill;
         HasUncertainDelivery = hasUncertainDelivery;
@@ -11439,8 +11387,6 @@ public sealed class RecoveryDraftViewModel
     internal string? ReasoningEffort { get; }
 
     internal string? ServiceTier { get; }
-
-    internal string? Personality { get; }
 
     internal bool PlanModeEnabled { get; }
 

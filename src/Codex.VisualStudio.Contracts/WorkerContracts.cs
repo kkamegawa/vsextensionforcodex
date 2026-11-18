@@ -827,8 +827,6 @@ public sealed class ModelInfo
 
     public IReadOnlyList<ReasoningEffortInfo> SupportedReasoningEfforts { get; set; } = Array.Empty<ReasoningEffortInfo>();
 
-    public bool SupportsPersonality { get; set; }
-
     public string? DefaultServiceTier { get; set; }
 
     public IReadOnlyList<ServiceTierInfo> ServiceTiers { get; set; } = Array.Empty<ServiceTierInfo>();
@@ -928,8 +926,6 @@ public sealed class StartTurnRequest
     public bool HasEffort { get; set; }
 
     public string? Effort { get; set; }
-
-    public string? Personality { get; set; }
 
     // Structured skill input. Scope is used only for Extension/Worker identity
     // validation; the app-server receives Name and Path in the input item.

@@ -79,6 +79,16 @@ public sealed class DailyUseArtifactStoreTests
         using var historyTurn = System.Text.Json.JsonDocument.Parse(
             "{\"id\":\"turn-1\",\"error\":{\"codexErrorInfo\":\"policyCapacityUnavailable\"}}");
         Assert.AreEqual("policyCapacityUnavailable", CodexSessionService.ReadTurnErrorReason(historyTurn.RootElement));
+
+        using var sessionBudget = System.Text.Json.JsonDocument.Parse(
+            "{\"error\":{\"codexErrorInfo\":\"sessionBudgetExceeded\"}}");
+        Assert.AreEqual("sessionBudgetExceeded", CodexSessionService.ReadTurnErrorReason(sessionBudget.RootElement));
+        StringAssert.Contains(CodexSessionService.DescribeTurnErrorReason("sessionBudgetExceeded"), "No retry");
+
+        using var inferenceHook = System.Text.Json.JsonDocument.Parse(
+            "{\"turn\":{\"error\":{\"codexErrorInfo\":{\"inferenceHookDenied\":{}}}}}");
+        Assert.AreEqual("inferenceHookDenied", CodexSessionService.ReadTurnErrorReason(inferenceHook.RootElement));
+        StringAssert.Contains(CodexSessionService.DescribeTurnErrorReason("inferenceHookDenied"), "No retry");
     }
 
     [TestMethod]

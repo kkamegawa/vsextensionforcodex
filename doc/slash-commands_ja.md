@@ -14,7 +14,7 @@ Visual Studio拡張機能は、入力の先頭文字が`/`の場合だけCodex�
 | 分類 | コマンド | 動作 |
 |---|---|---|
 | App Server操作 | `/compact`, `/feedback`, `/fork`, `/goal`, `/mcp`, `/review`, `/shell` | 専用の型付きWorker RPCを呼び出します。`/shell`は明示的な入力と確認からだけ実行します。 |
-| 次ターン設定 | `/fast`, `/model`, `/permissions`（`/approve`は互換エイリアス）, `/personality`, `/reasoning` | 次の`turn/start`へ渡す型付きフィールドを更新します。ピッカー選択以外は次のターン開始時に消費されます。 |
+| 次ターン設定 | `/fast`, `/model`, `/permissions`（`/approve`は互換エイリアス）, `/reasoning` | 次の`turn/start`へ渡す型付きフィールドを更新します。ピッカー選択以外は次のターン開始時に消費されます。 |
 | 会話モード | `/plan` | 入力欄のチェックと連動してPlanモードを有効にし、明示的にチェックを外すまで継続します。 |
 | Visual Studio操作 | `/ide-context`, `/init`, `/status`, `/doctor` | 上限付きIDEコンテキスト、`AGENTS.md`の安全な生成、ローカル状態表示、0.166以降での`codex doctor --network-only`によるネットワーク確認を行います。リモート接続では、サーバー上で実行する手順を表示します。 |
 
@@ -78,9 +78,9 @@ Worker契約バージョン18で、要求と通知に捕捉した所有者のsco
 live identityの完全一致検証を追加しました。バージョン9で接続中Codex versionを、
 バージョン8でcompact、review、fork、goal、MCP状態、feedback、
 rate limitsの型付きDTOとRPCを追加しました。`StartTurnRequest`にはreasoning
-effort、personality、service tier、collaboration mode、上限付きIDE contextを
-追加しています。モデル情報には対応effort、既定effort、personality対応、
-service tierを含めます。
+effort、service tier、collaboration mode、上限付きIDE contextを
+追加しています。モデル情報には対応effort、既定effort、service tierを
+含めます。
 
 App Serverの`-32601`は該当コマンドだけをセッション中無効化し、接続全体を
 Degradedにしません。非冪等コマンド操作は再試行しません。

@@ -5070,7 +5070,6 @@ public sealed partial class ViewModelTests
                     new ModelInfo
                     {
                         Id = "gpt-5",
-                        SupportsPersonality = true,
                         SupportedReasoningEfforts = [new ReasoningEffortInfo { Id = "high" }],
                         ServiceTiers = [new ServiceTierInfo { Id = "fast" }],
                     },
@@ -5092,22 +5091,18 @@ public sealed partial class ViewModelTests
         await InvokeComposerSendAsync(vm);
         vm.ComposerText = "/reasoning high";
         await InvokeComposerSendAsync(vm);
-        vm.ComposerText = "/personality friendly";
-        await InvokeComposerSendAsync(vm);
 
         await SendMessageAsync(vm, "first", clearComposer: false);
 
         Assert.IsNotNull(bridge.LastStartTurnRequest);
         Assert.AreEqual("fast", bridge.LastStartTurnRequest!.ServiceTier);
         Assert.AreEqual("high", bridge.LastStartTurnRequest.Effort);
-        Assert.AreEqual("friendly", bridge.LastStartTurnRequest.Personality);
 
         await SendMessageAsync(vm, "second", clearComposer: false);
 
         Assert.IsNull(bridge.LastStartTurnRequest!.ServiceTier);
         Assert.IsTrue(bridge.LastStartTurnRequest.HasServiceTier);
         Assert.IsNull(bridge.LastStartTurnRequest.Effort);
-        Assert.IsNull(bridge.LastStartTurnRequest.Personality);
 
         await SendMessageAsync(vm, "third", clearComposer: false);
         Assert.IsFalse(bridge.LastStartTurnRequest!.HasServiceTier);

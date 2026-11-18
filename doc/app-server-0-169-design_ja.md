@@ -107,7 +107,7 @@ Worker はペイロードを JSON 要素として読み取るため、Worker が
 | `item/commandExecution/requestApproval` の `kind` | `CodexSessionService.CreateApprovalRequest`、`OfferedCommandChoiceSet` | 読み取ります。`command` は既存のカードのままです。`writeStdin` は実行中のターミナルへの入力としてカードを表示します。`humanCommand` は 4 章の組織のチェックポイントを表示します。不明な値はセッション単位の許可なしで通常のカードを表示します |
 | `mcpServer/elicitation/request` の `_meta` | `McpElicitationFormParser` | 4 章のとおり `tool_name` と `tool_annotations` を読み取ります |
 | `item/completed` の `contentTokenCount` | `CodexSessionService.DispatchNotificationAsync` | `Tier168` で `agentMessage` 項目について読み取ります |
-| `codexErrorInfo` の `inferenceHookDenied`、`sessionBudgetExceeded` | `CodexSessionService.ReadTurnErrorReason` | `flexUnavailable`、`tooManyDenials`、`policyCapacityUnavailable` に加えて認識します |
+| ライブと再生されたターンの `codexErrorInfo` にある `inferenceHookDenied`、`sessionBudgetExceeded` | `CodexSessionService.ReadTurnErrorReason` とライブ／再生ターンリーダー | 認識し、ペイロードのテキストを秘匿化して安全な固定説明を表示します。ターンは自動で再送しません |
 | `model/list` の `modelProvider` | `CodexSessionService.ListModelsAsync` | 既定以外のプロバイダーを選んだとき、`Tier169` で送ります |
 | `thread/start` の `modelProvider` | `CodexSessionService.StartThreadAsync` | 新しい会話のプロバイダーを選んだとき、`Tier169` で送ります |
 | `account/read` の `userId` | `CodexSessionService.ReadAccountStatus` | セキュリティリマインダーの照合のため、`Tier169` で読み取ります |
@@ -115,16 +115,19 @@ Worker はペイロードを JSON 要素として読み取るため、Worker が
 | `account/gatewayOAuth/changed` の `loginId` | ゲートウェイ OAuth の通知ハンドラー | 読み取りません。完了は `providerId` で照合します |
 | `thread/section/changed` | 新しい通知ハンドラー | 一覧にある会話のセクションを更新します |
 | `ThreadItem` の `agentMessage.moderation` | 型付き項目のリーダー | 読み取りません。拡張機能は `AgentMessageDisplay` のアクションを適用しません |
-| `turn/start` の `personality` | `CodexSessionService.StartTurnAsync` | 送りません。3 章を参照してください |
+| `thread/start`、`thread/resume`、`turn/start` の `personality` | `CodexSessionService` のスレッド／ターン要求ビルダー | シリアライズしません。`/personality` と下書きの状態は削除します |
+| `thread/rollback` と、再生される巻き戻し済み履歴 | `ReadThread` とターン履歴リーダー | メソッドは要求せず、既存の履歴は引き続き読み込みます。`threadRollbackFailed` は通常のエラーとして残します |
+| `thread/start`、`thread/resume`、`thread/settings/updated` の権限フィールド | `ReadThread`、`ReadEffectiveThreadPermissions`、設定通知ハンドラー | `activePermissionProfile` と `sandbox` を実効承認モードに反映します。スキーマで定義されたファイルシステムの `read`／`write` 形式は維持します |
+| プリセットの `config/batchWrite` | `WritePresetAsync` | プリセットのキーだけを書き込み、`features.multi_agent` と `agents.enabled` は書き込みません |
 | 形の変化の表にあるその他の行 | — | 送信も読み取りもしません |
 
 ## 3. 必須の追従項目
 
-- **`personality`。** `Personality` の値はもうスタイルを選ばず、`Model.supportsPersonality` は常に `false` です。`/personality` スラッシュコマンド、`StartTurnRequest.Personality`、下書きからの選択の復元、`supportsPersonality` の読み取りを削除します。`turn/start` は `personality` を送りません。
-- **`thread/rollback`。** このメソッドは対応するどのスキーマにも存在せず、拡張機能も使っていません。`CodexErrorInfo` の値 `threadRollbackFailed` は残っており、通常のエラーとして表示します。契約テストで、このメソッドを送らないことを確認します。
-- **既定のスレッド権限。** 既定の権限で作成したスレッドは、権限を permission profile として保存します(openai/codex#60472)。応答の形は変わりません。Worker はこれまでどおり `activePermissionProfile`(`id` を持つオブジェクト、または文字列)と `sandbox` オブジェクトを読み取ります。実 CLI 0.167.2 と 0.169.0 のテストで、既定の権限で作成した会話を再開し、投影される承認モードを確認します。
-- **`features.multi_agent`。** このフラグは `agents.enabled` に置き換えられて非推奨になり(openai/codex#59479)、フラグが設定されていると CLI は stderr に警告を書きます。拡張機能はどちらのキーも書きません。警告は既存の stderr の規則に従う診断出力で、接続の失敗ではありません。
-- **終端エラー。** プロバイダーの `budget_reached` エラーは `sessionBudgetExceeded` として届きます(openai/codex#59228)。アクセスプログラムとワークスペースのアクセス拒否は、既存の `codexErrorInfo` の値とサーバーのメッセージで届きます(openai/codex#60476、#60480)。`inferenceHookDenied` は 0.169 で追加されました(openai/codex#60511)。いずれもサーバーは再試行しないため、拡張機能もターンを自動で再送しません。
+- **`personality`。** `Personality` 値はスレッド／ターン要求にシリアライズしません。`/personality` スラッシュコマンド、`StartTurnRequest.Personality`、下書き状態、`supportsPersonality` の読み取りを削除します。
+- **`thread/rollback`。** 対応するどのスキーマにも存在しないため、メソッドを要求しません。巻き戻し済みターンを含む既存の履歴は引き続き読み込みます。`threadRollbackFailed` は通常のエラーとして扱います。
+- **既定のスレッド権限。** 既定の権限で作成したスレッドは、権限を permission profile として保存します(openai/codex#60472)。Worker は `activePermissionProfile` と `sandbox` を読み取り、実効承認モードに反映します。スキーマに残るファイルシステム権限の `read`／`write` 形式も読み取ります。
+- **`features.multi_agent`。** このフラグは `agents.enabled` に置き換えられて非推奨になり(openai/codex#59479)、設定時に CLI は stderr に警告を書きます。拡張機能はプリセットの `config/batchWrite` でプリセットキーだけを書き込み、どちらのキーも書きません。警告は接続失敗ではありません。
+- **終端エラー。** プロバイダーの `budget_reached` は `sessionBudgetExceeded` として届きます(openai/codex#59228)。ライブ通知と再生履歴の `sessionBudgetExceeded`、`inferenceHookDenied` を認識し、ペイロードのテキストを表示せず安全な固定説明を表示します(openai/codex#60511)。サーバーのアクセス拒否も既存のエラー値と秘匿化したメッセージで扱います(openai/codex#60476、#60480)。ターンを自動で再送しません。
 
 ## 4. 機能
 

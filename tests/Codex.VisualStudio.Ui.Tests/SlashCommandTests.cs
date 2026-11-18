@@ -12,6 +12,17 @@ public sealed class SlashCommandTests
     private readonly SlashCommandCatalog catalog = new();
 
     [TestMethod]
+    public void Parser_RejectsDeprecatedPersonalityCommand()
+    {
+        var parser = new SlashCommandParser(catalog);
+
+        SlashCommandParseResult result = parser.Parse("/personality friendly");
+
+        Assert.AreEqual(SlashCommandParseKind.Unknown, result.Kind);
+        Assert.IsFalse(catalog.TryFind("personality", out _));
+    }
+
+    [TestMethod]
     public void Parser_OnlyTreatsLeadingSlashAsCommand()
     {
         var parser = new SlashCommandParser(catalog);
