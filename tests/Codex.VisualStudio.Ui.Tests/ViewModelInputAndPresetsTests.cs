@@ -3,7 +3,7 @@ using Codex.VisualStudio.Extension;
 
 namespace Codex.VisualStudio.Ui.Tests;
 
-// /model arguments, the /permissions queue hold, and presets (0.164 tier).
+// /model arguments, the /permissions queue hold, and preset behavior.
 public sealed partial class ViewModelTests
 {
     private static readonly string[] CliPresetSlotOrder = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"];
@@ -247,8 +247,8 @@ public sealed partial class ViewModelTests
         await WaitForAsync(() => bridge.ReviewCallCount == 1);
     }
 
-    private static WorkerStatus Tier164Status(WorkerConnectionState state = WorkerConnectionState.Ready)
-        => new() { State = state, FeatureTier = CodexFeatureTier.Baseline, CodexVersion = SupportedCodexVersions.Target };
+    private static WorkerStatus SupportedVersionStatus(WorkerConnectionState state = WorkerConnectionState.Ready)
+        => new() { State = state, FeatureTier = CodexFeatureTier.Tier169, CodexVersion = SupportedCodexVersions.Target };
 
     private static ListPresetsResult PresetsResult(string version = "v1")
         => new()
@@ -266,7 +266,7 @@ public sealed partial class ViewModelTests
     {
         var bridge = new FakeWorkerBridge { ListPresetsHandler = (_, _) => Task.FromResult(PresetsResult()) };
         using var vm = new ChatViewModel(bridge, autoConnect: false);
-        await bridge.PublishStateAsync(Tier164Status());
+        await bridge.PublishStateAsync(SupportedVersionStatus());
 
         await RunCommandAsync(vm.OpenPresetsCommand);
 
@@ -285,7 +285,7 @@ public sealed partial class ViewModelTests
     {
         var bridge = new FakeWorkerBridge { ListPresetsHandler = (_, _) => Task.FromResult(PresetsResult()) };
         using var vm = new ChatViewModel(bridge, autoConnect: false);
-        await bridge.PublishStateAsync(Tier164Status());
+        await bridge.PublishStateAsync(SupportedVersionStatus());
         await RunCommandAsync(vm.OpenPresetsCommand);
 
         await RunCommandAsync(vm.PresetSlots[0].RecallCommand);
@@ -300,7 +300,7 @@ public sealed partial class ViewModelTests
     {
         var bridge = new FakeWorkerBridge { ListPresetsHandler = (_, _) => Task.FromResult(PresetsResult()) };
         using var vm = new ChatViewModel(bridge, autoConnect: false);
-        await bridge.PublishStateAsync(Tier164Status());
+        await bridge.PublishStateAsync(SupportedVersionStatus());
         await RunCommandAsync(vm.OpenPresetsCommand);
         vm.ComposerText = "my draft";
 
@@ -321,7 +321,7 @@ public sealed partial class ViewModelTests
     {
         var bridge = new FakeWorkerBridge { ListPresetsHandler = (_, _) => Task.FromResult(PresetsResult("v7")) };
         using var vm = new ChatViewModel(bridge, autoConnect: false);
-        await bridge.PublishStateAsync(Tier164Status());
+        await bridge.PublishStateAsync(SupportedVersionStatus());
         await RunCommandAsync(vm.OpenPresetsCommand);
 
         await RunCommandAsync(vm.PresetSlots[0].EditCommand);
@@ -353,7 +353,7 @@ public sealed partial class ViewModelTests
             WritePresetHandler = (_, _) => Task.FromResult(new WritePresetResult { Outcome = WritePresetOutcome.Conflict, Message = "The presets changed." }),
         };
         using var vm = new ChatViewModel(bridge, autoConnect: false);
-        await bridge.PublishStateAsync(Tier164Status());
+        await bridge.PublishStateAsync(SupportedVersionStatus());
         await RunCommandAsync(vm.OpenPresetsCommand);
 
         await RunCommandAsync(vm.PresetSlots[2].EditCommand);
@@ -372,7 +372,7 @@ public sealed partial class ViewModelTests
     {
         var bridge = new FakeWorkerBridge { ListPresetsHandler = (_, _) => Task.FromResult(PresetsResult()) };
         using var vm = new ChatViewModel(bridge, autoConnect: false);
-        await bridge.PublishStateAsync(Tier164Status());
+        await bridge.PublishStateAsync(SupportedVersionStatus());
         await RunCommandAsync(vm.OpenPresetsCommand);
 
         await RunCommandAsync(vm.PresetSlots[0].DeleteCommand);
@@ -390,7 +390,7 @@ public sealed partial class ViewModelTests
     {
         var bridge = new FakeWorkerBridge { ListPresetsHandler = (_, _) => Task.FromResult(PresetsResult()) };
         using var vm = new ChatViewModel(bridge, autoConnect: false);
-        await bridge.PublishStateAsync(Tier164Status());
+        await bridge.PublishStateAsync(SupportedVersionStatus());
         await RunCommandAsync(vm.OpenPresetsCommand);
 
         await RunCommandAsync(vm.PresetSlots[2].EditCommand);
@@ -409,12 +409,12 @@ public sealed partial class ViewModelTests
         var bridge = new FakeWorkerBridge { ListPresetsHandler = (_, _) => pending.Task };
 #pragma warning restore VSTHRD003
         using var vm = new ChatViewModel(bridge, autoConnect: false);
-        WorkerStatus first = Tier164Status();
+        WorkerStatus first = SupportedVersionStatus();
         first.Target = new ConnectionTargetSnapshot { Generation = 1 };
         await bridge.PublishStateAsync(first);
 
         Task opening = RunCommandAsync(vm.OpenPresetsCommand);
-        WorkerStatus second = Tier164Status();
+        WorkerStatus second = SupportedVersionStatus();
         second.Target = new ConnectionTargetSnapshot { Generation = 2 };
         await bridge.PublishStateAsync(second);
         pending.SetResult(PresetsResult());
@@ -428,13 +428,13 @@ public sealed partial class ViewModelTests
     {
         var bridge = new FakeWorkerBridge { ListPresetsHandler = (_, _) => Task.FromResult(PresetsResult()) };
         using var vm = new ChatViewModel(bridge, autoConnect: false);
-        WorkerStatus first = Tier164Status();
+        WorkerStatus first = SupportedVersionStatus();
         first.Target = new ConnectionTargetSnapshot { Generation = 1 };
         await bridge.PublishStateAsync(first);
         await RunCommandAsync(vm.OpenPresetsCommand);
         PresetSlotViewModel retired = vm.PresetSlots[0];
 
-        WorkerStatus second = Tier164Status();
+        WorkerStatus second = SupportedVersionStatus();
         second.Target = new ConnectionTargetSnapshot { Generation = 2 };
         await bridge.PublishStateAsync(second);
         await RunCommandAsync(retired.RecallCommand);

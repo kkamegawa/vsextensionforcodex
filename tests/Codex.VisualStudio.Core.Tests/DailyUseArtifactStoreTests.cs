@@ -94,7 +94,7 @@ public sealed class DailyUseArtifactStoreTests
     [TestMethod]
     public void TurnErrorReasonToleratesUnknownCodexErrorInfoVariants()
     {
-        // 0.162.1 lets CodexErrorInfo carry unknown strings and objects (for example reviewTarget).
+        // CodexErrorInfo may carry unknown strings and objects (for example reviewTarget).
         // They are read without failing and never become a retry or approval reason.
         foreach (string json in new[]
         {

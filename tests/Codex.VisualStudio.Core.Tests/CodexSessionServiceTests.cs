@@ -121,7 +121,7 @@ public sealed partial class CodexSessionServiceTests
                 ? JsonSerializer.SerializeToElement(new
                 {
                     userAgent = "malformed user agent",
-                    serverInfo = new { version = "0.164.0" },
+                    serverInfo = new { version = "0.169.0" },
                 })
                 : JsonSerializer.SerializeToElement(new { }),
         };
@@ -169,7 +169,7 @@ public sealed partial class CodexSessionServiceTests
     }
 
     [TestMethod]
-    [DataRow("0.159.1", CodexFeatureTier.Unsupported, false)]
+    [DataRow("0.166.0", CodexFeatureTier.Unsupported, false)]
     [DataRow("0.166.9", CodexFeatureTier.Unsupported, false)]
     [DataRow("0.167.0-alpha.1", CodexFeatureTier.Unsupported, false)]
     [DataRow("0.167.0", CodexFeatureTier.Baseline, false)]
@@ -364,8 +364,8 @@ public sealed partial class CodexSessionServiceTests
     [TestMethod]
     public async Task HistoryKeepsPartialCommentaryAndFinalAnswersOnceInOrder()
     {
-        // 0.162.1 adds MessagePhase.partial_answer: each phase is a separate agentMessage item with
-        // its own text, so every item is shown exactly once and none of them ends the turn.
+        // The phases are separate agentMessage items with their own text, so each item is shown
+        // exactly once and none of them ends the turn.
         var connection = new RecordingConnection
         {
             Handler = (method, _) => method switch
@@ -1912,7 +1912,7 @@ public sealed partial class CodexSessionServiceTests
 
         ListSkillsResult result = await service.ListSkillsAsync(forceReload: false, CancellationToken.None);
 
-        // 0.162.1 types skill paths as LegacyAppPathString: a non-absolute value is a valid catalog
+        // The schema types skill paths as LegacyAppPathString: a non-absolute value is a valid catalog
         // identifier and is kept verbatim, while empty or control-character values are still dropped.
         CollectionAssert.AreEqual(new[] { "relative", "rooted" }, result.Skills.Select(skill => skill.Name).ToArray());
         CollectionAssert.AreEqual(
@@ -2228,7 +2228,7 @@ public sealed partial class CodexSessionServiceTests
         {
             Handler = (method, _) => method switch
             {
-                "initialize" => JsonSerializer.SerializeToElement(new { userAgent = "codex-cli/0.167.2" }),
+                "initialize" => JsonSerializer.SerializeToElement(new { userAgent = $"codex-cli/{SupportedCodexVersions.Target}" }),
                 "thread/start" => JsonSerializer.SerializeToElement(new { thread = new { id = "parent" } }),
                 "thread/fork" => JsonSerializer.SerializeToElement(new { thread = new { id = "child" } }),
                 "thread/list" => JsonSerializer.SerializeToElement(new
@@ -2273,7 +2273,7 @@ public sealed partial class CodexSessionServiceTests
         var connection = new RecordingConnection
         {
             Handler = (method, _) => method == "initialize"
-                ? JsonSerializer.SerializeToElement(new { userAgent = "codex-cli/0.167.2" })
+                ? JsonSerializer.SerializeToElement(new { userAgent = $"codex-cli/{SupportedCodexVersions.Target}" })
                 : JsonSerializer.SerializeToElement(new { }),
         };
         await using var service = CreateService();
@@ -2694,7 +2694,7 @@ public sealed partial class CodexSessionServiceTests
         var connection = new RecordingConnection
         {
             Handler = (method, _) => method == "initialize"
-                ? JsonSerializer.SerializeToElement(new { userAgent = "codex-cli/0.167.2" })
+                ? JsonSerializer.SerializeToElement(new { userAgent = $"codex-cli/{SupportedCodexVersions.Target}" })
                 : JsonSerializer.SerializeToElement(new { }),
         };
         await using CodexSessionService service = CreateService();
@@ -2714,7 +2714,7 @@ public sealed partial class CodexSessionServiceTests
         var connection = new RecordingConnection
         {
             Handler = (method, _) => method == "initialize"
-                ? JsonSerializer.SerializeToElement(new { userAgent = "codex-cli/0.167.2" })
+                ? JsonSerializer.SerializeToElement(new { userAgent = $"codex-cli/{SupportedCodexVersions.Target}" })
                 : JsonSerializer.SerializeToElement(new { }),
         };
         WorkerOptions options = Options();
@@ -2735,7 +2735,7 @@ public sealed partial class CodexSessionServiceTests
         {
             Handler = (method, _) => method switch
             {
-                "initialize" => JsonSerializer.SerializeToElement(new { userAgent = "codex-cli/0.167.2" }),
+                "initialize" => JsonSerializer.SerializeToElement(new { userAgent = $"codex-cli/{SupportedCodexVersions.Target}" }),
                 "thread/start" => ReviewThreadResponse("thread-memory"),
                 "thread/memory/read" => JsonSerializer.SerializeToElement(new { summary = "Stored memory." }),
                 _ => JsonSerializer.SerializeToElement(new { }),
@@ -2762,7 +2762,7 @@ public sealed partial class CodexSessionServiceTests
         {
             Handler = (method, _) => method switch
             {
-                "initialize" => JsonSerializer.SerializeToElement(new { userAgent = "codex-cli/0.167.2" }),
+                "initialize" => JsonSerializer.SerializeToElement(new { userAgent = $"codex-cli/{SupportedCodexVersions.Target}" }),
                 "thread/start" => ReviewThreadResponse("thread-memory"),
                 "thread/memory/read" => JsonSerializer.SerializeToElement(new { summary = (string?)null }),
                 _ => JsonSerializer.SerializeToElement(new { }),
@@ -2787,7 +2787,7 @@ public sealed partial class CodexSessionServiceTests
         {
             Handler = (method, _) => method switch
             {
-                "initialize" => JsonSerializer.SerializeToElement(new { userAgent = "codex-cli/0.167.2" }),
+                "initialize" => JsonSerializer.SerializeToElement(new { userAgent = $"codex-cli/{SupportedCodexVersions.Target}" }),
                 "thread/start" => JsonSerializer.SerializeToElement(new { thread = new { id = "parent" } }),
                 "thread/fork" => throw new JsonRpcRemoteException(-32600, "linked forks require persistent thread storage"),
                 _ => JsonSerializer.SerializeToElement(new { }),
@@ -2814,7 +2814,7 @@ public sealed partial class CodexSessionServiceTests
         {
             Handler = (method, _) => method switch
             {
-                "initialize" => JsonSerializer.SerializeToElement(new { userAgent = "codex-cli/0.167.2" }),
+                "initialize" => JsonSerializer.SerializeToElement(new { userAgent = $"codex-cli/{SupportedCodexVersions.Target}" }),
                 "account/read" => JsonSerializer.SerializeToElement(new
                 {
                     account = new { type = "chatgpt", email = "a@example.test", planType = "team" },
@@ -2849,7 +2849,7 @@ public sealed partial class CodexSessionServiceTests
         {
             Handler = (method, _) => method switch
             {
-                "initialize" => JsonSerializer.SerializeToElement(new { userAgent = "codex-cli/0.167.2" }),
+                "initialize" => JsonSerializer.SerializeToElement(new { userAgent = $"codex-cli/{SupportedCodexVersions.Target}" }),
                 "account/read" => JsonSerializer.SerializeToElement(new
                 {
                     account = new { type = "chatgpt", email = "a@example.test", planType = "team" },
@@ -2885,7 +2885,7 @@ public sealed partial class CodexSessionServiceTests
                 switch (method)
                 {
                     case "initialize":
-                        return JsonSerializer.SerializeToElement(new { userAgent = "codex-cli/0.167.2" });
+                        return JsonSerializer.SerializeToElement(new { userAgent = $"codex-cli/{SupportedCodexVersions.Target}" });
                     case "thread/start":
                         return JsonSerializer.SerializeToElement(new { thread = new { id = "thread-1" } });
                     case "accountSession/switch":
@@ -2928,7 +2928,7 @@ public sealed partial class CodexSessionServiceTests
                 switch (method)
                 {
                     case "initialize":
-                        return JsonSerializer.SerializeToElement(new { userAgent = "codex-cli/0.167.2" });
+                        return JsonSerializer.SerializeToElement(new { userAgent = $"codex-cli/{SupportedCodexVersions.Target}" });
                     case "accountSession/list":
                         if (Interlocked.Increment(ref listCalls) == 1)
                         {
@@ -3413,10 +3413,10 @@ public sealed partial class CodexSessionServiceTests
     }
 
     [TestMethod]
-    public async Task ListModelsToleratesAccessProgramsAddedInContract0159()
+    public async Task ListModelsToleratesAccessProgramsInTheTargetContract()
     {
-        // 0.159.1 adds availableAccessPrograms to Model and promotes a new default model. The
-        // catalog must still parse, and the new default must be offered in the picker.
+        // The target contract adds availableAccessPrograms to Model and promotes a new default model.
+        // The catalog must still parse, and the new default must be offered in the picker.
         var connection = new RecordingConnection
         {
             Handler = (method, _) => method == "model/list"
@@ -3857,7 +3857,7 @@ public sealed partial class CodexSessionServiceTests
         {
             Handler = (method, _) => method switch
             {
-                "initialize" => JsonSerializer.SerializeToElement(new { userAgent = "codex-cli/0.163.0" }),
+                "initialize" => JsonSerializer.SerializeToElement(new { userAgent = $"codex-cli/{SupportedCodexVersions.Target}" }),
                 "thread/list" => JsonSerializer.SerializeToElement(new
                 {
                     data = new[]
@@ -3902,7 +3902,7 @@ public sealed partial class CodexSessionServiceTests
         {
             Handler = (method, _) => method switch
             {
-                "initialize" => JsonSerializer.SerializeToElement(new { userAgent = "codex-cli/0.163.0" }),
+                "initialize" => JsonSerializer.SerializeToElement(new { userAgent = $"codex-cli/{SupportedCodexVersions.Target}" }),
                 "thread/list" => JsonSerializer.SerializeToElement(new { data = new[] { new { id = "thread" } }, readStates = (object?)null }),
                 _ => JsonSerializer.SerializeToElement(new { }),
             },
@@ -3928,7 +3928,7 @@ public sealed partial class CodexSessionServiceTests
         {
             Handler = (method, _) => method switch
             {
-                "initialize" => JsonSerializer.SerializeToElement(new { userAgent = "codex-cli/0.163.0" }),
+                "initialize" => JsonSerializer.SerializeToElement(new { userAgent = $"codex-cli/{SupportedCodexVersions.Target}" }),
                 "thread/readState/update" => throw new JsonRpcRemoteException(-32600, "Invalid request", conflictData),
                 _ => JsonSerializer.SerializeToElement(new { }),
             },
@@ -3956,7 +3956,7 @@ public sealed partial class CodexSessionServiceTests
         {
             Handler = (method, _) => method switch
             {
-                "initialize" => JsonSerializer.SerializeToElement(new { userAgent = "codex-cli/0.163.0" }),
+                "initialize" => JsonSerializer.SerializeToElement(new { userAgent = $"codex-cli/{SupportedCodexVersions.Target}" }),
                 "thread/readState/update" => throw new JsonRpcRemoteException(-32600, "Invalid request", unrelatedData),
                 _ => JsonSerializer.SerializeToElement(new { }),
             },
@@ -3978,7 +3978,7 @@ public sealed partial class CodexSessionServiceTests
         {
             Handler = (method, _) => method switch
             {
-                "initialize" => JsonSerializer.SerializeToElement(new { userAgent = "codex-cli/0.163.0" }),
+                "initialize" => JsonSerializer.SerializeToElement(new { userAgent = $"codex-cli/{SupportedCodexVersions.Target}" }),
                 "thread/readState/update" => throw new TaskCanceledException("simulated request timeout"),
                 _ => JsonSerializer.SerializeToElement(new { }),
             },
@@ -4183,7 +4183,7 @@ public sealed partial class CodexSessionServiceTests
                     codexHome = "C:/private/codex",
                     platformFamily = "windows",
                     platformOs = "windows-11",
-                    userAgent = "codex-cli/0.161.0",
+                    userAgent = $"codex-cli/{SupportedCodexVersions.Target}",
                 })
                 : JsonSerializer.SerializeToElement(new { }),
         };

@@ -2,7 +2,7 @@
 
 namespace Codex.VisualStudio.Ui.Tests;
 
-// Parity cases for the Codex CLI 0.164.0 /model argument parser and its shlex 1.3.0 tokenizer.
+// Parity cases for the Codex CLI /model argument parser and its shlex-compatible tokenizer.
 [TestClass]
 public sealed class ModelCommandArgumentsTests
 {

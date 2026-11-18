@@ -5,19 +5,19 @@ using Codex.VisualStudio.Worker;
 
 namespace Codex.VisualStudio.Core.Tests;
 
-// Codex CLI 0.164.0 tier behavior: presets, diagnostic ZIP saving, MCP runtime details,
+// Baseline behavior for presets, diagnostic ZIP saving, MCP runtime details,
 // generated-image references, and authoritative resume settings.
 public sealed partial class CodexSessionServiceTests
 {
     private static readonly string[] AllPresetSlots = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"];
 
     [TestMethod]
-    [DataRow("0.164.0-alpha.3", "0.164.0", -1)]
-    [DataRow("0.164.0-alpha.3", "0.164.0-alpha.10", -1)]
-    [DataRow("0.164.0-alpha", "0.164.0-alpha.1", -1)]
-    [DataRow("0.164.0-1", "0.164.0-alpha", -1)]
-    [DataRow("0.164.0+build.1", "0.164.0+build.2", 0)]
-    [DataRow("0.165.0", "0.164.9", 1)]
+    [DataRow("0.169.0-alpha.3", "0.169.0", -1)]
+    [DataRow("0.169.0-alpha.3", "0.169.0-alpha.10", -1)]
+    [DataRow("0.169.0-alpha", "0.169.0-alpha.1", -1)]
+    [DataRow("0.169.0-1", "0.169.0-alpha", -1)]
+    [DataRow("0.169.0+build.1", "0.169.0+build.2", 0)]
+    [DataRow("0.170.0", "0.169.9", 1)]
     public void CodexCliVersionUsesSemanticVersioningPrecedence(string left, string right, int expected)
     {
         int actual = CodexCliVersion.Parse(left).CompareTo(CodexCliVersion.Parse(right));
@@ -29,7 +29,7 @@ public sealed partial class CodexSessionServiceTests
     public async Task ListPresetsReadsLayersAndAppliesEditAndDeleteRules()
     {
         object? readParameters = null;
-        var connection = Tier164Connection((method, parameters) =>
+        var connection = CurrentTargetConnection((method, parameters) =>
         {
             if (method != "config/read")
             {
@@ -102,7 +102,7 @@ public sealed partial class CodexSessionServiceTests
     public async Task WritePresetSendsOneReplaceEditWithTheObservedVersion()
     {
         var writes = new List<object?>();
-        var connection = Tier164Connection((method, parameters) =>
+        var connection = CurrentTargetConnection((method, parameters) =>
         {
             if (method == "config/batchWrite")
             {
@@ -152,7 +152,7 @@ public sealed partial class CodexSessionServiceTests
     public async Task WritePresetRejectsInputTheCliRejectsWithoutWriting(string input, string message)
     {
         int writes = 0;
-        var connection = Tier164Connection((method, _) =>
+        var connection = CurrentTargetConnection((method, _) =>
         {
             writes += method == "config/batchWrite" ? 1 : 0;
             return method == "config/read" ? UserOnlyPresetLayers("user-v1") : null;
@@ -181,7 +181,7 @@ public sealed partial class CodexSessionServiceTests
     public async Task WritePresetReportsConflictsWithoutRetrying()
     {
         int writes = 0;
-        var connection = Tier164Connection((method, _) =>
+        var connection = CurrentTargetConnection((method, _) =>
         {
             if (method == "config/batchWrite")
             {
@@ -218,7 +218,7 @@ public sealed partial class CodexSessionServiceTests
         object userLayer = blankVersion
             ? new { name = new { type = "user" }, version = "  ", config = new { } }
             : new { name = new { type = "user" }, config = new { } };
-        var connection = Tier164Connection((method, _) =>
+        var connection = CurrentTargetConnection((method, _) =>
         {
             writes += method == "config/batchWrite" ? 1 : 0;
             return method == "config/read"
@@ -238,34 +238,11 @@ public sealed partial class CodexSessionServiceTests
     }
 
     [TestMethod]
-    public async Task PresetsAndDiagnosticSaveRequireThe164Tier()
-    {
-        var connection = new RecordingConnection
-        {
-            Handler = (method, _) => method == "initialize"
-                ? JsonSerializer.SerializeToElement(new { userAgent = "codex-cli/0.163.0" })
-                : JsonSerializer.SerializeToElement(new { }),
-        };
-        await using var service = CreateService();
-        await service.InitializeAsync(connection, Options(), CancellationToken.None);
-
-        ListPresetsResult presets = await service.ListPresetsAsync(CancellationToken.None);
-        SaveFeedbackResult save = await service.SaveFeedbackAsync(
-            new SaveFeedbackRequest { Classification = "visual-studio", SavePath = ServerZipPath() },
-            CancellationToken.None);
-
-        Assert.IsFalse(presets.IsSupported);
-        Assert.IsFalse(save.IsSupported);
-        StringAssert.Contains(presets.UnavailableReason, "0.164.0");
-        Assert.IsFalse(connection.Requests.Any(request => request.Method is "config/read" or "feedback/save"));
-    }
-
-    [TestMethod]
     public async Task SaveFeedbackSendsTheServerPathWithoutExtraLogs()
     {
         object? saveParameters = null;
         string zip = ServerZipPath();
-        var connection = Tier164Connection((method, parameters) =>
+        var connection = CurrentTargetConnection((method, parameters) =>
         {
             if (method != "feedback/save")
             {
@@ -295,7 +272,7 @@ public sealed partial class CodexSessionServiceTests
     public async Task SaveFeedbackReportsServerErrorsAndUnconfirmedOutcomes()
     {
         bool close = false;
-        var connection = Tier164Connection((method, _) =>
+        var connection = CurrentTargetConnection((method, _) =>
         {
             if (method != "feedback/save")
             {
@@ -327,15 +304,13 @@ public sealed partial class CodexSessionServiceTests
     }
 
     [TestMethod]
-    [DataRow("0.164.0", true)]
-    [DataRow("0.163.0", false)]
-    public async Task McpRuntimeDetailsAreReadOnlyInThe164Tier(string version, bool expectDetails)
+    public async Task McpRuntimeDetailsAreReadOnlyForSupportedVersions()
     {
         var connection = new RecordingConnection
         {
             Handler = (method, _) => method switch
             {
-                "initialize" => JsonSerializer.SerializeToElement(new { userAgent = $"codex-cli/{version}" }),
+                "initialize" => JsonSerializer.SerializeToElement(new { userAgent = $"codex-cli/{SupportedCodexVersions.Target}" }),
                 "mcpServerStatus/list" => JsonSerializer.SerializeToElement(new
                 {
                     data = new object[]
@@ -372,21 +347,13 @@ public sealed partial class CodexSessionServiceTests
 
         McpServerStatusInfo docs = result.Servers.Single(server => server.Name == "docs");
         McpServerStatusInfo future = result.Servers.Single(server => server.Name == "future");
-        Assert.AreEqual(expectDetails, docs.HasRuntimeDetails);
+        Assert.IsTrue(docs.HasRuntimeDetails);
         Assert.AreEqual(1, future.ToolCount);
         Assert.IsFalse(JsonSerializer.Serialize(result).Contains("do-not-forward", StringComparison.Ordinal));
-        if (expectDetails)
-        {
-            Assert.AreEqual(McpRuntimeStatus.AuthenticationRequired, docs.RuntimeStatus);
-            Assert.AreEqual(McpRuntimeStatus.Unknown, future.RuntimeStatus);
-            Assert.IsNotNull(docs.ToolsError);
-            Assert.IsFalse(docs.ToolsError.Any(char.IsControl));
-        }
-        else
-        {
-            Assert.AreEqual(McpRuntimeStatus.Unknown, docs.RuntimeStatus);
-            Assert.IsNull(docs.ToolsError);
-        }
+        Assert.AreEqual(McpRuntimeStatus.AuthenticationRequired, docs.RuntimeStatus);
+        Assert.AreEqual(McpRuntimeStatus.Unknown, future.RuntimeStatus);
+        Assert.IsNotNull(docs.ToolsError);
+        Assert.IsFalse(docs.ToolsError.Any(char.IsControl));
     }
 
     [TestMethod]
@@ -394,7 +361,7 @@ public sealed partial class CodexSessionServiceTests
     {
         // A 1x1 PNG.
         const string rawPng = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
-        var connection = Tier164Connection((_, _) => null);
+        var connection = CurrentTargetConnection((_, _) => null);
         await using var service = CreateService();
         var completed = new List<ConversationEvent>();
         service.ConversationEventReceived += (value, _) =>
@@ -431,15 +398,13 @@ public sealed partial class CodexSessionServiceTests
     }
 
     [TestMethod]
-    [DataRow("0.164.0", true)]
-    [DataRow("0.163.0", false)]
-    public async Task ResumeMarksSettingsAuthoritativeOnlyInThe164Tier(string version, bool expected)
+    public async Task ResumeMarksSettingsAuthoritativeForSupportedVersions()
     {
         var connection = new RecordingConnection
         {
             Handler = (method, _) => method switch
             {
-                "initialize" => JsonSerializer.SerializeToElement(new { userAgent = $"codex-cli/{version}" }),
+                "initialize" => JsonSerializer.SerializeToElement(new { userAgent = $"codex-cli/{SupportedCodexVersions.Target}" }),
                 "thread/resume" => JsonSerializer.SerializeToElement(new
                 {
                     thread = new { id = "thread-1", cwd = "C:/work" },
@@ -455,15 +420,15 @@ public sealed partial class CodexSessionServiceTests
 
         ThreadSummary resumed = await service.ResumeThreadAsync("thread-1", CancellationToken.None);
 
-        Assert.AreEqual(expected, resumed.HasAuthoritativeTurnSettings);
+        Assert.IsTrue(resumed.HasAuthoritativeTurnSettings);
         Assert.IsNull(resumed.EffectiveServiceTier);
     }
 
-    private static RecordingConnection Tier164Connection(Func<string, object?, JsonElement?> handler)
+    private static RecordingConnection CurrentTargetConnection(Func<string, object?, JsonElement?> handler)
         => new()
         {
             Handler = (method, parameters) => method == "initialize"
-                ? JsonSerializer.SerializeToElement(new { userAgent = "codex-cli/0.164.0" })
+                ? JsonSerializer.SerializeToElement(new { userAgent = $"codex-cli/{SupportedCodexVersions.Target}" })
                 : handler(method, parameters) ?? JsonSerializer.SerializeToElement(new { }),
         };
 

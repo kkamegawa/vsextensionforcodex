@@ -296,7 +296,7 @@ public sealed class WorkerRpcOwnerBoundaryTests
     [TestMethod]
     public async Task AccountUpdatedDuringStartupForTheSameAccountKeepsTheConnectionReady()
     {
-        // CLI 0.159.1 sends account/updated shortly after startup without any account change.
+        // The CLI may send account/updated shortly after startup without any account change.
         string workspace = Path.Combine(Path.GetTempPath(), $"worker-owner-startup-{Guid.NewGuid():N}");
         Directory.CreateDirectory(workspace);
         try
