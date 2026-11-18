@@ -14,7 +14,6 @@ public sealed partial class ChatViewModel
     private long linkedForkRequestGeneration;
     private string? relatedConversationsParentId;
     private string? relatedConversationsNextCursor;
-    private string linkedForkStatusText = string.Empty;
     private bool linkedForkContextChangedSubscribed;
 
     [DataMember]
@@ -87,9 +86,9 @@ public sealed partial class ChatViewModel
     [DataMember]
     public string LinkedForkStatusText
     {
-        get => linkedForkStatusText;
-        private set => SetProperty(ref linkedForkStatusText, value);
-    }
+        get => field;
+        private set => SetProperty(ref field, value);
+    } = string.Empty;
 
     [DataMember]
     public bool HasRelatedConversations => RelatedConversations.Count > 0;

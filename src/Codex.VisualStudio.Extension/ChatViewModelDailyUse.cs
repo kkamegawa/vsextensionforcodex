@@ -24,18 +24,12 @@ public sealed partial class ChatViewModel
     private ShellCommandConfirmationSnapshot? shellCommandSnapshot;
     private OwnerSnapshot? shellCommandOwner;
     private long shellCommandGoalStopFence;
-    private ShellCommandConfirmationPresentation? shellCommandConfirmation;
-    private string shellCommandStatusText = string.Empty;
-    private string windowsSandboxStatusText = "Readiness has not been checked.";
     private WindowsSandboxReadinessResult? windowsSandboxReadiness;
     private WindowsSandboxSetupState windowsSandboxSetupState = WindowsSandboxSetupState.NotObserved;
-    private WindowsSandboxSetupMode selectedWindowsSandboxMode = WindowsSandboxSetupMode.Unelevated;
     private long? windowsSandboxReadinessGeneration;
     private long? windowsSandboxSetupGeneration;
     private string? windowsSandboxSetupSolutionRoot;
-    private bool windowsSandboxSetupInProgress;
     private string? connectedSandboxBackendId;
-    private string windowsSandboxBackendStatusText = DefaultWindowsSandboxBackendStatusText;
 
     private const string DefaultWindowsSandboxBackendStatusText =
         "Check readiness to read the effective Codex configuration and managed policy.";
@@ -55,10 +49,10 @@ public sealed partial class ChatViewModel
     [DataMember]
     public ShellCommandConfirmationPresentation? ShellCommandConfirmation
     {
-        get => shellCommandConfirmation;
+        get => field;
         private set
         {
-            if (SetProperty(ref shellCommandConfirmation, value))
+            if (SetProperty(ref field, value))
             {
                 OnPropertyChanged(nameof(HasShellCommandConfirmation));
                 ConfirmShellCommandCommand?.RaiseCanExecuteChanged();
@@ -76,15 +70,15 @@ public sealed partial class ChatViewModel
     [DataMember]
     public string ShellCommandStatusText
     {
-        get => shellCommandStatusText;
+        get => field;
         private set
         {
-            if (SetProperty(ref shellCommandStatusText, markdown.ToSafeText(value).Trim()))
+            if (SetProperty(ref field, markdown.ToSafeText(value).Trim()))
             {
                 OnPropertyChanged(nameof(HasShellCommandStatus));
             }
         }
-    }
+    } = string.Empty;
 
     [DataMember]
     public AsyncCommand ConfirmShellCommandCommand { get; private set; } = null!;
@@ -95,9 +89,9 @@ public sealed partial class ChatViewModel
     [DataMember]
     public string WindowsSandboxStatusText
     {
-        get => windowsSandboxStatusText;
-        private set => SetProperty(ref windowsSandboxStatusText, markdown.ToSafeText(value).Trim());
-    }
+        get => field;
+        private set => SetProperty(ref field, markdown.ToSafeText(value).Trim());
+    } = "Readiness has not been checked.";
 
     [DataMember]
     public string WindowsSandboxSolutionRootText => windowsSandboxSetupSolutionRoot is { Length: > 0 } root
@@ -107,17 +101,17 @@ public sealed partial class ChatViewModel
     [DataMember]
     public WindowsSandboxSetupMode SelectedWindowsSandboxMode
     {
-        get => selectedWindowsSandboxMode;
-        set => SetProperty(ref selectedWindowsSandboxMode, value);
-    }
+        get => field;
+        set => SetProperty(ref field, value);
+    } = WindowsSandboxSetupMode.Unelevated;
 
     [DataMember]
     public bool IsWindowsSandboxSetupInProgress
     {
-        get => windowsSandboxSetupInProgress;
+        get => field;
         private set
         {
-            if (SetProperty(ref windowsSandboxSetupInProgress, value))
+            if (SetProperty(ref field, value))
             {
                 StartWindowsSandboxSetupCommand?.RaiseCanExecuteChanged();
             }
@@ -187,9 +181,9 @@ public sealed partial class ChatViewModel
     [DataMember]
     public string WindowsSandboxBackendStatusText
     {
-        get => windowsSandboxBackendStatusText;
-        private set => SetProperty(ref windowsSandboxBackendStatusText, markdown.ToSafeText(value).Trim());
-    }
+        get => field;
+        private set => SetProperty(ref field, markdown.ToSafeText(value).Trim());
+    } = DefaultWindowsSandboxBackendStatusText;
 
     private void SetConnectedSandboxBackend(string? backendId)
     {

@@ -112,10 +112,8 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
     private bool ideContextEnabled = true;
     private string? selectedModel;
     private string selectedReasoningEffortId = ReasoningEffortCatalog.DefaultId;
-    private string selectedMode = "Agent";
     private ApprovalModeOption? selectedApprovalMode;
     private ApprovalModeOption? pendingApprovalMode;
-    private string approvalModeConfirmationText = string.Empty;
     private string? approvalModeBeforeConfirmationId;
     private bool confirmationStartsNewThread;
     private string? workingDirectory;
@@ -150,20 +148,14 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
     private readonly Dictionary<Guid, ChatItemViewModel> inFlightMutations = [];
     private Action<WorkerRecoveryFailureKind>? bridgeConnectionLostHandler;
     private CancellationTokenSource? recoveryCancellation;
-    private RecoveryDraftViewModel? quarantinedDraft;
-    private string recoveryStatusText = string.Empty;
     private bool recoveryStatusIsConnectionFailure;
 
     // Status callbacks are not serialized, so publishing and clearing a connection-failure banner
     // decide against the current bridge and status under one gate.
     private readonly Lock connectionFailureBannerGate = new();
-    private bool isRecovering;
     private bool historyIsStale;
     private bool isHistoryLoading;
-    private bool isInteractionAuthStatusExpanded;
-    private bool isThreadJoined;
     private bool canLoadOlderHistory;
-    private string historyStatusText = string.Empty;
     private string? threadTurnsCursor;
     private ThreadItemCursor? threadItemsCursor;
     private readonly HashSet<string> deletedAttachmentIds = new(StringComparer.Ordinal);
@@ -183,8 +175,6 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
     private readonly ObservableCollection<ThreadAttachmentPresentationViewModel> threadAttachments = [];
     private readonly ObservableCollection<ThreadTurnSummary> threadTurns = [];
     private readonly ObservableCollection<ThreadHistoryRowViewModel> threadRows = [];
-    private string threadAttachmentsStatusText = string.Empty;
-    private string threadReadStateStatusText = string.Empty;
 
     private sealed record UnifiedSlashSuggestionSnapshot(
         List<SlashCommandSuggestionDescriptor> Suggestions,
@@ -485,8 +475,8 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
     [DataMember]
     public bool IsInteractionAuthStatusExpanded
     {
-        get => isInteractionAuthStatusExpanded;
-        set => SetProperty(ref isInteractionAuthStatusExpanded, value);
+        get => field;
+        set => SetProperty(ref field, value);
     }
 
     [DataMember]
@@ -549,10 +539,10 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
     [DataMember]
     public bool IsRecovering
     {
-        get => isRecovering;
+        get => field;
         private set
         {
-            if (SetProperty(ref isRecovering, value))
+            if (SetProperty(ref field, value))
             {
                 OnPropertyChanged(nameof(HasRecoveryStatus));
                 NotifyInterruptibilityChanged();
@@ -564,17 +554,17 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
     [DataMember]
     public string RecoveryStatusText
     {
-        get => recoveryStatusText;
+        get => field;
         private set
         {
             // Any other notice replaces the connection-failure banner and owns the text from now on.
             recoveryStatusIsConnectionFailure = false;
-            if (SetProperty(ref recoveryStatusText, value))
+            if (SetProperty(ref field, value))
             {
                 OnPropertyChanged(nameof(HasRecoveryStatus));
             }
         }
-    }
+    } = string.Empty;
 
     [DataMember]
     public bool HasRecoveryStatus => IsRecovering || !string.IsNullOrWhiteSpace(RecoveryStatusText);
@@ -582,10 +572,10 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
     [DataMember]
     public RecoveryDraftViewModel? QuarantinedDraft
     {
-        get => quarantinedDraft;
+        get => field;
         private set
         {
-            if (SetProperty(ref quarantinedDraft, value))
+            if (SetProperty(ref field, value))
             {
                 OnPropertyChanged(nameof(HasQuarantinedDraft));
                 RestoreQuarantinedDraftCommand?.RaiseCanExecuteChanged();
@@ -2324,16 +2314,16 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
     [DataMember]
     public string SelectedMode
     {
-        get => selectedMode;
+        get => field;
         set
         {
-            if (SetProperty(ref selectedMode, value))
+            if (SetProperty(ref field, value))
             {
                 OnPropertyChanged(nameof(IsApprovalModeEnabled));
                 OnPropertyChanged(nameof(ApprovalModeHelpText));
             }
         }
-    }
+    } = "Agent";
 
     [DataMember]
     public ObservableCollection<ApprovalModeOption> ApprovalModes { get; }
@@ -2380,9 +2370,9 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
     [DataMember]
     public string ApprovalModeConfirmationText
     {
-        get => approvalModeConfirmationText;
-        private set => SetProperty(ref approvalModeConfirmationText, value);
-    }
+        get => field;
+        private set => SetProperty(ref field, value);
+    } = string.Empty;
 
     [DataMember]
     public AsyncCommand ConfirmApprovalModeCommand { get; }
@@ -2511,9 +2501,9 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
     [DataMember]
     public string ThreadReadStateStatusText
     {
-        get => threadReadStateStatusText;
-        private set => SetProperty(ref threadReadStateStatusText, value);
-    }
+        get => field;
+        private set => SetProperty(ref field, value);
+    } = string.Empty;
 
     [DataMember]
     public AsyncCommand RefreshAttachmentsCommand { get; }
@@ -2521,10 +2511,10 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
     [DataMember]
     public bool IsThreadJoined
     {
-        get => isThreadJoined;
+        get => field;
         private set
         {
-            if (SetProperty(ref isThreadJoined, value))
+            if (SetProperty(ref field, value))
             {
                 OnPropertyChanged(nameof(IsHistoryOnly));
                 NotifyInterruptibilityChanged();
@@ -2558,9 +2548,9 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
     [DataMember]
     public string HistoryStatusText
     {
-        get => historyStatusText;
-        private set => SetProperty(ref historyStatusText, value);
-    }
+        get => field;
+        private set => SetProperty(ref field, value);
+    } = string.Empty;
 
     [DataMember]
     public bool CanLoadOlderHistory
@@ -2581,15 +2571,15 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
     [DataMember]
     public string ThreadAttachmentsStatusText
     {
-        get => threadAttachmentsStatusText;
+        get => field;
         private set
         {
-            if (SetProperty(ref threadAttachmentsStatusText, value))
+            if (SetProperty(ref field, value))
             {
                 OnPropertyChanged(nameof(HasHistoryNotice));
             }
         }
-    }
+    } = string.Empty;
 
     [DataMember]
     public ObservableCollection<ThreadTurnSummary> ThreadTurns => threadTurns;
@@ -9966,22 +9956,13 @@ public sealed partial class ChatItemViewModel : ObservableObject
 
     private readonly StringBuilder? commandOutputBuffer;
     private string text = string.Empty;
-    private string timingText = string.Empty;
     private long? startedAtMs;
     private long? completedAtMs;
-    private bool isDeliveryUnknown;
-    private bool isHistoryCompleted;
-    private bool isTruncated;
-    private string? overflowFile;
     private bool isCollapsed;
-    private bool isCommandOutputExpanded;
     private int commandLineBreakCount;
     private bool commandEndsWithLineBreak;
-    private string planDeltaText = string.Empty;
     private int planDeltaBytes;
     private bool isPlanComplete;
-    private bool planWasTruncated;
-    private bool isProposedPlan;
 
     public ChatItemViewModel(string role, string text, ConversationEventKind kind)
     {
@@ -10033,15 +10014,15 @@ public sealed partial class ChatItemViewModel : ObservableObject
     [DataMember]
     public string TimingText
     {
-        get => timingText;
+        get => field;
         private set
         {
-            if (SetProperty(ref timingText, value))
+            if (SetProperty(ref field, value))
             {
                 OnPropertyChanged(nameof(HasTiming));
             }
         }
-    }
+    } = string.Empty;
 
     [DataMember]
     public bool HasTiming => TimingText.Length > 0;
@@ -10096,8 +10077,8 @@ public sealed partial class ChatItemViewModel : ObservableObject
 
     internal bool IsHistoryCompleted
     {
-        get => isHistoryCompleted;
-        set => isHistoryCompleted = value;
+        get;
+        set;
     }
 
     [DataMember]
@@ -10110,8 +10091,8 @@ public sealed partial class ChatItemViewModel : ObservableObject
     [DataMember]
     public bool IsDeliveryUnknown
     {
-        get => isDeliveryUnknown;
-        private set => SetProperty(ref isDeliveryUnknown, value);
+        get => field;
+        private set => SetProperty(ref field, value);
     }
 
     [DataMember]
@@ -10133,10 +10114,10 @@ public sealed partial class ChatItemViewModel : ObservableObject
     [DataMember]
     public bool IsTruncated
     {
-        get => isTruncated;
+        get => field;
         set
         {
-            if (SetProperty(ref isTruncated, value))
+            if (SetProperty(ref field, value))
             {
                 RefreshCommandOutputPresentation();
                 OnPropertyChanged(nameof(TruncationNotice));
@@ -10146,10 +10127,10 @@ public sealed partial class ChatItemViewModel : ObservableObject
 
     public string? OverflowFile
     {
-        get => overflowFile;
+        get => field;
         set
         {
-            if (SetProperty(ref overflowFile, value))
+            if (SetProperty(ref field, value))
             {
                 OnPropertyChanged(nameof(TruncationNotice));
             }
@@ -10173,10 +10154,10 @@ public sealed partial class ChatItemViewModel : ObservableObject
     [DataMember]
     public bool IsCommandOutputExpanded
     {
-        get => isCommandOutputExpanded;
+        get => field;
         set
         {
-            if (SetProperty(ref isCommandOutputExpanded, value))
+            if (SetProperty(ref field, value))
             {
                 RefreshCommandOutputPresentation();
             }
@@ -10249,10 +10230,10 @@ public sealed partial class ChatItemViewModel : ObservableObject
     [DataMember]
     public bool IsProposedPlan
     {
-        get => isProposedPlan;
+        get => field;
         private set
         {
-            if (SetProperty(ref isProposedPlan, value))
+            if (SetProperty(ref field, value))
             {
                 OnPropertyChanged(nameof(UsesBlockRendering));
                 OnPropertyChanged(nameof(DisplayRole));
@@ -10276,16 +10257,16 @@ public sealed partial class ChatItemViewModel : ObservableObject
     [DataMember]
     public string PlanDeltaText
     {
-        get => planDeltaText;
+        get => field;
         private set
         {
-            if (SetProperty(ref planDeltaText, value))
+            if (SetProperty(ref field, value))
             {
                 OnPropertyChanged(nameof(HasPlanDeltaText));
                 OnPropertyChanged(nameof(ShowPlanDeltaText));
             }
         }
-    }
+    } = string.Empty;
 
     [DataMember]
     public bool HasPlanDeltaText => !string.IsNullOrEmpty(PlanDeltaText);
@@ -10296,8 +10277,8 @@ public sealed partial class ChatItemViewModel : ObservableObject
     [DataMember]
     public bool PlanWasTruncated
     {
-        get => planWasTruncated;
-        private set => SetProperty(ref planWasTruncated, value);
+        get => field;
+        private set => SetProperty(ref field, value);
     }
 
     [DataMember]
@@ -10571,16 +10552,6 @@ public sealed class ChatBlockViewModel : ObservableObject
     private string text = string.Empty;
     private string code = string.Empty;
     private string language = string.Empty;
-    private bool isParagraph;
-    private bool isHeading;
-    private bool isCodeBlock;
-    private bool isListItem;
-    private bool isNestedListItem;
-    private bool isDeeplyNestedListItem;
-    private bool isSeparator;
-    private bool isH1;
-    private bool isH2;
-    private bool isH3;
 
     [DataMember]
     public string Text
@@ -10612,24 +10583,24 @@ public sealed class ChatBlockViewModel : ObservableObject
     [DataMember]
     public bool IsParagraph
     {
-        get => isParagraph;
-        set => SetProperty(ref isParagraph, value);
+        get => field;
+        set => SetProperty(ref field, value);
     }
 
     [DataMember]
     public bool IsHeading
     {
-        get => isHeading;
-        set => SetProperty(ref isHeading, value);
+        get => field;
+        set => SetProperty(ref field, value);
     }
 
     [DataMember]
     public bool IsCodeBlock
     {
-        get => isCodeBlock;
+        get => field;
         set
         {
-            if (SetProperty(ref isCodeBlock, value))
+            if (SetProperty(ref field, value))
             {
                 OnPropertyChanged(nameof(CodeBlockAutomationName));
             }
@@ -10639,8 +10610,8 @@ public sealed class ChatBlockViewModel : ObservableObject
     [DataMember]
     public bool IsListItem
     {
-        get => isListItem;
-        set => SetProperty(ref isListItem, value);
+        get => field;
+        set => SetProperty(ref field, value);
     }
 
     // Precomputed indent flags (Remote UI cannot use value converters, so the XAML maps each
@@ -10649,43 +10620,43 @@ public sealed class ChatBlockViewModel : ObservableObject
     [DataMember]
     public bool IsNestedListItem
     {
-        get => isNestedListItem;
-        set => SetProperty(ref isNestedListItem, value);
+        get => field;
+        set => SetProperty(ref field, value);
     }
 
     [DataMember]
     public bool IsDeeplyNestedListItem
     {
-        get => isDeeplyNestedListItem;
-        set => SetProperty(ref isDeeplyNestedListItem, value);
+        get => field;
+        set => SetProperty(ref field, value);
     }
 
     [DataMember]
     public bool IsSeparator
     {
-        get => isSeparator;
-        set => SetProperty(ref isSeparator, value);
+        get => field;
+        set => SetProperty(ref field, value);
     }
 
     [DataMember]
     public bool IsH1
     {
-        get => isH1;
-        set => SetProperty(ref isH1, value);
+        get => field;
+        set => SetProperty(ref field, value);
     }
 
     [DataMember]
     public bool IsH2
     {
-        get => isH2;
-        set => SetProperty(ref isH2, value);
+        get => field;
+        set => SetProperty(ref field, value);
     }
 
     [DataMember]
     public bool IsH3
     {
-        get => isH3;
-        set => SetProperty(ref isH3, value);
+        get => field;
+        set => SetProperty(ref field, value);
     }
 
     [DataMember]
@@ -10751,7 +10722,6 @@ public sealed class ChatBlockViewModel : ObservableObject
 public sealed class ApprovalViewModel : ObservableObject
 {
     private readonly Func<string, ApprovalDecision, string?, Task> resolver;
-    private bool isResolved;
     private int resolving;
 
     public ApprovalViewModel(ApprovalRequest request, Func<string, ApprovalDecision, string?, Task> resolver, SafeMarkdownService markdown)
@@ -10847,10 +10817,10 @@ public sealed class ApprovalViewModel : ObservableObject
 
     public bool IsResolved
     {
-        get => isResolved;
+        get => field;
         private set
         {
-            if (SetProperty(ref isResolved, value))
+            if (SetProperty(ref field, value))
             {
                 foreach (ApprovalChoiceViewModel choice in Choices)
                 {
@@ -10911,7 +10881,6 @@ public sealed class ApprovalViewModel : ObservableObject
 public sealed class UserInputViewModel : ObservableObject
 {
     private readonly Func<string, IReadOnlyDictionary<string, UserInputAnswer>, UserInputAction, Task> resolver;
-    private bool isResolved;
     private int resolving;
     private string? validationText;
     private int currentIndex;
@@ -10997,10 +10966,10 @@ public sealed class UserInputViewModel : ObservableObject
     [DataMember]
     public bool IsResolved
     {
-        get => isResolved;
+        get => field;
         private set
         {
-            if (SetProperty(ref isResolved, value))
+            if (SetProperty(ref field, value))
             {
                 RaiseStepCommandStates();
             }
@@ -11093,10 +11062,6 @@ public sealed class UserInputViewModel : ObservableObject
 [DataContract]
 public sealed class UserInputQuestionViewModel : ObservableObject
 {
-    private bool isOtherSelected;
-    private string freeText = string.Empty;
-    private string otherText = string.Empty;
-
     public UserInputQuestionViewModel(UserInputQuestion question, SafeMarkdownService markdown)
     {
         Id = question.Id;
@@ -11139,10 +11104,10 @@ public sealed class UserInputQuestionViewModel : ObservableObject
     [DataMember]
     public bool IsOtherSelected
     {
-        get => isOtherSelected;
+        get => field;
         set
         {
-            if (SetProperty(ref isOtherSelected, value) && value)
+            if (SetProperty(ref field, value) && value)
             {
                 foreach (UserInputOptionViewModel option in Options)
                 {
@@ -11155,16 +11120,16 @@ public sealed class UserInputQuestionViewModel : ObservableObject
     [DataMember]
     public string FreeText
     {
-        get => freeText;
-        set => SetProperty(ref freeText, value);
-    }
+        get => field;
+        set => SetProperty(ref field, value);
+    } = string.Empty;
 
     [DataMember]
     public string OtherText
     {
-        get => otherText;
-        set => SetProperty(ref otherText, value);
-    }
+        get => field;
+        set => SetProperty(ref field, value);
+    } = string.Empty;
 
     public UserInputAnswer? CreateAnswer()
     {
@@ -11407,8 +11372,6 @@ internal readonly record struct AttachmentMembershipKey(string AttachmentType, s
 [DataContract]
 public sealed class ThreadAttachmentPresentationViewModel : ObservableObject
 {
-    private bool isRemovalConfirmationOpen;
-
     internal ThreadAttachmentPresentationViewModel(
         ThreadAttachmentMetadata metadata,
         SafeMarkdownService markdown,
@@ -11456,10 +11419,10 @@ public sealed class ThreadAttachmentPresentationViewModel : ObservableObject
     [DataMember]
     public bool IsRemovalConfirmationOpen
     {
-        get => isRemovalConfirmationOpen;
+        get => field;
         private set
         {
-            if (SetProperty(ref isRemovalConfirmationOpen, value))
+            if (SetProperty(ref field, value))
             {
                 RemoveCommand.RaiseCanExecuteChanged();
                 ConfirmRemoveCommand.RaiseCanExecuteChanged();

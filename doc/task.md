@@ -990,3 +990,12 @@ Tracking: [Issue #269](https://github.com/kkamegawa/vsextensionforcodex/issues/2
 - [x] Release VSIX content inspection passed, including Visual Studio `[18.12,)`, `amd64`/`arm64`, `.NET 10`, packaged dependencies and Worker `RollForward=Minor`.
 - [x] `git diff --check` passed.
 - [x] Visual Studio Enterprise 2026 Insiders 18.13.12409.143: F5 built and deployed the VSIX to the Experimental Instance; the solution loaded and the Codex tool window rendered. It reported `Ready · Codex 0.161.0` and `Signed in · plus`. The screen was visually inspected. The Windows sandbox setup card showed no active solution root; its readiness check was not run. No Codex turn was sent, so that acceptance criterion remains pending.
+
+### 2026-11-18 — C# 14 extension blocks and field-backed properties
+
+Tracking: [Issue #298](https://github.com/kkamegawa/vsextensionforcodex/issues/298) and [PR #320](https://github.com/kkamegawa/vsextensionforcodex/pull/320).
+
+- Completed the extension-method audit. `JsonRpcConnectionRetryExtensions` is the sole extension-method container in production code. Verified that the Release assembly retains its public static extension method, parameter names, and optional policy default.
+- Finished the property audit and converted property-owned storage while preserving defaults, accessor visibility, data contracts, and notification behavior. Kept explicit fields for direct access outside their accessors. Added a regression test for code block accessibility notifications.
+- The Release solution build completed with 0 warnings and 0 errors. Release UI tests passed 612 of 612. The first Core run passed 594 of 595 with one Fake App Server response timeout. The standalone Core rerun passed 595 of 595.
+- Verified the Release VSIX contents, inspected the off-screen WPF preview, and checked UTF-8 BOM, CRLF, and `git diff --check`. Experimental Instance display verification remains pending. Claude review was deferred at the maintainer's request.

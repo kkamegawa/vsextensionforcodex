@@ -12,8 +12,6 @@ public sealed partial class ChatViewModel
 
     private readonly ConversationTextStore conversationTextStore = new();
     private CancellationTokenSource? conversationTextCancellation;
-    private bool isConversationTextLoading;
-    private string conversationTextStatusText = string.Empty;
 
     internal IConversationTextDocuments ConversationTextDocuments { get; set; } = new ConversationTextDocuments(null);
 
@@ -26,10 +24,10 @@ public sealed partial class ChatViewModel
     [DataMember]
     public bool IsConversationTextLoading
     {
-        get => isConversationTextLoading;
+        get => field;
         private set
         {
-            if (SetProperty(ref isConversationTextLoading, value))
+            if (SetProperty(ref field, value))
             {
                 OpenConversationTextCommand.RaiseCanExecuteChanged();
                 CancelConversationTextCommand.RaiseCanExecuteChanged();
@@ -40,15 +38,15 @@ public sealed partial class ChatViewModel
     [DataMember]
     public string ConversationTextStatusText
     {
-        get => conversationTextStatusText;
+        get => field;
         private set
         {
-            if (SetProperty(ref conversationTextStatusText, value))
+            if (SetProperty(ref field, value))
             {
                 OnPropertyChanged(nameof(HasConversationTextStatus));
             }
         }
-    }
+    } = string.Empty;
 
     [DataMember]
     public bool HasConversationTextStatus => ConversationTextStatusText.Length > 0;

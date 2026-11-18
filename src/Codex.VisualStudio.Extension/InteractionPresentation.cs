@@ -119,9 +119,6 @@ public sealed class PermissionSelectionViewModel : ObservableObject
 {
     private readonly Func<string, IReadOnlyList<string>, PermissionScope, Task> resolver;
     private readonly string requestId;
-    private bool isResolved;
-    private PermissionScope scope = PermissionScope.Turn;
-    private string? validationText;
 
     public PermissionSelectionViewModel(
         PermissionRequest request,
@@ -154,9 +151,9 @@ public sealed class PermissionSelectionViewModel : ObservableObject
     [DataMember]
     public PermissionScope Scope
     {
-        get => scope;
-        set => SetProperty(ref scope, value);
-    }
+        get => field;
+        set => SetProperty(ref field, value);
+    } = PermissionScope.Turn;
 
     [DataMember]
     public bool IsTurnScope
@@ -191,17 +188,17 @@ public sealed class PermissionSelectionViewModel : ObservableObject
     [DataMember]
     public string? ValidationText
     {
-        get => validationText;
-        private set => SetProperty(ref validationText, value);
+        get => field;
+        private set => SetProperty(ref field, value);
     }
 
     [DataMember]
     public bool IsResolved
     {
-        get => isResolved;
+        get => field;
         private set
         {
-            if (SetProperty(ref isResolved, value))
+            if (SetProperty(ref field, value))
             {
                 SubmitCommand.RaiseCanExecuteChanged();
                 DeclineCommand.RaiseCanExecuteChanged();
@@ -237,8 +234,6 @@ public sealed class PermissionSelectionViewModel : ObservableObject
 [DataContract]
 public sealed class PermissionGrantOptionViewModel : ObservableObject
 {
-    private bool isSelected;
-
     public PermissionGrantOptionViewModel(PermissionGrantOption option, SafeMarkdownService markdown)
     {
         PermissionId = option.PermissionId;
@@ -257,8 +252,8 @@ public sealed class PermissionGrantOptionViewModel : ObservableObject
     [DataMember]
     public bool IsSelected
     {
-        get => isSelected;
-        set => SetProperty(ref isSelected, value);
+        get => field;
+        set => SetProperty(ref field, value);
     }
 }
 
@@ -267,8 +262,6 @@ public sealed class McpElicitationViewModel : ObservableObject
 {
     private readonly Func<string, McpElicitationAction, IReadOnlyList<McpElicitationValue>, Task> resolver;
     private readonly string requestId;
-    private bool isResolved;
-    private string? validationText;
 
     public McpElicitationViewModel(
         McpElicitationRequest request,
@@ -311,17 +304,17 @@ public sealed class McpElicitationViewModel : ObservableObject
     [DataMember]
     public string? ValidationText
     {
-        get => validationText;
-        private set => SetProperty(ref validationText, value);
+        get => field;
+        private set => SetProperty(ref field, value);
     }
 
     [DataMember]
     public bool IsResolved
     {
-        get => isResolved;
+        get => field;
         private set
         {
-            if (SetProperty(ref isResolved, value))
+            if (SetProperty(ref field, value))
             {
                 SubmitCommand.RaiseCanExecuteChanged();
                 DeclineCommand.RaiseCanExecuteChanged();
@@ -413,10 +406,7 @@ public sealed partial class McpElicitationFieldViewModel : ObservableObject
     private readonly long? maximumInteger;
     private readonly ulong? minimumSelections;
     private readonly ulong? maximumSelections;
-    private string inputText = string.Empty;
-    private bool? booleanValue;
     private bool isPresent;
-    private string? validationText;
 
     public McpElicitationFieldViewModel(McpElicitationField field, SafeMarkdownService markdown)
     {
@@ -490,33 +480,33 @@ public sealed partial class McpElicitationFieldViewModel : ObservableObject
     [DataMember]
     public string InputText
     {
-        get => inputText;
+        get => field;
         set
         {
             isPresent = true;
-            if (SetProperty(ref inputText, value))
+            if (SetProperty(ref field, value))
             {
                 OnPropertyChanged(nameof(ValidationText));
             }
         }
-    }
+    } = string.Empty;
 
     [DataMember]
     public bool? BooleanValue
     {
-        get => booleanValue;
+        get => field;
         set
         {
             isPresent = value.HasValue;
-            SetProperty(ref booleanValue, value);
+            SetProperty(ref field, value);
         }
     }
 
     [DataMember]
     public string? ValidationText
     {
-        get => validationText;
-        private set => SetProperty(ref validationText, value);
+        get => field;
+        private set => SetProperty(ref field, value);
     }
 
     public bool TryCreateValue(out McpElicitationValue? value, out string? error)
@@ -782,35 +772,28 @@ public sealed class InteractionAuthStatusPresentationViewModel : ObservableObjec
     }
 
     private string? openAuthorizationActionId;
-    private bool isLocal;
-    private bool isSupported;
-    private InteractionAuthState state;
-    private string statusText = string.Empty;
-    private string originDisplay = string.Empty;
-    private bool hasOpenAuthorizationAction;
-    private bool hasPendingMcpAuthAction;
 
     [DataMember]
-    public bool IsLocal { get => isLocal; private set => SetProperty(ref isLocal, value); }
+    public bool IsLocal { get => field; private set => SetProperty(ref field, value); }
 
     [DataMember]
-    public bool IsSupported { get => isSupported; private set => SetProperty(ref isSupported, value); }
+    public bool IsSupported { get => field; private set => SetProperty(ref field, value); }
 
     [DataMember]
-    public InteractionAuthState State { get => state; private set => SetProperty(ref state, value); }
+    public InteractionAuthState State { get => field; private set => SetProperty(ref field, value); }
 
     [DataMember]
-    public string StatusText { get => statusText; private set => SetProperty(ref statusText, value); }
+    public string StatusText { get => field; private set => SetProperty(ref field, value); } = string.Empty;
 
     [DataMember]
-    public string OriginDisplay { get => originDisplay; private set => SetProperty(ref originDisplay, value); }
+    public string OriginDisplay { get => field; private set => SetProperty(ref field, value); } = string.Empty;
 
     [DataMember]
-    public bool HasOpenAuthorizationAction { get => hasOpenAuthorizationAction; private set => SetProperty(ref hasOpenAuthorizationAction, value); }
+    public bool HasOpenAuthorizationAction { get => field; private set => SetProperty(ref field, value); }
 
     // Lets the compact (collapsed) presentation signal that MCP actions are waiting in the details.
     [DataMember]
-    public bool HasPendingMcpAuthAction { get => hasPendingMcpAuthAction; private set => SetProperty(ref hasPendingMcpAuthAction, value); }
+    public bool HasPendingMcpAuthAction { get => field; private set => SetProperty(ref field, value); }
 
     [DataMember]
     public ObservableCollection<McpServerAuthPresentationViewModel> McpServers { get; }

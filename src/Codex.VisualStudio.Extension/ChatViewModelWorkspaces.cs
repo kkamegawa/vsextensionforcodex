@@ -12,8 +12,6 @@ public sealed partial class ChatViewModel
     private string? workspaceSessionId;
     private string? pendingWorkspaceLoginId;
     private string? selectedWorkspaceAccountId;
-    private AccountWorkspacePresentationViewModel? selectedWorkspace;
-    private string workspaceStatusText = string.Empty;
     private bool isWorkspacePickerOpen;
 
     [DataMember]
@@ -22,10 +20,10 @@ public sealed partial class ChatViewModel
     [DataMember]
     public AccountWorkspacePresentationViewModel? SelectedWorkspace
     {
-        get => selectedWorkspace;
+        get => field;
         set
         {
-            if (SetProperty(ref selectedWorkspace, value))
+            if (SetProperty(ref field, value))
             {
                 SwitchWorkspaceCommand?.RaiseCanExecuteChanged();
             }
@@ -57,9 +55,9 @@ public sealed partial class ChatViewModel
     [DataMember]
     public string WorkspaceStatusText
     {
-        get => workspaceStatusText;
-        private set => SetProperty(ref workspaceStatusText, value);
-    }
+        get => field;
+        private set => SetProperty(ref field, value);
+    } = string.Empty;
 
     [DataMember]
     public bool IsWorkspaceLoginPending => pendingWorkspaceLoginId is not null;
