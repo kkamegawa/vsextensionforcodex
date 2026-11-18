@@ -171,7 +171,7 @@ internal sealed class NormalizedPath : IEquatable<NormalizedPath>
 
         if (value.StartsWith(@"\\?\UNC\", StringComparison.OrdinalIgnoreCase))
         {
-            value = @"\\" + value.Substring(8);
+            value = string.Concat(@"\\", value.AsSpan(8));
         }
         else if (value.StartsWith(@"\\?\", StringComparison.OrdinalIgnoreCase))
         {
@@ -234,7 +234,7 @@ internal sealed class NormalizedPath : IEquatable<NormalizedPath>
                 continue;
             }
 
-            if (segment.IndexOf('\0') >= 0 || (flavor != PathFamily.Posix && !IsValidWindowsSegment(segment)))
+            if (segment.Contains('\0') || (flavor != PathFamily.Posix && !IsValidWindowsSegment(segment)))
             {
                 return false;
             }
@@ -322,7 +322,7 @@ internal sealed class NormalizedPath : IEquatable<NormalizedPath>
                 throw new ArgumentException("The relative path contains an invalid path segment.", nameof(relativeSegments));
             }
 
-            if (segment.IndexOf('\0') >= 0 || (Flavor != PathFamily.Posix && !IsValidWindowsSegment(segment)))
+            if (segment.Contains('\0') || (Flavor != PathFamily.Posix && !IsValidWindowsSegment(segment)))
             {
                 throw new ArgumentException("The relative path contains an invalid path segment.", nameof(relativeSegments));
             }

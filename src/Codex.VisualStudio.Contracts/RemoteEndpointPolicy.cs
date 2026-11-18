@@ -119,14 +119,14 @@ public static class RemoteEndpointPolicy
         string afterScheme = raw.Substring(schemeEnd + 3);
         int authorityEnd = afterScheme.IndexOfAny(['/', '?', '#']);
         string authority = authorityEnd < 0 ? afterScheme : afterScheme.Substring(0, authorityEnd);
-        if (authority.IndexOf('@') >= 0 || uri.UserInfo.Length > 0)
+        if (authority.Contains('@') || uri.UserInfo.Length > 0)
         {
             return RemoteEndpointValidation.Reject(
                 RemoteEndpointRejection.UserInfo,
                 "Do not put credentials in the endpoint. Use the token file.");
         }
 
-        if (raw.IndexOf('?') >= 0 || raw.IndexOf('#') >= 0)
+        if (raw.Contains('?') || raw.Contains('#'))
         {
             return RemoteEndpointValidation.Reject(
                 RemoteEndpointRejection.QueryOrFragment,
@@ -162,7 +162,7 @@ public static class RemoteEndpointPolicy
     // accept forms such as "127.1" or "0x7f.0.0.1" and rewrite them as 127.0.0.1.
     private static string? ExtractHost(string authority)
     {
-        if (authority.StartsWith("[", StringComparison.Ordinal))
+        if (authority.StartsWith('['))
         {
             int close = authority.IndexOf(']');
             if (close < 0)
@@ -214,10 +214,10 @@ public static class RemoteEndpointPolicy
     {
         hostKind = RemoteEndpointHostKind.DnsName;
         rejection = RemoteEndpointRejection.None;
-        if (rawHost.StartsWith("[", StringComparison.Ordinal))
+        if (rawHost.StartsWith('['))
         {
             string literal = rawHost.Substring(1, rawHost.Length - 2);
-            if (literal.IndexOf('%') >= 0
+            if (literal.Contains('%')
                 || !IPAddress.TryParse(literal, out IPAddress? address)
                 || address.AddressFamily != AddressFamily.InterNetworkV6)
             {

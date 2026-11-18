@@ -214,10 +214,7 @@ public static class SavedAttachmentPayloadRegistry
     // The caller first normalizes with ServerPath and validates its family against initialize's OS.
     public static string CreateIdentityKey(ServerPath normalizedServerPath, bool serverIsWindows)
     {
-        if (normalizedServerPath is null)
-        {
-            throw new ArgumentNullException(nameof(normalizedServerPath));
-        }
+        ArgumentNullException.ThrowIfNull(normalizedServerPath);
 
         bool pathIsWindows = normalizedServerPath.Family != PathFamily.Posix;
         if (pathIsWindows != serverIsWindows)
@@ -225,13 +222,9 @@ public static class SavedAttachmentPayloadRegistry
             throw new ArgumentException("The path family does not match the initialized server OS.", nameof(normalizedServerPath));
         }
 
-        byte[] digest;
-        using (SHA256 sha256 = SHA256.Create())
-        {
-            digest = sha256.ComputeHash(Encoding.UTF8.GetBytes(normalizedServerPath.IdentityValue));
-        }
+        byte[] digest = SHA256.HashData(Encoding.UTF8.GetBytes(normalizedServerPath.IdentityValue));
 
-        string hash = BitConverter.ToString(digest).Replace("-", string.Empty).ToLowerInvariant();
+        string hash = Convert.ToHexString(digest).ToLowerInvariant();
         return IdentityKeyPrefix + hash;
     }
 

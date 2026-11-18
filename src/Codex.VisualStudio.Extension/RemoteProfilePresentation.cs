@@ -1,6 +1,7 @@
 ﻿using System.Collections.ObjectModel;
 using System.Runtime.Serialization;
 using Codex.VisualStudio.Contracts;
+using ReentrantSemaphore = Microsoft.VisualStudio.Threading.ReentrantSemaphore;
 
 namespace Codex.VisualStudio.Extension;
 
@@ -181,11 +182,11 @@ public sealed class RemoteProfilesPresentationViewModel : ObservableObject
     internal RemoteProfilesPresentationViewModel(
         ExtensionSettings settings,
         IExtensionSettingsStore store,
-        SemaphoreSlim? operationGate = null)
+        ReentrantSemaphore? operationGate = null)
     {
         this.settings = settings;
         this.store = store;
-        OperationGate = operationGate ?? new SemaphoreSlim(1, 1);
+        OperationGate = operationGate ?? ExtensionConcurrency.CreateSemaphore();
         foreach (RemoteConnectionProfile profile in settings.RemoteProfiles.Where(static p => p is not null))
         {
             Profiles.Add(new RemoteProfileViewModel(profile, isPersisted: true));
@@ -276,7 +277,7 @@ public sealed class RemoteProfilesPresentationViewModel : ObservableObject
     // Serializes every same-instance settings mutation (selection persistence, Save, rename,
     // enable/disable, delete, explicit switch to local) with reconnect snapshot validation and
     // the Worker RPC dispatch that follows it.
-    internal SemaphoreSlim OperationGate { get; }
+    internal ReentrantSemaphore OperationGate { get; }
 
     // Raised after saved profile metadata changes (Save or removal), so dependent presentation
     // such as a health result can be cleared.
@@ -371,8 +372,7 @@ public sealed class RemoteProfilesPresentationViewModel : ObservableObject
     {
         // Capture the row Remove was invoked for; the selection may change while this waits.
         RemoteProfileViewModel? target = SelectedProfile;
-        await OperationGate.WaitAsync().ConfigureAwait(false);
-        try
+        await OperationGate.ExecuteAsync(async () =>
         {
             int index = target is null ? -1 : Profiles.IndexOf(target);
             if (index < 0)
@@ -400,11 +400,7 @@ public sealed class RemoteProfilesPresentationViewModel : ObservableObject
                 // Another row is selected now; its own queued persistence records the selection.
                 PersistSettings();
             }
-        }
-        finally
-        {
-            OperationGate.Release();
-        }
+        }).ConfigureAwait(false);
 
         SavedProfilesChanged?.Invoke(this, EventArgs.Empty);
     }
@@ -413,15 +409,11 @@ public sealed class RemoteProfilesPresentationViewModel : ObservableObject
     {
         // Capture the row Save was invoked for; the selection may change while this waits.
         RemoteProfileViewModel? target = SelectedProfile;
-        await OperationGate.WaitAsync().ConfigureAwait(false);
-        try
+        await OperationGate.ExecuteAsync(() =>
         {
             SaveProfileCore(target);
-        }
-        finally
-        {
-            OperationGate.Release();
-        }
+            return Task.CompletedTask;
+        }).ConfigureAwait(false);
 
         SavedProfilesChanged?.Invoke(this, EventArgs.Empty);
     }
@@ -471,15 +463,11 @@ public sealed class RemoteProfilesPresentationViewModel : ObservableObject
     {
         try
         {
-            await OperationGate.WaitAsync().ConfigureAwait(false);
-            try
+            await OperationGate.ExecuteAsync(() =>
             {
                 action();
-            }
-            finally
-            {
-                OperationGate.Release();
-            }
+                return Task.CompletedTask;
+            }).ConfigureAwait(false);
         }
         catch (Exception ex)
         {

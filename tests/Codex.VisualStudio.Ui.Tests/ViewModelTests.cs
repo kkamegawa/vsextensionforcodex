@@ -7545,10 +7545,31 @@ public sealed partial class ViewModelTests
         await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready });
 
         // Apply waits behind another operation; the user then selects a different row.
-        await vm.RemoteProfiles.OperationGate.WaitAsync();
+        var gateEntered = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseGate = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        Task gateHolder = vm.RemoteProfiles.OperationGate.ExecuteAsync(async () =>
+        {
+            gateEntered.SetResult(true);
+            // This test releases the barrier from a separate task; the callback has no UI-affine work.
+#pragma warning disable VSTHRD003
+            await releaseGate.Task;
+#pragma warning restore VSTHRD003
+        });
+        var gateHolderCompletion = new TaskCompletionSource<Exception?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _ = gateHolder.ContinueWith(
+            completed => gateHolderCompletion.TrySetResult(
+                completed.IsFaulted ? completed.Exception!.GetBaseException()
+                : completed.IsCanceled ? new TaskCanceledException(completed)
+                : null),
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
+        await gateEntered.Task;
         Task apply = RunCommandAsync(vm.ApplyRemoteProfileCommand);
         vm.RemoteProfiles.SelectedProfile = vm.RemoteProfiles.Profiles[1];
-        vm.RemoteProfiles.OperationGate.Release();
+        releaseGate.SetResult(true);
+        Exception? gateHolderFailure = await gateHolderCompletion.Task;
+        Assert.IsNull(gateHolderFailure);
         await apply;
 
         Assert.AreEqual(1, bridge.ConnectCallCount);

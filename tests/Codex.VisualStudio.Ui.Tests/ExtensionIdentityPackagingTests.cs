@@ -10,6 +10,8 @@ public sealed class ExtensionIdentityPackagingTests
 {
     private const string ExtensionProjectDirectory = "Codex.VisualStudio.Extension";
     private static readonly XNamespace VsixNamespace = "http://schemas.microsoft.com/developer/vsx-schema/2011";
+    private static readonly string[] ExpectedTargetVersions = ["[18.12,)"];
+    private static readonly string[] ExpectedArchitectures = ["amd64", "arm64"];
 
     [TestMethod]
     public void ExtensionConfiguration_UsesCentralIdentity()
@@ -36,6 +38,40 @@ public sealed class ExtensionIdentityPackagingTests
             ?? throw new AssertFailedException("The packaged VSIX does not contain extension.vsixmanifest.");
         using Stream manifestStream = manifestEntry.Open();
         AssertManifestIdentity(XDocument.Load(manifestStream), manifestEntry.FullName);
+    }
+
+    [TestMethod]
+    public void PackagedVsixManifest_TargetsVisualStudio2026AndNet10()
+    {
+        string packagedVsixPath = FindPackagedVsix(FindRepositoryRoot());
+        using var archive = ZipFile.OpenRead(packagedVsixPath);
+        ZipArchiveEntry manifestEntry = archive.GetEntry("extension.vsixmanifest")
+            ?? throw new AssertFailedException("The packaged VSIX does not contain extension.vsixmanifest.");
+        using Stream manifestStream = manifestEntry.Open();
+        XDocument manifest = XDocument.Load(manifestStream);
+        XElement installation = manifest.Root?.Element(VsixNamespace + "Installation")
+            ?? throw new AssertFailedException("extension.vsixmanifest does not contain Installation.");
+        XElement[] targets = installation.Elements(VsixNamespace + "InstallationTarget").ToArray();
+        Assert.IsTrue(targets.Length > 0, "The packaged manifest does not declare an installation target.");
+
+        string[] targetVersions = targets
+            .Select(target => target.Attribute("Version")?.Value
+                ?? throw new AssertFailedException("An installation target has no Version."))
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+        CollectionAssert.AreEqual(ExpectedTargetVersions, targetVersions);
+
+        string[] architectures = targets
+            .SelectMany(target => target.Elements(VsixNamespace + "ProductArchitecture"))
+            .Select(architecture => architecture.Value)
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(architecture => architecture, StringComparer.Ordinal)
+            .ToArray();
+        CollectionAssert.AreEqual(ExpectedArchitectures, architectures);
+
+        XElement dotnetTargets = installation.Element(VsixNamespace + "DotnetTargetVersions")
+            ?? throw new AssertFailedException("extension.vsixmanifest does not declare DotnetTargetVersions.");
+        Assert.AreEqual("net10.0", dotnetTargets.Value.Trim());
     }
 
     [TestMethod]

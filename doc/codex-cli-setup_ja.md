@@ -34,7 +34,7 @@
 
 ## 2. Windows 用 CLI の完全パッケージを導入する
 
-必要なものは、Windows x64 または Arm64、Visual Studio 2022 **17.14 以降**または Visual Studio 2026、Codex で利用できるアカウント／プロバイダー、拡張機能の VSIX です。
+必要なものは、Windows x64 または Arm64、Visual Studio 2026 **18.12 以降**、Codex で利用できるアカウント／プロバイダー、拡張機能の VSIX です。
 
 1. [README の必要環境](../README_ja.md#動作要件)にある公式 `rust-v0.166.0` リリースへのリンクを開きます。
 2. x64 なら `codex-package-x86_64-pc-windows-msvc.tar.gz`、Arm64 なら `codex-package-aarch64-pc-windows-msvc.tar.gz` をダウンロードします。

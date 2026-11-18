@@ -1,5 +1,4 @@
 ﻿using System.Runtime.Versioning;
-using Microsoft.Extensions.DependencyInjection;
 using VSX = Microsoft.VisualStudio.Extensibility;
 
 [assembly: SupportedOSPlatform("windows10.0.22621")]
@@ -47,9 +46,4 @@ internal sealed class CodexExtension : VSX.Extension
             Tags = ExtensionIdentity.Tags,
         },
     };
-
-    protected override void InitializeServices(IServiceCollection serviceCollection)
-    {
-        base.InitializeServices(serviceCollection);
-    }
 }

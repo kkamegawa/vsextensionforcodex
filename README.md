@@ -2,7 +2,7 @@
 
 A Visual Studio extension that runs the local Codex CLI app server from inside the IDE and exposes it through a chat tool window: streaming responses, approval-aware command and file-change handling, slash commands, custom skill invocation, and workspace context.
 
-The extension is an out-of-process `Microsoft.VisualStudio.Extensibility` extension (`net8.0`) that starts a `net8.0` worker process. The worker owns the `codex app-server` subprocess and talks to it with newline-delimited JSON-RPC over stdio. No credentials are handled inside Visual Studio; sign-in happens in the Codex CLI.
+The extension is an out-of-process `Microsoft.VisualStudio.Extensibility` extension (`net10.0-windows10.0.22621.0`) that starts a `net10.0` worker process. The worker owns the `codex app-server` subprocess and talks to it with newline-delimited JSON-RPC over stdio. No credentials are handled inside Visual Studio; sign-in happens in the Codex CLI.
 
 ## How to use
 
@@ -11,7 +11,7 @@ The extension is an out-of-process `Microsoft.VisualStudio.Extensibility` extens
 ## Requirements
 
 - Windows (x64 or Arm64)
-- Visual Studio 2022 17.14 or later, or Visual Studio 2026 (Community, Professional, or Enterprise)
+- Visual Studio 2026 18.12 or later (Community, Professional, or Enterprise)
 - The official Windows Codex CLI 0.166.0 executable (x64 or Arm64) from the [rust-v0.166.0 release](https://github.com/openai/codex/releases/tag/rust-v0.166.0). Versions 0.161.0 through 0.165.0 still connect, with fewer features on older versions; anything older is rejected
 - A ChatGPT account that can sign in with `codex login`
 
@@ -98,7 +98,7 @@ Both roots are required: local paths for the working directory and attachments a
 ## FAQ
 
 **The Codex tool window does not appear under View.**
-Check that Visual Studio is 17.14 or later, that the extension is listed and enabled in **Extensions > Manage Extensions**, and restart Visual Studio once after installing the VSIX.
+Check that Visual Studio 2026 is version 18.12 or later, that the extension is listed and enabled in **Extensions > Manage Extensions**, and restart Visual Studio once after installing the VSIX.
 
 **Chat never responds, or the worker exits right away.**
 This is almost always the Codex CLI, not the extension. Run `codex --version` (0.166.0) and `codex login` in a terminal. If both succeed there but not in Visual Studio, a different `codex` is being launched; pin it with `CODEX_PATH` as described in [Limitations](#limitations).
@@ -165,8 +165,8 @@ Local mode uses a child process over stdio and a local named pipe; provider traf
 
 Prerequisites for development:
 
-- Visual Studio 2022 17.14 or later with the Visual Studio extension development workload
-- .NET 8 SDK
+- Visual Studio 2026 18.12 or later with the Visual Studio extension development workload
+- .NET 10 SDK
 - The official Codex CLI 0.166.0 executable (used to generate the target protocol schema during the build)
 
 Restore and build:
@@ -208,10 +208,10 @@ Pass `--codex <path-to-standalone-codex.exe>` in that environment.
 The VSIX is produced by the out-of-process extension project:
 
 ```text
-src/Codex.VisualStudio.Extension/bin/Release/net8.0-windows10.0.22621.0/Codex.VisualStudio.Extension.vsix
+src/Codex.VisualStudio.Extension/bin/Release/net10.0-windows10.0.22621.0/Codex.VisualStudio.Extension.vsix
 ```
 
-`src/Codex.VisualStudio.Package` is a `net472` placeholder for future in-process features and does not produce a VSIX.
+The extension has no in-process package; all extension features run out of process.
 
 See [doc/implementation.md](doc/implementation.md) for the implemented boundaries and remaining validation work.
 

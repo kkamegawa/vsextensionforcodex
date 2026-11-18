@@ -2,7 +2,7 @@
 
 ローカルの Codex CLI app server を Visual Studio 内から起動し、チャットツールウィンドウとして利用できるようにする拡張機能です。ストリーミング応答、承認を伴うコマンド実行とファイル変更、スラッシュコマンド、カスタムスキルの呼び出し、ワークスペースコンテキストの受け渡しに対応します。
 
-本拡張はアウトプロセスの `Microsoft.VisualStudio.Extensibility` 拡張 (`net8.0`) で、`net8.0` のワーカープロセスを起動します。ワーカーが `codex app-server` の子プロセスを保持し、改行区切りの JSON-RPC を stdio 経由でやり取りします。資格情報を Visual Studio 側で扱うことはありません。
+本拡張はアウトプロセスの `Microsoft.VisualStudio.Extensibility` 拡張 (`net10.0-windows10.0.22621.0`) で、`net10.0` のワーカープロセスを起動します。ワーカーが `codex app-server` の子プロセスを保持し、改行区切りの JSON-RPC を stdio 経由でやり取りします。資格情報を Visual Studio 側で扱うことはありません。
 サインインは Codex CLI で行います。
 
 ## 使い方
@@ -12,7 +12,7 @@
 ## 動作要件
 
 - Windows (x64 または Arm64)
-- Visual Studio 2022 17.14 以降、または Visual Studio 2026 (Community / Professional / Enterprise)
+- Visual Studio 2026 18.12 以降 (Community / Professional / Enterprise)
 - [rust-v0.166.0 リリース](https://github.com/openai/codex/releases/tag/rust-v0.166.0) に含まれる公式 Windows 版 Codex CLI 0.166.0 実行ファイル (x64 または Arm64)。0.161.0〜0.165.0 も接続できますが、古い版では機能が限定されます。それより古い版は拒否されます
 - `codex login` でサインインできる ChatGPT アカウント
 
@@ -99,7 +99,7 @@
 ## FAQ
 
 **表示メニューに Codex ツールウィンドウが出てきません。**
-Visual Studio が 17.14 以降であること、**拡張機能 > 拡張機能の管理** に本拡張が表示され有効に
+Visual Studio 2026 18.12 以降であること、**拡張機能 > 拡張機能の管理** に本拡張が表示され有効に
 なっていることを確認し、VSIX インストール後に Visual Studio を一度再起動してください。
 
 **チャットが応答しない、またはワーカーがすぐ終了します。**
@@ -167,8 +167,8 @@ Worker は現在の接続所有者のスキルカタログを 60 秒間メモリ
 
 開発時の前提条件:
 
-- Visual Studio 2022 17.14 以降 (Visual Studio 拡張機能開発ワークロード)
-- .NET 8 SDK
+- Visual Studio 2026 18.12 以降 (Visual Studio 拡張機能開発ワークロード)
+- .NET 10 SDK
 - 公式 Codex CLI 0.166.0 実行ファイル (ビルド時の対象プロトコル schema 生成に使用)
 
 復元とビルド:
@@ -210,11 +210,10 @@ WindowsApps 経由でインストールされた Codex は、実行エイリア�
 VSIX はアウトプロセス拡張プロジェクトが生成します。
 
 ```text
-src/Codex.VisualStudio.Extension/bin/Release/net8.0-windows10.0.22621.0/Codex.VisualStudio.Extension.vsix
+src/Codex.VisualStudio.Extension/bin/Release/net10.0-windows10.0.22621.0/Codex.VisualStudio.Extension.vsix
 ```
 
-`src/Codex.VisualStudio.Package` は将来のインプロセス機能向けの `net472` プレースホルダーで、VSIX は
-生成しません。
+本拡張にインプロセスのパッケージプロジェクトはなく、すべての機能をアウトプロセスで実行します。
 
 実装済みの境界と残作業は [doc/implementation.md](doc/implementation.md) を参照してください。
 

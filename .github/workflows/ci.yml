@@ -136,9 +136,8 @@ jobs:
       - name: Setup .NET
         uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5.4.0
         with:
-          # global.json pins the 10.0 SDK; the 8.0 SDK supplies the runtime the net8.0 tests need.
+          # All projects target .NET 10; global.json selects a compatible 10.0 SDK.
           dotnet-version: |
-            8.0.x
             10.0.x
 
       - name: Download generated schema caches

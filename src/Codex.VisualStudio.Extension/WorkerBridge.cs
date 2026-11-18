@@ -5,8 +5,25 @@ using System.Runtime.InteropServices;
 using Codex.VisualStudio.Contracts;
 using Microsoft.VisualStudio.Extensibility.Documents;
 using StreamJsonRpc;
+using JoinableTaskContext = Microsoft.VisualStudio.Threading.JoinableTaskContext;
+using ReentrantSemaphore = Microsoft.VisualStudio.Threading.ReentrantSemaphore;
 
 namespace Codex.VisualStudio.Extension;
+
+internal static class ExtensionConcurrency
+{
+    // The OOP Remote UI host has no public Visual Studio main-thread JTF, so all extension gates
+    // share the no-op context in production and in direct unit tests.
+#pragma warning disable VSTHRD012
+    private static readonly JoinableTaskContext joinableTaskContext = JoinableTaskContext.CreateNoOpContext();
+#pragma warning restore VSTHRD012
+
+    public static ReentrantSemaphore CreateSemaphore()
+        => ReentrantSemaphore.Create(
+            initialCount: 1,
+            joinableTaskContext: joinableTaskContext,
+            mode: ReentrantSemaphore.ReentrancyMode.NotRecognized);
+}
 
 internal partial interface IWorkerBridge : IAsyncDisposable
 {
@@ -205,7 +222,7 @@ public sealed partial class WorkerBridge : IWorkerBridge, ICodexWorkerObserver
     internal const int WorkerPipeConnectTimeoutMilliseconds = 30_000;
 
     private readonly OutputChannel? log;
-    private readonly SemaphoreSlim lifecycleGate = new(1, 1);
+    private readonly ReentrantSemaphore lifecycleGate = ExtensionConcurrency.CreateSemaphore();
     private Process? process;
     private NamedPipeClientStream? pipe;
     private JsonRpc? rpc;
@@ -710,15 +727,10 @@ public sealed partial class WorkerBridge : IWorkerBridge, ICodexWorkerObserver
             return;
         }
 
-        await lifecycleGate.WaitAsync().ConfigureAwait(false);
-        try
+        await lifecycleGate.ExecuteAsync(async () =>
         {
             await StopWorkerCoreAsync().ConfigureAwait(false);
-        }
-        finally
-        {
-            lifecycleGate.Release();
-        }
+        }).ConfigureAwait(false);
     }
 
     private async Task StopWorkerCoreAsync()
@@ -796,8 +808,7 @@ public sealed partial class WorkerBridge : IWorkerBridge, ICodexWorkerObserver
             return;
         }
 
-        await lifecycleGate.WaitAsync(cancellationToken).ConfigureAwait(false);
-        try
+        await lifecycleGate.ExecuteAsync(async () =>
         {
             ObjectDisposedException.ThrowIf(Volatile.Read(ref disposed) != 0, this);
             if (IsWorkerUsable())
@@ -815,11 +826,7 @@ public sealed partial class WorkerBridge : IWorkerBridge, ICodexWorkerObserver
             }
 
             await StartWorkerAsync(cancellationToken).ConfigureAwait(false);
-        }
-        finally
-        {
-            lifecycleGate.Release();
-        }
+        }, cancellationToken).ConfigureAwait(false);
     }
 
     private async Task StartWorkerAsync(CancellationToken cancellationToken)

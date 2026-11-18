@@ -21,7 +21,7 @@ public sealed class FakeInteractionIntegrationTests
 #else
         const string configuration = "Release";
 #endif
-        string fakeAssembly = Path.Combine(repositoryRoot, "src", "Codex.AppServer.Fake", "bin", configuration, "net8.0", "Codex.AppServer.Fake.dll");
+        string fakeAssembly = Path.Combine(repositoryRoot, "src", "Codex.AppServer.Fake", "bin", configuration, "net10.0", "Codex.AppServer.Fake.dll");
         Assert.IsTrue(File.Exists(fakeAssembly), $"Build the solution before running this process integration test: {fakeAssembly}");
 
         using var process = new Process

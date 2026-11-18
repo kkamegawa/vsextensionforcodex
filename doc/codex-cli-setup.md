@@ -34,7 +34,7 @@ The extension provides no remote installation, server lifecycle management or fi
 
 ## 2. Install the complete Windows CLI package
 
-Requirements: Windows x64 or Arm64; Visual Studio 2022 **17.14+** or Visual Studio 2026; an account/provider usable by Codex; and the extension VSIX.
+Requirements: Windows x64 or Arm64; Visual Studio 2026 **18.12+**; an account/provider usable by Codex; and the extension VSIX.
 
 1. Follow the official `rust-v0.166.0` release link in [README Requirements](../README.md#requirements).
 2. Download `codex-package-x86_64-pc-windows-msvc.tar.gz` for x64 or `codex-package-aarch64-pc-windows-msvc.tar.gz` for Arm64.

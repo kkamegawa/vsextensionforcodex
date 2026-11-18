@@ -6,13 +6,14 @@
 
 ## Runtime Boundaries
 
-- `Codex.VisualStudio.Extension` は OOP プロセスとして .NET 8 で動作する（`Microsoft.VisualStudio.Extensibility` SDK）。
-  コマンド・ツールウィンドウ・ビジネスロジックはすべてここに置く。
-- `Codex.VisualStudio.Package` は net472 in-proc パッケージ（将来の差分ビュー等 VSSDK 依存機能用プレースホルダ）。
-  現時点では実装なし。
-- `Codex.VisualStudio.Worker` は net8.0 コンソールアプリ。Extension の `WorkerBridge` が Worker を spawn し、
-  Worker が `codex app-server` を spawn・仲介する。
-- Extension と `codex app-server` は stdio（JSONL）で通信する。
+- `Codex.VisualStudio.Extension` runs as a .NET 10 out-of-process extension using `Microsoft.VisualStudio.Extensibility`; it targets `net10.0-windows10.0.22621.0` and Visual Studio 2026 18.12 or later. The repository has no in-process `Codex.VisualStudio.Package` project.
+  Commands, tool windows, and business logic run in this process.
+- `Codex.VisualStudio.Contracts` targets `net10.0` and is shared by the Extension and Worker.
+- `Codex.VisualStudio.Worker` is a framework-dependent `net10.0` console app launched through Visual Studio's `dotnet.exe`. It uses `RollForward=Minor`.
+  Worker manages the local `codex app-server` child process or connects to a configured remote server.
+- The Extension and Worker communicate over a named pipe. The Worker uses stdio (JSONL) for a local App Server and WebSocket for a configured remote server.
+
+> The implementation notes that follow are historical snapshots unless a later dated update says otherwise. Some describe superseded runtime or packaging details; the current baseline is defined by Runtime Boundaries above and the latest dated update at the end.
 
 The publisher is `kkamegawa` (see CLAUDE.md for the current VSIX identity string).
 
@@ -632,3 +633,13 @@ Implementation and verification: [English](implementation-app-server-0-164.md) �
 ## Codex App Server 0.166.0
 
 Implementation and verification: [English](implementation-app-server-0-166.md) · [日本語](implementation-app-server-0-166_ja.md). See the task record for the completed #241 checklist. Debug and Release builds and test suites passed; pinned complete-package CLI, schema, unload/resume, and Release VSIX checks passed. Live Visual Studio screenshot acceptance could not be completed in this session.
+
+## 2026-11-17: Phase 1 — Visual Studio 2026 and .NET 10
+
+Tracking: [Issue #269](https://github.com/kkamegawa/vsextensionforcodex/issues/269). The implementation follows the approved plan `plan/2026-11-15/vs2026-dotnet10-codex-cli-0-169` and ADR-022.
+
+The solution now targets .NET 10, the unused `net472` in-process placeholder has been removed, and the Visual Studio SDK packages use the 18.12 baseline. The VSIX requires `[18.12,)` and declares both `amd64` and `arm64`. The framework-dependent Worker uses the Visual Studio-provided `dotnet.exe` with `RollForward=Minor`.
+
+Visual Studio 18.12's RS0030 analyzer flags `SemaphoreSlim` in the Extension's serialized asynchronous operations. Those gates now use `ReentrantSemaphore` with `ReentrancyMode.NotRecognized` and the shared no-op `JoinableTaskContext` available to this out-of-process extension.
+
+Release build completed with 0 warnings and 0 errors. Core tests: 594 passed, 7 skipped; UI tests: 611 passed, 3 skipped. Release VSIX content inspection passed. Visual Studio Enterprise 2026 Insiders 18.13.12409.143 Experimental Instance acceptance passed: F5 deployed the VSIX, the solution loaded, and the Codex tool window rendered and connected (`Ready · Codex 0.161.0`, `Signed in · plus`). The screen was visually inspected. The Windows sandbox setup card showed no active solution root; its readiness check was not run. No Codex turn was sent, so the one-turn acceptance criterion remains pending.

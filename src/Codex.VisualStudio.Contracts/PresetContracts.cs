@@ -87,7 +87,7 @@ public static class PresetRules
             return "Preset input cannot be empty.";
         }
 
-        if (input.TrimStart().StartsWith("!", StringComparison.Ordinal))
+        if (input.TrimStart().StartsWith('!'))
         {
             return "Presets support prompts and slash commands, not shell commands.";
         }

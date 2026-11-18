@@ -1,4 +1,5 @@
 ﻿using System.Text;
+using System.Text.Json;
 using System.IO;
 using Codex.VisualStudio.Contracts;
 using Microsoft.VisualStudio.Extensibility;
@@ -22,11 +23,11 @@ internal static class IdeContextCaptureService
         }
 
         ITextViewSnapshot? activeView;
-        Uri? selectedPath;
+        string? selectedPath;
         try
         {
             activeView = await clientContext.GetActiveTextViewAsync(cancellationToken).ConfigureAwait(false);
-            selectedPath = await clientContext.GetSelectedPathAsync(cancellationToken).ConfigureAwait(false);
+            selectedPath = GetSelectedWorkspacePathFromShellContext(clientContext[ClientContextCategory.Shell]);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -47,8 +48,22 @@ internal static class IdeContextCaptureService
         return Build(
             normalizedRoot,
             activeView?.FilePath,
-            selectedPath?.IsFile == true ? selectedPath.LocalPath : null,
+            selectedPath,
             selectionText);
+    }
+
+    internal static string? GetSelectedWorkspacePathFromShellContext(string? shellContext)
+    {
+        if (string.IsNullOrWhiteSpace(shellContext))
+        {
+            return null;
+        }
+
+        using JsonDocument shell = JsonDocument.Parse(shellContext);
+        return shell.RootElement.TryGetProperty(ClientContextKey.Shell.ActiveSelectionPath.ToString(), out JsonElement selectedPath)
+            && selectedPath.ValueKind == JsonValueKind.String
+                ? selectedPath.GetString()
+                : null;
     }
 
     internal static IdeContextInfo? Build(

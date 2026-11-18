@@ -823,8 +823,8 @@ public sealed class FakeAppServerIntegrationTests
 #else
             const string configuration = "Release";
 #endif
-            string fakeOutput = Path.Combine(root, "src", "Codex.AppServer.Fake", "bin", configuration, "net8.0", "Codex.AppServer.Fake.dll");
-            string runtimeConfig = Path.Combine(root, "src", "Codex.AppServer.Fake", "bin", configuration, "net8.0", "Codex.AppServer.Fake.runtimeconfig.json");
+            string fakeOutput = Path.Combine(root, "src", "Codex.AppServer.Fake", "bin", configuration, "net10.0", "Codex.AppServer.Fake.dll");
+            string runtimeConfig = Path.Combine(root, "src", "Codex.AppServer.Fake", "bin", configuration, "net10.0", "Codex.AppServer.Fake.runtimeconfig.json");
             if (!File.Exists(fakeOutput) || !File.Exists(runtimeConfig))
             {
                 throw new FileNotFoundException("The Fake AppServer build output is missing. Ensure the Core test project builds the Fake project.");

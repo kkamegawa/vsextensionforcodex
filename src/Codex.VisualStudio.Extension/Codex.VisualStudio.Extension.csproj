@@ -1,6 +1,6 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <TargetFramework>net8.0-windows10.0.22621.0</TargetFramework>
+    <TargetFramework>net10.0-windows10.0.22621.0</TargetFramework>
     <UseWPF>true</UseWPF>
     <!-- Allow cross-platform restore on CI (Linux runners) -->
     <EnableWindowsTargeting Condition="'$(OS)' != 'Windows_NT'">true</EnableWindowsTargeting>
@@ -41,9 +41,6 @@
     </PackageReference>
     <PackageReference Include="StreamJsonRpc" />
     <PackageReference Include="Markdig" />
-    <PackageReference Include="System.IO.Pipelines" />
-    <PackageReference Include="System.Text.Encodings.Web" />
-    <PackageReference Include="System.Text.Json" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="../Codex.VisualStudio.Contracts/Codex.VisualStudio.Contracts.csproj" />
@@ -78,14 +75,14 @@
       <VSIXSourceItem Include="$(IntermediateOutputPath)icon.png" />
     </ItemGroup>
   </Target>
-  <!-- Build Worker (net8.0) before VSIX packaging and embed under Worker/ -->
+  <!-- Build Worker (net10.0) before VSIX packaging and embed under Worker/ -->
   <Target Name="BuildCodexWorker" BeforeTargets="GetVsixSourceItems">
     <MSBuild Projects="../Codex.VisualStudio.Worker/Codex.VisualStudio.Worker.csproj"
              Targets="Build"
              Properties="Configuration=$(Configuration)" />
     <ItemGroup>
-      <VSIXSourceItem Include="../Codex.VisualStudio.Worker/bin/$(Configuration)/net8.0/**/*.*"
-                      Exclude="../Codex.VisualStudio.Worker/bin/$(Configuration)/net8.0/**/*.pdb">
+      <VSIXSourceItem Include="../Codex.VisualStudio.Worker/bin/$(Configuration)/net10.0/**/*.*"
+                      Exclude="../Codex.VisualStudio.Worker/bin/$(Configuration)/net10.0/**/*.pdb">
         <VSIXSubPath>Worker/%(RecursiveDir)</VSIXSubPath>
       </VSIXSourceItem>
     </ItemGroup>

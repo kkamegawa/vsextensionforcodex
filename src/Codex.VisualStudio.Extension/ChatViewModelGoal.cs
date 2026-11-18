@@ -1,6 +1,7 @@
 ﻿using System.ComponentModel;
 using System.Runtime.Serialization;
 using Codex.VisualStudio.Contracts;
+using ReentrantSemaphore = Microsoft.VisualStudio.Threading.ReentrantSemaphore;
 
 namespace Codex.VisualStudio.Extension;
 
@@ -21,7 +22,7 @@ public sealed partial class ChatViewModel
     // Goal state is updated from the Worker notification thread and from RPC continuations, so
     // every read-modify-write runs under this lock. Change notifications are raised after release.
     private readonly object goalStateLock = new();
-    private readonly SemaphoreSlim goalOperationGate = new(1, 1);
+    private readonly ReentrantSemaphore goalOperationGate = ExtensionConcurrency.CreateSemaphore();
     private readonly HashSet<string> completedGoalTurnIds = new(StringComparer.Ordinal);
     private ThreadGoalInfo? selectedThreadGoal;
     private string? goalProjectionThreadId;
@@ -428,8 +429,7 @@ public sealed partial class ChatViewModel
         long projectionRevision = Volatile.Read(ref goalProjectionRevision);
         StopThreadGoalResult? result = null;
         Exception? failure = null;
-        await goalOperationGate.WaitAsync(lifetime.Token).ConfigureAwait(false);
-        try
+        await goalOperationGate.ExecuteAsync(async () =>
         {
             if (!IsCurrentGoalStop(owner, threadId!, operationId))
             {
@@ -447,11 +447,7 @@ public sealed partial class ChatViewModel
                 // Timeouts and disconnects leave both stages unknown. Nothing is retried automatically.
                 failure = ex;
             }
-        }
-        finally
-        {
-            goalOperationGate.Release();
-        }
+        }, lifetime.Token).ConfigureAwait(false);
 
         if (failure is not null)
         {
@@ -627,8 +623,7 @@ public sealed partial class ChatViewModel
 
     private async Task<ThreadGoalResult?> RunGoalMutationAsync(long fenceVersion, Func<Task<ThreadGoalResult>> operation)
     {
-        await goalOperationGate.WaitAsync(lifetime.Token).ConfigureAwait(false);
-        try
+        return await goalOperationGate.ExecuteAsync(async () =>
         {
             if (fenceVersion != CaptureGoalStopFenceVersion() || IsGoalStopUnresolved)
             {
@@ -636,10 +631,6 @@ public sealed partial class ChatViewModel
             }
 
             return await operation().ConfigureAwait(false);
-        }
-        finally
-        {
-            goalOperationGate.Release();
-        }
+        }, lifetime.Token).ConfigureAwait(false);
     }
 }
