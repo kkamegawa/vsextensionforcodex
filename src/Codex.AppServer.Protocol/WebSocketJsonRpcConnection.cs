@@ -12,9 +12,8 @@ namespace Codex.AppServer.Protocol;
 /// </summary>
 public sealed class WebSocketJsonRpcConnection : IJsonRpcConnection, IInboundActivitySource
 {
-    // .NET 8 sends unsolicited PONG frames at this interval. They keep intermediaries from idling
-    // the socket out but are not proof that the peer is alive; the Worker's idle watchdog is.
     public static readonly TimeSpan KeepAliveInterval = TimeSpan.FromSeconds(30);
+    public static readonly TimeSpan KeepAliveTimeout = TimeSpan.FromSeconds(10);
 
     private const int ReceiveBufferBytes = 8192;
     private const int NotificationQueueCapacity = 256;
@@ -29,6 +28,8 @@ public sealed class WebSocketJsonRpcConnection : IJsonRpcConnection, IInboundAct
     private readonly string? bearerToken;
     private readonly HttpMessageInvoker? invoker;
     private readonly int maxMessageBytes;
+    private readonly TimeSpan keepAliveInterval;
+    private readonly TimeSpan keepAliveTimeout;
     private readonly WebSocket socket;
     private readonly ClientWebSocket? clientSocket;
     private readonly SemaphoreSlim sendGate = new(1, 1);
@@ -62,6 +63,32 @@ public sealed class WebSocketJsonRpcConnection : IJsonRpcConnection, IInboundAct
         string bearerToken,
         HttpMessageInvoker? invoker,
         int maxMessageBytes = JsonLineRpcConnection.DefaultMaxLineBytes)
+        : this(endpoint, bearerToken, invoker, maxMessageBytes, KeepAliveInterval, KeepAliveTimeout)
+    {
+    }
+
+    internal WebSocketJsonRpcConnection(
+        Uri endpoint,
+        string bearerToken,
+        TimeSpan keepAliveInterval,
+        TimeSpan keepAliveTimeout)
+        : this(
+            endpoint,
+            bearerToken,
+            invoker: null,
+            JsonLineRpcConnection.DefaultMaxLineBytes,
+            keepAliveInterval,
+            keepAliveTimeout)
+    {
+    }
+
+    private WebSocketJsonRpcConnection(
+        Uri endpoint,
+        string bearerToken,
+        HttpMessageInvoker? invoker,
+        int maxMessageBytes,
+        TimeSpan keepAliveInterval,
+        TimeSpan keepAliveTimeout)
         : this(new ClientWebSocket(), maxMessageBytes)
     {
         if (!string.Equals(endpoint.Scheme, Uri.UriSchemeWs, StringComparison.OrdinalIgnoreCase)
@@ -82,6 +109,8 @@ public sealed class WebSocketJsonRpcConnection : IJsonRpcConnection, IInboundAct
         this.endpoint = endpoint;
         this.bearerToken = bearerToken;
         this.invoker = invoker;
+        this.keepAliveInterval = keepAliveInterval;
+        this.keepAliveTimeout = keepAliveTimeout;
         clientSocket = (ClientWebSocket)socket;
     }
 
@@ -125,7 +154,8 @@ public sealed class WebSocketJsonRpcConnection : IJsonRpcConnection, IInboundAct
         {
             if (clientSocket is not null)
             {
-                clientSocket.Options.KeepAliveInterval = KeepAliveInterval;
+                clientSocket.Options.KeepAliveInterval = keepAliveInterval;
+                clientSocket.Options.KeepAliveTimeout = keepAliveTimeout;
                 clientSocket.Options.CollectHttpResponseDetails = true;
 
                 // The bearer token is sent only on this handshake request.
