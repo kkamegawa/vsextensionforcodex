@@ -6,7 +6,7 @@ using Markdig.Syntax.Inlines;
 
 namespace Codex.VisualStudio.Extension;
 
-public sealed class SafeMarkdownService
+public sealed partial class SafeMarkdownService
 {
     private readonly MarkdownPipeline pipeline = new MarkdownPipelineBuilder()
         .DisableHtml()
@@ -16,7 +16,7 @@ public sealed class SafeMarkdownService
     {
         string withoutControlCharacters = Sanitize(value);
         string plainText = Markdown.ToPlainText(withoutControlCharacters, pipeline);
-        return CjkSpace.Replace(StripHtmlTags(plainText), string.Empty);
+        return CjkSpace().Replace(StripHtmlTags(plainText), string.Empty);
     }
 
     public static string ToSafeLiteralText(string value)
@@ -51,13 +51,13 @@ public sealed class SafeMarkdownService
             }
         }
 
-        return new(CjkSpace.Replace(safeTextBuilder.ToString(), string.Empty), blocks);
+        return new(CjkSpace().Replace(safeTextBuilder.ToString(), string.Empty), blocks);
     }
 
     private static string Sanitize(string value)
     {
-        string withoutAnsi = AnsiEscape.Replace(value ?? string.Empty, string.Empty);
-        return ControlCharacters.Replace(withoutAnsi, string.Empty);
+        string withoutAnsi = AnsiEscape().Replace(value ?? string.Empty, string.Empty);
+        return ControlCharacters().Replace(withoutAnsi, string.Empty);
     }
 
     private static void AppendBlock(Block block, List<ChatBlockViewModel> blocks, int listDepth, StringBuilder safeTextBuilder)
@@ -160,7 +160,7 @@ public sealed class SafeMarkdownService
     private static string NormalizeText(string value)
     {
         string normalized = NormalizeLineEndings(value).Trim();
-        return CjkSpace.Replace(normalized, string.Empty);
+        return CjkSpace().Replace(normalized, string.Empty);
     }
 
     private static string NormalizeLanguage(string? value)
@@ -170,7 +170,7 @@ public sealed class SafeMarkdownService
             return string.Empty;
         }
 
-        string normalized = ControlCharacters.Replace(value, string.Empty).Trim();
+        string normalized = ControlCharacters().Replace(value, string.Empty).Trim();
         int firstWhitespace = normalized.IndexOfAny(LanguageWhitespace);
         return firstWhitespace >= 0 ? normalized[..firstWhitespace] : normalized;
     }
@@ -204,7 +204,7 @@ public sealed class SafeMarkdownService
     }
 
     private static string StripHtmlTags(string value)
-        => HtmlTag.Replace(value, string.Empty);
+        => HtmlTag().Replace(value, string.Empty);
 
     private static void AppendInlineText(Inline? inline, StringBuilder builder)
     {
@@ -231,21 +231,17 @@ public sealed class SafeMarkdownService
         }
     }
 
-    private static readonly Regex ControlCharacters = new(
-        "[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]",
-        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+    [GeneratedRegex(@"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]", RegexOptions.CultureInvariant)]
+    private static partial Regex ControlCharacters();
 
-    private static readonly Regex AnsiEscape = new(
-        @"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])",
-        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+    [GeneratedRegex(@"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])", RegexOptions.CultureInvariant)]
+    private static partial Regex AnsiEscape();
 
-    private static readonly Regex HtmlTag = new(
-        @"<[^>]+>",
-        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+    [GeneratedRegex(@"<[^>]+>", RegexOptions.CultureInvariant)]
+    private static partial Regex HtmlTag();
 
-    private static readonly Regex CjkSpace = new(
-        @"(?<=[\u2E80-\u9FFF\uF900-\uFAFF\uFF00-\uFFEF\u3000-\u303F]) (?=[\u2E80-\u9FFF\uF900-\uFAFF\uFF00-\uFFEF\u3000-\u303F])",
-        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+    [GeneratedRegex(@"(?<=[\u2E80-\u9FFF\uF900-\uFAFF\uFF00-\uFFEF\u3000-\u303F]) (?=[\u2E80-\u9FFF\uF900-\uFAFF\uFF00-\uFFEF\u3000-\u303F])", RegexOptions.CultureInvariant)]
+    private static partial Regex CjkSpace();
 
     private static readonly char[] LanguageWhitespace = [' ', '\t', '\r', '\n'];
 }

@@ -4,6 +4,7 @@ using System.Globalization;
 using System.Net.Mail;
 using System.Runtime.Serialization;
 using System.Text;
+using System.Text.RegularExpressions;
 using Codex.VisualStudio.Contracts;
 
 namespace Codex.VisualStudio.Extension;
@@ -398,7 +399,7 @@ public sealed class McpElicitationViewModel : ObservableObject
 }
 
 [DataContract]
-public sealed class McpElicitationFieldViewModel : ObservableObject
+public sealed partial class McpElicitationFieldViewModel : ObservableObject
 {
     private readonly string fieldName;
     private readonly McpElicitationFieldType type;
@@ -672,10 +673,7 @@ public sealed class McpElicitationFieldViewModel : ObservableObject
             && string.Equals(address.Address, text, StringComparison.Ordinal);
 
     private static bool IsRfc3339DateTime(string text)
-        => System.Text.RegularExpressions.Regex.IsMatch(
-                text,
-                "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]+)?(?:[Zz]|[+-][0-9]{2}:[0-9]{2})$",
-                System.Text.RegularExpressions.RegexOptions.CultureInvariant)
+        => Rfc3339DateTimeRegex().IsMatch(text)
             && DateTimeOffset.TryParse(text, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out _)
             && DateOnly.TryParseExact(text[..10], "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out _);
 
@@ -698,6 +696,9 @@ public sealed class McpElicitationFieldViewModel : ObservableObject
 
         return true;
     }
+
+    [GeneratedRegex("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]+)?(?:[Zz]|[+-][0-9]{2}:[0-9]{2})$", RegexOptions.CultureInvariant)]
+    private static partial Regex Rfc3339DateTimeRegex();
 
     private string FormatLabel() => format switch
     {

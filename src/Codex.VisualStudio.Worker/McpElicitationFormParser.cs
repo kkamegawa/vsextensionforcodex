@@ -1,6 +1,7 @@
 ﻿using System.Globalization;
 using System.Net.Mail;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Text.Json;
 using Codex.VisualStudio.Contracts;
 
@@ -179,7 +180,7 @@ internal sealed class McpElicitationForm
     }
 }
 
-internal static class McpElicitationFormParser
+internal static partial class McpElicitationFormParser
 {
     internal const int MaximumFields = 64;
     internal const int MaximumChoicesPerField = 256;
@@ -888,10 +889,7 @@ internal static class McpElicitationFormParser
 
     private static bool IsRfc3339DateTime(string value)
     {
-        if (!System.Text.RegularExpressions.Regex.IsMatch(
-                value,
-                "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]+)?(?:[Zz]|[+-][0-9]{2}:[0-9]{2})$",
-                System.Text.RegularExpressions.RegexOptions.CultureInvariant)
+        if (!Rfc3339DateTimeRegex().IsMatch(value)
             || !DateTimeOffset.TryParse(value, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out _))
         {
             return false;
@@ -906,6 +904,9 @@ internal static class McpElicitationFormParser
 
         return true;
     }
+
+    [GeneratedRegex("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]+)?(?:[Zz]|[+-][0-9]{2}:[0-9]{2})$", RegexOptions.CultureInvariant)]
+    private static partial Regex Rfc3339DateTimeRegex();
 
     private static bool IsWellFormedUnicode(string value)
     {
