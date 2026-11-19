@@ -24,7 +24,7 @@ public interface ISecretRedactor
 
 public sealed partial class SecretRedactor : ISecretRedactor
 {
-    private readonly object secretsGate = new();
+    private readonly Lock secretsGate = new();
     private readonly Dictionary<string, int> registeredSecrets = new(StringComparer.Ordinal);
     private string[] secretSnapshot = [];
 
@@ -486,7 +486,13 @@ public sealed record ApprovalGrant(
 public sealed class ApprovalGrantStore
 {
     private readonly List<ApprovalGrant> grants = [];
-    private readonly object gate = new();
+    private readonly Lock gate = new();
+    private readonly TimeProvider timeProvider;
+
+    public ApprovalGrantStore(TimeProvider? timeProvider = null)
+    {
+        this.timeProvider = timeProvider ?? TimeProvider.System;
+    }
 
     public void Add(ApprovalRequest request, ApprovalScope scope)
     {
@@ -506,7 +512,7 @@ public sealed class ApprovalGrantStore
                 scope,
                 ScopeThreadId(request, scope),
                 ScopeTurnId(request, scope),
-                DateTimeOffset.UtcNow));
+                timeProvider.GetUtcNow()));
         }
     }
 

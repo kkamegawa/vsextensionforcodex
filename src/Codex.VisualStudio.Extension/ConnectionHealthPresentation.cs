@@ -14,16 +14,8 @@ public sealed class ConnectionHealthPresentationViewModel : ObservableObject
 {
     private readonly SafeMarkdownService markdown;
     private long sequence;
-    private bool isChecking;
-    private bool hasResult;
     private string checkedProfileName = string.Empty;
     private string checkedFingerprint = string.Empty;
-    private string checkedProfileText = string.Empty;
-    private string healthText = string.Empty;
-    private string readyText = string.Empty;
-    private string rpcText = string.Empty;
-    private string scopeText = string.Empty;
-    private string statusText = string.Empty;
 
     internal ConnectionHealthPresentationViewModel(SafeMarkdownService markdown)
     {
@@ -33,59 +25,59 @@ public sealed class ConnectionHealthPresentationViewModel : ObservableObject
     [DataMember]
     public bool IsChecking
     {
-        get => isChecking;
-        private set => SetProperty(ref isChecking, value);
+        get => field;
+        private set => SetProperty(ref field, value);
     }
 
     [DataMember]
     public bool HasResult
     {
-        get => hasResult;
-        private set => SetProperty(ref hasResult, value);
+        get => field;
+        private set => SetProperty(ref field, value);
     }
 
     [DataMember]
     public string CheckedProfileText
     {
-        get => checkedProfileText;
-        private set => SetProperty(ref checkedProfileText, value);
-    }
+        get => field;
+        private set => SetProperty(ref field, value);
+    } = string.Empty;
 
     [DataMember]
     public string HealthText
     {
-        get => healthText;
-        private set => SetProperty(ref healthText, value);
-    }
+        get => field;
+        private set => SetProperty(ref field, value);
+    } = string.Empty;
 
     [DataMember]
     public string ReadyText
     {
-        get => readyText;
-        private set => SetProperty(ref readyText, value);
-    }
+        get => field;
+        private set => SetProperty(ref field, value);
+    } = string.Empty;
 
     [DataMember]
     public string RpcText
     {
-        get => rpcText;
-        private set => SetProperty(ref rpcText, value);
-    }
+        get => field;
+        private set => SetProperty(ref field, value);
+    } = string.Empty;
 
     [DataMember]
     public string ScopeText
     {
-        get => scopeText;
-        private set => SetProperty(ref scopeText, value);
-    }
+        get => field;
+        private set => SetProperty(ref field, value);
+    } = string.Empty;
 
     // Bound to a polite live region so screen readers hear check progress and completion.
     [DataMember]
     public string StatusText
     {
-        get => statusText;
-        private set => SetProperty(ref statusText, value);
-    }
+        get => field;
+        private set => SetProperty(ref field, value);
+    } = string.Empty;
 
     internal long Begin(string profileName, string fingerprint)
     {

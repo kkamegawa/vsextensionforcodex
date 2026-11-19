@@ -13,14 +13,18 @@ public sealed class StreamingBuffer : IAsyncDisposable
     private readonly ConcurrentDictionary<string, Entry> entries = new();
     private readonly Func<ConversationEvent, CancellationToken, Task> sink;
     private readonly string overflowDirectory;
-    private readonly PeriodicTimer timer = new(TimeSpan.FromMilliseconds(75));
+    private readonly PeriodicTimer timer;
     private readonly CancellationTokenSource lifetime = new();
     private readonly Task flushLoop;
 
-    public StreamingBuffer(Func<ConversationEvent, CancellationToken, Task> sink, string overflowDirectory)
+    public StreamingBuffer(
+        Func<ConversationEvent, CancellationToken, Task> sink,
+        string overflowDirectory,
+        TimeProvider? timeProvider = null)
     {
         this.sink = sink;
         this.overflowDirectory = overflowDirectory;
+        timer = new PeriodicTimer(TimeSpan.FromMilliseconds(75), timeProvider ?? TimeProvider.System);
         Directory.CreateDirectory(overflowDirectory);
         flushLoop = Task.Run(() => FlushLoopAsync(lifetime.Token));
     }
@@ -28,7 +32,7 @@ public sealed class StreamingBuffer : IAsyncDisposable
     public void Append(string key, ConversationEvent template, string text, int limit)
     {
         Entry entry = entries.GetOrAdd(key, _ => new Entry(template, limit));
-        lock (entry)
+        lock (entry.SyncLock)
         {
             int remaining = Math.Max(0, entry.Limit - entry.VisibleWritten);
             if (remaining > 0)
@@ -73,7 +77,7 @@ public sealed class StreamingBuffer : IAsyncDisposable
             {
                 ConversationEvent? outgoing = null;
                 string? overflow = null;
-                lock (entry)
+                lock (entry.SyncLock)
                 {
                     if (!entry.Dirty)
                     {
@@ -137,6 +141,8 @@ public sealed class StreamingBuffer : IAsyncDisposable
 
     private sealed class Entry
     {
+        public Lock SyncLock { get; } = new();
+
         public Entry(ConversationEvent template, int limit)
         {
             Template = template;

@@ -12,8 +12,6 @@ public sealed partial class ChatViewModel
 
     private readonly ConversationTextStore conversationTextStore = new();
     private CancellationTokenSource? conversationTextCancellation;
-    private bool isConversationTextLoading;
-    private string conversationTextStatusText = string.Empty;
 
     internal IConversationTextDocuments ConversationTextDocuments { get; set; } = new ConversationTextDocuments(null);
 
@@ -26,10 +24,10 @@ public sealed partial class ChatViewModel
     [DataMember]
     public bool IsConversationTextLoading
     {
-        get => isConversationTextLoading;
+        get => field;
         private set
         {
-            if (SetProperty(ref isConversationTextLoading, value))
+            if (SetProperty(ref field, value))
             {
                 OpenConversationTextCommand.RaiseCanExecuteChanged();
                 CancelConversationTextCommand.RaiseCanExecuteChanged();
@@ -40,15 +38,15 @@ public sealed partial class ChatViewModel
     [DataMember]
     public string ConversationTextStatusText
     {
-        get => conversationTextStatusText;
+        get => field;
         private set
         {
-            if (SetProperty(ref conversationTextStatusText, value))
+            if (SetProperty(ref field, value))
             {
                 OnPropertyChanged(nameof(HasConversationTextStatus));
             }
         }
-    }
+    } = string.Empty;
 
     [DataMember]
     public bool HasConversationTextStatus => ConversationTextStatusText.Length > 0;
@@ -63,7 +61,7 @@ public sealed partial class ChatViewModel
             conversationTextCancellation?.Cancel();
             return Task.CompletedTask;
         }, () => IsConversationTextLoading);
-        _ = Task.Run(() => conversationTextStore.RemoveUnused(utcNow()));
+        _ = Task.Run(() => conversationTextStore.RemoveUnused(timeProvider.GetUtcNow()));
     }
 
     private async Task OpenConversationTextAsync()
@@ -88,7 +86,7 @@ public sealed partial class ChatViewModel
             List<ThreadHistoryItem> items = await ReadWholeHistoryAsync(thread.Id, owner, cancellation.Token).ConfigureAwait(false);
             items.Reverse();
             string title = GetConversationTextTitle(thread);
-            string text = ConversationTextFormatter.Format(title, utcNow(), items, markdown);
+            string text = ConversationTextFormatter.Format(title, timeProvider.GetUtcNow(), items, markdown);
             path = conversationTextStore.Write(ToArtifactOwner(owner), text);
             await ConversationTextDocuments.OpenAsync(path, title.Replace("%", string.Empty, StringComparison.Ordinal), conversationTextStore.Remove, cancellation.Token).ConfigureAwait(false);
             await SetConversationTextStatusAsync(string.Empty).ConfigureAwait(false);

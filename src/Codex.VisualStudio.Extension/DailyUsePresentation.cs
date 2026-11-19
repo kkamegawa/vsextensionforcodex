@@ -91,8 +91,6 @@ public sealed class AppServerNoticePresentationViewModel
 public sealed class ArtifactPartPresentationViewModel : ObservableObject
 {
     private readonly Func<ArtifactPartPresentationViewModel, ArtifactActionKind, Task> performAction;
-    private XamlFragment? previewFragment;
-    private string actionStatusText = string.Empty;
 
     internal ArtifactPartPresentationViewModel(
         ArtifactPart part,
@@ -171,10 +169,10 @@ public sealed class ArtifactPartPresentationViewModel : ObservableObject
     [DataMember]
     public XamlFragment? PreviewFragment
     {
-        get => previewFragment;
+        get => field;
         internal set
         {
-            if (SetProperty(ref previewFragment, value))
+            if (SetProperty(ref field, value))
             {
                 OnPropertyChanged(nameof(HasPreview));
             }
@@ -187,15 +185,15 @@ public sealed class ArtifactPartPresentationViewModel : ObservableObject
     [DataMember]
     public string ActionStatusText
     {
-        get => actionStatusText;
+        get => field;
         internal set
         {
-            if (SetProperty(ref actionStatusText, value))
+            if (SetProperty(ref field, value))
             {
                 OnPropertyChanged(nameof(HasActionStatus));
             }
         }
-    }
+    } = string.Empty;
 
     [DataMember]
     public bool HasActionStatus => !string.IsNullOrWhiteSpace(ActionStatusText);

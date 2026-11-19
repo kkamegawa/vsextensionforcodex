@@ -39,13 +39,7 @@ public sealed class SlashCommandPresentationViewModel : ObservableObject
     private Func<SlashCommandSuggestionViewModel, Task>? suggestionAccepted;
     private Func<SlashCommandSubmission, Task<bool>>? executeRequested;
     private Func<Task>? cleared;
-    private SlashCommandSuggestionViewModel? selectedSuggestion;
-    private SlashCommandSuggestionViewModel? activeCommand;
-    private SlashCommandOptionViewModel? selectedOption;
     private string argumentText = string.Empty;
-    private string statusAnnouncement = string.Empty;
-    private bool isSuggestionOpen;
-    private bool showArgumentInput;
 
     public SlashCommandPresentationViewModel()
     {
@@ -78,10 +72,10 @@ public sealed class SlashCommandPresentationViewModel : ObservableObject
     [DataMember]
     public SlashCommandSuggestionViewModel? SelectedSuggestion
     {
-        get => selectedSuggestion;
+        get => field;
         set
         {
-            if (SetProperty(ref selectedSuggestion, value))
+            if (SetProperty(ref field, value))
             {
                 AcceptSuggestionCommand.RaiseCanExecuteChanged();
             }
@@ -91,10 +85,10 @@ public sealed class SlashCommandPresentationViewModel : ObservableObject
     [DataMember]
     public SlashCommandSuggestionViewModel? ActiveCommand
     {
-        get => activeCommand;
+        get => field;
         private set
         {
-            if (SetProperty(ref activeCommand, value))
+            if (SetProperty(ref field, value))
             {
                 OnPropertyChanged(nameof(HasActiveCommand));
                 OnPropertyChanged(nameof(HasNoActiveCommand));
@@ -109,8 +103,8 @@ public sealed class SlashCommandPresentationViewModel : ObservableObject
     [DataMember]
     public SlashCommandOptionViewModel? SelectedOption
     {
-        get => selectedOption;
-        private set => SetProperty(ref selectedOption, value);
+        get => field;
+        private set => SetProperty(ref field, value);
     }
 
     [DataMember]
@@ -134,16 +128,16 @@ public sealed class SlashCommandPresentationViewModel : ObservableObject
     [DataMember]
     public string StatusAnnouncement
     {
-        get => statusAnnouncement;
+        get => field;
         private set
         {
             string safeValue = markdown.ToSafeText(value).Trim();
-            if (SetProperty(ref statusAnnouncement, safeValue))
+            if (SetProperty(ref field, safeValue))
             {
                 OnPropertyChanged(nameof(HasStatusAnnouncement));
             }
         }
-    }
+    } = string.Empty;
 
     [DataMember]
     public bool HasStatusAnnouncement => !string.IsNullOrWhiteSpace(StatusAnnouncement);
@@ -151,10 +145,10 @@ public sealed class SlashCommandPresentationViewModel : ObservableObject
     [DataMember]
     public bool IsSuggestionOpen
     {
-        get => isSuggestionOpen;
+        get => field;
         private set
         {
-            if (SetProperty(ref isSuggestionOpen, value))
+            if (SetProperty(ref field, value))
             {
                 RaiseSuggestionCommandStates();
             }
@@ -173,8 +167,8 @@ public sealed class SlashCommandPresentationViewModel : ObservableObject
     [DataMember]
     public bool ShowArgumentInput
     {
-        get => showArgumentInput;
-        private set => SetProperty(ref showArgumentInput, value);
+        get => field;
+        private set => SetProperty(ref field, value);
     }
 
     [DataMember]
@@ -542,7 +536,6 @@ public sealed class SlashCommandSuggestionViewModel
 public sealed class SlashCommandOptionViewModel : ObservableObject
 {
     private readonly Func<SlashCommandOptionViewModel, Task> use;
-    private bool isSelected;
 
     internal SlashCommandOptionViewModel(
         SlashCommandOptionDescriptor descriptor,
@@ -567,10 +560,10 @@ public sealed class SlashCommandOptionViewModel : ObservableObject
     [DataMember]
     public bool IsSelected
     {
-        get => isSelected;
+        get => field;
         set
         {
-            if (SetProperty(ref isSelected, value))
+            if (SetProperty(ref field, value))
             {
                 OnPropertyChanged(nameof(AutomationName));
             }

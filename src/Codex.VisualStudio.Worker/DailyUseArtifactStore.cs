@@ -9,7 +9,7 @@ internal sealed class DailyUseArtifactStore
     private const int MaximumEntries = 512;
     private const int MaximumPreviewEntries = 64;
     private const int MaximumPreviewStoreBytes = 20 * 1024 * 1024;
-    private readonly object gate = new();
+    private readonly Lock gate = new();
     private readonly Dictionary<string, Entry> entries = new(StringComparer.Ordinal);
     private int previewEntryCount;
     private int previewStoreBytes;

@@ -16,7 +16,7 @@ public sealed partial class CodexSessionService
     private const int MaxModelIdentifierLength = 128;
     private const string UnmappedArtifactReason = "File actions are unavailable because this path is outside the mapped local workspace.";
 
-    private readonly object dailyUseStateLock = new();
+    private readonly Lock dailyUseStateLock = new();
     private readonly Dictionary<ThreadStatusKey, string> threadStatuses = new();
     private readonly Dictionary<PlanItemKey, PlanDeltaState> planDeltaStates = new();
     private readonly HashSet<PlanTurnKey> finalizedPlanTurns = new();

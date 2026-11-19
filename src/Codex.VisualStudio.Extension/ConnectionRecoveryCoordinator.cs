@@ -1,5 +1,4 @@
-﻿using System.Diagnostics;
-using System.IO;
+﻿using System.IO;
 using Codex.VisualStudio.Contracts;
 
 namespace Codex.VisualStudio.Extension;
@@ -42,14 +41,16 @@ internal static class ConnectionRecoveryCoordinator
         Func<CancellationToken, Task<bool>> targetStillValidAsync,
         CancellationToken cancellationToken,
         Func<double>? jitterSample = null,
-        Func<TimeSpan, CancellationToken, Task>? delayAsync = null)
+        Func<TimeSpan, CancellationToken, Task>? delayAsync = null,
+        TimeProvider? timeProvider = null)
     {
         ArgumentNullException.ThrowIfNull(attemptAsync);
         ArgumentNullException.ThrowIfNull(targetStillValidAsync);
         jitterSample ??= static () => Random.Shared.NextDouble();
-        delayAsync ??= static (duration, token) => Task.Delay(duration, token);
+        timeProvider ??= TimeProvider.System;
+        delayAsync ??= (duration, token) => Task.Delay(duration, timeProvider, token);
 
-        var elapsed = Stopwatch.StartNew();
+        long startedAt = timeProvider.GetTimestamp();
         WorkerRecoveryFailureKind lastFailure = WorkerRecoveryFailureKind.None;
         int attempts = 0;
 
@@ -60,7 +61,7 @@ internal static class ConnectionRecoveryCoordinator
                 return new ConnectionRecoveryResult(ConnectionRecoveryOutcome.Cancelled, attempts, WorkerRecoveryFailureKind.Cancelled);
             }
 
-            if (elapsed.Elapsed >= EpisodeTimeout)
+            if (timeProvider.GetElapsedTime(startedAt) >= EpisodeTimeout)
             {
                 return new ConnectionRecoveryResult(ConnectionRecoveryOutcome.Exhausted, attempts, lastFailure);
             }
@@ -82,7 +83,7 @@ internal static class ConnectionRecoveryCoordinator
 
             if (attemptNumber > 1)
             {
-                TimeSpan remaining = EpisodeTimeout - elapsed.Elapsed;
+                TimeSpan remaining = EpisodeTimeout - timeProvider.GetElapsedTime(startedAt);
                 if (remaining <= TimeSpan.Zero)
                 {
                     return new ConnectionRecoveryResult(ConnectionRecoveryOutcome.Exhausted, attempts, lastFailure);
@@ -119,14 +120,15 @@ internal static class ConnectionRecoveryCoordinator
                 }
             }
 
-            TimeSpan attemptRemaining = EpisodeTimeout - elapsed.Elapsed;
+            TimeSpan attemptRemaining = EpisodeTimeout - timeProvider.GetElapsedTime(startedAt);
             if (attemptRemaining <= TimeSpan.Zero)
             {
                 return new ConnectionRecoveryResult(ConnectionRecoveryOutcome.Exhausted, attempts, lastFailure);
             }
 
             using var attemptTimeout = new CancellationTokenSource(
-                attemptRemaining < AttemptTimeout ? attemptRemaining : AttemptTimeout);
+                attemptRemaining < AttemptTimeout ? attemptRemaining : AttemptTimeout,
+                timeProvider);
             using var linkedCancellation = CancellationTokenSource.CreateLinkedTokenSource(
                 cancellationToken,
                 attemptTimeout.Token);

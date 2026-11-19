@@ -16,19 +16,15 @@ public sealed partial class ChatViewModel
         Recall,
     }
 
-    private bool isPresetsPanelOpen;
-    private bool isPresetsLoading;
     private bool isPresetSaving;
     private string presetsStatusText = string.Empty;
     private string? presetUserLayerVersion;
     private long presetListSequence;
-    private bool isPresetEditorOpen;
     private string presetEditorSlot = string.Empty;
     private string presetEditorInput = string.Empty;
     private string presetEditorLabel = string.Empty;
     private PresetConfirmationKind presetConfirmationKind;
     private PresetSlotViewModel? presetConfirmationSlot;
-    private string presetConfirmationText = string.Empty;
 
     [DataMember]
     public ObservableCollection<PresetSlotViewModel> PresetSlots { get; } = [];
@@ -36,8 +32,8 @@ public sealed partial class ChatViewModel
     [DataMember]
     public bool IsPresetsPanelOpen
     {
-        get => isPresetsPanelOpen;
-        private set => SetProperty(ref isPresetsPanelOpen, value);
+        get => field;
+        private set => SetProperty(ref field, value);
     }
 
     [DataMember]
@@ -49,8 +45,8 @@ public sealed partial class ChatViewModel
     [DataMember]
     public bool IsPresetsLoading
     {
-        get => isPresetsLoading;
-        private set => SetProperty(ref isPresetsLoading, value);
+        get => field;
+        private set => SetProperty(ref field, value);
     }
 
     [DataMember]
@@ -72,8 +68,8 @@ public sealed partial class ChatViewModel
     [DataMember]
     public bool IsPresetEditorOpen
     {
-        get => isPresetEditorOpen;
-        private set => SetProperty(ref isPresetEditorOpen, value);
+        get => field;
+        private set => SetProperty(ref field, value);
     }
 
     [DataMember]
@@ -105,9 +101,9 @@ public sealed partial class ChatViewModel
     [DataMember]
     public string PresetConfirmationText
     {
-        get => presetConfirmationText;
-        private set => SetProperty(ref presetConfirmationText, value);
-    }
+        get => field;
+        private set => SetProperty(ref field, value);
+    } = string.Empty;
 
     [DataMember]
     public string PresetConfirmationActionText => presetConfirmationKind switch

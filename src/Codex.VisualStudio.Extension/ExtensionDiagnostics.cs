@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.IO;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -6,13 +6,9 @@ using Microsoft.VisualStudio.Extensibility.Documents;
 
 namespace Codex.VisualStudio.Extension;
 
-internal static class ExtensionDiagnostics
+internal static partial class ExtensionDiagnostics
 {
-    private static readonly object FileLock = new();
-    private static readonly Regex UrlPattern = new(@"https?://\S+", RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
-    private static readonly Regex CredentialPattern = new(
-        @"(?i)(authorization|api[_-]?key|access[_-]?token|refresh[_-]?token|bearer)\s*[:=]\s*\S+",
-        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+    private static readonly Lock FileLock = new();
 
     public static string LogPath { get; } = Path.Combine(
         Path.GetTempPath(),
@@ -60,5 +56,11 @@ internal static class ExtensionDiagnostics
     }
 
     public static string Sanitize(string value)
-        => CredentialPattern.Replace(UrlPattern.Replace(value, "[URL REDACTED]"), "$1=[REDACTED]");
+        => CredentialPattern().Replace(UrlPattern().Replace(value, "[URL REDACTED]"), "$1=[REDACTED]");
+
+    [GeneratedRegex(@"https?://\S+", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex UrlPattern();
+
+    [GeneratedRegex(@"(?i)(authorization|api[_-]?key|access[_-]?token|refresh[_-]?token|bearer)\s*[:=]\s*\S+", RegexOptions.CultureInvariant)]
+    private static partial Regex CredentialPattern();
 }

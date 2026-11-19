@@ -1,5 +1,8 @@
 ﻿using System.IO.Pipelines;
+using System.Net;
+using System.Net.Sockets;
 using System.Net.WebSockets;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using Codex.AppServer.Protocol;
@@ -309,10 +312,129 @@ public sealed class WebSocketJsonRpcConnectionTests
     }
 
     [TestMethod]
+    public async Task MissingPong_ClosesRemoteConnectionAfterKeepAliveTimeout()
+    {
+        await using var peer = new UnresponsiveWebSocketPeer();
+        var closed = new TaskCompletionSource<Exception?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var connection = new WebSocketJsonRpcConnection(
+            peer.Endpoint,
+            new string('a', 32),
+            TimeSpan.FromMilliseconds(100),
+            TimeSpan.FromMilliseconds(100));
+        connection.Closed += (_, exception) => closed.TrySetResult(exception);
+        peer.StartAccepting();
+
+        await connection.StartAsync(CancellationToken.None);
+        await peer.PingReceived.WaitAsync(TimeSpan.FromSeconds(3));
+
+        Exception? failure = await closed.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        Assert.IsNotNull(failure);
+    }
+
+    [TestMethod]
     public void Constructor_RejectsPlainWebSocketToRemoteHost()
     {
         Assert.ThrowsExactly<ArgumentException>(() =>
             new WebSocketJsonRpcConnection(new Uri("ws://app-server.example.invalid"), new string('a', 32)));
+    }
+
+    private sealed class UnresponsiveWebSocketPeer : IAsyncDisposable
+    {
+        private const string WebSocketMagic = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+        private const int MaximumHandshakeBytes = 16 * 1024;
+        private readonly TcpListener listener = new(IPAddress.Loopback, 0);
+        private readonly CancellationTokenSource lifetime = new();
+        private Task? serverTask;
+
+        public UnresponsiveWebSocketPeer()
+        {
+            listener.Start();
+            var endpoint = (IPEndPoint)listener.LocalEndpoint;
+            Endpoint = new Uri($"ws://127.0.0.1:{endpoint.Port}/app-server");
+        }
+
+        public Uri Endpoint { get; }
+
+        private readonly TaskCompletionSource pingReceived = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public Task PingReceived => pingReceived.Task;
+
+        public void StartAccepting()
+            => serverTask = AcceptHandshakeAndIgnorePingCoreAsync();
+
+        private async Task AcceptHandshakeAndIgnorePingCoreAsync()
+        {
+            try
+            {
+                using TcpClient client = await listener.AcceptTcpClientAsync(lifetime.Token);
+                NetworkStream stream = client.GetStream();
+                string request = await ReadHandshakeAsync(stream, lifetime.Token).ConfigureAwait(false);
+                string keyLine = request.Split("\r\n", StringSplitOptions.RemoveEmptyEntries)
+                    .Single(line => line.StartsWith("Sec-WebSocket-Key:", StringComparison.OrdinalIgnoreCase));
+                string key = keyLine[(keyLine.IndexOf(':') + 1)..].Trim();
+                // RFC 6455 requires SHA-1 for the WebSocket accept handshake value.
+#pragma warning disable CA5350
+                byte[] acceptBytes = SHA1.HashData(Encoding.ASCII.GetBytes(key + WebSocketMagic));
+#pragma warning restore CA5350
+                string accept = Convert.ToBase64String(acceptBytes);
+                byte[] response = Encoding.ASCII.GetBytes(
+                    $"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {accept}\r\n\r\n");
+                await stream.WriteAsync(response, lifetime.Token).ConfigureAwait(false);
+
+                byte[] frameHeader = new byte[2];
+                await stream.ReadExactlyAsync(frameHeader, lifetime.Token).ConfigureAwait(false);
+                if ((frameHeader[0] & 0x0F) != 0x09)
+                {
+                    throw new InvalidDataException("The client did not send the expected WebSocket ping.");
+                }
+
+                pingReceived.TrySetResult();
+                await Task.Delay(Timeout.InfiniteTimeSpan, lifetime.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+            {
+            }
+        }
+
+        private static async Task<string> ReadHandshakeAsync(NetworkStream stream, CancellationToken cancellationToken)
+        {
+            using var request = new MemoryStream();
+            byte[] value = new byte[1];
+            while (request.Length < MaximumHandshakeBytes)
+            {
+                int read = await stream.ReadAsync(value, cancellationToken).ConfigureAwait(false);
+                if (read == 0)
+                {
+                    throw new EndOfStreamException("The client disconnected during the WebSocket handshake.");
+                }
+
+                request.WriteByte(value[0]);
+                if (request.Length >= 4)
+                {
+                    byte[] bytes = request.GetBuffer();
+                    int end = checked((int)request.Length);
+                    if (bytes[end - 4] == '\r' && bytes[end - 3] == '\n'
+                        && bytes[end - 2] == '\r' && bytes[end - 1] == '\n')
+                    {
+                        return Encoding.ASCII.GetString(bytes, 0, end);
+                    }
+                }
+            }
+
+            throw new InvalidDataException("The WebSocket handshake exceeded its size limit.");
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            lifetime.Cancel();
+            listener.Stop();
+            if (serverTask is not null)
+            {
+                await serverTask.ConfigureAwait(false);
+            }
+
+            lifetime.Dispose();
+        }
     }
 
     // Connects the connection under test to an in-memory server WebSocket so framing is real

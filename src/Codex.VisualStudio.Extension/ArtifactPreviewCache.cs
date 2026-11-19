@@ -28,7 +28,7 @@ internal sealed class ArtifactPreviewCache : IDisposable
     private const long MaximumPixels = 16_000_000;
     private const int MaximumPreviewsPerOwner = 50;
     private const long MaximumCachedBytesPerOwner = 20L * 1024 * 1024;
-    private readonly object gate = new();
+    private readonly Lock gate = new();
     private readonly Dictionary<string, int> previewFiles = new(StringComparer.OrdinalIgnoreCase);
     private readonly string cacheRoot = Path.Combine(Path.GetTempPath(), "Codex.VisualStudio", "ArtifactPreviews", Guid.NewGuid().ToString("N"));
     private ArtifactPreviewOwner? owner;

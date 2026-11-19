@@ -1080,6 +1080,26 @@ public sealed partial class ViewModelTests
     }
 
     [TestMethod]
+    public void ChatBlockCodeFlag_NotifiesAccessibilityNameOnlyWhenChanged()
+    {
+        var block = new ChatBlockViewModel();
+        var notifications = new List<string?>();
+        block.PropertyChanged += (_, args) => notifications.Add(args.PropertyName);
+
+        Assert.IsFalse(block.IsCodeBlock);
+        block.IsCodeBlock = false;
+        Assert.AreEqual(0, notifications.Count);
+
+        block.IsCodeBlock = true;
+        block.IsCodeBlock = true;
+
+        Assert.IsTrue(block.IsCodeBlock);
+        CollectionAssert.AreEqual(
+            new[] { nameof(ChatBlockViewModel.IsCodeBlock), nameof(ChatBlockViewModel.CodeBlockAutomationName) },
+            notifications);
+    }
+
+    [TestMethod]
     public async Task ChatViewModel_HistoryRebuildsReasoningMarkdownBlocksAndExplainsMissingSummary()
     {
         var bridge = new FakeWorkerBridge();
@@ -6383,8 +6403,9 @@ public sealed partial class ViewModelTests
     public async Task ChatViewModel_TurnCompleted_ForcesUsageRefreshWithinTtl()
     {
         DateTimeOffset now = new(2026, 8, 12, 1, 0, 30, TimeSpan.Zero);
+        var timeProvider = new ManualTimeProvider(now);
         var bridge = new FakeWorkerBridge { RateLimitsResult = UsageResult(20) };
-        using var vm = new ChatViewModel(bridge, autoConnect: false, utcNow: () => now);
+        using var vm = new ChatViewModel(bridge, autoConnect: false, timeProvider: timeProvider);
         await bridge.PublishAccountAsync(new AccountStatus { State = AccountState.SignedIn });
         await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready });
 
@@ -6393,7 +6414,7 @@ public sealed partial class ViewModelTests
         Assert.AreEqual("80% remaining", vm.Usage.ToolbarText);
 
         bridge.RateLimitsResult = UsageResult(60);
-        now = now.AddSeconds(40);
+        timeProvider.Advance(TimeSpan.FromSeconds(40));
         await RaiseConversationEventAsync(vm, new ConversationEvent { Kind = ConversationEventKind.TurnCompleted });
 
         Assert.AreEqual(2, bridge.RateLimitCallCount);
@@ -6449,8 +6470,9 @@ public sealed partial class ViewModelTests
     public async Task ChatViewModel_ContextCompacted_ForcesUsageRefreshWithinTtl()
     {
         DateTimeOffset now = new(2026, 8, 12, 1, 0, 30, TimeSpan.Zero);
+        var timeProvider = new ManualTimeProvider(now);
         var bridge = new FakeWorkerBridge { RateLimitsResult = UsageResult(20) };
-        using var vm = new ChatViewModel(bridge, autoConnect: false, utcNow: () => now);
+        using var vm = new ChatViewModel(bridge, autoConnect: false, timeProvider: timeProvider);
         await bridge.PublishAccountAsync(new AccountStatus { State = AccountState.SignedIn });
         await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready });
 
@@ -6459,7 +6481,7 @@ public sealed partial class ViewModelTests
         Assert.AreEqual("80% remaining", vm.Usage.ToolbarText);
 
         bridge.RateLimitsResult = UsageResult(60);
-        now = now.AddSeconds(40);
+        timeProvider.Advance(TimeSpan.FromSeconds(40));
         await RaiseContextCompactedAsync(vm, new ContextCompactionEvent { IsCompleted = true });
 
         Assert.AreEqual(2, bridge.RateLimitCallCount);
@@ -6486,15 +6508,15 @@ public sealed partial class ViewModelTests
     [TestMethod]
     public async Task ChatViewModel_UsagePopupRefreshesOnlyAfterTtl()
     {
-        DateTimeOffset now = DateTimeOffset.UnixEpoch;
+        var timeProvider = new ManualTimeProvider(DateTimeOffset.UnixEpoch);
         var bridge = new FakeWorkerBridge { RateLimitsResult = UsageResult(20) };
-        using var vm = new ChatViewModel(bridge, autoConnect: false, utcNow: () => now);
+        using var vm = new ChatViewModel(bridge, autoConnect: false, timeProvider: timeProvider);
         await bridge.PublishAccountAsync(new AccountStatus { State = AccountState.SignedIn });
         await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready });
 
         await vm.RefreshUsageAsync(force: false);
         Assert.AreEqual(1, bridge.RateLimitCallCount);
-        now = now.AddSeconds(61);
+        timeProvider.Advance(TimeSpan.FromSeconds(61));
         await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Busy });
         await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready });
         Assert.AreEqual(1, bridge.RateLimitCallCount, "Busy-to-Ready must not refresh usage even after the popup TTL.");
@@ -6551,7 +6573,7 @@ public sealed partial class ViewModelTests
     [TestMethod]
     public async Task ChatViewModel_UsageRefreshFailurePreservesSnapshotAndCanRetry()
     {
-        DateTimeOffset now = DateTimeOffset.UnixEpoch;
+        var timeProvider = new ManualTimeProvider(DateTimeOffset.UnixEpoch);
         var bridge = new FakeWorkerBridge
         {
             RateLimitHandler = call => call switch
@@ -6561,11 +6583,11 @@ public sealed partial class ViewModelTests
                 _ => Task.FromResult(UsageResult(60)),
             },
         };
-        using var vm = new ChatViewModel(bridge, autoConnect: false, utcNow: () => now);
+        using var vm = new ChatViewModel(bridge, autoConnect: false, timeProvider: timeProvider);
         await bridge.PublishAccountAsync(new AccountStatus { State = AccountState.SignedIn });
         await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready });
 
-        now = now.AddSeconds(61);
+        timeProvider.Advance(TimeSpan.FromSeconds(61));
         await vm.RefreshUsageAsync(force: false);
         Assert.AreEqual("80% remaining", vm.Usage.ToolbarText);
         Assert.AreEqual(2, bridge.RateLimitCallCount);
@@ -6925,6 +6947,40 @@ public sealed partial class ViewModelTests
 
             Assert.AreEqual("review #Program.cs ", vm.ComposerText);
             Assert.AreEqual(filePath, vm.PendingAttachments[0].FullPath);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_DefaultWorkspaceSearchUsesInjectedTimeProviderForCacheExpiry()
+    {
+        string directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        string programPath = Path.Combine(directory, "Program.cs");
+        string readmePath = Path.Combine(directory, "README.md");
+        await File.WriteAllTextAsync(programPath, "class Program { }");
+        try
+        {
+            var timeProvider = new ManualTimeProvider(DateTimeOffset.UnixEpoch);
+            using var vm = new ChatViewModel(
+                new FakeWorkerBridge(),
+                autoConnect: false,
+                protectedDirectoryPolicy: new ProtectedDirectoryPolicy([]),
+                timeProvider: timeProvider);
+            SetWorkingDirectory(vm, directory);
+
+            vm.ComposerText = "review #program";
+            await WaitForAsync(() => vm.FileSuggestions.Suggestions.Any(suggestion => suggestion.FullPath == programPath));
+
+            await File.WriteAllTextAsync(readmePath, "notes");
+            timeProvider.Advance(TimeSpan.FromSeconds(31));
+            vm.ComposerText = "review #readme";
+            await WaitForAsync(() => vm.FileSuggestions.Suggestions.Any(suggestion => suggestion.FullPath == readmePath));
+
+            Assert.AreEqual(readmePath, vm.FileSuggestions.Suggestions.Single().FullPath);
         }
         finally
         {

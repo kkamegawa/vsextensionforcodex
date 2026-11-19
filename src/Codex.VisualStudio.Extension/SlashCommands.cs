@@ -42,17 +42,70 @@ internal enum SlashCommandArgumentKind
     ApprovalMode,
 }
 
-internal sealed record SlashCommandDefinition(
-    SlashCommandId Id,
-    string Name,
-    string Description,
-    SlashCommandArgumentKind ArgumentKind,
-    bool IsVisible,
-    bool IsSetting,
-    bool StartsTurn,
-    string? UnsupportedReason = null,
-    params string[] Aliases)
+internal sealed record SlashCommandDefinition
 {
+    public SlashCommandDefinition(
+        SlashCommandId Id,
+        string Name,
+        string Description,
+        SlashCommandArgumentKind ArgumentKind,
+        bool IsVisible,
+        bool IsSetting,
+        bool StartsTurn,
+        string? UnsupportedReason = null,
+        params ReadOnlySpan<string> Aliases)
+    {
+        this.Id = Id;
+        this.Name = Name;
+        this.Description = Description;
+        this.ArgumentKind = ArgumentKind;
+        this.IsVisible = IsVisible;
+        this.IsSetting = IsSetting;
+        this.StartsTurn = StartsTurn;
+        this.UnsupportedReason = UnsupportedReason;
+        this.Aliases = Aliases.ToArray();
+    }
+
+    public SlashCommandId Id { get; init; }
+
+    public string Name { get; init; } = string.Empty;
+
+    public string Description { get; init; } = string.Empty;
+
+    public SlashCommandArgumentKind ArgumentKind { get; init; }
+
+    public bool IsVisible { get; init; }
+
+    public bool IsSetting { get; init; }
+
+    public bool StartsTurn { get; init; }
+
+    public string? UnsupportedReason { get; init; }
+
+    public string[] Aliases { get; init; } = Array.Empty<string>();
+
+    public void Deconstruct(
+        out SlashCommandId Id,
+        out string Name,
+        out string Description,
+        out SlashCommandArgumentKind ArgumentKind,
+        out bool IsVisible,
+        out bool IsSetting,
+        out bool StartsTurn,
+        out string? UnsupportedReason,
+        out string[] Aliases)
+    {
+        Id = this.Id;
+        Name = this.Name;
+        Description = this.Description;
+        ArgumentKind = this.ArgumentKind;
+        IsVisible = this.IsVisible;
+        IsSetting = this.IsSetting;
+        StartsTurn = this.StartsTurn;
+        UnsupportedReason = this.UnsupportedReason;
+        Aliases = this.Aliases;
+    }
+
     public bool Matches(string name)
         => string.Equals(Name, name, StringComparison.OrdinalIgnoreCase)
             || Aliases.Contains(name, StringComparer.OrdinalIgnoreCase);
@@ -489,7 +542,7 @@ internal sealed class SlashCommandCoordinator
     public const int MaximumQueuedCommands = 10;
 
     private const string SessionQueueKey = "<session>";
-    private readonly object gate = new();
+    private readonly Lock gate = new();
     private readonly Dictionary<string, List<SlashCommandInvocation>> queues = new(StringComparer.Ordinal);
 
     public SlashCommandQueueDecision Schedule(

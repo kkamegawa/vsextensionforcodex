@@ -18,7 +18,6 @@ public sealed class RemoteProfileViewModel : ObservableObject
     private string localRoot;
     private string serverRoot;
     private bool isEnabled;
-    private bool isSelected;
 
     internal RemoteProfileViewModel(RemoteConnectionProfile profile, bool isPersisted)
     {
@@ -151,7 +150,7 @@ public sealed class RemoteProfileViewModel : ObservableObject
     }
 
     [DataMember]
-    public bool IsSelected { get => isSelected; internal set => SetProperty(ref isSelected, value); }
+    public bool IsSelected { get => field; internal set => SetProperty(ref field, value); }
 
     [DataMember]
     public string DisplayText => string.IsNullOrWhiteSpace(Name) ? Endpoint : Name;
@@ -173,7 +172,6 @@ public sealed class RemoteProfilesPresentationViewModel : ObservableObject
     private readonly ExtensionSettings settings;
     private readonly IExtensionSettingsStore store;
     private RemoteProfileViewModel? selectedProfile;
-    private string statusText = string.Empty;
 
     // True while the caller already holds OperationGate, so a selection change persists inline
     // instead of queueing behind the operation that is changing it.
@@ -261,9 +259,9 @@ public sealed class RemoteProfilesPresentationViewModel : ObservableObject
     [DataMember]
     public string StatusText
     {
-        get => statusText;
-        private set => SetProperty(ref statusText, value);
-    }
+        get => field;
+        private set => SetProperty(ref field, value);
+    } = string.Empty;
 
     [DataMember]
     public AsyncCommand AddCommand { get; }

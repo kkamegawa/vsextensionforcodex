@@ -1,4 +1,6 @@
-﻿using System.Collections.Concurrent;
+﻿using System.Buffers;
+using System.Collections.Concurrent;
+using System.Collections.Frozen;
 using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
@@ -295,6 +297,25 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
     private const int MaxThreadPreviewBytes = 8 * 1024;
     private const int MaxHistoryTextBytes = 64 * 1024;
 
+    private static readonly SearchValues<char> ControlCharacters = CreateControlCharacterSearchValues();
+    private static readonly SearchValues<char> WireIdentifierCharacters =
+        SearchValues.Create("0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_-");
+    private static readonly FrozenDictionary<string, ConversationEventKind> NotificationKinds =
+        new Dictionary<string, ConversationEventKind>(StringComparer.Ordinal)
+        {
+            ["item/started"] = ConversationEventKind.ItemStarted,
+            ["item/completed"] = ConversationEventKind.ItemCompleted,
+            ["item/agentMessage/delta"] = ConversationEventKind.AgentMessageDelta,
+            ["item/reasoning/summaryTextDelta"] = ConversationEventKind.ReasoningSummaryDelta,
+            ["item/commandExecution/outputDelta"] = ConversationEventKind.CommandOutputDelta,
+            ["turn/diff/updated"] = ConversationEventKind.DiffUpdated,
+            ["turn/plan/updated"] = ConversationEventKind.PlanUpdated,
+            ["turn/started"] = ConversationEventKind.TurnStarted,
+            ["turn/completed"] = ConversationEventKind.TurnCompleted,
+            ["error"] = ConversationEventKind.Error,
+            ["thread/closed"] = ConversationEventKind.ThreadClosed,
+        }.ToFrozenDictionary(StringComparer.Ordinal);
+
     private static readonly string[] ThreadSourceKinds = ["cli", "vscode", "appServer"];
     private const int PermissionProfilePageSize = 100;
     private const int MaxPermissionProfilePages = 10;
@@ -329,7 +350,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
     private static readonly string[] NetworkDiagnosticsArguments = ["doctor", "--network-only", "--no-color", "--ascii"];
     private static readonly TimeSpan NetworkDiagnosticsTimeout = TimeSpan.FromSeconds(60);
     private readonly GitWorktreeScope gitWorktreeScope = new();
-    private readonly object turnStateLock = new();
+    private readonly Lock turnStateLock = new();
     private readonly HashSet<TurnKey> completedTurnIds = new();
     private string? activeRootTurnId;
     // Thread whose turn/start request is in flight. Its turn notifications can arrive before the
@@ -346,7 +367,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
     private readonly TimeProvider timeProvider;
     private readonly ISkillCatalogStore skillCatalogStore;
     private readonly Action<Uri> authorizationUrlOpener;
-    private readonly object skillsBackgroundRefreshLock = new();
+    private readonly Lock skillsBackgroundRefreshLock = new();
     private CancellationTokenSource skillsBackgroundRefreshCancellation = new();
     private Task? skillsBackgroundRefreshTask;
     private ListSkillsResult? skillsSnapshot;
@@ -582,7 +603,8 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             generation,
             StatePartitionFingerprint,
             OwnerGeneration,
-            string.IsNullOrWhiteSpace(options.RemoteEndpoint));
+            string.IsNullOrWhiteSpace(options.RemoteEndpoint),
+            timeProvider);
         context.SandboxBackend = context.IsLocal ? options.WindowsSandboxBackend : WindowsSandboxBackendPreference.FollowCodexConfig;
         connectionContext = context;
         connection.NotificationReceived += context.NotificationHandler;
@@ -604,7 +626,8 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             Guid.NewGuid().ToString("N"));
         streamingBuffer = new StreamingBuffer(
             (value, token) => EmitBufferedEventAsync(context, value, token),
-            overflowDirectory);
+            overflowDirectory,
+            timeProvider);
 
         JsonElement initResponse = await connection.SendRequestAsync(
             "initialize",
@@ -4157,7 +4180,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             return;
         }
 
-        ConversationEventKind kind = MapKind(method);
+        ConversationEventKind kind = MapNotificationKind(method);
         if (kind == ConversationEventKind.Unknown)
         {
             WorkerDiagnostics.Write($"Ignoring unsupported app-server notification method={redactor.Redact(method)}");
@@ -6054,7 +6077,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         }
 
         string trimmed = value.Trim();
-        return trimmed.Length <= 128 && trimmed.All(character => !char.IsControl(character))
+        return trimmed.Length <= 128 && !trimmed.AsSpan().ContainsAny(ControlCharacters)
             ? trimmed
             : null;
     }
@@ -6112,6 +6135,24 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         return values;
     }
 
+    private static SearchValues<char> CreateControlCharacterSearchValues()
+    {
+        // Unicode control characters are the C0 range, DEL, and the C1 range.
+        Span<char> characters = stackalloc char[65];
+        int index = 0;
+        for (char value = '\u0000'; value <= '\u001F'; value++)
+        {
+            characters[index++] = value;
+        }
+
+        for (char value = '\u007F'; value <= '\u009F'; value++)
+        {
+            characters[index++] = value;
+        }
+
+        return SearchValues.Create(characters);
+    }
+
     private static string? NormalizeWireIdentifier(string? value)
     {
         if (string.IsNullOrWhiteSpace(value))
@@ -6121,7 +6162,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
 
         string trimmed = value.Trim();
         return trimmed.Length <= 128
-            && trimmed.All(character => char.IsAsciiLetterOrDigit(character) || character is '_' or '-')
+            && !trimmed.AsSpan().ContainsAnyExcept(WireIdentifierCharacters)
                 ? trimmed
                 : null;
     }
@@ -6524,21 +6565,10 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
     private static JsonElement EmptyUserInputResponse()
         => JsonSerializer.SerializeToElement(new { answers = new Dictionary<string, object>(StringComparer.Ordinal) });
 
-    private static ConversationEventKind MapKind(string method) => method switch
-    {
-        "item/started" => ConversationEventKind.ItemStarted,
-        "item/completed" => ConversationEventKind.ItemCompleted,
-        "item/agentMessage/delta" => ConversationEventKind.AgentMessageDelta,
-        "item/reasoning/summaryTextDelta" => ConversationEventKind.ReasoningSummaryDelta,
-        "item/commandExecution/outputDelta" => ConversationEventKind.CommandOutputDelta,
-        "turn/diff/updated" => ConversationEventKind.DiffUpdated,
-        "turn/plan/updated" => ConversationEventKind.PlanUpdated,
-        "turn/started" => ConversationEventKind.TurnStarted,
-        "turn/completed" => ConversationEventKind.TurnCompleted,
-        "error" => ConversationEventKind.Error,
-        "thread/closed" => ConversationEventKind.ThreadClosed,
-        _ => ConversationEventKind.Unknown,
-    };
+    internal static ConversationEventKind MapNotificationKind(string method)
+        => NotificationKinds.TryGetValue(method, out ConversationEventKind kind)
+            ? kind
+            : ConversationEventKind.Unknown;
 
     private sealed class McpOAuthOperation(string operationId, string serverName, string? threadId)
     {
@@ -6568,7 +6598,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
 
         // Guards LoginId, ResponseReceived and EarlyCompletion between the login response and
         // the completion notification, which are processed on different tasks.
-        public object Gate { get; } = new();
+        public Lock Gate { get; } = new();
     }
 
     private sealed record McpOAuthEarlyCompletion(string LoginId, bool Succeeded);
@@ -6589,7 +6619,8 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             long generation,
             string? statePartitionFingerprint,
             long ownerGeneration,
-            bool isLocal)
+            bool isLocal,
+            TimeProvider timeProvider)
         {
             this.owner = owner;
             Connection = connection;
@@ -6597,6 +6628,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             StatePartitionFingerprint = statePartitionFingerprint;
             OwnerGeneration = ownerGeneration;
             IsLocal = isLocal;
+            ApprovalGrants = new ApprovalGrantStore(timeProvider);
             NotificationHandler = (message, token) => owner.OnNotificationAsync(this, message, token);
             RequestHandler = (message, token) => owner.OnServerRequestAsync(this, message, token);
             ClosedHandler = (_, _) => owner.OnConnectionClosed(this);
@@ -6609,7 +6641,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         public long Generation { get; }
         public string? StatePartitionFingerprint { get; }
         public long OwnerGeneration { get; }
-        public ApprovalGrantStore ApprovalGrants { get; } = new();
+        public ApprovalGrantStore ApprovalGrants { get; }
         public bool NotifyPendingResolution { get; set; }
         public bool OwnerInvalidated { get; set; }
         public string? PendingLoginId { get; set; }
@@ -6635,7 +6667,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         public string? GatewayOAuthOriginDisplay { get; set; }
         public string? GatewayLoginAttemptId { get; set; }
         public InteractionAuthState GatewayOAuthState { get; set; } = InteractionAuthState.Checking;
-        public object InteractionAuthLock { get; } = new();
+        public Lock InteractionAuthLock { get; } = new();
         public ConcurrentDictionary<string, McpServerAuthStatus> McpAuthStatuses { get; } = new(StringComparer.Ordinal);
         public ConcurrentDictionary<string, McpOAuthOperation> McpOAuthOperations { get; } = new(StringComparer.Ordinal);
         public ConcurrentDictionary<string, string> McpOAuthOperationsByServer { get; } = new(StringComparer.Ordinal);

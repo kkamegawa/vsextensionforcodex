@@ -213,13 +213,15 @@ public sealed class SecurityServicesTests
     [TestMethod]
     public void ApprovalGrantStore_EnforcesTurnThreadAndSessionScopes()
     {
-        var store = new ApprovalGrantStore();
+        DateTimeOffset now = new(2026, 11, 18, 2, 30, 0, TimeSpan.Zero);
+        var store = new ApprovalGrantStore(new FixedUtcTimeProvider(now));
         var turnRequest = Request("risk", "thread-1", "turn-1");
         var sameThreadNextTurn = Request("risk", "thread-1", "turn-2");
         var otherThread = Request("risk", "thread-2", "turn-3");
 
         store.Add(turnRequest, ApprovalScope.Turn);
         Assert.IsTrue(store.IsApproved(turnRequest));
+        Assert.AreEqual(now, store.FindApproval(turnRequest)!.CreatedAt);
         Assert.IsFalse(store.IsApproved(sameThreadNextTurn));
         store.EndTurn("thread-1", "turn-1");
         Assert.IsFalse(store.IsApproved(turnRequest));
@@ -268,5 +270,10 @@ public sealed class SecurityServicesTests
         {
             Assert.Inconclusive($"Directory junctions are unavailable (exit code {process.ExitCode}): {error}");
         }
+    }
+
+    private sealed class FixedUtcTimeProvider(DateTimeOffset utcNow) : TimeProvider
+    {
+        public override DateTimeOffset GetUtcNow() => utcNow;
     }
 }

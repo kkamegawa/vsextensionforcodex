@@ -165,7 +165,7 @@ internal sealed class JsonRpcServerRequestDispatcher
 
     private sealed class RequestRegistration
     {
-        private readonly object gate = new();
+        private readonly Lock gate = new();
         private int terminalState;
 
         public TaskCompletionSource CompleteTask { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);

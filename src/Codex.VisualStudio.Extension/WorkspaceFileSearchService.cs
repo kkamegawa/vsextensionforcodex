@@ -29,12 +29,14 @@ public sealed class WorkspaceFileSearchService : IWorkspaceFileSearchService
     };
 
     private readonly VisualStudioExtensibility? extensibility;
-    private readonly object cacheLock = new();
+    private readonly TimeProvider timeProvider;
+    private readonly Lock cacheLock = new();
     private CacheEntry? cache;
 
-    public WorkspaceFileSearchService(VisualStudioExtensibility? extensibility)
+    public WorkspaceFileSearchService(VisualStudioExtensibility? extensibility, TimeProvider? timeProvider = null)
     {
         this.extensibility = extensibility;
+        this.timeProvider = timeProvider ?? TimeProvider.System;
     }
 
     public async Task<IReadOnlyList<WorkspaceFileSearchResult>> SearchAsync(
@@ -68,7 +70,7 @@ public sealed class WorkspaceFileSearchService : IWorkspaceFileSearchService
         {
             if (cache is not null
                 && string.Equals(cache.WorkspaceRoot, workspaceRoot, StringComparison.OrdinalIgnoreCase)
-                && DateTimeOffset.UtcNow - cache.CreatedAt < CacheDuration)
+                && timeProvider.GetElapsedTime(cache.CreatedAtTimestamp) < CacheDuration)
             {
                 return cache.Paths;
             }
@@ -82,7 +84,7 @@ public sealed class WorkspaceFileSearchService : IWorkspaceFileSearchService
 
         lock (cacheLock)
         {
-            cache = new CacheEntry(workspaceRoot, paths, DateTimeOffset.UtcNow);
+            cache = new CacheEntry(workspaceRoot, paths, timeProvider.GetTimestamp());
         }
 
         return paths;
@@ -240,7 +242,7 @@ public sealed class WorkspaceFileSearchService : IWorkspaceFileSearchService
             .SkipLast(1)
             .Any(ExcludedDirectories.Contains);
 
-    private sealed record CacheEntry(string WorkspaceRoot, string[] Paths, DateTimeOffset CreatedAt);
+    private sealed record CacheEntry(string WorkspaceRoot, string[] Paths, long CreatedAtTimestamp);
 
     private sealed record RankedResult(WorkspaceFileSearchResult Result, int Rank);
 }

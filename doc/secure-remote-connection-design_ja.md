@@ -71,7 +71,7 @@ transport は有効に parse された inbound JSON-RPC response、notification�
 
 失敗は endpoint 不正、profile 変更・利用不可、token file 不在・読取不可・内容不正、認証拒否、証明書拒否、DNS/ネットワーク失敗、timeout、RPC initialize 失敗、account-read 失敗、health route の結果に分類します。秘匿が必要な詳細は redaction までの短時間だけ保持し、ユーザー表示は固定分類文言とします。
 
-.NET 8 の WebSocket `KeepAliveInterval` を 30 秒に設定します。これは unsolicited PONG frame を送るだけで、peer の生存証明にはなりません。.NET 8 では `KeepAliveTimeout` を利用できません。idle-generation watchdog が peer silence を検出します。
+.NET 10 では `ClientWebSocketOptions.KeepAliveInterval` を 30 秒、`KeepAliveTimeout` を 10 秒に設定します。client は WebSocket PING frame を送り、期限内に peer から PONG が返らない場合は transport を中断します。これらの control frame は JSON-RPC activity として扱いません。idle-generation watchdog は application-level peer silence を別途検出します。
 
 ## 読み取り overload retry
 
@@ -118,7 +118,7 @@ Preview の説明を更新し、health diagnostics と許可済み read-only RPC
 | Token と redaction | local path と最終 link 検証、file 不在/読取不可/directory、16 KiB 境界、BOM 有無の strict UTF-8、ASCII token grammar、長さ、空白・制御文字拒否、handshake のみの header を確認します。同値 concurrent lease、callback queue、exception text、共有 `diagnostics.log` に追記する両 writer と追記前 redaction、すべての既存 output sink、cleanup 順序、DTO/settings/UI/log に token がないことを検証します。initialize 失敗+close callback+secret echo を試し、gate release 後に deadlock せず出力が秘匿されることも証明します。 |
 | TLS と認証 | 信頼済み TLS、hostname/chain 拒否、認証拒否、cross-origin redirect 拒否を確認します。一時証明書によって machine trust を変えません。 |
 | Health と RPC | 並行 probe、5 秒合計上限、health 200 かつ upgrade/initialize 失敗、health failure と正常 RPC、redirect、timeout、auth/origin/body なし、pathful route の authority-root/unverified 表示、inactive profile の `Not connected` を検証します。 |
-| Idle watchdog | transport がすべての有効 parsed response/notification/server request を報告すること、30 秒 idle、30 秒 `KeepAliveInterval` と unsolicited PONG を生存証明に使わないこと、10 秒 probe、最初の timeout 中に inbound sequence が進んだ場合は2回目を抑止して idle wait を再開すること、無応答 probe 2回だけで捕捉 socket を閉じること、遅延 generation 無視、`SignedOut` でも接続維持、自動 reconnect/変更操作なしを確認します。 |
+| Idle watchdog | transport がすべての有効 parsed response/notification/server request を報告すること、30 秒 idle、30 秒 `KeepAliveInterval` と10秒 `KeepAliveTimeout` でPONG未受信時にtransportを中断すること、control frameをJSON-RPC livenessとして扱わないこと、10秒 probe、最初の timeout 中に inbound sequence が進んだ場合は2回目を抑止して idle wait を再開すること、無応答 probe 2回だけで捕捉 socket を閉じること、遅延 generation 無視、`SignedOut` でも接続維持、自動 reconnect/変更操作なしを確認します。 |
 | Retry 許可リスト | 許可 method 全件、account/read と skills/list の false/省略/不正/true、`-32001` 限定、4 回上限、jitter 境界、共通 monotonic deadline、cancel/close/generation 退役、すべての変更・未知 method が一度だけ送信されることを確認します。 |
 | 接続寿命と所有権 | 起動 45 秒上限と各段階上限、socket 作成後の cancel/failure、initialize/account-read の区別、`Unavailable` account state でも RPC Ready を維持すること、transport close/caller cancellation/全体 deadline の cleanup、有効 generation 1 つ、保留 client/server 要求完了を確認します。remote reconnect/dispose 後も外部 server が動作し、local restart は所有 process だけを置換し、複数 Worker が socket/lease を共有しないことを検証します。 |
 | 契約と UI | 次の contract version を一括適用し不一致を拒否すること、status DTO serialization、型付き error reason、local/remote action binding と通知、表示文字列の秘匿、health/RPC 独立表示を確認します。 |
@@ -131,4 +131,4 @@ Preview の説明を更新し、health diagnostics と許可済み read-only RPC
 
 - Repository source: `src/Codex.AppServer.Protocol/TransportPolicies.cs`（`ReadOnlyRetryPolicy`、`ReadOnlyRequestAllowlist`、`SendReadOnlyRequestAsync`、`WebSocketTransportSecurityPolicy` を含む）、`src/Codex.VisualStudio.Worker/WorkerRpcService.cs`、`ISecretRedactor`、既存 diagnostics writer。
 - 固定 upstream source: health/ready route は `codex-rs/app-server-transport/src/transport/websocket.rs`、force-reload の動作は `codex-rs/app-server/src/request_processors/catalog_processor.rs` の `skills_list_response`、schema `codex-rs/app-server-protocol/schema/json/v2/SkillsListParams.json`、test `codex-rs/app-server/tests/suite/v2/skills_list.rs`。
-- Microsoft Learn: .NET `ClientWebSocket.ConnectAsync` の `HttpMessageInvoker` overload、`HttpClient.DefaultProxy`、`SocketsHttpHandler.ConnectCallback`、WebSocket keep-alive と unsolicited PONG の動作。
+- Microsoft Learn: .NET `ClientWebSocket.ConnectAsync` の `HttpMessageInvoker` overload、`HttpClient.DefaultProxy`、`SocketsHttpHandler.ConnectCallback`、[WebSocket keep-alive と `ClientWebSocketOptions.KeepAliveTimeout`](https://learn.microsoft.com/dotnet/fundamentals/networking/websockets)。

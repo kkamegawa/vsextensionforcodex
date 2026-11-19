@@ -1,11 +1,11 @@
-using Codex.AppServer.Protocol;
+﻿using Codex.AppServer.Protocol;
 using System.Text;
 
 namespace Codex.VisualStudio.Worker;
 
 internal static class WorkerDiagnostics
 {
-    private static readonly object FileLock = new();
+    private static readonly Lock FileLock = new();
     private static readonly string LogPath = Path.Combine(
         Path.GetTempPath(),
         "Kkamegawa.CodexForVisualStudio",

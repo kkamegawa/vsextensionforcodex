@@ -204,91 +204,93 @@ public static class ReadOnlyRequestAllowlist
 
 public static class JsonRpcConnectionRetryExtensions
 {
-    /// <summary>
-    /// Sends a request, retrying only a completed <c>-32001</c> overload response for an
-    /// allowlisted read-only method. At most three retries (four sends) share one monotonic
-    /// deadline derived from <paramref name="timeout"/>. Every other method is sent exactly once.
-    /// </summary>
-    public static async Task<JsonElement> SendReadOnlyRequestAsync(
-        this IJsonRpcConnection connection,
-        string method,
-        object? parameters,
-        TimeSpan timeout,
-        CancellationToken cancellationToken,
-        ReadOnlyRetryPolicy? policy = null)
+    extension(IJsonRpcConnection connection)
     {
-        if (!ReadOnlyRequestAllowlist.IsRetryable(method, parameters))
+        /// <summary>
+        /// Sends a request, retrying only a completed <c>-32001</c> overload response for an
+        /// allowlisted read-only method. At most three retries (four sends) share one monotonic
+        /// deadline derived from <paramref name="timeout"/>. Every other method is sent exactly once.
+        /// </summary>
+        public async Task<JsonElement> SendReadOnlyRequestAsync(
+            string method,
+            object? parameters,
+            TimeSpan timeout,
+            CancellationToken cancellationToken,
+            ReadOnlyRetryPolicy? policy = null)
         {
-            return await connection.SendRequestAsync(method, parameters, timeout, cancellationToken).ConfigureAwait(false);
-        }
-
-        policy ??= ReadOnlyRetryPolicy.Default;
-        TimeProvider time = policy.TimeProvider;
-        long start = time.GetTimestamp();
-
-        // Observe a close for the whole call, so a connection closed or retired (disposed) before
-        // or during a backoff stops the retry promptly.
-        using var closed = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        void OnClosed(object? sender, Exception? exception)
-        {
-            // Closed may have captured this handler before the finally below unsubscribes it and
-            // invoke it after the source is disposed; that must not fault the transport's close.
-            try
+            if (!ReadOnlyRequestAllowlist.IsRetryable(method, parameters))
             {
-                closed.Cancel();
+                return await connection.SendRequestAsync(method, parameters, timeout, cancellationToken).ConfigureAwait(false);
             }
-            catch (ObjectDisposedException)
+
+            policy ??= ReadOnlyRetryPolicy.Default;
+            TimeProvider time = policy.TimeProvider;
+            long start = time.GetTimestamp();
+
+            // Observe a close for the whole call, so a connection closed or retired (disposed) before
+            // or during a backoff stops the retry promptly.
+            using var closed = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            void OnClosed(object? sender, Exception? exception)
             {
-            }
-        }
-
-        connection.Closed += OnClosed;
-        try
-        {
-            JsonRpcRemoteException? lastOverload = null;
-            for (int retry = 0; ; retry++)
-            {
-                TimeSpan remaining = timeout - time.GetElapsedTime(start);
-                if (remaining <= TimeSpan.Zero)
-                {
-                    // Timer granularity can overshoot the deadline during a backoff; the caller
-                    // still receives the original overload error rather than a cancellation.
-                    if (lastOverload is not null)
-                    {
-                        throw lastOverload;
-                    }
-
-                    throw new OperationCanceledException("The read-only request deadline elapsed.");
-                }
-
+                // Closed may have captured this handler before the finally below unsubscribes it and
+                // invoke it after the source is disposed; that must not fault the transport's close.
                 try
                 {
-                    return await connection.SendRequestAsync(method, parameters, remaining, cancellationToken).ConfigureAwait(false);
+                    closed.Cancel();
                 }
-                catch (JsonRpcRemoteException ex) when (ex.Code == ReadOnlyRetryPolicy.ServerOverloadedCode && retry < ReadOnlyRetryPolicy.MaxRetries)
+                catch (ObjectDisposedException)
                 {
-                    lastOverload = ex;
-                    TimeSpan delay = policy.GetDelay(retry);
-                    if (delay >= timeout - time.GetElapsedTime(start))
+                }
+            }
+
+            connection.Closed += OnClosed;
+            try
+            {
+                JsonRpcRemoteException? lastOverload = null;
+                for (int retry = 0; ; retry++)
+                {
+                    TimeSpan remaining = timeout - time.GetElapsedTime(start);
+                    if (remaining <= TimeSpan.Zero)
                     {
-                        // No time is left for another attempt; preserve the original overload error.
-                        throw;
+                        // Timer granularity can overshoot the deadline during a backoff; the caller
+                        // still receives the original overload error rather than a cancellation.
+                        if (lastOverload is not null)
+                        {
+                            throw lastOverload;
+                        }
+
+                        throw new OperationCanceledException("The read-only request deadline elapsed.");
                     }
 
                     try
                     {
-                        await Task.Delay(delay, time, closed.Token).ConfigureAwait(false);
+                        return await connection.SendRequestAsync(method, parameters, remaining, cancellationToken).ConfigureAwait(false);
                     }
-                    catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+                    catch (JsonRpcRemoteException ex) when (ex.Code == ReadOnlyRetryPolicy.ServerOverloadedCode && retry < ReadOnlyRetryPolicy.MaxRetries)
                     {
-                        throw new JsonRpcConnectionClosedException("The app-server connection closed during a retry backoff.");
+                        lastOverload = ex;
+                        TimeSpan delay = policy.GetDelay(retry);
+                        if (delay >= timeout - time.GetElapsedTime(start))
+                        {
+                            // No time is left for another attempt; preserve the original overload error.
+                            throw;
+                        }
+
+                        try
+                        {
+                            await Task.Delay(delay, time, closed.Token).ConfigureAwait(false);
+                        }
+                        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+                        {
+                            throw new JsonRpcConnectionClosedException("The app-server connection closed during a retry backoff.");
+                        }
                     }
                 }
             }
-        }
-        finally
-        {
-            connection.Closed -= OnClosed;
+            finally
+            {
+                connection.Closed -= OnClosed;
+            }
         }
     }
 }

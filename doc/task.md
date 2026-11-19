@@ -990,3 +990,30 @@ Tracking: [Issue #269](https://github.com/kkamegawa/vsextensionforcodex/issues/2
 - [x] Release VSIX content inspection passed, including Visual Studio `[18.12,)`, `amd64`/`arm64`, `.NET 10`, packaged dependencies and Worker `RollForward=Minor`.
 - [x] `git diff --check` passed.
 - [x] Visual Studio Enterprise 2026 Insiders 18.13.12409.143: F5 built and deployed the VSIX to the Experimental Instance; the solution loaded and the Codex tool window rendered. It reported `Ready · Codex 0.161.0` and `Signed in · plus`. The screen was visually inspected. The Windows sandbox setup card showed no active solution root; its readiness check was not run. No Codex turn was sent, so that acceptance criterion remains pending.
+
+### 2026-11-18 — C# 14 extension blocks and field-backed properties
+
+Tracking: [Issue #298](https://github.com/kkamegawa/vsextensionforcodex/issues/298) and [PR #320](https://github.com/kkamegawa/vsextensionforcodex/pull/320).
+
+- Completed the extension-method audit. `JsonRpcConnectionRetryExtensions` is the sole extension-method container in production code. Verified that the Release assembly retains its public static extension method, parameter names, and optional policy default.
+- Finished the property audit and converted property-owned storage while preserving defaults, accessor visibility, data contracts, and notification behavior. Kept explicit fields for direct access outside their accessors. Added a regression test for code block accessibility notifications.
+- The Release solution build completed with 0 warnings and 0 errors. Release UI tests passed 612 of 612. The first Core run passed 594 of 595 with one Fake App Server response timeout. The standalone Core rerun passed 595 of 595.
+- Verified the Release VSIX contents, inspected the off-screen WPF preview, and checked UTF-8 BOM, CRLF, and `git diff --check`. Experimental Instance display verification remains pending. Claude review was deferred at the maintainer's request.
+
+### 2026-11-18: Phase 2 — TimeProvider integration (#299)
+
+Tracking: [Issue #299](https://github.com/kkamegawa/vsextensionforcodex/issues/299), under [Issue #271](https://github.com/kkamegawa/vsextensionforcodex/issues/271). Approved plan: wiki page `plan/2026-11-15/vs2026-dotnet10-codex-cli-0-169`.
+
+- [x] Routed remaining production clock and elapsed-time operations through injected `TimeProvider`: chat usage and skill-cache timestamps, monotonic recovery deadlines and timeout sources, workspace file-search cache expiry, approval-grant timestamps, and streaming flush timers.
+- [x] Added deterministic `TimeProvider` coverage for approval timestamps, recovery episode deadlines, workspace cache expiry, and chat usage refreshes.
+- [x] Copilot review follow-up: pass the view model's injected clock to its default workspace search service and cover the wiring through the view model.
+
+Validation: Updated PR GitHub Actions passed after the review follow-up, including the Release solution build, UI suite with the default-service cache-expiry regression, schema checks, and all other CI jobs. The Core suite passed 610/611 in each of three full local runs; each run had one different timing-sensitive integration test failure. All three tests passed when rerun together in isolation (3/3). `SecurityServicesTests` passed 15/15 and `git diff --check` passed. The full Core suite remains nondeterministic in this local environment.
+### 2026-11-18: Phase 2 — WebSocket keep-alive timeout (#300)
+
+Tracking: [Issue #300](https://github.com/kkamegawa/vsextensionforcodex/issues/300), under [Issue #271](https://github.com/kkamegawa/vsextensionforcodex/issues/271). Approved plan: wiki page `plan/2026-11-15/vs2026-dotnet10-codex-cli-0-169`.
+
+- [x] Configure `ClientWebSocketOptions.KeepAliveInterval` to 30 seconds and `KeepAliveTimeout` to 10 seconds so a missing PONG aborts an unresponsive remote transport.
+- [x] Add a local WebSocket peer test that accepts the handshake, observes a PING, withholds PONG, and verifies connection closure. Update the English and Japanese remote-connection design records.
+
+Validation: Release solution build passed with 0 warnings and 0 errors. `WebSocketJsonRpcConnectionTests` passed 14/14, including the missing-PONG timeout case. `git diff --check` passed.
