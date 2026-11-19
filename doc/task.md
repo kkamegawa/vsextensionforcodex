@@ -1009,3 +1009,11 @@ Tracking: [Issue #299](https://github.com/kkamegawa/vsextensionforcodex/issues/2
 - [x] Copilot review follow-up: pass the view model's injected clock to its default workspace search service and cover the wiring through the view model.
 
 Validation: Updated PR GitHub Actions passed after the review follow-up, including the Release solution build, UI suite with the default-service cache-expiry regression, schema checks, and all other CI jobs. The Core suite passed 610/611 in each of three full local runs; each run had one different timing-sensitive integration test failure. All three tests passed when rerun together in isolation (3/3). `SecurityServicesTests` passed 15/15 and `git diff --check` passed. The full Core suite remains nondeterministic in this local environment.
+### 2026-11-18: Phase 2 — WebSocket keep-alive timeout (#300)
+
+Tracking: [Issue #300](https://github.com/kkamegawa/vsextensionforcodex/issues/300), under [Issue #271](https://github.com/kkamegawa/vsextensionforcodex/issues/271). Approved plan: wiki page `plan/2026-11-15/vs2026-dotnet10-codex-cli-0-169`.
+
+- [x] Configure `ClientWebSocketOptions.KeepAliveInterval` to 30 seconds and `KeepAliveTimeout` to 10 seconds so a missing PONG aborts an unresponsive remote transport.
+- [x] Add a local WebSocket peer test that accepts the handshake, observes a PING, withholds PONG, and verifies connection closure. Update the English and Japanese remote-connection design records.
+
+Validation: Release solution build passed with 0 warnings and 0 errors. `WebSocketJsonRpcConnectionTests` passed 14/14, including the missing-PONG timeout case. `git diff --check` passed.
