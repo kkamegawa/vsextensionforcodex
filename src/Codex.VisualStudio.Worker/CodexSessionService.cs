@@ -603,7 +603,8 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             generation,
             StatePartitionFingerprint,
             OwnerGeneration,
-            string.IsNullOrWhiteSpace(options.RemoteEndpoint));
+            string.IsNullOrWhiteSpace(options.RemoteEndpoint),
+            timeProvider);
         context.SandboxBackend = context.IsLocal ? options.WindowsSandboxBackend : WindowsSandboxBackendPreference.FollowCodexConfig;
         connectionContext = context;
         connection.NotificationReceived += context.NotificationHandler;
@@ -625,7 +626,8 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             Guid.NewGuid().ToString("N"));
         streamingBuffer = new StreamingBuffer(
             (value, token) => EmitBufferedEventAsync(context, value, token),
-            overflowDirectory);
+            overflowDirectory,
+            timeProvider);
 
         JsonElement initResponse = await connection.SendRequestAsync(
             "initialize",
@@ -6617,7 +6619,8 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             long generation,
             string? statePartitionFingerprint,
             long ownerGeneration,
-            bool isLocal)
+            bool isLocal,
+            TimeProvider timeProvider)
         {
             this.owner = owner;
             Connection = connection;
@@ -6625,6 +6628,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             StatePartitionFingerprint = statePartitionFingerprint;
             OwnerGeneration = ownerGeneration;
             IsLocal = isLocal;
+            ApprovalGrants = new ApprovalGrantStore(timeProvider);
             NotificationHandler = (message, token) => owner.OnNotificationAsync(this, message, token);
             RequestHandler = (message, token) => owner.OnServerRequestAsync(this, message, token);
             ClosedHandler = (_, _) => owner.OnConnectionClosed(this);
@@ -6637,7 +6641,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         public long Generation { get; }
         public string? StatePartitionFingerprint { get; }
         public long OwnerGeneration { get; }
-        public ApprovalGrantStore ApprovalGrants { get; } = new();
+        public ApprovalGrantStore ApprovalGrants { get; }
         public bool NotifyPendingResolution { get; set; }
         public bool OwnerInvalidated { get; set; }
         public string? PendingLoginId { get; set; }

@@ -7,6 +7,33 @@ namespace Codex.VisualStudio.Ui.Tests;
 public sealed class ConnectionRecoveryCoordinatorTests
 {
     [TestMethod]
+    public async Task RunAsync_UsesTimeProviderForEpisodeDeadline()
+    {
+        var timeProvider = new ManualTimeProvider(DateTimeOffset.UnixEpoch);
+        int attempts = 0;
+
+        ConnectionRecoveryResult result = await ConnectionRecoveryCoordinator.RunAsync(
+            (_, _) =>
+            {
+                attempts++;
+                timeProvider.Advance(ConnectionRecoveryCoordinator.EpisodeTimeout);
+                return Task.FromResult(new WorkerStatus
+                {
+                    State = WorkerConnectionState.Degraded,
+                    RecoveryFailureKind = WorkerRecoveryFailureKind.PipeClosed,
+                });
+            },
+            _ => Task.FromResult(true),
+            CancellationToken.None,
+            delayAsync: static (_, _) => Task.CompletedTask,
+            timeProvider: timeProvider);
+
+        Assert.AreEqual(ConnectionRecoveryOutcome.Exhausted, result.Outcome);
+        Assert.AreEqual(1, attempts);
+        Assert.AreEqual(1, result.Attempts);
+    }
+
+    [TestMethod]
     public async Task RunAsync_RetriesTransientFailuresWithBoundedBackoff_ThenReconnects()
     {
         int attempts = 0;

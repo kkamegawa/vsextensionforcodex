@@ -45,7 +45,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
     private readonly SlashCommandCoordinator slashCommandCoordinator = new();
     private readonly IExtensionSettingsStore settingsStore;
     private readonly IExternalLinkOpener externalLinkOpener;
-    private readonly Func<DateTimeOffset> utcNow;
+    private readonly TimeProvider timeProvider;
     private readonly ReentrantSemaphore usageRefreshGate = ExtensionConcurrency.CreateSemaphore();
     private int reviewThreadStartInFlight;
     private string? usageThreadId;
@@ -197,7 +197,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         IProtectedDirectoryPolicy? protectedDirectoryPolicy = null,
         IExtensionSettingsStore? settingsStore = null,
         IExternalLinkOpener? externalLinkOpener = null,
-        Func<DateTimeOffset>? utcNow = null,
+        TimeProvider? timeProvider = null,
         Func<IWorkerBridge>? bridgeFactory = null)
     {
         this.bridge = bridge;
@@ -210,11 +210,12 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         projectScaffolder = new ProjectScaffolder(extensibility);
         agentsFileInitializer = new AgentsFileInitializer(extensibility);
         this.filePickerService = filePickerService ?? new FilePickerService(extensibility);
-        this.workspaceFileSearchService = workspaceFileSearchService ?? new WorkspaceFileSearchService(extensibility);
+        this.timeProvider = timeProvider ?? TimeProvider.System;
+        this.workspaceFileSearchService = workspaceFileSearchService
+            ?? new WorkspaceFileSearchService(extensibility, this.timeProvider);
         this.protectedDirectoryPolicy = protectedDirectoryPolicy ?? new ProtectedDirectoryPolicy();
         this.settingsStore = settingsStore ?? new FileExtensionSettingsStore();
         this.externalLinkOpener = externalLinkOpener ?? new ExternalLinkOpener();
-        this.utcNow = utcNow ?? (() => DateTimeOffset.UtcNow);
         InitializeConversationText();
         InitializeTranscriptSearch();
         settings = this.settingsStore.Load();
@@ -937,7 +938,8 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         ConnectionRecoveryResult result = await ConnectionRecoveryCoordinator.RunAsync(
             async (_, token) => await RecoverAttemptAsync(root, profileName, fingerprint, experimentalApi, token).ConfigureAwait(false),
             token => IsRecoveryTargetValidAsync(root, profileName, fingerprint, experimentalApi, token),
-            cancellation.Token).ConfigureAwait(false);
+            cancellation.Token,
+            timeProvider: timeProvider).ConfigureAwait(false);
         await FinishRecoveryCoreAsync(result, firstConnection).ConfigureAwait(false);
     }
 
@@ -5493,7 +5495,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             .Select(CreateSlashCommandSuggestion)
             .ToArray();
         bool requiresSkillRefresh = skillsSnapshot is null
-            || utcNow() >= skillsSnapshotExpiresAt;
+            || timeProvider.GetUtcNow() >= skillsSnapshotExpiresAt;
         if (requiresSkillRefresh)
         {
             skillsRefreshPending = true;
@@ -5673,7 +5675,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
 
                 skillsRefreshPending = false;
                 skillsLoadFailure = markdown.ToSafeText(ex.Message).Trim();
-                skillsSnapshotExpiresAt = utcNow().AddSeconds(60);
+                skillsSnapshotExpiresAt = timeProvider.GetUtcNow().AddSeconds(60);
                 if (!string.IsNullOrEmpty(ComposerText) && ComposerText[0] == '/')
                 {
                     UpdateComposerSuggestions(ComposerText);
@@ -5724,7 +5726,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                 skillsSnapshot = result;
                 minimumSkillsGeneration = Math.Max(minimumSkillsGeneration, result.Generation);
                 skillsRefreshPending = result.IsStale;
-                skillsSnapshotExpiresAt = utcNow().AddSeconds(60);
+                skillsSnapshotExpiresAt = timeProvider.GetUtcNow().AddSeconds(60);
                 if (!string.IsNullOrEmpty(ComposerText)
                     && ComposerText[0] == '/'
                     && !ComposerText.StartsWith("//", StringComparison.Ordinal))
@@ -5753,7 +5755,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
 
             skillsRefreshPending = false;
             skillsLoadFailure = "The cached skill catalog could not be refreshed.";
-            skillsSnapshotExpiresAt = utcNow().AddSeconds(60);
+            skillsSnapshotExpiresAt = timeProvider.GetUtcNow().AddSeconds(60);
             if (!string.IsNullOrEmpty(ComposerText)
                 && ComposerText[0] == '/'
                 && !ComposerText.StartsWith("//", StringComparison.Ordinal))
@@ -8316,7 +8318,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             return;
         }
 
-        DateTimeOffset refreshedAt = utcNow();
+        DateTimeOffset refreshedAt = timeProvider.GetUtcNow();
         latestRateLimits = value;
         latestRateLimitsAt = refreshedAt;
         usageFetchedGeneration = generation;
@@ -9626,7 +9628,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                     }
 
                     generation = Volatile.Read(ref usageConnectionGeneration);
-                    DateTimeOffset requestedAt = utcNow();
+                    DateTimeOffset requestedAt = timeProvider.GetUtcNow();
                     OwnerSnapshot usageOwner = CaptureOwnerSnapshot();
                     if (!force
                         && usageFetchedGeneration == generation
@@ -9674,7 +9676,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                             return;
                         }
 
-                        DateTimeOffset refreshedAt = utcNow();
+                        DateTimeOffset refreshedAt = timeProvider.GetUtcNow();
                         latestRateLimits = result;
                         latestRateLimitsAt = refreshedAt;
                         usageFetchedGeneration = generation;

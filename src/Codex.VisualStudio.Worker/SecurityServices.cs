@@ -487,6 +487,12 @@ public sealed class ApprovalGrantStore
 {
     private readonly List<ApprovalGrant> grants = [];
     private readonly Lock gate = new();
+    private readonly TimeProvider timeProvider;
+
+    public ApprovalGrantStore(TimeProvider? timeProvider = null)
+    {
+        this.timeProvider = timeProvider ?? TimeProvider.System;
+    }
 
     public void Add(ApprovalRequest request, ApprovalScope scope)
     {
@@ -506,7 +512,7 @@ public sealed class ApprovalGrantStore
                 scope,
                 ScopeThreadId(request, scope),
                 ScopeTurnId(request, scope),
-                DateTimeOffset.UtcNow));
+                timeProvider.GetUtcNow()));
         }
     }
 
