@@ -1080,6 +1080,26 @@ public sealed partial class ViewModelTests
     }
 
     [TestMethod]
+    public void ChatBlockCodeFlag_NotifiesAccessibilityNameOnlyWhenChanged()
+    {
+        var block = new ChatBlockViewModel();
+        var notifications = new List<string?>();
+        block.PropertyChanged += (_, args) => notifications.Add(args.PropertyName);
+
+        Assert.IsFalse(block.IsCodeBlock);
+        block.IsCodeBlock = false;
+        Assert.AreEqual(0, notifications.Count);
+
+        block.IsCodeBlock = true;
+        block.IsCodeBlock = true;
+
+        Assert.IsTrue(block.IsCodeBlock);
+        CollectionAssert.AreEqual(
+            new[] { nameof(ChatBlockViewModel.IsCodeBlock), nameof(ChatBlockViewModel.CodeBlockAutomationName) },
+            notifications);
+    }
+
+    [TestMethod]
     public async Task ChatViewModel_HistoryRebuildsReasoningMarkdownBlocksAndExplainsMissingSummary()
     {
         var bridge = new FakeWorkerBridge();

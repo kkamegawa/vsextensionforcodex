@@ -11,8 +11,6 @@ public sealed partial class ChatViewModel
     private AsyncCommand? closeConversationMemoryCommand;
     private long conversationMemoryRequestGeneration;
     private string conversationMemoryText = string.Empty;
-    private string conversationMemoryStatusText = string.Empty;
-    private bool isConversationMemoryOpen;
 
     [DataMember]
     public AsyncCommand ReadConversationMemoryCommand
@@ -47,10 +45,10 @@ public sealed partial class ChatViewModel
     [DataMember]
     public bool IsConversationMemoryOpen
     {
-        get => isConversationMemoryOpen;
+        get => field;
         set
         {
-            if (SetProperty(ref isConversationMemoryOpen, value) && !value)
+            if (SetProperty(ref field, value) && !value)
             {
                 Interlocked.Increment(ref conversationMemoryRequestGeneration);
             }
@@ -78,9 +76,9 @@ public sealed partial class ChatViewModel
     [DataMember]
     public string ConversationMemoryStatusText
     {
-        get => conversationMemoryStatusText;
-        private set => SetProperty(ref conversationMemoryStatusText, value);
-    }
+        get => field;
+        private set => SetProperty(ref field, value);
+    } = string.Empty;
 
     private bool CanReadConversationMemory()
         => IsConversationMemoryFeatureAvailable

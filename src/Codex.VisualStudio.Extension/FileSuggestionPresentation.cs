@@ -17,9 +17,6 @@ public sealed class FileSuggestionPresentationViewModel : ObservableObject
 {
     private readonly SafeMarkdownService markdown = new();
     private Func<FileSuggestionViewModel, Task>? accepted;
-    private FileSuggestionViewModel? selectedSuggestion;
-    private string statusAnnouncement = string.Empty;
-    private bool isSuggestionOpen;
 
     public FileSuggestionPresentationViewModel()
     {
@@ -43,10 +40,10 @@ public sealed class FileSuggestionPresentationViewModel : ObservableObject
     [DataMember]
     public FileSuggestionViewModel? SelectedSuggestion
     {
-        get => selectedSuggestion;
+        get => field;
         set
         {
-            if (SetProperty(ref selectedSuggestion, value))
+            if (SetProperty(ref field, value))
             {
                 AcceptSuggestionCommand.RaiseCanExecuteChanged();
             }
@@ -56,10 +53,10 @@ public sealed class FileSuggestionPresentationViewModel : ObservableObject
     [DataMember]
     public bool IsSuggestionOpen
     {
-        get => isSuggestionOpen;
+        get => field;
         private set
         {
-            if (SetProperty(ref isSuggestionOpen, value))
+            if (SetProperty(ref field, value))
             {
                 OnPropertyChanged(nameof(MovePreviousKeyCommand));
                 OnPropertyChanged(nameof(MoveNextKeyCommand));
@@ -76,16 +73,16 @@ public sealed class FileSuggestionPresentationViewModel : ObservableObject
     [DataMember]
     public string StatusAnnouncement
     {
-        get => statusAnnouncement;
+        get => field;
         private set
         {
             string safeValue = markdown.ToSafeText(value).Trim();
-            if (SetProperty(ref statusAnnouncement, safeValue))
+            if (SetProperty(ref field, safeValue))
             {
                 OnPropertyChanged(nameof(HasStatusAnnouncement));
             }
         }
-    }
+    } = string.Empty;
 
     [DataMember]
     public bool HasStatusAnnouncement => !string.IsNullOrWhiteSpace(StatusAnnouncement);

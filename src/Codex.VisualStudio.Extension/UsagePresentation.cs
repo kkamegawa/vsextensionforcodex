@@ -7,135 +7,119 @@ namespace Codex.VisualStudio.Extension;
 [DataContract]
 public sealed class UsagePresentation : ObservableObject
 {
-    private bool hasData;
-    private bool hasPrimary;
-    private bool hasSecondary;
-    private bool hasCredits;
-    private bool isLoading;
-    private string toolbarText = "Usage";
-    private string automationName = "Codex usage";
-    private string automationHelpText = "Usage data is unavailable.";
-    private string statusText = "Usage data is unavailable.";
-    private string slashStatusText = "Usage data is unavailable.";
-    private string primaryText = string.Empty;
-    private string secondaryText = string.Empty;
-    private string creditsText = string.Empty;
-    private string updatedText = string.Empty;
-    private bool hasThreadUsage;
-    private string threadUsageText = string.Empty;
     private string limitsSlashStatusText = "Usage data is unavailable.";
 
     [DataMember]
     public bool HasThreadUsage
     {
-        get => hasThreadUsage;
-        private set => SetProperty(ref hasThreadUsage, value);
+        get => field;
+        private set => SetProperty(ref field, value);
     }
 
     [DataMember]
     public string ThreadUsageText
     {
-        get => threadUsageText;
-        private set => SetProperty(ref threadUsageText, value);
-    }
+        get => field;
+        private set => SetProperty(ref field, value);
+    } = string.Empty;
 
     [DataMember]
     public bool HasData
     {
-        get => hasData;
-        private set => SetProperty(ref hasData, value);
+        get => field;
+        private set => SetProperty(ref field, value);
     }
 
     [DataMember]
     public bool HasPrimary
     {
-        get => hasPrimary;
-        private set => SetProperty(ref hasPrimary, value);
+        get => field;
+        private set => SetProperty(ref field, value);
     }
 
     [DataMember]
     public bool HasSecondary
     {
-        get => hasSecondary;
-        private set => SetProperty(ref hasSecondary, value);
+        get => field;
+        private set => SetProperty(ref field, value);
     }
 
     [DataMember]
     public bool HasCredits
     {
-        get => hasCredits;
-        private set => SetProperty(ref hasCredits, value);
+        get => field;
+        private set => SetProperty(ref field, value);
     }
 
     [DataMember]
     public bool IsLoading
     {
-        get => isLoading;
-        private set => SetProperty(ref isLoading, value);
+        get => field;
+        private set => SetProperty(ref field, value);
     }
 
     [DataMember]
     public string ToolbarText
     {
-        get => toolbarText;
-        private set => SetProperty(ref toolbarText, value);
-    }
+        get => field;
+        private set => SetProperty(ref field, value);
+    } = "Usage";
 
     [DataMember]
     public string AutomationName
     {
-        get => automationName;
-        private set => SetProperty(ref automationName, value);
-    }
+        get => field;
+        private set => SetProperty(ref field, value);
+    } = "Codex usage";
 
     [DataMember]
     public string AutomationHelpText
     {
-        get => automationHelpText;
-        private set => SetProperty(ref automationHelpText, value);
-    }
+        get => field;
+        private set => SetProperty(ref field, value);
+    } = "Usage data is unavailable.";
 
     [DataMember]
     public string StatusText
     {
-        get => statusText;
-        private set => SetProperty(ref statusText, value);
-    }
+        get => field;
+        private set => SetProperty(ref field, value);
+    } = "Usage data is unavailable.";
 
     [DataMember]
     public string SlashStatusText
     {
-        get => slashStatusText;
-        private set => SetProperty(ref slashStatusText, value);
-    }
+        get => field;
+        private set => SetProperty(ref field, value);
+    } = "Usage data is unavailable.";
 
     [DataMember]
     public string PrimaryText
     {
-        get => primaryText;
-        private set => SetProperty(ref primaryText, value);
-    }
+        get => field;
+        private set => SetProperty(ref field, value);
+    } = string.Empty;
 
     [DataMember]
     public string SecondaryText
     {
-        get => secondaryText;
-        private set => SetProperty(ref secondaryText, value);
-    }
+        get => field;
+        private set => SetProperty(ref field, value);
+    } = string.Empty;
 
     [DataMember]
     public string CreditsText
     {
-        get => creditsText;
-        private set => SetProperty(ref creditsText, value);
-    }
+        get => field;
+        private set => SetProperty(ref field, value);
+    } = string.Empty;
 
     [DataMember]
     public string UpdatedText
     {
-        get => updatedText;
-        private set => SetProperty(ref updatedText, value);
-    }
+        get => field;
+        private set => SetProperty(ref field, value);
+    } = string.Empty;
 
     public void SetLoading(bool value) => IsLoading = value;
 

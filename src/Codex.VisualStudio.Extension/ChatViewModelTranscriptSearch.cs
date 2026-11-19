@@ -9,41 +9,36 @@ public sealed partial class ChatViewModel
     private const int TranscriptSearchPageSize = 100;
     private CancellationTokenSource? transcriptSearchCancellation;
     private long transcriptSearchGeneration;
-    private string transcriptSearchText = string.Empty;
-    private string transcriptSearchStatusText = string.Empty;
-    private bool isTranscriptSearchOpen;
-    private bool isTranscriptSearchLoading;
-    private TranscriptSearchResultViewModel? selectedTranscriptSearchResult;
 
     [DataMember]
     public string TranscriptSearchText
     {
-        get => transcriptSearchText;
+        get => field;
         set
         {
             string normalized = value ?? string.Empty;
-            if (SetProperty(ref transcriptSearchText, normalized))
+            if (SetProperty(ref field, normalized))
             {
                 InvalidateTranscriptSearch(clearResults: true);
                 SearchTranscriptCommand.RaiseCanExecuteChanged();
             }
         }
-    }
+    } = string.Empty;
 
     [DataMember]
     public bool IsTranscriptSearchOpen
     {
-        get => isTranscriptSearchOpen;
-        private set => SetProperty(ref isTranscriptSearchOpen, value);
+        get => field;
+        private set => SetProperty(ref field, value);
     }
 
     [DataMember]
     public bool IsTranscriptSearchLoading
     {
-        get => isTranscriptSearchLoading;
+        get => field;
         private set
         {
-            if (SetProperty(ref isTranscriptSearchLoading, value))
+            if (SetProperty(ref field, value))
             {
                 SearchTranscriptCommand.RaiseCanExecuteChanged();
                 CancelTranscriptSearchCommand.RaiseCanExecuteChanged();
@@ -54,15 +49,15 @@ public sealed partial class ChatViewModel
     [DataMember]
     public string TranscriptSearchStatusText
     {
-        get => transcriptSearchStatusText;
+        get => field;
         private set
         {
-            if (SetProperty(ref transcriptSearchStatusText, value))
+            if (SetProperty(ref field, value))
             {
                 OnPropertyChanged(nameof(HasTranscriptSearchStatus));
             }
         }
-    }
+    } = string.Empty;
 
     [DataMember]
     public bool HasTranscriptSearchStatus => TranscriptSearchStatusText.Length > 0;
@@ -73,8 +68,8 @@ public sealed partial class ChatViewModel
     [DataMember]
     public TranscriptSearchResultViewModel? SelectedTranscriptSearchResult
     {
-        get => selectedTranscriptSearchResult;
-        set => SetProperty(ref selectedTranscriptSearchResult, value);
+        get => field;
+        set => SetProperty(ref field, value);
     }
 
     [DataMember]
