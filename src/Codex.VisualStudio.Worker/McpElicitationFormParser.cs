@@ -4,6 +4,7 @@ using System.Text;
 using System.Text.RegularExpressions;
 using System.Text.Json;
 using Codex.VisualStudio.Contracts;
+using static Codex.VisualStudio.Worker.JsonElementPropertyValidation;
 
 namespace Codex.VisualStudio.Worker;
 
@@ -1031,21 +1032,6 @@ internal static partial class McpElicitationFormParser
         bound = decimalValue;
         decimal rounded = lowerBound ? decimal.Ceiling(decimalValue) : decimal.Floor(decimalValue);
         return rounded >= long.MinValue && rounded <= long.MaxValue;
-    }
-
-    private static bool OnlyProperties(JsonElement element, params string[] allowed)
-    {
-        var names = new HashSet<string>(allowed, StringComparer.Ordinal);
-        var seen = new HashSet<string>(StringComparer.Ordinal);
-        foreach (JsonProperty property in element.EnumerateObject())
-        {
-            if (!names.Contains(property.Name) || !seen.Add(property.Name))
-            {
-                return false;
-            }
-        }
-
-        return true;
     }
 
     private static bool TryGetString(JsonElement element, string name, out string value)
