@@ -34,7 +34,7 @@
    [Environment]::SetEnvironmentVariable('CODEX_PATH', (Join-Path $codexRoot 'bin\codex.exe'), 'User')
    ```
 
-   先に進む前に、表示された SHA-256 をリリースページのそのアセットの値と照合してください。CI とスキーマ生成は `app-server-contract.json` で固定した単体の x64 実行ファイルを使います。スキーマ生成と `initialize` の完了にはそれで足ります。どちらのアーキテクチャのパッケージも同じ app-server 契約を公開しています。
+   先に進む前に、表示された SHA-256 をリリースページのそのアセットの値と照合してください。CI は完全な x64 package を取得します。固定版では `packageSha256` のアーカイブ SHA-256 と `sha256` の package 内 CLI entrypoint の SHA-256 を `app-server-contract.json` と照合し、最新安定版の smoke test では公開 release metadata の digest を使います。スキーマ生成と app-server smoke test では package 内 entrypoint を実行します。x64 と Arm64 の package が公開する app-server 契約は同じです。
 
 2. Visual Studio を再起動し、実行ファイルが 0.171.0 を報告することを確認します。
 
@@ -186,7 +186,7 @@ dotnet build CodexForVisualStudio.slnx -c Release --no-restore
 pwsh -NoProfile -File scripts/generate-schemas.ps1 -OutputDirectory schemas -Version 0.171.0 -Surface stable -CodexPath $env:CODEX_PATH
 ```
 
-generator は `CODEX_PATH` を優先し、未設定時は `PATH` 上の `codex` を参照します。固定した schema contract version と、別管理の最低境界 0.169.0 を受け付けます。CI は `scripts/validate-contract-manifest.ps1` で `app-server-contract.json`（スキーマバージョン 5）を検証し、固定した Windows x64 の 0.169.1 / 0.170.0 / 0.171.0 公式 package を取得して SHA-256 を検証し、固定した3版と別管理の最低境界 0.169.0 の stable / experimental schema を生成します。0.169.0 の `codex app-server` を起動して `initialize` を完了する smoke test、0.169.0 と 0.169.1 の schema 構造の同等性確認、各回帰版と 0.171.0 対象版の差分比較を実行します。build と release job は固定した 0.171.0 実行ファイルを `CODEX_PATH` として渡します。CI の build job はさらに最新安定版の Windows x64 実行ファイルを runner のローカル一時ディレクトリへ取得し、`scripts/smoke-app-server.ps1` を非ブロッキングの確認として実行します。ローカル schema ビルドでは公式 0.171.0 実行ファイルを `CODEX_PATH` に設定してください。
+generator は `CODEX_PATH` を優先し、未設定時は `PATH` 上の `codex` を参照します。固定した schema contract version と、別管理の最低境界 0.169.0 を受け付けます。CI は `scripts/validate-contract-manifest.ps1` で `app-server-contract.json`（スキーマバージョン 5）を検証します。0.169.0 の最低境界を含む各 schema version について、完全な Windows x64 package を取得し、`packageSha256` とアーカイブ、`sha256` と package 内 CLI entrypoint の SHA-256 を照合してから、その entrypoint を使って stable / experimental schema を生成します。0.169.0 の `codex app-server` を起動して `initialize` を完了する smoke test、0.169.0 と 0.169.1 の schema 構造の同等性確認、各回帰版と 0.171.0 対象版の差分比較を実行します。build と release job は展開済み package の 0.171.0 entrypoint を `CODEX_PATH` として渡します。CI の build job はさらに最新安定版の Windows x64 package を取得し、release metadata の公開 digest でアーカイブと内包 entrypoint を検証してから、`scripts/smoke-app-server.ps1` を使った非ブロッキング確認をその entrypoint に対して実行します。ローカル schema ビルドでは 0.171.0 package の実行ファイルを `CODEX_PATH` に設定してください:
 
 ```powershell
 $env:CODEX_PATH = "C:\path\to\codex.exe"
