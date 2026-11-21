@@ -5,7 +5,7 @@
 > Superseded for the current CLI support policy by [ADR-024](ADR-024-codex-cli-0-169-minimum.md) on 2026-11-20. Retained as the historical decision record for the original 0.169 feature phase.
 
 - Date: 2026-11-16
-- Status: Accepted
+- Status: Superseded by ADR-024
 - Tracking: [Issue #268](https://github.com/kkamegawa/vsextensionforcodex/issues/268) ([#274](https://github.com/kkamegawa/vsextensionforcodex/issues/274), [#276](https://github.com/kkamegawa/vsextensionforcodex/issues/276)); implementation [Issue #270](https://github.com/kkamegawa/vsextensionforcodex/issues/270) and [Issue #272](https://github.com/kkamegawa/vsextensionforcodex/issues/272)
 - Related: [ADR-011](ADR-011-app-server-contract.md), [ADR-020](ADR-020-app-server-0-166.md), [ADR-022](ADR-022-visual-studio-2026-dotnet-10.md)
 
