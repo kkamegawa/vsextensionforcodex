@@ -6,7 +6,11 @@ namespace Codex.VisualStudio.Extension;
 
 public sealed partial class ChatViewModel
 {
+    private const int MaximumCompletedAgentMessageKeys = 1024;
+
     private readonly HashSet<string> pendingAgentRawKeys = new(StringComparer.Ordinal);
+    private readonly HashSet<string> completedAgentMessageKeys = new(StringComparer.Ordinal);
+    private readonly Queue<string> completedAgentMessageKeyOrder = new();
 
     private bool RequiresBufferedAgentMessageDisplay()
         => Status.FeatureTier != CodexFeatureTier.Baseline;
@@ -28,19 +32,34 @@ public sealed partial class ChatViewModel
         ConversationEvent value,
         WorkerNotification<ConversationEvent> notification)
     {
-        string agentRawKey = GetAgentRawKey(value);
-        RemoveAgentRaw(agentRawKey);
-
-        ChatItemViewModel? existing = FindCurrentTranscriptItem(value, notification);
-        if (existing?.IsHistoryCompleted == true)
+        // A completion without an item ID cannot be safely correlated with deltas or duplicates.
+        // Tier 170+ keeps those deltas hidden, so fail closed and leave them for turn cleanup.
+        if (string.IsNullOrWhiteSpace(value.ItemId))
         {
             return;
         }
 
+        bool firstCompletion = MarkAgentMessageCompleted(value);
+
+        string agentRawKey = GetAgentRawKey(value);
+        ChatItemViewModel? existing = FindCurrentTranscriptItem(value, notification);
+        if (existing?.IsHistoryCompleted == true)
+        {
+            if (firstCompletion)
+            {
+                RemoveAgentRaw(agentRawKey);
+                AppendApprovedAgentRaw(agentRawKey, value);
+            }
+
+            return;
+        }
+
+        RemoveAgentRaw(agentRawKey);
+
         AgentMessageDisplayDecision? decision = value.AgentMessageDisplayDecision;
         bool mayDisplayParts = decision is null or { Mode: AgentMessageDisplayMode.Show };
         string? displayText = decision is null ? value.Text : decision.GetDisplayText(value.Text);
-        if (displayText is null && (!mayDisplayParts || value.Parts.Count == 0))
+        if (string.IsNullOrEmpty(displayText) && (!mayDisplayParts || value.Parts.Count == 0))
         {
             return;
         }
@@ -91,16 +110,63 @@ public sealed partial class ChatViewModel
             existing.ApplyTiming(value.StartedAtMs, value.CompletedAtMs);
         }
 
-        if (decision is null or { Mode: AgentMessageDisplayMode.Show })
+        AppendApprovedAgentRaw(agentRawKey, value);
+
+        TrimHistoryWindow();
+    }
+
+    private void AppendApprovedAgentRaw(string key, ConversationEvent value)
+    {
+        if (value.AgentMessageDisplayDecision is null or { Mode: AgentMessageDisplayMode.Show })
         {
             if (!string.IsNullOrEmpty(value.Text))
             {
                 // Keep only the completed, approved body for end-of-turn choice detection.
-                AppendAgentRaw(agentRawKey, value.Text);
+                AppendAgentRaw(key, value.Text);
             }
         }
+    }
 
-        TrimHistoryWindow();
+    private bool IsAgentMessageCompleted(ConversationEvent value)
+        => completedAgentMessageKeys.Contains(GetAgentCompletionKey(value));
+
+    private bool MarkAgentMessageCompleted(ConversationEvent value)
+    {
+        if (string.IsNullOrWhiteSpace(value.ItemId))
+        {
+            return false;
+        }
+
+        string key = GetAgentCompletionKey(value);
+        if (!completedAgentMessageKeys.Add(key))
+        {
+            return false;
+        }
+
+        completedAgentMessageKeyOrder.Enqueue(key);
+        while (completedAgentMessageKeyOrder.Count > MaximumCompletedAgentMessageKeys)
+        {
+            completedAgentMessageKeys.Remove(completedAgentMessageKeyOrder.Dequeue());
+        }
+
+        return true;
+    }
+
+    private static string GetAgentCompletionKey(ConversationEvent value)
+    {
+        string threadId = value.ThreadId ?? string.Empty;
+        string turnId = value.TurnId ?? string.Empty;
+        string itemId = value.ItemId ?? string.Empty;
+        return string.Concat(
+            threadId.Length,
+            ":",
+            threadId,
+            turnId.Length,
+            ":",
+            turnId,
+            itemId.Length,
+            ":",
+            itemId);
     }
 
     private void ApplyAgentMessageParts(

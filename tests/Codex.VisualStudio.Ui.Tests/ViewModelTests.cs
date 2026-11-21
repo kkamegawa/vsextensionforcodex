@@ -1238,7 +1238,11 @@ public sealed partial class ViewModelTests
         };
 
         using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
-        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready });
+        await bridge.PublishStateAsync(new WorkerStatus
+        {
+            State = WorkerConnectionState.Ready,
+            FeatureTier = CodexFeatureTier.Tier170,
+        });
         var thread = new ThreadSummary { Id = "thread-live-buffer" };
         vm.Threads.Add(thread);
         vm.SelectedThread = thread;
@@ -1252,6 +1256,17 @@ public sealed partial class ViewModelTests
             TurnId = "turn-live",
             ItemId = "live-item",
             Kind = ConversationEventKind.AgentMessageDelta,
+            IsAgentMessage = true,
+            Text = "live update",
+        });
+        await RaiseConversationEventAsync(vm, new ConversationEvent
+        {
+            ThreadId = thread.Id,
+            TurnId = "turn-live",
+            ItemId = "live-item",
+            Kind = ConversationEventKind.ItemCompleted,
+            IsAgentMessage = true,
+            AgentMessageDisplayDecision = new AgentMessageDisplayDecision { Mode = AgentMessageDisplayMode.Show },
             Text = "live update",
         });
         releaseOlder.Set();
@@ -1352,14 +1367,11 @@ public sealed partial class ViewModelTests
             Text = "interrupted private body",
         });
         Assert.IsFalse(vm.Items.Any(item => item.Text.Contains("interrupted private body", StringComparison.Ordinal)));
-        object rawBuffer = typeof(ChatViewModel).GetField("agentRawText", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(vm)!;
-        Assert.AreEqual(1, (int)rawBuffer.GetType().GetProperty("Count")!.GetValue(rawBuffer)!);
 
         MethodInfo lostMethod = typeof(ChatViewModel).GetMethod("HandleConnectionLostAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
         await (Task)lostMethod.Invoke(vm, [bridge, WorkerRecoveryFailureKind.PeerUnresponsive])!;
 
         Assert.IsFalse(vm.Items.Any(item => item.Text.Contains("interrupted private body", StringComparison.Ordinal)));
-        Assert.AreEqual(0, (int)rawBuffer.GetType().GetProperty("Count")!.GetValue(rawBuffer)!);
 
         await bridge.PublishStateAsync(new WorkerStatus
         {
@@ -2439,6 +2451,16 @@ public sealed partial class ViewModelTests
         });
         await bridge.PublishConversationEventAsync(new ConversationEvent
         {
+            Kind = ConversationEventKind.ItemCompleted,
+            ThreadId = "thread-multi-question",
+            TurnId = "agent-turn",
+            ItemId = "agent-questions",
+            IsAgentMessage = true,
+            AgentMessageDisplayDecision = new AgentMessageDisplayDecision { Mode = AgentMessageDisplayMode.Show },
+            Text = "Which theme?\n- Dark\n- Light\n\nWhere should the switch go?\n- Navigation bar\n- Home page only",
+        });
+        await bridge.PublishConversationEventAsync(new ConversationEvent
+        {
             Kind = ConversationEventKind.TurnCompleted,
             ThreadId = "thread-multi-question",
             TurnId = "agent-turn",
@@ -2501,13 +2523,24 @@ public sealed partial class ViewModelTests
         Assert.IsFalse(vm.HasActiveUserInput, "A settled confirmation question in an earlier message must not produce a card.");
     }
 
-    private static Task RaiseAgentMessageAsync(ChatViewModel vm, string itemId, string text)
-        => RaiseConversationEventAsync(vm, new ConversationEvent
+    private static async Task RaiseAgentMessageAsync(ChatViewModel vm, string itemId, string text)
+    {
+        await RaiseConversationEventAsync(vm, new ConversationEvent
         {
             Kind = ConversationEventKind.AgentMessageDelta,
             ItemId = itemId,
+            IsAgentMessage = true,
             Text = text,
         });
+        await RaiseConversationEventAsync(vm, new ConversationEvent
+        {
+            Kind = ConversationEventKind.ItemCompleted,
+            ItemId = itemId,
+            IsAgentMessage = true,
+            AgentMessageDisplayDecision = new AgentMessageDisplayDecision { Mode = AgentMessageDisplayMode.Show },
+            Text = text,
+        });
+    }
 
     [TestMethod]
     public void ChoicePromptParser_OptionQuestionsOnly_RejectsLooseNumberedListAfterQuestion()
@@ -2545,13 +2578,24 @@ public sealed partial class ViewModelTests
         settings.ExperimentalApiEnabled = false;
 
         await RaiseConversationEventAsync(vm, new ConversationEvent { Kind = ConversationEventKind.TurnStarted });
+        string question = string.Join('\n',
+                "既存プロジェクトに LICENSE がありませんでした。",
+                "MIT ライセンスで進めてよいですか？",
+                "MIT 以外にする場合は、使用するライセンス名を指定してください。");
         await RaiseConversationEventAsync(vm, new ConversationEvent
         {
             Kind = ConversationEventKind.AgentMessageDelta,
-            Text = string.Join('\n',
-                "既存プロジェクトに LICENSE がありませんでした。",
-                "MIT ライセンスで進めてよいですか？",
-                "MIT 以外にする場合は、使用するライセンス名を指定してください。"),
+            ItemId = "license-question",
+            IsAgentMessage = true,
+            Text = question,
+        });
+        await RaiseConversationEventAsync(vm, new ConversationEvent
+        {
+            Kind = ConversationEventKind.ItemCompleted,
+            ItemId = "license-question",
+            IsAgentMessage = true,
+            AgentMessageDisplayDecision = new AgentMessageDisplayDecision { Mode = AgentMessageDisplayMode.Show },
+            Text = question,
         });
         await RaiseConversationEventAsync(vm, new ConversationEvent { Kind = ConversationEventKind.TurnCompleted });
 
@@ -3446,7 +3490,9 @@ public sealed partial class ViewModelTests
     [TestMethod]
     public async Task ChatViewModel_AgentMessageDelta_MultipleChunks_NoArtificialNewlines()
     {
-        using var vm = new ChatViewModel();
+        var bridge = new FakeWorkerBridge();
+        using var vm = new ChatViewModel(bridge, autoConnect: false);
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready, FeatureTier = CodexFeatureTier.Baseline });
 
         await RaiseConversationEventAsync(vm, new ConversationEvent { Kind = ConversationEventKind.TurnStarted });
         await RaiseConversationEventAsync(vm, new ConversationEvent
@@ -3525,20 +3571,6 @@ public sealed partial class ViewModelTests
                 Assert.AreEqual(0, item.ArtifactParts.Count, "A hidden live item must ignore parts that could contain its original body.");
             }
 
-            object agentBuffer = typeof(ChatViewModel).GetField("agentRawText", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(vm)!;
-            if (decision is null or { Mode: AgentMessageDisplayMode.Show })
-            {
-                object?[] arguments = [id, null];
-                bool found = (bool)agentBuffer.GetType().GetMethod("TryGetValue")!.Invoke(agentBuffer, arguments)!;
-                Assert.IsTrue(found, "Choice detection retains the completed, approved assistant body.");
-                Assert.AreEqual(original, arguments[1]!.ToString(), "Pending deltas are replaced by the approved completion body.");
-            }
-            else
-            {
-                bool found = (bool)agentBuffer.GetType().GetMethod("ContainsKey")!.Invoke(agentBuffer, [id])!;
-                Assert.IsFalse(found, "A hidden assistant body must not remain in the choice-detection buffer.");
-            }
-
             await RaiseConversationEventAsync(vm, new ConversationEvent
             {
                 Kind = ConversationEventKind.AgentMessageDelta,
@@ -3591,6 +3623,218 @@ public sealed partial class ViewModelTests
 
         Assert.IsNull(vm.ActiveUserInput, "An incomplete 0.170+ assistant item must not synthesize a user-input prompt.");
         Assert.IsFalse(vm.Items.Any(item => item.Text.Contains(unapprovedPrompt, StringComparison.Ordinal)));
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_Tier170DuplicateAgentCompletionKeepsApprovedChoicePrompt()
+    {
+        var bridge = new FakeWorkerBridge();
+        bool includeHistoryItem = false;
+        ThreadHistoryItem historyItem = new()
+        {
+            Id = "completed-question",
+            TurnId = "turn-duplicate",
+            Type = "agentMessage",
+            Text = "historical answer",
+            AgentMessageDisplayDecision = new AgentMessageDisplayDecision { Mode = AgentMessageDisplayMode.Show },
+        };
+        bridge.ListThreadItemsHandler = (_, _) => Task.FromResult(new ThreadItemsPage
+        {
+            Items = includeHistoryItem ? [historyItem] : [],
+        });
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        await bridge.PublishStateAsync(new WorkerStatus
+        {
+            State = WorkerConnectionState.Ready,
+            FeatureTier = CodexFeatureTier.Tier170,
+        });
+        const string prompt = "Which deployment target?\n1. Azure\n2. On-premises";
+        const string pendingPrompt = "Which database?\n1. PostgreSQL\n2. SQLite";
+        const string duplicatePrompt = "Which database?\n1. PostgreSQL\n2. SQLite";
+        var thread = new ThreadSummary { Id = "test-thread" };
+        vm.Threads.Add(thread);
+        vm.SelectedThread = thread;
+        await WaitForAsync(() => vm.HistoryStatusText.StartsWith("Read-only history", StringComparison.Ordinal));
+        await RaiseConversationEventAsync(vm, new ConversationEvent
+        {
+            Kind = ConversationEventKind.AgentMessageDelta,
+            ThreadId = "test-thread",
+            TurnId = "turn-duplicate",
+            ItemId = "completed-question",
+            IsAgentMessage = true,
+            Text = pendingPrompt,
+        });
+
+        includeHistoryItem = true;
+        MethodInfo refreshMethod = typeof(ChatViewModel).GetMethod("RefreshSelectedHistoryAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
+        await (Task)refreshMethod.Invoke(vm, null)!;
+        Assert.IsTrue(vm.Items.Any(item => item.ItemId == "completed-question" && item.IsHistoryCompleted));
+
+        var completed = new ConversationEvent
+        {
+            Kind = ConversationEventKind.ItemCompleted,
+            ThreadId = "test-thread",
+            TurnId = "turn-duplicate",
+            ItemId = "completed-question",
+            IsAgentMessage = true,
+            AgentMessageDisplayDecision = new AgentMessageDisplayDecision { Mode = AgentMessageDisplayMode.Show },
+            Text = prompt,
+        };
+
+        await RaiseConversationEventAsync(vm, completed);
+        await RaiseConversationEventAsync(vm, new ConversationEvent
+        {
+            Kind = ConversationEventKind.ItemCompleted,
+            ThreadId = "test-thread",
+            TurnId = "turn-duplicate",
+            ItemId = "completed-question",
+            IsAgentMessage = true,
+            AgentMessageDisplayDecision = new AgentMessageDisplayDecision { Mode = AgentMessageDisplayMode.Show },
+            Text = duplicatePrompt,
+        });
+        await RaiseConversationEventAsync(vm, new ConversationEvent
+        {
+            Kind = ConversationEventKind.TurnCompleted,
+            ThreadId = "test-thread",
+            TurnId = "turn-duplicate",
+        });
+
+        Assert.IsNotNull(vm.ActiveUserInput, "A duplicate completion must not erase the approved body needed for choice detection.");
+        Assert.AreEqual(1, vm.ActiveUserInput!.Questions.Count, "A duplicate completion must not append a second approved body.");
+        Assert.AreEqual("Which deployment target?", vm.ActiveUserInput!.Questions[0].Question);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_Tier170EmptyShowCompletionSuppressesLateAgentDelta()
+    {
+        var bridge = new FakeWorkerBridge();
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        await bridge.PublishStateAsync(new WorkerStatus
+        {
+            State = WorkerConnectionState.Ready,
+            FeatureTier = CodexFeatureTier.Tier170,
+        });
+        const string lateBody = "late assistant body after empty completion";
+
+        await RaiseConversationEventAsync(vm, new ConversationEvent
+        {
+            Kind = ConversationEventKind.ItemCompleted,
+            ThreadId = "test-thread",
+            TurnId = "turn-empty-completion",
+            ItemId = "empty-agent",
+            IsAgentMessage = true,
+            AgentMessageDisplayDecision = new AgentMessageDisplayDecision { Mode = AgentMessageDisplayMode.Show },
+            Text = string.Empty,
+        });
+        await RaiseConversationEventAsync(vm, new ConversationEvent
+        {
+            Kind = ConversationEventKind.AgentMessageDelta,
+            ThreadId = "test-thread",
+            TurnId = "turn-empty-completion",
+            ItemId = "empty-agent",
+            IsAgentMessage = true,
+            Text = lateBody,
+        });
+
+        Assert.IsFalse(vm.Items.Any(item => item.ItemId == "empty-agent"), "An empty approved completion without parts must not create an empty Codex row.");
+        Assert.IsFalse(vm.Items.Any(item => item.Text.Contains(lateBody, StringComparison.Ordinal)));
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_Tier170CompletionWithoutItemIdFailsClosed()
+    {
+        var bridge = new FakeWorkerBridge();
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        await bridge.PublishStateAsync(new WorkerStatus
+        {
+            State = WorkerConnectionState.Ready,
+            FeatureTier = CodexFeatureTier.Tier170,
+        });
+        const string uncorrelatablePrompt = "Which deployment target?\n1. Azure\n2. On-premises";
+
+        foreach (string? itemId in new string?[] { null, string.Empty })
+        {
+            await RaiseConversationEventAsync(vm, new ConversationEvent
+            {
+                Kind = ConversationEventKind.ItemCompleted,
+                ThreadId = "test-thread",
+                TurnId = "turn-no-item-id",
+                ItemId = itemId,
+                IsAgentMessage = true,
+                AgentMessageDisplayDecision = new AgentMessageDisplayDecision { Mode = AgentMessageDisplayMode.Show },
+                Text = uncorrelatablePrompt,
+            });
+        }
+
+        await RaiseConversationEventAsync(vm, new ConversationEvent
+        {
+            Kind = ConversationEventKind.TurnCompleted,
+            ThreadId = "test-thread",
+            TurnId = "turn-no-item-id",
+        });
+
+        Assert.IsFalse(vm.Items.Any(item => item.Text.Contains(uncorrelatablePrompt, StringComparison.Ordinal)));
+        Assert.IsNull(vm.ActiveUserInput, "A completion without a stable item ID cannot authorize a transcript row or synthetic prompt.");
+
+        await RaiseConversationEventAsync(vm, new ConversationEvent
+        {
+            Kind = ConversationEventKind.ItemCompleted,
+            ThreadId = "test-thread",
+            TurnId = "turn-no-item-id",
+            ItemId = "correlated-agent",
+            IsAgentMessage = true,
+            AgentMessageDisplayDecision = new AgentMessageDisplayDecision { Mode = AgentMessageDisplayMode.Show },
+            Text = "A separately correlated answer.",
+        });
+
+        Assert.IsTrue(vm.Items.Any(item => item.ItemId == "correlated-agent" && item.Text.Contains("separately correlated answer", StringComparison.Ordinal)));
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_Tier170HiddenChoicePromptDoesNotCreateSyntheticInput()
+    {
+        var bridge = new FakeWorkerBridge();
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        await bridge.PublishStateAsync(new WorkerStatus
+        {
+            State = WorkerConnectionState.Ready,
+            FeatureTier = CodexFeatureTier.Tier170,
+        });
+        const string privatePrompt = "Which deployment target?\n1. Azure\n2. On-premises";
+
+        await RaiseConversationEventAsync(vm, new ConversationEvent
+        {
+            Kind = ConversationEventKind.AgentMessageDelta,
+            ThreadId = "test-thread",
+            TurnId = "turn-hidden-choice",
+            ItemId = "hidden-choice",
+            IsAgentMessage = true,
+            Text = privatePrompt,
+        });
+        await RaiseConversationEventAsync(vm, new ConversationEvent
+        {
+            Kind = ConversationEventKind.ItemCompleted,
+            ThreadId = "test-thread",
+            TurnId = "turn-hidden-choice",
+            ItemId = "hidden-choice",
+            IsAgentMessage = true,
+            AgentMessageDisplayDecision = new AgentMessageDisplayDecision
+            {
+                Mode = AgentMessageDisplayMode.Hide,
+                DisplayText = "The answer was replaced with a support message.",
+            },
+            Text = privatePrompt,
+        });
+        await RaiseConversationEventAsync(vm, new ConversationEvent
+        {
+            Kind = ConversationEventKind.TurnCompleted,
+            ThreadId = "test-thread",
+            TurnId = "turn-hidden-choice",
+        });
+
+        Assert.IsNull(vm.ActiveUserInput, "A non-Show body must not produce a synthetic choice prompt.");
+        Assert.IsFalse(vm.Items.Any(item => item.Text.Contains(privatePrompt, StringComparison.Ordinal)));
+        Assert.IsTrue(vm.Items.Any(item => item.Text.Contains("replaced with a support message", StringComparison.Ordinal)));
     }
 
     [TestMethod]
@@ -3688,7 +3932,9 @@ public sealed partial class ViewModelTests
     [TestMethod]
     public async Task ChatViewModel_AgentMessageDelta_FullTextRerendered_NotAppended()
     {
-        using var vm = new ChatViewModel();
+        var bridge = new FakeWorkerBridge();
+        using var vm = new ChatViewModel(bridge, autoConnect: false);
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready, FeatureTier = CodexFeatureTier.Baseline });
 
         await RaiseConversationEventAsync(vm, new ConversationEvent { Kind = ConversationEventKind.TurnStarted });
         await RaiseConversationEventAsync(vm, new ConversationEvent
@@ -3711,7 +3957,9 @@ public sealed partial class ViewModelTests
     [TestMethod]
     public async Task ChatViewModel_AgentMessageDelta_JapaneseFragments_NoInterCharacterSpace()
     {
-        using var vm = new ChatViewModel();
+        var bridge = new FakeWorkerBridge();
+        using var vm = new ChatViewModel(bridge, autoConnect: false);
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready, FeatureTier = CodexFeatureTier.Baseline });
 
         await RaiseConversationEventAsync(vm, new ConversationEvent { Kind = ConversationEventKind.TurnStarted });
         await RaiseConversationEventAsync(vm, new ConversationEvent
@@ -3736,7 +3984,9 @@ public sealed partial class ViewModelTests
     [TestMethod]
     public async Task ChatViewModel_AgentAndReasoningDeltas_WithSameItemId_DoNotShareAccumulator()
     {
-        using var vm = new ChatViewModel(new FakeWorkerBridge(), autoConnect: false);
+        var bridge = new FakeWorkerBridge();
+        using var vm = new ChatViewModel(bridge, autoConnect: false);
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready, FeatureTier = CodexFeatureTier.Baseline });
 
         await RaiseConversationEventAsync(vm, new ConversationEvent { Kind = ConversationEventKind.TurnStarted });
         await RaiseConversationEventAsync(vm, new ConversationEvent
@@ -3773,7 +4023,9 @@ public sealed partial class ViewModelTests
     [TestMethod]
     public async Task ChatViewModel_AgentMessageDelta_PopulatesStructuredBlocks()
     {
-        using var vm = new ChatViewModel();
+        var bridge = new FakeWorkerBridge();
+        using var vm = new ChatViewModel(bridge, autoConnect: false);
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready, FeatureTier = CodexFeatureTier.Baseline });
 
         await RaiseConversationEventAsync(vm, new ConversationEvent { Kind = ConversationEventKind.TurnStarted });
         await RaiseConversationEventAsync(vm, new ConversationEvent
@@ -3877,7 +4129,9 @@ public sealed partial class ViewModelTests
     [TestMethod]
     public async Task ChatViewModel_TurnStarted_ClearsItemRawText()
     {
-        using var vm = new ChatViewModel();
+        var bridge = new FakeWorkerBridge();
+        using var vm = new ChatViewModel(bridge, autoConnect: false);
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready, FeatureTier = CodexFeatureTier.Baseline });
 
         await RaiseConversationEventAsync(vm, new ConversationEvent { Kind = ConversationEventKind.TurnStarted });
         await RaiseConversationEventAsync(vm, new ConversationEvent
@@ -6155,6 +6409,17 @@ public sealed partial class ViewModelTests
             ThreadId = "thread-synthetic",
             TurnId = "synthetic-turn-1",
             ItemId = "agent-question",
+            IsAgentMessage = true,
+            Text = "Do you want me to continue with the implementation?\n1. Yes\n2. No",
+        });
+        await bridge.PublishConversationEventAsync(new ConversationEvent
+        {
+            Kind = ConversationEventKind.ItemCompleted,
+            ThreadId = "thread-synthetic",
+            TurnId = "synthetic-turn-1",
+            ItemId = "agent-question",
+            IsAgentMessage = true,
+            AgentMessageDisplayDecision = new AgentMessageDisplayDecision { Mode = AgentMessageDisplayMode.Show },
             Text = "Do you want me to continue with the implementation?\n1. Yes\n2. No",
         });
         await bridge.PublishConversationEventAsync(new ConversationEvent
@@ -9585,16 +9850,28 @@ public sealed partial class ViewModelTests
 
         public async Task PublishFinalQuestionAsync()
         {
+            string question = string.Join('\n',
+                "依存制約が変わっていないことを再確認しました。更新済みの変更は保持し、ゴールを回答待ち（blocked）にしました。",
+                string.Empty,
+                "残りの最新版化には対象フレームワークの変更が必要です。ご提示のAGENTS.mdの範囲外変更の確認ルールに従い、**.NET 11 RC2への移行を進めてよいですか？**");
             await Bridge.PublishConversationEventAsync(new ConversationEvent
             {
                 Kind = ConversationEventKind.AgentMessageDelta,
                 ThreadId = ThreadId,
                 TurnId = TurnId,
                 ItemId = "goal-confirmation-agent-message",
-                Text = string.Join('\n',
-                    "依存制約が変わっていないことを再確認しました。更新済みの変更は保持し、ゴールを回答待ち（blocked）にしました。",
-                    string.Empty,
-                    "残りの最新版化には対象フレームワークの変更が必要です。ご提示のAGENTS.mdの範囲外変更の確認ルールに従い、**.NET 11 RC2への移行を進めてよいですか？**"),
+                IsAgentMessage = true,
+                Text = question,
+            });
+            await Bridge.PublishConversationEventAsync(new ConversationEvent
+            {
+                Kind = ConversationEventKind.ItemCompleted,
+                ThreadId = ThreadId,
+                TurnId = TurnId,
+                ItemId = "goal-confirmation-agent-message",
+                IsAgentMessage = true,
+                AgentMessageDisplayDecision = new AgentMessageDisplayDecision { Mode = AgentMessageDisplayMode.Show },
+                Text = question,
             });
 
             await Bridge.PublishThreadGoalChangedAsync(new ThreadGoalEvent

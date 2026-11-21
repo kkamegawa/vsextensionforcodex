@@ -1787,6 +1787,8 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         skillSelections.Clear();
         agentRawText.Clear();
         pendingAgentRawKeys.Clear();
+        completedAgentMessageKeys.Clear();
+        completedAgentMessageKeyOrder.Clear();
         itemRawText.Clear();
         lastAgentRawKey = null;
         pendingReasoningByThread.Clear();
@@ -8383,6 +8385,13 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
 
             ApplyItemTiming(value);
 
+            if (value.Kind == ConversationEventKind.AgentMessageDelta
+                && value.IsAgentMessage
+                && IsAgentMessageCompleted(value))
+            {
+                return;
+            }
+
             if (isHistoryLoading && !string.IsNullOrWhiteSpace(value.ThreadId))
             {
                 long eventBytes = GetConversationEventBytes(value);
@@ -8630,7 +8639,10 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             string.Equals(item.ThreadId, value.ThreadId, StringComparison.Ordinal)
             && string.Equals(item.TurnId, value.TurnId, StringComparison.Ordinal)
             && string.Equals(item.ItemId, value.ItemId, StringComparison.Ordinal)
-            && item.Kind == value.Kind
+            && (item.Kind == value.Kind
+                || (value.Kind == ConversationEventKind.ItemCompleted
+                    && value.IsAgentMessage
+                    && item.Kind == ConversationEventKind.AgentMessageDelta))
             && string.Equals(item.StatePartitionFingerprint, notification.StatePartitionFingerprint, StringComparison.Ordinal)
             && item.OwnerGeneration == notification.OwnerGeneration
             && item.ConnectionGeneration == notification.ConnectionGeneration);
