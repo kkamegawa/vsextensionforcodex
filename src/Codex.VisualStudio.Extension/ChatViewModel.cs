@@ -1786,6 +1786,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         skillSelectionSequence++;
         skillSelections.Clear();
         agentRawText.Clear();
+        pendingAgentRawKeys.Clear();
         itemRawText.Clear();
         lastAgentRawKey = null;
         pendingReasoningByThread.Clear();
@@ -3680,7 +3681,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         {
             if (existingItem is not null && !existingItem.IsHistoryCompleted)
             {
-                SetHistoryTranscriptText(existingItem, historyItem.Text);
+                SetHistoryTranscriptText(existingItem, historyItem);
                 ApplyDailyUseHistoryItem(existingItem, historyItem, threadId, owner);
                 existingItem.HistoryKey = key;
                 existingItem.IsHistoryCompleted = true;
@@ -3692,7 +3693,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
 
         if (existingItem is not null)
         {
-            SetHistoryTranscriptText(existingItem, historyItem.Text);
+            SetHistoryTranscriptText(existingItem, historyItem);
             ApplyDailyUseHistoryItem(existingItem, historyItem, threadId, owner);
             existingItem.HistoryKey = key;
             existingItem.IsHistoryCompleted = true;
@@ -3710,7 +3711,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             _ => ConversationEventKind.ItemCompleted,
         };
         bool missingReasoningSummary = IsMissingReasoningSummary(kind, historyItem.Text);
-        string displayText = missingReasoningSummary ? MissingReasoningSummaryText : historyItem.Text ?? string.Empty;
+        string displayText = missingReasoningSummary ? MissingReasoningSummaryText : GetHistoryDisplayText(historyItem);
         SafeMarkdownRenderResult rendered = markdown.ToSafeTextAndBlocks(displayText);
         var item = new ChatItemViewModel(role, rendered.Text, kind)
         {
@@ -4012,10 +4013,10 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         historyBytes += Encoding.UTF8.GetByteCount(text);
     }
 
-    private void SetHistoryTranscriptText(ChatItemViewModel item, string? text)
+    private void SetHistoryTranscriptText(ChatItemViewModel item, ThreadHistoryItem historyItem)
     {
-        bool missingReasoningSummary = IsMissingReasoningSummary(item.Kind, text);
-        string displayText = missingReasoningSummary ? MissingReasoningSummaryText : text ?? string.Empty;
+        bool missingReasoningSummary = IsMissingReasoningSummary(item.Kind, historyItem.Text);
+        string displayText = missingReasoningSummary ? MissingReasoningSummaryText : GetHistoryDisplayText(historyItem);
         SafeMarkdownRenderResult rendered = markdown.ToSafeTextAndBlocks(displayText);
         SetTranscriptText(item, rendered.Text);
         if (item.UsesBlockRendering)
@@ -8409,9 +8410,33 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                 ShowTurnError(value, notification);
             }
 
+            if (RequiresBufferedAgentMessageDisplay()
+                && value.Kind == ConversationEventKind.ItemCompleted
+                && value.IsAgentMessage)
+            {
+                RenderCompletedAgentMessage(value, notification);
+                return;
+            }
+
             if (ApplyDailyUseEvent(value, notification))
             {
                 return;
+            }
+
+            if (RequiresBufferedAgentMessageDisplay())
+            {
+                if (value.Kind == ConversationEventKind.AgentMessageDelta)
+                {
+                    if (!string.IsNullOrEmpty(value.Text)
+                        && FindCurrentTranscriptItem(value, notification)?.IsHistoryCompleted != true)
+                    {
+                        string key = GetAgentRawKey(value);
+                        AppendAgentRaw(key, value.Text);
+                        pendingAgentRawKeys.Add(key);
+                    }
+
+                    return;
+                }
             }
 
             // Plan events carry a full replacement payload — handle separately to avoid text append.
@@ -8444,6 +8469,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             {
                 case ConversationEventKind.TurnStarted:
                     agentRawText.Clear();
+                    pendingAgentRawKeys.Clear();
                     itemRawText.Clear();
                     lastAgentRawKey = null;
                     RemovePlanImplementationOffers();
@@ -8452,6 +8478,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                     AppendAgentRaw(GetAgentRawKey(value), value.Text);
                     break;
                 case ConversationEventKind.TurnCompleted:
+                    DiscardPendingAgentRawText();
                     TryDetectChoicePrompt(NotificationOwner(notification));
                     TryOfferPlanImplementation(value, NotificationOwner(notification));
                     itemRawText.Clear();
@@ -9320,6 +9347,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         agentRawText.TryGetValue(lastKey, out StringBuilder? builder);
         string raw = builder?.ToString() ?? string.Empty;
         agentRawText.Clear();
+        pendingAgentRawKeys.Clear();
         lastAgentRawKey = null;
         UserInputRequest synthesized = new();
         if (ChoicePromptParser.TryParse(raw, out synthesized)

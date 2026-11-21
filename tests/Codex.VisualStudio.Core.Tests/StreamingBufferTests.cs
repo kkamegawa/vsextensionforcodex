@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using Codex.VisualStudio.Contracts;
 using Codex.VisualStudio.Worker;
 
@@ -7,6 +7,43 @@ namespace Codex.VisualStudio.Core.Tests;
 [TestClass]
 public sealed class StreamingBufferTests
 {
+    [TestMethod]
+    public async Task AgentMessageClone_PreservesDisplayDecisionAndAgentMessageFlag()
+    {
+        string directory = Path.Combine(Path.GetTempPath(), "CodexVsTests", Guid.NewGuid().ToString("N"));
+        var events = new List<ConversationEvent>();
+        await using var buffer = new StreamingBuffer(
+            (value, _) =>
+            {
+                lock (events)
+                {
+                    events.Add(value);
+                }
+
+                return Task.CompletedTask;
+            },
+            directory);
+        var template = new ConversationEvent
+        {
+            Kind = ConversationEventKind.AgentMessageDelta,
+            ItemId = "agent-1",
+            IsAgentMessage = true,
+            AgentMessageDisplayDecision = new AgentMessageDisplayDecision
+            {
+                Mode = AgentMessageDisplayMode.Hide,
+                DisplayText = "The answer was replaced with a support message.",
+            },
+        };
+
+        buffer.Append("agent-1", template, "buffered delta", StreamingBuffer.CommandOutputLimit);
+        await WaitUntilAsync(() => CountEvents(events) == 1, TimeSpan.FromSeconds(2));
+
+        ConversationEvent flushed = events.Single();
+        Assert.IsTrue(flushed.IsAgentMessage);
+        Assert.AreEqual(AgentMessageDisplayMode.Hide, flushed.AgentMessageDisplayDecision?.Mode);
+        Assert.AreEqual("The answer was replaced with a support message.", flushed.AgentMessageDisplayDecision?.DisplayText);
+    }
+
     [TestMethod]
     public async Task Burst_IsBatchedAndOverflowIsWritten()
     {

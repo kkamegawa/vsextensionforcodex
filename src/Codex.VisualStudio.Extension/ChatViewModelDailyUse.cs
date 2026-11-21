@@ -410,6 +410,13 @@ public sealed partial class ChatViewModel
             }
         }
 
+        if (historyItem.Type == "agentMessage"
+            && historyItem.AgentMessageDisplayDecision is { Mode: not AgentMessageDisplayMode.Show })
+        {
+            item.ReplaceArtifactParts([]);
+            return;
+        }
+
         if (historyItem.Parts is { Count: > 0 })
         {
             var previewOwner = new ArtifactPreviewOwner(

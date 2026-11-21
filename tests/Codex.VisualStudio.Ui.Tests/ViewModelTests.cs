@@ -1080,6 +1080,77 @@ public sealed partial class ViewModelTests
     }
 
     [TestMethod]
+    public async Task ChatViewModel_RestoredHistoryAppliesAgentMessageDisplayDecision()
+    {
+        var bridge = new FakeWorkerBridge();
+        bridge.ListThreadItemsHandler = (_, _) => Task.FromResult(new ThreadItemsPage
+        {
+            Items =
+            [
+                new ThreadHistoryItem
+                {
+                    Id = "hidden-answer",
+                    TurnId = "turn-1",
+                    Type = "agentMessage",
+                    Text = "private historical answer",
+                    AgentMessageDisplayDecision = new AgentMessageDisplayDecision
+                    {
+                        Mode = AgentMessageDisplayMode.Hide,
+                        DisplayText = "The answer was replaced with a support message.",
+                    },
+                    Parts = [new ArtifactPart { Kind = ArtifactPartKind.Text, Text = "private historical answer" }],
+                },
+                new ThreadHistoryItem
+                {
+                    Id = "invalid-answer",
+                    TurnId = "turn-1",
+                    Type = "agentMessage",
+                    Text = "private invalid historical answer",
+                    AgentMessageDisplayDecision = new AgentMessageDisplayDecision
+                    {
+                        Mode = AgentMessageDisplayMode.Suppress,
+                        DisplayText = "This response was hidden because its display instructions could not be verified.",
+                    },
+                },
+                new ThreadHistoryItem
+                {
+                    Id = "null-display-answer",
+                    TurnId = "turn-1",
+                    Type = "agentMessage",
+                    Text = "private historical body with missing display text",
+                    AgentMessageDisplayDecision = new AgentMessageDisplayDecision
+                    {
+                        Mode = AgentMessageDisplayMode.Hide,
+                        DisplayText = null!,
+                    },
+                    Parts = [new ArtifactPart { Kind = ArtifactPartKind.Text, Text = "private historical body with missing display text" }],
+                },
+            ],
+        });
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        await bridge.PublishStateAsync(new WorkerStatus
+        {
+            State = WorkerConnectionState.Ready,
+            FeatureTier = CodexFeatureTier.Tier170,
+        });
+        var thread = new ThreadSummary { Id = "thread-history" };
+        vm.Threads.Add(thread);
+        vm.SelectedThread = thread;
+        await WaitForAsync(() => vm.Items.Count == 3);
+
+        ChatItemViewModel hidden = vm.Items.Single(item => item.ItemId == "hidden-answer");
+        Assert.IsTrue(hidden.Text.Contains("The answer was replaced with a support message.", StringComparison.Ordinal));
+        Assert.IsFalse(hidden.Text.Contains("private historical answer", StringComparison.Ordinal));
+        ChatItemViewModel invalid = vm.Items.Single(item => item.ItemId == "invalid-answer");
+        Assert.IsTrue(invalid.Text.Contains("display instructions could not be verified", StringComparison.Ordinal));
+        Assert.IsFalse(invalid.Text.Contains("private invalid historical answer", StringComparison.Ordinal));
+        ChatItemViewModel nullDisplay = vm.Items.Single(item => item.ItemId == "null-display-answer");
+        Assert.IsTrue(nullDisplay.Text.Contains("display instructions could not be verified", StringComparison.Ordinal));
+        Assert.IsFalse(nullDisplay.Text.Contains("private historical body with missing display text", StringComparison.Ordinal));
+        Assert.AreEqual(0, nullDisplay.ArtifactParts.Count, "A hidden history item must ignore parts that could contain its original body.");
+    }
+
+    [TestMethod]
     public void ChatBlockCodeFlag_NotifiesAccessibilityNameOnlyWhenChanged()
     {
         var block = new ChatBlockViewModel();
@@ -1244,6 +1315,68 @@ public sealed partial class ViewModelTests
         Assert.IsTrue(vm.Items.Any(item => item.Kind == ConversationEventKind.Error
             && item.Text.Contains("1 unresolved operation", StringComparison.OrdinalIgnoreCase)
             && item.Text.Contains("unknown delivery outcome", StringComparison.OrdinalIgnoreCase)));
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_Tier170DisconnectDropsBufferedAgentBodyAndRestoresFromHistory()
+    {
+        var bridge = new FakeWorkerBridge();
+        bridge.ListThreadItemsHandler = (_, _) => Task.FromResult(new ThreadItemsPage
+        {
+            Items =
+            [
+                new ThreadHistoryItem
+                {
+                    Id = "agent-pending",
+                    TurnId = "turn-1",
+                    Type = "agentMessage",
+                    Text = "authoritative history answer",
+                    AgentMessageDisplayDecision = new AgentMessageDisplayDecision { Mode = AgentMessageDisplayMode.Show },
+                },
+            ],
+        });
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        await bridge.PublishStateAsync(new WorkerStatus
+        {
+            State = WorkerConnectionState.Ready,
+            FeatureTier = CodexFeatureTier.Tier170,
+        });
+
+        await RaiseConversationEventAsync(vm, new ConversationEvent
+        {
+            Kind = ConversationEventKind.AgentMessageDelta,
+            ThreadId = "thread-reconnect",
+            TurnId = "turn-1",
+            ItemId = "agent-pending",
+            IsAgentMessage = true,
+            Text = "interrupted private body",
+        });
+        Assert.IsFalse(vm.Items.Any(item => item.Text.Contains("interrupted private body", StringComparison.Ordinal)));
+        object rawBuffer = typeof(ChatViewModel).GetField("agentRawText", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(vm)!;
+        Assert.AreEqual(1, (int)rawBuffer.GetType().GetProperty("Count")!.GetValue(rawBuffer)!);
+
+        MethodInfo lostMethod = typeof(ChatViewModel).GetMethod("HandleConnectionLostAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
+        await (Task)lostMethod.Invoke(vm, [bridge, WorkerRecoveryFailureKind.PeerUnresponsive])!;
+
+        Assert.IsFalse(vm.Items.Any(item => item.Text.Contains("interrupted private body", StringComparison.Ordinal)));
+        Assert.AreEqual(0, (int)rawBuffer.GetType().GetProperty("Count")!.GetValue(rawBuffer)!);
+
+        await bridge.PublishStateAsync(new WorkerStatus
+        {
+            State = WorkerConnectionState.Ready,
+            FeatureTier = CodexFeatureTier.Tier170,
+        });
+        var thread = new ThreadSummary { Id = "thread-reconnect" };
+        if (!vm.Threads.Any(item => item.Id == thread.Id))
+        {
+            vm.Threads.Add(thread);
+        }
+        vm.SelectedThread = vm.Threads.Single(item => item.Id == thread.Id);
+        await WaitForAsync(() => vm.Items.Any(item => item.ItemId == "agent-pending"));
+
+        ChatItemViewModel restored = vm.Items.Single(item => item.ItemId == "agent-pending");
+        Assert.IsTrue(restored.Text.Contains("authoritative history answer", StringComparison.Ordinal));
+        Assert.IsFalse(restored.Text.Contains("interrupted private body", StringComparison.Ordinal));
     }
 
     private static ThreadHistoryItem HistoryItem(string id)
@@ -3336,6 +3469,223 @@ public sealed partial class ViewModelTests
     }
 
     [TestMethod]
+    public async Task ChatViewModel_Tier170BuffersAgentDeltasUntilDisplayDecisionAndSuppressesLateDeltas()
+    {
+        var bridge = new FakeWorkerBridge();
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        await bridge.PublishStateAsync(new WorkerStatus
+        {
+            State = WorkerConnectionState.Ready,
+            FeatureTier = CodexFeatureTier.Tier170,
+        });
+
+        await VerifyAsync("normal", null, "private answer body");
+        await VerifyAsync("show", new AgentMessageDisplayDecision { Mode = AgentMessageDisplayMode.Show }, "private answer body");
+        await VerifyAsync("hide", new AgentMessageDisplayDecision { Mode = AgentMessageDisplayMode.Hide, DisplayText = "The answer was replaced with a support message." }, "The answer was replaced with a support message.");
+        await VerifyAsync("block", new AgentMessageDisplayDecision { Mode = AgentMessageDisplayMode.Block, DisplayText = "The answer was blocked by moderation." }, "The answer was blocked by moderation.");
+        await VerifyAsync("invalid", new AgentMessageDisplayDecision { Mode = AgentMessageDisplayMode.Suppress, DisplayText = "This response was hidden because its display instructions could not be verified." }, "This response was hidden because its display instructions could not be verified.");
+        await VerifyAsync(
+            "null-display",
+            new AgentMessageDisplayDecision { Mode = AgentMessageDisplayMode.Hide, DisplayText = null! },
+            "This response was hidden because its display instructions could not be verified.",
+            [new ArtifactPart { Kind = ArtifactPartKind.Text, Text = "private answer body" }]);
+
+        async Task VerifyAsync(string id, AgentMessageDisplayDecision? decision, string expected, IReadOnlyList<ArtifactPart>? parts = null)
+        {
+            const string original = "private answer body";
+            const string pendingDelta = "unapproved partial body";
+            await RaiseConversationEventAsync(vm, new ConversationEvent
+            {
+                Kind = ConversationEventKind.AgentMessageDelta,
+                ThreadId = "test-thread",
+                TurnId = "turn-1",
+                ItemId = id,
+                IsAgentMessage = true,
+                Text = pendingDelta,
+            });
+            Assert.IsFalse(vm.Items.Any(item => item.ItemId == id), "A 0.170+ agent delta must not create a transcript row.");
+
+            await RaiseConversationEventAsync(vm, new ConversationEvent
+            {
+                Kind = ConversationEventKind.ItemCompleted,
+                ThreadId = "test-thread",
+                TurnId = "turn-1",
+                ItemId = id,
+                IsAgentMessage = true,
+                Text = original,
+                AgentMessageDisplayDecision = decision,
+                Parts = parts ?? Array.Empty<ArtifactPart>(),
+            });
+
+            ChatItemViewModel item = vm.Items.Single(entry => entry.ItemId == id);
+            Assert.IsTrue(item.Text.Contains(expected, StringComparison.Ordinal));
+            if (decision is { Mode: not AgentMessageDisplayMode.Show })
+            {
+                Assert.IsFalse(item.Text.Contains(original, StringComparison.Ordinal));
+                Assert.AreEqual(0, item.ArtifactParts.Count, "A hidden live item must ignore parts that could contain its original body.");
+            }
+
+            object agentBuffer = typeof(ChatViewModel).GetField("agentRawText", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(vm)!;
+            if (decision is null or { Mode: AgentMessageDisplayMode.Show })
+            {
+                object?[] arguments = [id, null];
+                bool found = (bool)agentBuffer.GetType().GetMethod("TryGetValue")!.Invoke(agentBuffer, arguments)!;
+                Assert.IsTrue(found, "Choice detection retains the completed, approved assistant body.");
+                Assert.AreEqual(original, arguments[1]!.ToString(), "Pending deltas are replaced by the approved completion body.");
+            }
+            else
+            {
+                bool found = (bool)agentBuffer.GetType().GetMethod("ContainsKey")!.Invoke(agentBuffer, [id])!;
+                Assert.IsFalse(found, "A hidden assistant body must not remain in the choice-detection buffer.");
+            }
+
+            await RaiseConversationEventAsync(vm, new ConversationEvent
+            {
+                Kind = ConversationEventKind.AgentMessageDelta,
+                ThreadId = "test-thread",
+                TurnId = "turn-1",
+                ItemId = id,
+                IsAgentMessage = true,
+                Text = "late unapproved tail",
+            });
+            Assert.IsFalse(item.Text.Contains("late unapproved tail", StringComparison.Ordinal));
+        }
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_Tier170TurnCompletionDropsUncompletedAgentBodyBeforeChoiceDetection()
+    {
+        var bridge = new FakeWorkerBridge();
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        await bridge.PublishStateAsync(new WorkerStatus
+        {
+            State = WorkerConnectionState.Ready,
+            FeatureTier = CodexFeatureTier.Tier170,
+        });
+        const string unapprovedPrompt = "Which deployment target?\n1. Azure\n2. On-premises";
+
+        await RaiseConversationEventAsync(vm, new ConversationEvent
+        {
+            Kind = ConversationEventKind.TurnStarted,
+            ThreadId = "test-thread",
+            TurnId = "turn-1",
+        });
+        await RaiseConversationEventAsync(vm, new ConversationEvent
+        {
+            Kind = ConversationEventKind.AgentMessageDelta,
+            ThreadId = "test-thread",
+            TurnId = "turn-1",
+            ItemId = "pending-agent",
+            IsAgentMessage = true,
+            Text = unapprovedPrompt,
+        });
+
+        Assert.IsFalse(vm.Items.Any(item => item.Text.Contains(unapprovedPrompt, StringComparison.Ordinal)));
+
+        await RaiseConversationEventAsync(vm, new ConversationEvent
+        {
+            Kind = ConversationEventKind.TurnCompleted,
+            ThreadId = "test-thread",
+            TurnId = "turn-1",
+        });
+
+        Assert.IsNull(vm.ActiveUserInput, "An incomplete 0.170+ assistant item must not synthesize a user-input prompt.");
+        Assert.IsFalse(vm.Items.Any(item => item.Text.Contains(unapprovedPrompt, StringComparison.Ordinal)));
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_UnknownFutureFeatureTierBuffersAgentDeltasUntilCompletion()
+    {
+        var bridge = new FakeWorkerBridge();
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        await bridge.PublishStateAsync(new WorkerStatus
+        {
+            State = WorkerConnectionState.Ready,
+            FeatureTier = (CodexFeatureTier)999,
+        });
+
+        await RaiseConversationEventAsync(vm, new ConversationEvent
+        {
+            Kind = ConversationEventKind.AgentMessageDelta,
+            ThreadId = "future-thread",
+            TurnId = "turn-1",
+            ItemId = "future-agent",
+            IsAgentMessage = true,
+            Text = "unapproved future-tier delta",
+        });
+
+        Assert.IsFalse(vm.Items.Any(item => item.Text.Contains("unapproved future-tier delta", StringComparison.Ordinal)));
+
+        await RaiseConversationEventAsync(vm, new ConversationEvent
+        {
+            Kind = ConversationEventKind.ItemCompleted,
+            ThreadId = "future-thread",
+            TurnId = "turn-1",
+            ItemId = "future-agent",
+            IsAgentMessage = true,
+            AgentMessageDisplayDecision = new AgentMessageDisplayDecision { Mode = AgentMessageDisplayMode.Show },
+            Text = "approved future-tier completion",
+        });
+
+        ChatItemViewModel item = vm.Items.Single(entry => entry.ItemId == "future-agent");
+        Assert.IsTrue(item.Text.Contains("approved future-tier completion", StringComparison.Ordinal));
+        Assert.IsFalse(item.Text.Contains("unapproved future-tier delta", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_Tier170ShowAgentMessageWithPartsOnlyRendersParts()
+    {
+        var bridge = new FakeWorkerBridge();
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        await bridge.PublishStateAsync(new WorkerStatus
+        {
+            State = WorkerConnectionState.Ready,
+            FeatureTier = CodexFeatureTier.Tier170,
+        });
+        const string approvedText = "approved assistant content from a text part";
+
+        await RaiseConversationEventAsync(vm, new ConversationEvent
+        {
+            Kind = ConversationEventKind.ItemCompleted,
+            ThreadId = "test-thread",
+            TurnId = "turn-1",
+            ItemId = "parts-only-agent",
+            IsAgentMessage = true,
+            AgentMessageDisplayDecision = new AgentMessageDisplayDecision { Mode = AgentMessageDisplayMode.Show },
+            Parts = [new ArtifactPart { Kind = ArtifactPartKind.Text, Text = approvedText }],
+        });
+
+        ChatItemViewModel item = vm.Items.Single(entry => entry.ItemId == "parts-only-agent");
+        Assert.IsTrue(string.IsNullOrEmpty(item.Text));
+        Assert.AreEqual(1, item.ArtifactParts.Count);
+        Assert.IsTrue(item.ArtifactParts[0].Text.Contains(approvedText, StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_Tier169KeepsLiveAgentStreaming()
+    {
+        var bridge = new FakeWorkerBridge();
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        await bridge.PublishStateAsync(new WorkerStatus
+        {
+            State = WorkerConnectionState.Ready,
+            FeatureTier = CodexFeatureTier.Baseline,
+        });
+
+        await RaiseConversationEventAsync(vm, new ConversationEvent
+        {
+            Kind = ConversationEventKind.AgentMessageDelta,
+            ThreadId = "test-thread",
+            TurnId = "turn-1",
+            ItemId = "baseline-agent",
+            IsAgentMessage = true,
+            Text = "visible before completion",
+        });
+
+        Assert.IsTrue(vm.Items.Single(item => item.ItemId == "baseline-agent").Text.Contains("visible before completion", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
     public async Task ChatViewModel_AgentMessageDelta_FullTextRerendered_NotAppended()
     {
         using var vm = new ChatViewModel();
@@ -3613,6 +3963,26 @@ public sealed partial class ViewModelTests
         Assert.IsTrue(line.Contains("TurnCompleted", StringComparison.Ordinal));
         Assert.IsTrue(line.Contains("thread=t1", StringComparison.Ordinal));
         Assert.IsTrue(line.Contains("turn=u1", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    public void ConversationEventPresentation_FormatDiagnostic_AssistantMessageNeverIncludesBodyOrPayload()
+    {
+        const string privateBody = "unapproved private answer";
+        string line = ConversationEventPresentation.FormatDiagnostic(new ConversationEvent
+        {
+            Kind = ConversationEventKind.ItemCompleted,
+            ThreadId = "thread-1",
+            TurnId = "turn-1",
+            ItemId = "item-1",
+            IsAgentMessage = true,
+            Text = privateBody,
+            PayloadJson = "{\"text\":\"unapproved private answer\"}",
+            Parts = [new ArtifactPart { Kind = ArtifactPartKind.Text, Text = privateBody }],
+        });
+
+        Assert.IsTrue(line.Contains("item-1", StringComparison.Ordinal));
+        Assert.IsFalse(line.Contains(privateBody, StringComparison.Ordinal));
     }
 
     [TestMethod]
@@ -6184,12 +6554,37 @@ public sealed partial class ViewModelTests
     [TestMethod]
     public async Task ChatViewModel_ForkSelectsReadOnlyHistoryUntilExplicitJoin()
     {
-        var bridge = new FakeWorkerBridge();
+        var bridge = new FakeWorkerBridge
+        {
+            ListThreadItemsHandler = (_, _) => Task.FromResult(new ThreadItemsPage
+            {
+                Items =
+                [
+                    new ThreadHistoryItem
+                    {
+                        Id = "fork-hidden-answer",
+                        TurnId = "turn-fork",
+                        Type = "agentMessage",
+                        Text = "private fork history answer",
+                        AgentMessageDisplayDecision = new AgentMessageDisplayDecision
+                        {
+                            Mode = AgentMessageDisplayMode.Hide,
+                            DisplayText = "The answer was replaced with a support message.",
+                        },
+                    },
+                ],
+            }),
+        };
         using var vm = new ChatViewModel(bridge, autoConnect: false)
         {
             SelectedThread = new ThreadSummary { Id = "thread-1" },
         };
-        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready, ThreadId = "thread-1" });
+        await bridge.PublishStateAsync(new WorkerStatus
+        {
+            State = WorkerConnectionState.Ready,
+            ThreadId = "thread-1",
+            FeatureTier = CodexFeatureTier.Tier170,
+        });
 
         vm.ComposerText = "/fork";
         await InvokeComposerSendAsync(vm);
@@ -6197,6 +6592,10 @@ public sealed partial class ViewModelTests
         Assert.AreEqual("thread-fork", vm.SelectedThread!.Id);
         Assert.AreEqual("thread-1", bridge.LastResumedThreadId, "Fork selection must not implicitly resume the new thread.");
         Assert.IsTrue(vm.IsHistoryOnly);
+        await WaitForAsync(() => vm.Items.Any(item => item.ItemId == "fork-hidden-answer"));
+        ChatItemViewModel forkedHistory = vm.Items.Single(item => item.ItemId == "fork-hidden-answer");
+        Assert.IsTrue(forkedHistory.Text.Contains("support message", StringComparison.Ordinal));
+        Assert.IsFalse(forkedHistory.Text.Contains("private fork history answer", StringComparison.Ordinal));
 
         await RunCommandAsync(vm.JoinThreadCommand);
 
@@ -6215,18 +6614,45 @@ public sealed partial class ViewModelTests
                     "provider rejected this conversation",
                     WorkerErrorCodes.UpstreamOperationFailed,
                     ProviderErrorCodes.ModelProviderNotConfigured)),
+            ListThreadItemsHandler = (_, _) => Task.FromResult(new ThreadItemsPage
+            {
+                Items =
+                [
+                    new ThreadHistoryItem
+                    {
+                        Id = "resume-hidden-answer",
+                        TurnId = "turn-provider",
+                        Type = "agentMessage",
+                        Text = "private resumed history answer",
+                        AgentMessageDisplayDecision = new AgentMessageDisplayDecision
+                        {
+                            Mode = AgentMessageDisplayMode.Block,
+                            DisplayText = "The answer was blocked by moderation.",
+                        },
+                    },
+                ],
+            }),
         };
         using var vm = new ChatViewModel(bridge, autoConnect: false)
         {
             SelectedThread = new ThreadSummary { Id = threadId },
         };
-        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready, ThreadId = threadId });
+        await bridge.PublishStateAsync(new WorkerStatus
+        {
+            State = WorkerConnectionState.Ready,
+            ThreadId = threadId,
+            FeatureTier = CodexFeatureTier.Tier170,
+        });
         int historyReadsBeforeJoin = bridge.ReadThreadCallCount;
 
         await RunCommandAsync(vm.JoinThreadCommand);
 
         Assert.IsTrue(vm.IsHistoryOnly);
         Assert.IsTrue(bridge.ReadThreadCallCount > historyReadsBeforeJoin, "Provider rejection should open the transcript through thread/read.");
+        await WaitForAsync(() => vm.Items.Any(item => item.ItemId == "resume-hidden-answer"));
+        ChatItemViewModel resumedHistory = vm.Items.Single(item => item.ItemId == "resume-hidden-answer");
+        Assert.IsTrue(resumedHistory.Text.Contains("blocked by moderation", StringComparison.Ordinal));
+        Assert.IsFalse(resumedHistory.Text.Contains("private resumed history answer", StringComparison.Ordinal));
         StringAssert.Contains(vm.HistoryStatusText, "not configured");
         StringAssert.Contains(vm.HistoryStatusText, "/goal pause");
 

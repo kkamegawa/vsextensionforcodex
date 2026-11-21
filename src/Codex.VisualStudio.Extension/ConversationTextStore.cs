@@ -295,14 +295,26 @@ internal static class ConversationTextFormatter
             // History text has already passed through ISecretRedactor in the worker. Keep it
             // as plain text here: Markdown parsing changes literal command and code characters.
             // The literal path still removes ANSI escape sequences and control characters.
-            text.Append(SafeMarkdownService.ToSafeLiteralText(item.Text ?? string.Empty)).Append("\r\n");
+            bool isAgentMessage = item.Type == "agentMessage";
+            AgentMessageDisplayDecision? decision = item.AgentMessageDisplayDecision;
+            string? displayText = isAgentMessage && decision is not null
+                ? decision.GetDisplayText(item.Text)
+                : item.Text;
+            text.Append(SafeMarkdownService.ToSafeLiteralText(displayText ?? string.Empty)).Append("\r\n");
+
+            // A non-show moderation decision replaces the entire assistant item. Do not export
+            // parts that may contain the original body or its fallback metadata.
+            if (isAgentMessage && decision is { Mode: not AgentMessageDisplayMode.Show })
+            {
+                continue;
+            }
 
             foreach (ArtifactPart part in item.Parts)
             {
                 if (part.Kind == ArtifactPartKind.Text)
                 {
-                    // MCP history can expose content only through ordered text parts. When the
-                    // item already has that same body, avoid writing its projected copy twice.
+                    // MCP history can expose content only through ordered text parts. Agent
+                    // history can also repeat its body in parts; avoid writing an exact duplicate.
                     if (!string.IsNullOrEmpty(part.Text)
                         && !string.Equals(item.Text, part.Text, StringComparison.Ordinal))
                     {

@@ -149,6 +149,94 @@ public sealed class ConversationTextFormatterTests
         Assert.AreEqual(1, CountOccurrences(snapshot, body));
     }
 
+    [TestMethod]
+    public void Format_HiddenAgentMessageExportsOnlyItsApprovedReplacement()
+    {
+        const string original = "private assistant body";
+        const string replacement = "The answer was replaced with a support message.";
+        string formatted = ConversationTextFormatter.Format(
+            "Conversation",
+            DateTimeOffset.UnixEpoch,
+            [new ThreadHistoryItem
+            {
+                Id = "agent-1",
+                TurnId = "turn-1",
+                Type = "agentMessage",
+                Text = original,
+                AgentMessageDisplayDecision = new AgentMessageDisplayDecision
+                {
+                    Mode = AgentMessageDisplayMode.Hide,
+                    DisplayText = replacement,
+                },
+                Parts = [new ArtifactPart { Kind = ArtifactPartKind.Text, Text = original }],
+            }],
+            new SafeMarkdownService());
+
+        Assert.IsTrue(formatted.Contains(replacement, StringComparison.Ordinal));
+        Assert.IsFalse(formatted.Contains(original, StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    public void Format_HiddenAgentMessageWithMissingDisplayTextExportsFailClosedText()
+    {
+        const string original = "private assistant body";
+        string formatted = ConversationTextFormatter.Format(
+            "Conversation",
+            DateTimeOffset.UnixEpoch,
+            [new ThreadHistoryItem
+            {
+                Id = "agent-1",
+                TurnId = "turn-1",
+                Type = "agentMessage",
+                Text = original,
+                AgentMessageDisplayDecision = new AgentMessageDisplayDecision
+                {
+                    Mode = AgentMessageDisplayMode.Hide,
+                    DisplayText = null!,
+                },
+                Parts = [new ArtifactPart { Kind = ArtifactPartKind.Text, Text = original }],
+            }],
+            new SafeMarkdownService());
+
+        Assert.IsTrue(formatted.Contains("display instructions could not be verified", StringComparison.Ordinal));
+        Assert.IsFalse(formatted.Contains(original, StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    public void AgentMessageDisplayDecision_DefaultIsFailClosed()
+    {
+        const string original = "private assistant body";
+        var decision = new AgentMessageDisplayDecision();
+
+        Assert.AreEqual(AgentMessageDisplayMode.Suppress, decision.Mode);
+        Assert.IsFalse(decision.GetDisplayText(original)!.Contains(original, StringComparison.Ordinal));
+        Assert.IsTrue(decision.DisplayText.Contains("could not be verified", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    public void AgentMessageDisplayDecision_DeserializationWithoutDisplayTextFailsClosed()
+    {
+        var serializer = new System.Runtime.Serialization.DataContractSerializer(typeof(AgentMessageDisplayDecision));
+        using var serialized = new System.IO.MemoryStream();
+        serializer.WriteObject(serialized, new AgentMessageDisplayDecision { Mode = AgentMessageDisplayMode.Hide });
+        serialized.Position = 0;
+        System.Xml.Linq.XDocument document = System.Xml.Linq.XDocument.Load(serialized);
+        System.Xml.Linq.XElement displayText = document.Descendants().Single(element => element.Name.LocalName == "DisplayText");
+        displayText.Remove();
+
+        using var withoutDisplayText = new System.IO.MemoryStream();
+        using (System.Xml.XmlWriter writer = System.Xml.XmlWriter.Create(withoutDisplayText))
+        {
+            document.Save(writer);
+        }
+
+        withoutDisplayText.Position = 0;
+        var restored = (AgentMessageDisplayDecision)serializer.ReadObject(withoutDisplayText)!;
+
+        Assert.IsFalse(restored.GetDisplayText("private assistant body")!.Contains("private assistant body", StringComparison.Ordinal));
+        Assert.IsTrue(restored.GetDisplayText("private assistant body")!.Contains("could not be verified", StringComparison.Ordinal));
+    }
+
     private static int CountOccurrences(string value, string searched)
     {
         int count = 0;

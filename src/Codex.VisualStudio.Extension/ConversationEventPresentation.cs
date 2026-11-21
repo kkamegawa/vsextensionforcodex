@@ -30,6 +30,11 @@ public static class ConversationEventPresentation
     // so this method only shapes the text.
     public static string FormatDiagnostic(ConversationEvent value)
     {
+        if (value.IsAgentMessage)
+        {
+            return $"[assistant-message] thread={value.ThreadId ?? "-"} turn={value.TurnId ?? "-"} item={value.ItemId ?? "-"}";
+        }
+
         string? detail = value.Text ?? value.PayloadJson;
         if (value.Kind == ConversationEventKind.Error)
         {

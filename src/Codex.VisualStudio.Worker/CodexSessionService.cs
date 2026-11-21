@@ -1878,6 +1878,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
                 TurnId = itemTurnId,
                 Type = itemType,
                 Text = ReadHistoryText(item, itemType) is { } historyText ? redactor.Redact(historyText) : null,
+                AgentMessageDisplayDecision = itemType == "agentMessage" ? ReadAgentMessageDisplayDecision(item) : null,
                 StartedAtMs = GetInt64(item, "startedAtMs") ?? GetInt64(entry, "startedAtMs"),
                 CompletedAtMs = GetInt64(item, "completedAtMs") ?? GetInt64(entry, "completedAtMs"),
             };
@@ -4201,7 +4202,8 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             ThreadId = threadId,
             TurnId = turnId,
             ItemId = itemId,
-            PayloadJson = redactor.Redact(parameters.GetRawText()),
+            IsAgentMessage = method == "item/agentMessage/delta",
+            PayloadJson = method == "item/agentMessage/delta" ? null : redactor.Redact(parameters.GetRawText()),
             StartedAtMs = ReadItemTimestamp(parameters, "startedAtMs"),
             CompletedAtMs = ReadItemTimestamp(parameters, "completedAtMs"),
         };
@@ -4249,6 +4251,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             && startedItem.ValueKind == JsonValueKind.Object)
         {
             string? startedType = GetBoundedString(startedItem, "type", 64);
+            output.IsAgentMessage = string.Equals(startedType, "agentMessage", StringComparison.Ordinal);
             output.PayloadJson = null;
             output.Text = startedType is null ? "An app-server item started." : $"App-server item started: {redactor.Redact(startedType)}.";
             // Lifecycle only: no artifact parts, so the extension routes it to diagnostics
@@ -6251,6 +6254,118 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
 
         return cursor.GetString();
     }
+
+    private static AgentMessageDisplayDecision? ReadAgentMessageDisplayDecision(JsonElement item)
+    {
+        if (!item.TryGetProperty("moderation", out JsonElement moderation))
+        {
+            return null;
+        }
+
+        if (moderation.ValueKind == JsonValueKind.Null)
+        {
+            return null;
+        }
+
+        if (moderation.ValueKind != JsonValueKind.Object
+            || !moderation.TryGetProperty("moderated", out JsonElement moderated)
+            || moderated.ValueKind != JsonValueKind.True && moderated.ValueKind != JsonValueKind.False)
+        {
+            return CreateSuppressedAgentMessageDecision();
+        }
+
+        if (moderated.ValueKind == JsonValueKind.False)
+        {
+            return null;
+        }
+
+        if (!moderation.TryGetProperty("display", out JsonElement display)
+            || display.ValueKind != JsonValueKind.Object
+            || !display.TryGetProperty("version", out JsonElement version)
+            || version.ValueKind != JsonValueKind.Number
+            || !version.TryGetInt32(out int displayVersion)
+            || displayVersion != 1
+            || GetString(display, "mode") is not { } mode)
+        {
+            return CreateSuppressedAgentMessageDecision();
+        }
+
+        if (mode == "show"
+            && display.TryGetProperty("trustedContacts", out JsonElement trustedContacts)
+            && trustedContacts.ValueKind == JsonValueKind.String
+            && trustedContacts.GetString() is "check" or "skip"
+            && IsValidAnswerAnnotation(display))
+        {
+            return new AgentMessageDisplayDecision { Mode = AgentMessageDisplayMode.Show };
+        }
+
+        if (mode == "hide"
+            && display.TryGetProperty("replacement", out JsonElement replacement)
+            && replacement.ValueKind == JsonValueKind.Object
+            && GetString(replacement, "kind") == "wellbeingPromptHelpline")
+        {
+            return new AgentMessageDisplayDecision
+            {
+                Mode = AgentMessageDisplayMode.Hide,
+                DisplayText = "The answer was replaced with a support message.",
+            };
+        }
+
+        if (mode == "block"
+            && display.TryGetProperty("reason", out JsonElement reason)
+            && IsValidBlockReason(reason))
+        {
+            return new AgentMessageDisplayDecision
+            {
+                Mode = AgentMessageDisplayMode.Block,
+                DisplayText = "The answer was blocked by moderation.",
+            };
+        }
+
+        return CreateSuppressedAgentMessageDecision();
+    }
+
+    private static bool IsValidAnswerAnnotation(JsonElement display)
+    {
+        if (!display.TryGetProperty("annotation", out JsonElement annotation)
+            || annotation.ValueKind == JsonValueKind.Null)
+        {
+            return true;
+        }
+
+        return annotation.ValueKind == JsonValueKind.Object
+            && GetString(annotation, "kind") == "wellbeingHelpline"
+            && GetString(annotation, "subject") is "answer" or "prompt";
+    }
+
+    private static bool IsValidBlockReason(JsonElement reason)
+    {
+        if (reason.ValueKind != JsonValueKind.Object)
+        {
+            return false;
+        }
+
+        string? kind = GetString(reason, "kind");
+        if (kind == "protection")
+        {
+            return GetBoundedString(reason, "protectionType", 128) is not null;
+        }
+
+        if (kind != "cyber")
+        {
+            return false;
+        }
+
+        return !reason.TryGetProperty("trustedAccess", out JsonElement trustedAccess)
+            || trustedAccess.ValueKind is JsonValueKind.True or JsonValueKind.False or JsonValueKind.Null;
+    }
+
+    private static AgentMessageDisplayDecision CreateSuppressedAgentMessageDecision()
+        => new()
+        {
+            Mode = AgentMessageDisplayMode.Suppress,
+            DisplayText = "This response was hidden because its display instructions could not be verified.",
+        };
 
     private static string? ReadHistoryText(JsonElement item, string itemType)
     {

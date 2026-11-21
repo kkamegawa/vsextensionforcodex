@@ -117,6 +117,8 @@ public sealed class StreamingBuffer : IAsyncDisposable
         ThreadId = value.ThreadId,
         TurnId = value.TurnId,
         ItemId = value.ItemId,
+        IsAgentMessage = value.IsAgentMessage,
+        AgentMessageDisplayDecision = value.AgentMessageDisplayDecision,
         PayloadJson = value.PayloadJson,
         Truncated = value.Truncated,
         OverflowFile = value.OverflowFile,

@@ -752,6 +752,13 @@ public sealed partial class CodexSessionService
         CancellationToken cancellationToken)
     {
         string? itemType = GetString(item, "type");
+        if (itemType == "agentMessage")
+        {
+            output.IsAgentMessage = true;
+            output.PayloadJson = null;
+            output.AgentMessageDisplayDecision = ReadAgentMessageDisplayDecision(item);
+        }
+
         if (itemType == "plan" && output.Kind == ConversationEventKind.ItemCompleted)
         {
             await EmitCompletedPlanItemAsync(context, item, output.ThreadId, output.TurnId, cancellationToken).ConfigureAwait(false);
