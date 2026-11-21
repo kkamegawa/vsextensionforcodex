@@ -13,8 +13,11 @@ jobs:
       contents: read
     outputs:
       versions: ${{ steps.contract.outputs.versions }}
+      schemaVersions: ${{ steps.contract.outputs.schemaVersions }}
       regressions: ${{ steps.contract.outputs.regressions }}
       target: ${{ steps.contract.outputs.target }}
+      minimumBoundary: ${{ steps.contract.outputs.minimumBoundary }}
+      minimumBoundaryEquivalent: ${{ steps.contract.outputs.minimumBoundaryEquivalent }}
     steps:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -29,7 +32,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        version: ${{ fromJSON(needs.contract-manifest.outputs.versions) }}
+        version: ${{ fromJSON(needs.contract-manifest.outputs.schemaVersions) }}
         surface: [stable, experimental]
     permissions:
       contents: read
@@ -50,6 +53,10 @@ jobs:
         run: |
           pwsh -NoProfile -File scripts/generate-schemas.ps1 -OutputDirectory schemas `
             -Version '${{ matrix.version }}' -Surface '${{ matrix.surface }}' -CodexPath "$env:CODEX_PATH"
+      - name: Smoke test minimum supported CLI
+        if: matrix.version == needs.contract-manifest.outputs.minimumBoundary && matrix.surface == 'stable'
+        shell: pwsh
+        run: pwsh -NoProfile -File scripts/smoke-app-server.ps1 -CodexPath "$env:CODEX_PATH"
       - name: Verify schema cache contract
         if: matrix.surface == 'stable'
         shell: pwsh
@@ -67,6 +74,8 @@ jobs:
     env:
       CONTRACT_REGRESSIONS: ${{ needs.contract-manifest.outputs.regressions }}
       CONTRACT_TARGET: ${{ needs.contract-manifest.outputs.target }}
+      CONTRACT_MINIMUM_BOUNDARY: ${{ needs.contract-manifest.outputs.minimumBoundary }}
+      CONTRACT_MINIMUM_EQUIVALENT: ${{ needs.contract-manifest.outputs.minimumBoundaryEquivalent }}
     permissions:
       contents: read
     steps:
@@ -97,11 +106,27 @@ jobs:
               }
             }
           }
+      - name: Verify minimum boundary schema equivalence
+        shell: pwsh
+        run: |
+          foreach ($surface in @('stable', 'experimental')) {
+            pwsh -NoProfile -File scripts/compare-schemas.ps1 `
+              -BaselineDirectory "schemas/$env:CONTRACT_MINIMUM_BOUNDARY/$surface" `
+              -TargetDirectory "schemas/$env:CONTRACT_MINIMUM_EQUIVALENT/$surface" `
+              -BaselineVersion $env:CONTRACT_MINIMUM_BOUNDARY `
+              -TargetVersion $env:CONTRACT_MINIMUM_EQUIVALENT -Surface $surface `
+              -AssertMinimumBoundaryEquivalent `
+              -ReportPath (Join-Path $env:RUNNER_TEMP "release-validation/schema-diffs/schema-equivalence-$surface.txt")
+            if ($LASTEXITCODE -ne 0) {
+              Write-Output "::error::Minimum boundary schema equivalence failed for $surface."
+              exit $LASTEXITCODE
+            }
+          }
       - name: Verify method surface for every version and surface
         shell: pwsh
         run: |
           $baselineVersions = @($env:CONTRACT_REGRESSIONS | ConvertFrom-Json)
-          $surfaceVersions = @($baselineVersions + $env:CONTRACT_TARGET)
+          $surfaceVersions = @($baselineVersions + $env:CONTRACT_TARGET + $env:CONTRACT_MINIMUM_BOUNDARY)
           foreach ($version in $surfaceVersions) {
             foreach ($surface in @('stable', 'experimental')) {
               pwsh -NoProfile -File scripts/verify-contract-surface.ps1 `

@@ -1,6 +1,6 @@
 ﻿[CmdletBinding()]
 param(
-    # 'latest' or a version pinned in app-server-contract.json; Get-PinnedRelease rejects any other version.
+    # 'latest', a pinned release, or the separately declared minimum support boundary.
     [ValidatePattern('^(latest|\d+\.\d+\.\d+)$')]
     [string]$Version = 'latest',
     [string]$OutputDirectory = (Join-Path ([IO.Path]::GetTempPath()) 'codex-cli'),
@@ -64,6 +64,9 @@ function Get-LatestRelease {
 function Get-PinnedRelease([string]$PinnedVersion) {
     $manifest = Get-Content -Raw -LiteralPath $manifestPath | ConvertFrom-Json
     $release = $manifest.releases.$PinnedVersion
+    if ($null -eq $release -and $manifest.minimumBoundary.version -eq $PinnedVersion) {
+        $release = $manifest.minimumBoundary
+    }
     if ($null -eq $release) {
         throw "The pinned Codex version '$PinnedVersion' is not present in $manifestPath."
     }

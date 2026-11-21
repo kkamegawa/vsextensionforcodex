@@ -7,9 +7,10 @@
 
 $ErrorActionPreference = 'Stop'
 $manifest = Get-Content -Raw -LiteralPath $ManifestPath | ConvertFrom-Json
-$expectedMethods = $manifest.methodsByVersion.$Version.$Surface
+$methodVersion = if ($Version -eq [string]$manifest.minimumBoundary.version) { [string]$manifest.minimumBoundary.schemaEquivalentVersion } else { $Version }
+$expectedMethods = $manifest.methodsByVersion.$methodVersion.$Surface
 if ($null -eq $expectedMethods) {
-    throw "The contract manifest has no method table for $Version/$Surface."
+    throw "The contract manifest has no method table for $methodVersion/$Surface (used to verify $Version/$Surface)."
 }
 
 function Get-MethodTable {

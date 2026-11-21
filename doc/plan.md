@@ -28,7 +28,7 @@ Visual Studio 拡張機能（チャットツールウィンドウ + インライ
 | in-process コンポーネント | **なし** | 全機能を OOP で実装する |
 | 言語 | **C# 14** | .NET 10 と C# 14 の機能を前提にする |
 | 対象 IDE | Visual Studio 2026 (18.12 以降) のみ | arm64 + amd64 |
-| Codex CLI | 最低 0.167.0、ターゲット 0.169.0 | 回帰確認は 0.167.2 と 0.168.0。各マイナー系列の最新パッチだけを固定する |
+| Codex CLI | 最低 0.169.0、ターゲット 0.171.0 | 回帰確認の固定版は 0.169.1 と 0.170.0 |
 | 拡張モデル | **VisualStudio.Extensibility OOP 実装済み** | `CodexExtension : Extension`、コマンド・ツールウィンドウを同 SDK で実装 |
 | Codex 連携 | `codex app-server` を spawn、stdio で JSON-RPC 2.0 (JSONL) | WebSocket/Unix socket は将来検討 |
 | UI | Remote UI / WPF（テーマ対応、`EnvironmentColors`・`VsResourceKeys`） | 色のハードコード禁止 |
@@ -41,8 +41,8 @@ Visual Studio 拡張機能（チャットツールウィンドウ + インライ
   Visual Studio 2026 18.12 以降と .NET 10 だけをサポートし、Visual Studio 2022 と .NET 8 はサポートしない
   （[ADR-022](adr/ADR-022-visual-studio-2026-dotnet-10.md)）。
 - in-proc の VSSDK コンポーネントは持たない。`Codex.VisualStudio.Contracts` も net10.0 をターゲットにする。
-- Codex CLI のバージョン方針と機能ティアは [ADR-023](adr/ADR-023-codex-cli-0-167-minimum.md) と
-  [app-server-0-169-design.md](app-server-0-169-design.md) に従う。
+- Codex CLI のバージョン方針と機能ティアは [ADR-024](adr/ADR-024-codex-cli-0-169-minimum.md) と
+  [app-server-0-171-design.md](app-server-0-171-design.md) に従う。
 
 ## 4. アーキテクチャ
 
@@ -81,7 +81,7 @@ Visual Studio 拡張機能（チャットツールウィンドウ + インライ
 └───────────┬─────────────────────────────────────────────────┘
             │ stdin/stdout (JSONL) またはリモート WebSocket
   ┌─────────▼──────────┐
-  │ codex app-server   │  ← Codex CLI 0.167.0 以降
+  │ codex app-server   │  ← Codex CLI 0.169.0 以降
   │ (サブプロセス)      │
   └────────────────────┘
 ```
@@ -271,7 +271,7 @@ The current owner, contract v18, and disk-cache admission rules are defined in
 - **app-server プロトコルのバージョン差**: 固定した各リリースから `codex app-server generate-json-schema` で
   stable と experimental のスキーマを生成し、契約マニフェストの既知差分と比較する。ペイロードは JSON 要素として
   読み取るため、形が変わった項目はスキーマとパーサーの対応表（[app-server-0-169-design.md](app-server-0-169-design.md)）で
-  扱いを決め、テストで確認する。0.167.0 未満の CLI は接続時に拒否する。
+  扱いを決め、テストで確認する。0.169.0 未満の CLI は接続時に拒否する。
 - **承認フローの UX**: 破壊的操作は必ず承認 UI を経由。`acceptForSession` 等の粒度を UI に反映。
 - **`clientInfo.name`**: エンタープライズ利用時は OpenAI の known clients 登録が必要になる点を明記。
 - **サンドボックス/権限**: `thread/shellCommand`・`command/exec` はサンドボックス外実行があるため
@@ -321,11 +321,11 @@ The approved design and plan are in [English](app-server-0-162-1-plan.md) and [J
 - Add Follow Codex configuration / Prefer MXC / Require MXC for local stdio launches only, with diagnosis from readiness, effective configuration and managed policy.
 - Validate schema and contract scripts, smoke against both CLI versions, warning-free Debug/Release builds, Core/UI tests, VSIX integrity, off-screen renders, real Windows MXC acceptance and Experimental Instance visual/accessibility evidence.
 
-### Issue #268 — Visual Studio 2026, .NET 10, and Codex App Server 0.169.0
+### Historical Issue #268 — Visual Studio 2026, .NET 10, and Codex App Server 0.169.0
 
-The platform decision is [ADR-022](adr/ADR-022-visual-studio-2026-dotnet-10.md) ([日本語](adr/ADR-022-visual-studio-2026-dotnet-10_ja.md)); the CLI version policy is [ADR-023](adr/ADR-023-codex-cli-0-167-minimum.md) ([日本語](adr/ADR-023-codex-cli-0-167-minimum_ja.md)); the protocol and feature design is [app-server-0-169-design.md](app-server-0-169-design.md) ([日本語](app-server-0-169-design_ja.md)).
+The platform decision is [ADR-022](adr/ADR-022-visual-studio-2026-dotnet-10.md) ([日本語](adr/ADR-022-visual-studio-2026-dotnet-10_ja.md)). The 0.169 version policy is preserved as historical [ADR-023](adr/ADR-023-codex-cli-0-167-minimum.md) ([日本語](adr/ADR-023-codex-cli-0-167-minimum_ja.md)); current policy is [ADR-024](adr/ADR-024-codex-cli-0-169-minimum.md). Feature details remain in [app-server-0-169-design.md](app-server-0-169-design.md) ([日本語](app-server-0-169-design_ja.md)); current protocol behavior is in [app-server-0-171-design.md](app-server-0-171-design.md).
 
 - Support Visual Studio 2026 18.12+ and .NET 10 only, with every project on .NET 10 and C# 14 features adopted across the codebase.
-- Accept Codex CLI 0.167.0 and later, target 0.169.0, and pin 0.167.2 and 0.168.0 as regression versions. Feature tiers are `Baseline` (0.167), `Tier168`, and `Tier169`.
+- Historical policy approved on 2026-11-16: minimum 0.167.0, target 0.169.0, regression pins 0.167.2 and 0.168.0, with `Baseline`, `Tier168`, and `Tier169`. ADR-024 supersedes that policy for current support. The 0.169 feature scope remains tracked by #272 and #302–#305.
 - Add model provider switching, approval UI improvements, thread management, and diagnostics and status display.
 - Work order: design documents (#268), platform (#269), contract (#270), .NET 10 and C# 14 adoption (#271), features (#272). Each phase is a separate pull request.

@@ -16,10 +16,8 @@ public sealed class FakeAppServerIntegrationTests
     };
 
     [TestMethod]
-    [DataRow("Regression01672", "codex-cli/0.167.2")]
-    [DataRow("Regression01680", "codex-cli/0.168.0")]
     [DataRow("Current01690", "codex-cli/0.169.0")]
-    public async Task FakeReportsEachContractVersionInUserAgent(string scenario, string expectedUserAgent)
+    public async Task FakeReportsTheMinimumSupportedVersionInUserAgent(string scenario, string expectedUserAgent)
     {
         await using FakeAppServerProcess server = await FakeAppServerProcess.StartAsync(scenario);
         await server.SendAsync(new { id = 1, method = "initialize", @params = new { } });
@@ -52,7 +50,7 @@ public sealed class FakeAppServerIntegrationTests
     }
 
     [TestMethod]
-    public async Task Fake167ProtocolReplayRetainsRolledBackTurnsAndTerminalErrors()
+    public async Task FakeProtocolReplayRetainsRolledBackTurnsAndTerminalErrors()
     {
         await using FakeAppServerProcess server = await FakeAppServerProcess.StartAsync("Issue292");
         await using JsonLineRpcConnection connection = await server.ConnectAsync();
@@ -124,7 +122,6 @@ public sealed class FakeAppServerIntegrationTests
     }
 
     [TestMethod]
-    [DataRow("Regression01672", true)]
     [DataRow("Current01690", true)]
     [DataRow("Current01690", false)]
     public async Task FakeExperimentalMemoryHonorsNegotiatedCapability(string scenario, bool experimental)
@@ -408,28 +405,34 @@ public sealed class FakeAppServerIntegrationTests
         Assert.AreEqual(-32600, error.GetProperty("code").GetInt32());
         Assert.AreEqual("readStateConflict", error.GetProperty("data").GetProperty("reason").GetString());
         Assert.IsTrue(error.GetProperty("data").GetProperty("readState").GetProperty("revision").GetString()!.Length > 0);
-
-        await using FakeAppServerProcess regression = await FakeAppServerProcess.StartAsync("Regression01672");
-        await regression.SendAsync(new
-        {
-            id = 1,
-            method = "initialize",
-            @params = new { capabilities = new { experimentalApi = true } },
-        });
-        using JsonDocument regressionInitialized = await regression.ReadAsync();
-        Assert.AreEqual("codex-cli/0.167.2", regressionInitialized.RootElement.GetProperty("result").GetProperty("userAgent").GetString());
-        await regression.SendAsync(new { id = 2, method = "thread/list", @params = new { } });
-        using JsonDocument regressionList = await regression.ReadAsync();
-        Assert.IsTrue(regressionList.RootElement.GetProperty("result").TryGetProperty("readStates", out _));
     }
 
     [TestMethod]
-    [DataRow("Regression01672", "codex-cli/0.167.2", true)]
-    [DataRow("Regression01680", "codex-cli/0.168.0", true)]
-    [DataRow("Current01690", "codex-cli/0.169.0", true)]
-    public async Task FakeThreadListExposesReadStatesOnSupportedVersions(string scenario, string expectedUserAgent, bool expectReadStates)
+    public async Task FakeServerAt168IsRejectedBeforeInitialized()
     {
-        await using FakeAppServerProcess server = await FakeAppServerProcess.StartAsync(scenario);
+        await using FakeAppServerProcess server = await FakeAppServerProcess.StartAsync("Unsupported01680");
+        await using var connection = new RecordingJsonRpcConnection(await server.ConnectAsync());
+        await using var service = new CodexSessionService(new ApprovalPolicyEngine(new PathAccessPolicy()), new SecretRedactor());
+
+        UnsupportedCodexVersionException error = await Assert.ThrowsExactlyAsync<UnsupportedCodexVersionException>(
+            () => service.InitializeAsync(connection, new WorkerOptions
+            {
+                WorkingDirectory = Environment.CurrentDirectory,
+                ExtensionVersion = "minimum-version-integration-test",
+            }, CancellationToken.None));
+
+        StringAssert.Contains(error.Message, "version 0.168.0");
+        StringAssert.Contains(error.Message, SupportedCodexVersions.Minimum);
+        Assert.IsNull(service.CodexVersion);
+        Assert.AreEqual(CodexFeatureTier.Unsupported, service.FeatureTier);
+        CollectionAssert.AreEqual(new[] { "initialize" }, connection.Requests.ToArray());
+        CollectionAssert.DoesNotContain(connection.Notifications, "initialized");
+    }
+
+    [TestMethod]
+    public async Task FakeThreadListExposesReadStatesOnTheMinimumSupportedVersion()
+    {
+        await using FakeAppServerProcess server = await FakeAppServerProcess.StartAsync("Current01690");
         await server.SendAsync(new
         {
             id = 1,
@@ -437,11 +440,11 @@ public sealed class FakeAppServerIntegrationTests
             @params = new { capabilities = new { experimentalApi = true } },
         });
         using JsonDocument initialized = await server.ReadAsync();
-        Assert.AreEqual(expectedUserAgent, initialized.RootElement.GetProperty("result").GetProperty("userAgent").GetString());
+        Assert.AreEqual("codex-cli/0.169.0", initialized.RootElement.GetProperty("result").GetProperty("userAgent").GetString());
         await server.SendAsync(new { id = 2, method = "thread/list", @params = new { } });
         using JsonDocument listed = await server.ReadAsync();
         Assert.IsTrue(listed.RootElement.TryGetProperty("result", out JsonElement listResult), listed.RootElement.ToString());
-        Assert.AreEqual(expectReadStates, listResult.TryGetProperty("readStates", out _), listed.RootElement.ToString());
+        Assert.IsTrue(listResult.TryGetProperty("readStates", out _), listed.RootElement.ToString());
     }
 
     [TestMethod]
@@ -945,5 +948,46 @@ public sealed class FakeAppServerIntegrationTests
 
             throw new DirectoryNotFoundException("Could not find the repository root containing the Fake AppServer project.");
         }
+    }
+
+    private sealed class RecordingJsonRpcConnection(IJsonRpcConnection inner) : IJsonRpcConnection
+    {
+        public List<string> Requests { get; } = [];
+
+        public List<string> Notifications { get; } = [];
+
+        public event Func<JsonRpcMessage, CancellationToken, Task>? NotificationReceived
+        {
+            add => inner.NotificationReceived += value;
+            remove => inner.NotificationReceived -= value;
+        }
+
+        public event Func<JsonRpcMessage, CancellationToken, Task<JsonElement>>? RequestReceived
+        {
+            add => inner.RequestReceived += value;
+            remove => inner.RequestReceived -= value;
+        }
+
+        public event EventHandler<Exception?>? Closed
+        {
+            add => inner.Closed += value;
+            remove => inner.Closed -= value;
+        }
+
+        public Task StartAsync(CancellationToken cancellationToken) => inner.StartAsync(cancellationToken);
+
+        public Task<JsonElement> SendRequestAsync(string method, object? parameters, TimeSpan timeout, CancellationToken cancellationToken)
+        {
+            Requests.Add(method);
+            return inner.SendRequestAsync(method, parameters, timeout, cancellationToken);
+        }
+
+        public Task SendNotificationAsync(string method, object? parameters, CancellationToken cancellationToken)
+        {
+            Notifications.Add(method);
+            return inner.SendNotificationAsync(method, parameters, cancellationToken);
+        }
+
+        public ValueTask DisposeAsync() => inner.DisposeAsync();
     }
 }

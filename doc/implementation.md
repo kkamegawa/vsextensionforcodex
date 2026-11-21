@@ -15,8 +15,8 @@
 
 ## Current Codex CLI contract
 
-The extension requires Codex CLI 0.167.0 or later. Version 0.169.0 is the recommended
-and verified target; 0.167.2 and 0.168.0 are regression baselines. These values are
+The extension requires Codex CLI 0.169.0 or later. Version 0.171.0 is the recommended
+target. The pinned regression versions are 0.169.1 and 0.170.0. These values are
 maintained in `app-server-contract.json` and drive the schema-generation and build
 workflows. Generated stable and experimental schema caches are stored under
 `schemas/<version>/<surface>/` and are excluded from source control. CI verifies the
@@ -653,3 +653,11 @@ The solution now targets .NET 10, the unused `net472` in-process placeholder has
 Visual Studio 18.12's RS0030 analyzer flags `SemaphoreSlim` in the Extension's serialized asynchronous operations. Those gates now use `ReentrantSemaphore` with `ReentrancyMode.NotRecognized` and the shared no-op `JoinableTaskContext` available to this out-of-process extension.
 
 Release build completed with 0 warnings and 0 errors. Core tests: 594 passed, 7 skipped; UI tests: 611 passed, 3 skipped. Release VSIX content inspection passed. Visual Studio Enterprise 2026 Insiders 18.13.12409.143 Experimental Instance acceptance passed: F5 deployed the VSIX, the solution loaded, and the Codex tool window rendered and connected (`Ready · Codex 0.161.0`, `Signed in · plus`). The screen was visually inspected. The Windows sandbox setup card showed no active solution root; its readiness check was not run. No Codex turn was sent, so the one-turn acceptance criterion remains pending.
+
+## Issue #327: Codex CLI 0.169–0.171 compatibility baseline
+
+The extension now requires Codex CLI 0.169.0 or later and recommends 0.171.0. Regression pins are 0.169.1 and 0.170.0. The minimum-boundary release is tracked separately from regression pins and is checked for real app-server initialization plus stable and experimental schema equivalence with 0.169.1. Older 0.167.x and 0.168.x compatibility pins and feature tiers are removed; negative version-gate coverage remains.
+
+The 0.169.0 official executable hash matched the manifest. Its app-server initialize smoke passed. Stable and experimental schema generation, 0.169.0-to-0.169.1 equivalence, both pinned-release comparisons against 0.171.0, all four version method surfaces, cache validation, manifest output, and PowerShell parsing passed. The focused Release Core version-boundary suite passed 20/20.
+
+The installer’s complete-package network download and extraction were not verified because the release download did not return during this run. The integrated Release build, full regression suites, and Visual Studio acceptance remain tracked by #331.

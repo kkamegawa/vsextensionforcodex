@@ -144,11 +144,9 @@ while (await Console.In.ReadLineAsync().ConfigureAwait(false) is { } line)
     {
         "initialize" => new
         {
-            userAgent = IsScenario("Regression01672") || IsScenario("Issue292")
-                ? "codex-cli/0.167.2"
-                : IsScenario("Regression01680")
-                    ? "codex-cli/0.168.0"
-                    : "codex-cli/0.169.0",
+            userAgent = IsScenario("Unsupported01680")
+                ? "codex-cli/0.168.0"
+                : "codex-cli/0.169.0",
             codexHome = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".codex"),
             platformFamily = OperatingSystem.IsWindows() ? "windows" : "unix",
             platformOs = OperatingSystem.IsWindows() ? "windows" : OperatingSystem.IsMacOS() ? "macos" : "linux",

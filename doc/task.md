@@ -2,6 +2,18 @@
 
 `plan.md` のフェーズ分割に対応する詳細タスク。各タスクは独立してレビュー可能な小さなスライスを意図する。
 
+## 2026-11-21: Codex CLI 0.169–0.171 compatibility baseline (Issue #327)
+
+Tracking: [Issue #327](https://github.com/kkamegawa/vsextensionforcodex/issues/327), under [Issue #326](https://github.com/kkamegawa/vsextensionforcodex/issues/326). Approved policy: [ADR-024](adr/ADR-024-codex-cli-0-169-minimum.md); protocol decisions: [0.171 design](app-server-0-171-design.md).
+
+- [x] Set 0.169.0 as the local and remote minimum, retain rejection coverage for 0.168.0 and earlier, and set 0.171.0 as the recommended target.
+- [x] Pin 0.169.1 and 0.170.0 for regression comparisons; keep 0.169.0 in the separate minimum-boundary contract.
+- [x] Generate the official 0.169.0 stable and experimental schemas, confirm structural equivalence with 0.169.1, and compare both regression pins with 0.171.0.
+- [x] Verify the minimum CLI initialize smoke, all four version method surfaces, schema cache contract, manifest outputs, PowerShell parsing, and UTF-8 BOM/CRLF formatting.
+- [x] Release Core version-boundary tests: 20 passed, 0 failed, 0 skipped.
+- [ ] Verify the installer package download and extraction end to end; the pinned package download did not return during this run.
+- [ ] Full Release solution build, complete Core/UI suites, and Visual Studio acceptance are tracked by #331.
+
 ## 2026-10-09: Integrated release validation design and documentation (Issue #156)
 
 Tracking: [Issue #156](https://github.com/kkamegawa/vsextensionforcodex/issues/156), under [Issue #149](https://github.com/kkamegawa/vsextensionforcodex/issues/149). Approved [design](release-validation-design.md) and [implementation plan](release-validation-plan.md); [Japanese work record](task-issue156_ja.md).

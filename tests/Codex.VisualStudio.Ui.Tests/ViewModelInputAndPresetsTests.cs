@@ -248,7 +248,7 @@ public sealed partial class ViewModelTests
     }
 
     private static WorkerStatus SupportedVersionStatus(WorkerConnectionState state = WorkerConnectionState.Ready)
-        => new() { State = state, FeatureTier = CodexFeatureTier.Tier169, CodexVersion = SupportedCodexVersions.Target };
+        => new() { State = state, FeatureTier = CodexFeatureTier.Baseline, CodexVersion = SupportedCodexVersions.Minimum };
 
     private static ListPresetsResult PresetsResult(string version = "v1")
         => new()
