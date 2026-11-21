@@ -39,7 +39,7 @@
 1. [README の必要環境](../README_ja.md#動作要件)にある公式 `rust-v0.171.0` リリースへのリンクを開きます。
 2. x64 なら `codex-package-x86_64-pc-windows-msvc.tar.gz`、Arm64 なら `codex-package-aarch64-pc-windows-msvc.tar.gz` をダウンロードします。
 3. 完全パッケージを使用し、`bin\codex.exe`、`bin\codex-code-mode-host.exe`、`codex-resources\` を含む配置を維持します。単体の実行ファイルでは初期接続できても、ツール実行が `failed to spawn code-mode host` で失敗することがあります。
-4. そのパッケージの SHA-256 を、リリースページにある同じアセットのダイジェストと照合します。`app-server-contract.json` の単体実行ファイルのハッシュは別アセットの値ですが、`scripts/install-codex.ps1` は展開した package entrypoint もその値と照合します。
+4. ダウンロードしたアーカイブの SHA-256 を、リリースページにある同じアセットのダイジェストと照合します。`app-server-contract.json` の `packageSha256` はアーカイブ、`sha256` は展開後の `bin\codex.exe` のダイジェストです。`scripts/install-codex.ps1` は両方を検証します。
 
 以下は **PowerShell 7** で実行します。ダウンロードしたアーカイブのパスと、そのパッケージの正しいハッシュを入力します。一致しなければ展開せず停止し、一致すればバージョン専用のディレクトリへ展開します。
 

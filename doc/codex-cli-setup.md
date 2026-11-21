@@ -39,7 +39,7 @@ Requirements: Windows x64 or Arm64; Visual Studio 2026 **18.12+**; an account/pr
 1. Follow the official `rust-v0.171.0` release link in [README Requirements](../README.md#requirements).
 2. Download `codex-package-x86_64-pc-windows-msvc.tar.gz` for x64 or `codex-package-aarch64-pc-windows-msvc.tar.gz` for Arm64.
 3. Use the complete package. Keep its directory layout, including `bin\codex.exe`, `bin\codex-code-mode-host.exe` and `codex-resources\`. A standalone executable can initialize successfully while tool calls fail with `failed to spawn code-mode host`.
-4. Compare the package SHA-256 with the digest for that exact asset on the release page. The standalone executable hash in `app-server-contract.json` is for a different release asset; `scripts/install-codex.ps1` also verifies that the extracted package entrypoint has that same hash.
+4. Compare the downloaded archive SHA-256 with the digest for that exact asset on the release page. In `app-server-contract.json`, `packageSha256` is the archive digest and `sha256` is the digest for the extracted `bin\codex.exe`; `scripts/install-codex.ps1` verifies both.
 
 Run the following in **PowerShell 7**. Enter your downloaded archive and its expected digest. The script stops before extraction if they disagree; it installs in a dedicated version directory.
 
