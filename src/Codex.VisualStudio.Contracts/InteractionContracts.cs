@@ -131,7 +131,15 @@ public sealed class McpElicitationRequest
 
     public string ServerName { get; set; } = string.Empty;
 
+    public string DisplayServerName { get; set; } = string.Empty;
+
+    public string? DisplayEnvironmentId { get; set; }
+
     public string? ThreadId { get; set; }
+
+    public bool HasRegistrationIdentity { get; set; }
+
+    public string? EnvironmentId { get; set; }
 
     public string? TurnId { get; set; }
 
@@ -232,6 +240,10 @@ public sealed class InteractionAuthStatus
 
     public bool IsSupported { get; set; }
 
+    public bool McpEnvironmentIdentityEnabled { get; set; }
+
+
+
     public InteractionAuthState State { get; set; }
 
     public string? Message { get; set; }
@@ -246,6 +258,18 @@ public sealed class InteractionAuthStatus
 public sealed class McpServerAuthStatus
 {
     public string ServerName { get; set; } = string.Empty;
+
+    public string DisplayServerName { get; set; } = string.Empty;
+
+    public string? DisplayEnvironmentId { get; set; }
+
+    public bool IsRegistrationAmbiguous { get; set; }
+
+    public bool HasRegistrationIdentity { get; set; }
+
+    public string? EnvironmentId { get; set; }
+
+    public string? ThreadId { get; set; }
 
     public InteractionAuthState State { get; set; }
 
@@ -277,6 +301,10 @@ public sealed class StartMcpOAuthLoginRequest : OwnerScopedRequest
 {
     public string ServerName { get; set; } = string.Empty;
 
+    public bool HasRegistrationIdentity { get; set; }
+
+    public string? EnvironmentId { get; set; }
+
     public string? ThreadId { get; set; }
 }
 
@@ -285,6 +313,16 @@ public sealed class McpOAuthLoginStatus
     public string OperationId { get; set; } = string.Empty;
 
     public string ServerName { get; set; } = string.Empty;
+
+    public string DisplayServerName { get; set; } = string.Empty;
+
+    public string? DisplayEnvironmentId { get; set; }
+
+    public bool HasRegistrationIdentity { get; set; }
+
+    public string? EnvironmentId { get; set; }
+
+    public string? ThreadId { get; set; }
 
     public InteractionAuthState State { get; set; }
 

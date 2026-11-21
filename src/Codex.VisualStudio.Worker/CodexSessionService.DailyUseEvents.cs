@@ -869,10 +869,15 @@ public sealed partial class CodexSessionService
             string serverName = BoundAndRedact(GetBoundedString(item, "server", 256) ?? "unknown server", 256);
             string toolName = BoundAndRedact(GetBoundedString(item, "tool", 256) ?? "unknown tool", 256);
             string status = BoundAndRedact(GetBoundedString(item, "status", 64) ?? "unknown", 64);
+            string? environmentId = null;
+            bool hasRegistrationIdentity = IsMcpEnvironmentIdentityEnabled(context)
+                && TryReadMcpEnvironmentId(item, out environmentId);
             parts.Add(new ArtifactPart
             {
                 Kind = ArtifactPartKind.Fallback,
                 Text = $"MCP {serverName} / {toolName} ({status}).",
+                HasRegistrationIdentity = hasRegistrationIdentity,
+                EnvironmentId = hasRegistrationIdentity && environmentId is not null ? redactor.Redact(environmentId) : null,
             });
 
             string? errorMessage = item.TryGetProperty("error", out JsonElement error)

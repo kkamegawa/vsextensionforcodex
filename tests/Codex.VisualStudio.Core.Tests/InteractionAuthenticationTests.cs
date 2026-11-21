@@ -26,6 +26,476 @@ public sealed class InteractionAuthenticationTests
     }
 
     [TestMethod]
+    public async Task McpEnvironmentIdentity_RoutesSameNameLoginsAndCompletionByRegistration()
+    {
+        var connection = EnvironmentIdentityConnection(
+            new { name = "docs", environmentId = "env-a" },
+            new { name = "docs", environmentId = "env-b" });
+        var statuses = new ConcurrentQueue<InteractionAuthStatus>();
+        await using var service = CreateService();
+        service.InteractionAuthStatusChanged += (status, _) =>
+        {
+            statuses.Enqueue(status);
+            return Task.CompletedTask;
+        };
+
+        await service.InitializeAsync(connection, Options(experimentalApi: true), CancellationToken.None);
+        McpServerListResult inventory = await service.ListMcpServersAsync(
+            new ListMcpServersRequest { ThreadId = "thread-1" },
+            CancellationToken.None);
+        Assert.AreEqual(2, inventory.Servers.Count);
+        CollectionAssert.AreEquivalent(new[] { "env-a", "env-b" }, inventory.Servers.Select(server => server.EnvironmentId).ToArray());
+        Assert.IsTrue(inventory.Servers.All(server => server.HasRegistrationIdentity));
+        Assert.IsTrue(inventory.Servers.All(server => server.ToolCount == 1 && server.ResourceCount == 1));
+        await service.ListMcpServersAsync(
+            new ListMcpServersRequest
+            {
+                ThreadId = "thread-1",
+                ServerName = "docs",
+                HasRegistrationIdentity = true,
+                EnvironmentId = "env-b",
+            },
+            CancellationToken.None);
+        JsonElement statusFilter = JsonSerializer.SerializeToElement(
+            connection.Requests.Last(request => request.Method == "mcpServerStatus/list").Parameters);
+        Assert.AreEqual("thread-1", statusFilter.GetProperty("threadId").GetString());
+        Assert.AreEqual("docs", statusFilter.GetProperty("serverName").GetString());
+        Assert.AreEqual("env-b", statusFilter.GetProperty("environmentId").GetString());
+
+        McpOAuthLoginStatus loginA = await service.StartMcpOAuthLoginAsync(
+            new StartMcpOAuthLoginRequest { ServerName = "docs", ThreadId = "thread-1", HasRegistrationIdentity = true, EnvironmentId = "env-a" },
+            CancellationToken.None);
+        McpOAuthLoginStatus loginB = await service.StartMcpOAuthLoginAsync(
+            new StartMcpOAuthLoginRequest { ServerName = "docs", ThreadId = "thread-1", HasRegistrationIdentity = true, EnvironmentId = "env-b" },
+            CancellationToken.None);
+
+        JsonElement[] loginParameters = connection.Requests
+            .Where(request => request.Method == "mcpServer/oauth/login")
+            .Select(request => JsonSerializer.SerializeToElement(request.Parameters))
+            .ToArray();
+        CollectionAssert.AreEqual(new[] { "env-a", "env-b" }, loginParameters.Select(parameters => parameters.GetProperty("environmentId").GetString()).ToArray());
+        Assert.IsTrue(loginParameters.All(parameters => parameters.GetProperty("threadId").GetString() == "thread-1"));
+
+        await connection.EmitNotificationAsync("mcpServer/oauthLogin/completed", new
+        {
+            name = "docs",
+            threadId = "thread-1",
+            environmentId = "env-b",
+            success = true,
+            loginId = "env-b",
+        });
+
+        await connection.EmitNotificationAsync("mcpServer/startupStatus/updated", new
+        {
+            name = "docs",
+            threadId = "thread-1",
+            environmentId = "env-a",
+            status = "failed",
+        });
+        await connection.EmitNotificationAsync("mcpServer/startupStatus/updated", new
+        {
+            name = "docs",
+            threadId = "thread-1",
+            status = "cancelled",
+        });
+
+        McpServerAuthStatus[] latest = statuses.Last().McpServers.ToArray();
+        Assert.AreEqual(InteractionAuthState.Failed, latest.Single(server => server.EnvironmentId == "env-a").State);
+        Assert.AreEqual(InteractionAuthState.Authenticated, latest.Single(server => server.EnvironmentId == "env-b").State);
+        Assert.AreEqual("env-a", loginA.EnvironmentId);
+        Assert.AreEqual("env-b", loginB.EnvironmentId);
+    }
+
+    [TestMethod]
+    public async Task McpEnvironmentIdentity_ThreadWideNullIsForwardedAndAmbiguousNameIsRejected()
+    {
+        var threadWideConnection = EnvironmentIdentityConnection(new { name = "docs", environmentId = (string?)null });
+        await using (var service = CreateService())
+        {
+            await service.InitializeAsync(threadWideConnection, Options(experimentalApi: true), CancellationToken.None);
+            McpOAuthLoginStatus status = await service.StartMcpOAuthLoginAsync(
+                new StartMcpOAuthLoginRequest { ServerName = "docs", ThreadId = "thread-1", HasRegistrationIdentity = true },
+                CancellationToken.None);
+            JsonElement parameters = JsonSerializer.SerializeToElement(threadWideConnection.Requests.Single(request => request.Method == "mcpServer/oauth/login").Parameters);
+            Assert.IsTrue(parameters.TryGetProperty("environmentId", out JsonElement environmentId));
+            Assert.AreEqual(JsonValueKind.Null, environmentId.ValueKind);
+            Assert.IsTrue(status.HasRegistrationIdentity);
+            Assert.IsNull(status.EnvironmentId);
+            await service.ListMcpServersAsync(
+                new ListMcpServersRequest
+                {
+                    ThreadId = "thread-1",
+                    ServerName = "docs",
+                    HasRegistrationIdentity = true,
+                },
+                CancellationToken.None);
+            JsonElement statusFilter = JsonSerializer.SerializeToElement(
+                threadWideConnection.Requests.Last(request => request.Method == "mcpServerStatus/list").Parameters);
+            Assert.AreEqual("thread-1", statusFilter.GetProperty("threadId").GetString());
+            Assert.AreEqual("docs", statusFilter.GetProperty("serverName").GetString());
+            Assert.AreEqual(JsonValueKind.Null, statusFilter.GetProperty("environmentId").ValueKind);
+        }
+
+        var ambiguousConnection = EnvironmentIdentityConnection(
+            new { name = "docs", environmentId = "env-a" },
+            new { name = "docs", environmentId = "env-b" });
+        await using var ambiguousService = CreateService();
+        await ambiguousService.InitializeAsync(ambiguousConnection, Options(experimentalApi: true), CancellationToken.None);
+        await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => ambiguousService.StartMcpOAuthLoginAsync(
+            new StartMcpOAuthLoginRequest { ServerName = "docs", ThreadId = "thread-1" },
+            CancellationToken.None));
+        Assert.IsFalse(ambiguousConnection.Requests.Any(request => request.Method == "mcpServer/oauth/login"));
+    }
+
+    [TestMethod]
+    public async Task McpEnvironmentIdentity_UniqueMissingIdentityResolvesAndOlderTierKeepsLegacyRoute()
+    {
+        var uniqueConnection = EnvironmentIdentityConnection(new { name = "docs", environmentId = "only" });
+        await using (var service = CreateService())
+        {
+            await service.InitializeAsync(uniqueConnection, Options(experimentalApi: true), CancellationToken.None);
+            await service.StartMcpOAuthLoginAsync(
+                new StartMcpOAuthLoginRequest { ServerName = "docs", ThreadId = "thread-1" },
+                CancellationToken.None);
+            JsonElement parameters = JsonSerializer.SerializeToElement(uniqueConnection.Requests.Single(request => request.Method == "mcpServer/oauth/login").Parameters);
+            Assert.AreEqual("only", parameters.GetProperty("environmentId").GetString());
+        }
+
+        var olderConnection = EnvironmentIdentityConnection(new { name = "docs", environmentId = "should-be-ignored" }, version: "0.170.2");
+        await using var olderService = CreateService();
+        await olderService.InitializeAsync(olderConnection, Options(experimentalApi: true), CancellationToken.None);
+        McpServerListResult olderInventory = await olderService.ListMcpServersAsync(new ListMcpServersRequest(), CancellationToken.None);
+        Assert.IsFalse(olderInventory.Servers.Single().HasRegistrationIdentity);
+        await olderService.StartMcpOAuthLoginAsync(new StartMcpOAuthLoginRequest { ServerName = "docs" }, CancellationToken.None);
+        JsonElement olderParameters = JsonSerializer.SerializeToElement(olderConnection.Requests.Single(request => request.Method == "mcpServer/oauth/login").Parameters);
+        Assert.IsFalse(olderParameters.TryGetProperty("environmentId", out _));
+    }
+
+    [TestMethod]
+    public async Task McpEnvironmentIdentity_ReconnectRetiresPreviousRegistrationState()
+    {
+        var first = EnvironmentIdentityConnection(new { name = "docs", environmentId = "env-old" });
+        var second = EnvironmentIdentityConnection(new { name = "docs", environmentId = "env-new" });
+        await using var service = CreateService();
+        await service.InitializeAsync(first, Options(experimentalApi: true), CancellationToken.None);
+        await service.StartMcpOAuthLoginAsync(
+            new StartMcpOAuthLoginRequest { ServerName = "docs", ThreadId = "thread-1", HasRegistrationIdentity = true, EnvironmentId = "env-old" },
+            CancellationToken.None);
+
+        await service.InitializeAsync(second, Options(experimentalApi: true), CancellationToken.None);
+        await first.EmitNotificationAsync("mcpServer/oauthLogin/completed", new
+        {
+            name = "docs",
+            threadId = "thread-1",
+            environmentId = "env-old",
+            success = true,
+            loginId = "env-old",
+        });
+
+        InteractionAuthStatus status = await service.ReadGatewayOAuthAsync(CancellationToken.None);
+        Assert.AreEqual(0, status.McpServers.Count, "A retired connection must not leak its registration state into the new connection.");
+        await service.StartMcpOAuthLoginAsync(
+            new StartMcpOAuthLoginRequest { ServerName = "docs", ThreadId = "thread-1", HasRegistrationIdentity = true, EnvironmentId = "env-new" },
+            CancellationToken.None);
+        JsonElement parameters = JsonSerializer.SerializeToElement(second.Requests.Single(request => request.Method == "mcpServer/oauth/login").Parameters);
+        Assert.AreEqual("env-new", parameters.GetProperty("environmentId").GetString());
+    }
+
+    [TestMethod]
+    public async Task McpEnvironmentIdentity_RequiresVersionAndExperimentalCapability()
+    {
+        var connection = EnvironmentIdentityConnection(new { name = "docs", environmentId = "ignored" });
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(experimentalApi: false), CancellationToken.None);
+        McpServerListResult result = await service.ListMcpServersAsync(new ListMcpServersRequest(), CancellationToken.None);
+        Assert.IsFalse(result.Servers.Single().HasRegistrationIdentity);
+        await service.StartMcpOAuthLoginAsync(new StartMcpOAuthLoginRequest { ServerName = "docs" }, CancellationToken.None);
+        JsonElement parameters = JsonSerializer.SerializeToElement(connection.Requests.Single(request => request.Method == "mcpServer/oauth/login").Parameters);
+        Assert.IsFalse(parameters.TryGetProperty("environmentId", out _));
+    }
+
+    [TestMethod]
+    public async Task McpEnvironmentIdentity_ElicitationApprovalCarriesRegistrationScope()
+    {
+        var connection = EnvironmentIdentityConnection(new { name = "docs", environmentId = "env-a" }, new { name = "docs", environmentId = "env-b" });
+        var prompts = new ConcurrentQueue<McpElicitationRequest>();
+        var bothPromptsReceived = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var service = CreateService();
+        service.McpElicitationRequested += (request, _) =>
+        {
+            prompts.Enqueue(request);
+            if (prompts.Count == 2)
+            {
+                bothPromptsReceived.TrySetResult();
+            }
+
+            return Task.CompletedTask;
+        };
+        await service.InitializeAsync(connection, Options(experimentalApi: true), CancellationToken.None);
+
+        Task<JsonElement> first = connection.EmitRequestAsync("elicitation-a", "mcpServer/elicitation/request", new
+        {
+            serverName = "docs",
+            threadId = "thread-1",
+            environmentId = "env-a",
+            mode = "url",
+            elicitationId = "elicitation-a",
+            message = "Approve access for A",
+            url = "https://login.example.test/a",
+        });
+        Task<JsonElement> second = connection.EmitRequestAsync("elicitation-b", "mcpServer/elicitation/request", new
+        {
+            serverName = "docs",
+            threadId = "thread-1",
+            environmentId = "env-b",
+            mode = "url",
+            elicitationId = "elicitation-b",
+            message = "Approve access for B",
+            url = "https://login.example.test/b",
+        });
+        await bothPromptsReceived.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+        McpElicitationRequest promptA = prompts.Single(request => request.EnvironmentId == "env-a");
+        McpElicitationRequest promptB = prompts.Single(request => request.EnvironmentId == "env-b");
+        Assert.IsTrue(promptA.HasRegistrationIdentity);
+        Assert.AreEqual("env-a", promptA.EnvironmentId);
+        Assert.AreEqual("thread-1", promptA.ThreadId);
+        Assert.AreEqual("env-b", promptB.EnvironmentId);
+
+        await service.ResolveMcpElicitationAsync(new ResolveMcpElicitationRequest
+        {
+            RequestId = promptB.RequestId,
+            Action = McpElicitationAction.Accept,
+        }, CancellationToken.None);
+        await service.ResolveMcpElicitationAsync(new ResolveMcpElicitationRequest
+        {
+            RequestId = promptA.RequestId,
+            Action = McpElicitationAction.Decline,
+        }, CancellationToken.None);
+        Assert.AreEqual("accept", (await second.WaitAsync(TimeSpan.FromSeconds(2))).GetProperty("action").GetString());
+        Assert.AreEqual("decline", (await first.WaitAsync(TimeSpan.FromSeconds(2))).GetProperty("action").GetString());
+    }
+
+    [TestMethod]
+    public async Task McpOAuthCompletionWithoutThreadId_UsesLoginIdAcrossSameEnvironmentThreads()
+    {
+        var connection = new RecordingConnection
+        {
+            InitializeResponse = JsonSerializer.SerializeToElement(new { userAgent = "codex-cli/0.171.0" }),
+        };
+        connection.AsyncHandler = (method, parameters, _) =>
+        {
+            if (method == "mcpServer/oauth/login")
+            {
+                JsonElement request = JsonSerializer.SerializeToElement(parameters);
+                return Task.FromResult(JsonSerializer.SerializeToElement(new
+                {
+                    loginId = request.GetProperty("threadId").GetString(),
+                    authorizationUrl = "https://login.example.test/authorize",
+                }));
+            }
+
+            return Task.FromResult(JsonSerializer.SerializeToElement(new { }));
+        };
+        var statuses = new ConcurrentQueue<InteractionAuthStatus>();
+        await using var service = CreateService();
+        service.InteractionAuthStatusChanged += (status, _) =>
+        {
+            statuses.Enqueue(status);
+            return Task.CompletedTask;
+        };
+        await service.InitializeAsync(connection, Options(experimentalApi: true), CancellationToken.None);
+
+        await service.StartMcpOAuthLoginAsync(new StartMcpOAuthLoginRequest
+        {
+            ServerName = "docs",
+            ThreadId = "thread-1",
+            HasRegistrationIdentity = true,
+            EnvironmentId = "env-a",
+        }, CancellationToken.None);
+        await service.StartMcpOAuthLoginAsync(new StartMcpOAuthLoginRequest
+        {
+            ServerName = "docs",
+            ThreadId = "thread-2",
+            HasRegistrationIdentity = true,
+            EnvironmentId = "env-a",
+        }, CancellationToken.None);
+
+        await connection.EmitNotificationAsync("mcpServer/oauthLogin/completed", new
+        {
+            name = "docs",
+            environmentId = "env-a",
+            success = true,
+            loginId = "thread-2",
+        });
+
+        McpServerAuthStatus[] latest = statuses.Last().McpServers.ToArray();
+        Assert.AreEqual(InteractionAuthState.LoginPending, latest.Single(server => server.ThreadId == "thread-1").State);
+        Assert.AreEqual(InteractionAuthState.Authenticated, latest.Single(server => server.ThreadId == "thread-2").State);
+    }
+
+    [TestMethod]
+    public async Task McpRegistrationKey_TreatsUnitSeparatorAsDataInServerAndThreadIds()
+    {
+        var connection = new RecordingConnection
+        {
+            InitializeResponse = JsonSerializer.SerializeToElement(new { userAgent = "codex-cli/0.171.0" }),
+        };
+        connection.AsyncHandler = (method, _, _) => method == "mcpServer/oauth/login"
+            ? Task.FromResult(JsonSerializer.SerializeToElement(new { loginId = Guid.NewGuid().ToString("N"), authorizationUrl = "https://login.example.test/authorize" }))
+            : Task.FromResult(JsonSerializer.SerializeToElement(new { }));
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(experimentalApi: true), CancellationToken.None);
+
+        McpOAuthLoginStatus first = await service.StartMcpOAuthLoginAsync(new StartMcpOAuthLoginRequest
+        {
+            ServerName = "b\u001fc",
+            ThreadId = "a",
+            HasRegistrationIdentity = true,
+            EnvironmentId = "d",
+        }, CancellationToken.None);
+        McpOAuthLoginStatus second = await service.StartMcpOAuthLoginAsync(new StartMcpOAuthLoginRequest
+        {
+            ServerName = "c",
+            ThreadId = "a\u001fb",
+            HasRegistrationIdentity = true,
+            EnvironmentId = "d",
+        }, CancellationToken.None);
+
+        Assert.AreNotEqual(first.OperationId, second.OperationId);
+        InteractionAuthStatus status = await service.ReadGatewayOAuthAsync(CancellationToken.None);
+        Assert.AreEqual(2, status.McpServers.Count);
+        Assert.AreEqual("b\u001fc", status.McpServers.Single(item => item.ThreadId == "a").ServerName);
+        Assert.AreEqual("c", status.McpServers.Single(item => item.ThreadId == "a\u001fb").ServerName);
+    }
+
+    [TestMethod]
+    public async Task McpRetirementWithThreadAndRegistrationScope_LeavesOtherThreadElicitationPending()
+    {
+        var connection = new RecordingConnection
+        {
+            InitializeResponse = JsonSerializer.SerializeToElement(new { userAgent = "codex-cli/0.171.0" }),
+        };
+        await using var service = CreateService();
+        var prompts = new ConcurrentQueue<McpElicitationRequest>();
+        service.McpElicitationRequested += (request, _) =>
+        {
+            prompts.Enqueue(request);
+            return Task.CompletedTask;
+        };
+        await service.InitializeAsync(connection, Options(experimentalApi: true), CancellationToken.None);
+
+        Task<JsonElement> first = connection.EmitRequestAsync("elicitation-thread-1", "mcpServer/elicitation/request", new
+        {
+            serverName = "docs", mode = "url", elicitationId = "el-1", message = "Sign in", url = "https://login.example.test/a", threadId = "thread-1", environmentId = "env-a",
+        });
+        Task<JsonElement> second = connection.EmitRequestAsync("elicitation-thread-2", "mcpServer/elicitation/request", new
+        {
+            serverName = "docs", mode = "url", elicitationId = "el-2", message = "Sign in", url = "https://login.example.test/b", threadId = "thread-2", environmentId = "env-a",
+        });
+        DateTime deadline = DateTime.UtcNow.AddSeconds(2);
+        while (prompts.Count < 2 && DateTime.UtcNow < deadline)
+        {
+            await Task.Delay(10);
+        }
+        Assert.AreEqual(2, prompts.Count);
+
+        await connection.EmitNotificationAsync("mcpServer/startupStatus/updated", new
+        {
+            name = "docs", threadId = "thread-1", environmentId = "env-a", status = "failed", failureReason = "reauthenticationRequired",
+        });
+        Assert.AreEqual("cancel", (await first.WaitAsync(TimeSpan.FromSeconds(2))).GetProperty("action").GetString());
+        Assert.IsFalse(second.IsCompleted, "A same-name registration in another thread must remain pending.");
+
+        McpElicitationRequest surviving = prompts.Single(request => request.ThreadId == "thread-2");
+        await service.ResolveMcpElicitationAsync(new ResolveMcpElicitationRequest
+        {
+            RequestId = surviving.RequestId,
+            Action = McpElicitationAction.Cancel,
+        }, CancellationToken.None);
+        Assert.AreEqual("cancel", (await second.WaitAsync(TimeSpan.FromSeconds(2))).GetProperty("action").GetString());
+    }
+
+    [TestMethod]
+    public async Task McpRoutingKeepsRawIdentityAndRedactsDisplayCopies()
+    {
+        var redactor = new SecretRedactor();
+        using IDisposable nameSecret = redactor.RegisterSecret("docs-private");
+        using IDisposable environmentSecret = redactor.RegisterSecret("environment-private");
+        var connection = new RecordingConnection
+        {
+            InitializeResponse = JsonSerializer.SerializeToElement(new { userAgent = "codex-cli/0.171.0" }),
+        };
+        connection.AsyncHandler = (method, _, _) => method == "mcpServer/oauth/login"
+            ? Task.FromResult(JsonSerializer.SerializeToElement(new { loginId = "login-private", authorizationUrl = "https://login.example.test/authorize" }))
+            : Task.FromResult(JsonSerializer.SerializeToElement(new { }));
+        await using var service = CreateService(redactor: redactor);
+        await service.InitializeAsync(connection, Options(experimentalApi: true), CancellationToken.None);
+
+        McpOAuthLoginStatus login = await service.StartMcpOAuthLoginAsync(new StartMcpOAuthLoginRequest
+        {
+            ServerName = "docs-private",
+            ThreadId = "thread-1",
+            HasRegistrationIdentity = true,
+            EnvironmentId = "environment-private",
+        }, CancellationToken.None);
+
+        JsonElement parameters = JsonSerializer.SerializeToElement(connection.Requests.Single(request => request.Method == "mcpServer/oauth/login").Parameters);
+        Assert.AreEqual("docs-private", parameters.GetProperty("name").GetString());
+        Assert.AreEqual("environment-private", parameters.GetProperty("environmentId").GetString());
+        Assert.AreEqual("docs-private", login.ServerName);
+        Assert.AreEqual("environment-private", login.EnvironmentId);
+        Assert.AreEqual("[REDACTED]", login.DisplayServerName);
+        Assert.AreEqual("[REDACTED]", login.DisplayEnvironmentId);
+    }
+
+    private static RecordingConnection EnvironmentIdentityConnection(object first, object? second = null, string version = "0.171.0")
+    {
+        var connection = new RecordingConnection
+        {
+            InitializeResponse = JsonSerializer.SerializeToElement(new { userAgent = $"codex-cli/{version}" }),
+        };
+        object[] registrations = second is null ? [first] : [first, second];
+        connection.AsyncHandler = (method, parameters, _) =>
+        {
+            if (method == "mcpServerStatus/list")
+            {
+                var servers = registrations.Select(registration =>
+                {
+                    JsonElement registrationJson = JsonSerializer.SerializeToElement(registration);
+                    return new Dictionary<string, object?>(StringComparer.Ordinal)
+                    {
+                        ["name"] = registrationJson.GetProperty("name").GetString(),
+                        ["environmentId"] = registrationJson.GetProperty("environmentId").ValueKind == JsonValueKind.Null
+                            ? null
+                            : registrationJson.GetProperty("environmentId").GetString(),
+                        ["authStatus"] = "oAuth",
+                        ["tools"] = new { search = new { name = "search", inputSchema = new { type = "object" } } },
+                        ["resources"] = new[] { new { name = "root", uri = "file:///root" } },
+                        ["resourceTemplates"] = Array.Empty<object>(),
+                    };
+                }).ToArray();
+                return Task.FromResult(JsonSerializer.SerializeToElement(new { data = servers }));
+            }
+
+            if (method == "mcpServer/oauth/login")
+            {
+                JsonElement request = JsonSerializer.SerializeToElement(parameters);
+                string? environmentId = request.TryGetProperty("environmentId", out JsonElement environment)
+                    && environment.ValueKind == JsonValueKind.String ? environment.GetString() : null;
+                return Task.FromResult(JsonSerializer.SerializeToElement(new
+                {
+                    loginId = environmentId ?? "thread-wide",
+                    authorizationUrl = "https://login.example.test/authorize",
+                }));
+            }
+
+            return Task.FromResult(JsonSerializer.SerializeToElement(new { }));
+        };
+        return connection;
+    }
+
+    [TestMethod]
     public async Task RemoteInitialize_OmitsGatewayCapabilityAndRejectsLoginAndCancel()
     {
         var connection = new RecordingConnection();
@@ -485,20 +955,21 @@ public sealed class InteractionAuthenticationTests
         Assert.IsFalse(connection.Requests.Any(request => request.Method == "mcpServer/tools/call"));
     }
 
-    private static CodexSessionService CreateService(Action<Uri>? authorizationUrlOpener = null)
+    private static CodexSessionService CreateService(Action<Uri>? authorizationUrlOpener = null, ISecretRedactor? redactor = null)
         => new(
             new ApprovalPolicyEngine(new PathAccessPolicy()),
-            new SecretRedactor(),
+            redactor ?? new SecretRedactor(),
             null,
             null,
             null,
             null,
             authorizationUrlOpener);
 
-    private static WorkerOptions Options() => new()
+    private static WorkerOptions Options(bool experimentalApi = false) => new()
     {
         WorkingDirectory = Path.GetTempPath(),
         ExtensionVersion = "test",
+        ExperimentalApi = experimentalApi,
     };
 
     private static JsonElement GatewayRead(bool required, string? status)
@@ -525,6 +996,8 @@ public sealed class InteractionAuthenticationTests
         public Func<string, object?, CancellationToken, Task<JsonElement>>? AsyncHandler { get; set; }
 
         public JsonElement GatewayOAuthReadResponse { get; set; } = GatewayRead(required: false, status: null);
+
+        public JsonElement? InitializeResponse { get; set; }
 
         public Exception? GatewayReadFailure { get; set; }
 
@@ -554,6 +1027,11 @@ public sealed class InteractionAuthenticationTests
             JsonElement response = AsyncHandler is not null
                 ? await AsyncHandler(method, parameters, cancellationToken).ConfigureAwait(false)
                 : JsonSerializer.SerializeToElement(new { });
+            if (method == "initialize" && InitializeResponse is JsonElement initializeResponse)
+            {
+                return initializeResponse.Clone();
+            }
+
             return method == "initialize" && response.ValueKind == JsonValueKind.Object && !response.EnumerateObject().Any()
                 ? JsonSerializer.SerializeToElement(new { userAgent = $"codex-cli/{SupportedCodexVersions.Target}" })
                 : response;

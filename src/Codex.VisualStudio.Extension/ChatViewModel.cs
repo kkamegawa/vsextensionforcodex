@@ -8979,7 +8979,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             InteractionAuthStatus = new InteractionAuthStatusPresentationViewModel(
                 status,
                 markdown,
-                serverName => StartMcpOAuthLoginAsync(serverName, owner),
+                server => StartMcpOAuthLoginAsync(server, owner),
                 operationId => DismissMcpOAuthLoginAsync(operationId, owner),
                 actionId => OpenAuthorizationUrlAsync(actionId, owner));
         }
@@ -9029,6 +9029,43 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             InteractionAuthStatus result = await bridge.ReadGatewayOAuthAsync(
                 StampOwner(new ReadGatewayOAuthRequest(), owner),
                 lifetime.Token).ConfigureAwait(false);
+            try
+            {
+                foreach (IGrouping<string?, McpServerAuthStatus> threadGroup in result.McpServers
+                    .Where(server => result.McpEnvironmentIdentityEnabled && !server.HasRegistrationIdentity)
+                    .GroupBy(server => server.ThreadId ?? SelectedThread?.Id))
+                {
+                    McpServerListResult inventory = await bridge.ListMcpServersAsync(
+                        StampOwner(new ListMcpServersRequest { ThreadId = threadGroup.Key }, owner),
+                        lifetime.Token).ConfigureAwait(false);
+                    foreach (McpServerAuthStatus server in threadGroup)
+                    {
+                        McpServerStatusInfo[] candidates = inventory.Servers
+                            .Where(candidate => string.Equals(candidate.Name, server.ServerName, StringComparison.Ordinal))
+                            .ToArray();
+                        if (candidates.Length == 1)
+                        {
+                            server.HasRegistrationIdentity = candidates[0].HasRegistrationIdentity;
+                            server.EnvironmentId = candidates[0].EnvironmentId;
+                            server.DisplayEnvironmentId = candidates[0].DisplayEnvironmentId;
+                        }
+                        else if (candidates.Length > 1)
+                        {
+                            server.IsRegistrationAmbiguous = true;
+                        }
+                    }
+                }
+            }
+            catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception)
+            {
+                // The Worker validates identity again when an action is invoked. A transient
+                // status-list failure must not hide unrelated authentication state.
+            }
+
             if (IsCurrentOwner(owner))
             {
                 await OnUiAsync(() =>
@@ -9117,9 +9154,9 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             ? OpenAuthorizationUrlAsync(actionId, CaptureOwnerSnapshot())
             : Task.CompletedTask;
 
-    private async Task StartMcpOAuthLoginAsync(string serverName, OwnerSnapshot owner)
+    private async Task StartMcpOAuthLoginAsync(McpServerAuthStatus server, OwnerSnapshot owner)
     {
-        if (!IsCurrentOwner(owner) || string.IsNullOrWhiteSpace(serverName))
+        if (!IsCurrentOwner(owner) || server.IsRegistrationAmbiguous || string.IsNullOrWhiteSpace(server.ServerName))
         {
             return;
         }
@@ -9129,8 +9166,10 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             McpOAuthLoginStatus result = await bridge.StartMcpOAuthLoginAsync(
                 StampOwner(new StartMcpOAuthLoginRequest
                 {
-                    ServerName = serverName,
-                    ThreadId = SelectedThread?.Id,
+                    ServerName = server.ServerName,
+                    HasRegistrationIdentity = server.HasRegistrationIdentity,
+                    EnvironmentId = server.EnvironmentId,
+                    ThreadId = server.ThreadId ?? SelectedThread?.Id,
                 }, owner),
                 lifetime.Token).ConfigureAwait(false);
             await OnUiAsync(() =>
@@ -9140,9 +9179,15 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                     return;
                 }
 
-                McpServerAuthPresentationViewModel? server = InteractionAuthStatus.McpServers
-                    .FirstOrDefault(item => item.MatchesServer(result.ServerName));
-                server?.Update(result, markdown);
+                McpServerAuthPresentationViewModel? serverPresentation = InteractionAuthStatus.McpServers
+                    .FirstOrDefault(item => item.MatchesServer(new McpServerAuthStatus
+                    {
+                        ServerName = result.ServerName,
+                        HasRegistrationIdentity = result.HasRegistrationIdentity,
+                        EnvironmentId = result.EnvironmentId,
+                        ThreadId = result.ThreadId,
+                    }, server.ThreadId ?? SelectedThread?.Id));
+                serverPresentation?.Update(result, markdown);
             }).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (lifetime.IsCancellationRequested)

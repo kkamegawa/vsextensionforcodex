@@ -214,7 +214,7 @@ public partial interface ICodexSessionService : IAsyncDisposable
 
     Task<ThreadGoalResult> ClearThreadGoalAsync(string threadId, CancellationToken cancellationToken);
 
-    Task<McpServerListResult> ListMcpServersAsync(string? threadId, CancellationToken cancellationToken);
+    Task<McpServerListResult> ListMcpServersAsync(ListMcpServersRequest request, CancellationToken cancellationToken);
 
     Task<ListSkillsResult> ListSkillsAsync(bool forceReload, CancellationToken cancellationToken);
 
@@ -867,25 +867,60 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
     {
         ArgumentNullException.ThrowIfNull(request);
         string serverName = request.ServerName.Trim();
-        if (serverName.Length is 0 or > 256 || serverName.Any(char.IsControl))
+        if (serverName.Length is 0 or > 256 || serverName.Any(character => char.IsControl(character) && character != '\u001f'))
         {
             throw new ArgumentException("The MCP server name is invalid.", nameof(request));
         }
 
         ConnectionContext context = RequireContext();
         EnsureCurrent(context);
-        string? previousOperationId = context.McpOAuthOperationsByServer.GetValueOrDefault(serverName);
+        bool environmentIdentityEnabled = IsMcpEnvironmentIdentityEnabled(context);
+        bool hasRegistrationIdentity = environmentIdentityEnabled && request.HasRegistrationIdentity;
+        string? environmentId = hasRegistrationIdentity ? request.EnvironmentId : null;
+        if (environmentIdentityEnabled && !hasRegistrationIdentity)
+        {
+            JsonElement inventory = await SendRequiredOperationAsync(
+                "mcpServerStatus/list",
+                new { cursor = (string?)null, limit = 100, detail = "toolsAndAuthOnly", threadId = request.ThreadId },
+                TimeSpan.FromSeconds(30),
+                cancellationToken).ConfigureAwait(false);
+            McpServerStatusInfo[] candidates = ReadMcpServers(inventory, environmentIdentityEnabled)
+                .Where(server => string.Equals(server.Name, serverName, StringComparison.Ordinal))
+                .ToArray();
+            if (candidates.Length > 1)
+            {
+                throw new InvalidOperationException("The MCP server registration is ambiguous. Refresh status and choose a specific registration.");
+            }
+
+            if (candidates.Length == 1)
+            {
+                hasRegistrationIdentity = candidates[0].HasRegistrationIdentity;
+                environmentId = candidates[0].EnvironmentId;
+            }
+        }
+
+        McpRegistrationKey registrationKey = GetMcpRegistrationKey(
+            serverName,
+            environmentIdentityEnabled ? request.ThreadId : null,
+            hasRegistrationIdentity,
+            environmentId);
+        string? previousOperationId = context.McpOAuthOperationsByServer.GetValueOrDefault(registrationKey);
         if (previousOperationId is not null && context.McpOAuthOperations.TryRemove(previousOperationId, out McpOAuthOperation? previous))
         {
             RevokeAuthorizationAction(context, previous.ActionId);
         }
 
-        var operation = new McpOAuthOperation(Guid.NewGuid().ToString("N"), serverName, request.ThreadId);
+        var operation = new McpOAuthOperation(Guid.NewGuid().ToString("N"), serverName, request.ThreadId, hasRegistrationIdentity, environmentId, registrationKey);
         context.McpOAuthOperations[operation.OperationId] = operation;
-        context.McpOAuthOperationsByServer[serverName] = operation.OperationId;
-        context.McpAuthStatuses[serverName] = new McpServerAuthStatus
+        context.McpOAuthOperationsByServer[registrationKey] = operation.OperationId;
+        context.McpAuthStatuses[registrationKey] = new McpServerAuthStatus
         {
-            ServerName = redactor.Redact(serverName) ?? string.Empty,
+            ServerName = serverName,
+            DisplayServerName = redactor.Redact(serverName) ?? string.Empty,
+            HasRegistrationIdentity = hasRegistrationIdentity,
+            EnvironmentId = hasRegistrationIdentity ? environmentId : null,
+            DisplayEnvironmentId = hasRegistrationIdentity && environmentId is not null ? redactor.Redact(environmentId) : null,
+            ThreadId = request.ThreadId,
             State = InteractionAuthState.LoginPending,
             Message = "MCP server authorization is starting.",
         };
@@ -893,10 +928,17 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         JsonElement result;
         try
         {
-            result = await SendAsync(
-                "mcpServer/oauth/login",
-                new { name = serverName, threadId = request.ThreadId },
-                cancellationToken).ConfigureAwait(false);
+            var parameters = new Dictionary<string, object?>(StringComparer.Ordinal)
+            {
+                ["name"] = serverName,
+                ["threadId"] = request.ThreadId,
+            };
+            if (environmentIdentityEnabled && hasRegistrationIdentity)
+            {
+                parameters["environmentId"] = environmentId;
+            }
+
+            result = await SendAsync("mcpServer/oauth/login", parameters, cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -911,9 +953,14 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         {
             if (IsCurrent(context) && context.McpOAuthOperations.TryGetValue(operation.OperationId, out McpOAuthOperation? active))
             {
-                context.McpAuthStatuses[serverName] = new McpServerAuthStatus
+                context.McpAuthStatuses[registrationKey] = new McpServerAuthStatus
                 {
-                    ServerName = redactor.Redact(serverName) ?? string.Empty,
+                    ServerName = serverName,
+            DisplayServerName = redactor.Redact(serverName) ?? string.Empty,
+                    HasRegistrationIdentity = hasRegistrationIdentity,
+                    EnvironmentId = hasRegistrationIdentity ? environmentId : null,
+            DisplayEnvironmentId = hasRegistrationIdentity && environmentId is not null ? redactor.Redact(environmentId) : null,
+                    ThreadId = request.ThreadId,
                     State = InteractionAuthState.Failed,
                     Message = "MCP server authorization could not be started. Check the server status before retrying.",
                 };
@@ -926,6 +973,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
 
         EnsureCurrent(context);
         McpOAuthEarlyCompletion? early;
+        string? loginId;
         lock (operation.Gate)
         {
             // The notification handler runs on another task. Publishing the response state and
@@ -933,11 +981,22 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             // either stored before this point and taken here, or matched by the handler afterwards.
             // Every supported server returns loginId, so a missing one is as unmatchable as an
             // invalid one; no completion is matched to this attempt by server name alone.
-            operation.LoginIdInvalid = !TryReadMcpOAuthLoginId(result, out string? loginId) || loginId is null;
+            operation.LoginIdInvalid = !TryReadMcpOAuthLoginId(result, out loginId) || loginId is null;
             operation.LoginId = loginId;
             operation.ResponseReceived = true;
             early = operation.EarlyCompletion;
             operation.EarlyCompletion = null;
+        }
+
+        if (early is null && loginId is not null
+            && context.PendingMcpOAuthCompletions.TryGetValue(loginId, out McpOAuthDeferredCompletion? deferred)
+            && string.Equals(deferred.ServerName, serverName, StringComparison.Ordinal)
+            && (!deferred.HasRegistrationIdentity || (operation.HasRegistrationIdentity
+                && string.Equals(deferred.EnvironmentId, operation.EnvironmentId, StringComparison.Ordinal)))
+            && (deferred.ThreadId is null || operation.ThreadId is null || string.Equals(deferred.ThreadId, operation.ThreadId, StringComparison.Ordinal))
+            && context.PendingMcpOAuthCompletions.TryRemove(loginId, out deferred))
+        {
+            early = new McpOAuthEarlyCompletion(loginId, deferred.Succeeded);
         }
 
         if (early is not null)
@@ -948,7 +1007,15 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
                 && string.Equals(operation.LoginId, early.LoginId, StringComparison.Ordinal)
                 && context.McpOAuthOperations.ContainsKey(operation.OperationId))
             {
-                await ApplyMcpOAuthCompletionAsync(context, serverName, early.Succeeded, cancellationToken).ConfigureAwait(false);
+                await ApplyMcpOAuthCompletionAsync(
+                    context,
+                    serverName,
+                    operation.RegistrationKey,
+                    operation.HasRegistrationIdentity,
+                    operation.EnvironmentId,
+                    operation.ThreadId,
+                    early.Succeeded,
+                    cancellationToken).ConfigureAwait(false);
                 return GetMcpOAuthLoginStatus(context, operation);
             }
         }
@@ -977,10 +1044,15 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             message = "The MCP server did not provide a valid authorization link. Check the server status and retry.";
         }
 
-        context.McpAuthStatuses.TryGetValue(serverName, out McpServerAuthStatus? previousStatus);
+        context.McpAuthStatuses.TryGetValue(registrationKey, out McpServerAuthStatus? previousStatus);
         var status = new McpServerAuthStatus
         {
-            ServerName = redactor.Redact(serverName) ?? string.Empty,
+            ServerName = serverName,
+            DisplayServerName = redactor.Redact(serverName) ?? string.Empty,
+            HasRegistrationIdentity = hasRegistrationIdentity,
+            EnvironmentId = hasRegistrationIdentity ? environmentId : null,
+            DisplayEnvironmentId = hasRegistrationIdentity && environmentId is not null ? redactor.Redact(environmentId) : null,
+            ThreadId = request.ThreadId,
             State = current.NotificationObserved && previousStatus is not null
                 ? previousStatus.State
                 : actionId is null ? InteractionAuthState.Failed : InteractionAuthState.LoginPending,
@@ -990,7 +1062,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         };
         if (context.McpOAuthOperations.TryGetValue(operation.OperationId, out current) && !current.Completed && !current.RequestCanceled)
         {
-            context.McpAuthStatuses[serverName] = status;
+            context.McpAuthStatuses[registrationKey] = status;
         }
         else
         {
@@ -1003,6 +1075,11 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         {
             OperationId = operation.OperationId,
             ServerName = status.ServerName,
+            DisplayServerName = status.DisplayServerName,
+            HasRegistrationIdentity = status.HasRegistrationIdentity,
+            EnvironmentId = status.EnvironmentId,
+            DisplayEnvironmentId = status.DisplayEnvironmentId,
+            ThreadId = status.ThreadId,
             State = status.State,
             Message = status.Message,
             OriginDisplay = status.OriginDisplay,
@@ -1010,14 +1087,117 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         };
     }
 
-    private static McpOAuthLoginStatus GetMcpOAuthLoginStatus(ConnectionContext context, McpOAuthOperation operation)
+    private static McpRegistrationKey GetMcpRegistrationKey(string serverName, string? threadId, bool hasRegistrationIdentity, string? environmentId)
+        => new(serverName, threadId, hasRegistrationIdentity, hasRegistrationIdentity ? environmentId : null);
+
+    private static bool TryResolveMcpRegistrationKey(
+        ConnectionContext context,
+        string serverName,
+        string? threadId,
+        bool hasRegistrationIdentity,
+        string? environmentId,
+        out McpRegistrationKey registrationKey)
     {
-        if (context.McpAuthStatuses.TryGetValue(operation.ServerName, out McpServerAuthStatus? status))
+        if (hasRegistrationIdentity)
+        {
+            McpRegistrationKey[] identifiedCandidates = context.McpOAuthOperations.Values
+                .Where(operation => string.Equals(operation.ServerName, serverName, StringComparison.Ordinal)
+                    && operation.HasRegistrationIdentity
+                    && string.Equals(operation.EnvironmentId, environmentId, StringComparison.Ordinal)
+                    && (threadId is null || operation.ThreadId is null || string.Equals(operation.ThreadId, threadId, StringComparison.Ordinal)))
+                .Select(operation => operation.RegistrationKey)
+                .Concat(context.McpAuthStatuses.Keys.Where(key => MatchesMcpRegistrationKey(
+                    key, serverName, threadId, hasRegistrationIdentity: true, environmentId)))
+                .Distinct()
+                .ToArray();
+            if (threadId is not null)
+            {
+                McpRegistrationKey[] exactThreadCandidates = identifiedCandidates
+                    .Where(key => string.Equals(key.ThreadId, threadId, StringComparison.Ordinal))
+                    .ToArray();
+                if (exactThreadCandidates.Length != 0)
+                {
+                    identifiedCandidates = exactThreadCandidates;
+                }
+                else
+                {
+                    identifiedCandidates = identifiedCandidates.Where(key => key.ThreadId is null).ToArray();
+                }
+            }
+            if (identifiedCandidates.Length > 1)
+            {
+                registrationKey = default;
+                return false;
+            }
+
+            registrationKey = identifiedCandidates.Length == 1
+                ? identifiedCandidates[0]
+                : GetMcpRegistrationKey(serverName, threadId, true, environmentId);
+            return true;
+        }
+
+        if (!IsMcpEnvironmentIdentityEnabled(context))
+        {
+            registrationKey = GetMcpRegistrationKey(serverName, null, false, null);
+            return true;
+        }
+
+        McpRegistrationKey[] candidates = context.McpAuthStatuses.Keys
+            .Where(key => MatchesMcpRegistrationKey(key, serverName, threadId, hasRegistrationIdentity: false, environmentId: null))
+            .Concat(context.McpOAuthOperations.Values
+                .Where(operation => string.Equals(operation.ServerName, serverName, StringComparison.Ordinal)
+                    && (threadId is null || operation.ThreadId is null || string.Equals(operation.ThreadId, threadId, StringComparison.Ordinal)))
+                .Select(operation => operation.RegistrationKey))
+            .Distinct()
+            .ToArray();
+        if (threadId is not null)
+        {
+            McpRegistrationKey[] exactThreadCandidates = candidates
+                .Where(key => string.Equals(key.ThreadId, threadId, StringComparison.Ordinal))
+                .ToArray();
+            if (exactThreadCandidates.Length != 0)
+            {
+                candidates = exactThreadCandidates;
+            }
+            else
+            {
+                candidates = candidates.Where(key => key.ThreadId is null).ToArray();
+            }
+        }
+        if (candidates.Length > 1)
+        {
+            registrationKey = default;
+            return false;
+        }
+
+        registrationKey = candidates.Length == 1 ? candidates[0] : GetMcpRegistrationKey(serverName, threadId, false, null);
+        return true;
+    }
+
+    private static bool MatchesMcpRegistrationKey(
+        McpRegistrationKey key,
+        string serverName,
+        string? threadId,
+        bool hasRegistrationIdentity,
+        string? environmentId)
+        => string.Equals(key.ServerName, serverName, StringComparison.Ordinal)
+            && (threadId is null || key.ThreadId is null || string.Equals(key.ThreadId, threadId, StringComparison.Ordinal))
+            && (!hasRegistrationIdentity
+                || (key.HasRegistrationIdentity && string.Equals(key.EnvironmentId, environmentId, StringComparison.Ordinal)));
+
+    private McpOAuthLoginStatus GetMcpOAuthLoginStatus(ConnectionContext context, McpOAuthOperation operation)
+    {
+        if (context.McpAuthStatuses.TryGetValue(operation.RegistrationKey, out McpServerAuthStatus? status))
         {
             return new McpOAuthLoginStatus
             {
                 OperationId = operation.OperationId,
                 ServerName = status.ServerName,
+                DisplayServerName = status.DisplayServerName,
+                HasRegistrationIdentity = status.HasRegistrationIdentity,
+                EnvironmentId = status.EnvironmentId,
+                DisplayEnvironmentId = status.DisplayEnvironmentId,
+                ThreadId = status.ThreadId,
                 State = status.State,
                 Message = status.Message,
                 OriginDisplay = status.OriginDisplay,
@@ -1029,6 +1209,11 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         {
             OperationId = operation.OperationId,
             ServerName = operation.ServerName,
+            DisplayServerName = redactor.Redact(operation.ServerName) ?? string.Empty,
+            HasRegistrationIdentity = operation.HasRegistrationIdentity,
+            EnvironmentId = operation.EnvironmentId,
+            DisplayEnvironmentId = operation.HasRegistrationIdentity && operation.EnvironmentId is not null ? redactor.Redact(operation.EnvironmentId) : null,
+            ThreadId = operation.ThreadId,
             State = InteractionAuthState.Unavailable,
             Message = "MCP server authorization status is unavailable.",
         };
@@ -1047,12 +1232,16 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         operation.Dismissed = true;
         RevokeAuthorizationAction(context, operation.ActionId);
         operation.ActionId = null;
-        string serverName = operation.ServerName;
-        if (context.McpAuthStatuses.TryGetValue(serverName, out McpServerAuthStatus? status))
+        if (context.McpAuthStatuses.TryGetValue(operation.RegistrationKey, out McpServerAuthStatus? status))
         {
-            context.McpAuthStatuses[serverName] = new McpServerAuthStatus
+            context.McpAuthStatuses[operation.RegistrationKey] = new McpServerAuthStatus
             {
                 ServerName = status.ServerName,
+                DisplayServerName = status.DisplayServerName,
+                HasRegistrationIdentity = status.HasRegistrationIdentity,
+                EnvironmentId = status.EnvironmentId,
+                DisplayEnvironmentId = status.DisplayEnvironmentId,
+                ThreadId = status.ThreadId,
                 State = status.State,
                 Message = "The authorization wait was dismissed. Server authentication may still be in progress.",
             };
@@ -1237,12 +1426,15 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             {
                 IsLocal = context.IsLocal,
                 IsSupported = context.GatewayOAuthReadSucceeded,
+                McpEnvironmentIdentityEnabled = IsMcpEnvironmentIdentityEnabled(context),
                 State = context.GatewayOAuthState,
                 Message = context.GatewayOAuthMessage,
                 OriginDisplay = context.GatewayOAuthOriginDisplay,
                 OpenAuthorizationActionId = context.GatewayOAuthActionId,
                 McpServers = context.McpAuthStatuses.Values
                     .OrderBy(item => item.ServerName, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(item => item.ThreadId, StringComparer.Ordinal)
+                .ThenBy(item => item.EnvironmentId, StringComparer.Ordinal)
                     .ToArray(),
             };
         }
@@ -2521,18 +2713,47 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
     }
 
     public async Task<McpServerListResult> ListMcpServersAsync(
-        string? threadId,
+        ListMcpServersRequest request,
         CancellationToken cancellationToken)
     {
+        ArgumentNullException.ThrowIfNull(request);
+        ConnectionContext context = RequireContext();
+        EnsureCurrent(context);
+        bool environmentIdentityEnabled = IsMcpEnvironmentIdentityEnabled(context);
+        string? serverName = string.IsNullOrWhiteSpace(request.ServerName) ? null : request.ServerName.Trim();
+        if (environmentIdentityEnabled && request.HasRegistrationIdentity
+            && (serverName is null || string.IsNullOrWhiteSpace(request.ThreadId)))
+        {
+            throw new ArgumentException("Environment-scoped MCP status requires both a thread ID and server name.", nameof(request));
+        }
+
+        bool filterByEnvironment = environmentIdentityEnabled && request.HasRegistrationIdentity;
+        var parameters = new Dictionary<string, object?>(StringComparer.Ordinal)
+        {
+            ["cursor"] = null,
+            ["limit"] = 100,
+            ["detail"] = "toolsAndAuthOnly",
+            ["threadId"] = request.ThreadId,
+        };
+        if (environmentIdentityEnabled && serverName is not null)
+        {
+            parameters["serverName"] = serverName;
+        }
+
+        if (filterByEnvironment)
+        {
+            parameters["environmentId"] = request.EnvironmentId;
+        }
+
         JsonElement result = await SendRequiredOperationAsync(
             "mcpServerStatus/list",
-            new { cursor = (string?)null, limit = 100, detail = "toolsAndAuthOnly", threadId },
+            parameters,
             TimeSpan.FromSeconds(30),
             cancellationToken).ConfigureAwait(false);
 
         return new McpServerListResult
         {
-            Servers = ReadMcpServers(result),
+            Servers = ReadMcpServers(result, environmentIdentityEnabled),
         };
     }
 
@@ -3127,6 +3348,15 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             }, cancellationToken).ConfigureAwait(false);
             return JsonSerializer.SerializeToElement(new { action = "cancel" });
         }
+
+        string? rawEnvironmentId = null;
+        bool hasRegistrationIdentity = IsMcpEnvironmentIdentityEnabled(context)
+            && TryReadMcpEnvironmentId(parameters, out rawEnvironmentId);
+        form.Request.HasRegistrationIdentity = hasRegistrationIdentity;
+        form.Request.EnvironmentId = hasRegistrationIdentity ? rawEnvironmentId : null;
+        form.Request.DisplayEnvironmentId = hasRegistrationIdentity && rawEnvironmentId is not null ? redactor.Redact(rawEnvironmentId) : null;
+        form.Request.DisplayServerName = redactor.Redact(form.Request.ServerName) ?? string.Empty;
+        form.Request.ThreadId = GetString(parameters, "threadId");
 
         var key = new PendingInteractionKey(context.Generation, requestId);
         JsonElement timeoutResponse = JsonSerializer.SerializeToElement(new { action = "cancel" });
@@ -4360,6 +4590,90 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             return;
         }
 
+        string? threadId = GetString(parameters, "threadId");
+        string? environmentId = null;
+        bool hasRegistrationIdentity = IsMcpEnvironmentIdentityEnabled(context)
+            && TryReadMcpEnvironmentId(parameters, out environmentId);
+        string? completionLoginId = null;
+        if (parameters.TryGetProperty("loginId", out JsonElement completionLoginIdElement)
+            && completionLoginIdElement.ValueKind != JsonValueKind.Null)
+        {
+            if (!TryReadMcpOAuthLoginId(parameters, out completionLoginId) || completionLoginId is null)
+            {
+                return;
+            }
+        }
+
+        McpRegistrationKey registrationKey;
+        if (completionLoginId is not null)
+        {
+            McpOAuthOperation[] matchingOperations = context.McpOAuthOperations.Values
+                .Where(operation => string.Equals(operation.ServerName, rawName, StringComparison.Ordinal)
+                    && (!hasRegistrationIdentity || (operation.HasRegistrationIdentity && string.Equals(operation.EnvironmentId, environmentId, StringComparison.Ordinal)))
+                    && (threadId is null || operation.ThreadId is null || string.Equals(operation.ThreadId, threadId, StringComparison.Ordinal)))
+                .ToArray();
+            McpOAuthOperation[] identifiedOperations = matchingOperations
+                .Where(operation => operation.ResponseReceived
+                    && !operation.LoginIdInvalid
+                    && string.Equals(operation.LoginId, completionLoginId, StringComparison.Ordinal))
+                .ToArray();
+            if (identifiedOperations.Length == 1)
+            {
+                McpOAuthOperation identified = identifiedOperations[0];
+                registrationKey = identified.RegistrationKey;
+                threadId ??= identified.ThreadId;
+                hasRegistrationIdentity = identified.HasRegistrationIdentity;
+                environmentId = identified.EnvironmentId;
+            }
+            else
+            {
+                McpOAuthOperation[] awaitingResponse = matchingOperations.Where(operation => !operation.ResponseReceived).ToArray();
+                if (awaitingResponse.Length == 1)
+                {
+                    registrationKey = awaitingResponse[0].RegistrationKey;
+                    threadId ??= awaitingResponse[0].ThreadId;
+                    hasRegistrationIdentity = awaitingResponse[0].HasRegistrationIdentity;
+                    environmentId = awaitingResponse[0].EnvironmentId;
+                }
+                else if (awaitingResponse.Length > 1)
+                {
+                    if (context.PendingMcpOAuthCompletions.Count < 128 || context.PendingMcpOAuthCompletions.ContainsKey(completionLoginId))
+                    {
+                        context.PendingMcpOAuthCompletions[completionLoginId] = new McpOAuthDeferredCompletion(
+                            rawName, threadId, hasRegistrationIdentity, environmentId, completionLoginId, GetBoolean(parameters, "success") == true);
+                    }
+                    return;
+                }
+                else
+                {
+                    return;
+                }
+            }
+        }
+        else if (!TryResolveMcpRegistrationKey(context, rawName, threadId, hasRegistrationIdentity, hasRegistrationIdentity ? environmentId : null, out registrationKey))
+        {
+            return;
+        }
+
+        if (!hasRegistrationIdentity)
+        {
+            if (context.McpOAuthOperationsByServer.TryGetValue(registrationKey, out string? scopedOperationId)
+                && context.McpOAuthOperations.TryGetValue(scopedOperationId, out McpOAuthOperation? scopedOperation)
+                && scopedOperation.HasRegistrationIdentity)
+            {
+                hasRegistrationIdentity = true;
+                environmentId = scopedOperation.EnvironmentId;
+                threadId ??= scopedOperation.ThreadId;
+            }
+            else if (context.McpAuthStatuses.TryGetValue(registrationKey, out McpServerAuthStatus? scopedStatus)
+                && scopedStatus.HasRegistrationIdentity)
+            {
+                hasRegistrationIdentity = true;
+                environmentId = scopedStatus.EnvironmentId;
+                threadId ??= scopedStatus.ThreadId;
+            }
+        }
+
         bool succeeded = GetBoolean(parameters, "success") == true;
         if (parameters.TryGetProperty("loginId", out JsonElement loginIdElement)
             && loginIdElement.ValueKind != JsonValueKind.Null)
@@ -4369,7 +4683,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
                 return;
             }
 
-            if (!context.McpOAuthOperationsByServer.TryGetValue(rawName, out string? operationId)
+            if (!context.McpOAuthOperationsByServer.TryGetValue(registrationKey, out string? operationId)
                 || !context.McpOAuthOperations.TryGetValue(operationId, out McpOAuthOperation? active))
             {
                 // An identified completion with no active attempt is delayed or duplicated; it
@@ -4396,7 +4710,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
                 return;
             }
         }
-        else if (context.McpOAuthOperationsByServer.TryGetValue(rawName, out string? pendingOperationId)
+        else if (context.McpOAuthOperationsByServer.TryGetValue(registrationKey, out string? pendingOperationId)
             && context.McpOAuthOperations.TryGetValue(pendingOperationId, out McpOAuthOperation? pending)
             && !pending.Completed)
         {
@@ -4405,27 +4719,36 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             return;
         }
 
-        await ApplyMcpOAuthCompletionAsync(context, rawName, succeeded, cancellationToken).ConfigureAwait(false);
+        await ApplyMcpOAuthCompletionAsync(context, rawName, registrationKey, hasRegistrationIdentity, hasRegistrationIdentity ? environmentId : null, threadId, succeeded, cancellationToken).ConfigureAwait(false);
     }
 
     private async Task ApplyMcpOAuthCompletionAsync(
         ConnectionContext context,
         string rawName,
+        McpRegistrationKey registrationKey,
+        bool hasRegistrationIdentity,
+        string? environmentId,
+        string? threadId,
         bool succeeded,
         CancellationToken cancellationToken)
     {
-        MarkMcpOAuthOperationsCompleted(context, rawName);
-        string serverName = redactor.Redact(rawName) ?? string.Empty;
+        MarkMcpOAuthOperationsCompleted(context, registrationKey);
+        string serverName = rawName;
         var status = new McpServerAuthStatus
         {
             ServerName = serverName,
+            DisplayServerName = redactor.Redact(serverName) ?? string.Empty,
+            HasRegistrationIdentity = hasRegistrationIdentity,
+            EnvironmentId = hasRegistrationIdentity ? environmentId : null,
+            DisplayEnvironmentId = hasRegistrationIdentity && environmentId is not null ? redactor.Redact(environmentId) : null,
+            ThreadId = threadId,
             State = succeeded ? InteractionAuthState.Authenticated : InteractionAuthState.Failed,
             Message = succeeded ? "MCP server authorization completed." : "MCP server authorization did not complete. Retry from the server status.",
         };
-        context.McpAuthStatuses[rawName] = status;
+        context.McpAuthStatuses[registrationKey] = status;
         if (!succeeded)
         {
-            RetireMcpElicitations(context, rawName);
+            RetireMcpElicitations(context, rawName, environmentId, hasRegistrationIdentity, threadId);
         }
 
         await EmitInteractionAuthStatusAsync(context, cancellationToken).ConfigureAwait(false);
@@ -4437,10 +4760,27 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         CancellationToken cancellationToken)
     {
         string? rawName = GetString(parameters, "name");
+        string? threadId = GetString(parameters, "threadId");
         string? wireStatus = GetString(parameters, "status");
         if (string.IsNullOrWhiteSpace(rawName) || wireStatus is not ("starting" or "ready" or "failed" or "cancelled"))
         {
             return;
+        }
+
+        string? environmentId = null;
+        bool hasRegistrationIdentity = IsMcpEnvironmentIdentityEnabled(context)
+            && TryReadMcpEnvironmentId(parameters, out environmentId);
+        if (!TryResolveMcpRegistrationKey(context, rawName, threadId, hasRegistrationIdentity, hasRegistrationIdentity ? environmentId : null, out McpRegistrationKey registrationKey))
+        {
+            return;
+        }
+
+        if (!hasRegistrationIdentity && context.McpAuthStatuses.TryGetValue(registrationKey, out McpServerAuthStatus? scopedStatus)
+            && scopedStatus.HasRegistrationIdentity)
+        {
+            hasRegistrationIdentity = true;
+            environmentId = scopedStatus.EnvironmentId;
+            threadId ??= scopedStatus.ThreadId;
         }
 
         string? failureReason = GetString(parameters, "failureReason");
@@ -4462,20 +4802,25 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
                 "cancelled" => "MCP server startup was canceled.",
                 _ => "MCP server is unavailable. Check its status before retrying.",
             };
-        context.McpAuthStatuses[rawName] = new McpServerAuthStatus
+        context.McpAuthStatuses[registrationKey] = new McpServerAuthStatus
         {
-            ServerName = redactor.Redact(rawName) ?? string.Empty,
+            ServerName = rawName,
+            DisplayServerName = redactor.Redact(rawName) ?? string.Empty,
+            HasRegistrationIdentity = hasRegistrationIdentity,
+            EnvironmentId = hasRegistrationIdentity ? environmentId : null,
+            DisplayEnvironmentId = hasRegistrationIdentity && environmentId is not null ? redactor.Redact(environmentId) : null,
+            ThreadId = threadId,
             State = state,
             Message = message,
         };
-        if (context.McpOAuthOperationsByServer.TryGetValue(rawName, out string? operationId)
+        if (context.McpOAuthOperationsByServer.TryGetValue(registrationKey, out string? operationId)
             && context.McpOAuthOperations.TryGetValue(operationId, out McpOAuthOperation? operation))
         {
             operation.NotificationObserved = true;
         }
         if (needsReauthentication || wireStatus is "failed" or "cancelled")
         {
-            RetireMcpElicitations(context, rawName);
+            RetireMcpElicitations(context, rawName, environmentId, hasRegistrationIdentity, threadId);
         }
 
         await EmitInteractionAuthStatusAsync(context, cancellationToken).ConfigureAwait(false);
@@ -4506,34 +4851,68 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         return true;
     }
 
-    private void MarkMcpOAuthOperationsCompleted(ConnectionContext context, string serverName)
+    private void MarkMcpOAuthOperationsCompleted(ConnectionContext context, McpRegistrationKey registrationKey)
     {
         foreach ((string operationId, McpOAuthOperation operation) in context.McpOAuthOperations)
         {
-            if (string.Equals(operation.ServerName, serverName, StringComparison.Ordinal))
+            if (operation.RegistrationKey.Equals(registrationKey))
             {
                 operation.Completed = true;
                 RevokeAuthorizationAction(context, operation.ActionId);
                 operation.ActionId = null;
                 context.McpOAuthOperations.TryRemove(operationId, out _);
-                context.McpOAuthOperationsByServer.TryRemove(serverName, out _);
+                context.McpOAuthOperationsByServer.TryRemove(registrationKey, out _);
             }
         }
     }
 
-    private void RetireMcpElicitations(ConnectionContext context, string serverName)
+    private void RetireMcpElicitations(
+        ConnectionContext context,
+        string serverName,
+        string? environmentId = null,
+        bool hasRegistrationIdentity = false,
+        string? threadId = null)
     {
+        McpElicitationForm[] candidates = context.McpElicitations.Values
+            .Where(form => string.Equals(form.Request.ServerName, serverName, StringComparison.Ordinal)
+                && (!hasRegistrationIdentity
+                    || (form.Request.HasRegistrationIdentity
+                        && string.Equals(form.Request.EnvironmentId, environmentId, StringComparison.Ordinal)))
+                && (threadId is null || string.Equals(form.Request.ThreadId, threadId, StringComparison.Ordinal)))
+            .ToArray();
+        McpRegistrationKey[] scopes = candidates
+            .Select(form => GetMcpRegistrationKey(
+                form.Request.ServerName,
+                form.Request.ThreadId,
+                form.Request.HasRegistrationIdentity,
+                form.Request.EnvironmentId))
+            .Distinct()
+            .ToArray();
+        if (scopes.Length != 1)
+        {
+            return;
+        }
+
+        McpRegistrationKey target = scopes[0];
         foreach ((string interactionId, McpElicitationForm form) in context.McpElicitations)
         {
-            if (string.Equals(form.Request.ServerName, serverName, StringComparison.Ordinal)
-                && pendingInteractions.TryGetByInteractionId(context.Generation, interactionId, out PendingInteractionEntry entry))
+            McpRegistrationKey formKey = GetMcpRegistrationKey(
+                form.Request.ServerName,
+                form.Request.ThreadId,
+                form.Request.HasRegistrationIdentity,
+                form.Request.EnvironmentId);
+            if (!formKey.Equals(target)
+                || !string.Equals(form.Request.ServerName, serverName, StringComparison.Ordinal)
+                || !pendingInteractions.TryGetByInteractionId(context.Generation, interactionId, out PendingInteractionEntry entry))
             {
-                RevokeAuthorizationActionsForOwner(context, interactionId);
-                pendingInteractions.TryComplete(
-                    entry.Key,
-                    entry,
-                    JsonSerializer.SerializeToElement(new { action = "cancel" }));
+                continue;
             }
+
+            RevokeAuthorizationActionsForOwner(context, interactionId);
+            pendingInteractions.TryComplete(
+                entry.Key,
+                entry,
+                JsonSerializer.SerializeToElement(new { action = "cancel" }));
         }
     }
 
@@ -5919,7 +6298,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
     private const int MaxMcpToolsErrorLength = 512;
 
     // toolListMeta is opaque server metadata and is deliberately never read.
-    internal IReadOnlyList<McpServerStatusInfo> ReadMcpServers(JsonElement result)
+    internal IReadOnlyList<McpServerStatusInfo> ReadMcpServers(JsonElement result, bool environmentIdentityEnabled = false)
     {
         if (!result.TryGetProperty("data", out JsonElement data) || data.ValueKind != JsonValueKind.Array)
         {
@@ -5948,10 +6327,17 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
                 displayName = GetString(serverInfo, "title") ?? GetString(serverInfo, "name");
             }
 
+            string? environmentId = null;
+            bool hasRegistrationIdentity = environmentIdentityEnabled
+                && TryReadMcpEnvironmentId(server, out environmentId);
+
             servers.Add(new McpServerStatusInfo
             {
-                Name = redactor.Redact(GetString(server, "name")) ?? string.Empty,
-                DisplayName = redactor.Redact(displayName),
+                Name = GetString(server, "name") ?? string.Empty,
+                HasRegistrationIdentity = hasRegistrationIdentity,
+                EnvironmentId = hasRegistrationIdentity ? environmentId : null,
+            DisplayEnvironmentId = hasRegistrationIdentity && environmentId is not null ? redactor.Redact(environmentId) : null,
+                DisplayName = redactor.Redact(displayName ?? GetString(server, "name")),
                 AuthStatus = NormalizeWireIdentifier(GetString(server, "authStatus")) ?? string.Empty,
                 ToolNames = tools,
                 ResourceCount = GetArrayLength(server, "resources"),
@@ -5967,6 +6353,37 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
 
         return servers;
     }
+
+    private static bool TryReadMcpEnvironmentId(JsonElement server, out string? environmentId)
+    {
+        environmentId = null;
+        if (!server.TryGetProperty("environmentId", out JsonElement value))
+        {
+            return false;
+        }
+
+        if (value.ValueKind == JsonValueKind.Null)
+        {
+            return true;
+        }
+
+        if (value.ValueKind != JsonValueKind.String)
+        {
+            return false;
+        }
+
+        string candidate = value.GetString() ?? string.Empty;
+        if (candidate.Length > 256 || candidate.Any(char.IsControl))
+        {
+            return false;
+        }
+
+        environmentId = candidate;
+        return true;
+    }
+
+    private static bool IsMcpEnvironmentIdentityEnabled(ConnectionContext context)
+        => context.FeatureTier >= CodexFeatureTier.Tier171 && context.ExperimentalApi;
 
     private static McpRuntimeStatus ReadMcpRuntimeStatus(JsonElement server)
         => GetString(server, "runtimeStatus") switch
@@ -6745,13 +7162,27 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             ? kind
             : ConversationEventKind.Unknown;
 
-    private sealed class McpOAuthOperation(string operationId, string serverName, string? threadId)
+    private readonly record struct McpRegistrationKey(string ServerName, string? ThreadId, bool HasRegistrationIdentity, string? EnvironmentId);
+
+    private sealed class McpOAuthOperation(
+        string operationId,
+        string serverName,
+        string? threadId,
+        bool hasRegistrationIdentity,
+        string? environmentId,
+        McpRegistrationKey registrationKey)
     {
         public string OperationId { get; } = operationId;
 
         public string ServerName { get; } = serverName;
 
         public string? ThreadId { get; } = threadId;
+
+        public bool HasRegistrationIdentity { get; } = hasRegistrationIdentity;
+
+        public string? EnvironmentId { get; } = environmentId;
+
+        public McpRegistrationKey RegistrationKey { get; } = registrationKey;
 
         public string? ActionId { get; set; }
 
@@ -6777,6 +7208,8 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
     }
 
     private sealed record McpOAuthEarlyCompletion(string LoginId, bool Succeeded);
+
+    private sealed record McpOAuthDeferredCompletion(string ServerName, string? ThreadId, bool HasRegistrationIdentity, string? EnvironmentId, string LoginId, bool Succeeded);
 
     private sealed record UserInputProjection(
         UserInputRequest Request,
@@ -6843,9 +7276,11 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         public string? GatewayLoginAttemptId { get; set; }
         public InteractionAuthState GatewayOAuthState { get; set; } = InteractionAuthState.Checking;
         public Lock InteractionAuthLock { get; } = new();
-        public ConcurrentDictionary<string, McpServerAuthStatus> McpAuthStatuses { get; } = new(StringComparer.Ordinal);
+        public ConcurrentDictionary<McpRegistrationKey, McpServerAuthStatus> McpAuthStatuses { get; } = new();
         public ConcurrentDictionary<string, McpOAuthOperation> McpOAuthOperations { get; } = new(StringComparer.Ordinal);
-        public ConcurrentDictionary<string, string> McpOAuthOperationsByServer { get; } = new(StringComparer.Ordinal);
+        public ConcurrentDictionary<McpRegistrationKey, string> McpOAuthOperationsByServer { get; } = new();
+
+        public ConcurrentDictionary<string, McpOAuthDeferredCompletion> PendingMcpOAuthCompletions { get; } = new(StringComparer.Ordinal);
         public ConcurrentDictionary<string, OfferedCommandChoiceSet> CommandChoices { get; } = new(StringComparer.Ordinal);
         public ConcurrentDictionary<string, PermissionSelectionSet> PermissionSelections { get; } = new(StringComparer.Ordinal);
         public ConcurrentDictionary<string, McpElicitationForm> McpElicitations { get; } = new(StringComparer.Ordinal);

@@ -5,7 +5,7 @@ namespace Codex.VisualStudio.Contracts;
 
 public static class ContractVersions
 {
-    public const int Current = 28;
+    public const int Current = 29;
 }
 
 public enum GoalStopStepOutcome
@@ -443,6 +443,12 @@ public sealed class ListPermissionProfilesRequest : OwnerScopedRequest
 public sealed class ListMcpServersRequest : OwnerScopedRequest
 {
     public string? ThreadId { get; set; }
+
+    public string? ServerName { get; set; }
+
+    public bool HasRegistrationIdentity { get; set; }
+
+    public string? EnvironmentId { get; set; }
 }
 
 public sealed class ListSkillsRequest : OwnerScopedRequest
@@ -1175,6 +1181,14 @@ public sealed class StopThreadGoalResult : WorkerGenerationResult
 public sealed class McpServerStatusInfo
 {
     public string Name { get; set; } = string.Empty;
+
+    // True when the 0.171 registration scope was present in the server response. A present null
+    // EnvironmentId identifies a thread-wide registration; false means the scope is unknown.
+    public bool HasRegistrationIdentity { get; set; }
+
+    public string? EnvironmentId { get; set; }
+
+    public string? DisplayEnvironmentId { get; set; }
 
     public string? DisplayName { get; set; }
 

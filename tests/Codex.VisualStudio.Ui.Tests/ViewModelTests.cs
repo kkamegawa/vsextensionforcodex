@@ -1917,6 +1917,109 @@ public sealed partial class ViewModelTests
     }
 
     [TestMethod]
+    public async Task McpAuthPresentation_KeepsSameNameRegistrationsDistinctAndRoutesSelectedScope()
+    {
+        McpServerAuthStatus? loginTarget = null;
+        var presentation = new InteractionAuthStatusPresentationViewModel(
+            new InteractionAuthStatus
+            {
+                McpServers =
+                [
+                    new McpServerAuthStatus
+                    {
+                        ServerName = "docs",
+                        ThreadId = "thread-1",
+                        HasRegistrationIdentity = true,
+                        EnvironmentId = "env-a",
+                        State = InteractionAuthState.ReauthenticationRequired,
+                    },
+                    new McpServerAuthStatus
+                    {
+                        ServerName = "docs",
+                        ThreadId = "thread-1",
+                        HasRegistrationIdentity = true,
+                        EnvironmentId = "env-b",
+                        State = InteractionAuthState.ReauthenticationRequired,
+                    },
+                ],
+            },
+            new SafeMarkdownService(),
+            server =>
+            {
+                loginTarget = server;
+                return Task.CompletedTask;
+            },
+            _ => Task.CompletedTask,
+            _ => Task.CompletedTask);
+
+        Assert.AreEqual(2, presentation.McpServers.Count);
+        Assert.AreEqual("env-a", presentation.McpServers[0].EnvironmentId);
+        Assert.AreEqual("env-b", presentation.McpServers[1].EnvironmentId);
+        Assert.AreEqual("docs (environment env-a)", presentation.McpServers[0].ServerName);
+        Assert.AreEqual("docs (environment env-b)", presentation.McpServers[1].ServerName);
+        await RunCommandAsync(presentation.McpServers[1].LoginCommand);
+        Assert.AreEqual("docs", loginTarget?.ServerName);
+        Assert.IsTrue(loginTarget?.HasRegistrationIdentity);
+        Assert.AreEqual("env-b", loginTarget?.EnvironmentId);
+        Assert.AreEqual("thread-1", loginTarget?.ThreadId);
+        Assert.IsTrue(presentation.McpServers[1].MatchesServer(new McpServerAuthStatus
+        {
+            ServerName = "docs",
+            HasRegistrationIdentity = true,
+            EnvironmentId = "env-b",
+            ThreadId = null,
+        }, expectedThreadId: "thread-1"), "A response without threadId should match its selected-thread row by stable server identity.");
+
+        var ambiguousPresentation = new InteractionAuthStatusPresentationViewModel(
+            new InteractionAuthStatus
+            {
+                McpServers =
+                [
+                    new McpServerAuthStatus { ServerName = "docs", ThreadId = "thread-1", State = InteractionAuthState.ReauthenticationRequired },
+                    new McpServerAuthStatus
+                    {
+                        ServerName = "docs",
+                        ThreadId = "thread-1",
+                        HasRegistrationIdentity = true,
+                        EnvironmentId = "env-a",
+                        State = InteractionAuthState.ReauthenticationRequired,
+                    },
+                ],
+            },
+            new SafeMarkdownService(),
+            _ => Task.CompletedTask,
+            _ => Task.CompletedTask,
+            _ => Task.CompletedTask);
+        McpServerAuthPresentationViewModel[] sameNameRows = ambiguousPresentation.McpServers.ToArray();
+        Assert.IsFalse(sameNameRows.Single(row => !row.HasRegistrationIdentity).LoginCommand.CanExecute,
+            "Only the row without sufficient registration identity is disabled when same-name candidates coexist.");
+        Assert.IsTrue(sameNameRows.Single(row => row.HasRegistrationIdentity).LoginCommand.CanExecute);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_ReadGatewayOAuth_OnlyListsMcpInventoryWhenCapabilityIsEnabled()
+    {
+        foreach (bool identityEnabled in new[] { false, true })
+        {
+            var bridge = new FakeWorkerBridge();
+            using var vm = new ChatViewModel(bridge, autoConnect: false);
+            await bridge.PublishStateAsync(ReadyOwnerStatus(1, "auth-owner-gate"));
+            bridge.ReadGatewayOAuthHandler = (_, _) => Task.FromResult(new InteractionAuthStatus
+            {
+                IsLocal = true,
+                IsSupported = true,
+                McpEnvironmentIdentityEnabled = identityEnabled,
+                McpServers = [new McpServerAuthStatus { ServerName = "docs", State = InteractionAuthState.ReauthenticationRequired }],
+            });
+
+            await RunCommandAsync(vm.ReadGatewayOAuthCommand);
+
+            Assert.AreEqual(identityEnabled ? 1 : 0, bridge.ListMcpServersCallCount,
+                "Only the 0.171 negotiated identity feature may issue inventory hydration calls.");
+        }
+    }
+
+    [TestMethod]
     public async Task ChatViewModel_AuthenticationDetails_CheckHideAndRecheckPreservesPendingActions()
     {
         var bridge = new FakeWorkerBridge();
@@ -11167,8 +11270,13 @@ public sealed partial class ViewModelTests
             });
         }
 
+        public int ListMcpServersCallCount { get; private set; }
+
         public Task<McpServerListResult> ListMcpServersAsync(ListMcpServersRequest request, CancellationToken cancellationToken)
-            => Task.FromResult(new McpServerListResult());
+        {
+            ListMcpServersCallCount++;
+            return Task.FromResult(new McpServerListResult());
+        }
 
         public Task<ListSkillsResult> ListSkillsAsync(ListSkillsRequest request, CancellationToken cancellationToken)
         {

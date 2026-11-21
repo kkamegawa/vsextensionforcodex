@@ -270,7 +270,7 @@ public sealed class McpElicitationViewModel : ObservableObject
     {
         requestId = request.RequestId;
         this.resolver = resolver;
-        ServerName = markdown.ToSafeText(request.ServerName).Trim();
+        ServerName = markdown.ToSafeText(request.DisplayServerName.Length == 0 ? request.ServerName : request.DisplayServerName).Trim();
         Message = markdown.ToSafeText(request.Message).Trim();
         OriginDisplay = markdown.ToSafeText(request.OriginDisplay ?? string.Empty).Trim();
         OpenAuthorizationActionId = request.OpenAuthorizationActionId;
@@ -745,14 +745,14 @@ public sealed class McpElicitationChoiceViewModel : ObservableObject
 public sealed class InteractionAuthStatusPresentationViewModel : ObservableObject
 {
     private readonly SafeMarkdownService markdown;
-    private readonly Func<string, Task> startMcpLogin;
+    private readonly Func<McpServerAuthStatus, Task> startMcpLogin;
     private readonly Func<string, Task> dismissMcpLogin;
     private readonly Func<string, Task> openAuthorization;
 
     public InteractionAuthStatusPresentationViewModel(
         InteractionAuthStatus status,
         SafeMarkdownService markdown,
-        Func<string, Task> startMcpLogin,
+        Func<McpServerAuthStatus, Task> startMcpLogin,
         Func<string, Task> dismissMcpLogin,
         Func<string, Task> openAuthorization)
     {
@@ -810,7 +810,7 @@ public sealed class InteractionAuthStatusPresentationViewModel : ObservableObjec
 
         foreach (McpServerAuthStatus server in status.McpServers)
         {
-            McpServerAuthPresentationViewModel? existing = McpServers.FirstOrDefault(item => item.MatchesServer(server.ServerName));
+            McpServerAuthPresentationViewModel? existing = McpServers.FirstOrDefault(item => item.MatchesServer(server));
             if (existing is null)
             {
                 var added = new McpServerAuthPresentationViewModel(server, markdown, startMcpLogin, dismissMcpLogin, openAuthorization);
@@ -825,11 +825,17 @@ public sealed class InteractionAuthStatusPresentationViewModel : ObservableObjec
 
         for (int index = McpServers.Count - 1; index >= 0; index--)
         {
-            if (!status.McpServers.Any(server => McpServers[index].MatchesServer(server.ServerName)))
+            if (!status.McpServers.Any(McpServers[index].MatchesServer))
             {
                 McpServers[index].PropertyChanged -= OnMcpServerPropertyChanged;
                 McpServers.RemoveAt(index);
             }
+        }
+
+        foreach (McpServerAuthPresentationViewModel server in McpServers)
+        {
+            int sameNameCount = status.McpServers.Count(candidate => string.Equals(candidate.ServerName, server.RawServerName, StringComparison.Ordinal));
+            server.SetRegistrationAmbiguous(server.IsRegistrationAmbiguous || (!server.HasRegistrationIdentity && sameNameCount > 1));
         }
 
         RefreshPendingMcpAuthAction();
@@ -856,20 +862,24 @@ public sealed class InteractionAuthStatusPresentationViewModel : ObservableObjec
 [DataContract]
 public sealed class McpServerAuthPresentationViewModel : ObservableObject
 {
-    private readonly string serverName;
-    private readonly Func<string, Task> startMcpLogin;
+    private string serverName;
+    private string safeDisplayServerName = string.Empty;
+    private string? safeDisplayEnvironmentId;
+    private readonly Func<McpServerAuthStatus, Task> startMcpLogin;
     private readonly Func<string, Task> dismissMcpLogin;
     private readonly Func<string, Task> openAuthorization;
     private string? operationId;
     private string? authorizationActionId;
     private InteractionAuthState state;
+    private string displayServerName = string.Empty;
     private string statusText = string.Empty;
     private string originDisplay = string.Empty;
+    private bool registrationAmbiguous;
 
     public McpServerAuthPresentationViewModel(
         McpServerAuthStatus status,
         SafeMarkdownService markdown,
-        Func<string, Task> startMcpLogin,
+        Func<McpServerAuthStatus, Task> startMcpLogin,
         Func<string, Task> dismissMcpLogin,
         Func<string, Task> openAuthorization)
     {
@@ -877,18 +887,30 @@ public sealed class McpServerAuthPresentationViewModel : ObservableObject
         this.dismissMcpLogin = dismissMcpLogin;
         this.openAuthorization = openAuthorization;
         serverName = status.ServerName;
-        ServerName = markdown.ToSafeText(status.ServerName).Trim();
+        serverName = status.ServerName;
+        safeDisplayServerName = markdown.ToSafeText(status.DisplayServerName.Length == 0 ? status.ServerName : status.DisplayServerName).Trim();
+        UpdateRegistrationIdentity(status.HasRegistrationIdentity, status.EnvironmentId, status.DisplayEnvironmentId, status.ThreadId, markdown);
+        registrationAmbiguous = status.IsRegistrationAmbiguous;
         state = status.State;
         statusText = markdown.ToSafeText(status.Message ?? status.State.ToString()).Trim();
         originDisplay = markdown.ToSafeText(status.OriginDisplay ?? string.Empty).Trim();
         authorizationActionId = status.OpenAuthorizationActionId;
-        LoginCommand = new AsyncCommand(() => this.startMcpLogin(serverName), () => CanStartLogin);
+        LoginCommand = new AsyncCommand(() => this.startMcpLogin(CreateStatusSnapshot()), () => CanStartLogin);
         DismissCommand = new AsyncCommand(DismissAsync, () => CanDismiss);
         OpenAuthorizationCommand = new AsyncCommand(OpenAuthorizationAsync, () => CanOpenAuthorization);
     }
 
     [DataMember]
-    public string ServerName { get; }
+    public string ServerName { get => displayServerName; private set => SetProperty(ref displayServerName, value); }
+
+    internal string RawServerName => serverName;
+
+    [DataMember]
+    public bool HasRegistrationIdentity { get; private set; }
+
+    public string? EnvironmentId { get; private set; }
+
+    public string? ThreadId { get; private set; }
 
     [DataMember]
     public InteractionAuthState State { get => state; private set => SetProperty(ref state, value); }
@@ -900,13 +922,17 @@ public sealed class McpServerAuthPresentationViewModel : ObservableObject
     public string OriginDisplay { get => originDisplay; private set => SetProperty(ref originDisplay, value); }
 
     [DataMember]
-    public bool CanStartLogin => State is InteractionAuthState.ReauthenticationRequired or InteractionAuthState.Unavailable or InteractionAuthState.Failed;
+    public bool CanStartLogin => !registrationAmbiguous
+        && (State is InteractionAuthState.ReauthenticationRequired or InteractionAuthState.Unavailable or InteractionAuthState.Failed);
 
     [DataMember]
     public bool CanDismiss => operationId is not null;
 
     [DataMember]
     public bool CanOpenAuthorization => authorizationActionId is not null;
+
+    [DataMember]
+    public bool IsRegistrationAmbiguous => registrationAmbiguous;
 
     internal bool HasPendingAction => CanStartLogin || CanDismiss || CanOpenAuthorization;
 
@@ -922,6 +948,10 @@ public sealed class McpServerAuthPresentationViewModel : ObservableObject
     public void Update(McpOAuthLoginStatus status, SafeMarkdownService markdown)
     {
         operationId = status.State == InteractionAuthState.LoginPending ? status.OperationId : null;
+        serverName = status.ServerName;
+        safeDisplayServerName = markdown.ToSafeText(status.DisplayServerName.Length == 0 ? status.ServerName : status.DisplayServerName).Trim();
+        UpdateRegistrationIdentity(status.HasRegistrationIdentity, status.EnvironmentId, status.DisplayEnvironmentId, status.ThreadId, markdown);
+        SetRegistrationAmbiguous(false);
         State = status.State;
         StatusText = markdown.ToSafeText(status.Message ?? status.State.ToString()).Trim();
         OriginDisplay = markdown.ToSafeText(status.OriginDisplay ?? string.Empty).Trim();
@@ -937,6 +967,10 @@ public sealed class McpServerAuthPresentationViewModel : ObservableObject
     public void Update(McpServerAuthStatus status, SafeMarkdownService markdown)
     {
         operationId = null;
+        serverName = status.ServerName;
+        safeDisplayServerName = markdown.ToSafeText(status.DisplayServerName.Length == 0 ? status.ServerName : status.DisplayServerName).Trim();
+        UpdateRegistrationIdentity(status.HasRegistrationIdentity, status.EnvironmentId, status.DisplayEnvironmentId, status.ThreadId, markdown);
+        SetRegistrationAmbiguous(status.IsRegistrationAmbiguous);
         State = status.State;
         StatusText = markdown.ToSafeText(status.Message ?? status.State.ToString()).Trim();
         OriginDisplay = markdown.ToSafeText(status.OriginDisplay ?? string.Empty).Trim();
@@ -951,6 +985,70 @@ public sealed class McpServerAuthPresentationViewModel : ObservableObject
 
     public bool MatchesServer(string value)
         => string.Equals(serverName, value, StringComparison.Ordinal);
+
+    public bool MatchesServer(McpServerAuthStatus value)
+        => MatchesServer(value, expectedThreadId: null);
+
+    public bool MatchesServer(McpServerAuthStatus value, string? expectedThreadId)
+        => string.Equals(serverName, value.ServerName, StringComparison.Ordinal)
+            && HasRegistrationIdentity == value.HasRegistrationIdentity
+            && (!HasRegistrationIdentity || string.Equals(EnvironmentId, value.EnvironmentId, StringComparison.Ordinal))
+            && (string.Equals(ThreadId, value.ThreadId, StringComparison.Ordinal)
+                || (value.ThreadId is null && expectedThreadId is not null && string.Equals(ThreadId, expectedThreadId, StringComparison.Ordinal)));
+
+    internal void SetRegistrationAmbiguous(bool value)
+    {
+        if (registrationAmbiguous == value)
+        {
+            return;
+        }
+
+        registrationAmbiguous = value;
+        OnPropertyChanged(nameof(IsRegistrationAmbiguous));
+        OnPropertyChanged(nameof(CanStartLogin));
+        LoginCommand.RaiseCanExecuteChanged();
+    }
+
+    private void UpdateRegistrationIdentity(bool hasIdentity, string? environmentId, string? displayEnvironmentId, string? threadId, SafeMarkdownService markdown)
+    {
+        if (HasRegistrationIdentity != hasIdentity)
+        {
+            HasRegistrationIdentity = hasIdentity;
+            OnPropertyChanged(nameof(HasRegistrationIdentity));
+        }
+
+        safeDisplayEnvironmentId = displayEnvironmentId is null ? null : markdown.ToSafeText(displayEnvironmentId).Trim();
+        if (!string.Equals(EnvironmentId, environmentId, StringComparison.Ordinal))
+        {
+            EnvironmentId = environmentId;
+            OnPropertyChanged(nameof(EnvironmentId));
+        }
+
+        if (!string.Equals(ThreadId, threadId, StringComparison.Ordinal))
+        {
+            ThreadId = threadId;
+            OnPropertyChanged(nameof(ThreadId));
+        }
+
+        string safeName = safeDisplayServerName;
+        string displayName = !hasIdentity
+            ? safeName
+            : environmentId is null
+                ? $"{safeName} (thread-wide)"
+                : $"{safeName} (environment {markdown.ToSafeText(displayEnvironmentId ?? safeDisplayEnvironmentId ?? environmentId).Trim()})";
+        ServerName = displayName;
+    }
+
+    private McpServerAuthStatus CreateStatusSnapshot()
+        => new()
+        {
+            ServerName = serverName,
+            IsRegistrationAmbiguous = registrationAmbiguous,
+            HasRegistrationIdentity = HasRegistrationIdentity,
+            EnvironmentId = EnvironmentId,
+            ThreadId = ThreadId,
+            State = State,
+        };
 
     private async Task DismissAsync()
     {

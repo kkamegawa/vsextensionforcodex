@@ -682,6 +682,43 @@ public sealed partial class CodexSessionServiceTests
     }
 
     [TestMethod]
+    public async Task McpToolCallHistoryCarriesTheNegotiatedRegistrationScope()
+    {
+        var connection = new RecordingConnection();
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(experimentalApi: true), CancellationToken.None);
+        var events = new List<ConversationEvent>();
+        service.ConversationEventReceived += (value, _) =>
+        {
+            events.Add(value);
+            return Task.CompletedTask;
+        };
+
+        await connection.EmitNotificationAsync("item/completed", new
+        {
+            threadId = "thread-1",
+            turnId = "turn-1",
+            item = new
+            {
+                id = "mcp-env-item",
+                type = "mcpToolCall",
+                server = "docs",
+                tool = "search",
+                status = "completed",
+                environmentId = "env-a",
+                arguments = new { query = "safe" },
+                result = (object?)null,
+                error = (object?)null,
+            },
+        });
+
+        ConversationEvent item = events.Single(value => value.Kind == ConversationEventKind.ItemCompleted);
+        ArtifactPart part = item.Parts.Single();
+        Assert.IsTrue(part.HasRegistrationIdentity);
+        Assert.AreEqual("env-a", part.EnvironmentId);
+    }
+
+    [TestMethod]
     public async Task LiveAgentMessageCompletionProjectsModerationDisplayDecisions()
     {
         using JsonDocument hugeVersionDocument = JsonDocument.Parse("999999999999999999999999999999999999999999999999999999999999999999999999");
@@ -2926,7 +2963,7 @@ public sealed partial class CodexSessionServiceTests
             },
             CancellationToken.None);
         ThreadGoalResult cleared = await service.ClearThreadGoalAsync("thread-1", CancellationToken.None);
-        McpServerListResult mcp = await service.ListMcpServersAsync("thread-1", CancellationToken.None);
+        McpServerListResult mcp = await service.ListMcpServersAsync(new ListMcpServersRequest { ThreadId = "thread-1" }, CancellationToken.None);
         UploadFeedbackResult feedback = await service.UploadFeedbackAsync(
             new UploadFeedbackRequest
             {
