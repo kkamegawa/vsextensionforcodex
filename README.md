@@ -12,14 +12,14 @@ The extension is an out-of-process `Microsoft.VisualStudio.Extensibility` extens
 
 - Windows (x64 or Arm64)
 - Visual Studio 2026 18.12 or later (Community, Professional, or Enterprise)
-- The official Windows Codex CLI 0.169.0 executable (x64 or Arm64) from the [rust-v0.169.0 release](https://github.com/openai/codex/releases/tag/rust-v0.169.0). Minimum supported version: 0.167.0; 0.169.0 is the recommended and verified contract version.
+- The official Windows Codex CLI 0.171.0 package (x64 or Arm64) from the [rust-v0.171.0 release](https://github.com/openai/codex/releases/tag/rust-v0.171.0). Minimum supported version: 0.169.0. Regression versions are pinned at 0.169.1 and 0.170.0; 0.171.0 is the recommended target.
 - A ChatGPT account that can sign in with `codex login`
 
 ## Setup
 
 See the detailed [Codex CLI setup and usage guide](doc/codex-cli-setup.md) for installation, authentication, configuration files, every Connection target field, remote server preparation, connection and diagnosis.
 
-1. Download the Windows package for your machine from the [Codex 0.169.0 release](https://github.com/openai/codex/releases/tag/rust-v0.169.0) and extract it into a local directory: `codex-package-x86_64-pc-windows-msvc.tar.gz` on x64, `codex-package-aarch64-pc-windows-msvc.tar.gz` on Arm64. The script below picks the right one. Use the package, not the standalone `codex-*.exe`: Codex runs tools through helper programs (`bin\codex-code-mode-host.exe`, `codex-resources\codex-command-runner.exe`, and the Windows sandbox setup) that must sit next to `codex.exe`, and a standalone executable fails every tool call with "failed to spawn code-mode host". winget is not required, and the winget package can lag behind the pinned release. 0.169.0 is the recommended app-server contract version; 0.167.0 is the minimum supported version.
+1. Download the Windows package for your machine from the [Codex 0.171.0 release](https://github.com/openai/codex/releases/tag/rust-v0.171.0) and extract it into a local directory: `codex-package-x86_64-pc-windows-msvc.tar.gz` on x64, `codex-package-aarch64-pc-windows-msvc.tar.gz` on Arm64. The script below picks the right one. Use the package, not the standalone `codex-*.exe`: Codex runs tools through helper programs (`bin\codex-code-mode-host.exe`, `codex-resources\codex-command-runner.exe`, and the Windows sandbox setup) that must sit next to `codex.exe`, and a standalone executable fails every tool call with "failed to spawn code-mode host". winget is not required, and the winget package can lag behind the pinned release. Minimum supported version is 0.169.0; regression versions are pinned at 0.169.1 and 0.170.0; 0.171.0 is the recommended target.
 
    ```powershell
    $arch = if ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture -eq 'Arm64') { 'aarch64' } else { 'x86_64' }
@@ -27,15 +27,15 @@ See the detailed [Codex CLI setup and usage guide](doc/codex-cli-setup.md) for i
    $codexRoot = Join-Path $env:LOCALAPPDATA 'OpenAI\Codex'
    New-Item -ItemType Directory -Force -Path $codexRoot | Out-Null
    $archive = Join-Path $env:TEMP $package
-   Invoke-WebRequest -Uri "https://github.com/openai/codex/releases/download/rust-v0.169.0/$package" -OutFile $archive
+   Invoke-WebRequest -Uri "https://github.com/openai/codex/releases/download/rust-v0.171.0/$package" -OutFile $archive
    Get-FileHash $archive -Algorithm SHA256
    tar -xzf $archive -C $codexRoot
    [Environment]::SetEnvironmentVariable('CODEX_PATH', (Join-Path $codexRoot 'bin\codex.exe'), 'User')
    ```
 
-   Compare the printed SHA-256 with the value shown for that asset on the release page before you continue. CI and schema generation use the standalone x64 executable pinned in `app-server-contract.json`, which is enough to generate schemas and complete `initialize`; the package for either architecture exposes the same app-server contract.
+   Compare the printed SHA-256 with the value shown for that asset on the release page before you continue. CI downloads the complete x64 package. For pinned versions, it checks the archive SHA-256 in `packageSha256` and the packaged CLI entrypoint SHA-256 in `sha256` against `app-server-contract.json`; the latest-release smoke uses published release metadata. Schema generation and app-server smoke tests run the packaged entrypoint; the x64 and Arm64 packages expose the same app-server contract.
 
-2. Restart Visual Studio and confirm that the executable reports 0.169.0:
+2. Restart Visual Studio and confirm that the executable reports 0.171.0:
 
    ```powershell
    $codexExe = [Environment]::GetEnvironmentVariable('CODEX_PATH', 'User')
@@ -76,8 +76,8 @@ Both roots are required: local paths for the working directory and attachments a
 ## Limitations
 
 - **Validation limits:** Enterprise environments, including SSO, are not tested because they are unavailable to the project. Workspace switching is not tested because multiple workspaces are unavailable. Experimental features are implemented with minimal testing and may not work as expected. The fine-grained runtime combinations listed in [ADR-021](doc/adr/ADR-021-validation-policy.md) are not tested proactively; reproduce them if an issue is reported or encountered. Visual Studio Experimental Instance is a test host and is separate from Codex experimental features.
-- **Other Codex CLI versions are not the target contract.** The recommended and verified version is 0.169.0, and the minimum supported version is 0.167.0. Versions 0.167.2 and 0.168.0 are retained as regression baselines. The extension rejects a server older than 0.167.0, or one whose version cannot be determined, when it connects. Other builds
-  expose different app-server protocol shapes, so `initialize` or `turn/start` can fail or silently drop events. Issues reproduced only on older versions are out of scope.
+- **Codex CLI version policy:** The minimum supported version is 0.169.0; regression versions are pinned to 0.169.1 and 0.170.0; 0.171.0 is the recommended target. The 0.169.0 minimum boundary has a separate smoke check. The extension rejects versions below 0.169.0 or servers whose version cannot be determined. Unpinned versions at or above the minimum may connect under policy, but their runtime behavior is not specifically verified. Their app-server shapes can differ, so requests may fail or events may be omitted.
+  Issues reproduced only on unsupported versions below 0.169.0 are out of scope.
 - **Multiple Codex installations can select the wrong version.** Version managers (mise), winget, npm, and the Codex desktop app each place a `codex` executable in a different location, and the one that wins on `PATH` is not necessarily the newest. The worker resolves the executable in this order:
   1. the `CODEX_PATH` environment variable
   2. the explicit path in the worker options
@@ -92,7 +92,7 @@ Both roots are required: local paths for the working directory and attachments a
   slash menu keeps working with built-in commands only for the rest of the session. Skill icons
   declared by `interface.iconSmall` are not rendered; every row uses a fixed glyph. Skill-specific
   approval requests are declined rather than granted.
-- The app-server contract is verified against 0.169.0. CI also downloads the latest stable release and runs a non-blocking smoke test (start `codex app-server` and complete `initialize`), so a newer release is only known to start, not to match the contract. Schema generation and the build stay pinned to the manifest versions. Confirm the local executable with `codex --version`.
+- The app-server contract is pinned to 0.171.0 and regression-checked against 0.169.1 and 0.170.0, with a separate 0.169.0 minimum-boundary smoke. CI also downloads the latest stable release and runs a non-blocking smoke test (start `codex app-server` and complete `initialize`), so a newer release is only known to start, not to match the contract. Schema generation and builds use the versions in the manifest. Confirm the local executable with `codex --version`.
 - The extension is Windows-only and targets Visual Studio; there is no Visual Studio Code or cross-platform host.
 
 ## FAQ
@@ -101,10 +101,10 @@ Both roots are required: local paths for the working directory and attachments a
 Check that Visual Studio 2026 is version 18.12 or later, that the extension is listed and enabled in **Extensions > Manage Extensions**, and restart Visual Studio once after installing the VSIX.
 
 **Chat never responds, or the worker exits right away.**
-This is almost always the Codex CLI, not the extension. Run `codex --version` (0.169.0) and `codex login` in a terminal. If both succeed there but not in Visual Studio, a different `codex` is being launched; pin it with `CODEX_PATH` as described in [Limitations](#limitations).
+This is almost always the Codex CLI, not the extension. Run `codex --version` (0.171.0) and `codex login` in a terminal. If both succeed there but not in Visual Studio, a different `codex` is being launched; pin it with `CODEX_PATH` as described in [Limitations](#limitations).
 
 **A model that works in ChatGPT, such as gpt-6.1, is missing from the model picker.**
-The picker lists exactly what the Codex CLI's `model/list` returns, and Codex delivers its model catalog per CLI version. `gpt-6.1-sol` is offered starting with Codex CLI 0.159.1. Run `codex --version`, update to 0.169.0, and restart Visual Studio.
+The picker lists exactly what the Codex CLI's `model/list` returns, and Codex delivers its model catalog per CLI version. `gpt-6.1-sol` is offered starting with Codex CLI 0.159.1. Run `codex --version`, update to 0.171.0, and restart Visual Studio.
 
 **Codex answers, but every file edit or command fails with "failed to spawn code-mode host".**
 `CODEX_PATH` points to a standalone `codex.exe` without its helper programs. Install the release package as described in [Setup](#setup) so that `bin\codex-code-mode-host.exe` and `codex-resources\` sit next to `codex.exe`, then restart Visual Studio.
@@ -154,7 +154,7 @@ The **Windows sandbox** panel above the conversation has a **Local app-server ba
 | Follow Codex configuration (default) | nothing | Uses `windows.sandbox` and features from your Codex configuration and managed policy. |
 | Prefer MXC | `-c features.prefer_mxc=true` | Uses MXC when managed policy allows it and does not set `allowLocalBinding=false`; otherwise keeps the configured backend. |
 | Require MXC | `-c windows.sandbox=mxc` | Requests MXC. Codex may refuse startup when this conflicts with `windows.allow_mxc=false` or managed policy. |
-| Do not use MXC | `-c windows.allow_mxc=false` | Disables MXC for the local app-server. CLI 0.167.0 or later is required; a policy that requires MXC can make Codex reject startup. |
+| Do not use MXC | `-c windows.allow_mxc=false` | Disables MXC for the local app-server. CLI 0.169.0 or later is required; a policy that requires MXC can make Codex reject startup. |
 
 The change applies the next time the local app-server starts; the panel says when a reconnect is still needed. Remote profiles are never changed. **Check sandbox status** reports `windows.allow_mxc` when available and shows managed requirements, but missing values are unknown and the App Server does not expose whether MXC is required. It cannot prove which backend runs a particular command. MXC needs no setup; the elevated/unelevated setup below the picker is only for those legacy backends. If a selection prevents startup, review the sanitized CLI error and configuration before changing the choice.
 
@@ -167,7 +167,7 @@ Prerequisites for development:
 
 - Visual Studio 2026 18.12 or later with the Visual Studio extension development workload
 - .NET 10 SDK
-- The official Codex CLI 0.169.0 executable (used to generate the target protocol schema during the build)
+- The `bin\codex.exe` entrypoint from the official complete Codex CLI 0.171.0 Windows package (used to generate the target protocol schema during the build)
 
 Restore and build:
 
@@ -176,13 +176,13 @@ dotnet restore CodexForVisualStudio.slnx
 dotnet build CodexForVisualStudio.slnx -c Release --no-restore
 ```
 
-`schemas/` contains generated output from the Apache-2.0-licensed Codex CLI and is intentionally excluded from this MIT-licensed repository. Caches are separated as `schemas/<version>/<stable|experimental>/` and are reused only when the CLI version, surface, generator arguments, metadata, and schema sentinel all match. When `schemas/0.169.0/stable/codex_app_server_protocol.schemas.json` is missing or stale, building `Codex.AppServer.Protocol` on Windows automatically runs the equivalent of:
+`schemas/` contains generated output from the Apache-2.0-licensed Codex CLI and is intentionally excluded from this MIT-licensed repository. Caches are separated as `schemas/<version>/<stable|experimental>/` and are reused only when the CLI version, surface, generator arguments, metadata, and schema sentinel all match. When `schemas/0.171.0/stable/codex_app_server_protocol.schemas.json` is missing or stale, building `Codex.AppServer.Protocol` on Windows automatically runs the equivalent of:
 
 ```powershell
-pwsh -NoProfile -File scripts/generate-schemas.ps1 -OutputDirectory schemas -Version 0.169.0 -Surface stable -CodexPath $env:CODEX_PATH
+pwsh -NoProfile -File scripts/generate-schemas.ps1 -OutputDirectory schemas -Version 0.171.0 -Surface stable -CodexPath $env:CODEX_PATH
 ```
 
-The generator prefers `CODEX_PATH` when it is set and otherwise resolves `codex` from `PATH`. It rejects a version other than the selected stable manifest entry. CI validates `app-server-contract.json` (schema version 4, including `minimumVersion`) with `scripts/validate-contract-manifest.ps1`, downloads the pinned 0.167.2, 0.168.0 and 0.169.0 Windows x64 release assets, verifies their SHA-256 hashes from the manifest, generates stable and experimental surfaces for all three versions, and checks each regression difference separately. The build and release jobs pass the pinned 0.169.0 executable as `CODEX_PATH`. The CI build job also downloads the latest stable Windows x64 executable into the runner's local temporary directory and runs `scripts/smoke-app-server.ps1` against it as a non-blocking check. Set `CODEX_PATH` to the official 0.169.0 executable for local schema builds:
+The generator prefers `CODEX_PATH` when set and otherwise resolves `codex` from `PATH`. It accepts the pinned schema contract versions and the separately declared 0.169.0 minimum boundary. CI validates `app-server-contract.json` (schema version 5) with `scripts/validate-contract-manifest.ps1`. For each schema version, including the 0.169.0 minimum boundary, CI downloads the complete Windows x64 package, verifies the archive SHA-256 against `packageSha256` and the packaged CLI entrypoint SHA-256 against `sha256`, then generates stable and experimental schemas for that version. CI smoke-tests 0.169.0 by starting `codex app-server` and completing `initialize`, verifies that the 0.169.0 schemas are structurally equivalent to 0.169.1, and checks each regression difference separately against 0.171.0. The build and release jobs pass the extracted 0.171.0 package entrypoint as `CODEX_PATH`. The CI build job also downloads the latest stable Windows x64 package, checks its archive and packaged entrypoint digests from release metadata, and runs `scripts/smoke-app-server.ps1` against the packaged entrypoint as a non-blocking check. Set `CODEX_PATH` to the 0.171.0 package entrypoint for local schema builds:
 
 ```powershell
 $env:CODEX_PATH = "C:\path\to\codex.exe"

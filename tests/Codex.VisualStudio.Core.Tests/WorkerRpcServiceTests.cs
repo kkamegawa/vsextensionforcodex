@@ -38,6 +38,7 @@ public sealed class WorkerRpcServiceTests
     }
 
     [TestMethod]
+    [DataRow("codex-cli/0.168.0", "version 0.168.0")]
     [DataRow("codex-cli/0.166.0", "version 0.166.0")]
     [DataRow("unparseable", "an unknown version")]
     public async Task LocalConnectToAnUnsupportedServerStopsWithoutRetryAndReportsTheVersion(string userAgent, string detected)
@@ -70,7 +71,7 @@ public sealed class WorkerRpcServiceTests
         var connection = new StubConnection
         {
             Handler = method => method == "initialize"
-                ? JsonSerializer.SerializeToElement(new { userAgent = "codex-cli/0.170.0" })
+                ? JsonSerializer.SerializeToElement(new { userAgent = "codex-cli/0.171.0" })
                 : JsonSerializer.SerializeToElement(new { }),
         };
         var session = new CodexSessionService(new ApprovalPolicyEngine(new PathAccessPolicy()), new SecretRedactor());
@@ -79,8 +80,33 @@ public sealed class WorkerRpcServiceTests
         WorkerStatus status = await worker.ConnectAsync(Options(), CancellationToken.None);
 
         Assert.AreEqual(WorkerConnectionState.Ready, status.State);
-        Assert.AreEqual(CodexFeatureTier.Tier169, status.FeatureTier);
-        Assert.IsTrue(status.IsNewerThanVerifiedVersion);
+        Assert.AreEqual(CodexFeatureTier.Tier171, status.FeatureTier);
+        Assert.IsFalse(status.IsNewerThanVerifiedVersion);
+    }
+
+    [TestMethod]
+    public async Task RemoteConnectTo168IsRejectedBeforeInitializedAndStopsTheConnection()
+    {
+        var connection = new StubConnection
+        {
+            Handler = method => method == "initialize"
+                ? JsonSerializer.SerializeToElement(new { userAgent = "codex-cli/0.168.0" })
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        var host = new FakeProcessHost(connection);
+        var session = new CodexSessionService(new ApprovalPolicyEngine(new PathAccessPolicy()), new SecretRedactor());
+        await using var worker = new WorkerRpcService(new SecretRedactor(), host, session);
+
+        WorkerStatus status = await worker.ConnectAsync(RemoteOptions(), CancellationToken.None);
+
+        Assert.AreEqual(WorkerConnectionState.Degraded, status.State);
+        Assert.AreEqual(WorkerRecoveryFailureKind.UnsupportedServerVersion, status.RecoveryFailureKind);
+        StringAssert.Contains(status.Message, "version 0.168.0");
+        StringAssert.Contains(status.Message, SupportedCodexVersions.Minimum);
+        Assert.AreEqual(CodexFeatureTier.Unsupported, status.FeatureTier);
+        Assert.IsNull(status.CodexVersion);
+        Assert.IsTrue(host.Stops > 0);
+        CollectionAssert.AreEqual(new[] { "initialize" }, connection.Methods.ToArray());
     }
 
     [TestMethod]

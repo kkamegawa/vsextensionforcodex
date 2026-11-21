@@ -3,10 +3,10 @@
 // Mirrors minimumVersion and targetVersion in app-server-contract.json; a Core test keeps them in sync.
 public static class SupportedCodexVersions
 {
-    public const string Minimum = "0.167.0";
-    public const string Target = "0.169.0";
-    public const string Tier168 = "0.168.0";
-    public const string Tier169 = "0.169.0";
+    public const string Minimum = "0.169.0";
+    public const string Target = "0.171.0";
+    public const string Tier170 = "0.170.0";
+    public const string Tier171 = "0.171.0";
 }
 
 // The features a connection may use. Computed once per connection from the initialize userAgent.
@@ -14,8 +14,8 @@ public enum CodexFeatureTier
 {
     Unsupported,
     Baseline,
-    Tier168,
-    Tier169,
+    Tier170,
+    Tier171,
 }
 
 /// <summary>A Codex CLI version ordered by Semantic Versioning 2.0 precedence.</summary>
@@ -46,9 +46,9 @@ public sealed class CodexCliVersion
 
     public static CodexCliVersion Target { get; } = Parse(SupportedCodexVersions.Target);
 
-    private static CodexCliVersion Tier168Minimum { get; } = Parse(SupportedCodexVersions.Tier168);
+    private static CodexCliVersion Tier170Minimum { get; } = Parse(SupportedCodexVersions.Tier170);
 
-    private static CodexCliVersion Tier169Minimum { get; } = Parse(SupportedCodexVersions.Tier169);
+    private static CodexCliVersion Tier171Minimum { get; } = Parse(SupportedCodexVersions.Tier171);
 
     public static CodexCliVersion Parse(string value)
         => TryParse(value, out CodexCliVersion? version)
@@ -111,12 +111,12 @@ public sealed class CodexCliVersion
             return CodexFeatureTier.Unsupported;
         }
 
-        if (version.CompareTo(Tier169Minimum) >= 0)
+        if (version.CompareTo(Tier171Minimum) >= 0)
         {
-            return CodexFeatureTier.Tier169;
+            return CodexFeatureTier.Tier171;
         }
 
-        return version.CompareTo(Tier168Minimum) >= 0 ? CodexFeatureTier.Tier168 : CodexFeatureTier.Baseline;
+        return version.CompareTo(Tier170Minimum) >= 0 ? CodexFeatureTier.Tier170 : CodexFeatureTier.Baseline;
     }
 
     public bool IsNewerThanTarget => CompareTo(Target) > 0;

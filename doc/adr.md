@@ -18,7 +18,8 @@ Phase-scoped ADR files:
 | [ADR-020](adr/ADR-020-app-server-0-166.md) | Codex App Server 0.166.0 support and per-version tiers |
 | [ADR-021](adr/ADR-021-validation-policy.md) | Validation policy for constrained and experimental features |
 | [ADR-022](adr/ADR-022-visual-studio-2026-dotnet-10.md) | Visual Studio 2026 18.12+ and .NET 10 only |
-| [ADR-023](adr/ADR-023-codex-cli-0-167-minimum.md) | Codex CLI minimum 0.167.0 and target 0.169.0 |
+| [ADR-023](adr/ADR-023-codex-cli-0-167-minimum.md) | Previous CLI version policy |
+| [ADR-024](adr/ADR-024-codex-cli-0-169-minimum.md) | Codex CLI minimum 0.169.0 and target 0.171.0 |
 
 ## ADR-001: File attachment interaction and trust boundaries
 

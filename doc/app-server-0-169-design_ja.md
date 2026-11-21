@@ -4,6 +4,8 @@
 
 追跡: [Issue #268](https://github.com/kkamegawa/vsextensionforcodex/issues/268) と子 Issue [#273](https://github.com/kkamegawa/vsextensionforcodex/issues/273)、[#274](https://github.com/kkamegawa/vsextensionforcodex/issues/274)、[#275](https://github.com/kkamegawa/vsextensionforcodex/issues/275)、[#276](https://github.com/kkamegawa/vsextensionforcodex/issues/276)。実装: [#269](https://github.com/kkamegawa/vsextensionforcodex/issues/269)(プラットフォーム)、[#270](https://github.com/kkamegawa/vsextensionforcodex/issues/270)(契約)、[#271](https://github.com/kkamegawa/vsextensionforcodex/issues/271)(.NET 10 と C# 14)、[#272](https://github.com/kkamegawa/vsextensionforcodex/issues/272)(機能)。2026-11-16 承認。
 
+> これは 2026-11-16 に承認された #272 の Phase 4 当時の履歴設計です。以下のバージョン方針と機能ティアは当時の目標を記録したもので、現行 CLI の対応方針ではありません。現行方針は [ADR-024](adr/ADR-024-codex-cli-0-169-minimum.md) と [0.171 対応設計](app-server-0-171-design_ja.md) を参照してください。機能要件は #272 と #302～#305 で追跡します。
+
 ## 目的
 
 Visual Studio 2026 と .NET 10 のプラットフォーム上で Codex App Server 0.167.0 から 0.169.0 に対応し、これらのリリースから 4 群の機能を取り込みます。モデルプロバイダー切り替え、承認 UI の強化、スレッド管理、診断・状態表示です。
