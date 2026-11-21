@@ -19,7 +19,7 @@ Each feature issue owns its Worker contract changes and parser tests. The baseli
 
 ## Verified schema differences
 
-Schema generation and structural comparison were run against the official Windows x64 CLI assets. The minimum-boundary 0.169.0 stable and experimental schemas are structurally equivalent to 0.169.1; 0.169.0 is therefore checked for minimum-version smoke and equivalence, not treated as a separate regression release.
+Schema generation and structural comparison were run against the official Windows x64 CLI assets. The file counts below are the results of that local direct comparison. CI separately verifies the minimum-boundary equivalence and each pinned regression against 0.171.0; it does not directly compare 0.169.1 with 0.170.0. The minimum-boundary 0.169.0 stable and experimental schemas are structurally equivalent to 0.169.1; 0.169.0 is therefore checked for minimum-version smoke and equivalence, not treated as a separate regression release.
 
 | Comparison | Stable schema files changed | Experimental schema files changed | Worker decisions |
 | --- | ---: | ---: | --- |
