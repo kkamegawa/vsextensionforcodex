@@ -7,6 +7,7 @@
 )
 
 $ErrorActionPreference = 'Stop'
+Import-Module (Join-Path $PSScriptRoot 'ContractManifest.psm1') -Force -ErrorAction Stop
 $manifest = Get-Content -Raw -LiteralPath $ManifestPath | ConvertFrom-Json
 
 function Assert-Contract([bool]$Condition, [string]$Message) {
@@ -101,7 +102,7 @@ if ($GitHubOutput) {
         throw '-GitHubOutput requires the GITHUB_OUTPUT environment variable.'
     }
     "versions=$(ConvertTo-Json -Compress -InputObject @($contractVersions))" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
-    $schemaVersions = @([string]$boundary.version) + @($contractVersions | Where-Object { $_ -ne [string]$boundary.version })
+    $schemaVersions = @(Get-CodexSchemaVersions -Manifest $manifest)
     "schemaVersions=$(ConvertTo-Json -Compress -InputObject @($schemaVersions))" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
     "regressions=$(ConvertTo-Json -Compress -InputObject @($regressions))" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
     "target=$($manifest.targetVersion)" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append

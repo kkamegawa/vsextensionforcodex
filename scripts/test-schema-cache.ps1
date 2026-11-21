@@ -6,8 +6,9 @@
 )
 
 $ErrorActionPreference = 'Stop'
+Import-Module (Join-Path $PSScriptRoot 'ContractManifest.psm1') -Force -ErrorAction Stop
 $manifest = Get-Content -Raw -LiteralPath $ManifestPath | ConvertFrom-Json
-$schemaVersions = @($manifest.releases.psobject.Properties.Name) + @([string]$manifest.minimumBoundary.version)
+$schemaVersions = @(Get-CodexSchemaVersions -Manifest $manifest)
 if ($schemaVersions -notcontains $Version) {
     throw "Codex $Version is not declared as a schema contract version in $ManifestPath."
 }

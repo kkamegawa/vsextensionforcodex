@@ -11,6 +11,7 @@ Tracking: [Issue #327](https://github.com/kkamegawa/vsextensionforcodex/issues/3
 - [x] Generate the official 0.169.0 stable and experimental schemas, confirm structural equivalence with 0.169.1, and compare both regression pins with 0.171.0.
 - [x] Verify the minimum CLI initialize smoke, all four version method surfaces, schema cache contract, manifest outputs, PowerShell parsing, and UTF-8 BOM/CRLF formatting.
 - [x] Release Core version-boundary tests: 20 passed, 0 failed, 0 skipped.
+- [x] Extend the local release verifier to include the minimum-boundary download, initialize smoke, stable/experimental schema generation, and equivalence check, while keeping regression comparisons separate.
 - [ ] Verify the installer package download and extraction end to end; the pinned package download did not return during this run.
 - [ ] Full Release solution build, complete Core/UI suites, and Visual Studio acceptance are tracked by #331.
 

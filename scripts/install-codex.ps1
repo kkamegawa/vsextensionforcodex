@@ -9,6 +9,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+Import-Module (Join-Path $PSScriptRoot 'ContractManifest.psm1') -Force -ErrorAction Stop
 
 $repository = 'openai/codex'
 $executableAssetName = 'codex-x86_64-pc-windows-msvc.exe'
@@ -63,10 +64,7 @@ function Get-LatestRelease {
 
 function Get-PinnedRelease([string]$PinnedVersion) {
     $manifest = Get-Content -Raw -LiteralPath $manifestPath | ConvertFrom-Json
-    $release = $manifest.releases.$PinnedVersion
-    if ($null -eq $release -and $manifest.minimumBoundary.version -eq $PinnedVersion) {
-        $release = $manifest.minimumBoundary
-    }
+    $release = Get-CodexReleaseDefinition -Manifest $manifest -Version $PinnedVersion
     if ($null -eq $release) {
         throw "The pinned Codex version '$PinnedVersion' is not present in $manifestPath."
     }

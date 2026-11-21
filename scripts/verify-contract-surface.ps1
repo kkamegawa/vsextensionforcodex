@@ -6,8 +6,9 @@
 )
 
 $ErrorActionPreference = 'Stop'
+Import-Module (Join-Path $PSScriptRoot 'ContractManifest.psm1') -Force -ErrorAction Stop
 $manifest = Get-Content -Raw -LiteralPath $ManifestPath | ConvertFrom-Json
-$methodVersion = if ($Version -eq [string]$manifest.minimumBoundary.version) { [string]$manifest.minimumBoundary.schemaEquivalentVersion } else { $Version }
+$methodVersion = Get-CodexMethodVersion -Manifest $manifest -Version $Version
 $expectedMethods = $manifest.methodsByVersion.$methodVersion.$Surface
 if ($null -eq $expectedMethods) {
     throw "The contract manifest has no method table for $methodVersion/$Surface (used to verify $Version/$Surface)."

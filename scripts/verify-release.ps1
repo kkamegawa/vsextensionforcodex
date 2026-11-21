@@ -6,6 +6,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+Import-Module (Join-Path $PSScriptRoot 'ContractManifest.psm1') -Force -ErrorAction Stop
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $outputRoot = [IO.Path]::GetFullPath($OutputDirectory)
 $schemaRoot = Join-Path $outputRoot 'schemas'
@@ -13,13 +14,15 @@ $cliRoot = if ([string]::IsNullOrWhiteSpace($CodexDirectory)) { Join-Path $outpu
 New-Item -ItemType Directory -Force -Path $outputRoot, $schemaRoot, $cliRoot | Out-Null
 $manifestPath = Join-Path $outputRoot 'release-validation.json'
 $manifestDefinition = Get-Content -LiteralPath (Join-Path $root 'app-server-contract.json') -Raw | ConvertFrom-Json
-$contractVersions = @($manifestDefinition.regressionVersions) + @($manifestDefinition.targetVersion)
+$minimumBoundaryVersion = [string]$manifestDefinition.minimumBoundary.version
+$schemaVersions = @(Get-CodexSchemaVersions -Manifest $manifestDefinition)
 $configurations = if ($Configuration -eq 'Both') { @('Debug', 'Release') } else { @($Configuration) }
 $manifest = [ordered]@{
     schemaVersion = 1
     commit = (git -C $root rev-parse HEAD 2>$null | Out-String).Trim()
     host = [ordered]@{ os = [Environment]::OSVersion.VersionString; pwsh = $PSVersionTable.PSVersion.ToString(); dotnet = ''; visualStudio = '' }
     codex = [ordered]@{
+        minimumBoundaryVersion = $minimumBoundaryVersion
         targetVersion = $manifestDefinition.targetVersion
         assets = [System.Collections.Generic.List[object]]::new()
     }
@@ -97,11 +100,12 @@ try {
 
     $cliPaths = @{}
     $allCliInstalled = $true
-    foreach ($version in $contractVersions) {
+    foreach ($version in $schemaVersions) {
         $versionCopy = $version
         $versionCliRoot = Join-Path $cliRoot $versionCopy
-        $versionAsset = $manifestDefinition.releases.$versionCopy
-        $installed = Add-Scenario "cli.pinned-download-hash.$version" "pwsh scripts/install-codex.ps1 -Version $version" {
+        $versionAsset = Get-CodexReleaseDefinition -Manifest $manifestDefinition -Version $versionCopy
+        $downloadScenarioId = if ($versionCopy -eq $minimumBoundaryVersion) { "cli.minimum-boundary-download-hash.$version" } else { "cli.pinned-download-hash.$version" }
+        $installed = Add-Scenario $downloadScenarioId "pwsh scripts/install-codex.ps1 -Version $version" {
             & pwsh -NoProfile -File (Join-Path $PSScriptRoot 'install-codex.ps1') -Version $versionCopy -OutputDirectory $versionCliRoot
         } "cli-install-$version.log"
         if ($installed) {
@@ -114,6 +118,7 @@ try {
             $cliPaths[$versionCopy] = $versionCliPath
             $manifest.codex.assets.Add([ordered]@{
                 version = $versionCopy
+                role = if ($versionCopy -eq $minimumBoundaryVersion) { 'minimum-boundary' } elseif ($versionCopy -eq [string]$manifestDefinition.targetVersion) { 'target' } else { 'regression' }
                 executableSha256 = $versionAsset.sha256
                 packageAsset = $versionAsset.packageAsset
                 packageSha256 = $versionAsset.packageSha256
@@ -124,6 +129,7 @@ try {
             $allCliInstalled = $false
             $manifest.codex.assets.Add([ordered]@{
                 version = $versionCopy
+                role = if ($versionCopy -eq $minimumBoundaryVersion) { 'minimum-boundary' } elseif ($versionCopy -eq [string]$manifestDefinition.targetVersion) { 'target' } else { 'regression' }
                 executableSha256 = $versionAsset.sha256
                 packageAsset = $versionAsset.packageAsset
                 packageSha256 = $versionAsset.packageSha256
@@ -134,10 +140,10 @@ try {
     $codexPath = if ($cliPaths.ContainsKey([string]$manifestDefinition.targetVersion)) { $cliPaths[[string]$manifestDefinition.targetVersion] } else { '' }
 
     if ($allCliInstalled) {
-        foreach ($version in $contractVersions) {
+        foreach ($version in $schemaVersions) {
             $versionCopy = [string]$version
             $versionCodexPath = $cliPaths[$versionCopy]
-            [void](Add-Scenario "app-server.initialize.$versionCopy" "smoke-app-server.ps1 -CodexPath <pinned $versionCopy package entrypoint>" {
+            [void](Add-Scenario "app-server.initialize.$versionCopy" "smoke-app-server.ps1 -CodexPath <installed $versionCopy package entrypoint>" {
                 if ($versionCopy -eq [string]$manifestDefinition.targetVersion) {
                     & pwsh -NoProfile -File (Join-Path $PSScriptRoot 'smoke-app-server.ps1') -CodexPath $versionCodexPath -VerifyIdleUnload
                 }
@@ -148,12 +154,12 @@ try {
         }
     }
     else {
-        foreach ($version in $contractVersions) {
+        foreach ($version in $schemaVersions) {
             $manifest.scenarios.Add([ordered]@{
                 id = "app-server.initialize.$version"
                 class = 'Local-required'
                 status = 'not-run'
-                command = 'blocked by pinned complete-package installation failure'
+                command = 'blocked by CLI complete-package installation failure'
                 exitCode = $null
                 log = $null
             })
@@ -162,7 +168,7 @@ try {
 
     $schemaGenerationOk = $allCliInstalled
     if ($allCliInstalled) {
-        foreach ($version in $contractVersions) {
+        foreach ($version in $schemaVersions) {
             foreach ($surface in @('stable', 'experimental')) {
                 $id = "schema.generate.$version.$surface"
                 $versionCopy = $version
@@ -174,7 +180,7 @@ try {
                 if (-not $ok) { $schemaGenerationOk = $false }
             }
         }
-        foreach ($version in $contractVersions) {
+        foreach ($version in $schemaVersions) {
             $versionCopy = $version
             $versionCodexPath = $cliPaths[$versionCopy]
             $cacheOk = Add-Scenario "schema.cache.contract.$version" "test-schema-cache.ps1 -Version $version" {
@@ -184,7 +190,7 @@ try {
         }
     }
     else {
-        foreach ($version in $contractVersions) {
+        foreach ($version in $schemaVersions) {
             foreach ($surface in @('stable', 'experimental')) {
                 $manifest.scenarios.Add([ordered]@{ id = "schema.generate.$version.$surface"; class = 'Local-required'; status = 'not-run'; command = 'blocked by pinned CLI download failure'; exitCode = $null; log = $null })
             }
@@ -206,7 +212,16 @@ try {
                 } "schema/compare-$baselineCopy-to-$targetVersion-$surfaceCopy.log")
             }
         }
-        foreach ($version in $contractVersions) {
+        foreach ($surface in @('stable', 'experimental')) {
+            $surfaceCopy = $surface
+            $minimumVersionCopy = $minimumBoundaryVersion
+            $equivalentVersionCopy = [string]$manifestDefinition.minimumBoundary.schemaEquivalentVersion
+            $equivalencePassed = Add-Scenario "schema.minimum-boundary-equivalence.$surfaceCopy" "compare-schemas.ps1 -BaselineVersion $minimumVersionCopy -TargetVersion $equivalentVersionCopy -Surface $surfaceCopy -AssertMinimumBoundaryEquivalent" {
+                & pwsh -NoProfile -File (Join-Path $PSScriptRoot 'compare-schemas.ps1') -BaselineDirectory (Join-Path $schemaRoot "$minimumVersionCopy/$surfaceCopy") -TargetDirectory (Join-Path $schemaRoot "$equivalentVersionCopy/$surfaceCopy") -BaselineVersion $minimumVersionCopy -TargetVersion $equivalentVersionCopy -Surface $surfaceCopy -AssertMinimumBoundaryEquivalent
+            } "schema/minimum-boundary-equivalence-$surfaceCopy.log"
+            if (-not $equivalencePassed) { $schemaGenerationOk = $false }
+        }
+        foreach ($version in $schemaVersions) {
             foreach ($surface in @('stable', 'experimental')) {
                 $versionCopy = $version
                 $surfaceCopy = $surface

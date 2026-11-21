@@ -8,12 +8,13 @@
 )
 
 $ErrorActionPreference = 'Stop'
+Import-Module (Join-Path $PSScriptRoot 'ContractManifest.psm1') -Force -ErrorAction Stop
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $manifest = Get-Content -Raw -LiteralPath (Join-Path $root 'app-server-contract.json') | ConvertFrom-Json
 if ([string]::IsNullOrWhiteSpace($Version)) { $Version = $manifest.targetVersion }
-$schemaVersions = @($manifest.releases.psobject.Properties.Name) + @([string]$manifest.minimumBoundary.version)
+$schemaVersions = @(Get-CodexSchemaVersions -Manifest $manifest)
 if ($Version -notin $schemaVersions) { throw "Unsupported schema contract version: $Version" }
-$release = if ($Version -eq [string]$manifest.minimumBoundary.version) { $manifest.minimumBoundary } else { $manifest.releases.$Version }
+$release = Get-CodexReleaseDefinition -Manifest $manifest -Version $Version
 $surfaceDefinition = $manifest.surfaces.$Surface
 if ($null -eq $release -or $null -eq $surfaceDefinition) { throw "Unsupported schema contract: $Version/$Surface" }
 $outputRoot = [IO.Path]::GetFullPath($OutputDirectory).TrimEnd([IO.Path]::DirectorySeparatorChar)
