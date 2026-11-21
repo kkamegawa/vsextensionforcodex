@@ -170,7 +170,7 @@ Worker は現在の接続所有者のスキルカタログを 60 秒間メモリ
 
 - Visual Studio 2026 18.12 or later with the Visual Studio extension development workload
 - .NET 10 SDK
-- 公式 Codex CLI 0.171.0 実行ファイル (ビルド時の対象プロトコル schema 生成に使用)
+- 公式 Codex CLI 0.171.0 完全 Windows package を展開した `bin\codex.exe` (ビルド時の対象プロトコル schema 生成に使用)
 
 復元とビルド:
 

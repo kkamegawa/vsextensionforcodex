@@ -167,7 +167,7 @@ Prerequisites for development:
 
 - Visual Studio 2026 18.12 or later with the Visual Studio extension development workload
 - .NET 10 SDK
-- The official Codex CLI 0.171.0 executable (used to generate the target protocol schema during the build)
+- The `bin\codex.exe` entrypoint from the official complete Codex CLI 0.171.0 Windows package (used to generate the target protocol schema during the build)
 
 Restore and build:
 
