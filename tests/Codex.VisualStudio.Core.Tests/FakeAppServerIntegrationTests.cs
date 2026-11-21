@@ -17,7 +17,9 @@ public sealed class FakeAppServerIntegrationTests
 
     [TestMethod]
     [DataRow("Current01690", "codex-cli/0.169.0")]
-    public async Task FakeReportsTheMinimumSupportedVersionInUserAgent(string scenario, string expectedUserAgent)
+    [DataRow("Current01700", "codex-cli/0.170.0")]
+    [DataRow("Current01710", "codex-cli/0.171.0")]
+    public async Task FakeReportsSupportedVersionScenariosInUserAgent(string scenario, string expectedUserAgent)
     {
         await using FakeAppServerProcess server = await FakeAppServerProcess.StartAsync(scenario);
         await server.SendAsync(new { id = 1, method = "initialize", @params = new { } });

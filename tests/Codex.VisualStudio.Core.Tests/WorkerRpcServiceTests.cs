@@ -39,6 +39,8 @@ public sealed class WorkerRpcServiceTests
 
     [TestMethod]
     [DataRow("codex-cli/0.168.0", "version 0.168.0")]
+    [DataRow("codex-cli/0.168.0+build.7", "version 0.168.0+build.7")]
+    [DataRow("codex-cli/0.168.9", "version 0.168.9")]
     [DataRow("codex-cli/0.166.0", "version 0.166.0")]
     [DataRow("unparseable", "an unknown version")]
     public async Task LocalConnectToAnUnsupportedServerStopsWithoutRetryAndReportsTheVersion(string userAgent, string detected)
@@ -66,12 +68,19 @@ public sealed class WorkerRpcServiceTests
     }
 
     [TestMethod]
-    public async Task LocalConnectPublishesTheFeatureTierWhenReady()
+    [DataRow("0.169.0", CodexFeatureTier.Baseline, false)]
+    [DataRow("0.169.1", CodexFeatureTier.Baseline, false)]
+    [DataRow("0.170.0", CodexFeatureTier.Tier170, false)]
+    [DataRow("0.170.1", CodexFeatureTier.Tier170, false)]
+    [DataRow("0.171.0", CodexFeatureTier.Tier171, false)]
+    [DataRow("0.171.1", CodexFeatureTier.Tier171, true)]
+    [DataRow("0.172.0", CodexFeatureTier.Tier171, true)]
+    public async Task LocalConnectPublishesTheFeatureTierWhenReady(string version, CodexFeatureTier expectedTier, bool newer)
     {
         var connection = new StubConnection
         {
             Handler = method => method == "initialize"
-                ? JsonSerializer.SerializeToElement(new { userAgent = "codex-cli/0.171.0" })
+                ? JsonSerializer.SerializeToElement(new { userAgent = $"codex-cli/{version}" })
                 : JsonSerializer.SerializeToElement(new { }),
         };
         var session = new CodexSessionService(new ApprovalPolicyEngine(new PathAccessPolicy()), new SecretRedactor());
@@ -80,17 +89,21 @@ public sealed class WorkerRpcServiceTests
         WorkerStatus status = await worker.ConnectAsync(Options(), CancellationToken.None);
 
         Assert.AreEqual(WorkerConnectionState.Ready, status.State);
-        Assert.AreEqual(CodexFeatureTier.Tier171, status.FeatureTier);
-        Assert.IsFalse(status.IsNewerThanVerifiedVersion);
+        Assert.AreEqual(expectedTier, status.FeatureTier);
+        Assert.AreEqual(newer, status.IsNewerThanVerifiedVersion);
     }
 
     [TestMethod]
-    public async Task RemoteConnectTo168IsRejectedBeforeInitializedAndStopsTheConnection()
+    [DataRow("codex-cli/0.168.0", "version 0.168.0")]
+    [DataRow("codex-cli/0.168.0+build.7", "version 0.168.0+build.7")]
+    [DataRow("codex-cli/0.168.9", "version 0.168.9")]
+    [DataRow("unparseable", "an unknown version")]
+    public async Task RemoteConnectBelowMinimumOrWithUnknownVersionIsRejectedBeforeInitializedAndStopsTheConnection(string userAgent, string detected)
     {
         var connection = new StubConnection
         {
             Handler = method => method == "initialize"
-                ? JsonSerializer.SerializeToElement(new { userAgent = "codex-cli/0.168.0" })
+                ? JsonSerializer.SerializeToElement(new { userAgent })
                 : JsonSerializer.SerializeToElement(new { }),
         };
         var host = new FakeProcessHost(connection);
@@ -101,7 +114,7 @@ public sealed class WorkerRpcServiceTests
 
         Assert.AreEqual(WorkerConnectionState.Degraded, status.State);
         Assert.AreEqual(WorkerRecoveryFailureKind.UnsupportedServerVersion, status.RecoveryFailureKind);
-        StringAssert.Contains(status.Message, "version 0.168.0");
+        StringAssert.Contains(status.Message, detected);
         StringAssert.Contains(status.Message, SupportedCodexVersions.Minimum);
         Assert.AreEqual(CodexFeatureTier.Unsupported, status.FeatureTier);
         Assert.IsNull(status.CodexVersion);
@@ -1027,9 +1040,22 @@ public sealed class WorkerRpcServiceTests
     }
 
     [TestMethod]
-    public async Task RemoteConnectWithBothRootsIsAccepted()
+    [DataRow("0.169.0", CodexFeatureTier.Baseline, false)]
+    [DataRow("0.169.1", CodexFeatureTier.Baseline, false)]
+    [DataRow("0.170.0", CodexFeatureTier.Tier170, false)]
+    [DataRow("0.170.1", CodexFeatureTier.Tier170, false)]
+    [DataRow("0.171.0", CodexFeatureTier.Tier171, false)]
+    [DataRow("0.171.1", CodexFeatureTier.Tier171, true)]
+    [DataRow("0.172.0", CodexFeatureTier.Tier171, true)]
+    public async Task RemoteConnectWithBothRootsIsAccepted(string version, CodexFeatureTier expectedTier, bool newer)
     {
-        var host = new FakeProcessHost(new StubConnection());
+        var connection = new StubConnection
+        {
+            Handler = method => method == "initialize"
+                ? JsonSerializer.SerializeToElement(new { userAgent = $"codex-cli/{version}" })
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        var host = new FakeProcessHost(connection);
         var session = new CodexSessionService(new ApprovalPolicyEngine(new PathAccessPolicy()), new SecretRedactor());
         await using var worker = new WorkerRpcService(new SecretRedactor(), host, session);
 
@@ -1037,6 +1063,8 @@ public sealed class WorkerRpcServiceTests
 
         Assert.AreEqual(WorkerConnectionState.Ready, status.State);
         Assert.AreEqual(1, host.RemoteStarts);
+        Assert.AreEqual(expectedTier, status.FeatureTier);
+        Assert.AreEqual(newer, status.IsNewerThanVerifiedVersion);
     }
 
     [TestMethod]

@@ -13,6 +13,8 @@ public sealed class SupportedCodexVersionsTests
         JsonElement root = manifest.RootElement;
 
         Assert.AreEqual(5, root.GetProperty("schemaVersion").GetInt32());
+        Assert.AreEqual("0.169.0", SupportedCodexVersions.Minimum);
+        Assert.AreEqual("0.171.0", SupportedCodexVersions.Target);
         Assert.AreEqual(SupportedCodexVersions.Minimum, root.GetProperty("minimumVersion").GetString());
         Assert.AreEqual(SupportedCodexVersions.Target, root.GetProperty("targetVersion").GetString());
         Assert.AreEqual("0.170.0", SupportedCodexVersions.Tier170);
@@ -25,16 +27,22 @@ public sealed class SupportedCodexVersionsTests
     [TestMethod]
     [DataRow("0.168.0-alpha.1", CodexFeatureTier.Unsupported)]
     [DataRow("0.168.0", CodexFeatureTier.Unsupported)]
+    [DataRow("0.168.0+build.7", CodexFeatureTier.Unsupported)]
+    [DataRow("0.168.9", CodexFeatureTier.Unsupported)]
     [DataRow("0.169.0-alpha.1", CodexFeatureTier.Unsupported)]
     [DataRow("0.169.0+build.7", CodexFeatureTier.Baseline)]
     [DataRow("0.169.0", CodexFeatureTier.Baseline)]
+    [DataRow("0.169.1", CodexFeatureTier.Baseline)]
     [DataRow("0.169.1-alpha.1", CodexFeatureTier.Baseline)]
     [DataRow("0.170.0-alpha.1", CodexFeatureTier.Baseline)]
     [DataRow("0.170.0+build.7", CodexFeatureTier.Tier170)]
     [DataRow("0.170.0", CodexFeatureTier.Tier170)]
+    [DataRow("0.170.1", CodexFeatureTier.Tier170)]
     [DataRow("0.171.0-alpha.1", CodexFeatureTier.Tier170)]
     [DataRow("0.171.0+build.7", CodexFeatureTier.Tier171)]
     [DataRow("0.171.0", CodexFeatureTier.Tier171)]
+    [DataRow("0.171.1", CodexFeatureTier.Tier171)]
+    [DataRow("0.172.0", CodexFeatureTier.Tier171)]
     public void GetFeatureTierUsesTheSupportedVersionBoundaries(string version, CodexFeatureTier expected)
         => Assert.AreEqual(expected, CodexCliVersion.GetFeatureTier(CodexCliVersion.Parse(version)));
 
@@ -54,6 +62,8 @@ public sealed class SupportedCodexVersionsTests
     [DataRow("0.171.0-alpha.1", false)]
     [DataRow("0.171.0+build.7", false)]
     [DataRow("0.171.0", false)]
+    [DataRow("0.169.1", false)]
+    [DataRow("0.170.1", false)]
     [DataRow("0.171.1-alpha.1", true)]
     [DataRow("0.171.1", true)]
     [DataRow("0.172.0", true)]

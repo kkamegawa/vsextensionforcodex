@@ -209,14 +209,18 @@ public sealed partial class CodexSessionServiceTests
     }
 
     [TestMethod]
-    [DataRow(false, DisplayName = "local app-server")]
-    [DataRow(true, DisplayName = "remote app-server")]
-    public async Task InitializeRejects168BeforeInitializedForLocalAndRemote(bool remote)
+    [DataRow(false, "0.168.0", DisplayName = "local app-server 0.168.0")]
+    [DataRow(false, "0.168.9", DisplayName = "local app-server 0.168.9")]
+    [DataRow(false, "0.168.0+build.7", DisplayName = "local app-server 0.168.0 build metadata")]
+    [DataRow(true, "0.168.0", DisplayName = "remote app-server 0.168.0")]
+    [DataRow(true, "0.168.9", DisplayName = "remote app-server 0.168.9")]
+    [DataRow(true, "0.168.0+build.7", DisplayName = "remote app-server 0.168.0 build metadata")]
+    public async Task InitializeRejectsVersionsBelowMinimumBeforeInitializedForLocalAndRemote(bool remote, string version)
     {
         var connection = new RecordingConnection
         {
             Handler = (method, _) => method == "initialize"
-                ? JsonSerializer.SerializeToElement(new { userAgent = "codex-cli/0.168.0" })
+                ? JsonSerializer.SerializeToElement(new { userAgent = $"codex-cli/{version}" })
                 : JsonSerializer.SerializeToElement(new { }),
         };
         await using var service = CreateService();
@@ -224,7 +228,7 @@ public sealed partial class CodexSessionServiceTests
         UnsupportedCodexVersionException error = await Assert.ThrowsExactlyAsync<UnsupportedCodexVersionException>(
             () => service.InitializeAsync(connection, Options(remote: remote), CancellationToken.None));
 
-        StringAssert.Contains(error.Message, "version 0.168.0");
+        StringAssert.Contains(error.Message, $"version {version}");
         StringAssert.Contains(error.Message, SupportedCodexVersions.Minimum);
         Assert.IsNull(service.CodexVersion);
         Assert.AreEqual(CodexFeatureTier.Unsupported, service.FeatureTier);
@@ -290,16 +294,21 @@ public sealed partial class CodexSessionServiceTests
 
     [TestMethod]
     [DataRow("0.168.0", CodexFeatureTier.Unsupported, false)]
+    [DataRow("0.168.0+build.7", CodexFeatureTier.Unsupported, false)]
+    [DataRow("0.168.9", CodexFeatureTier.Unsupported, false)]
     [DataRow("0.169.0-alpha.1", CodexFeatureTier.Unsupported, false)]
     [DataRow("0.169.0+build.7", CodexFeatureTier.Baseline, false)]
     [DataRow("0.169.0", CodexFeatureTier.Baseline, false)]
+    [DataRow("0.169.1", CodexFeatureTier.Baseline, false)]
     [DataRow("0.170.0-alpha.1", CodexFeatureTier.Baseline, false)]
     [DataRow("0.170.0+build.7", CodexFeatureTier.Tier170, false)]
     [DataRow("0.170.0", CodexFeatureTier.Tier170, false)]
+    [DataRow("0.170.1", CodexFeatureTier.Tier170, false)]
     [DataRow("0.171.0-alpha.1", CodexFeatureTier.Tier170, false)]
     [DataRow("0.171.0+build.7", CodexFeatureTier.Tier171, false)]
     [DataRow("0.171.0", CodexFeatureTier.Tier171, false)]
     [DataRow("0.171.1", CodexFeatureTier.Tier171, true)]
+    [DataRow("0.172.0", CodexFeatureTier.Tier171, true)]
     public async Task InitializeAssignsTheFeatureTierOrRejectsTheServer(string version, CodexFeatureTier expected, bool newer)
     {
         var connection = new RecordingConnection
