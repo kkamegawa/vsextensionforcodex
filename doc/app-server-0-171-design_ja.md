@@ -29,18 +29,6 @@ Worker 契約の変更とパーサーのテストは該当する機能 Issue で
 
 0.171 スキーマでは `ModelProviderDefaultSetParams`、`ThreadSearchPartialNotification`、`ThreadSearchCancelParams`/`Response`、`ThreadRealtimeListParams`/`Response` が追加される。MCP 操作には登録スコープとして `environmentId` も含まれる。Worker はこれらのフィールドを該当機能が使う場合だけ引き渡す。MCP ID が欠落または曖昧な場合、名前だけの経路へフォールバックせず、影響する操作を無効にする。`workspaceRoutingReady` は所有者を確認してから更新するシグナル、`bioPolicy` は終端拒否として扱う。（#305、#329）
 
-## 検証済みスキーマ差分
-
-公式 Windows x64 CLI 配布物を使ってスキーマを生成し、構造を比較した。最低境界の 0.169.0 は stable と experimental の両スキーマで 0.169.1 と構造的に同等である。そのため 0.169.0 は最低版のスモークと同等性の確認に使い、独立した回帰対象版としては扱わない。
-
-| 比較 | stable 変更ファイル数 | experimental 変更ファイル数 | Worker の判断 |
-| --- | ---: | ---: | --- |
-| 0.169.1 → 0.170.0 | 18 | 23 | 0.170 以降では版付きの AgentMessageDisplay v1 の表示判断を採用し、0.169 のストリーミング動作は維持する。本文は完了まで保留し、モデレーション対象に認識可能な表示指示がなければ fail closed とする。（#328） |
-| 0.170.0 → 0.171.0 | 35 | 50 | 型付き既定プロバイダー変更、ストリーミング検索とキャンセル、環境スコープ付き MCP 登録 ID、Enterprise MCP・管理 OTLP の新動作は、対応する版とネゴシエート済み capability でのみ使う。（#302、#304、#329、#330） |
-| 0.169.1 → 0.171.0 | 35 | 51 | 統合差分は上記の機能別バージョン・capability gate で扱う。無関係なスキーマ追加によって、Worker が未使用メソッドを呼び出したり解釈したりすることはない。 |
-
-0.171 スキーマでは ModelProviderDefaultSetParams、ThreadSearchPartialNotification、ThreadSearchCancelParams/Response、ThreadRealtimeListParams/Response が追加される。MCP 操作には登録スコープとして environmentId も含まれる。Worker はこれらのフィールドを該当機能が使う場合だけ引き渡す。MCP ID が欠落または曖昧な場合、名前だけの経路へフォールバックせず、影響する操作を無効にする。workspaceRoutingReady は所有者を確認してから更新するシグナル、bioPolicy は終端拒否として扱う。（#305、#329）
-
 ## 受け入れ確認
 
 0.171.0 でビルドとスキーマ生成を行う。manifest を検証し、stable と experimental の回帰スキーマを比較し、固定した各 CLI で利用メソッドを確認する。最低版と各固定版の実 CLI 初期化、および `initialized` 前に 0.168.0 が拒否されることを確認する。ローカル・リモート接続判定、プレリリースとビルドメタデータの境界、未検証の新版の案内を確認する。[#331](https://github.com/kkamegawa/vsextensionforcodex/issues/331) で統合受け入れと Visual Studio 2026 のライト・ダークテーマでの UI 確認を追跡する。

@@ -29,18 +29,6 @@ Schema generation and structural comparison were run against the official Window
 
 The 0.171 schema introduces the `ModelProviderDefaultSetParams`, `ThreadSearchPartialNotification`, `ThreadSearchCancelParams`/`Response`, and `ThreadRealtimeListParams`/`Response` shapes. MCP operations also carry registration scope through `environmentId`. The Worker passes these fields only through the feature paths that consume them; an absent or ambiguous MCP identity disables the affected operation rather than falling back to a name-only route. `workspaceRoutingReady` remains an owner-checked refresh signal and `bioPolicy` remains a terminal denial. (#305, #329)
 
-## Verified schema differences
-
-Schema generation and structural comparison were run against the official Windows x64 CLI assets. The minimum-boundary 0.169.0 stable and experimental schemas are structurally equivalent to 0.169.1; 0.169.0 is therefore checked for minimum-version smoke and equivalence, not treated as a separate regression release.
-
-| Comparison | Stable schema files changed | Experimental schema files changed | Worker decisions |
-| --- | ---: | ---: | --- |
-| 0.169.1 → 0.170.0 | 18 | 23 | Adopt the versioned AgentMessageDisplay v1 decision contract on 0.170+; keep the 0.169 streaming behavior. Buffer assistant body text until completion, and fail closed when moderated content has no recognized display instruction. (#328) |
-| 0.170.0 → 0.171.0 | 35 | 50 | Use the typed provider-default setter, streamed thread search and cancellation, environment-scoped MCP registration identity, and the new Enterprise MCP/managed OTLP behavior only on the supported version and negotiated capability. (#302, #304, #329, #330) |
-| 0.169.1 → 0.171.0 | 35 | 51 | The combined delta is covered by the per-feature version and capability gates above; unrelated schema additions do not cause the Worker to call or interpret unconsumed methods. |
-
-The 0.171 schema introduces the ModelProviderDefaultSetParams, ThreadSearchPartialNotification, ThreadSearchCancelParams/Response, and ThreadRealtimeListParams/Response shapes. MCP operations also carry registration scope through environmentId. The Worker passes these fields only through the feature paths that consume them; an absent or ambiguous MCP identity disables the affected operation rather than falling back to a name-only route. workspaceRoutingReady remains an owner-checked refresh signal and bioPolicy remains a terminal denial. (#305, #329)
-
 ## Acceptance
 
 Build and generate schemas with 0.171.0. Validate the manifest, compare stable and experimental regressions, and check the used method tables for each pinned CLI. Confirm real CLI initialization at the minimum and for each pin, and rejection of 0.168.0 before `initialized`. Test the local and remote gates, prerelease and build metadata boundaries, and newer-version notice. [#331](https://github.com/kkamegawa/vsextensionforcodex/issues/331) tracks integrated acceptance, including Visual Studio 2026 Light and Dark theme checks for user interface changes.
