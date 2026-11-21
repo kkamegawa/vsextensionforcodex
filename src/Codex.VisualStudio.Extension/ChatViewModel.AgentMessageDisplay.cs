@@ -7,10 +7,14 @@ namespace Codex.VisualStudio.Extension;
 public sealed partial class ChatViewModel
 {
     private const int MaximumCompletedAgentMessageKeys = 1024;
+    private const int MaximumConsumedAgentRawTurnKeys = 1024;
 
     private readonly HashSet<string> pendingAgentRawKeys = new(StringComparer.Ordinal);
     private readonly HashSet<string> completedAgentMessageKeys = new(StringComparer.Ordinal);
     private readonly Queue<string> completedAgentMessageKeyOrder = new();
+    // Keep consumed turn IDs across owner changes so reconnect replay cannot recreate a consumed prompt.
+    private readonly HashSet<string> consumedAgentRawTurnKeys = new(StringComparer.Ordinal);
+    private readonly Queue<string> consumedAgentRawTurnKeyOrder = new();
 
     private bool RequiresBufferedAgentMessageDisplay()
         => Status.FeatureTier != CodexFeatureTier.Baseline;
@@ -45,7 +49,11 @@ public sealed partial class ChatViewModel
         ChatItemViewModel? existing = FindCurrentTranscriptItem(value, notification);
         if (existing?.IsHistoryCompleted == true)
         {
-            if (firstCompletion)
+            // Completion keys are bounded. If an old key was evicted, avoid appending an
+            // already-approved body again when the completed transcript row is still present.
+            bool hasRawText = agentRawText.TryGetValue(agentRawKey, out _);
+            if (!IsAgentRawTurnConsumed(value)
+                && (firstCompletion || pendingAgentRawKeys.Contains(agentRawKey) || !hasRawText))
             {
                 RemoveAgentRaw(agentRawKey);
                 AppendApprovedAgentRaw(agentRawKey, value);
@@ -117,6 +125,13 @@ public sealed partial class ChatViewModel
 
     private void AppendApprovedAgentRaw(string key, ConversationEvent value)
     {
+        if (IsAgentRawTurnConsumed(value))
+        {
+            // Late/replayed completion can still render in the transcript, but a terminal turn
+            // has already spent its choice-detection window.
+            return;
+        }
+
         if (value.AgentMessageDisplayDecision is null or { Mode: AgentMessageDisplayMode.Show })
         {
             if (!string.IsNullOrEmpty(value.Text))
@@ -150,6 +165,39 @@ public sealed partial class ChatViewModel
         }
 
         return true;
+    }
+
+    private bool IsAgentRawTurnConsumed(ConversationEvent value)
+    {
+        string? key = GetAgentRawTurnKey(value);
+        return key is not null && consumedAgentRawTurnKeys.Contains(key);
+    }
+
+    private void MarkAgentRawTurnConsumed(ConversationEvent value)
+    {
+        string? key = GetAgentRawTurnKey(value);
+        if (key is null || !consumedAgentRawTurnKeys.Add(key))
+        {
+            return;
+        }
+
+        consumedAgentRawTurnKeyOrder.Enqueue(key);
+        while (consumedAgentRawTurnKeyOrder.Count > MaximumConsumedAgentRawTurnKeys)
+        {
+            consumedAgentRawTurnKeys.Remove(consumedAgentRawTurnKeyOrder.Dequeue());
+        }
+    }
+
+    private static string? GetAgentRawTurnKey(ConversationEvent value)
+    {
+        if (string.IsNullOrWhiteSpace(value.ThreadId) || string.IsNullOrWhiteSpace(value.TurnId))
+        {
+            return null;
+        }
+
+        string threadId = value.ThreadId;
+        string turnId = value.TurnId;
+        return string.Concat(threadId.Length, ":", threadId, turnId.Length, ":", turnId);
     }
 
     private static string GetAgentCompletionKey(ConversationEvent value)
@@ -203,6 +251,19 @@ public sealed partial class ChatViewModel
         if (lastMessageWasPending)
         {
             lastAgentRawKey = FindLatestApprovedAgentRawKey();
+        }
+    }
+
+    private void TryDiscardPendingAgentRawTextAfterConnectionLoss()
+    {
+        try
+        {
+            DiscardPendingAgentRawText();
+        }
+        catch (Exception ex)
+        {
+            // A cleanup failure must not prevent reconnect attempts.
+            ExtensionDiagnostics.Write("Pending assistant text cleanup failed after connection loss", ex);
         }
     }
 

@@ -3705,6 +3705,229 @@ public sealed partial class ViewModelTests
     }
 
     [TestMethod]
+    public async Task ChatViewModel_Tier170StaleBridgeConnectionLossPreservesCurrentPendingChoiceUntilCompletion()
+    {
+        const string threadId = "test-thread";
+        const string turnId = "turn-stale-loss";
+        const string itemId = "pending-choice";
+        const string prompt = "Which deployment target?\n1. Azure\n2. On-premises";
+        var currentBridge = new FakeWorkerBridge
+        {
+            ListThreadItemsHandler = (_, _) => Task.FromResult(new ThreadItemsPage()),
+        };
+        var staleBridge = new FakeWorkerBridge();
+        using var vm = new ChatViewModel(currentBridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        WorkerStatus status = OwnerStatus("stale-loss-owner", 1, 1);
+        status.FeatureTier = CodexFeatureTier.Tier170;
+        status.ThreadId = threadId;
+        await currentBridge.PublishStateAsync(status);
+        var thread = new ThreadSummary { Id = threadId };
+        vm.Threads.Add(thread);
+        vm.SelectedThread = thread;
+        await WaitForAsync(() => vm.HistoryStatusText.StartsWith("Read-only history", StringComparison.Ordinal));
+
+        await currentBridge.PublishConversationEventAsync(new ConversationEvent
+        {
+            Kind = ConversationEventKind.AgentMessageDelta,
+            ThreadId = threadId,
+            TurnId = turnId,
+            ItemId = itemId,
+            IsAgentMessage = true,
+            Text = prompt,
+        });
+        FieldInfo pendingRawField = typeof(ChatViewModel).GetField("pendingAgentRawKeys", BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("Could not find pendingAgentRawKeys.");
+        var pendingRawKeys = (HashSet<string>)pendingRawField.GetValue(vm)!;
+        Assert.AreEqual(1, pendingRawKeys.Count, "The current bridge delta should be retained pending its display decision.");
+
+        MethodInfo lostMethod = typeof(ChatViewModel).GetMethod("HandleConnectionLostAsync", BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("Could not find HandleConnectionLostAsync.");
+        await (Task)lostMethod.Invoke(vm, [staleBridge, WorkerRecoveryFailureKind.AuthenticationRejected])!;
+
+        Assert.AreEqual(1, pendingRawKeys.Count, "A stale bridge loss must not clear the active bridge's pending raw text.");
+        await currentBridge.PublishConversationEventAsync(new ConversationEvent
+        {
+            Kind = ConversationEventKind.ItemCompleted,
+            ThreadId = threadId,
+            TurnId = turnId,
+            ItemId = itemId,
+            IsAgentMessage = true,
+            AgentMessageDisplayDecision = new AgentMessageDisplayDecision { Mode = AgentMessageDisplayMode.Show },
+            Text = prompt,
+        });
+        await currentBridge.PublishConversationEventAsync(new ConversationEvent
+        {
+            Kind = ConversationEventKind.TurnCompleted,
+            ThreadId = threadId,
+            TurnId = turnId,
+        });
+
+        Assert.IsTrue(vm.ActiveUserInput?.IsSynthetic == true);
+        Assert.AreEqual("Which deployment target?", vm.ActiveUserInput!.Questions[0].Question);
+        Assert.AreEqual(1, vm.PendingInteractions.Count(card => card.UserInput is not null));
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_Tier170DuplicateCompletionAfterConsumedTurnAndReconnectDoesNotRecreateSyntheticPrompt()
+    {
+        const string threadId = "test-thread";
+        const string turnId = "turn-consumed-choice";
+        const string itemId = "completed-choice";
+        const string prompt = "Which deployment target?\n1. Azure\n2. On-premises";
+        var bridge = new FakeWorkerBridge
+        {
+            ListThreadItemsHandler = (_, _) => Task.FromResult(new ThreadItemsPage()),
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        WorkerStatus initialStatus = OwnerStatus("choice-owner", 1, 1);
+        initialStatus.FeatureTier = CodexFeatureTier.Tier170;
+        initialStatus.ThreadId = threadId;
+        await bridge.PublishStateAsync(initialStatus);
+        var thread = new ThreadSummary { Id = threadId };
+        vm.Threads.Add(thread);
+        vm.SelectedThread = thread;
+        await WaitForAsync(() => vm.HistoryStatusText.StartsWith("Read-only history", StringComparison.Ordinal));
+
+        ConversationEvent completed = new()
+        {
+            Kind = ConversationEventKind.ItemCompleted,
+            ThreadId = threadId,
+            TurnId = turnId,
+            ItemId = itemId,
+            IsAgentMessage = true,
+            AgentMessageDisplayDecision = new AgentMessageDisplayDecision { Mode = AgentMessageDisplayMode.Show },
+            Text = prompt,
+        };
+        await bridge.PublishConversationEventAsync(completed);
+        await bridge.PublishConversationEventAsync(new ConversationEvent
+        {
+            Kind = ConversationEventKind.TurnCompleted,
+            ThreadId = threadId,
+            TurnId = turnId,
+        });
+
+        UserInputViewModel firstPrompt = vm.ActiveUserInput
+            ?? throw new AssertFailedException("The approved completed choice should produce one synthetic prompt.");
+        Assert.IsTrue(firstPrompt.IsSynthetic);
+        Assert.AreEqual(1, vm.PendingInteractions.Count(card => card.UserInput is not null));
+
+        WorkerStatus reconnectedStatus = OwnerStatus("choice-owner", 1, 2);
+        reconnectedStatus.FeatureTier = CodexFeatureTier.Tier170;
+        reconnectedStatus.ThreadId = threadId;
+        await bridge.PublishStateAsync(reconnectedStatus);
+        await bridge.PublishConversationEventAsync(completed);
+        await bridge.PublishConversationEventAsync(new ConversationEvent
+        {
+            Kind = ConversationEventKind.TurnCompleted,
+            ThreadId = threadId,
+            TurnId = turnId,
+        });
+
+        Assert.AreEqual(firstPrompt.RequestId, vm.ActiveUserInput?.RequestId, "A replayed completion after reconnect must not synthesize another prompt.");
+        Assert.AreEqual(1, vm.PendingInteractions.Count(card => card.UserInput is not null));
+    }
+
+    [TestMethod]
+    public void ChatViewModel_ConsumedAgentTurnLedgerEvictsOldestTurnAtBound()
+    {
+        using var vm = new ChatViewModel(new FakeWorkerBridge(), autoConnect: false);
+        Type viewModelType = typeof(ChatViewModel);
+        MethodInfo markConsumed = viewModelType.GetMethod("MarkAgentRawTurnConsumed", BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("Could not find MarkAgentRawTurnConsumed.");
+        MethodInfo isConsumed = viewModelType.GetMethod("IsAgentRawTurnConsumed", BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("Could not find IsAgentRawTurnConsumed.");
+        FieldInfo maximumField = viewModelType.GetField("MaximumConsumedAgentRawTurnKeys", BindingFlags.NonPublic | BindingFlags.Static)
+            ?? throw new InvalidOperationException("Could not find MaximumConsumedAgentRawTurnKeys.");
+        int maximum = (int)maximumField.GetRawConstantValue()!;
+        var firstTurn = new ConversationEvent { ThreadId = "ledger-thread", TurnId = "ledger-turn-0" };
+        ConversationEvent latestTurn = firstTurn;
+
+        for (int index = 0; index <= maximum; index++)
+        {
+            latestTurn = new ConversationEvent
+            {
+                ThreadId = "ledger-thread",
+                TurnId = $"ledger-turn-{index}",
+            };
+            markConsumed.Invoke(vm, [latestTurn]);
+        }
+
+        FieldInfo ledgerField = viewModelType.GetField("consumedAgentRawTurnKeys", BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("Could not find consumedAgentRawTurnKeys.");
+        var ledger = (HashSet<string>)ledgerField.GetValue(vm)!;
+        Assert.AreEqual(maximum, ledger.Count, "The consumed-turn replay ledger must remain bounded.");
+        Assert.IsFalse((bool)isConsumed.Invoke(vm, [firstTurn])!, "The oldest turn should be evicted once the bound is exceeded.");
+        Assert.IsTrue((bool)isConsumed.Invoke(vm, [latestTurn])!, "The newest turn should remain protected from replay.");
+    }
+
+    [TestMethod]
+    public void ChatViewModel_ConsumedAgentTurnLedgerRequiresThreadAndTurnIds()
+    {
+        using var vm = new ChatViewModel(new FakeWorkerBridge(), autoConnect: false);
+        Type viewModelType = typeof(ChatViewModel);
+        MethodInfo markConsumed = viewModelType.GetMethod("MarkAgentRawTurnConsumed", BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("Could not find MarkAgentRawTurnConsumed.");
+        MethodInfo isConsumed = viewModelType.GetMethod("IsAgentRawTurnConsumed", BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("Could not find IsAgentRawTurnConsumed.");
+        FieldInfo ledgerField = viewModelType.GetField("consumedAgentRawTurnKeys", BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("Could not find consumedAgentRawTurnKeys.");
+        var ledger = (HashSet<string>)ledgerField.GetValue(vm)!;
+
+        markConsumed.Invoke(vm, [new ConversationEvent { ThreadId = null, TurnId = "same-turn" }]);
+        markConsumed.Invoke(vm, [new ConversationEvent { ThreadId = "same-thread", TurnId = null }]);
+
+        Assert.AreEqual(0, ledger.Count, "An incomplete identity must not create a shared or ambiguous replay key.");
+        var identifiedTurn = new ConversationEvent { ThreadId = "same-thread", TurnId = "same-turn" };
+        Assert.IsFalse((bool)isConsumed.Invoke(vm, [identifiedTurn])!, "Missing IDs must not suppress an identified turn.");
+        markConsumed.Invoke(vm, [identifiedTurn]);
+        Assert.IsTrue((bool)isConsumed.Invoke(vm, [identifiedTurn])!);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_Tier170ItemCompletionAfterTurnCompletedDisplaysApprovedTextWithoutChoicePrompt()
+    {
+        const string threadId = "late-completion-thread";
+        const string turnId = "late-completion-turn";
+        const string itemId = "late-completion-answer";
+        const string prompt = "Which deployment target?\n1. Azure\n2. On-premises";
+        var bridge = new FakeWorkerBridge
+        {
+            ListThreadItemsHandler = (_, _) => Task.FromResult(new ThreadItemsPage()),
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        WorkerStatus status = OwnerStatus("late-completion-owner", 1, 1);
+        status.FeatureTier = CodexFeatureTier.Tier170;
+        status.ThreadId = threadId;
+        await bridge.PublishStateAsync(status);
+        var thread = new ThreadSummary { Id = threadId };
+        vm.Threads.Add(thread);
+        vm.SelectedThread = thread;
+        await WaitForAsync(() => vm.HistoryStatusText.StartsWith("Read-only history", StringComparison.Ordinal));
+
+        await bridge.PublishConversationEventAsync(new ConversationEvent
+        {
+            Kind = ConversationEventKind.TurnCompleted,
+            ThreadId = threadId,
+            TurnId = turnId,
+        });
+        await bridge.PublishConversationEventAsync(new ConversationEvent
+        {
+            Kind = ConversationEventKind.ItemCompleted,
+            ThreadId = threadId,
+            TurnId = turnId,
+            ItemId = itemId,
+            IsAgentMessage = true,
+            AgentMessageDisplayDecision = new AgentMessageDisplayDecision { Mode = AgentMessageDisplayMode.Show },
+            Text = prompt,
+        });
+
+        ChatItemViewModel item = vm.Items.Single(value => value.ItemId == itemId);
+        Assert.IsTrue(item.Text.Contains(prompt, StringComparison.Ordinal), "An approved late completion remains visible in the transcript.");
+        Assert.IsNull(vm.ActiveUserInput, "A turn completion has already consumed the choice-detection window.");
+        Assert.AreEqual(0, vm.PendingInteractions.Count(card => card.UserInput is not null));
+    }
+
+    [TestMethod]
     public async Task ChatViewModel_Tier170EmptyShowCompletionSuppressesLateAgentDelta()
     {
         var bridge = new FakeWorkerBridge();

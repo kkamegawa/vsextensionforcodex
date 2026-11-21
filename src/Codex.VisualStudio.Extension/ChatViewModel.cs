@@ -858,7 +858,15 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         if (!ConnectionRecoveryCoordinator.IsTransient(failureKind) || lifetime.IsCancellationRequested)
         {
             // A replacement bridge may already be connected when this loss is reported.
-            await OnUiAsync(() => TryShowConnectionFailureStatus(failureKind, () => ReferenceEquals(source, bridge))).ConfigureAwait(false);
+            await OnUiAsync(() =>
+            {
+                if (!lifetime.IsCancellationRequested && ReferenceEquals(source, bridge))
+                {
+                    TryDiscardPendingAgentRawTextAfterConnectionLoss();
+                }
+
+                TryShowConnectionFailureStatus(failureKind, () => ReferenceEquals(source, bridge));
+            }).ConfigureAwait(false);
             return;
         }
 
@@ -872,7 +880,17 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         bool started = false;
         await OnUiAsync(() =>
         {
-            if (!ReferenceEquals(source, bridge) || IsRecovering)
+            if (!ReferenceEquals(source, bridge))
+            {
+                return;
+            }
+
+            if (!lifetime.IsCancellationRequested)
+            {
+                TryDiscardPendingAgentRawTextAfterConnectionLoss();
+            }
+
+            if (IsRecovering)
             {
                 return;
             }
@@ -8487,6 +8505,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                     AppendAgentRaw(GetAgentRawKey(value), value.Text);
                     break;
                 case ConversationEventKind.TurnCompleted:
+                    MarkAgentRawTurnConsumed(value);
                     DiscardPendingAgentRawText();
                     TryDetectChoicePrompt(NotificationOwner(notification));
                     TryOfferPlanImplementation(value, NotificationOwner(notification));
