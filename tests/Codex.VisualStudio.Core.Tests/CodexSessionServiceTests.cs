@@ -543,8 +543,11 @@ public sealed partial class CodexSessionServiceTests
                     {
                         new { turnId = "turn-1", item = new { id = "normal", type = "agentMessage", text = "normal answer" } },
                         new { turnId = "turn-1", item = new { id = "null-moderation", type = "agentMessage", text = "null moderation answer", moderation = (object?)null } },
-                        new { turnId = "turn-1", item = new { id = "unmoderated", type = "agentMessage", text = "unmoderated answer", moderation = new { moderated = false, display = new { version = 99, mode = "unknown" } } } },
-                        new { turnId = "turn-1", item = new { id = "show", type = "agentMessage", text = "shown answer", moderation = new { moderated = true, display = new { version = 1, mode = "show", trustedContacts = "check" } } } },
+                        new { turnId = "turn-1", item = new { id = "unmoderated", type = "agentMessage", text = "unmoderated answer", moderation = new { moderated = false } } },
+                        new { turnId = "turn-1", item = new { id = "unmoderated-with-display", type = "agentMessage", text = "unmoderated private answer", moderation = new { moderated = false, display = new { version = 1, mode = "hide", replacement = new { kind = "wellbeingPromptHelpline" } } } } },
+                        new { turnId = "turn-1", item = new { id = "show", type = "agentMessage", text = "shown answer", moderation = new { moderated = true, display = new { version = 1, mode = "show", trustedContacts = "skip" } } } },
+                        new { turnId = "turn-1", item = new { id = "annotated-show", type = "agentMessage", text = "annotated private answer", moderation = new { moderated = true, display = new { version = 1, mode = "show", trustedContacts = "skip", annotation = new { kind = "wellbeingHelpline", subject = "answer" } } } } },
+                        new { turnId = "turn-1", item = new { id = "contact-check", type = "agentMessage", text = "private contact-check answer", moderation = new { moderated = true, display = new { version = 1, mode = "show", trustedContacts = "check" } } } },
                         new { turnId = "turn-1", item = new { id = "hide", type = "agentMessage", text = "hidden answer", moderation = new { moderated = true, display = new { version = 1, mode = "hide", replacement = new { kind = "wellbeingPromptHelpline" } } } } },
                         new { turnId = "turn-1", item = new { id = "block", type = "agentMessage", text = "blocked answer", moderation = new { moderated = true, display = new { version = 1, mode = "block", reason = new { kind = "cyber" } } } } },
                         new { turnId = "turn-1", item = new { id = "missing", type = "agentMessage", text = "missing instruction", moderation = new { moderated = true } } },
@@ -568,13 +571,21 @@ public sealed partial class CodexSessionServiceTests
         Assert.IsNull(items["normal"].AgentMessageDisplayDecision);
         Assert.IsNull(items["null-moderation"].AgentMessageDisplayDecision);
         Assert.IsNull(items["unmoderated"].AgentMessageDisplayDecision);
+        Assert.AreEqual(AgentMessageDisplayMode.Hide, items["unmoderated-with-display"].AgentMessageDisplayDecision!.Mode);
+        Assert.IsTrue(items["unmoderated-with-display"].Text!.Contains("local emergency services", StringComparison.Ordinal));
         AgentMessageDisplayDecision showDecision = items["show"].AgentMessageDisplayDecision ?? throw new AssertFailedException("The show instruction was not projected.");
         AgentMessageDisplayDecision hideDecision = items["hide"].AgentMessageDisplayDecision ?? throw new AssertFailedException("The hide instruction was not projected.");
         AgentMessageDisplayDecision blockDecision = items["block"].AgentMessageDisplayDecision ?? throw new AssertFailedException("The block instruction was not projected.");
         Assert.AreEqual(AgentMessageDisplayMode.Show, showDecision.Mode);
         Assert.AreEqual("shown answer", showDecision.GetDisplayText(items["show"].Text));
         Assert.AreEqual(AgentMessageDisplayMode.Hide, hideDecision.Mode);
-        Assert.AreEqual("The answer was replaced with a support message.", hideDecision.GetDisplayText(items["hide"].Text));
+        Assert.IsTrue(hideDecision.GetDisplayText(items["hide"].Text)!.Contains("local emergency services", StringComparison.Ordinal));
+        Assert.IsFalse(items["hide"].Text!.Contains("hidden answer", StringComparison.Ordinal), "Transcript search receives only display-approved history text.");
+        Assert.AreEqual(0, items["hide"].Parts.Count, "Unsupported replacement instructions must suppress associated content parts.");
+        Assert.AreEqual(AgentMessageDisplayMode.Suppress, items["annotated-show"].AgentMessageDisplayDecision!.Mode);
+        Assert.IsFalse(items["annotated-show"].Text!.Contains("annotated private answer", StringComparison.Ordinal));
+        Assert.AreEqual(AgentMessageDisplayMode.Suppress, items["contact-check"].AgentMessageDisplayDecision!.Mode);
+        Assert.IsFalse(items["contact-check"].Text!.Contains("private contact-check answer", StringComparison.Ordinal));
         Assert.AreEqual(AgentMessageDisplayMode.Block, blockDecision.Mode);
         Assert.IsFalse(blockDecision.GetDisplayText(items["block"].Text)!.Contains("blocked answer", StringComparison.Ordinal));
         Assert.AreEqual(AgentMessageDisplayMode.Suppress, items["missing"].AgentMessageDisplayDecision!.Mode);
@@ -621,8 +632,53 @@ public sealed partial class CodexSessionServiceTests
         Assert.IsNull(delta.PayloadJson, "Raw assistant delta JSON must not survive as a secondary body channel.");
         ConversationEvent partial = events.Single(value => value.Kind == ConversationEventKind.ItemCompleted);
         Assert.AreEqual("The first result is ready.", partial.Text);
+        Assert.AreEqual("fragment", partial.ItemId, "The worker must read the completed item's nested item.id.");
         Assert.IsTrue(partial.IsAgentMessage);
         Assert.IsFalse(events.Any(value => value.Kind == ConversationEventKind.TurnCompleted), "Only turn/completed ends a turn.");
+    }
+
+    [TestMethod]
+    public async Task BaselineHistoryKeepsLegacyModeratedAnswerVisible()
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method switch
+            {
+                "initialize" => JsonSerializer.SerializeToElement(new { userAgent = "codex/0.169.0 (Windows; x64)" }),
+                "thread/items/list" => JsonSerializer.SerializeToElement(new
+                {
+                    data = new[]
+                    {
+                        new
+                        {
+                            turnId = "turn-1",
+                            item = new
+                            {
+                                id = "legacy-answer",
+                                type = "agentMessage",
+                                text = "legacy visible answer",
+                                moderation = new
+                                {
+                                    moderated = true,
+                                    display = new { version = 1, mode = "hide", replacement = new { kind = "wellbeingPromptHelpline" } },
+                                },
+                            },
+                        },
+                    },
+                    nextCursor = (string?)null,
+                }),
+                _ => JsonSerializer.SerializeToElement(new { }),
+            },
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        ThreadItemsPage page = await service.ListThreadItemsAsync("thread-1", "turn-1", null, 50, CancellationToken.None);
+        ThreadHistoryItem historyItem = page.Items.Single();
+
+        Assert.AreEqual(CodexFeatureTier.Baseline, service.FeatureTier);
+        Assert.IsNull(historyItem.AgentMessageDisplayDecision);
+        Assert.AreEqual("legacy visible answer", historyItem.Text);
     }
 
     [TestMethod]
@@ -769,9 +825,12 @@ public sealed partial class CodexSessionServiceTests
         Assert.IsNull(started.PayloadJson);
         Assert.IsFalse(started.Text!.Contains("private started body", StringComparison.Ordinal));
         Assert.IsTrue(items[0].IsAgentMessage);
-        Assert.AreEqual(AgentMessageDisplayMode.Hide, items[0].AgentMessageDisplayDecision?.Mode);
         Assert.IsNull(items[0].PayloadJson);
-        Assert.AreEqual("The answer was replaced with a support message.", items[0].AgentMessageDisplayDecision!.GetDisplayText(items[0].Text));
+        AgentMessageDisplayDecision hiddenDecision = items[0].AgentMessageDisplayDecision
+            ?? throw new AssertFailedException("The hidden-item replacement was not projected.");
+        Assert.AreEqual(AgentMessageDisplayMode.Hide, hiddenDecision.Mode);
+        Assert.IsTrue(hiddenDecision.GetDisplayText(items[0].Text)!.Contains("local emergency services", StringComparison.Ordinal));
+        Assert.IsFalse(hiddenDecision.GetDisplayText(items[0].Text)!.Contains("private hidden body", StringComparison.Ordinal));
         Assert.IsTrue(items[1].IsAgentMessage);
         Assert.AreEqual(AgentMessageDisplayMode.Block, items[1].AgentMessageDisplayDecision?.Mode);
         Assert.IsNull(items[1].PayloadJson);
@@ -784,6 +843,76 @@ public sealed partial class CodexSessionServiceTests
         Assert.AreEqual(AgentMessageDisplayMode.Suppress, items[5].AgentMessageDisplayDecision?.Mode);
         Assert.AreEqual(AgentMessageDisplayMode.Suppress, items[6].AgentMessageDisplayDecision?.Mode);
         Assert.IsTrue(items.All(value => value.PayloadJson is null), "No completed agent item may retain a raw payload body.");
+    }
+
+    [TestMethod]
+    public async Task TurnCompletionDoesNotRetainRawAssistantItemsForDiagnostics()
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "thread/resume"
+                ? JsonSerializer.SerializeToElement(new { thread = new { id = "diagnostic-thread", preview = "test" } })
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+        await service.ResumeThreadAsync("diagnostic-thread", CancellationToken.None);
+        await connection.EmitNotificationAsync("turn/started", new { threadId = "diagnostic-thread", turn = new { id = "diagnostic-turn" } });
+        ConversationEvent? completed = null;
+        service.ConversationEventReceived += (value, _) =>
+        {
+            completed = value.Kind == ConversationEventKind.TurnCompleted ? value : completed;
+            return Task.CompletedTask;
+        };
+
+        await connection.EmitNotificationAsync("turn/completed", new
+        {
+            threadId = "diagnostic-thread",
+            turn = new
+            {
+                id = "diagnostic-turn",
+                status = "completed",
+                items = new[]
+                {
+                    new { id = "hidden-agent", type = "agentMessage", text = "private hidden assistant body" },
+                },
+            },
+        });
+
+        Assert.IsNotNull(completed);
+        Assert.IsNull(completed.PayloadJson);
+        Assert.IsFalse(completed.Text?.Contains("private hidden assistant body", StringComparison.Ordinal) == true);
+    }
+
+    [TestMethod]
+    public async Task CompletedAgentMessageUsesDisplayLimitAndSignalsLocalTruncation()
+    {
+        var connection = new RecordingConnection();
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+        ConversationEvent? completed = null;
+        service.ConversationEventReceived += (value, _) =>
+        {
+            if (value.Kind == ConversationEventKind.ItemCompleted)
+            {
+                completed = value;
+            }
+
+            return Task.CompletedTask;
+        };
+        string longAnswer = new('a', StreamingBuffer.CommandOutputLimit + 1);
+
+        await connection.EmitNotificationAsync("item/completed", new
+        {
+            threadId = "long-answer-thread",
+            turnId = "long-answer-turn",
+            item = new { id = "long-answer", type = "agentMessage", text = longAnswer },
+        });
+
+        Assert.IsNotNull(completed);
+        Assert.AreEqual(StreamingBuffer.CommandOutputLimit, System.Text.Encoding.UTF8.GetByteCount(completed.Text!));
+        Assert.IsTrue(completed.Truncated);
+        Assert.IsTrue(completed.Parts.Single().IsLocallyTruncated);
     }
 
     [TestMethod]

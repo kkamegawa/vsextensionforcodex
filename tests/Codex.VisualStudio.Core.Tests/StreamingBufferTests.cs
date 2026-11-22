@@ -118,6 +118,42 @@ public sealed class StreamingBufferTests
     }
 
     [TestMethod]
+    public async Task AssistantOverflow_IsBoundedInMemoryWithoutWritingBodyToDisk()
+    {
+        string directory = Path.Combine(Path.GetTempPath(), "CodexVsTests", Guid.NewGuid().ToString("N"));
+        var events = new List<ConversationEvent>();
+        await using var buffer = new StreamingBuffer(
+            (value, _) =>
+            {
+                lock (events)
+                {
+                    events.Add(value);
+                }
+
+                return Task.CompletedTask;
+            },
+            directory);
+        var template = new ConversationEvent
+        {
+            Kind = ConversationEventKind.AgentMessageDelta,
+            ItemId = "agent-private",
+            IsAgentMessage = true,
+        };
+
+        buffer.Append(
+            "agent-private",
+            template,
+            new string('x', StreamingBuffer.CommandOutputLimit + 1),
+            StreamingBuffer.CommandOutputLimit,
+            writeOverflowToDisk: false);
+
+        await WaitUntilAsync(() => CountEvents(events) == 1, TimeSpan.FromSeconds(2));
+        Assert.IsTrue(events[0].Truncated);
+        Assert.IsNull(events[0].OverflowFile);
+        Assert.AreEqual(0, Directory.GetFiles(directory, "*.log").Length);
+    }
+
+    [TestMethod]
     public async Task MultipleSources_TrackedIndependently()
     {
         string directory = Path.Combine(Path.GetTempPath(), "CodexVsTests", Guid.NewGuid().ToString("N"));

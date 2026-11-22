@@ -8,10 +8,14 @@ public sealed partial class ChatViewModel
 {
     private const int MaximumCompletedAgentMessageKeys = 1024;
     private const int MaximumConsumedAgentRawTurnKeys = 1024;
+    private const int MaximumRestrictedAgentMessageKeys = 1024;
 
     private readonly HashSet<string> pendingAgentRawKeys = new(StringComparer.Ordinal);
     private readonly HashSet<string> completedAgentMessageKeys = new(StringComparer.Ordinal);
     private readonly Queue<string> completedAgentMessageKeyOrder = new();
+    private readonly HashSet<string> restrictedAgentMessageKeys = new(StringComparer.Ordinal);
+    private readonly Queue<string> restrictedAgentMessageKeyOrder = new();
+    private readonly Dictionary<string, string?> restrictedAgentMessageTurnKeys = new(StringComparer.Ordinal);
     // Keep consumed turn IDs across owner changes so reconnect replay cannot recreate a consumed prompt.
     private readonly HashSet<string> consumedAgentRawTurnKeys = new(StringComparer.Ordinal);
     private readonly Queue<string> consumedAgentRawTurnKeyOrder = new();
@@ -32,6 +36,56 @@ public sealed partial class ChatViewModel
             : decision.GetDisplayText(historyItem.Text) ?? string.Empty;
     }
 
+    private void RecordHistoryAgentMessageDecision(string threadId, ThreadHistoryItem historyItem)
+    {
+        if (historyItem.Type != "agentMessage"
+            || historyItem.AgentMessageDisplayDecision is not { Mode: not AgentMessageDisplayMode.Show })
+        {
+            return;
+        }
+
+        string key = GetAgentCompletionKey(threadId, historyItem.TurnId, historyItem.Id);
+        if (restrictedAgentMessageKeys.Add(key))
+        {
+            restrictedAgentMessageKeyOrder.Enqueue(key);
+            restrictedAgentMessageTurnKeys[key] = GetAgentRawTurnKey(threadId, historyItem.TurnId);
+            TrimRestrictedAgentMessageKeys();
+        }
+
+        RemoveAgentRaw(historyItem.Id ?? historyItem.TurnId ?? "global-agent-message");
+    }
+
+    private void TrimRestrictedAgentMessageKeys()
+    {
+        string? activeTurnKey = GetAgentRawTurnKey(Status.ThreadId, Status.TurnId);
+        int skippedActiveKeys = 0;
+        while (restrictedAgentMessageKeys.Count > MaximumRestrictedAgentMessageKeys
+            && restrictedAgentMessageKeyOrder.Count > 0)
+        {
+            string oldestKey = restrictedAgentMessageKeyOrder.Dequeue();
+            if (!restrictedAgentMessageKeys.Contains(oldestKey))
+            {
+                continue;
+            }
+
+            if (string.Equals(restrictedAgentMessageTurnKeys[oldestKey], activeTurnKey, StringComparison.Ordinal))
+            {
+                restrictedAgentMessageKeyOrder.Enqueue(oldestKey);
+                skippedActiveKeys++;
+                if (skippedActiveKeys >= restrictedAgentMessageKeyOrder.Count)
+                {
+                    break;
+                }
+
+                continue;
+            }
+
+            restrictedAgentMessageKeys.Remove(oldestKey);
+            restrictedAgentMessageTurnKeys.Remove(oldestKey);
+            skippedActiveKeys = 0;
+        }
+    }
+
     private void RenderCompletedAgentMessage(
         ConversationEvent value,
         WorkerNotification<ConversationEvent> notification)
@@ -44,6 +98,10 @@ public sealed partial class ChatViewModel
         }
 
         bool firstCompletion = MarkAgentMessageCompleted(value);
+        if (!firstCompletion)
+        {
+            return;
+        }
 
         string agentRawKey = GetAgentRawKey(value);
         ChatItemViewModel? existing = FindCurrentTranscriptItem(value, notification);
@@ -64,7 +122,10 @@ public sealed partial class ChatViewModel
 
         RemoveAgentRaw(agentRawKey);
 
-        AgentMessageDisplayDecision? decision = value.AgentMessageDisplayDecision;
+        string completionKey = GetAgentCompletionKey(value);
+        AgentMessageDisplayDecision? decision = restrictedAgentMessageKeys.Contains(completionKey)
+            ? new AgentMessageDisplayDecision { Mode = AgentMessageDisplayMode.Suppress }
+            : value.AgentMessageDisplayDecision;
         bool mayDisplayParts = decision is null or { Mode: AgentMessageDisplayMode.Show };
         string? displayText = decision is null ? value.Text : decision.GetDisplayText(value.Text);
         if (string.IsNullOrEmpty(displayText) && (!mayDisplayParts || value.Parts.Count == 0))
@@ -132,7 +193,8 @@ public sealed partial class ChatViewModel
             return;
         }
 
-        if (value.AgentMessageDisplayDecision is null or { Mode: AgentMessageDisplayMode.Show })
+        if (!restrictedAgentMessageKeys.Contains(GetAgentCompletionKey(value))
+            && (value.AgentMessageDisplayDecision is null or { Mode: AgentMessageDisplayMode.Show }))
         {
             if (!string.IsNullOrEmpty(value.Text))
             {
@@ -189,22 +251,26 @@ public sealed partial class ChatViewModel
     }
 
     private static string? GetAgentRawTurnKey(ConversationEvent value)
+        => GetAgentRawTurnKey(value.ThreadId, value.TurnId);
+
+    private static string? GetAgentRawTurnKey(string? threadId, string? turnId)
     {
-        if (string.IsNullOrWhiteSpace(value.ThreadId) || string.IsNullOrWhiteSpace(value.TurnId))
+        if (string.IsNullOrWhiteSpace(threadId) || string.IsNullOrWhiteSpace(turnId))
         {
             return null;
         }
 
-        string threadId = value.ThreadId;
-        string turnId = value.TurnId;
         return string.Concat(threadId.Length, ":", threadId, turnId.Length, ":", turnId);
     }
 
     private static string GetAgentCompletionKey(ConversationEvent value)
+        => GetAgentCompletionKey(value.ThreadId, value.TurnId, value.ItemId);
+
+    private static string GetAgentCompletionKey(string? threadId, string? turnId, string? itemId)
     {
-        string threadId = value.ThreadId ?? string.Empty;
-        string turnId = value.TurnId ?? string.Empty;
-        string itemId = value.ItemId ?? string.Empty;
+        threadId ??= string.Empty;
+        turnId ??= string.Empty;
+        itemId ??= string.Empty;
         return string.Concat(
             threadId.Length,
             ":",

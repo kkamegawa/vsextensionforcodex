@@ -756,7 +756,7 @@ public sealed partial class CodexSessionService
         {
             output.IsAgentMessage = true;
             output.PayloadJson = null;
-            output.AgentMessageDisplayDecision = ReadAgentMessageDisplayDecision(item);
+            output.AgentMessageDisplayDecision = ReadAgentMessageDisplayDecision(item, context.FeatureTier);
         }
 
         if (itemType == "plan" && output.Kind == ConversationEventKind.ItemCompleted)
@@ -777,16 +777,18 @@ public sealed partial class CodexSessionService
         if (itemType == "agentMessage")
         {
             string? rawText = GetString(item, "text");
-            string? text = rawText is null ? null : ClipUtf8(rawText, MaxHistoryTextBytes);
+            string? text = rawText is null ? null : ClipUtf8(rawText, MaxCompletedAgentMessageTextBytes);
             if (text is not null)
             {
                 output.Text = redactor.Redact(text);
+                bool locallyTruncated = Encoding.UTF8.GetByteCount(rawText!) > MaxCompletedAgentMessageTextBytes;
+                output.Truncated |= locallyTruncated;
                 output.Parts = [new ArtifactPart
                 {
                     Kind = ArtifactPartKind.Text,
                     Text = output.Text,
                     IsServerTruncated = output.Truncated,
-                    IsLocallyTruncated = Encoding.UTF8.GetByteCount(rawText!) > MaxHistoryTextBytes,
+                    IsLocallyTruncated = locallyTruncated,
                 }];
                 output.PayloadJson = null;
                 await EmitForContextAsync(context, output, cancellationToken).ConfigureAwait(false);

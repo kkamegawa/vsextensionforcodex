@@ -3690,6 +3690,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
 
     private void MergeHistoryItem(string threadId, ThreadHistoryItem historyItem, OwnerSnapshot owner, bool prepend)
     {
+        RecordHistoryAgentMessageDecision(threadId, historyItem);
         string key = string.Concat(owner.StatePartitionFingerprint, ":", owner.OwnerGeneration, ":", owner.ConnectionGeneration, ":", threadId, ":", historyItem.TurnId, ":", historyItem.Id);
         ChatItemViewModel? existingItem = Items.LastOrDefault(item => string.Equals(item.HistoryKey, key, StringComparison.Ordinal)
             || (string.Equals(item.ThreadId, threadId, StringComparison.Ordinal)
@@ -3699,7 +3700,10 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                 && item.ConnectionGeneration == owner.ConnectionGeneration));
         if (!historyItemKeys.Add(key))
         {
-            if (existingItem is not null && !existingItem.IsHistoryCompleted)
+            if (existingItem is not null
+                && (!existingItem.IsHistoryCompleted
+                    || historyItem.Type == "agentMessage"
+                        && historyItem.AgentMessageDisplayDecision is { Mode: not AgentMessageDisplayMode.Show }))
             {
                 SetHistoryTranscriptText(existingItem, historyItem);
                 ApplyDailyUseHistoryItem(existingItem, historyItem, threadId, owner);
@@ -10268,6 +10272,8 @@ public sealed partial class ChatItemViewModel : ObservableObject
     public string TruncationNotice
         => !IsTruncated
             ? string.Empty
+            : string.Equals(Role, "Codex", StringComparison.Ordinal)
+                ? "The response exceeded the display size limit and was shortened."
             : IsCommandItem && string.IsNullOrEmpty(OverflowFile)
             ? "Command output was truncated to the buffered limit."
             : "Output truncated; additional output is stored in a temporary file.";

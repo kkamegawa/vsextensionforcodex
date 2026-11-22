@@ -1138,9 +1138,29 @@ public sealed partial class ViewModelTests
         vm.SelectedThread = thread;
         await WaitForAsync(() => vm.Items.Count == 3);
 
+        const string hiddenLiveChoice = "Which private answer should be used?\n1. Reveal\n2. Hide";
+        await bridge.PublishConversationEventAsync(new ConversationEvent
+        {
+            Kind = ConversationEventKind.ItemCompleted,
+            ThreadId = "thread-history",
+            TurnId = "turn-1",
+            ItemId = "hidden-answer",
+            IsAgentMessage = true,
+            AgentMessageDisplayDecision = new AgentMessageDisplayDecision { Mode = AgentMessageDisplayMode.Show },
+            Text = hiddenLiveChoice,
+        });
+        await bridge.PublishConversationEventAsync(new ConversationEvent
+        {
+            Kind = ConversationEventKind.TurnCompleted,
+            ThreadId = "thread-history",
+            TurnId = "turn-1",
+        });
+
         ChatItemViewModel hidden = vm.Items.Single(item => item.ItemId == "hidden-answer");
         Assert.IsTrue(hidden.Text.Contains("The answer was replaced with a support message.", StringComparison.Ordinal));
         Assert.IsFalse(hidden.Text.Contains("private historical answer", StringComparison.Ordinal));
+        Assert.IsFalse(hidden.Text.Contains(hiddenLiveChoice, StringComparison.Ordinal));
+        Assert.IsNull(vm.ActiveUserInput, "A Show completion cannot undo the authoritative hidden history decision.");
         ChatItemViewModel invalid = vm.Items.Single(item => item.ItemId == "invalid-answer");
         Assert.IsTrue(invalid.Text.Contains("display instructions could not be verified", StringComparison.Ordinal));
         Assert.IsFalse(invalid.Text.Contains("private invalid historical answer", StringComparison.Ordinal));
@@ -4014,6 +4034,33 @@ public sealed partial class ViewModelTests
     }
 
     [TestMethod]
+    public async Task ChatViewModel_Tier170TruncatedAnswerShowsDisplayLimitNotice()
+    {
+        var bridge = new FakeWorkerBridge();
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        await bridge.PublishStateAsync(new WorkerStatus
+        {
+            State = WorkerConnectionState.Ready,
+            FeatureTier = CodexFeatureTier.Tier170,
+        });
+
+        await RaiseConversationEventAsync(vm, new ConversationEvent
+        {
+            Kind = ConversationEventKind.ItemCompleted,
+            ThreadId = "truncated-answer-thread",
+            TurnId = "truncated-answer-turn",
+            ItemId = "truncated-answer",
+            IsAgentMessage = true,
+            AgentMessageDisplayDecision = new AgentMessageDisplayDecision { Mode = AgentMessageDisplayMode.Show },
+            Text = "Visible answer prefix",
+            Truncated = true,
+        });
+
+        ChatItemViewModel answer = vm.Items.Single(item => item.ItemId == "truncated-answer");
+        Assert.IsTrue(answer.TruncationNotice.Contains("response exceeded the display size limit", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
     public async Task ChatViewModel_Tier170HiddenChoicePromptDoesNotCreateSyntheticInput()
     {
         var bridge = new FakeWorkerBridge();
@@ -4046,6 +4093,16 @@ public sealed partial class ViewModelTests
                 Mode = AgentMessageDisplayMode.Hide,
                 DisplayText = "The answer was replaced with a support message.",
             },
+            Text = privatePrompt,
+        });
+        await RaiseConversationEventAsync(vm, new ConversationEvent
+        {
+            Kind = ConversationEventKind.ItemCompleted,
+            ThreadId = "test-thread",
+            TurnId = "turn-hidden-choice",
+            ItemId = "hidden-choice",
+            IsAgentMessage = true,
+            AgentMessageDisplayDecision = new AgentMessageDisplayDecision { Mode = AgentMessageDisplayMode.Show },
             Text = privatePrompt,
         });
         await RaiseConversationEventAsync(vm, new ConversationEvent

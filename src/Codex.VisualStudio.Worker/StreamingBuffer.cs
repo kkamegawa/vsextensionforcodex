@@ -29,9 +29,9 @@ public sealed class StreamingBuffer : IAsyncDisposable
         flushLoop = Task.Run(() => FlushLoopAsync(lifetime.Token));
     }
 
-    public void Append(string key, ConversationEvent template, string text, int limit)
+    public void Append(string key, ConversationEvent template, string text, int limit, bool writeOverflowToDisk = true)
     {
-        Entry entry = entries.GetOrAdd(key, _ => new Entry(template, limit));
+        Entry entry = entries.GetOrAdd(key, _ => new Entry(template, limit, writeOverflowToDisk));
         lock (entry.SyncLock)
         {
             int remaining = Math.Max(0, entry.Limit - entry.VisibleWritten);
@@ -44,7 +44,11 @@ public sealed class StreamingBuffer : IAsyncDisposable
 
             if (text.Length > remaining)
             {
-                entry.Overflow.Append(text.AsSpan(remaining));
+                if (entry.WriteOverflowToDisk)
+                {
+                    entry.Overflow.Append(text.AsSpan(remaining));
+                }
+
                 entry.Template.Truncated = true;
             }
 
@@ -145,15 +149,18 @@ public sealed class StreamingBuffer : IAsyncDisposable
     {
         public Lock SyncLock { get; } = new();
 
-        public Entry(ConversationEvent template, int limit)
+        public Entry(ConversationEvent template, int limit, bool writeOverflowToDisk)
         {
             Template = template;
             Limit = limit;
+            WriteOverflowToDisk = writeOverflowToDisk;
         }
 
         public ConversationEvent Template { get; }
 
         public int Limit { get; }
+
+        public bool WriteOverflowToDisk { get; }
 
         public StringBuilder Visible { get; } = new();
 

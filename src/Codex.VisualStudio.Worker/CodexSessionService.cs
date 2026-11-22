@@ -296,6 +296,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
     private const int MaxAttachmentIdentityBytes = 256;
     private const int MaxThreadPreviewBytes = 8 * 1024;
     private const int MaxHistoryTextBytes = 64 * 1024;
+    private const int MaxCompletedAgentMessageTextBytes = StreamingBuffer.CommandOutputLimit;
 
     private static readonly SearchValues<char> ControlCharacters = CreateControlCharacterSearchValues();
     private static readonly SearchValues<char> WireIdentifierCharacters =
@@ -1872,13 +1873,20 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
                 continue;
             }
 
+            AgentMessageDisplayDecision? displayDecision = itemType == "agentMessage"
+                ? ReadAgentMessageDisplayDecision(item, context.FeatureTier)
+                : null;
+            string? rawHistoryText = ReadHistoryText(item, itemType);
+            string? displayHistoryText = rawHistoryText is null
+                ? null
+                : ProjectHistoryDisplayText(itemType, rawHistoryText, displayDecision);
             var historyItem = new ThreadHistoryItem
             {
                 Id = id,
                 TurnId = itemTurnId,
                 Type = itemType,
-                Text = ReadHistoryText(item, itemType) is { } historyText ? redactor.Redact(historyText) : null,
-                AgentMessageDisplayDecision = itemType == "agentMessage" ? ReadAgentMessageDisplayDecision(item) : null,
+                Text = displayHistoryText is null ? null : redactor.Redact(displayHistoryText),
+                AgentMessageDisplayDecision = displayDecision,
                 StartedAtMs = GetInt64(item, "startedAtMs") ?? GetInt64(entry, "startedAtMs"),
                 CompletedAtMs = GetInt64(item, "completedAtMs") ?? GetInt64(entry, "completedAtMs"),
             };
@@ -1895,7 +1903,9 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
                 };
             }
 
-            historyItem.Parts = ProjectHistoryParts(context, item, itemType, historyItem.Text);
+            historyItem.Parts = displayDecision is { Mode: not AgentMessageDisplayMode.Show }
+                ? []
+                : ProjectHistoryParts(context, item, itemType, rawHistoryText);
             items.Add(historyItem);
             if (items.Count == boundedLimit)
             {
@@ -4201,9 +4211,15 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             Kind = kind,
             ThreadId = threadId,
             TurnId = turnId,
-            ItemId = itemId,
+            ItemId = itemId
+                ?? (method == "item/completed"
+                    && parameters.TryGetProperty("item", out JsonElement completedItemIdentity)
+                    ? GetString(completedItemIdentity, "id")
+                    : null),
             IsAgentMessage = method == "item/agentMessage/delta",
-            PayloadJson = method == "item/agentMessage/delta" ? null : redactor.Redact(parameters.GetRawText()),
+            PayloadJson = method is "item/agentMessage/delta" or "item/completed" or "turn/completed"
+                ? null
+                : redactor.Redact(parameters.GetRawText()),
             StartedAtMs = ReadItemTimestamp(parameters, "startedAtMs"),
             CompletedAtMs = ReadItemTimestamp(parameters, "completedAtMs"),
         };
@@ -4233,7 +4249,14 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
                 ConversationEventKind.DiffUpdated => StreamingBuffer.DiffLimit,
                 _ => StreamingBuffer.CommandOutputLimit,
             };
-            streamingBuffer.Append($"{method}:{itemId ?? turnId ?? "global"}", output, redactor.Redact(delta), limit);
+            bool isBufferedAssistantMessage = method == "item/agentMessage/delta"
+                && context.FeatureTier != CodexFeatureTier.Baseline;
+            streamingBuffer.Append(
+                $"{method}:{output.ItemId ?? turnId ?? "global"}",
+                output,
+                redactor.Redact(delta),
+                limit,
+                writeOverflowToDisk: !isBufferedAssistantMessage);
             return;
         }
 
@@ -6255,8 +6278,15 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         return cursor.GetString();
     }
 
-    private static AgentMessageDisplayDecision? ReadAgentMessageDisplayDecision(JsonElement item)
+    private static AgentMessageDisplayDecision? ReadAgentMessageDisplayDecision(
+        JsonElement item,
+        CodexFeatureTier featureTier)
     {
+        if (featureTier == CodexFeatureTier.Baseline)
+        {
+            return null;
+        }
+
         if (!item.TryGetProperty("moderation", out JsonElement moderation))
         {
             return null;
@@ -6274,7 +6304,9 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             return CreateSuppressedAgentMessageDecision();
         }
 
-        if (moderated.ValueKind == JsonValueKind.False)
+        if (moderated.ValueKind == JsonValueKind.False
+            && (!moderation.TryGetProperty("display", out JsonElement unmoderatedDisplay)
+                || unmoderatedDisplay.ValueKind == JsonValueKind.Null))
         {
             return null;
         }
@@ -6291,11 +6323,21 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         }
 
         if (mode == "show"
-            && display.TryGetProperty("trustedContacts", out JsonElement trustedContacts)
-            && trustedContacts.ValueKind == JsonValueKind.String
-            && trustedContacts.GetString() is "check" or "skip"
+            && IsValidTrustedContactsInstruction(display)
             && IsValidAnswerAnnotation(display))
         {
+            if (display.TryGetProperty("trustedContacts", out JsonElement trustedContacts)
+                && trustedContacts.GetString() == "check")
+            {
+                return CreateSuppressedAgentMessageDecision();
+            }
+
+            if (display.TryGetProperty("annotation", out JsonElement annotation)
+                && annotation.ValueKind != JsonValueKind.Null)
+            {
+                return CreateSuppressedAgentMessageDecision();
+            }
+
             return new AgentMessageDisplayDecision { Mode = AgentMessageDisplayMode.Show };
         }
 
@@ -6307,7 +6349,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             return new AgentMessageDisplayDecision
             {
                 Mode = AgentMessageDisplayMode.Hide,
-                DisplayText = "The answer was replaced with a support message.",
+                DisplayText = "If you may be in immediate danger, contact your local emergency services now. You can also reach out to someone you trust or contact a crisis helpline in your area.",
             };
         }
 
@@ -6323,6 +6365,24 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         }
 
         return CreateSuppressedAgentMessageDecision();
+    }
+
+    private static bool IsValidTrustedContactsInstruction(JsonElement display)
+        => display.TryGetProperty("trustedContacts", out JsonElement trustedContacts)
+            && trustedContacts.ValueKind == JsonValueKind.String
+            && trustedContacts.GetString() is "check" or "skip";
+
+    private static string ProjectHistoryDisplayText(
+        string? itemType,
+        string historyText,
+        AgentMessageDisplayDecision? decision)
+    {
+        if (itemType != "agentMessage")
+        {
+            return historyText;
+        }
+
+        return decision?.GetDisplayText(historyText) ?? historyText;
     }
 
     private static bool IsValidAnswerAnnotation(JsonElement display)
