@@ -746,6 +746,13 @@ public sealed class InteractionAuthenticationTests
         };
     }
 
+    private sealed class SharedMcpDisplayNameRedactor : ISecretRedactor
+    {
+        public string Redact(string? value) => value is "docs-private-a" or "docs-private-b" or "[REDACTED]"
+            ? "[REDACTED]"
+            : value ?? string.Empty;
+    }
+
     [TestMethod]
     public async Task McpLegacyDisplayNameCache_ResolvesRedactedLoginNameWithinLifetime()
     {
@@ -782,6 +789,106 @@ public sealed class InteractionAuthenticationTests
             connection.Requests.Single(request => request.Method == "mcpServer/oauth/login").Parameters);
         Assert.AreEqual("docs-private", parameters.GetProperty("name").GetString(),
             "A unique, unexpired internal mapping resolves the display name before it reaches the CLI.");
+    }
+
+    [TestMethod]
+    public async Task McpLegacyNameResolution_UsesCachedStatusThreadInsteadOfLegacyKeyThread()
+    {
+        var connection = new RecordingConnection
+        {
+            InitializeResponse = JsonSerializer.SerializeToElement(new { userAgent = "codex-cli/0.170.2" }),
+        };
+        connection.AsyncHandler = (method, parameters, _) =>
+        {
+            JsonElement request = JsonSerializer.SerializeToElement(parameters);
+            if (method == "mcpServerStatus/list")
+            {
+                string rawName = request.GetProperty("threadId").GetString() == "thread-a" ? "docs-private-a" : "docs-private-b";
+                return Task.FromResult(JsonSerializer.SerializeToElement(new
+                {
+                    data = new[] { new { name = rawName } },
+                    nextCursor = (string?)null,
+                }));
+            }
+
+            return Task.FromResult(JsonSerializer.SerializeToElement(new
+            {
+                loginId = "legacy-login",
+                authorizationUrl = "https://login.example.test/authorize",
+            }));
+        };
+        await using var service = CreateService(redactor: new SharedMcpDisplayNameRedactor());
+        await service.InitializeAsync(connection, Options(experimentalApi: false), CancellationToken.None);
+
+        await service.ListMcpServersAsync(new ListMcpServersRequest { ThreadId = "thread-a" }, CancellationToken.None);
+        await service.StartMcpOAuthLoginAsync(
+            new StartMcpOAuthLoginRequest { ServerName = "[REDACTED]", ThreadId = "thread-a" }, CancellationToken.None);
+        await service.ListMcpServersAsync(new ListMcpServersRequest { ThreadId = "thread-b" }, CancellationToken.None);
+        await service.StartMcpOAuthLoginAsync(
+            new StartMcpOAuthLoginRequest { ServerName = "[REDACTED]", ThreadId = "thread-b" }, CancellationToken.None);
+
+        JsonElement[] loginParameters = connection.Requests
+            .Where(request => request.Method == "mcpServer/oauth/login")
+            .Select(request => JsonSerializer.SerializeToElement(request.Parameters))
+            .ToArray();
+        CollectionAssert.AreEqual(new[] { "docs-private-a", "docs-private-b" },
+            loginParameters.Select(parameters => parameters.GetProperty("name").GetString()).ToArray());
+    }
+
+    [TestMethod]
+    public async Task McpLegacyDisplayNameCache_DoesNotPublishNamesUntilAllPagesValidate()
+    {
+        var redactor = new SecretRedactor();
+        using IDisposable nameSecret = redactor.RegisterSecret("docs-private");
+        var connection = new RecordingConnection
+        {
+            InitializeResponse = JsonSerializer.SerializeToElement(new { userAgent = "codex-cli/0.170.2" }),
+        };
+        connection.AsyncHandler = (method, parameters, _) =>
+        {
+            if (method == "mcpServerStatus/list")
+            {
+                JsonElement request = JsonSerializer.SerializeToElement(parameters);
+                bool secondPage = request.GetProperty("cursor").ValueKind == JsonValueKind.String;
+                return Task.FromResult(secondPage
+                    ? JsonSerializer.SerializeToElement(new { invalid = true })
+                    : JsonSerializer.SerializeToElement(new { data = new[] { new { name = "docs-private" } }, nextCursor = "next" }));
+            }
+
+            return Task.FromResult(JsonSerializer.SerializeToElement(new { loginId = "unexpected" }));
+        };
+        await using var service = CreateService(redactor: redactor);
+        await service.InitializeAsync(connection, Options(experimentalApi: false), CancellationToken.None);
+
+        await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => service.ListMcpServersAsync(
+            new ListMcpServersRequest { ThreadId = "thread-1" }, CancellationToken.None));
+        await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => service.StartMcpOAuthLoginAsync(
+            new StartMcpOAuthLoginRequest { ServerName = "[REDACTED]", ThreadId = "thread-1" }, CancellationToken.None));
+
+        Assert.IsFalse(connection.Requests.Any(request => request.Method == "mcpServer/oauth/login"));
+    }
+
+    [TestMethod]
+    public async Task McpLegacyDisplayNameCache_RejectsUnicodeFormatCharactersInRawNames()
+    {
+        string invalidName = "docs\u202Eprivate";
+        var redactor = new SecretRedactor();
+        using IDisposable nameSecret = redactor.RegisterSecret(invalidName);
+        var connection = new RecordingConnection
+        {
+            InitializeResponse = JsonSerializer.SerializeToElement(new { userAgent = "codex-cli/0.170.2" }),
+            AsyncHandler = (method, _, _) => method == "mcpServerStatus/list"
+                ? Task.FromResult(JsonSerializer.SerializeToElement(new { data = new[] { new { name = invalidName } }, nextCursor = (string?)null }))
+                : Task.FromResult(JsonSerializer.SerializeToElement(new { loginId = "unexpected" })),
+        };
+        await using var service = CreateService(redactor: redactor);
+        await service.InitializeAsync(connection, Options(experimentalApi: false), CancellationToken.None);
+
+        await service.ListMcpServersAsync(new ListMcpServersRequest { ThreadId = "thread-1" }, CancellationToken.None);
+        await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => service.StartMcpOAuthLoginAsync(
+            new StartMcpOAuthLoginRequest { ServerName = "[REDACTED]", ThreadId = "thread-1" }, CancellationToken.None));
+
+        Assert.IsFalse(connection.Requests.Any(request => request.Method == "mcpServer/oauth/login"));
     }
 
     [TestMethod]
@@ -1883,6 +1990,43 @@ public sealed class InteractionAuthenticationTests
         }, CancellationToken.None);
         Assert.AreEqual("cancel", (await scoped.WaitAsync(TimeSpan.FromSeconds(2))).GetProperty("action").GetString());
         Assert.AreEqual("cancel", (await otherThreadWide.WaitAsync(TimeSpan.FromSeconds(2))).GetProperty("action").GetString());
+    }
+
+    [TestMethod]
+    public async Task McpRetirement_EnvironmentFailureWithoutThreadDoesNotCancelScopedElicitation()
+    {
+        var connection = new RecordingConnection
+        {
+            InitializeResponse = JsonSerializer.SerializeToElement(new { userAgent = "codex-cli/0.171.0" }),
+        };
+        var prompt = new TaskCompletionSource<McpElicitationRequest>(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var service = CreateService();
+        service.McpElicitationRequested += (request, _) =>
+        {
+            prompt.TrySetResult(request);
+            return Task.CompletedTask;
+        };
+        await service.InitializeAsync(connection, Options(experimentalApi: true), CancellationToken.None);
+
+        Task<JsonElement> elicitation = connection.EmitRequestAsync("thread-scoped-el", "mcpServer/elicitation/request", new
+        {
+            serverName = "docs", mode = "url", elicitationId = "thread-scoped", message = "Sign in",
+            url = "https://login.example.test/scoped", threadId = "thread-a", environmentId = "env-a",
+        });
+        McpElicitationRequest request = await prompt.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+        await connection.EmitNotificationAsync("mcpServer/startupStatus/updated", new
+        {
+            name = "docs", environmentId = "env-a", status = "failed", failureReason = "reauthenticationRequired",
+        });
+
+        Assert.IsFalse(elicitation.IsCompleted, "An environment-scoped status without threadId cannot infer the pending form's thread.");
+        await service.ResolveMcpElicitationAsync(new ResolveMcpElicitationRequest
+        {
+            RequestId = request.RequestId,
+            Action = McpElicitationAction.Cancel,
+        }, CancellationToken.None);
+        Assert.AreEqual("cancel", (await elicitation.WaitAsync(TimeSpan.FromSeconds(2))).GetProperty("action").GetString());
     }
 
     [TestMethod]

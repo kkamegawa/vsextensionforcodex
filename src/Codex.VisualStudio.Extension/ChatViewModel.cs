@@ -9162,7 +9162,19 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                 .ToArray();
             if (matchingRows.Length == 1)
             {
-                matchingRows[0].ApplyHydratedRegistrationIdentity(hydratedServer, markdown);
+                McpServerAuthPresentationViewModel unresolvedRow = matchingRows[0];
+                McpServerAuthPresentationViewModel[] resolvedRows = InteractionAuthStatus.McpServers
+                    .Where(row => row.HasRegistrationIdentity && row.MatchesServer(hydratedServer))
+                    .ToArray();
+                if (resolvedRows.Length == 1 && !ReferenceEquals(resolvedRows[0], unresolvedRow))
+                {
+                    resolvedRows[0].MergeHydratedRegistrationIdentityFrom(unresolvedRow, hydratedServer, markdown);
+                    InteractionAuthStatus.RemoveMcpServer(unresolvedRow);
+                }
+                else
+                {
+                    unresolvedRow.ApplyHydratedRegistrationIdentity(hydratedServer, markdown);
+                }
             }
             else if (matchingRows.Length > 1)
             {

@@ -2986,6 +2986,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         const int maximumServers = pageSize * maximumPages;
         bool environmentIdentityEnabled = IsMcpEnvironmentIdentityEnabled(context);
         var servers = new List<McpServerStatusInfo>();
+        var stagedLegacyNames = new List<(string RawName, string DisplayName)>();
         var observedCursors = new HashSet<string>(StringComparer.Ordinal);
         string? cursor = null;
 
@@ -3009,6 +3010,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             }
 
             JsonElement page = await SendRequiredOperationAsync(
+                context,
                 "mcpServerStatus/list",
                 parameters,
                 TimeSpan.FromSeconds(30),
@@ -3031,7 +3033,10 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
                 throw new InvalidOperationException("The MCP server inventory contained an invalid registration identity.");
             }
 
-            RememberLegacyMcpServerNames(context, data, threadId, environmentIdentityEnabled);
+            if (!environmentIdentityEnabled)
+            {
+                StageLegacyMcpServerNames(data, stagedLegacyNames);
+            }
 
             servers.AddRange(ReadMcpServers(page, environmentIdentityEnabled));
             if (servers.Count > maximumServers)
@@ -3043,6 +3048,8 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             if (!page.TryGetProperty("nextCursor", out JsonElement nextCursor)
                 || nextCursor.ValueKind == JsonValueKind.Null)
             {
+                EnsureCurrent(context);
+                RememberLegacyMcpServerNames(context, stagedLegacyNames, threadId);
                 return servers;
             }
 
@@ -3065,39 +3072,48 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         throw new InvalidOperationException("The MCP server inventory exceeded the supported page limit.");
     }
 
-    private void RememberLegacyMcpServerNames(ConnectionContext context, JsonElement data, string? threadId, bool environmentIdentityEnabled)
+    private void StageLegacyMcpServerNames(JsonElement data, List<(string RawName, string DisplayName)> stagedNames)
     {
-        if (environmentIdentityEnabled)
-        {
-            return;
-        }
-
-        DateTimeOffset now = timeProvider.GetUtcNow();
-        PurgeLegacyMcpServerNames(context, now);
         foreach (JsonElement server in data.EnumerateArray())
         {
             string? rawName = GetString(server, "name");
-            if (string.IsNullOrWhiteSpace(rawName) || rawName.Length > 256 || rawName.Any(char.IsControl))
+            if (string.IsNullOrWhiteSpace(rawName) || rawName.Length > 256 || !IsValidOptionalMcpIdentityComponent(rawName))
             {
                 continue;
             }
 
             string displayName = redactor.Redact(rawName) ?? string.Empty;
-            var key = new McpLegacyDisplayNameKey(displayName, threadId);
-            if (!context.McpLegacyDisplayNames.TryGetValue(key, out ConcurrentDictionary<string, DateTimeOffset>? rawNames))
-            {
-                EnsureLegacyMcpDisplayNameCapacity(context);
-                rawNames = context.McpLegacyDisplayNames.GetOrAdd(
-                    key,
-                    static _ => new ConcurrentDictionary<string, DateTimeOffset>(StringComparer.Ordinal));
-            }
+            stagedNames.Add((rawName, displayName));
+        }
+    }
 
-            if (!rawNames.ContainsKey(rawName) && rawNames.Count >= MaximumLegacyMcpRawNamesPerDisplayName)
+    private void RememberLegacyMcpServerNames(
+        ConnectionContext context,
+        IReadOnlyList<(string RawName, string DisplayName)> stagedNames,
+        string? threadId)
+    {
+        lock (context.McpLegacyDisplayNamesLock)
+        {
+            DateTimeOffset now = timeProvider.GetUtcNow();
+            PurgeLegacyMcpServerNames(context, now);
+            foreach ((string rawName, string displayName) in stagedNames)
             {
-                continue;
-            }
+                var key = new McpLegacyDisplayNameKey(displayName, threadId);
+                if (!context.McpLegacyDisplayNames.TryGetValue(key, out ConcurrentDictionary<string, DateTimeOffset>? rawNames))
+                {
+                    EnsureLegacyMcpDisplayNameCapacity(context);
+                    rawNames = context.McpLegacyDisplayNames.GetOrAdd(
+                        key,
+                        static _ => new ConcurrentDictionary<string, DateTimeOffset>(StringComparer.Ordinal));
+                }
 
-            rawNames[rawName] = now;
+                if (!rawNames.ContainsKey(rawName) && rawNames.Count >= MaximumLegacyMcpRawNamesPerDisplayName)
+                {
+                    continue;
+                }
+
+                rawNames[rawName] = now;
+            }
         }
     }
 
@@ -3138,23 +3154,26 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
 
     private string ResolveLegacyMcpServerName(ConnectionContext context, string requestedName, string? threadId)
     {
-        PurgeLegacyMcpServerNames(context, timeProvider.GetUtcNow());
         var candidates = new HashSet<string>(StringComparer.Ordinal);
-        foreach (KeyValuePair<McpLegacyDisplayNameKey, ConcurrentDictionary<string, DateTimeOffset>> entry in context.McpLegacyDisplayNames)
+        lock (context.McpLegacyDisplayNamesLock)
         {
-            if (string.Equals(entry.Key.DisplayName, requestedName, StringComparison.Ordinal)
-                && (threadId is null || entry.Key.ThreadId is null || string.Equals(entry.Key.ThreadId, threadId, StringComparison.Ordinal)))
+            PurgeLegacyMcpServerNames(context, timeProvider.GetUtcNow());
+            foreach (KeyValuePair<McpLegacyDisplayNameKey, ConcurrentDictionary<string, DateTimeOffset>> entry in context.McpLegacyDisplayNames)
             {
-                candidates.UnionWith(entry.Value.Keys);
+                if (string.Equals(entry.Key.DisplayName, requestedName, StringComparison.Ordinal)
+                    && (threadId is null || entry.Key.ThreadId is null || string.Equals(entry.Key.ThreadId, threadId, StringComparison.Ordinal)))
+                {
+                    candidates.UnionWith(entry.Value.Keys);
+                }
             }
-        }
 
-        foreach ((McpRegistrationKey key, McpServerAuthStatus status) in context.McpAuthStatuses)
-        {
-            if (string.Equals(status.DisplayServerName, requestedName, StringComparison.Ordinal)
-                && (threadId is null || key.ThreadId is null || string.Equals(key.ThreadId, threadId, StringComparison.Ordinal)))
+            foreach (McpServerAuthStatus status in context.McpAuthStatuses.Values)
             {
-                candidates.Add(key.ServerName);
+                if (string.Equals(status.DisplayServerName, requestedName, StringComparison.Ordinal)
+                    && (threadId is null || status.ThreadId is null || string.Equals(status.ThreadId, threadId, StringComparison.Ordinal)))
+                {
+                    candidates.Add(status.ServerName);
+                }
             }
         }
 
@@ -5471,6 +5490,11 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             return;
         }
 
+        if (threadId is null)
+        {
+            return;
+        }
+
         McpElicitationForm[] candidates = context.McpElicitations.Values
             .Where(form => string.Equals(form.Request.ServerName, serverName, StringComparison.Ordinal)
                 && (!hasRegistrationIdentity
@@ -5750,8 +5774,17 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         TimeSpan timeout,
         CancellationToken cancellationToken,
         bool allowUncredentialed = false)
+        => await SendRequiredOperationAsync(RequireContext(), method, parameters, timeout, cancellationToken, allowUncredentialed).ConfigureAwait(false);
+
+    private async Task<JsonElement> SendRequiredOperationAsync(
+        ConnectionContext context,
+        string method,
+        object parameters,
+        TimeSpan timeout,
+        CancellationToken cancellationToken,
+        bool allowUncredentialed = false)
     {
-        ConnectionContext context = RequireContext();
+        EnsureCurrent(context);
         if (method != "account/read" && !allowUncredentialed)
         {
             EnsureCredentialReady(context);
@@ -7926,6 +7959,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         public LinkedList<McpRegistrationKey> McpAuthStatusLru { get; } = new();
         public bool McpAuthStatusOverflow { get; set; }
         public ConcurrentDictionary<McpLegacyDisplayNameKey, ConcurrentDictionary<string, DateTimeOffset>> McpLegacyDisplayNames { get; } = new();
+        public object McpLegacyDisplayNamesLock { get; } = new();
         public ConcurrentDictionary<string, McpOAuthOperation> McpOAuthOperations { get; } = new(StringComparer.Ordinal);
         public ConcurrentDictionary<McpRegistrationKey, string> McpOAuthOperationsByServer { get; } = new();
 

@@ -798,6 +798,15 @@ public sealed class InteractionAuthStatusPresentationViewModel : ObservableObjec
     [DataMember]
     public ObservableCollection<McpServerAuthPresentationViewModel> McpServers { get; }
 
+    internal void RemoveMcpServer(McpServerAuthPresentationViewModel server)
+    {
+        if (McpServers.Remove(server))
+        {
+            server.PropertyChanged -= OnMcpServerPropertyChanged;
+            RefreshPendingMcpAuthAction();
+        }
+    }
+
     public void Update(InteractionAuthStatus status)
     {
         IsLocal = status.IsLocal;
@@ -820,7 +829,8 @@ public sealed class InteractionAuthStatusPresentationViewModel : ObservableObjec
                 && !server.IsRegistrationAmbiguous)
             {
                 McpServerAuthPresentationViewModel[] registrationMatches = McpServers
-                    .Where(item => item.MatchesServerNameAndThread(server))
+                    .Where(item => item.MatchesServerNameAndThread(server)
+                        && !status.McpServers.Any(item.MatchesServer))
                     .ToArray();
                 if (registrationMatches.Length == 1 && registrationMatches[0].HasRegistrationIdentity)
                 {
@@ -857,10 +867,17 @@ public sealed class InteractionAuthStatusPresentationViewModel : ObservableObjec
                 }
             }
 
-            if (existing is null && server.ThreadId is null)
+            bool hasThreadScopedSnapshotForServer = server.ThreadId is null
+                && status.McpServers.Any(candidate => candidate.ThreadId is not null
+                    && string.Equals(candidate.ServerName, server.ServerName, StringComparison.Ordinal)
+                    && (!server.HasRegistrationIdentity
+                        || (candidate.HasRegistrationIdentity
+                            && string.Equals(candidate.EnvironmentId, server.EnvironmentId, StringComparison.Ordinal))));
+            if (existing is null && server.ThreadId is null && !hasThreadScopedSnapshotForServer)
             {
                 McpServerAuthPresentationViewModel[] missingThreadMatches = McpServers
-                    .Where(item => item.MatchesServerIgnoringMissingThread(server))
+                    .Where(item => item.MatchesServerIgnoringMissingThread(server)
+                        && !status.McpServers.Any(item.MatchesServer))
                     .ToArray();
                 if (missingThreadMatches.Length == 1)
                 {
@@ -1141,6 +1158,34 @@ public sealed class McpServerAuthPresentationViewModel : ObservableObject
         {
             StatusText = markdown.ToSafeText(status.Message ?? "Registration identity could not be resolved. Sign-in is disabled.").Trim();
         }
+    }
+
+    internal void MergeHydratedRegistrationIdentityFrom(
+        McpServerAuthPresentationViewModel source,
+        McpServerAuthStatus status,
+        SafeMarkdownService markdown)
+    {
+        UpdateRegistrationIdentity(status.HasRegistrationIdentity, status.EnvironmentId, status.DisplayEnvironmentId, status.ThreadId, markdown);
+        SetRegistrationAmbiguous(status.IsRegistrationAmbiguous);
+
+        if (source.operationId is not null)
+        {
+            operationId = source.operationId;
+            State = source.State;
+            StatusText = source.StatusText;
+        }
+
+        if (source.authorizationActionId is not null)
+        {
+            authorizationActionId = source.authorizationActionId;
+        }
+
+        OnPropertyChanged(nameof(CanDismiss));
+        OnPropertyChanged(nameof(CanOpenAuthorization));
+        OnPropertyChanged(nameof(CanStartLogin));
+        LoginCommand.RaiseCanExecuteChanged();
+        DismissCommand.RaiseCanExecuteChanged();
+        OpenAuthorizationCommand.RaiseCanExecuteChanged();
     }
 
     internal void SetHydrationAmbiguous(string message, SafeMarkdownService markdown)

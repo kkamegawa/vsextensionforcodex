@@ -2221,11 +2221,20 @@ public sealed partial class ViewModelTests
             IsLocal = true,
             IsSupported = true,
             McpEnvironmentIdentityEnabled = true,
-                McpServers = [new McpServerAuthStatus
+            McpServers =
+            [
+                new McpServerAuthStatus
+                {
+                    ServerName = "docs", DisplayServerName = "docs", ThreadId = "thread-original",
+                    HasRegistrationIdentity = true, EnvironmentId = "environment-original",
+                    State = InteractionAuthState.ReauthenticationRequired,
+                },
+                new McpServerAuthStatus
                 {
                     ServerName = "docs", State = InteractionAuthState.ReauthenticationRequired,
                     OpenAuthorizationActionId = "hydration-action",
-                }],
+                },
+            ],
         });
         var inventoryCallStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var inventory = new TaskCompletionSource<McpServerListResult>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -2254,6 +2263,8 @@ public sealed partial class ViewModelTests
 #pragma warning disable VSTHRD003 // This signal is completed when the test-controlled inventory request starts.
         await inventoryCallStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
 #pragma warning restore VSTHRD003
+        McpServerAuthPresentationViewModel resolvedRow = vm.InteractionAuthStatus!.McpServers
+            .Single(row => row.HasRegistrationIdentity);
         vm.SelectedThread = new ThreadSummary { Id = "thread-after-switch" };
         inventory.TrySetResult(new McpServerListResult
         {
@@ -2264,6 +2275,7 @@ public sealed partial class ViewModelTests
 #pragma warning restore VSTHRD003
 
         McpServerAuthPresentationViewModel row = vm.InteractionAuthStatus!.McpServers.Single();
+        Assert.AreSame(resolvedRow, row, "Hydration coalesces into the row already carrying this registration identity.");
         Assert.AreEqual("thread-original", row.ThreadId);
         Assert.AreEqual("environment-original", row.EnvironmentId);
         Assert.AreEqual(InteractionAuthState.ReauthenticationRequired, row.State);
@@ -2339,6 +2351,78 @@ public sealed partial class ViewModelTests
         Assert.IsTrue(rows[0].HasRegistrationIdentity, "A later identity-less status update must not erase the hydrated environment scope.");
         Assert.AreEqual("environment-a", rows[0].EnvironmentId);
         Assert.IsTrue(rows[0].CanDismiss, "A threadless status update must not drop the pending operation ID.");
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_ThreadlessAndIdentitylessStatusesKeepExactScopedRowsSeparate()
+    {
+        var bridge = new FakeWorkerBridge();
+        using var vm = new ChatViewModel(bridge, autoConnect: false);
+        await bridge.PublishStateAsync(ReadyOwnerStatus(1, "auth-owner-scoped-status-separation"));
+
+        await bridge.PublishInteractionAuthStatusAsync(new InteractionAuthStatus
+        {
+            IsLocal = true,
+            IsSupported = true,
+            McpEnvironmentIdentityEnabled = true,
+            McpServers =
+            [
+                new McpServerAuthStatus
+                {
+                    ServerName = "docs", ThreadId = "thread-a", HasRegistrationIdentity = true,
+                    EnvironmentId = "environment-a", State = InteractionAuthState.LoginPending,
+                    OpenAuthorizationActionId = "scoped-action-a",
+                },
+                new McpServerAuthStatus
+                {
+                    ServerName = "docs", ThreadId = "thread-b", HasRegistrationIdentity = true,
+                    EnvironmentId = "environment-a", State = InteractionAuthState.LoginPending,
+                    OpenAuthorizationActionId = "scoped-action-b",
+                },
+            ],
+        });
+
+        await bridge.PublishInteractionAuthStatusAsync(new InteractionAuthStatus
+        {
+            IsLocal = true,
+            IsSupported = true,
+            McpEnvironmentIdentityEnabled = true,
+            McpServers =
+            [
+                new McpServerAuthStatus
+                {
+                    ServerName = "docs", ThreadId = "thread-a", State = InteractionAuthState.Failed,
+                    Message = "Unscoped startup failure.",
+                },
+                new McpServerAuthStatus
+                {
+                    ServerName = "docs", ThreadId = null, State = InteractionAuthState.Failed,
+                    Message = "Threadless startup failure.",
+                },
+                new McpServerAuthStatus
+                {
+                    ServerName = "docs", ThreadId = "thread-a", HasRegistrationIdentity = true,
+                    EnvironmentId = "environment-a", State = InteractionAuthState.LoginPending,
+                    OpenAuthorizationActionId = "scoped-action-a",
+                },
+                new McpServerAuthStatus
+                {
+                    ServerName = "docs", ThreadId = "thread-b", HasRegistrationIdentity = true,
+                    EnvironmentId = "environment-a", State = InteractionAuthState.LoginPending,
+                    OpenAuthorizationActionId = "scoped-action-b",
+                },
+            ],
+        });
+
+        McpServerAuthPresentationViewModel[] rows = vm.InteractionAuthStatus!.McpServers.ToArray();
+        McpServerAuthPresentationViewModel threadA = rows.Single(row => row.ThreadId == "thread-a" && row.HasRegistrationIdentity);
+        McpServerAuthPresentationViewModel threadB = rows.Single(row => row.ThreadId == "thread-b" && row.HasRegistrationIdentity);
+        Assert.IsTrue(threadA.CanOpenAuthorization);
+        Assert.IsTrue(threadB.CanOpenAuthorization);
+        Assert.AreEqual(InteractionAuthState.LoginPending, threadA.State);
+        Assert.AreEqual(InteractionAuthState.LoginPending, threadB.State);
+        Assert.IsTrue(rows.Any(row => !row.HasRegistrationIdentity && row.IsRegistrationAmbiguous && row.ThreadId == "thread-a"));
+        Assert.IsTrue(rows.Any(row => !row.HasRegistrationIdentity && row.IsRegistrationAmbiguous && row.ThreadId is null));
     }
 
     [TestMethod]
