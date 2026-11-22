@@ -5993,6 +5993,7 @@ public sealed partial class ViewModelTests
             typeof(ChatViewModel), typeof(ChatItemViewModel), typeof(ChatBlockViewModel), typeof(TranscriptSearchResultViewModel), typeof(ApprovalViewModel),
             typeof(InteractionCardViewModel), typeof(ApprovalChoiceViewModel), typeof(PermissionSelectionViewModel),
             typeof(PermissionGrantOptionViewModel), typeof(McpElicitationViewModel), typeof(McpElicitationFieldViewModel),
+            typeof(McpToolAnnotationViewModel),
             typeof(McpElicitationChoiceViewModel), typeof(InteractionAuthStatusPresentationViewModel),
             typeof(McpServerAuthPresentationViewModel), typeof(UserInputViewModel), typeof(UserInputQuestionViewModel), typeof(UserInputOptionViewModel),
             typeof(SuggestionChip), typeof(SlashCommandPresentationViewModel),
