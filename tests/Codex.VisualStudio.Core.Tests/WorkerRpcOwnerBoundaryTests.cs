@@ -134,6 +134,7 @@ public sealed class WorkerRpcOwnerBoundaryTests
                 async () => await oldTurn.WaitAsync(TimeSpan.FromSeconds(5)));
             Assert.AreEqual(WorkerErrorCodes.UpstreamOperationFailed, turnFailure.ErrorCode);
             WorkerStatus ownerBStatus = await replacement.WaitAsync(TimeSpan.FromSeconds(5));
+            await client.WaitForReadyNotificationAsync(ownerBStatus.Target!).WaitAsync(TimeSpan.FromSeconds(5));
             WorkerNotification<WorkerStatus> busy = await client.BusyNotification.WaitAsync(TimeSpan.FromSeconds(5));
 
             StringAssert.Contains(turnFailure.Message, "generation");
