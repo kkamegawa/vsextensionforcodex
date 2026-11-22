@@ -207,10 +207,12 @@ public sealed class WorkerRpcOwnerBoundaryTests
         Directory.CreateDirectory(workspace);
         try
         {
+            var releaseResponse = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             var first = new RecordingConnection(workspace)
             {
                 AccountEmail = "a@example.test",
                 EmitAccountUpdatedDuringLogout = true,
+                LogoutResponseGate = releaseResponse.Task,
             };
             var second = new RecordingConnection(workspace);
             var session = new CodexSessionService(new ApprovalPolicyEngine(new PathAccessPolicy()), new SecretRedactor());
@@ -218,11 +220,20 @@ public sealed class WorkerRpcOwnerBoundaryTests
             await using var client = new RpcClientChannel(worker);
             ConnectionTargetSnapshot ownerA = (await worker.ConnectAsync(Options(workspace), CancellationToken.None)).Target!;
 
-            AccountStatus result = await worker.LogoutAccountAsync(Request<LogoutAccountRequest>(ownerA), CancellationToken.None);
+            Task<AccountStatus> logout = worker.LogoutAccountAsync(Request<LogoutAccountRequest>(ownerA), CancellationToken.None);
+            WorkerNotification<WorkerStatus> ready;
+            try
+            {
+                ready = await client.WaitForAsync(notification =>
+                    notification.Value.State == WorkerConnectionState.Ready
+                    && notification.OwnerGeneration > ownerA.OwnerGeneration).WaitAsync(TimeSpan.FromSeconds(5));
+            }
+            finally
+            {
+                releaseResponse.TrySetResult();
+            }
 
-            WorkerNotification<WorkerStatus> ready = await client.WaitForAsync(notification =>
-                notification.Value.State == WorkerConnectionState.Ready
-                && notification.OwnerGeneration > ownerA.OwnerGeneration).WaitAsync(TimeSpan.FromSeconds(5));
+            AccountStatus result = await logout.WaitAsync(TimeSpan.FromSeconds(5));
             Assert.AreEqual(AccountState.SignedOut, result.State);
             Assert.AreNotEqual(ownerA.StatePartitionFingerprint, ready.StatePartitionFingerprint);
             Assert.IsFalse(client.Notifications.Any(notification => notification.Value.State == WorkerConnectionState.Degraded));
@@ -613,6 +624,8 @@ public sealed class WorkerRpcOwnerBoundaryTests
 
         public bool EmitAccountUpdatedDuringLogout { get; set; }
 
+        public Task? LogoutResponseGate { get; set; }
+
         public Task TurnStartSeen => turnStartSeen.Task;
 
         public void ReleaseTurnStart() => releaseTurnStart.TrySetResult();
@@ -662,6 +675,10 @@ public sealed class WorkerRpcOwnerBoundaryTests
                 EmitAccountUpdatedDuringLogout = false;
                 AccountEmail = null;
                 await EmitNotificationAsync("account/updated", new { authMode = (string?)null });
+                if (LogoutResponseGate is not null)
+                {
+                    await LogoutResponseGate.WaitAsync(cancellationToken);
+                }
             }
 
             JsonElement result = method switch

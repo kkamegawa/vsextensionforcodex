@@ -1932,7 +1932,8 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
                 new { },
                 TimeSpan.FromSeconds(15),
                 cancellationToken).ConfigureAwait(false);
-            if (!IsCurrent(context) && context.OwnerInvalidated && invalidatedByOwnerAction)
+            // A replacement connection can clear the session-wide flags before this response arrives.
+            if (!IsCurrent(context) && context.OwnerInvalidated && context.LogoutRequested)
             {
                 WorkerDiagnostics.Write("app-server logout request completed after its notification");
                 return new AccountStatus { State = AccountState.SignedOut };
