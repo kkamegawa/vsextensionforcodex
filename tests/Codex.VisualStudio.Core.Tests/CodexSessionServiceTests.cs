@@ -715,7 +715,7 @@ public sealed partial class CodexSessionServiceTests
         ConversationEvent item = events.Single(value => value.Kind == ConversationEventKind.ItemCompleted);
         ArtifactPart part = item.Parts.Single();
         Assert.IsTrue(part.HasRegistrationIdentity);
-        Assert.AreEqual("env-a", part.EnvironmentId);
+        Assert.AreEqual("env-a", part.DisplayEnvironmentId);
     }
 
     [TestMethod]

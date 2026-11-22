@@ -808,24 +808,109 @@ public sealed class InteractionAuthStatusPresentationViewModel : ObservableObjec
         openAuthorizationActionId = status.OpenAuthorizationActionId;
         HasOpenAuthorizationAction = !string.IsNullOrWhiteSpace(openAuthorizationActionId);
 
+        var retainedForMissingThread = new HashSet<McpServerAuthPresentationViewModel>();
         foreach (McpServerAuthStatus server in status.McpServers)
         {
             McpServerAuthPresentationViewModel? existing = McpServers.FirstOrDefault(item => item.MatchesServer(server));
+            string? expectedThreadId = null;
+            McpServerAuthStatus updateStatus = server;
+            if (existing is null
+                && status.McpEnvironmentIdentityEnabled
+                && !server.HasRegistrationIdentity
+                && !server.IsRegistrationAmbiguous)
+            {
+                McpServerAuthPresentationViewModel[] registrationMatches = McpServers
+                    .Where(item => item.MatchesServerNameAndThread(server))
+                    .ToArray();
+                if (registrationMatches.Length == 1 && registrationMatches[0].HasRegistrationIdentity)
+                {
+                    existing = registrationMatches[0];
+                    expectedThreadId = existing.ThreadId;
+                    retainedForMissingThread.Add(existing);
+                    updateStatus = new McpServerAuthStatus
+                    {
+                        ServerName = server.ServerName,
+                        DisplayServerName = server.DisplayServerName,
+                        HasRegistrationIdentity = existing.HasRegistrationIdentity,
+                        EnvironmentId = existing.EnvironmentId,
+                        DisplayEnvironmentId = existing.DisplayEnvironmentId,
+                        ThreadId = existing.ThreadId,
+                        IsRegistrationAmbiguous = existing.IsRegistrationAmbiguous,
+                        State = server.State,
+                        Message = server.Message,
+                        OriginDisplay = server.OriginDisplay,
+                        OpenAuthorizationActionId = server.OpenAuthorizationActionId,
+                    };
+                }
+                else if (registrationMatches.Length > 1)
+                {
+                    foreach (McpServerAuthPresentationViewModel registrationMatch in registrationMatches)
+                    {
+                        retainedForMissingThread.Add(registrationMatch);
+                        if (!registrationMatch.HasRegistrationIdentity)
+                        {
+                            registrationMatch.SetRegistrationAmbiguous(true);
+                        }
+                    }
+
+                    continue;
+                }
+            }
+
+            if (existing is null && server.ThreadId is null)
+            {
+                McpServerAuthPresentationViewModel[] missingThreadMatches = McpServers
+                    .Where(item => item.MatchesServerIgnoringMissingThread(server))
+                    .ToArray();
+                if (missingThreadMatches.Length == 1)
+                {
+                    existing = missingThreadMatches[0];
+                    expectedThreadId = existing.ThreadId;
+                    retainedForMissingThread.Add(existing);
+                }
+                else if (missingThreadMatches.Length > 1)
+                {
+                    foreach (McpServerAuthPresentationViewModel match in missingThreadMatches)
+                    {
+                        retainedForMissingThread.Add(match);
+                        if (status.McpEnvironmentIdentityEnabled)
+                        {
+                            match.SetRegistrationAmbiguous(true);
+                        }
+                    }
+
+                    continue;
+                }
+            }
+
             if (existing is null)
             {
+                if (status.McpEnvironmentIdentityEnabled && !server.HasRegistrationIdentity)
+                {
+                    server.IsRegistrationAmbiguous = true;
+                }
+
                 var added = new McpServerAuthPresentationViewModel(server, markdown, startMcpLogin, dismissMcpLogin, openAuthorization);
                 added.PropertyChanged += OnMcpServerPropertyChanged;
                 McpServers.Add(added);
             }
             else
             {
-                existing.Update(server, markdown);
+                if (status.McpEnvironmentIdentityEnabled
+                    && !updateStatus.HasRegistrationIdentity
+                    && existing.IsRegistrationAmbiguous)
+                {
+                    updateStatus.IsRegistrationAmbiguous = true;
+                }
+
+                existing.Update(updateStatus, markdown, expectedThreadId);
             }
         }
 
         for (int index = McpServers.Count - 1; index >= 0; index--)
         {
-            if (!status.McpServers.Any(McpServers[index].MatchesServer))
+            if (!retainedForMissingThread.Contains(McpServers[index])
+                && !status.McpServers.Any(McpServers[index].MatchesServer))
             {
                 McpServers[index].PropertyChanged -= OnMcpServerPropertyChanged;
                 McpServers.RemoveAt(index);
@@ -834,10 +919,24 @@ public sealed class InteractionAuthStatusPresentationViewModel : ObservableObjec
 
         foreach (McpServerAuthPresentationViewModel server in McpServers)
         {
-            int sameNameCount = status.McpServers.Count(candidate => string.Equals(candidate.ServerName, server.RawServerName, StringComparison.Ordinal));
+            int sameNameCount = status.McpServers.Count(candidate =>
+                string.Equals(candidate.ServerName, server.RawServerName, StringComparison.Ordinal)
+                && string.Equals(candidate.ThreadId, server.ThreadId, StringComparison.Ordinal));
             server.SetRegistrationAmbiguous(server.IsRegistrationAmbiguous || (!server.HasRegistrationIdentity && sameNameCount > 1));
         }
 
+        RefreshPendingMcpAuthAction();
+    }
+
+    internal void UpdateGatewayStatus(InteractionAuthStatus status)
+    {
+        IsLocal = status.IsLocal;
+        IsSupported = status.IsSupported;
+        State = status.State;
+        StatusText = markdown.ToSafeText(status.Message ?? status.State.ToString()).Trim();
+        OriginDisplay = markdown.ToSafeText(status.OriginDisplay ?? string.Empty).Trim();
+        openAuthorizationActionId = status.OpenAuthorizationActionId;
+        HasOpenAuthorizationAction = !string.IsNullOrWhiteSpace(openAuthorizationActionId);
         RefreshPendingMcpAuthAction();
     }
 
@@ -887,7 +986,6 @@ public sealed class McpServerAuthPresentationViewModel : ObservableObject
         this.dismissMcpLogin = dismissMcpLogin;
         this.openAuthorization = openAuthorization;
         serverName = status.ServerName;
-        serverName = status.ServerName;
         safeDisplayServerName = markdown.ToSafeText(status.DisplayServerName.Length == 0 ? status.ServerName : status.DisplayServerName).Trim();
         UpdateRegistrationIdentity(status.HasRegistrationIdentity, status.EnvironmentId, status.DisplayEnvironmentId, status.ThreadId, markdown);
         registrationAmbiguous = status.IsRegistrationAmbiguous;
@@ -895,7 +993,7 @@ public sealed class McpServerAuthPresentationViewModel : ObservableObject
         statusText = markdown.ToSafeText(status.Message ?? status.State.ToString()).Trim();
         originDisplay = markdown.ToSafeText(status.OriginDisplay ?? string.Empty).Trim();
         authorizationActionId = status.OpenAuthorizationActionId;
-        LoginCommand = new AsyncCommand(() => this.startMcpLogin(CreateStatusSnapshot()), () => CanStartLogin);
+        LoginCommand = new AsyncCommand(() => this.startMcpLogin(CreateLoginRequestSnapshot()), () => CanStartLogin);
         DismissCommand = new AsyncCommand(DismissAsync, () => CanDismiss);
         OpenAuthorizationCommand = new AsyncCommand(OpenAuthorizationAsync, () => CanOpenAuthorization);
     }
@@ -909,6 +1007,8 @@ public sealed class McpServerAuthPresentationViewModel : ObservableObject
     public bool HasRegistrationIdentity { get; private set; }
 
     public string? EnvironmentId { get; private set; }
+
+    internal string? DisplayEnvironmentId => safeDisplayEnvironmentId;
 
     public string? ThreadId { get; private set; }
 
@@ -936,6 +1036,22 @@ public sealed class McpServerAuthPresentationViewModel : ObservableObject
 
     internal bool HasPendingAction => CanStartLogin || CanDismiss || CanOpenAuthorization;
 
+    private McpServerAuthStatus CreateLoginRequestSnapshot()
+        => new()
+        {
+            ServerName = serverName,
+            DisplayServerName = safeDisplayServerName,
+            IsRegistrationAmbiguous = registrationAmbiguous,
+            HasRegistrationIdentity = HasRegistrationIdentity,
+            EnvironmentId = EnvironmentId,
+            DisplayEnvironmentId = safeDisplayEnvironmentId,
+            ThreadId = ThreadId,
+            State = State,
+            Message = StatusText,
+            OriginDisplay = OriginDisplay,
+            OpenAuthorizationActionId = authorizationActionId,
+        };
+
     [DataMember]
     public AsyncCommand LoginCommand { get; }
 
@@ -950,8 +1066,7 @@ public sealed class McpServerAuthPresentationViewModel : ObservableObject
         operationId = status.State == InteractionAuthState.LoginPending ? status.OperationId : null;
         serverName = status.ServerName;
         safeDisplayServerName = markdown.ToSafeText(status.DisplayServerName.Length == 0 ? status.ServerName : status.DisplayServerName).Trim();
-        UpdateRegistrationIdentity(status.HasRegistrationIdentity, status.EnvironmentId, status.DisplayEnvironmentId, status.ThreadId, markdown);
-        SetRegistrationAmbiguous(false);
+        UpdateRegistrationIdentity(status.HasRegistrationIdentity, status.EnvironmentId, status.DisplayEnvironmentId, status.ThreadId ?? ThreadId, markdown);
         State = status.State;
         StatusText = markdown.ToSafeText(status.Message ?? status.State.ToString()).Trim();
         OriginDisplay = markdown.ToSafeText(status.OriginDisplay ?? string.Empty).Trim();
@@ -965,11 +1080,17 @@ public sealed class McpServerAuthPresentationViewModel : ObservableObject
     }
 
     public void Update(McpServerAuthStatus status, SafeMarkdownService markdown)
+        => Update(status, markdown, expectedThreadId: null);
+
+    internal void Update(McpServerAuthStatus status, SafeMarkdownService markdown, string? expectedThreadId)
     {
-        operationId = null;
+        if (status.State != InteractionAuthState.LoginPending)
+        {
+            operationId = null;
+        }
         serverName = status.ServerName;
         safeDisplayServerName = markdown.ToSafeText(status.DisplayServerName.Length == 0 ? status.ServerName : status.DisplayServerName).Trim();
-        UpdateRegistrationIdentity(status.HasRegistrationIdentity, status.EnvironmentId, status.DisplayEnvironmentId, status.ThreadId, markdown);
+        UpdateRegistrationIdentity(status.HasRegistrationIdentity, status.EnvironmentId, status.DisplayEnvironmentId, status.ThreadId ?? expectedThreadId, markdown);
         SetRegistrationAmbiguous(status.IsRegistrationAmbiguous);
         State = status.State;
         StatusText = markdown.ToSafeText(status.Message ?? status.State.ToString()).Trim();
@@ -995,6 +1116,41 @@ public sealed class McpServerAuthPresentationViewModel : ObservableObject
             && (!HasRegistrationIdentity || string.Equals(EnvironmentId, value.EnvironmentId, StringComparison.Ordinal))
             && (string.Equals(ThreadId, value.ThreadId, StringComparison.Ordinal)
                 || (value.ThreadId is null && expectedThreadId is not null && string.Equals(ThreadId, expectedThreadId, StringComparison.Ordinal)));
+
+    internal bool MatchesServerIgnoringMissingThread(McpServerAuthStatus value)
+        => value.ThreadId is null
+            && string.Equals(serverName, value.ServerName, StringComparison.Ordinal)
+            && HasRegistrationIdentity == value.HasRegistrationIdentity
+            && (!HasRegistrationIdentity || string.Equals(EnvironmentId, value.EnvironmentId, StringComparison.Ordinal));
+
+    internal bool MatchesServerNameAndThread(McpServerAuthStatus value)
+        => string.Equals(serverName, value.ServerName, StringComparison.Ordinal)
+            && (value.ThreadId is null || string.Equals(ThreadId, value.ThreadId, StringComparison.Ordinal));
+
+    internal bool MatchesServerForHydration(string expectedServerName, string? expectedThreadId)
+        => !HasRegistrationIdentity
+            && string.Equals(serverName, expectedServerName, StringComparison.Ordinal)
+            && (string.Equals(ThreadId, expectedThreadId, StringComparison.Ordinal)
+                || (ThreadId is null && expectedThreadId is not null));
+
+    internal void ApplyHydratedRegistrationIdentity(McpServerAuthStatus status, SafeMarkdownService markdown)
+    {
+        UpdateRegistrationIdentity(status.HasRegistrationIdentity, status.EnvironmentId, status.DisplayEnvironmentId, status.ThreadId, markdown);
+        SetRegistrationAmbiguous(status.IsRegistrationAmbiguous);
+        if (status.IsRegistrationAmbiguous && !CanDismiss && !CanOpenAuthorization)
+        {
+            StatusText = markdown.ToSafeText(status.Message ?? "Registration identity could not be resolved. Sign-in is disabled.").Trim();
+        }
+    }
+
+    internal void SetHydrationAmbiguous(string message, SafeMarkdownService markdown)
+    {
+        SetRegistrationAmbiguous(true);
+        if (!CanDismiss && !CanOpenAuthorization)
+        {
+            StatusText = markdown.ToSafeText(message).Trim();
+        }
+    }
 
     internal void SetRegistrationAmbiguous(bool value)
     {
@@ -1035,20 +1191,9 @@ public sealed class McpServerAuthPresentationViewModel : ObservableObject
             ? safeName
             : environmentId is null
                 ? $"{safeName} (thread-wide)"
-                : $"{safeName} (environment {markdown.ToSafeText(displayEnvironmentId ?? safeDisplayEnvironmentId ?? environmentId).Trim()})";
+                : $"{safeName} (environment {safeDisplayEnvironmentId ?? "[hidden]"})";
         ServerName = displayName;
     }
-
-    private McpServerAuthStatus CreateStatusSnapshot()
-        => new()
-        {
-            ServerName = serverName,
-            IsRegistrationAmbiguous = registrationAmbiguous,
-            HasRegistrationIdentity = HasRegistrationIdentity,
-            EnvironmentId = EnvironmentId,
-            ThreadId = ThreadId,
-            State = State,
-        };
 
     private async Task DismissAsync()
     {

@@ -85,7 +85,7 @@ public sealed class ArtifactPart
     public bool HasRegistrationIdentity { get; set; }
 
     [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
-    public string? EnvironmentId { get; set; }
+    public string? DisplayEnvironmentId { get; set; }
 
     public string? Text { get; set; }
 

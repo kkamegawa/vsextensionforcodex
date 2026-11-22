@@ -877,7 +877,7 @@ public sealed partial class CodexSessionService
                 Kind = ArtifactPartKind.Fallback,
                 Text = $"MCP {serverName} / {toolName} ({status}).",
                 HasRegistrationIdentity = hasRegistrationIdentity,
-                EnvironmentId = hasRegistrationIdentity && environmentId is not null ? redactor.Redact(environmentId) : null,
+                DisplayEnvironmentId = hasRegistrationIdentity && environmentId is not null ? BoundAndRedact(environmentId, 256) : null,
             });
 
             string? errorMessage = item.TryGetProperty("error", out JsonElement error)
