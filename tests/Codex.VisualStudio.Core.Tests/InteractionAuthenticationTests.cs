@@ -1508,6 +1508,54 @@ public sealed class InteractionAuthenticationTests
     }
 
     [TestMethod]
+    public async Task McpToolElicitation_ProjectsOnlyBoundedToolHintsForDisplay()
+    {
+        var connection = new RecordingConnection();
+        await using var service = CreateService();
+        McpElicitationRequest? captured = null;
+        service.McpElicitationRequested += (request, _) =>
+        {
+            captured = request;
+            return Task.CompletedTask;
+        };
+        await service.InitializeAsync(connection, Options(experimentalApi: true), CancellationToken.None);
+
+        Task<JsonElement> pending = connection.EmitRequestAsync("tool-approval", "mcpServer/elicitation/request", new
+        {
+            serverName = "docs",
+            threadId = "thread-1",
+            mode = "url",
+            elicitationId = "tool-approval",
+            message = "Authorize this tool",
+            url = "https://login.example.test/tool",
+            _meta = new
+            {
+                tool_name = "read_file",
+                tool_annotations = new
+                {
+                    readOnlyHint = true,
+                    destructiveHint = false,
+                    idempotentHint = true,
+                    openWorldHint = "unknown",
+                },
+            },
+        });
+
+        Assert.IsNotNull(captured);
+        Assert.AreEqual("read_file", captured.DisplayToolName);
+        Assert.AreEqual(true, captured.ReadOnlyHint);
+        Assert.AreEqual(false, captured.DestructiveHint);
+        Assert.AreEqual(true, captured.IdempotentHint);
+        Assert.IsNull(captured.OpenWorldHint, "A malformed annotation is not presented as a hint.");
+        await service.ResolveMcpElicitationAsync(new ResolveMcpElicitationRequest
+        {
+            RequestId = captured.RequestId,
+            Action = McpElicitationAction.Cancel,
+        }, CancellationToken.None);
+        await pending;
+    }
+
+    [TestMethod]
     public async Task McpOAuthCompletionWithoutThreadId_UsesLoginIdAcrossSameEnvironmentThreads()
     {
         var connection = new RecordingConnection

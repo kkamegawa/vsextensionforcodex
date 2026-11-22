@@ -5,7 +5,7 @@ namespace Codex.VisualStudio.Contracts;
 
 public static class ContractVersions
 {
-    public const int Current = 29;
+    public const int Current = 30;
 }
 
 public enum GoalStopStepOutcome
@@ -1526,6 +1526,8 @@ public sealed class ApprovalRequest
     public IReadOnlyList<ApprovalDecision> AvailableDecisions { get; set; } = Array.Empty<ApprovalDecision>();
 
     public IReadOnlyList<ApprovalChoice> Choices { get; set; } = Array.Empty<ApprovalChoice>();
+
+    public bool IsHumanCommand { get; set; }
 }
 
 public sealed class ResolveApprovalRequest : OwnerScopedRequest

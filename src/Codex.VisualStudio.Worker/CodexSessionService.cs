@@ -702,6 +702,10 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         {
             ["experimentalApi"] = options.ExperimentalApi,
         };
+        if (options.ExperimentalApi)
+        {
+            capabilities["requiredHumanApproval"] = true;
+        }
         if (string.IsNullOrWhiteSpace(options.RemoteEndpoint))
         {
             capabilities["explicitGatewayOauth"] = true;
@@ -3842,6 +3846,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         form.Request.EnvironmentId = hasRegistrationIdentity ? rawEnvironmentId : null;
         form.Request.DisplayEnvironmentId = hasRegistrationIdentity && rawEnvironmentId is not null ? redactor.Redact(rawEnvironmentId) : null;
         form.Request.DisplayServerName = redactor.Redact(form.Request.ServerName) ?? string.Empty;
+        ReadMcpToolApprovalMetadata(parameters, form.Request);
         form.Request.ThreadId = GetString(parameters, "threadId");
 
         var key = new PendingInteractionKey(context.Generation, requestId);
@@ -4490,15 +4495,21 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             return ApprovalResponse("decline");
         }
 
-        if (!OfferedCommandChoiceSet.TryCreate(parameters, value => redactor.Redact(value) ?? string.Empty,
-                static () => Guid.NewGuid().ToString("N"), out OfferedCommandChoiceSet? choices)
+        bool isHumanCommand = string.Equals(GetString(parameters, "kind"), "humanCommand", StringComparison.Ordinal);
+        if (!(isHumanCommand
+                ? OfferedCommandChoiceSet.TryCreateHumanCommand(parameters, value => redactor.Redact(value) ?? string.Empty,
+                    static () => Guid.NewGuid().ToString("N"), out OfferedCommandChoiceSet? choices)
+                : OfferedCommandChoiceSet.TryCreate(parameters, value => redactor.Redact(value) ?? string.Empty,
+                    static () => Guid.NewGuid().ToString("N"), out choices))
             || choices is null)
         {
             throw new JsonRpcRemoteException(-32602, "The command-approval choices are invalid.");
         }
 
-        request.Choices = choices.Choices;
-        if (CanReuseSessionApproval(parameters)
+        request.Choices = isHumanCommand ? Array.Empty<ApprovalChoice>() : choices.Choices;
+        request.IsHumanCommand = isHumanCommand;
+        if (!isHumanCommand
+            && CanReuseSessionApproval(parameters)
             && context.ApprovalGrants.FindApproval(request) is { Scope: ApprovalScope.Session } sessionGrant
             && choices.TryResolveDecision("acceptForSession", out JsonElement automaticResponse))
         {
@@ -5595,6 +5606,8 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             : method.Contains("fileChange", StringComparison.Ordinal)
                 ? approvalPolicy.EvaluateFile(grantRoot, options.WorkingDirectory)
                 : approvalPolicy.EvaluateCommand(command, cwd, options.WorkingDirectory, networkHost, networkPort);
+        bool isHumanCommand = method == "item/commandExecution/requestApproval"
+            && string.Equals(GetString(parameters, "kind"), "humanCommand", StringComparison.Ordinal);
         return new ApprovalRequest
         {
             RequestId = requestId,
@@ -5606,10 +5619,13 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             RiskKey = policy.RiskKey,
             DisplayText = redactor.Redact(command ?? grantRoot ?? networkHost ?? method),
             Reason = redactor.Redact(GetString(parameters, "reason")),
+            IsHumanCommand = isHumanCommand,
             IsPolicyBlocked = policy.IsBlocked,
             PolicyBlockReason = policy.BlockReason,
             AvailableDecisions = policy.IsBlocked
                 ? Array.Empty<ApprovalDecision>()
+                : isHumanCommand
+                ? [ApprovalDecision.Accept, ApprovalDecision.Decline, ApprovalDecision.Cancel]
                 :
                 [
                     ApprovalDecision.Accept,
@@ -5620,6 +5636,45 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
                     ApprovalDecision.Cancel,
                 ],
         };
+    }
+
+    private void ReadMcpToolApprovalMetadata(JsonElement parameters, McpElicitationRequest request)
+    {
+        if (!parameters.TryGetProperty("_meta", out JsonElement metadata)
+            || metadata.ValueKind != JsonValueKind.Object
+            || !metadata.TryGetProperty("tool_name", out JsonElement toolName)
+            || toolName.ValueKind != JsonValueKind.String)
+        {
+            return;
+        }
+
+        string? name = toolName.GetString();
+        if (string.IsNullOrWhiteSpace(name) || name.Length > 256)
+        {
+            return;
+        }
+
+        request.DisplayToolName = redactor.Redact(name.Trim());
+        if (!metadata.TryGetProperty("tool_annotations", out JsonElement annotations)
+            || annotations.ValueKind != JsonValueKind.Object)
+        {
+            return;
+        }
+
+        request.ReadOnlyHint = ReadNullableBoolean(annotations, "readOnlyHint");
+        request.DestructiveHint = ReadNullableBoolean(annotations, "destructiveHint");
+        request.IdempotentHint = ReadNullableBoolean(annotations, "idempotentHint");
+        request.OpenWorldHint = ReadNullableBoolean(annotations, "openWorldHint");
+
+        static bool? ReadNullableBoolean(JsonElement value, string propertyName)
+            => value.TryGetProperty(propertyName, out JsonElement property)
+                ? property.ValueKind switch
+                {
+                    JsonValueKind.True => true,
+                    JsonValueKind.False => false,
+                    _ => null,
+                }
+                : null;
     }
 
     // Logs the completion of a turn the user asked to stop: the final status (normally
@@ -7831,6 +7886,12 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
     private static bool CanReuseSessionApproval(JsonElement parameters)
     {
         if (parameters.ValueKind != JsonValueKind.Object)
+        {
+            return false;
+        }
+
+        string? kind = GetString(parameters, "kind");
+        if (kind is not (null or "command" or "writeStdin"))
         {
             return false;
         }

@@ -271,6 +271,16 @@ public sealed class McpElicitationViewModel : ObservableObject
         requestId = request.RequestId;
         this.resolver = resolver;
         ServerName = markdown.ToSafeText(request.DisplayServerName.Length == 0 ? request.ServerName : request.DisplayServerName).Trim();
+        ToolName = markdown.ToSafeText(request.DisplayToolName ?? string.Empty).Trim();
+        var isJapanese = CultureInfo.CurrentUICulture.TwoLetterISOLanguageName == "ja";
+        var annotations = new List<McpToolAnnotationViewModel>();
+        AddAnnotation(request.ReadOnlyHint, isJapanese ? "読み取り専用" : "Read-only", isJapanese ? "変更可能" : "Can modify data");
+        AddAnnotation(request.DestructiveHint, isJapanese ? "⚠ 破壊的操作" : "⚠ Destructive",
+            isJapanese ? "非破壊的" : "Not destructive", destructive: true);
+        AddAnnotation(request.IdempotentHint, isJapanese ? "冪等" : "Idempotent", isJapanese ? "非冪等" : "Not idempotent");
+        AddAnnotation(request.OpenWorldHint, isJapanese ? "外部システムにアクセス" : "Accesses external systems",
+            isJapanese ? "外部システムへのアクセスなし" : "No external system access");
+        ToolAnnotations = new ObservableCollection<McpToolAnnotationViewModel>(annotations);
         Message = markdown.ToSafeText(request.Message).Trim();
         OriginDisplay = markdown.ToSafeText(request.OriginDisplay ?? string.Empty).Trim();
         OpenAuthorizationActionId = request.OpenAuthorizationActionId;
@@ -281,10 +291,27 @@ public sealed class McpElicitationViewModel : ObservableObject
         DeclineCommand = new AsyncCommand(() => ResolveAsync(McpElicitationAction.Decline), () => CanResolve);
         CancelCommand = new AsyncCommand(() => ResolveAsync(McpElicitationAction.Cancel), () => CanResolve);
         OpenAuthorizationCommand = new AsyncCommand(OpenAuthorizationAsync, () => CanOpenAuthorization);
+
+        void AddAnnotation(bool? hint, string trueLabel, string falseLabel, bool destructive = false)
+        {
+            if (hint is not null)
+            {
+                annotations.Add(new McpToolAnnotationViewModel(hint.Value ? trueLabel : falseLabel, destructive && hint.Value));
+            }
+        }
     }
 
     [DataMember]
     public string ServerName { get; }
+
+    [DataMember]
+    public string ToolName { get; }
+
+    [DataMember]
+    public bool HasToolName => ToolName.Length > 0;
+
+    [DataMember]
+    public ObservableCollection<McpToolAnnotationViewModel> ToolAnnotations { get; }
 
     [DataMember]
     public string Message { get; }
@@ -389,6 +416,22 @@ public sealed class McpElicitationViewModel : ObservableObject
         => OpenAuthorization is not null && OpenAuthorizationActionId is not null
             ? OpenAuthorization(OpenAuthorizationActionId)
             : Task.CompletedTask;
+}
+
+[DataContract]
+public sealed class McpToolAnnotationViewModel
+{
+    public McpToolAnnotationViewModel(string label, bool isDestructive)
+    {
+        Label = label;
+        IsDestructive = isDestructive;
+    }
+
+    [DataMember]
+    public string Label { get; }
+
+    [DataMember]
+    public bool IsDestructive { get; }
 }
 
 [DataContract]

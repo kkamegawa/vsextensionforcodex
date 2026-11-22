@@ -1,4 +1,5 @@
 ﻿using System.Collections.Specialized;
+using System.Globalization;
 using System.IO;
 using System.Reflection;
 using System.Runtime.Serialization;
@@ -1792,6 +1793,11 @@ public sealed partial class ViewModelTests
         {
             RequestId = "mcp-1",
             ServerName = "forms",
+            DisplayToolName = "read_file",
+            ReadOnlyHint = true,
+            DestructiveHint = false,
+            IdempotentHint = true,
+            OpenWorldHint = true,
             Kind = McpElicitationKind.Form,
             Message = "Provide values",
             Fields =
@@ -1844,6 +1850,15 @@ public sealed partial class ViewModelTests
             submittedValues = values;
             return Task.CompletedTask;
         }, new SafeMarkdownService());
+
+        Assert.AreEqual("read_file", vm.ToolName);
+        Assert.AreEqual(4, vm.ToolAnnotations.Count);
+        bool isJapanese = CultureInfo.CurrentUICulture.TwoLetterISOLanguageName == "ja";
+        Assert.AreEqual(isJapanese ? "読み取り専用" : "Read-only", vm.ToolAnnotations[0].Label);
+        Assert.AreEqual(isJapanese ? "非破壊的" : "Not destructive", vm.ToolAnnotations[1].Label);
+        Assert.AreEqual(isJapanese ? "冪等" : "Idempotent", vm.ToolAnnotations[2].Label);
+        Assert.AreEqual(isJapanese ? "外部システムにアクセス" : "Accesses external systems", vm.ToolAnnotations[3].Label);
+        Assert.IsFalse(vm.ToolAnnotations[1].IsDestructive, "A false destructive hint must not be styled as a warning.");
 
         Assert.IsFalse(vm.IsResolved);
         Assert.IsTrue(vm.CanAccept);
@@ -3738,6 +3753,31 @@ public sealed partial class ViewModelTests
         Assert.IsFalse(vm.ShowAcceptForThread);
         Assert.IsFalse(vm.ShowAcceptForSession);
         Assert.IsFalse(vm.ShowDecline);
+        Assert.IsTrue(vm.ShowCancel);
+    }
+
+    [TestMethod]
+    public void ApprovalViewModel_HumanCommandShowsOrganizationCheckpointAndOnlyOneTimeActions()
+    {
+        var request = new ApprovalRequest
+        {
+            RequestId = "human-approval",
+            IsHumanCommand = true,
+            DisplayText = "dotnet build",
+            Reason = "Required by organization policy",
+            AvailableDecisions = [ApprovalDecision.Accept, ApprovalDecision.Decline, ApprovalDecision.Cancel],
+        };
+
+        var vm = new ApprovalViewModel(request, (_, _, _) => Task.CompletedTask, new SafeMarkdownService());
+
+        bool isJapanese = CultureInfo.CurrentUICulture.TwoLetterISOLanguageName == "ja";
+        Assert.AreEqual(isJapanese ? "組織ポリシーによる承認が必要です" : "Approval required by your organization", vm.Title);
+        Assert.AreEqual(isJapanese ? "承認" : "Approve", vm.ApproveLabel);
+        Assert.IsTrue(vm.ShowAccept);
+        Assert.IsFalse(vm.ShowAcceptForSession);
+        Assert.IsFalse(vm.ShowAcceptForTurn);
+        Assert.IsFalse(vm.ShowAcceptForThread);
+        Assert.IsTrue(vm.ShowDecline);
         Assert.IsTrue(vm.ShowCancel);
     }
 

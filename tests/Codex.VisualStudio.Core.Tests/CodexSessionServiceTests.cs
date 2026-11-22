@@ -4318,6 +4318,93 @@ public sealed partial class CodexSessionServiceTests
     }
 
     [TestMethod]
+    public async Task HumanCommandApproval_RequiresFreshOneTimeDecisionAndIgnoresSessionChoices()
+    {
+        var connection = new RecordingConnection();
+        await using var service = CreateService();
+        var shown = new List<ApprovalRequest>();
+        service.ApprovalRequested += (request, cancellationToken) =>
+        {
+            shown.Add(request);
+            ResolveApprovalRequest resolution = request.IsHumanCommand
+                ? new ResolveApprovalRequest { RequestId = request.RequestId, Decision = ApprovalDecision.Accept }
+                : request.DisplayText == "dotnet build"
+                    ? new ResolveApprovalRequest
+                    {
+                        RequestId = request.RequestId,
+                        ChoiceId = request.Choices.Single(choice => choice.Label == "Approve for this session").ChoiceId,
+                    }
+                    : new ResolveApprovalRequest { RequestId = request.RequestId, Decision = ApprovalDecision.Accept };
+            return service.ResolveApprovalAsync(
+                resolution,
+                cancellationToken);
+        };
+        await service.InitializeAsync(connection, Options(experimentalApi: true), CancellationToken.None);
+
+        JsonElement initialize = JsonSerializer.SerializeToElement(connection.Requests.Single(request => request.Method == "initialize").Parameters);
+        Assert.IsTrue(initialize.GetProperty("capabilities").GetProperty("requiredHumanApproval").GetBoolean());
+
+        object ApprovalParams(string itemId, string kind) => new
+        {
+            command = "dotnet build",
+            cwd = Options().WorkingDirectory,
+            itemId,
+            threadId = "thread-1",
+            turnId = "turn-1",
+            startedAtMs = 1L,
+            kind,
+            availableDecisions = new[] { "accept", "acceptForSession", "decline", "cancel" },
+        };
+
+        JsonElement priorSessionGrant = await connection.EmitRequestAsync(
+            "ordinary-grant", "item/commandExecution/requestApproval", ApprovalParams("item-grant", "command"));
+        JsonElement checkpoint = await connection.EmitRequestAsync(
+            "human-1", "item/commandExecution/requestApproval", ApprovalParams("item-human", "humanCommand"));
+        JsonElement afterCheckpoint = await connection.EmitRequestAsync(
+            "ordinary-1", "item/commandExecution/requestApproval", new
+            {
+                command = "git status",
+                cwd = Options().WorkingDirectory,
+                itemId = "item-ordinary",
+                threadId = "thread-1",
+                turnId = "turn-2",
+                startedAtMs = 2L,
+                kind = "command",
+            });
+
+        Assert.AreEqual("acceptForSession", priorSessionGrant.GetProperty("decision").GetString());
+        Assert.AreEqual("accept", checkpoint.GetProperty("decision").GetString());
+        Assert.AreEqual("accept", afterCheckpoint.GetProperty("decision").GetString());
+        Assert.AreEqual(3, shown.Count, "A matching existing grant must not auto-approve a checkpoint, and the checkpoint must not create a grant for another command.");
+        Assert.IsFalse(shown[0].IsHumanCommand);
+        Assert.IsTrue(shown[1].IsHumanCommand);
+        CollectionAssert.AreEqual(
+            new[] { ApprovalDecision.Accept, ApprovalDecision.Decline, ApprovalDecision.Cancel },
+            shown[1].AvailableDecisions.ToArray());
+        Assert.AreEqual(0, shown[1].Choices.Count);
+        Assert.IsFalse(shown[2].IsHumanCommand);
+    }
+
+    [TestMethod]
+    public async Task Initialize_OnlyDeclaresRequiredHumanApprovalWithExperimentalApi()
+    {
+        foreach (bool experimentalApi in new[] { false, true })
+        {
+            var connection = new RecordingConnection();
+            await using var service = CreateService();
+            await service.InitializeAsync(connection, Options(experimentalApi: experimentalApi), CancellationToken.None);
+
+            JsonElement initialize = JsonSerializer.SerializeToElement(connection.Requests.Single(request => request.Method == "initialize").Parameters);
+            bool hasCapability = initialize.GetProperty("capabilities").TryGetProperty("requiredHumanApproval", out JsonElement value);
+            Assert.AreEqual(experimentalApi, hasCapability);
+            if (hasCapability)
+            {
+                Assert.IsTrue(value.GetBoolean());
+            }
+        }
+    }
+
+    [TestMethod]
     public async Task UserInputRequest_ParsesQuestionsAndReturnsValidatedSelectedLabel()
     {
         var connection = new RecordingConnection();

@@ -218,6 +218,26 @@ public sealed class InteractionValidationTests
     }
 
     [TestMethod]
+    public void HumanCommandChoices_ExposeOnlyOneTimeUserDecisions()
+    {
+        using JsonDocument request = JsonDocument.Parse("""
+        {"availableDecisions":["accept","acceptForSession","decline","cancel",
+         {"acceptWithExecpolicyAmendment":{"execpolicy_amendment":["allow read"]}}],
+         "proposedExecpolicyAmendment":["allow read"],
+         "proposedNetworkPolicyAmendments":[{"action":"allow","host":"example.test"}]}
+        """);
+        int id = 0;
+
+        Assert.IsTrue(OfferedCommandChoiceSet.TryCreateHumanCommand(request.RootElement, value => value, () => $"human-{++id}", out OfferedCommandChoiceSet? choices));
+        Assert.IsNotNull(choices);
+        CollectionAssert.AreEqual(new[] { "Approve", "Decline", "Cancel" }, choices.Choices.Select(choice => choice.Label).ToArray());
+        Assert.IsFalse(choices.TryResolveDecision("acceptForSession", out _));
+        Assert.IsFalse(choices.TryResolveDecision("acceptWithExecpolicyAmendment", out _));
+        Assert.IsTrue(choices.TryResolve(choices.Choices[0].ChoiceId, out JsonElement response));
+        Assert.AreEqual("accept", response.GetProperty("decision").GetString());
+    }
+
+    [TestMethod]
     public void PermissionSelection_RejectsForgedIdsAndPreservesDenyConstraints()
     {
         using JsonDocument requested = JsonDocument.Parse("""

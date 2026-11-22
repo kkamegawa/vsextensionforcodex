@@ -183,6 +183,51 @@ internal sealed class OfferedCommandChoiceSet
         }
     }
 
+    public static bool TryCreateHumanCommand(
+        JsonElement parameters,
+        Func<string, string> redact,
+        Func<string> newOpaqueId,
+        out OfferedCommandChoiceSet? choiceSet)
+    {
+        choiceSet = null;
+        if (parameters.ValueKind != JsonValueKind.Object
+            || redact is null
+            || newOpaqueId is null
+            || EncodingSize(parameters) > McpElicitationFormParser.MaximumPayloadBytes)
+        {
+            return false;
+        }
+
+        var choices = new List<ApprovalChoice>(3);
+        var decisions = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
+        if (!Add("Approve", "Approve this organization checkpoint once.", "accept")
+            || !Add("Decline", "Decline this organization checkpoint.", "decline")
+            || !Add("Cancel", "Cancel this organization checkpoint.", "cancel"))
+        {
+            return false;
+        }
+        choiceSet = new OfferedCommandChoiceSet(choices, decisions);
+        return true;
+
+        bool Add(string label, string description, string decision)
+        {
+            string choiceId = newOpaqueId();
+            if (string.IsNullOrWhiteSpace(choiceId)
+                || !decisions.TryAdd(choiceId, JsonSerializer.SerializeToElement(new { decision }).Clone()))
+            {
+                return false;
+            }
+
+            choices.Add(new ApprovalChoice
+            {
+                ChoiceId = choiceId,
+                Label = Bound(redact(label) ?? string.Empty),
+                Description = Bound(redact(description) ?? string.Empty),
+            });
+            return true;
+        }
+    }
+
     private static bool TryDescribeDecision(JsonElement decision, Func<string, string> redact, out string label, out string description)
     {
         label = string.Empty;
