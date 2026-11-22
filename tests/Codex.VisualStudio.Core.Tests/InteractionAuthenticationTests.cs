@@ -107,6 +107,65 @@ public sealed class InteractionAuthenticationTests
     }
 
     [TestMethod]
+    public async Task EnterpriseMcpOAuthCompletionUsesOnlyPublicStatusAndRegistration()
+    {
+        const string privateToken = "synthetic-id-token-do-not-project";
+        const string privateHeader = "synthetic-telemetry-header-do-not-project";
+        var connection = EnvironmentIdentityConnection(
+            new { name = "docs", environmentId = "managed" },
+            new { name = "docs", environmentId = "other" });
+        var statuses = new ConcurrentQueue<InteractionAuthStatus>();
+        var events = new ConcurrentQueue<ConversationEvent>();
+        await using var service = CreateService();
+        service.InteractionAuthStatusChanged += (status, _) =>
+        {
+            statuses.Enqueue(status);
+            return Task.CompletedTask;
+        };
+        service.ConversationEventReceived += (value, _) =>
+        {
+            events.Enqueue(value);
+            return Task.CompletedTask;
+        };
+
+        await service.InitializeAsync(connection, Options(experimentalApi: true), CancellationToken.None);
+        McpOAuthLoginStatus pending = await service.StartMcpOAuthLoginAsync(
+            new StartMcpOAuthLoginRequest
+            {
+                ServerName = "docs",
+                ThreadId = "thread-1",
+                HasRegistrationIdentity = true,
+                EnvironmentId = "managed",
+            },
+            CancellationToken.None);
+        Assert.AreEqual(InteractionAuthState.LoginPending, pending.State);
+        Assert.IsNotNull(pending.OpenAuthorizationActionId);
+
+        // A CLI-owned token exchange ends with public status and contains no refresh token.
+        await connection.EmitNotificationAsync("mcpServer/oauthLogin/completed", new
+        {
+            name = "docs",
+            threadId = "thread-1",
+            environmentId = "managed",
+            loginId = "managed",
+            success = true,
+            idToken = privateToken,
+            headers = new { authorization = privateHeader },
+        });
+
+        McpServerAuthStatus completed = statuses.Last().McpServers.Single();
+        Assert.AreEqual(InteractionAuthState.Authenticated, completed.State);
+        Assert.IsNull(completed.OpenAuthorizationActionId);
+        Assert.AreEqual("managed", completed.EnvironmentId);
+        Assert.AreEqual("thread-1", completed.ThreadId);
+        Assert.AreEqual("docs", completed.ServerName);
+        Assert.AreEqual(1, connection.Requests.Count(request => request.Method == "mcpServer/oauth/login"));
+        string projected = JsonSerializer.Serialize(new { Statuses = statuses.ToArray(), Events = events.ToArray() });
+        Assert.IsFalse(projected.Contains(privateToken, StringComparison.Ordinal));
+        Assert.IsFalse(projected.Contains(privateHeader, StringComparison.Ordinal));
+    }
+
+    [TestMethod]
     public async Task McpEnvironmentIdentity_ThreadWideNullIsForwardedAndAmbiguousNameIsRejected()
     {
         var threadWideConnection = EnvironmentIdentityConnection(new { name = "docs", environmentId = (string?)null });
