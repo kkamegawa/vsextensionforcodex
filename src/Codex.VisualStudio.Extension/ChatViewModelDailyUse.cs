@@ -385,7 +385,8 @@ public sealed partial class ChatViewModel
         ChatItemViewModel item,
         ThreadHistoryItem historyItem,
         string threadId,
-        OwnerSnapshot owner)
+        OwnerSnapshot owner,
+        AgentMessageDisplayDecision? agentMessageDisplayDecision)
     {
         item.ApplyTiming(historyItem.StartedAtMs, historyItem.CompletedAtMs);
         if (historyItem.Plan is { } plan
@@ -411,7 +412,7 @@ public sealed partial class ChatViewModel
         }
 
         if (historyItem.Type == "agentMessage"
-            && historyItem.AgentMessageDisplayDecision is { Mode: not AgentMessageDisplayMode.Show })
+            && agentMessageDisplayDecision is { Mode: not AgentMessageDisplayMode.Show })
         {
             item.ReplaceArtifactParts([]);
             return;

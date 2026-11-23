@@ -925,7 +925,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             // owner-scoped state again. Keep the Plan selections aside and restore them only if
             // this recovery reconnects to the validated same target.
             CapturePlanModeForRecovery();
-            ClearOwnerScopedState();
+            ClearOwnerScopedState(preserveAgentDisplayDecisions: true);
             if (uncertainOperations.Length > 0)
             {
                 Items.Add(new ChatItemViewModel(
@@ -1785,7 +1785,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             $"[INTERRUPT] state={diagnostic.State} joined={diagnostic.Joined} recovering={diagnostic.Recovering} goal={diagnostic.Goal} threadMatches={diagnostic.ThreadMatches} hasTurn={diagnostic.HasTurn} localStartKnown={diagnostic.LocalStartKnown} eligible={diagnostic.Eligible}");
     }
 
-    private void ClearOwnerScopedState()
+    private void ClearOwnerScopedState(bool preserveAgentDisplayDecisions = false)
     {
         slashCommandCoordinator.CancelAll();
         CancelFileSuggestionRefresh();
@@ -1805,6 +1805,11 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         skillSelections.Clear();
         agentRawText.Clear();
         pendingAgentRawKeys.Clear();
+        if (!preserveAgentDisplayDecisions)
+        {
+            restrictedAgentDisplayDecisions.Clear();
+            overflowedAgentDisplayDecisionScopes.Clear();
+        }
         completedAgentMessageKeys.Clear();
         completedAgentMessageKeyOrder.Clear();
         itemRawText.Clear();
@@ -3690,7 +3695,6 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
 
     private void MergeHistoryItem(string threadId, ThreadHistoryItem historyItem, OwnerSnapshot owner, bool prepend)
     {
-        RecordHistoryAgentMessageDecision(threadId, historyItem);
         string key = string.Concat(owner.StatePartitionFingerprint, ":", owner.OwnerGeneration, ":", owner.ConnectionGeneration, ":", threadId, ":", historyItem.TurnId, ":", historyItem.Id);
         ChatItemViewModel? existingItem = Items.LastOrDefault(item => string.Equals(item.HistoryKey, key, StringComparison.Ordinal)
             || (string.Equals(item.ThreadId, threadId, StringComparison.Ordinal)
@@ -3700,13 +3704,18 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                 && item.ConnectionGeneration == owner.ConnectionGeneration));
         if (!historyItemKeys.Add(key))
         {
-            if (existingItem is not null
-                && (!existingItem.IsHistoryCompleted
-                    || historyItem.Type == "agentMessage"
-                        && historyItem.AgentMessageDisplayDecision is { Mode: not AgentMessageDisplayMode.Show }))
+            AgentMessageDisplayDecision? decision = existingItem is null
+                ? null
+                : ResolveHistoryAgentMessageDisplayDecision(existingItem, historyItem, owner, threadId);
+            bool incomingRestriction = historyItem.Type == "agentMessage"
+                && decision is { Mode: not AgentMessageDisplayMode.Show };
+            if (existingItem is not null && (!existingItem.IsHistoryCompleted || incomingRestriction))
             {
-                SetHistoryTranscriptText(existingItem, historyItem);
-                ApplyDailyUseHistoryItem(existingItem, historyItem, threadId, owner);
+                SetHistoryTranscriptText(existingItem, historyItem, decision);
+                existingItem.AgentDisplayDecision = decision;
+                existingItem.UsesBufferedAgentMessageDisplay = RequiresBufferedAgentMessageDisplay() && historyItem.Type == "agentMessage";
+                RecordRestrictedAgentDisplayDecision(existingItem, decision);
+                ApplyDailyUseHistoryItem(existingItem, historyItem, threadId, owner, decision);
                 existingItem.HistoryKey = key;
                 existingItem.IsHistoryCompleted = true;
                 TrimHistoryWindow();
@@ -3717,8 +3726,12 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
 
         if (existingItem is not null)
         {
-            SetHistoryTranscriptText(existingItem, historyItem);
-            ApplyDailyUseHistoryItem(existingItem, historyItem, threadId, owner);
+            AgentMessageDisplayDecision? decision = ResolveHistoryAgentMessageDisplayDecision(existingItem, historyItem, owner, threadId);
+            SetHistoryTranscriptText(existingItem, historyItem, decision);
+            existingItem.AgentDisplayDecision = decision;
+            existingItem.UsesBufferedAgentMessageDisplay = RequiresBufferedAgentMessageDisplay() && historyItem.Type == "agentMessage";
+            RecordRestrictedAgentDisplayDecision(existingItem, decision);
+            ApplyDailyUseHistoryItem(existingItem, historyItem, threadId, owner, decision);
             existingItem.HistoryKey = key;
             existingItem.IsHistoryCompleted = true;
             TrimHistoryWindow();
@@ -3735,13 +3748,22 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             _ => ConversationEventKind.ItemCompleted,
         };
         bool missingReasoningSummary = IsMissingReasoningSummary(kind, historyItem.Text);
-        string displayText = missingReasoningSummary ? MissingReasoningSummaryText : GetHistoryDisplayText(historyItem);
+        AgentMessageDisplayDecision? agentMessageDisplayDecision = historyItem.Type == "agentMessage"
+            ? ResolveAgentMessageDisplayDecision(
+                historyItem.AgentMessageDisplayDecision,
+                GetRestrictedAgentDisplayDecision(owner, threadId, historyItem.TurnId, historyItem.Id))
+            : null;
+        string displayText = missingReasoningSummary
+            ? MissingReasoningSummaryText
+            : GetHistoryDisplayText(historyItem, agentMessageDisplayDecision);
         SafeMarkdownRenderResult rendered = markdown.ToSafeTextAndBlocks(displayText);
         var item = new ChatItemViewModel(role, rendered.Text, kind)
         {
             ItemId = historyItem.Id,
             ThreadId = threadId,
             TurnId = historyItem.TurnId,
+            AgentDisplayDecision = agentMessageDisplayDecision,
+            UsesBufferedAgentMessageDisplay = RequiresBufferedAgentMessageDisplay() && historyItem.Type == "agentMessage",
             HistoryKey = key,
             IsHistoryCompleted = true,
             StatePartitionFingerprint = owner.StatePartitionFingerprint,
@@ -3752,12 +3774,13 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         {
             item.UpdateBlocks(rendered.Blocks);
         }
+        RecordRestrictedAgentDisplayDecision(item, agentMessageDisplayDecision);
         if (missingReasoningSummary)
         {
             item.IsCollapsed = false;
         }
 
-        ApplyDailyUseHistoryItem(item, historyItem, threadId, owner);
+        ApplyDailyUseHistoryItem(item, historyItem, threadId, owner, agentMessageDisplayDecision);
         if (prepend)
         {
             Items.Insert(0, item);
@@ -4037,10 +4060,34 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         historyBytes += Encoding.UTF8.GetByteCount(text);
     }
 
-    private void SetHistoryTranscriptText(ChatItemViewModel item, ThreadHistoryItem historyItem)
+    private AgentMessageDisplayDecision? ResolveHistoryAgentMessageDisplayDecision(
+        ChatItemViewModel existingItem,
+        ThreadHistoryItem historyItem,
+        OwnerSnapshot owner,
+        string threadId)
+    {
+        if (historyItem.Type != "agentMessage")
+        {
+            return null;
+        }
+
+        AgentMessageDisplayDecision? decision = ResolveAgentMessageDisplayDecision(
+            existingItem.AgentDisplayDecision,
+            historyItem.AgentMessageDisplayDecision);
+        return ResolveAgentMessageDisplayDecision(
+            decision,
+            GetRestrictedAgentDisplayDecision(owner, threadId, historyItem.TurnId, historyItem.Id));
+    }
+
+    private void SetHistoryTranscriptText(
+        ChatItemViewModel item,
+        ThreadHistoryItem historyItem,
+        AgentMessageDisplayDecision? decision)
     {
         bool missingReasoningSummary = IsMissingReasoningSummary(item.Kind, historyItem.Text);
-        string displayText = missingReasoningSummary ? MissingReasoningSummaryText : GetHistoryDisplayText(historyItem);
+        string displayText = missingReasoningSummary
+            ? MissingReasoningSummaryText
+            : GetHistoryDisplayText(historyItem, decision);
         SafeMarkdownRenderResult rendered = markdown.ToSafeTextAndBlocks(displayText);
         SetTranscriptText(item, rendered.Text);
         if (item.UsesBlockRendering)
@@ -8511,7 +8558,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                 case ConversationEventKind.TurnCompleted:
                     MarkAgentRawTurnConsumed(value);
                     DiscardPendingAgentRawText();
-                    TryDetectChoicePrompt(NotificationOwner(notification));
+                    TryDetectChoicePrompt(NotificationOwner(notification), value.ThreadId, value.TurnId);
                     TryOfferPlanImplementation(value, NotificationOwner(notification));
                     itemRawText.Clear();
                     break;
@@ -9366,7 +9413,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
     // same selection card. The last agent message is checked first; codex often follows its question
     // with status messages ("waiting for your answer"), so earlier messages of the turn are then checked
     // from newest to oldest, accepting only questions that carry their own option lists.
-    private void TryDetectChoicePrompt(OwnerSnapshot owner)
+    private void TryDetectChoicePrompt(OwnerSnapshot owner, string? threadId, string? turnId)
     {
         if (lastAgentRawKey is null)
         {
@@ -9374,9 +9421,8 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         }
 
         string lastKey = lastAgentRawKey;
-        string[] earlierMessages = agentRawText.Entries
+        KeyValuePair<string, StringBuilder>[] earlierMessages = agentRawText.Entries
             .Where(entry => !string.Equals(entry.Key, lastKey, StringComparison.Ordinal))
-            .Select(static entry => entry.Value.ToString())
             .Reverse()
             .ToArray();
         agentRawText.TryGetValue(lastKey, out StringBuilder? builder);
@@ -9385,13 +9431,36 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         pendingAgentRawKeys.Clear();
         lastAgentRawKey = null;
         UserInputRequest synthesized = new();
-        if (ChoicePromptParser.TryParse(raw, out synthesized)
-            || earlierMessages.Any(message => ChoicePromptParser.TryParseOptionQuestions(message, out synthesized)))
+        bool foundPrompt = ChoicePromptParser.TryParse(raw, out synthesized);
+        string? sourceItemId = foundPrompt ? lastKey : null;
+        if (!foundPrompt)
         {
+            foreach (KeyValuePair<string, StringBuilder> entry in earlierMessages)
+            {
+                if (ChoicePromptParser.TryParseOptionQuestions(entry.Value.ToString(), out synthesized))
+                {
+                    sourceItemId = entry.Key;
+                    foundPrompt = true;
+                    break;
+                }
+            }
+        }
+
+        if (foundPrompt)
+        {
+            synthesized.ThreadId = threadId ?? string.Empty;
+            synthesized.TurnId = turnId ?? string.Empty;
+            synthesized.ItemId = sourceItemId;
             EnqueueUserInput(new UserInputViewModel(
                 synthesized,
                 (requestId, answers, action) => ResolveSyntheticUserInputAsync(synthesized, requestId, answers, action, owner),
-                markdown) { IsSynthetic = true });
+                markdown)
+            {
+                IsSynthetic = true,
+                SourceAgentMessageThreadId = threadId,
+                SourceAgentMessageTurnId = turnId,
+                SourceAgentMessageItemId = sourceItemId,
+            });
         }
     }
 
@@ -10024,6 +10093,7 @@ public sealed partial class ChatItemViewModel : ObservableObject
     private long? startedAtMs;
     private long? completedAtMs;
     private bool isCollapsed;
+    private bool usesBufferedAgentMessageDisplay;
     private int commandLineBreakCount;
     private bool commandEndsWithLineBreak;
     private int planDeltaBytes;
@@ -10139,6 +10209,21 @@ public sealed partial class ChatItemViewModel : ObservableObject
     }
 
     internal string? HistoryKey { get; set; }
+
+    internal AgentMessageDisplayDecision? AgentDisplayDecision { get; set; }
+
+    internal bool UsesBufferedAgentMessageDisplay
+    {
+        get => usesBufferedAgentMessageDisplay;
+        set
+        {
+            if (usesBufferedAgentMessageDisplay != value)
+            {
+                usesBufferedAgentMessageDisplay = value;
+                OnPropertyChanged(nameof(TruncationNotice));
+            }
+        }
+    }
 
     internal bool IsHistoryCompleted
     {
@@ -10272,7 +10357,7 @@ public sealed partial class ChatItemViewModel : ObservableObject
     public string TruncationNotice
         => !IsTruncated
             ? string.Empty
-            : string.Equals(Role, "Codex", StringComparison.Ordinal)
+            : UsesBufferedAgentMessageDisplay
                 ? "The response exceeded the display size limit and was shortened."
             : IsCommandItem && string.IsNullOrEmpty(OverflowFile)
             ? "Command output was truncated to the buffered limit."
@@ -10982,6 +11067,12 @@ public sealed class UserInputViewModel : ObservableObject
     // True when synthesized from a detected prose choice (no pending server request); drives
     // ChatViewModel's "send the picked option as the next turn" resolution path.
     public bool IsSynthetic { get; init; }
+
+    internal string? SourceAgentMessageThreadId { get; init; }
+
+    internal string? SourceAgentMessageTurnId { get; init; }
+
+    internal string? SourceAgentMessageItemId { get; init; }
 
     [DataMember]
     public bool IsBlocking { get; }

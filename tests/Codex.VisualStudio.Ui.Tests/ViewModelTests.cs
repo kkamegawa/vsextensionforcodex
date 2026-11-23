@@ -3725,6 +3725,337 @@ public sealed partial class ViewModelTests
     }
 
     [TestMethod]
+    public async Task ChatViewModel_Tier170HistoryAndLiveDisplayDecisionsUseTheMostRestrictiveResult()
+    {
+        const string threadId = "thread-display-conflict";
+        const string turnId = "turn-display-conflict";
+        const string hiddenHistoryBody = "Which deployment target?\n1. Azure\n2. On-premises";
+        const string hiddenLiveBody = "private live answer with a choice?\n1. Secret\n2. Public";
+        var bridge = new FakeWorkerBridge
+        {
+            ListThreadItemsHandler = (_, _) => Task.FromResult(new ThreadItemsPage
+            {
+                Items =
+                [
+                    new ThreadHistoryItem
+                    {
+                        Id = "history-show",
+                        TurnId = turnId,
+                        Type = "agentMessage",
+                        Text = hiddenHistoryBody,
+                        AgentMessageDisplayDecision = new AgentMessageDisplayDecision { Mode = AgentMessageDisplayMode.Show },
+                    },
+                    new ThreadHistoryItem
+                    {
+                        Id = "history-hide",
+                        TurnId = turnId,
+                        Type = "agentMessage",
+                        Text = hiddenHistoryBody,
+                        AgentMessageDisplayDecision = new AgentMessageDisplayDecision
+                        {
+                            Mode = AgentMessageDisplayMode.Hide,
+                            DisplayText = "The earlier history decision remains in force.",
+                        },
+                    },
+                ],
+            }),
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        await bridge.PublishStateAsync(new WorkerStatus
+        {
+            State = WorkerConnectionState.Ready,
+            FeatureTier = CodexFeatureTier.Tier170,
+        });
+        var thread = new ThreadSummary { Id = threadId };
+        vm.Threads.Add(thread);
+        vm.SelectedThread = thread;
+        await WaitForAsync(() => vm.Items.Count(item => item.IsHistoryCompleted) == 2);
+
+        await RaiseConversationEventAsync(vm, new ConversationEvent
+        {
+            Kind = ConversationEventKind.ItemCompleted,
+            ThreadId = threadId,
+            TurnId = turnId,
+            ItemId = "history-show",
+            IsAgentMessage = true,
+            Text = hiddenHistoryBody,
+            AgentMessageDisplayDecision = new AgentMessageDisplayDecision { Mode = AgentMessageDisplayMode.Show },
+        });
+        await RaiseConversationEventAsync(vm, new ConversationEvent
+        {
+            Kind = ConversationEventKind.ItemCompleted,
+            ThreadId = threadId,
+            TurnId = turnId,
+            ItemId = "history-show",
+            IsAgentMessage = true,
+            Text = hiddenHistoryBody,
+            AgentMessageDisplayDecision = new AgentMessageDisplayDecision
+            {
+                Mode = AgentMessageDisplayMode.Block,
+                DisplayText = "The live completion was blocked.",
+            },
+            Parts = [new ArtifactPart { Kind = ArtifactPartKind.Text, Text = hiddenHistoryBody }],
+        });
+        await RaiseConversationEventAsync(vm, new ConversationEvent
+        {
+            Kind = ConversationEventKind.ItemCompleted,
+            ThreadId = threadId,
+            TurnId = turnId,
+            ItemId = "history-hide",
+            IsAgentMessage = true,
+            Text = hiddenLiveBody,
+            AgentMessageDisplayDecision = new AgentMessageDisplayDecision { Mode = AgentMessageDisplayMode.Show },
+        });
+        await RaiseConversationEventAsync(vm, new ConversationEvent
+        {
+            Kind = ConversationEventKind.TurnCompleted,
+            ThreadId = threadId,
+            TurnId = turnId,
+        });
+
+        ChatItemViewModel first = vm.Items.Single(item => item.ItemId == "history-show");
+        ChatItemViewModel second = vm.Items.Single(item => item.ItemId == "history-hide");
+        Assert.AreEqual("The live completion was blocked.", first.Text);
+        Assert.AreEqual(0, first.ArtifactParts.Count, "A restrictive live decision also removes previously visible parts.");
+        Assert.IsFalse(first.Text.Contains(hiddenHistoryBody, StringComparison.Ordinal));
+        Assert.AreEqual("The earlier history decision remains in force.", second.Text);
+        Assert.IsFalse(second.Text.Contains(hiddenLiveBody, StringComparison.Ordinal));
+        Assert.IsNull(vm.ActiveUserInput, "Neither conflicting hidden body may reach choice-prompt detection.");
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_Tier170RestrictiveHistoryRefreshClearsPreviouslyApprovedChoiceText()
+    {
+        const string threadId = "thread-history-restricts-live";
+        const string turnId = "turn-history-restricts-live";
+        const string itemId = "answer-history-restricts-live";
+        const string body = "Which deployment target?\n1. Azure\n2. On-premises";
+        const string replacement = "The refreshed history decision hides this answer.";
+        bool returnRestrictedHistory = false;
+        var bridge = new FakeWorkerBridge
+        {
+            ListThreadItemsHandler = (_, _) => Task.FromResult(new ThreadItemsPage
+            {
+                Items = returnRestrictedHistory
+                    ?
+                    [
+                        new ThreadHistoryItem
+                        {
+                            Id = itemId,
+                            TurnId = turnId,
+                            Type = "agentMessage",
+                            Text = body,
+                            Parts = [new ArtifactPart { Kind = ArtifactPartKind.File, DisplayName = "sensitive-output.txt" }],
+                            AgentMessageDisplayDecision = new AgentMessageDisplayDecision
+                            {
+                                Mode = AgentMessageDisplayMode.Hide,
+                                DisplayText = replacement,
+                            },
+                        },
+                    ]
+                    : [],
+            }),
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        await bridge.PublishStateAsync(new WorkerStatus
+        {
+            State = WorkerConnectionState.Ready,
+            FeatureTier = CodexFeatureTier.Tier170,
+        });
+        var thread = new ThreadSummary { Id = threadId };
+        vm.Threads.Add(thread);
+        vm.SelectedThread = thread;
+        await WaitForAsync(() => vm.HistoryStatusText.StartsWith("Read-only history", StringComparison.Ordinal));
+
+        await RaiseConversationEventAsync(vm, new ConversationEvent
+        {
+            Kind = ConversationEventKind.ItemCompleted,
+            ThreadId = threadId,
+            TurnId = turnId,
+            ItemId = itemId,
+            IsAgentMessage = true,
+            Text = body,
+            AgentMessageDisplayDecision = new AgentMessageDisplayDecision { Mode = AgentMessageDisplayMode.Show },
+            Parts = [new ArtifactPart { Kind = ArtifactPartKind.File, DisplayName = "sensitive-output.txt" }],
+        });
+        await WaitForAsync(() => vm.Items.Any(item => item.ItemId == itemId && item.Text == body));
+        Assert.AreEqual(1, vm.Items.Single(item => item.ItemId == itemId).ArtifactParts.Count);
+
+        await RaiseConversationEventAsync(vm, new ConversationEvent
+        {
+            Kind = ConversationEventKind.TurnCompleted,
+            ThreadId = threadId,
+            TurnId = turnId,
+        });
+        Assert.IsTrue(vm.ActiveUserInput?.IsSynthetic, "The approved live question should create its choice card before history refresh.");
+
+        returnRestrictedHistory = true;
+        MethodInfo refreshMethod = typeof(ChatViewModel).GetMethod("RefreshSelectedHistoryAsync", BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("Could not find RefreshSelectedHistoryAsync.");
+        await (Task)refreshMethod.Invoke(vm, null)!;
+        await WaitForAsync(() => vm.Items.Any(item => item.ItemId == itemId && item.Text == replacement));
+        await WaitForAsync(() => vm.Items.Single(item => item.ItemId == itemId).ArtifactParts.Count == 0);
+        Assert.IsNull(vm.ActiveUserInput, "A restrictive history refresh must remove the choice card created from its earlier live body.");
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_Tier170RememberedRestrictionAppliesAfterTranscriptTrimAndHistoryReload()
+    {
+        const string threadId = "thread-restricted-reload";
+        const string turnId = "turn-restricted-reload";
+        const string itemId = "answer-restricted-reload";
+        const string body = "Which deployment target?\n1. Azure\n2. On-premises";
+        const string replacement = "This answer remains hidden after the transcript reloads.";
+        bool returnShowHistory = false;
+        var bridge = new FakeWorkerBridge
+        {
+            ListThreadItemsHandler = (_, _) => Task.FromResult(new ThreadItemsPage
+            {
+                Items = returnShowHistory
+                    ?
+                    [
+                        new ThreadHistoryItem
+                        {
+                            Id = itemId,
+                            TurnId = turnId,
+                            Type = "agentMessage",
+                            Text = body,
+                            AgentMessageDisplayDecision = new AgentMessageDisplayDecision { Mode = AgentMessageDisplayMode.Show },
+                        },
+                    ]
+                    : [],
+            }),
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        await bridge.PublishStateAsync(new WorkerStatus
+        {
+            State = WorkerConnectionState.Ready,
+            FeatureTier = CodexFeatureTier.Tier170,
+        });
+        var thread = new ThreadSummary { Id = threadId };
+        vm.Threads.Add(thread);
+        vm.SelectedThread = thread;
+        await WaitForAsync(() => vm.HistoryStatusText.StartsWith("Read-only history", StringComparison.Ordinal));
+
+        await RaiseConversationEventAsync(vm, new ConversationEvent
+        {
+            Kind = ConversationEventKind.ItemCompleted,
+            ThreadId = threadId,
+            TurnId = turnId,
+            ItemId = itemId,
+            IsAgentMessage = true,
+            Text = body,
+            AgentMessageDisplayDecision = new AgentMessageDisplayDecision
+            {
+                Mode = AgentMessageDisplayMode.Hide,
+                DisplayText = replacement,
+            },
+        });
+        await WaitForAsync(() => vm.Items.Any(item => item.ItemId == itemId && item.Text == replacement));
+
+        for (int index = 0; index < 1_001; index++)
+        {
+            vm.Items.Add(new ChatItemViewModel("Codex", "history filler", ConversationEventKind.AgentMessageDelta));
+        }
+
+        MethodInfo trimHistory = typeof(ChatViewModel).GetMethod("TrimHistoryWindow", BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("Could not find TrimHistoryWindow.");
+        trimHistory.Invoke(vm, null);
+        Assert.IsFalse(vm.Items.Any(item => item.ItemId == itemId));
+
+        returnShowHistory = true;
+        MethodInfo refreshMethod = typeof(ChatViewModel).GetMethod("RefreshSelectedHistoryAsync", BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("Could not find RefreshSelectedHistoryAsync.");
+        await (Task)refreshMethod.Invoke(vm, null)!;
+        await WaitForAsync(() => vm.Items.Any(item => item.ItemId == itemId && item.Text == replacement));
+
+        await RaiseConversationEventAsync(vm, new ConversationEvent
+        {
+            Kind = ConversationEventKind.ItemCompleted,
+            ThreadId = threadId,
+            TurnId = turnId,
+            ItemId = itemId,
+            IsAgentMessage = true,
+            Text = body,
+            AgentMessageDisplayDecision = new AgentMessageDisplayDecision { Mode = AgentMessageDisplayMode.Show },
+        });
+        await RaiseConversationEventAsync(vm, new ConversationEvent
+        {
+            Kind = ConversationEventKind.TurnCompleted,
+            ThreadId = threadId,
+            TurnId = turnId,
+        });
+
+        Assert.IsFalse(vm.Items.Any(item => item.ItemId == itemId && item.Text == body));
+        Assert.IsNull(vm.ActiveUserInput, "A remembered restrictive decision must survive transcript trimming and suppress choice detection.");
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_Tier170HistoryRestrictionWithMissingItemIdIsScopedToItsTurn()
+    {
+        const string threadId = "thread-overflowed-display-scope";
+        const string privateBody = "private answer from malformed history";
+        const string replacement = "This response was hidden because its display instructions could not be verified.";
+        var bridge = new FakeWorkerBridge
+        {
+            ListThreadItemsHandler = (_, _) => Task.FromResult(new ThreadItemsPage
+            {
+                Items =
+                [
+                    new ThreadHistoryItem
+                    {
+                        TurnId = "missing-item-turn",
+                        Type = "agentMessage",
+                        Text = privateBody,
+                        AgentMessageDisplayDecision = new AgentMessageDisplayDecision
+                        {
+                            Mode = AgentMessageDisplayMode.Hide,
+                            DisplayText = replacement,
+                        },
+                    },
+                    new ThreadHistoryItem
+                    {
+                        Id = "same-turn-answer",
+                        TurnId = "missing-item-turn",
+                        Type = "agentMessage",
+                        Text = privateBody,
+                        AgentMessageDisplayDecision = new AgentMessageDisplayDecision { Mode = AgentMessageDisplayMode.Show },
+                    },
+                    new ThreadHistoryItem
+                    {
+                        Id = "unrelated-answer",
+                        TurnId = "unrelated-turn",
+                        Type = "agentMessage",
+                        Text = "An unrelated public answer.",
+                        AgentMessageDisplayDecision = new AgentMessageDisplayDecision { Mode = AgentMessageDisplayMode.Show },
+                    },
+                ],
+            }),
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        await bridge.PublishStateAsync(new WorkerStatus
+        {
+            State = WorkerConnectionState.Ready,
+            FeatureTier = CodexFeatureTier.Tier170,
+        });
+        var thread = new ThreadSummary { Id = threadId };
+        vm.Threads.Add(thread);
+        vm.SelectedThread = thread;
+
+        await WaitForAsync(() => vm.Items.Count(item => item.IsHistoryCompleted) == 3);
+
+        ChatItemViewModel missingItemId = vm.Items.Single(item => item.TurnId == "missing-item-turn" && string.IsNullOrEmpty(item.ItemId));
+        Assert.AreEqual(replacement, missingItemId.Text);
+        ChatItemViewModel sameTurn = vm.Items.Single(item => item.ItemId == "same-turn-answer");
+        Assert.AreEqual(replacement, sameTurn.Text);
+        Assert.IsFalse(sameTurn.Text.Contains(privateBody, StringComparison.Ordinal));
+        Assert.AreEqual(AgentMessageDisplayMode.Hide, sameTurn.AgentDisplayDecision?.Mode);
+        ChatItemViewModel unrelated = vm.Items.Single(item => item.ItemId == "unrelated-answer");
+        Assert.AreEqual("An unrelated public answer.", unrelated.Text);
+        Assert.AreEqual(AgentMessageDisplayMode.Show, unrelated.AgentDisplayDecision?.Mode);
+    }
+
+    [TestMethod]
     public async Task ChatViewModel_Tier170StaleBridgeConnectionLossPreservesCurrentPendingChoiceUntilCompletion()
     {
         const string threadId = "test-thread";
@@ -4058,6 +4389,33 @@ public sealed partial class ViewModelTests
 
         ChatItemViewModel answer = vm.Items.Single(item => item.ItemId == "truncated-answer");
         Assert.IsTrue(answer.TruncationNotice.Contains("response exceeded the display size limit", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_BaselineTruncatedAnswerKeepsTemporaryFileNotice()
+    {
+        var bridge = new FakeWorkerBridge();
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        await bridge.PublishStateAsync(new WorkerStatus
+        {
+            State = WorkerConnectionState.Ready,
+            FeatureTier = CodexFeatureTier.Baseline,
+        });
+
+        await RaiseConversationEventAsync(vm, new ConversationEvent
+        {
+            Kind = ConversationEventKind.AgentMessageDelta,
+            ThreadId = "baseline-truncated-answer-thread",
+            TurnId = "baseline-truncated-answer-turn",
+            ItemId = "baseline-truncated-answer",
+            IsAgentMessage = true,
+            Text = "Visible answer prefix",
+            Truncated = true,
+            OverflowFile = "answer-overflow.txt",
+        });
+
+        ChatItemViewModel answer = vm.Items.Single(item => item.ItemId == "baseline-truncated-answer");
+        Assert.AreEqual("Output truncated; additional output is stored in a temporary file.", answer.TruncationNotice);
     }
 
     [TestMethod]

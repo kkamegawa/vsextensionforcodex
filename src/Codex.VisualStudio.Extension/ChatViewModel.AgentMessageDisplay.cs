@@ -8,81 +8,330 @@ public sealed partial class ChatViewModel
 {
     private const int MaximumCompletedAgentMessageKeys = 1024;
     private const int MaximumConsumedAgentRawTurnKeys = 1024;
-    private const int MaximumRestrictedAgentMessageKeys = 1024;
+    private const int MaximumRestrictedAgentDisplayDecisions = 4096;
 
     private readonly HashSet<string> pendingAgentRawKeys = new(StringComparer.Ordinal);
     private readonly HashSet<string> completedAgentMessageKeys = new(StringComparer.Ordinal);
     private readonly Queue<string> completedAgentMessageKeyOrder = new();
-    private readonly HashSet<string> restrictedAgentMessageKeys = new(StringComparer.Ordinal);
-    private readonly Queue<string> restrictedAgentMessageKeyOrder = new();
-    private readonly Dictionary<string, string?> restrictedAgentMessageTurnKeys = new(StringComparer.Ordinal);
+    private readonly Dictionary<AgentMessageDisplayIdentity, AgentMessageDisplayDecision> restrictedAgentDisplayDecisions = [];
+    private readonly HashSet<AgentMessageDisplayScope> overflowedAgentDisplayDecisionScopes = [];
     // Keep consumed turn IDs across owner changes so reconnect replay cannot recreate a consumed prompt.
     private readonly HashSet<string> consumedAgentRawTurnKeys = new(StringComparer.Ordinal);
     private readonly Queue<string> consumedAgentRawTurnKeyOrder = new();
 
+    private readonly record struct AgentMessageDisplayScope(string StatePartitionFingerprint, long OwnerGeneration);
+
+    private readonly record struct AgentMessageDisplayIdentity(
+        string StatePartitionFingerprint,
+        long OwnerGeneration,
+        string ThreadId,
+        string TurnId,
+        string ItemId);
+
     private bool RequiresBufferedAgentMessageDisplay()
         => Status.FeatureTier != CodexFeatureTier.Baseline;
 
-    private static string GetHistoryDisplayText(ThreadHistoryItem historyItem)
+    private static string GetHistoryDisplayText(ThreadHistoryItem historyItem, AgentMessageDisplayDecision? decision)
     {
         if (historyItem.Type != "agentMessage")
         {
             return historyItem.Text ?? string.Empty;
         }
 
-        AgentMessageDisplayDecision? decision = historyItem.AgentMessageDisplayDecision;
         return decision is null
             ? historyItem.Text ?? string.Empty
             : decision.GetDisplayText(historyItem.Text) ?? string.Empty;
     }
 
-    private void RecordHistoryAgentMessageDecision(string threadId, ThreadHistoryItem historyItem)
+    private static AgentMessageDisplayDecision? ResolveAgentMessageDisplayDecision(
+        AgentMessageDisplayDecision? current,
+        AgentMessageDisplayDecision? incoming)
     {
-        if (historyItem.Type != "agentMessage"
-            || historyItem.AgentMessageDisplayDecision is not { Mode: not AgentMessageDisplayMode.Show })
+        if (current is null)
+        {
+            return incoming;
+        }
+
+        if (incoming is null)
+        {
+            return current;
+        }
+
+        int currentPriority = GetAgentMessageDisplayPriority(current.Mode);
+        int incomingPriority = GetAgentMessageDisplayPriority(incoming.Mode);
+        if (currentPriority != incomingPriority)
+        {
+            return currentPriority > incomingPriority ? current : incoming;
+        }
+
+        if (currentPriority == 0)
+        {
+            return incoming;
+        }
+
+        string currentText = current.GetDisplayText(null) ?? string.Empty;
+        string incomingText = incoming.GetDisplayText(null) ?? string.Empty;
+        return StringComparer.Ordinal.Compare(currentText, incomingText) <= 0 ? current : incoming;
+    }
+
+    private static int GetAgentMessageDisplayPriority(AgentMessageDisplayMode mode)
+        => mode switch
+        {
+            AgentMessageDisplayMode.Show => 0,
+            AgentMessageDisplayMode.Hide => 1,
+            AgentMessageDisplayMode.Block => 2,
+            AgentMessageDisplayMode.Suppress => 3,
+            _ => 4,
+        };
+
+    private AgentMessageDisplayDecision? GetRestrictedAgentDisplayDecision(
+        OwnerSnapshot owner,
+        string? threadId,
+        string? turnId,
+        string? itemId)
+    {
+        var scope = new AgentMessageDisplayScope(owner.StatePartitionFingerprint ?? string.Empty, owner.OwnerGeneration);
+        if (overflowedAgentDisplayDecisionScopes.Contains(scope))
+        {
+            return new AgentMessageDisplayDecision { Mode = AgentMessageDisplayMode.Suppress };
+        }
+
+        if (string.IsNullOrWhiteSpace(threadId))
+        {
+            return null;
+        }
+
+        AgentMessageDisplayDecision? decision = null;
+        string partition = owner.StatePartitionFingerprint ?? string.Empty;
+        string turnKey = turnId ?? string.Empty;
+        string itemKey = itemId ?? string.Empty;
+        AgentMessageDisplayIdentity[] candidateKeys =
+        [
+            new(partition, owner.OwnerGeneration, threadId, turnKey, itemKey),
+            new(partition, owner.OwnerGeneration, threadId, turnKey, string.Empty),
+            new(partition, owner.OwnerGeneration, threadId, string.Empty, itemKey),
+            new(partition, owner.OwnerGeneration, threadId, string.Empty, string.Empty),
+        ];
+        foreach (AgentMessageDisplayIdentity key in candidateKeys)
+        {
+            if (restrictedAgentDisplayDecisions.TryGetValue(key, out AgentMessageDisplayDecision? candidate))
+            {
+                decision = ResolveAgentMessageDisplayDecision(decision, candidate);
+            }
+        }
+
+        return decision;
+    }
+
+    private void RecordRestrictedAgentDisplayDecision(ChatItemViewModel item, AgentMessageDisplayDecision? decision)
+    {
+        if (decision is not { Mode: not AgentMessageDisplayMode.Show })
         {
             return;
         }
 
-        string key = GetAgentCompletionKey(threadId, historyItem.TurnId, historyItem.Id);
-        if (restrictedAgentMessageKeys.Add(key))
-        {
-            restrictedAgentMessageKeyOrder.Enqueue(key);
-            restrictedAgentMessageTurnKeys[key] = GetAgentRawTurnKey(threadId, historyItem.TurnId);
-            TrimRestrictedAgentMessageKeys();
-        }
-
-        RemoveAgentRaw(historyItem.Id ?? historyItem.TurnId ?? "global-agent-message");
+        string rawKey = !string.IsNullOrWhiteSpace(item.ItemId)
+            ? item.ItemId
+            : item.TurnId ?? "global-agent-message";
+        RemoveAgentRaw(rawKey);
+        RecordRestrictedAgentDisplayDecision(
+            new OwnerSnapshot(item.StatePartitionFingerprint, item.OwnerGeneration, item.ConnectionGeneration),
+            item.ThreadId,
+            item.TurnId,
+            item.ItemId,
+            decision);
     }
 
-    private void TrimRestrictedAgentMessageKeys()
+    private void RecordRestrictedAgentDisplayDecision(
+        OwnerSnapshot owner,
+        string? threadId,
+        string? turnId,
+        string? itemId,
+        AgentMessageDisplayDecision? decision)
     {
-        string? activeTurnKey = GetAgentRawTurnKey(Status.ThreadId, Status.TurnId);
-        int skippedActiveKeys = 0;
-        while (restrictedAgentMessageKeys.Count > MaximumRestrictedAgentMessageKeys
-            && restrictedAgentMessageKeyOrder.Count > 0)
+        if (decision is not { Mode: not AgentMessageDisplayMode.Show })
         {
-            string oldestKey = restrictedAgentMessageKeyOrder.Dequeue();
-            if (!restrictedAgentMessageKeys.Contains(oldestKey))
+            return;
+        }
+
+        threadId = string.IsNullOrWhiteSpace(threadId)
+            ? SelectedThread?.Id ?? Status.ThreadId
+            : threadId;
+        RemoveSyntheticUserInputForAgentMessage(threadId, turnId, itemId);
+
+        var scope = new AgentMessageDisplayScope(owner.StatePartitionFingerprint ?? string.Empty, owner.OwnerGeneration);
+        PruneRestrictedAgentDisplayDecisionsToScope(scope);
+        if (overflowedAgentDisplayDecisionScopes.Contains(scope))
+        {
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(threadId))
+        {
+            MarkAgentDisplayDecisionScopeOverflow(scope);
+            return;
+        }
+
+        var key = new AgentMessageDisplayIdentity(
+            owner.StatePartitionFingerprint ?? string.Empty,
+            owner.OwnerGeneration,
+            threadId,
+            turnId ?? string.Empty,
+            itemId ?? string.Empty);
+        if (restrictedAgentDisplayDecisions.TryGetValue(key, out AgentMessageDisplayDecision? current))
+        {
+            decision = ResolveAgentMessageDisplayDecision(current, decision)!;
+        }
+        else if (restrictedAgentDisplayDecisions.Count >= MaximumRestrictedAgentDisplayDecisions)
+        {
+            MarkAgentDisplayDecisionScopeOverflow(scope);
+            return;
+        }
+
+        restrictedAgentDisplayDecisions[key] = new AgentMessageDisplayDecision
+        {
+            Mode = decision.Mode,
+            DisplayText = decision.DisplayText,
+        };
+
+        ApplyRestrictedAgentDisplayDecisionToVisibleItems(owner, threadId, turnId, itemId, decision);
+        if (string.IsNullOrWhiteSpace(turnId) || string.IsNullOrWhiteSpace(itemId))
+        {
+            agentRawText.Clear();
+            pendingAgentRawKeys.Clear();
+            lastAgentRawKey = null;
+        }
+    }
+
+    private void PruneRestrictedAgentDisplayDecisionsToScope(AgentMessageDisplayScope scope)
+    {
+        foreach (AgentMessageDisplayIdentity identity in restrictedAgentDisplayDecisions.Keys
+            .Where(identity => !string.Equals(identity.StatePartitionFingerprint, scope.StatePartitionFingerprint, StringComparison.Ordinal)
+                || identity.OwnerGeneration != scope.OwnerGeneration)
+            .ToArray())
+        {
+            restrictedAgentDisplayDecisions.Remove(identity);
+        }
+
+        overflowedAgentDisplayDecisionScopes.RemoveWhere(existingScope => existingScope != scope);
+    }
+
+    private void ApplyRestrictedAgentDisplayDecisionToVisibleItems(
+        OwnerSnapshot owner,
+        string threadId,
+        string? turnId,
+        string? itemId,
+        AgentMessageDisplayDecision decision)
+    {
+        foreach (ChatItemViewModel item in Items)
+        {
+            if (!string.Equals(item.Role, "Codex", StringComparison.Ordinal)
+                || !string.Equals(item.StatePartitionFingerprint ?? string.Empty, owner.StatePartitionFingerprint ?? string.Empty, StringComparison.Ordinal)
+                || item.OwnerGeneration != owner.OwnerGeneration
+                || !string.Equals(item.ThreadId, threadId, StringComparison.Ordinal))
             {
                 continue;
             }
 
-            if (string.Equals(restrictedAgentMessageTurnKeys[oldestKey], activeTurnKey, StringComparison.Ordinal))
+            if (!string.IsNullOrWhiteSpace(itemId))
             {
-                restrictedAgentMessageKeyOrder.Enqueue(oldestKey);
-                skippedActiveKeys++;
-                if (skippedActiveKeys >= restrictedAgentMessageKeyOrder.Count)
+                if (!string.Equals(item.ItemId, itemId, StringComparison.Ordinal)
+                    || (!string.IsNullOrWhiteSpace(turnId) && !string.Equals(item.TurnId, turnId, StringComparison.Ordinal)))
                 {
-                    break;
+                    continue;
                 }
-
+            }
+            else if (!string.IsNullOrWhiteSpace(turnId)
+                && !string.Equals(item.TurnId, turnId, StringComparison.Ordinal))
+            {
                 continue;
             }
 
-            restrictedAgentMessageKeys.Remove(oldestKey);
-            restrictedAgentMessageTurnKeys.Remove(oldestKey);
-            skippedActiveKeys = 0;
+            AgentMessageDisplayDecision effectiveDecision = ResolveAgentMessageDisplayDecision(
+                item.AgentDisplayDecision,
+                decision)!;
+            item.AgentDisplayDecision = effectiveDecision;
+            SafeMarkdownRenderResult rendered = markdown.ToSafeTextAndBlocks(
+                effectiveDecision.GetDisplayText(item.Text) ?? string.Empty);
+            SetTranscriptText(item, rendered.Text);
+            if (item.UsesBlockRendering)
+            {
+                item.UpdateBlocks(rendered.Blocks);
+            }
+
+            item.ReplaceArtifactParts([]);
+        }
+    }
+
+    private void RemoveSyntheticUserInputForAgentMessage(string? threadId, string? turnId, string? itemId)
+    {
+        string[] requestIds = PendingInteractions
+            .Where(card => card.UserInput is
+                {
+                    IsSynthetic: true,
+                    SourceAgentMessageThreadId: var sourceThreadId,
+                    SourceAgentMessageTurnId: var sourceTurnId,
+                    SourceAgentMessageItemId: var sourceItemId,
+                }
+                && (string.IsNullOrWhiteSpace(threadId)
+                    || string.Equals(sourceThreadId, threadId, StringComparison.Ordinal))
+                && (string.IsNullOrWhiteSpace(turnId)
+                    || string.Equals(sourceTurnId, turnId, StringComparison.Ordinal))
+                && (string.IsNullOrWhiteSpace(itemId)
+                    || string.Equals(sourceItemId, itemId, StringComparison.Ordinal)))
+            .Select(static card => card.RequestId)
+            .ToArray();
+        foreach (string requestId in requestIds)
+        {
+            RemoveUserInput(requestId);
+        }
+    }
+
+    private void MarkAgentDisplayDecisionScopeOverflow(AgentMessageDisplayScope scope)
+    {
+        if (!overflowedAgentDisplayDecisionScopes.Add(scope))
+        {
+            return;
+        }
+
+        foreach (ChatItemViewModel item in Items)
+        {
+            if (!string.Equals(item.Role, "Codex", StringComparison.Ordinal)
+                || !string.Equals(item.StatePartitionFingerprint ?? string.Empty, scope.StatePartitionFingerprint, StringComparison.Ordinal)
+                || item.OwnerGeneration != scope.OwnerGeneration)
+            {
+                continue;
+            }
+
+            AgentMessageDisplayDecision decision = ResolveAgentMessageDisplayDecision(
+                item.AgentDisplayDecision,
+                new AgentMessageDisplayDecision { Mode = AgentMessageDisplayMode.Suppress })!;
+            item.AgentDisplayDecision = decision;
+            SafeMarkdownRenderResult rendered = markdown.ToSafeTextAndBlocks(decision.GetDisplayText(item.Text) ?? string.Empty);
+            SetTranscriptText(item, rendered.Text);
+            if (item.UsesBlockRendering)
+            {
+                item.UpdateBlocks(rendered.Blocks);
+            }
+
+            item.ReplaceArtifactParts([]);
+        }
+
+        ConnectionTargetSnapshot? target = Status.Target;
+        if (scope.OwnerGeneration == (target?.OwnerGeneration ?? 0)
+            && string.Equals(scope.StatePartitionFingerprint, target?.StatePartitionFingerprint ?? string.Empty, StringComparison.Ordinal))
+        {
+            agentRawText.Clear();
+            pendingAgentRawKeys.Clear();
+            lastAgentRawKey = null;
+            string[] syntheticInputIds = PendingInteractions
+                .Where(static card => card.UserInput?.IsSynthetic == true)
+                .Select(static card => card.RequestId)
+                .ToArray();
+            foreach (string requestId in syntheticInputIds)
+            {
+                RemoveUserInput(requestId);
+            }
         }
     }
 
@@ -98,23 +347,63 @@ public sealed partial class ChatViewModel
         }
 
         bool firstCompletion = MarkAgentMessageCompleted(value);
-        if (!firstCompletion)
+        string agentRawKey = GetAgentRawKey(value);
+        ChatItemViewModel? existing = FindCurrentTranscriptItem(value, notification);
+        OwnerSnapshot owner = NotificationOwner(notification);
+        AgentMessageDisplayDecision? decision = ResolveAgentMessageDisplayDecision(
+            existing?.AgentDisplayDecision,
+            value.AgentMessageDisplayDecision);
+        decision = ResolveAgentMessageDisplayDecision(
+            decision,
+            GetRestrictedAgentDisplayDecision(owner, value.ThreadId, value.TurnId, value.ItemId));
+        bool restrictive = decision is { Mode: not AgentMessageDisplayMode.Show };
+        if (!firstCompletion && !restrictive)
         {
             return;
         }
 
-        string agentRawKey = GetAgentRawKey(value);
-        ChatItemViewModel? existing = FindCurrentTranscriptItem(value, notification);
+        if (!firstCompletion && existing is null)
+        {
+            RecordRestrictedAgentDisplayDecision(owner, value.ThreadId, value.TurnId, value.ItemId, decision);
+            RemoveAgentRaw(agentRawKey);
+            return;
+        }
+
         if (existing?.IsHistoryCompleted == true)
         {
+            bool historyMayDisplayParts = decision is null or { Mode: AgentMessageDisplayMode.Show };
+            if (value.Text is not null || !historyMayDisplayParts)
+            {
+                string? historyDisplayText = decision is null ? value.Text : decision.GetDisplayText(value.Text);
+                SafeMarkdownRenderResult historyRendered = markdown.ToSafeTextAndBlocks(historyDisplayText ?? string.Empty);
+                SetTranscriptText(existing, historyRendered.Text);
+                existing.UpdateBlocks(historyRendered.Blocks);
+            }
+
+            if (!historyMayDisplayParts || value.Parts.Count > 0)
+            {
+                ApplyAgentMessageParts(existing, value, notification, historyMayDisplayParts);
+            }
+
+            existing.AgentDisplayDecision = decision;
+            existing.UsesBufferedAgentMessageDisplay = RequiresBufferedAgentMessageDisplay();
+            RecordRestrictedAgentDisplayDecision(existing, decision);
+            existing.IsTruncated |= value.Truncated;
+            existing.OverflowFile = value.OverflowFile ?? existing.OverflowFile;
+            existing.ApplyTiming(value.StartedAtMs, value.CompletedAtMs);
+
             // Completion keys are bounded. If an old key was evicted, avoid appending an
             // already-approved body again when the completed transcript row is still present.
             bool hasRawText = agentRawText.TryGetValue(agentRawKey, out _);
-            if (!IsAgentRawTurnConsumed(value)
+            if (restrictive)
+            {
+                RemoveAgentRaw(agentRawKey);
+            }
+            else if (!IsAgentRawTurnConsumed(value)
                 && (firstCompletion || pendingAgentRawKeys.Contains(agentRawKey) || !hasRawText))
             {
                 RemoveAgentRaw(agentRawKey);
-                AppendApprovedAgentRaw(agentRawKey, value);
+                AppendApprovedAgentRaw(agentRawKey, value, decision);
             }
 
             return;
@@ -122,10 +411,6 @@ public sealed partial class ChatViewModel
 
         RemoveAgentRaw(agentRawKey);
 
-        string completionKey = GetAgentCompletionKey(value);
-        AgentMessageDisplayDecision? decision = restrictedAgentMessageKeys.Contains(completionKey)
-            ? new AgentMessageDisplayDecision { Mode = AgentMessageDisplayMode.Suppress }
-            : value.AgentMessageDisplayDecision;
         bool mayDisplayParts = decision is null or { Mode: AgentMessageDisplayMode.Show };
         string? displayText = decision is null ? value.Text : decision.GetDisplayText(value.Text);
         if (string.IsNullOrEmpty(displayText) && (!mayDisplayParts || value.Parts.Count == 0))
@@ -134,7 +419,6 @@ public sealed partial class ChatViewModel
         }
 
         SafeMarkdownRenderResult rendered = markdown.ToSafeTextAndBlocks(displayText ?? string.Empty);
-        OwnerSnapshot owner = NotificationOwner(notification);
         string historyKey = string.Concat(
             owner.StatePartitionFingerprint,
             ":",
@@ -154,6 +438,8 @@ public sealed partial class ChatViewModel
                 ItemId = value.ItemId,
                 ThreadId = value.ThreadId,
                 TurnId = value.TurnId,
+                AgentDisplayDecision = decision,
+                UsesBufferedAgentMessageDisplay = RequiresBufferedAgentMessageDisplay(),
                 HistoryKey = historyKey,
                 IsHistoryCompleted = true,
                 StatePartitionFingerprint = owner.StatePartitionFingerprint,
@@ -166,12 +452,16 @@ public sealed partial class ChatViewModel
             item.UpdateBlocks(rendered.Blocks);
             ApplyAgentMessageParts(item, value, notification, mayDisplayParts);
             Items.Add(item);
+            RecordRestrictedAgentDisplayDecision(item, decision);
         }
         else
         {
             SetTranscriptText(existing, rendered.Text);
             existing.UpdateBlocks(rendered.Blocks);
             ApplyAgentMessageParts(existing, value, notification, mayDisplayParts);
+            existing.AgentDisplayDecision = decision;
+            existing.UsesBufferedAgentMessageDisplay = RequiresBufferedAgentMessageDisplay();
+            RecordRestrictedAgentDisplayDecision(existing, decision);
             existing.HistoryKey = historyKey;
             existing.IsHistoryCompleted = true;
             existing.IsTruncated |= value.Truncated;
@@ -179,12 +469,15 @@ public sealed partial class ChatViewModel
             existing.ApplyTiming(value.StartedAtMs, value.CompletedAtMs);
         }
 
-        AppendApprovedAgentRaw(agentRawKey, value);
+        AppendApprovedAgentRaw(agentRawKey, value, decision);
 
         TrimHistoryWindow();
     }
 
-    private void AppendApprovedAgentRaw(string key, ConversationEvent value)
+    private void AppendApprovedAgentRaw(
+        string key,
+        ConversationEvent value,
+        AgentMessageDisplayDecision? decision)
     {
         if (IsAgentRawTurnConsumed(value))
         {
@@ -193,8 +486,7 @@ public sealed partial class ChatViewModel
             return;
         }
 
-        if (!restrictedAgentMessageKeys.Contains(GetAgentCompletionKey(value))
-            && (value.AgentMessageDisplayDecision is null or { Mode: AgentMessageDisplayMode.Show }))
+        if (decision is null or { Mode: AgentMessageDisplayMode.Show })
         {
             if (!string.IsNullOrEmpty(value.Text))
             {

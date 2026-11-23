@@ -757,6 +757,17 @@ public sealed partial class CodexSessionService
             output.IsAgentMessage = true;
             output.PayloadJson = null;
             output.AgentMessageDisplayDecision = ReadAgentMessageDisplayDecision(item, context.FeatureTier);
+            if (output.AgentMessageDisplayDecision is { Mode: not AgentMessageDisplayMode.Show } restrictedDecision)
+            {
+                output.Text = BoundAndRedact(
+                    restrictedDecision.GetDisplayText(null) ?? string.Empty,
+                    MaxCompletedAgentMessageTextBytes);
+                output.Parts = [];
+                output.OverflowFile = null;
+                output.Truncated = false;
+                await EmitForContextAsync(context, output, cancellationToken).ConfigureAwait(false);
+                return;
+            }
         }
 
         if (itemType == "plan" && output.Kind == ConversationEventKind.ItemCompleted)
@@ -781,13 +792,14 @@ public sealed partial class CodexSessionService
             if (text is not null)
             {
                 output.Text = redactor.Redact(text);
+                bool serverTruncated = output.Truncated;
                 bool locallyTruncated = Encoding.UTF8.GetByteCount(rawText!) > MaxCompletedAgentMessageTextBytes;
-                output.Truncated |= locallyTruncated;
+                output.Truncated = serverTruncated || locallyTruncated;
                 output.Parts = [new ArtifactPart
                 {
                     Kind = ArtifactPartKind.Text,
                     Text = output.Text,
-                    IsServerTruncated = output.Truncated,
+                    IsServerTruncated = serverTruncated,
                     IsLocallyTruncated = locallyTruncated,
                 }];
                 output.PayloadJson = null;

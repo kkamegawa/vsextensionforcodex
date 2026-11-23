@@ -829,10 +829,16 @@ public sealed partial class CodexSessionServiceTests
         AgentMessageDisplayDecision hiddenDecision = items[0].AgentMessageDisplayDecision
             ?? throw new AssertFailedException("The hidden-item replacement was not projected.");
         Assert.AreEqual(AgentMessageDisplayMode.Hide, hiddenDecision.Mode);
+        Assert.IsTrue(items[0].Text!.Contains("local emergency services", StringComparison.Ordinal));
+        Assert.IsFalse(items[0].Text!.Contains("private hidden body", StringComparison.Ordinal));
+        Assert.AreEqual(0, items[0].Parts.Count);
         Assert.IsTrue(hiddenDecision.GetDisplayText(items[0].Text)!.Contains("local emergency services", StringComparison.Ordinal));
         Assert.IsFalse(hiddenDecision.GetDisplayText(items[0].Text)!.Contains("private hidden body", StringComparison.Ordinal));
         Assert.IsTrue(items[1].IsAgentMessage);
         Assert.AreEqual(AgentMessageDisplayMode.Block, items[1].AgentMessageDisplayDecision?.Mode);
+        Assert.IsTrue(items[1].Text!.Contains("blocked by moderation", StringComparison.Ordinal));
+        Assert.IsFalse(items[1].Text!.Contains("private blocked body", StringComparison.Ordinal));
+        Assert.AreEqual(0, items[1].Parts.Count);
         Assert.IsNull(items[1].PayloadJson);
         Assert.IsFalse(items[1].AgentMessageDisplayDecision!.GetDisplayText(items[1].Text)!.Contains("private blocked body", StringComparison.Ordinal));
         Assert.IsTrue(items[2].IsAgentMessage);
@@ -842,6 +848,9 @@ public sealed partial class CodexSessionServiceTests
         Assert.AreEqual(AgentMessageDisplayMode.Suppress, items[4].AgentMessageDisplayDecision?.Mode);
         Assert.AreEqual(AgentMessageDisplayMode.Suppress, items[5].AgentMessageDisplayDecision?.Mode);
         Assert.AreEqual(AgentMessageDisplayMode.Suppress, items[6].AgentMessageDisplayDecision?.Mode);
+        Assert.IsTrue(items.All(value => value.Parts.Count == 0), "Restricted assistant events must not retain raw artifact parts.");
+        Assert.IsTrue(items.All(value => value.Text is null
+            || !value.Text.Contains("private ", StringComparison.Ordinal)), "Restricted assistant events must not retain raw bodies.");
         Assert.IsTrue(items.All(value => value.PayloadJson is null), "No completed agent item may retain a raw payload body.");
     }
 
@@ -912,6 +921,7 @@ public sealed partial class CodexSessionServiceTests
         Assert.IsNotNull(completed);
         Assert.AreEqual(StreamingBuffer.CommandOutputLimit, System.Text.Encoding.UTF8.GetByteCount(completed.Text!));
         Assert.IsTrue(completed.Truncated);
+        Assert.IsFalse(completed.Parts.Single().IsServerTruncated);
         Assert.IsTrue(completed.Parts.Single().IsLocallyTruncated);
     }
 
