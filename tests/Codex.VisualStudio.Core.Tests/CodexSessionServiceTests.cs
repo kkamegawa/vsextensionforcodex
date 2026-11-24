@@ -814,7 +814,6 @@ public sealed partial class CodexSessionServiceTests
                 },
             },
         });
-        await Task.Delay(TimeSpan.FromMilliseconds(120));
 
         ConversationEvent[] items = events
             .Where(value => value.Kind == ConversationEventKind.ItemCompleted)

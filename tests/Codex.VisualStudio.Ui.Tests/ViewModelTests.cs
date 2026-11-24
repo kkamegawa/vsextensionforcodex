@@ -1390,10 +1390,12 @@ public sealed partial class ViewModelTests
             IsAgentMessage = true,
             Text = "interrupted private body",
         });
+        Assert.AreEqual(1, GetPrivateDictionaryCount(vm, "agentRawText"), "The private assistant delta should remain buffered until it is approved.");
         Assert.IsFalse(vm.Items.Any(item => item.Text.Contains("interrupted private body", StringComparison.Ordinal)));
 
         MethodInfo lostMethod = typeof(ChatViewModel).GetMethod("HandleConnectionLostAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
         await (Task)lostMethod.Invoke(vm, [bridge, WorkerRecoveryFailureKind.PeerUnresponsive])!;
+        Assert.AreEqual(0, GetPrivateDictionaryCount(vm, "agentRawText"), "Disconnect must discard the buffered private assistant text.");
 
         Assert.IsFalse(vm.Items.Any(item => item.Text.Contains("interrupted private body", StringComparison.Ordinal)));
 
