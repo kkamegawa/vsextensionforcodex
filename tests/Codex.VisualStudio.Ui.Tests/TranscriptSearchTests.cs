@@ -42,7 +42,7 @@ public sealed partial class ViewModelTests
         Assert.AreEqual("match in older", vm.TranscriptSearchResults[0].Text.TrimEnd());
         Assert.AreEqual("match in recent", vm.TranscriptSearchResults[1].Text.TrimEnd());
         Assert.AreSame(vm.TranscriptSearchResults[0], vm.SelectedTranscriptSearchResult);
-        Assert.AreEqual(LocalizedStrings.Format("TranscriptSearch.Matches", 2, 2), vm.TranscriptSearchStatusText);
+        Assert.AreEqual("2 matching conversation items found across 2 items.", vm.TranscriptSearchStatusText);
         CollectionAssert.AreEqual(originalTranscript, vm.Items.ToArray(), "Searching leaves the transcript collection and selection untouched.");
     }
 
@@ -189,7 +189,7 @@ public sealed partial class ViewModelTests
 
         Assert.AreEqual(0, vm.TranscriptSearchResults.Count);
         Assert.IsNull(vm.SelectedTranscriptSearchResult);
-        Assert.AreEqual(LocalizedStrings.Get("TranscriptSearch.Failed"), vm.TranscriptSearchStatusText);
+        Assert.AreEqual("Search failed before the full conversation was read. No partial results are shown; try again.", vm.TranscriptSearchStatusText);
     }
 
     [TestMethod]
