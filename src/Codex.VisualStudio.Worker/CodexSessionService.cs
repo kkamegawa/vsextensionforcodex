@@ -6349,7 +6349,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             return new AgentMessageDisplayDecision
             {
                 Mode = AgentMessageDisplayMode.Hide,
-                DisplayText = "If you may be in immediate danger, contact your local emergency services now. You can also reach out to someone you trust or contact a crisis helpline in your area.",
+                DisplayText = "If you may be in immediate danger, contact your local emergency services now. You can also reach out to someone you trust. Find a crisis helpline in your country at https://findahelpline.com",
             };
         }
 

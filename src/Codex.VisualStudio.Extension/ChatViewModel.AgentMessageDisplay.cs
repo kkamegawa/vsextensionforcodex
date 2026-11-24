@@ -259,6 +259,8 @@ public sealed partial class ChatViewModel
                 item.UpdateBlocks(rendered.Blocks);
             }
 
+            item.IsTruncated = false;
+            item.OverflowFile = null;
             item.ReplaceArtifactParts([]);
         }
     }
@@ -314,6 +316,8 @@ public sealed partial class ChatViewModel
                 item.UpdateBlocks(rendered.Blocks);
             }
 
+            item.IsTruncated = false;
+            item.OverflowFile = null;
             item.ReplaceArtifactParts([]);
         }
 
@@ -388,8 +392,8 @@ public sealed partial class ChatViewModel
             existing.AgentDisplayDecision = decision;
             existing.UsesBufferedAgentMessageDisplay = RequiresBufferedAgentMessageDisplay();
             RecordRestrictedAgentDisplayDecision(existing, decision);
-            existing.IsTruncated |= value.Truncated;
-            existing.OverflowFile = value.OverflowFile ?? existing.OverflowFile;
+            existing.IsTruncated = restrictive ? false : existing.IsTruncated || value.Truncated;
+            existing.OverflowFile = restrictive ? null : value.OverflowFile ?? existing.OverflowFile;
             existing.ApplyTiming(value.StartedAtMs, value.CompletedAtMs);
 
             // Completion keys are bounded. If an old key was evicted, avoid appending an
@@ -445,8 +449,8 @@ public sealed partial class ChatViewModel
                 StatePartitionFingerprint = owner.StatePartitionFingerprint,
                 OwnerGeneration = owner.OwnerGeneration,
                 ConnectionGeneration = owner.ConnectionGeneration,
-                IsTruncated = value.Truncated,
-                OverflowFile = value.OverflowFile,
+                IsTruncated = restrictive ? false : value.Truncated,
+                OverflowFile = restrictive ? null : value.OverflowFile,
             };
             item.ApplyTiming(value.StartedAtMs, value.CompletedAtMs);
             item.UpdateBlocks(rendered.Blocks);
@@ -464,8 +468,8 @@ public sealed partial class ChatViewModel
             RecordRestrictedAgentDisplayDecision(existing, decision);
             existing.HistoryKey = historyKey;
             existing.IsHistoryCompleted = true;
-            existing.IsTruncated |= value.Truncated;
-            existing.OverflowFile = value.OverflowFile ?? existing.OverflowFile;
+            existing.IsTruncated = restrictive ? false : existing.IsTruncated || value.Truncated;
+            existing.OverflowFile = restrictive ? null : value.OverflowFile ?? existing.OverflowFile;
             existing.ApplyTiming(value.StartedAtMs, value.CompletedAtMs);
         }
 

@@ -1148,6 +1148,8 @@ public sealed partial class ViewModelTests
             IsAgentMessage = true,
             AgentMessageDisplayDecision = new AgentMessageDisplayDecision { Mode = AgentMessageDisplayMode.Show },
             Text = hiddenLiveChoice,
+            Truncated = true,
+            OverflowFile = "restricted-history-overflow.txt",
         });
         await bridge.PublishConversationEventAsync(new ConversationEvent
         {
@@ -1160,6 +1162,8 @@ public sealed partial class ViewModelTests
         Assert.IsTrue(hidden.Text.Contains("The answer was replaced with a support message.", StringComparison.Ordinal));
         Assert.IsFalse(hidden.Text.Contains("private historical answer", StringComparison.Ordinal));
         Assert.IsFalse(hidden.Text.Contains(hiddenLiveChoice, StringComparison.Ordinal));
+        Assert.IsFalse(hidden.IsTruncated);
+        Assert.IsNull(hidden.OverflowFile);
         Assert.IsNull(vm.ActiveUserInput, "A Show completion cannot undo the authoritative hidden history decision.");
         ChatItemViewModel invalid = vm.Items.Single(item => item.ItemId == "invalid-answer");
         Assert.IsTrue(invalid.Text.Contains("display instructions could not be verified", StringComparison.Ordinal));
@@ -3579,16 +3583,23 @@ public sealed partial class ViewModelTests
                 ItemId = id,
                 IsAgentMessage = true,
                 Text = original,
+                Truncated = true,
+                OverflowFile = "restricted-answer-overflow.txt",
                 AgentMessageDisplayDecision = decision,
                 Parts = parts ?? Array.Empty<ArtifactPart>(),
             });
 
             ChatItemViewModel item = vm.Items.Single(entry => entry.ItemId == id);
-            Assert.IsTrue(item.Text.Contains(expected, StringComparison.Ordinal));
+            string projected = decision is null ? expected : decision.GetDisplayText(original) ?? string.Empty;
+            string safeExpected = new SafeMarkdownService().ToSafeTextAndBlocks(projected).Text;
+            Assert.IsTrue(item.Text.Contains(safeExpected, StringComparison.Ordinal),
+                $"The approved display for '{id}' did not contain the sanitized expected text. Actual: '{item.Text}' Expected: '{safeExpected}'");
             if (decision is { Mode: not AgentMessageDisplayMode.Show })
             {
                 Assert.IsFalse(item.Text.Contains(original, StringComparison.Ordinal));
                 Assert.AreEqual(0, item.ArtifactParts.Count, "A hidden live item must ignore parts that could contain its original body.");
+                Assert.IsFalse(item.IsTruncated, "A restricted answer must not expose a temporary-file continuation.");
+                Assert.IsNull(item.OverflowFile, "A restricted answer must not retain its temporary file path.");
             }
 
             await RaiseConversationEventAsync(vm, new ConversationEvent

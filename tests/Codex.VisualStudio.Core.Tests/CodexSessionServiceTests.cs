@@ -572,14 +572,14 @@ public sealed partial class CodexSessionServiceTests
         Assert.IsNull(items["null-moderation"].AgentMessageDisplayDecision);
         Assert.IsNull(items["unmoderated"].AgentMessageDisplayDecision);
         Assert.AreEqual(AgentMessageDisplayMode.Hide, items["unmoderated-with-display"].AgentMessageDisplayDecision!.Mode);
-        Assert.IsTrue(items["unmoderated-with-display"].Text!.Contains("local emergency services", StringComparison.Ordinal));
+        StringAssert.Contains(items["unmoderated-with-display"].Text!, "https://findahelpline.com");
         AgentMessageDisplayDecision showDecision = items["show"].AgentMessageDisplayDecision ?? throw new AssertFailedException("The show instruction was not projected.");
         AgentMessageDisplayDecision hideDecision = items["hide"].AgentMessageDisplayDecision ?? throw new AssertFailedException("The hide instruction was not projected.");
         AgentMessageDisplayDecision blockDecision = items["block"].AgentMessageDisplayDecision ?? throw new AssertFailedException("The block instruction was not projected.");
         Assert.AreEqual(AgentMessageDisplayMode.Show, showDecision.Mode);
         Assert.AreEqual("shown answer", showDecision.GetDisplayText(items["show"].Text));
         Assert.AreEqual(AgentMessageDisplayMode.Hide, hideDecision.Mode);
-        Assert.IsTrue(hideDecision.GetDisplayText(items["hide"].Text)!.Contains("local emergency services", StringComparison.Ordinal));
+        StringAssert.Contains(hideDecision.GetDisplayText(items["hide"].Text)!, "https://findahelpline.com");
         Assert.IsFalse(items["hide"].Text!.Contains("hidden answer", StringComparison.Ordinal), "Transcript search receives only display-approved history text.");
         Assert.AreEqual(0, items["hide"].Parts.Count, "Unsupported replacement instructions must suppress associated content parts.");
         Assert.AreEqual(AgentMessageDisplayMode.Suppress, items["annotated-show"].AgentMessageDisplayDecision!.Mode);
@@ -829,10 +829,11 @@ public sealed partial class CodexSessionServiceTests
         AgentMessageDisplayDecision hiddenDecision = items[0].AgentMessageDisplayDecision
             ?? throw new AssertFailedException("The hidden-item replacement was not projected.");
         Assert.AreEqual(AgentMessageDisplayMode.Hide, hiddenDecision.Mode);
-        Assert.IsTrue(items[0].Text!.Contains("local emergency services", StringComparison.Ordinal));
+        const string wellbeingReplacement = "If you may be in immediate danger, contact your local emergency services now. You can also reach out to someone you trust. Find a crisis helpline in your country at https://findahelpline.com";
+        Assert.AreEqual(wellbeingReplacement, items[0].Text);
         Assert.IsFalse(items[0].Text!.Contains("private hidden body", StringComparison.Ordinal));
         Assert.AreEqual(0, items[0].Parts.Count);
-        Assert.IsTrue(hiddenDecision.GetDisplayText(items[0].Text)!.Contains("local emergency services", StringComparison.Ordinal));
+        Assert.AreEqual(wellbeingReplacement, hiddenDecision.GetDisplayText(items[0].Text));
         Assert.IsFalse(hiddenDecision.GetDisplayText(items[0].Text)!.Contains("private hidden body", StringComparison.Ordinal));
         Assert.IsTrue(items[1].IsAgentMessage);
         Assert.AreEqual(AgentMessageDisplayMode.Block, items[1].AgentMessageDisplayDecision?.Mode);
