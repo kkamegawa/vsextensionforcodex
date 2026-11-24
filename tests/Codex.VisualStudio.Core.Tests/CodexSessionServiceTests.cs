@@ -4386,6 +4386,151 @@ public sealed partial class CodexSessionServiceTests
     }
 
     [TestMethod]
+    public async Task HumanCommandKindOnFileChangeUsesOrdinaryApprovalCard()
+    {
+        var connection = new RecordingConnection();
+        await using var service = CreateService();
+        var shown = new List<ApprovalRequest>();
+        service.ApprovalRequested += (request, cancellationToken) =>
+        {
+            shown.Add(request);
+            return service.ResolveApprovalAsync(
+                new ResolveApprovalRequest { RequestId = request.RequestId, Decision = ApprovalDecision.Accept },
+                cancellationToken);
+        };
+        await service.InitializeAsync(connection, Options(experimentalApi: true), CancellationToken.None);
+
+        JsonElement response = await connection.EmitRequestAsync(
+            "file-kind", "item/fileChange/requestApproval", new
+            {
+                command = "git diff",
+                cwd = Options().WorkingDirectory,
+                itemId = "file-item",
+                threadId = "thread-1",
+                turnId = "turn-1",
+                startedAtMs = 1L,
+                kind = "humanCommand",
+            });
+
+        Assert.AreEqual("accept", response.GetProperty("decision").GetString());
+        ApprovalRequest request = shown.Single();
+        Assert.IsFalse(request.IsHumanCommand);
+        Assert.IsTrue(request.Choices.Any(choice => choice.Label == "Approve this command"));
+        Assert.IsFalse(request.Choices.Any(choice => choice.Label == "Approve"));
+    }
+
+    [TestMethod]
+    public async Task HumanCommandApproval_RejectsBlankCommandsAndDeclinesHiddenPermissions()
+    {
+        var connection = new RecordingConnection();
+        await using var service = CreateService();
+        int shown = 0;
+        service.ApprovalRequested += (request, cancellationToken) =>
+        {
+            shown++;
+            return service.ResolveApprovalAsync(
+                new ResolveApprovalRequest { RequestId = request.RequestId, Decision = ApprovalDecision.Accept },
+                cancellationToken);
+        };
+        await service.InitializeAsync(connection, Options(experimentalApi: true), CancellationToken.None);
+        object Parameters(string command, object? additionalPermissions = null) => new
+        {
+            command,
+            cwd = Options().WorkingDirectory,
+            itemId = Guid.NewGuid().ToString("N"),
+            threadId = "thread-1",
+            turnId = "turn-1",
+            startedAtMs = 1L,
+            kind = "humanCommand",
+            additionalPermissions,
+        };
+
+        JsonRpcRemoteException invalid = await Assert.ThrowsExactlyAsync<JsonRpcRemoteException>(() => connection.EmitRequestAsync(
+            "blank-human-command", "item/commandExecution/requestApproval", Parameters("  ")));
+        Assert.AreEqual(-32602, invalid.Code);
+
+        JsonElement declined = await connection.EmitRequestAsync(
+            "hidden-human-permissions", "item/commandExecution/requestApproval",
+            Parameters("dotnet build", new { network = new { enabled = true } }));
+
+        Assert.AreEqual("decline", declined.GetProperty("decision").GetString());
+        Assert.AreEqual(0, shown, "An unshown command or permission request must never reach the approval card.");
+    }
+
+    [TestMethod]
+    public async Task UnknownApprovalKindCannotUseSessionGrantButWriteStdinCan()
+    {
+        var connection = new RecordingConnection();
+        await using var service = CreateService();
+        var shown = new List<ApprovalRequest>();
+        service.ApprovalRequested += (request, cancellationToken) =>
+        {
+            shown.Add(request);
+            ResolveApprovalRequest resolution = request.Choices.Any(choice => choice.Label == "Approve for this session")
+                ? new ResolveApprovalRequest
+                {
+                    RequestId = request.RequestId,
+                    ChoiceId = request.Choices.Single(choice => choice.Label == "Approve for this session").ChoiceId,
+                }
+                : new ResolveApprovalRequest { RequestId = request.RequestId, Decision = ApprovalDecision.Accept };
+            return service.ResolveApprovalAsync(resolution, cancellationToken);
+        };
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        object WriteStdin(string turnId) => new
+        {
+            command = "dotnet build",
+            cwd = Options().WorkingDirectory,
+            itemId = Guid.NewGuid().ToString("N"),
+            threadId = "thread-1",
+            turnId,
+            startedAtMs = 1L,
+            kind = "writeStdin",
+            availableDecisions = new[] { "accept", "acceptForSession", "decline", "cancel" },
+        };
+
+        JsonElement firstWriteStdin = await connection.EmitRequestAsync(
+            "write-stdin-1", "item/commandExecution/requestApproval", WriteStdin("turn-1"));
+        JsonElement reusedWriteStdin = await connection.EmitRequestAsync(
+            "write-stdin-2", "item/commandExecution/requestApproval", WriteStdin("turn-2"));
+        JsonElement commandWithExtraPermissions = await connection.EmitRequestAsync(
+            "command-with-permissions", "item/commandExecution/requestApproval", new
+            {
+                command = "npm test",
+                cwd = Options().WorkingDirectory,
+                itemId = Guid.NewGuid().ToString("N"),
+                threadId = "thread-1",
+                turnId = "turn-3",
+                startedAtMs = 1L,
+                kind = "command",
+                availableDecisions = new[] { "accept", "acceptForSession", "decline", "cancel" },
+                additionalPermissions = new { network = new { enabled = true } },
+            });
+        JsonElement unknown = await connection.EmitRequestAsync(
+            "unknown-kind", "item/commandExecution/requestApproval", new
+            {
+                command = "dotnet build",
+                cwd = Options().WorkingDirectory,
+                itemId = Guid.NewGuid().ToString("N"),
+                threadId = "thread-1",
+                turnId = "turn-4",
+                startedAtMs = 1L,
+                kind = new { futureKind = true },
+                availableDecisions = new[] { "accept", "acceptForSession", "decline", "cancel" },
+            });
+
+        Assert.AreEqual("acceptForSession", firstWriteStdin.GetProperty("decision").GetString());
+        Assert.AreEqual("acceptForSession", reusedWriteStdin.GetProperty("decision").GetString());
+        Assert.AreEqual("acceptForSession", commandWithExtraPermissions.GetProperty("decision").GetString());
+        Assert.AreEqual("accept", unknown.GetProperty("decision").GetString());
+        Assert.AreEqual(3, shown.Count, "writeStdin reuses its grant; known command and unknown kind requests both prompt.");
+        Assert.IsTrue(shown[1].AvailableDecisions.Contains(ApprovalDecision.AcceptForSession));
+        Assert.IsTrue(shown[1].Choices.Any(choice => choice.Label == "Approve for this session"));
+        Assert.IsFalse(shown[2].AvailableDecisions.Contains(ApprovalDecision.AcceptForSession));
+        Assert.IsFalse(shown[2].Choices.Any(choice => choice.Label == "Approve for this session"));
+    }
+
+    [TestMethod]
     public async Task Initialize_OnlyDeclaresRequiredHumanApprovalWithExperimentalApi()
     {
         foreach (bool experimentalApi in new[] { false, true })

@@ -1885,6 +1885,23 @@ public sealed partial class ViewModelTests
     }
 
     [TestMethod]
+    public void McpElicitation_DescribesClosedInteractionDomainWithoutPromisingNoExternalAccess()
+    {
+        var vm = new McpElicitationViewModel(
+            new McpElicitationRequest
+            {
+                RequestId = "mcp-closed",
+                ServerName = "database",
+                OpenWorldHint = false,
+            },
+            (_, _, _) => Task.CompletedTask,
+            new SafeMarkdownService());
+
+        bool isJapanese = CultureInfo.CurrentUICulture.TwoLetterISOLanguageName == "ja";
+        Assert.AreEqual(isJapanese ? "閉じた操作範囲" : "Closed interaction domain", vm.ToolAnnotations.Single().Label);
+    }
+
+    [TestMethod]
     public async Task McpAuthPresentation_NotifiesDismissabilityAndRetiresStaleOperationIds()
     {
         string? dismissedOperationId = null;

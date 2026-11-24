@@ -235,6 +235,55 @@ public sealed class InteractionValidationTests
         Assert.IsFalse(choices.TryResolveDecision("acceptWithExecpolicyAmendment", out _));
         Assert.IsTrue(choices.TryResolve(choices.Choices[0].ChoiceId, out JsonElement response));
         Assert.AreEqual("accept", response.GetProperty("decision").GetString());
+        CollectionAssert.AreEqual(
+            new[] { ApprovalDecision.Accept, ApprovalDecision.Decline, ApprovalDecision.Cancel },
+            choices.AvailableDecisions.ToArray());
+    }
+
+    [TestMethod]
+    public void HumanCommandChoices_IntersectOnlyDecisionsOfferedByServer()
+    {
+        using JsonDocument request = JsonDocument.Parse("""
+        {"availableDecisions":["cancel","acceptForSession","accept","decline"]}
+        """);
+        int id = 0;
+
+        Assert.IsTrue(OfferedCommandChoiceSet.TryCreateHumanCommand(
+            request.RootElement, value => value, () => $"human-{++id}", out OfferedCommandChoiceSet? choices));
+        Assert.IsNotNull(choices);
+        CollectionAssert.AreEqual(new[] { "Cancel", "Approve", "Decline" }, choices.Choices.Select(choice => choice.Label).ToArray());
+        CollectionAssert.AreEqual(
+            new[] { ApprovalDecision.Cancel, ApprovalDecision.Accept, ApprovalDecision.Decline },
+            choices.AvailableDecisions.ToArray());
+        Assert.IsFalse(choices.TryResolveDecision("acceptForSession", out _));
+    }
+
+    [TestMethod]
+    public void HumanCommandChoices_RejectWhenServerOffersNoOneTimeDecision()
+    {
+        using JsonDocument request = JsonDocument.Parse("""
+        {"availableDecisions":["acceptForSession"]}
+        """);
+        Assert.IsFalse(OfferedCommandChoiceSet.TryCreateHumanCommand(
+            request.RootElement, value => value, () => "human-1", out _));
+    }
+
+    [TestMethod]
+    public void OrdinaryApprovalChoices_OmitSessionApprovalForUnknownKind()
+    {
+        using JsonDocument request = JsonDocument.Parse("""
+        {"kind":{"future":true},"availableDecisions":["accept","acceptForSession","decline","cancel"]}
+        """);
+        int id = 0;
+
+        Assert.IsTrue(OfferedCommandChoiceSet.TryCreate(
+            request.RootElement, value => value, () => $"choice-{++id}", out OfferedCommandChoiceSet? choices,
+            allowSessionApproval: false));
+        Assert.IsNotNull(choices);
+        Assert.IsFalse(choices.TryResolveDecision("acceptForSession", out _));
+        CollectionAssert.AreEqual(
+            new[] { "Approve this command", "Decline", "Cancel turn" },
+            choices.Choices.Select(choice => choice.Label).ToArray());
     }
 
     [TestMethod]

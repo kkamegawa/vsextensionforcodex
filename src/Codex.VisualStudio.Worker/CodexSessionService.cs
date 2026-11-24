@@ -4489,25 +4489,42 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
 
         ValidateApprovalParameters(method, parameters);
 
+        if (IsHumanCommandRequest(method, parameters) && HasUnshownHumanCommandPermissions(parameters))
+        {
+            // These permissions are not shown on the organization checkpoint card. Decline until
+            // the UI can present an accurate, redacted summary before offering approval.
+            return ApprovalResponse("decline");
+        }
+
         ApprovalRequest request = CreateApprovalRequest(requestId, method, parameters);
         if (request.IsPolicyBlocked)
         {
             return ApprovalResponse("decline");
         }
 
-        bool isHumanCommand = string.Equals(GetString(parameters, "kind"), "humanCommand", StringComparison.Ordinal);
+        bool isHumanCommand = request.IsHumanCommand;
         if (!(isHumanCommand
                 ? OfferedCommandChoiceSet.TryCreateHumanCommand(parameters, value => redactor.Redact(value) ?? string.Empty,
                     static () => Guid.NewGuid().ToString("N"), out OfferedCommandChoiceSet? choices)
                 : OfferedCommandChoiceSet.TryCreate(parameters, value => redactor.Redact(value) ?? string.Empty,
-                    static () => Guid.NewGuid().ToString("N"), out choices))
+                    static () => Guid.NewGuid().ToString("N"), out choices,
+                    allowSessionApproval: CanOfferSessionApproval(parameters)))
             || choices is null)
         {
             throw new JsonRpcRemoteException(-32602, "The command-approval choices are invalid.");
         }
 
         request.Choices = isHumanCommand ? Array.Empty<ApprovalChoice>() : choices.Choices;
-        request.IsHumanCommand = isHumanCommand;
+        if (isHumanCommand)
+        {
+            request.AvailableDecisions = choices.AvailableDecisions;
+        }
+        else if (!CanOfferSessionApproval(parameters))
+        {
+            request.AvailableDecisions = request.AvailableDecisions
+                .Where(decision => decision != ApprovalDecision.AcceptForSession)
+                .ToArray();
+        }
         if (!isHumanCommand
             && CanReuseSessionApproval(parameters)
             && context.ApprovalGrants.FindApproval(request) is { Scope: ApprovalScope.Session } sessionGrant
@@ -7808,6 +7825,13 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             {
                 throw new JsonRpcRemoteException(-32602, "Approval request requires startedAtMs.");
             }
+
+            if (IsHumanCommandRequest(method, parameters)
+                && (!HasString(parameters, "command")
+                    || string.IsNullOrWhiteSpace(GetString(parameters, "command"))))
+            {
+                throw new JsonRpcRemoteException(-32602, "Human-command approval requires a nonblank command.");
+            }
         }
         else if (method == "item/permissions/requestApproval"
             && (!HasString(parameters, "cwd")
@@ -7883,6 +7907,24 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             or "item/fileChange/requestApproval"
             or "item/permissions/requestApproval";
 
+    private static bool IsHumanCommandRequest(string method, JsonElement parameters)
+        => method == "item/commandExecution/requestApproval"
+            && string.Equals(GetString(parameters, "kind"), "humanCommand", StringComparison.Ordinal);
+
+    private static bool HasUnshownHumanCommandPermissions(JsonElement parameters)
+    {
+        foreach (string name in new[] { "additionalPermissions", "proposedExecpolicyAmendment", "proposedNetworkPolicyAmendments" })
+        {
+            if (parameters.TryGetProperty(name, out JsonElement value)
+                && value.ValueKind is not (JsonValueKind.Null or JsonValueKind.Undefined))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     private static bool CanReuseSessionApproval(JsonElement parameters)
     {
         if (parameters.ValueKind != JsonValueKind.Object)
@@ -7890,7 +7932,23 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             return false;
         }
 
-        string? kind = GetString(parameters, "kind");
+        string? kind = null;
+        if (parameters.TryGetProperty("kind", out JsonElement kindValue))
+        {
+            if (kindValue.ValueKind == JsonValueKind.Null)
+            {
+                kind = null;
+            }
+            else if (kindValue.ValueKind == JsonValueKind.String)
+            {
+                kind = kindValue.GetString();
+            }
+            else
+            {
+                return false;
+            }
+        }
+
         if (kind is not (null or "command" or "writeStdin"))
         {
             return false;
@@ -7907,6 +7965,25 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         }
 
         return true;
+    }
+
+    private static bool CanOfferSessionApproval(JsonElement parameters)
+    {
+        if (parameters.ValueKind != JsonValueKind.Object
+            || !parameters.TryGetProperty("kind", out JsonElement kindValue)
+            || kindValue.ValueKind == JsonValueKind.Null)
+        {
+            return parameters.ValueKind == JsonValueKind.Object;
+        }
+
+        if (kindValue.ValueKind != JsonValueKind.String)
+        {
+            return false;
+        }
+
+        // A method-qualified humanCommand uses its separate one-time-only path. If that kind
+        // appears on another approval method, it remains an ordinary known-kind request.
+        return kindValue.GetString() is null or "command" or "writeStdin" or "humanCommand";
     }
 
     // The empty ToolRequestUserInputResponse used for cancel, timeout, and refused requests.

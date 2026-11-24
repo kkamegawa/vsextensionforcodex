@@ -279,7 +279,7 @@ public sealed class McpElicitationViewModel : ObservableObject
             isJapanese ? "非破壊的" : "Not destructive", destructive: true);
         AddAnnotation(request.IdempotentHint, isJapanese ? "冪等" : "Idempotent", isJapanese ? "非冪等" : "Not idempotent");
         AddAnnotation(request.OpenWorldHint, isJapanese ? "外部システムにアクセス" : "Accesses external systems",
-            isJapanese ? "外部システムへのアクセスなし" : "No external system access");
+            isJapanese ? "閉じた操作範囲" : "Closed interaction domain");
         ToolAnnotations = new ObservableCollection<McpToolAnnotationViewModel>(annotations);
         Message = markdown.ToSafeText(request.Message).Trim();
         OriginDisplay = markdown.ToSafeText(request.OriginDisplay ?? string.Empty).Trim();

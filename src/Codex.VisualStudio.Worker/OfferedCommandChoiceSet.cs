@@ -9,13 +9,19 @@ internal sealed class OfferedCommandChoiceSet
     private const int MaximumAmendmentEntries = 256;
     private readonly Dictionary<string, JsonElement> decisions;
 
-    private OfferedCommandChoiceSet(List<ApprovalChoice> choices, Dictionary<string, JsonElement> decisions)
+    private OfferedCommandChoiceSet(
+        List<ApprovalChoice> choices,
+        Dictionary<string, JsonElement> decisions,
+        IReadOnlyList<ApprovalDecision>? availableDecisions = null)
     {
         Choices = choices;
         this.decisions = decisions;
+        AvailableDecisions = availableDecisions ?? Array.Empty<ApprovalDecision>();
     }
 
     public IReadOnlyList<ApprovalChoice> Choices { get; }
+
+    public IReadOnlyList<ApprovalDecision> AvailableDecisions { get; }
 
     public bool TryResolve(string? choiceId, out JsonElement response)
     {
@@ -50,7 +56,8 @@ internal sealed class OfferedCommandChoiceSet
         JsonElement parameters,
         Func<string, string> redact,
         Func<string> newOpaqueId,
-        out OfferedCommandChoiceSet? choiceSet)
+        out OfferedCommandChoiceSet? choiceSet,
+        bool allowSessionApproval = true)
     {
         choiceSet = null;
         if (parameters.ValueKind != JsonValueKind.Object
@@ -75,6 +82,13 @@ internal sealed class OfferedCommandChoiceSet
 
             foreach (JsonElement offered in availableDecisions.EnumerateArray())
             {
+                if (!allowSessionApproval
+                    && offered.ValueKind == JsonValueKind.String
+                    && string.Equals(offered.GetString(), "acceptForSession", StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
                 if (!TryDescribeDecision(offered, redact, out string label, out string description)
                     || !TryAdd(label, AddPermissionContext(description), offered))
                 {
@@ -85,7 +99,8 @@ internal sealed class OfferedCommandChoiceSet
         else
         {
             if (!TryAdd("Approve this command", AddPermissionContext("Run the command once."), JsonSerializer.SerializeToElement("accept"))
-                || !TryAdd("Approve for this session", AddPermissionContext("Run this command and allow session-scoped approval reuse."), JsonSerializer.SerializeToElement("acceptForSession"))
+                || (allowSessionApproval
+                    && !TryAdd("Approve for this session", AddPermissionContext("Run this command and allow session-scoped approval reuse."), JsonSerializer.SerializeToElement("acceptForSession")))
                 || !TryAdd("Decline", "Decline the command and let the turn continue.", JsonSerializer.SerializeToElement("decline"))
                 || !TryAdd("Cancel turn", "Decline the command and interrupt the turn.", JsonSerializer.SerializeToElement("cancel")))
             {
@@ -152,6 +167,11 @@ internal sealed class OfferedCommandChoiceSet
             }
         }
 
+        if (choices.Count == 0)
+        {
+            return false;
+        }
+
         choiceSet = new OfferedCommandChoiceSet(choices, decisions);
         return true;
 
@@ -200,31 +220,87 @@ internal sealed class OfferedCommandChoiceSet
 
         var choices = new List<ApprovalChoice>(3);
         var decisions = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
-        if (!Add("Approve", "Approve this organization checkpoint once.", "accept")
-            || !Add("Decline", "Decline this organization checkpoint.", "decline")
-            || !Add("Cancel", "Cancel this organization checkpoint.", "cancel"))
+        var available = new List<ApprovalDecision>(3);
+        bool choiceCreationFailed = false;
+        if (!parameters.TryGetProperty("availableDecisions", out JsonElement offeredDecisions)
+            || offeredDecisions.ValueKind == JsonValueKind.Null)
+        {
+            Add("accept");
+            Add("decline");
+            Add("cancel");
+        }
+        else
+        {
+            if (offeredDecisions.ValueKind != JsonValueKind.Array
+                || offeredDecisions.GetArrayLength() is < 1 or > MaximumChoices)
+            {
+                return false;
+            }
+
+            foreach (JsonElement offered in offeredDecisions.EnumerateArray())
+            {
+                if (offered.ValueKind == JsonValueKind.String)
+                {
+                    Add(offered.GetString());
+                }
+                else if (offered.ValueKind != JsonValueKind.Object)
+                {
+                    return false;
+                }
+            }
+        }
+
+        if (choiceCreationFailed || available.Count == 0)
         {
             return false;
         }
-        choiceSet = new OfferedCommandChoiceSet(choices, decisions);
+        choiceSet = new OfferedCommandChoiceSet(choices, decisions, available);
         return true;
 
-        bool Add(string label, string description, string decision)
+        void Add(string? decision)
         {
+            string? label = decision switch
+            {
+                "accept" => "Approve",
+                "decline" => "Decline",
+                "cancel" => "Cancel",
+                _ => null,
+            };
+            if (choiceCreationFailed || label is null || available.Contains(decision switch
+                {
+                    "accept" => ApprovalDecision.Accept,
+                    "decline" => ApprovalDecision.Decline,
+                    _ => ApprovalDecision.Cancel,
+                }))
+            {
+                return;
+            }
+
             string choiceId = newOpaqueId();
             if (string.IsNullOrWhiteSpace(choiceId)
                 || !decisions.TryAdd(choiceId, JsonSerializer.SerializeToElement(new { decision }).Clone()))
             {
-                return false;
+                choiceCreationFailed = true;
+                return;
             }
 
             choices.Add(new ApprovalChoice
             {
                 ChoiceId = choiceId,
                 Label = Bound(redact(label) ?? string.Empty),
-                Description = Bound(redact(description) ?? string.Empty),
+                Description = Bound(redact(decision switch
+                {
+                    "accept" => "Approve this organization checkpoint once.",
+                    "decline" => "Decline this organization checkpoint.",
+                    _ => "Cancel this organization checkpoint.",
+                }) ?? string.Empty),
             });
-            return true;
+            available.Add(decision switch
+            {
+                "accept" => ApprovalDecision.Accept,
+                "decline" => ApprovalDecision.Decline,
+                _ => ApprovalDecision.Cancel,
+            });
         }
     }
 

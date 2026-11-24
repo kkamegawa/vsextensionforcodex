@@ -150,7 +150,7 @@ Worker はペイロードを JSON 要素として読み取るため、Worker が
 
 **利用条件:** `Baseline`。組織のチェックポイントには `experimentalApi` が必要です。
 
-- **MCP ツールの承認:** MCP ツール呼び出しの `mcpServer/elicitation/request` には `_meta.tool_name` と `_meta.tool_annotations` が含まれます(openai/codex#58161)。`tool_annotations` には真偽値 `readOnlyHint`、`destructiveHint`、`idempotentHint`、`openWorldHint` が含まれることがあり、含まれないヒントは不明として扱います。カードはサーバー名とツール名をタイトルにし、その下に「読み取り専用」「破壊的」「冪等」「外部システムにアクセス」のバッジを表示します。バッジは該当するヒントがあるときだけ表示し、`destructiveHint: true` は警告スタイルにします。ヒントは MCP サーバーが申告する信頼できない値です。選べる決定を変えず、自動承認を有効にせず、`IApprovalPolicyEngine` を迂回しません。`tool_name` がない、文字列でない、または大きすぎる場合は既存のカードを表示します。
+- **MCP ツールの承認:** MCP ツール呼び出しの `mcpServer/elicitation/request` には `_meta.tool_name` と `_meta.tool_annotations` が含まれます(openai/codex#58161)。`tool_annotations` には真偽値 `readOnlyHint`、`destructiveHint`、`idempotentHint`、`openWorldHint` が含まれることがあり、含まれないヒントは不明として扱います。カードはサーバー名とツール名をタイトルにし、その下に「読み取り専用」「破壊的」「冪等」「外部システムにアクセス」「閉じた操作範囲」のバッジを表示します。バッジは該当するヒントがあるときだけ表示し、`destructiveHint: true` は警告スタイルにします。ヒントは MCP サーバーが申告する信頼できない値です。選べる決定を変えず、自動承認を有効にせず、`IApprovalPolicyEngine` を迂回しません。`tool_name` がない、文字列でない、または大きすぎる場合は既存のカードを表示します。
 - **組織のチェックポイント:** `experimentalApi` を交渉した場合、`initialize` で `requiredHumanApproval` を宣言します。`kind: "humanCommand"` のコマンド承認は、組織の管理ポリシーが要求するチェックポイントです。カードのタイトルは「組織が求める承認」で、コマンドと理由を表示し、「承認」「拒否」「キャンセル」だけを提示して、それぞれ `accept`、`decline`、`cancel` を送ります。チェックポイントには、セッション単位の許可、`acceptForSession`、実行ポリシーの修正、ローカルポリシーによる自動化、自動承認のいずれも使いません。タイムアウト時は `cancel` を送ります。`experimentalApi` がない場合は機能を宣言せず、サーバー側の動作に任せます。
 
 ### 4.3 スレッド管理
