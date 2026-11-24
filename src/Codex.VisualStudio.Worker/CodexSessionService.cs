@@ -1957,7 +1957,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             return signedOut;
         }
         catch (JsonRpcConnectionClosedException) when (
-            logoutContext is { OwnerInvalidated: true, LogoutConfirmed: true })
+            logoutContext is { LogoutConfirmed: true })
         {
             WorkerDiagnostics.Write("app-server logout request closed after its notification");
             return new AccountStatus { State = AccountState.SignedOut };
@@ -1968,7 +1968,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            if (logoutContext is { OwnerInvalidated: true, LogoutConfirmed: true })
+            if (logoutContext is { LogoutConfirmed: true })
             {
                 WorkerDiagnostics.Write("app-server logout request failed after its notification", ex);
                 return new AccountStatus { State = AccountState.SignedOut };

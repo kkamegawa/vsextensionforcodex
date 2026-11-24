@@ -245,6 +245,56 @@ public sealed class WorkerRpcOwnerBoundaryTests
     }
 
     [TestMethod]
+    public async Task ConfirmedLogoutBeforeOwnerInvalidationReturnsSignedOutWhenConnectionCloses()
+    {
+        string workspace = Path.Combine(Path.GetTempPath(), $"worker-owner-logout-confirmed-close-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(workspace);
+        try
+        {
+            var responseGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var connection = new RecordingConnection(workspace)
+            {
+                AccountEmail = "a@example.test",
+                LogoutResponseGate = responseGate,
+            };
+            await using var session = new CodexSessionService(new ApprovalPolicyEngine(new PathAccessPolicy()), new SecretRedactor());
+            await session.InitializeAsync(connection, Options(workspace), CancellationToken.None);
+
+            Task<AccountStatus> logout = session.LogoutAccountAsync(CancellationToken.None);
+            await connection.LogoutRequestSeen.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+            // Reproduce the transient state between confirming the notification and retiring its owner.
+            System.Reflection.FieldInfo? contextField = typeof(CodexSessionService).GetField(
+                "connectionContext",
+                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+            Assert.IsNotNull(contextField, "CodexSessionService should retain its active connection context.");
+            Assert.AreEqual("ConnectionContext", contextField.FieldType.Name, "The active context field should reference the logout state owner.");
+            object? context = contextField.GetValue(session);
+            Assert.IsNotNull(context, "The logout request should have an active connection context.");
+            System.Reflection.MethodInfo? confirmLogout = context.GetType().GetMethod(
+                "ConfirmLogout",
+                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic);
+            Assert.IsNotNull(confirmLogout, "The connection context should expose its logout confirmation transition.");
+            Assert.AreEqual(0, confirmLogout.GetParameters().Length, "ConfirmLogout should remain parameterless for this fixture.");
+            confirmLogout.Invoke(context, Array.Empty<object>());
+            System.Reflection.PropertyInfo? logoutConfirmed = context.GetType().GetProperty(
+                "LogoutConfirmed",
+                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic);
+            Assert.IsNotNull(logoutConfirmed, "The connection context should expose whether logout has been confirmed.");
+            Assert.IsTrue((bool)logoutConfirmed.GetValue(context)!, "ConfirmLogout should set the context's confirmation flag.");
+            responseGate.TrySetException(new JsonRpcConnectionClosedException("The fake connection closed before owner invalidation."));
+
+            AccountStatus result = await logout.WaitAsync(TimeSpan.FromSeconds(5));
+
+            Assert.AreEqual(AccountState.SignedOut, result.State);
+        }
+        finally
+        {
+            Directory.Delete(workspace, recursive: true);
+        }
+    }
+
+    [TestMethod]
     public async Task FailedOverlappingLogoutDoesNotHideConfirmedLogout()
     {
         string workspace = Path.Combine(Path.GetTempPath(), $"worker-owner-logout-overlap-{Guid.NewGuid():N}");
@@ -254,6 +304,7 @@ public sealed class WorkerRpcOwnerBoundaryTests
             var requestBarrier = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             var firstFailureGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             var notificationGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            // Keep the response pending so owner invalidation stops the transport before the RPC replies.
             var responseGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             var first = new RecordingConnection(workspace)
             {
