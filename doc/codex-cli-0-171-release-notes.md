@@ -4,7 +4,7 @@
 
 ## Enterprise MCP sign-in
 
-Use **Codex CLI 0.171.0 or later** when your enterprise identity provider issues an OpenID Connect ID token without a refresh token. When registrations share a name across environments, first enable **Experimental API** and reconnect to the app-server. Then open MCP details in the Codex tool window, select the intended registration, and choose **Sign in to MCP server**. This creates a pending action; choose **Open authorization page** and complete sign-in in the browser. The CLI performs the token exchange and validates the ID token. If the token expires or becomes invalid, sign in to that registration again.
+Use **Codex CLI 0.171.0 or later** when your enterprise identity provider issues an OpenID Connect ID token without a refresh token. When registrations share a name across environments, first enable **Experimental API** and reconnect to the app-server. Then open MCP details in the Codex tool window, select the intended registration, and choose **Sign in to MCP server**. This creates a pending action; choose **Open authorization page**, complete sign-in in the browser, and return to Visual Studio. The CLI performs the token exchange and validates the ID token. If the token expires or becomes invalid, sign in to that registration again.
 
 The 0.169 and 0.170 releases require a refresh token for this sign-in flow. For a remote connection, the version of the CLI running the remote app-server determines support.
 
@@ -19,6 +19,8 @@ The 0.169 and 0.170 releases require a refresh token for this sign-in flow. For 
 Before enabling managed helper settings, upgrade every targeted CLI to 0.171.0 or later. Older clients, including 0.170, may fail at startup when managed requirements contain either `otel.headers_helper` or `otel.headers_helper_refresh_interval_ms`. Before downgrading a client, remove both keys from policy and allow the updated policy to propagate to that machine.
 
 The CLI validates and runs the helper and applies refreshed headers to the eligible exporter. Manage the executable and its configuration on the machine running the CLI. The extension displays MCP sign-in status and keeps credentials and telemetry header values within the CLI.
+
+Before enabling either managed helper key, upgrade every targeted Codex CLI to 0.171.0 or later. Older clients, including 0.170 clients that support user-configured helpers, may reject managed requirements containing either key when they start. Before downgrading a client, remove both helper keys from managed requirements and wait for the policy change to propagate to that machine.
 
 **Implemented, unverified in an Enterprise environment.** Enterprise environment acceptance is waived. Ordinary build and regression checks apply.
 

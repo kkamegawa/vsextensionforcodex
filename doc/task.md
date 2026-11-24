@@ -2,6 +2,24 @@
 
 `plan.md` のフェーズ分割に対応する詳細タスク。各タスクは独立してレビュー可能な小さなスライスを意図する。
 
+## 2026-11-24: Enterprise MCP sign-in and OTLP header helpers (Issue #330)
+
+Tracking: [Issue #330](https://github.com/kkamegawa/vsextensionforcodex/issues/330), under [Issue #326](https://github.com/kkamegawa/vsextensionforcodex/issues/326). The documentation is included in [PR #336](https://github.com/kkamegawa/vsextensionforcodex/pull/336), stacked on [PR #335](https://github.com/kkamegawa/vsextensionforcodex/pull/335).
+
+- [x] Document the Codex CLI 0.171+ MCP sign-in flow for identity providers that do not issue refresh tokens, including opening the authorization page and returning from the browser.
+- [x] Explain that same-named registrations across environments require enabling Experimental API and reconnecting before selecting the intended registration.
+- [x] Document user-configured OTLP HTTP header helpers in 0.170 and managed helpers in 0.171, including upgrading target clients before enabling managed keys and removing both keys and waiting for policy propagation before downgrading.
+- [x] Preserve the boundary that Codex CLI owns token exchange, validation, helper execution, and credential refresh; Enterprise environment acceptance is waived and recorded as unverified.
+- [x] PR #336 Release checks passed on the reviewed implementation: Release build, schema verification, Core/UI suites, and VSIX validation. The Core authentication regression set passed 76/76. Copilot review identified two missing guidance items; this follow-up adds them in English and Japanese. Enterprise-specific acceptance remains unverified as approved.
+
+
+## 2026-11-24: APM skill updates
+
+- [x] Added 11 individual dotnet-azure-lessons skill folders and dotnet-mutation-testing, pinned to commit `b0a86ec27fd431d929f14566fe494f0feafd68f2`. Individual folders avoid deploying the Codex reviewer whose tools restriction APM drops.
+- [x] Migrated deprecated `target` to `targets` and regenerated the lockfile with APM 0.38.0 (lockfile v4). Updated refs intentionally to maintainer-provided versions: dotnet/skills `a6bf43a` to `c227688`, api-architect `d85f762` to `f10fdb8`, and github-plan-wiki `1c7aba1` / 0.2.0 to `b0a86ec` / 0.2.1.
+- [x] Verified a clean temporary install, frozen replay, and `apm audit --ci --no-policy`; all 15 audit checks passed with no drift. The GitHub plan/wiki package is registered as a Claude native plugin in the clean install.
+- [x] APM warns that an unrelated dotnet/skills primitive has invalid `keywords` frontmatter; it was not integrated. Existing ignored generated files in the PR worktree were preserved.
+
 ## 2026-11-21: Versioned assistant message display for 0.170+ (Issue #328)
 
 Tracking: [Issue #328](https://github.com/kkamegawa/vsextensionforcodex/issues/328), under [Issue #326](https://github.com/kkamegawa/vsextensionforcodex/issues/326). The implementation follows the approved [0.171 design](app-server-0-171-design.md).
