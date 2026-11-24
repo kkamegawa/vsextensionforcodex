@@ -269,18 +269,30 @@ public sealed class InteractionValidationTests
     }
 
     [TestMethod]
+    public void HumanCommandChoices_RejectWhenServerDoesNotOfferCancel()
+    {
+        using JsonDocument request = JsonDocument.Parse("""
+        {"availableDecisions":["accept","decline"]}
+        """);
+        Assert.IsFalse(OfferedCommandChoiceSet.TryCreateHumanCommand(
+            request.RootElement, value => value, () => "human-1", out _));
+    }
+
+    [TestMethod]
     public void OrdinaryApprovalChoices_OmitSessionApprovalForUnknownKind()
     {
         using JsonDocument request = JsonDocument.Parse("""
-        {"kind":{"future":true},"availableDecisions":["accept","acceptForSession","decline","cancel"]}
+        {"kind":{"future":true},"availableDecisions":["accept","acceptForSession","decline","cancel",
+         {"acceptWithExecpolicyAmendment":{"execpolicy_amendment":["allow read"]}}]}
         """);
         int id = 0;
 
         Assert.IsTrue(OfferedCommandChoiceSet.TryCreate(
             request.RootElement, value => value, () => $"choice-{++id}", out OfferedCommandChoiceSet? choices,
-            allowSessionApproval: false));
+            allowPersistentApprovals: false));
         Assert.IsNotNull(choices);
         Assert.IsFalse(choices.TryResolveDecision("acceptForSession", out _));
+        Assert.IsFalse(choices.Choices.Any(choice => choice.Label.Contains("execution rule", StringComparison.OrdinalIgnoreCase)));
         CollectionAssert.AreEqual(
             new[] { "Approve this command", "Decline", "Cancel turn" },
             choices.Choices.Select(choice => choice.Label).ToArray());

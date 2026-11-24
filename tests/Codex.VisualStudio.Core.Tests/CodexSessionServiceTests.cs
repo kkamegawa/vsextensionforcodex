@@ -4417,6 +4417,10 @@ public sealed partial class CodexSessionServiceTests
         Assert.IsFalse(request.IsHumanCommand);
         Assert.IsTrue(request.Choices.Any(choice => choice.Label == "Approve this command"));
         Assert.IsFalse(request.Choices.Any(choice => choice.Label == "Approve"));
+        CollectionAssert.AreEqual(
+            new[] { ApprovalDecision.Accept, ApprovalDecision.Decline, ApprovalDecision.Cancel },
+            request.AvailableDecisions.ToArray());
+        Assert.IsFalse(request.Choices.Any(choice => choice.Label == "Approve for this session"));
     }
 
     [TestMethod]
@@ -4433,7 +4437,11 @@ public sealed partial class CodexSessionServiceTests
                 cancellationToken);
         };
         await service.InitializeAsync(connection, Options(experimentalApi: true), CancellationToken.None);
-        object Parameters(string command, object? additionalPermissions = null) => new
+        object Parameters(
+            string command,
+            object? additionalPermissions = null,
+            object? proposedExecpolicyAmendment = null,
+            object? proposedNetworkPolicyAmendments = null) => new
         {
             command,
             cwd = Options().WorkingDirectory,
@@ -4443,6 +4451,8 @@ public sealed partial class CodexSessionServiceTests
             startedAtMs = 1L,
             kind = "humanCommand",
             additionalPermissions,
+            proposedExecpolicyAmendment,
+            proposedNetworkPolicyAmendments,
         };
 
         JsonRpcRemoteException invalid = await Assert.ThrowsExactlyAsync<JsonRpcRemoteException>(() => connection.EmitRequestAsync(
@@ -4455,6 +4465,13 @@ public sealed partial class CodexSessionServiceTests
 
         Assert.AreEqual("decline", declined.GetProperty("decision").GetString());
         Assert.AreEqual(0, shown, "An unshown command or permission request must never reach the approval card.");
+
+        JsonElement emptyPermissions = await connection.EmitRequestAsync(
+            "empty-human-permissions", "item/commandExecution/requestApproval",
+            Parameters("dotnet build", new { }, Array.Empty<string>(), Array.Empty<object>()));
+
+        Assert.AreEqual("accept", emptyPermissions.GetProperty("decision").GetString());
+        Assert.AreEqual(1, shown, "Empty permission containers do not add permissions that need to be shown.");
     }
 
     [TestMethod]
@@ -4516,7 +4533,14 @@ public sealed partial class CodexSessionServiceTests
                 turnId = "turn-4",
                 startedAtMs = 1L,
                 kind = new { futureKind = true },
-                availableDecisions = new[] { "accept", "acceptForSession", "decline", "cancel" },
+                availableDecisions = new object[]
+                {
+                    "accept",
+                    "acceptForSession",
+                    "decline",
+                    "cancel",
+                    new { acceptWithExecpolicyAmendment = new { execpolicy_amendment = new[] { "allow read" } } },
+                },
             });
 
         Assert.AreEqual("acceptForSession", firstWriteStdin.GetProperty("decision").GetString());
@@ -4526,8 +4550,11 @@ public sealed partial class CodexSessionServiceTests
         Assert.AreEqual(3, shown.Count, "writeStdin reuses its grant; known command and unknown kind requests both prompt.");
         Assert.IsTrue(shown[1].AvailableDecisions.Contains(ApprovalDecision.AcceptForSession));
         Assert.IsTrue(shown[1].Choices.Any(choice => choice.Label == "Approve for this session"));
-        Assert.IsFalse(shown[2].AvailableDecisions.Contains(ApprovalDecision.AcceptForSession));
+        CollectionAssert.AreEqual(
+            new[] { ApprovalDecision.Accept, ApprovalDecision.Decline, ApprovalDecision.Cancel },
+            shown[2].AvailableDecisions.ToArray());
         Assert.IsFalse(shown[2].Choices.Any(choice => choice.Label == "Approve for this session"));
+        Assert.IsFalse(shown[2].Choices.Any(choice => choice.Label == "Approve and add execution rule"));
     }
 
     [TestMethod]

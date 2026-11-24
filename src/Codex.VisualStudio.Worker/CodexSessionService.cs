@@ -4493,6 +4493,8 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         {
             // These permissions are not shown on the organization checkpoint card. Decline until
             // the UI can present an accurate, redacted summary before offering approval.
+            WorkerDiagnostics.Write(redactor.Redact(
+                "organization checkpoint declined because requested permissions are not shown") ?? string.Empty);
             return ApprovalResponse("decline");
         }
 
@@ -4503,12 +4505,13 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         }
 
         bool isHumanCommand = request.IsHumanCommand;
+        bool canOfferPersistentApprovals = CanOfferPersistentApprovals(parameters);
         if (!(isHumanCommand
                 ? OfferedCommandChoiceSet.TryCreateHumanCommand(parameters, value => redactor.Redact(value) ?? string.Empty,
                     static () => Guid.NewGuid().ToString("N"), out OfferedCommandChoiceSet? choices)
                 : OfferedCommandChoiceSet.TryCreate(parameters, value => redactor.Redact(value) ?? string.Empty,
                     static () => Guid.NewGuid().ToString("N"), out choices,
-                    allowSessionApproval: CanOfferSessionApproval(parameters)))
+                    allowPersistentApprovals: canOfferPersistentApprovals))
             || choices is null)
         {
             throw new JsonRpcRemoteException(-32602, "The command-approval choices are invalid.");
@@ -4519,10 +4522,10 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         {
             request.AvailableDecisions = choices.AvailableDecisions;
         }
-        else if (!CanOfferSessionApproval(parameters))
+        else if (!canOfferPersistentApprovals)
         {
             request.AvailableDecisions = request.AvailableDecisions
-                .Where(decision => decision != ApprovalDecision.AcceptForSession)
+                .Where(decision => decision is ApprovalDecision.Accept or ApprovalDecision.Decline or ApprovalDecision.Cancel)
                 .ToArray();
         }
         if (!isHumanCommand
@@ -7915,8 +7918,16 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
     {
         foreach (string name in new[] { "additionalPermissions", "proposedExecpolicyAmendment", "proposedNetworkPolicyAmendments" })
         {
-            if (parameters.TryGetProperty(name, out JsonElement value)
-                && value.ValueKind is not (JsonValueKind.Null or JsonValueKind.Undefined))
+            if (!parameters.TryGetProperty(name, out JsonElement value)
+                || value.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)
+            {
+                continue;
+            }
+
+            bool isEmpty = name == "additionalPermissions"
+                ? value.ValueKind == JsonValueKind.Object && !value.EnumerateObject().Any()
+                : value.ValueKind == JsonValueKind.Array && value.GetArrayLength() == 0;
+            if (!isEmpty)
             {
                 return true;
             }
@@ -7967,7 +7978,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         return true;
     }
 
-    private static bool CanOfferSessionApproval(JsonElement parameters)
+    private static bool CanOfferPersistentApprovals(JsonElement parameters)
     {
         if (parameters.ValueKind != JsonValueKind.Object
             || !parameters.TryGetProperty("kind", out JsonElement kindValue)
@@ -7981,9 +7992,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             return false;
         }
 
-        // A method-qualified humanCommand uses its separate one-time-only path. If that kind
-        // appears on another approval method, it remains an ordinary known-kind request.
-        return kindValue.GetString() is null or "command" or "writeStdin" or "humanCommand";
+        return kindValue.GetString() is null or "command" or "writeStdin";
     }
 
     // The empty ToolRequestUserInputResponse used for cancel, timeout, and refused requests.

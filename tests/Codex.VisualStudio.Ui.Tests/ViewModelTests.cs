@@ -1852,13 +1852,11 @@ public sealed partial class ViewModelTests
         }, new SafeMarkdownService());
 
         Assert.AreEqual("read_file", vm.ToolName);
-        Assert.AreEqual(4, vm.ToolAnnotations.Count);
+        Assert.AreEqual(3, vm.ToolAnnotations.Count);
         bool isJapanese = CultureInfo.CurrentUICulture.TwoLetterISOLanguageName == "ja";
         Assert.AreEqual(isJapanese ? "読み取り専用" : "Read-only", vm.ToolAnnotations[0].Label);
-        Assert.AreEqual(isJapanese ? "非破壊的" : "Not destructive", vm.ToolAnnotations[1].Label);
-        Assert.AreEqual(isJapanese ? "冪等" : "Idempotent", vm.ToolAnnotations[2].Label);
-        Assert.AreEqual(isJapanese ? "外部システムにアクセス" : "Accesses external systems", vm.ToolAnnotations[3].Label);
-        Assert.IsFalse(vm.ToolAnnotations[1].IsDestructive, "A false destructive hint must not be styled as a warning.");
+        Assert.AreEqual(isJapanese ? "冪等" : "Idempotent", vm.ToolAnnotations[1].Label);
+        Assert.AreEqual(isJapanese ? "外部システムにアクセス" : "Accesses external systems", vm.ToolAnnotations[2].Label);
 
         Assert.IsFalse(vm.IsResolved);
         Assert.IsTrue(vm.CanAccept);
@@ -1885,7 +1883,7 @@ public sealed partial class ViewModelTests
     }
 
     [TestMethod]
-    public void McpElicitation_DescribesClosedInteractionDomainWithoutPromisingNoExternalAccess()
+    public void McpElicitation_LabelsClosedDomainAsServerReported()
     {
         var vm = new McpElicitationViewModel(
             new McpElicitationRequest
@@ -1898,7 +1896,25 @@ public sealed partial class ViewModelTests
             new SafeMarkdownService());
 
         bool isJapanese = CultureInfo.CurrentUICulture.TwoLetterISOLanguageName == "ja";
-        Assert.AreEqual(isJapanese ? "閉じた操作範囲" : "Closed interaction domain", vm.ToolAnnotations.Single().Label);
+        Assert.AreEqual(isJapanese ? "サーバー申告の閉じた操作範囲" : "Declared closed interaction domain", vm.ToolAnnotations.Single().Label);
+    }
+
+    [TestMethod]
+    public void McpElicitation_OmitsFalseDestructiveAndOtherReassuringHints()
+    {
+        var vm = new McpElicitationViewModel(
+            new McpElicitationRequest
+            {
+                RequestId = "mcp-false-hints",
+                ServerName = "database",
+                ReadOnlyHint = false,
+                DestructiveHint = false,
+                IdempotentHint = false,
+            },
+            (_, _, _) => Task.CompletedTask,
+            new SafeMarkdownService());
+
+        Assert.AreEqual(0, vm.ToolAnnotations.Count);
     }
 
     [TestMethod]

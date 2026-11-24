@@ -57,7 +57,7 @@ internal sealed class OfferedCommandChoiceSet
         Func<string, string> redact,
         Func<string> newOpaqueId,
         out OfferedCommandChoiceSet? choiceSet,
-        bool allowSessionApproval = true)
+        bool allowPersistentApprovals = true)
     {
         choiceSet = null;
         if (parameters.ValueKind != JsonValueKind.Object
@@ -82,9 +82,10 @@ internal sealed class OfferedCommandChoiceSet
 
             foreach (JsonElement offered in availableDecisions.EnumerateArray())
             {
-                if (!allowSessionApproval
-                    && offered.ValueKind == JsonValueKind.String
-                    && string.Equals(offered.GetString(), "acceptForSession", StringComparison.Ordinal))
+                if (!allowPersistentApprovals
+                    && (offered.ValueKind == JsonValueKind.Object
+                        || (offered.ValueKind == JsonValueKind.String
+                            && string.Equals(offered.GetString(), "acceptForSession", StringComparison.Ordinal))))
                 {
                     continue;
                 }
@@ -99,7 +100,7 @@ internal sealed class OfferedCommandChoiceSet
         else
         {
             if (!TryAdd("Approve this command", AddPermissionContext("Run the command once."), JsonSerializer.SerializeToElement("accept"))
-                || (allowSessionApproval
+                || (allowPersistentApprovals
                     && !TryAdd("Approve for this session", AddPermissionContext("Run this command and allow session-scoped approval reuse."), JsonSerializer.SerializeToElement("acceptForSession")))
                 || !TryAdd("Decline", "Decline the command and let the turn continue.", JsonSerializer.SerializeToElement("decline"))
                 || !TryAdd("Cancel turn", "Decline the command and interrupt the turn.", JsonSerializer.SerializeToElement("cancel")))
@@ -107,7 +108,8 @@ internal sealed class OfferedCommandChoiceSet
                 return false;
             }
 
-            if (parameters.TryGetProperty("proposedExecpolicyAmendment", out JsonElement execAmendment)
+            if (allowPersistentApprovals
+                && parameters.TryGetProperty("proposedExecpolicyAmendment", out JsonElement execAmendment)
                 && execAmendment.ValueKind is not (JsonValueKind.Null or JsonValueKind.Undefined))
             {
                 if (execAmendment.ValueKind != JsonValueKind.Array
@@ -135,7 +137,8 @@ internal sealed class OfferedCommandChoiceSet
                 }
             }
 
-            if (parameters.TryGetProperty("proposedNetworkPolicyAmendments", out JsonElement networkAmendments)
+            if (allowPersistentApprovals
+                && parameters.TryGetProperty("proposedNetworkPolicyAmendments", out JsonElement networkAmendments)
                 && networkAmendments.ValueKind is not (JsonValueKind.Null or JsonValueKind.Undefined))
             {
                 if (networkAmendments.ValueKind != JsonValueKind.Array
@@ -250,7 +253,9 @@ internal sealed class OfferedCommandChoiceSet
             }
         }
 
-        if (choiceCreationFailed || available.Count == 0)
+        if (choiceCreationFailed
+            || available.Count == 0
+            || !available.Contains(ApprovalDecision.Cancel))
         {
             return false;
         }

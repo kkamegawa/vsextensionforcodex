@@ -274,12 +274,11 @@ public sealed class McpElicitationViewModel : ObservableObject
         ToolName = markdown.ToSafeText(request.DisplayToolName ?? string.Empty).Trim();
         var isJapanese = CultureInfo.CurrentUICulture.TwoLetterISOLanguageName == "ja";
         var annotations = new List<McpToolAnnotationViewModel>();
-        AddAnnotation(request.ReadOnlyHint, isJapanese ? "読み取り専用" : "Read-only", isJapanese ? "変更可能" : "Can modify data");
-        AddAnnotation(request.DestructiveHint, isJapanese ? "⚠ 破壊的操作" : "⚠ Destructive",
-            isJapanese ? "非破壊的" : "Not destructive", destructive: true);
-        AddAnnotation(request.IdempotentHint, isJapanese ? "冪等" : "Idempotent", isJapanese ? "非冪等" : "Not idempotent");
+        AddAnnotation(request.ReadOnlyHint, isJapanese ? "読み取り専用" : "Read-only");
+        AddAnnotation(request.DestructiveHint, isJapanese ? "⚠ 破壊的操作" : "⚠ Destructive", destructive: true);
+        AddAnnotation(request.IdempotentHint, isJapanese ? "冪等" : "Idempotent");
         AddAnnotation(request.OpenWorldHint, isJapanese ? "外部システムにアクセス" : "Accesses external systems",
-            isJapanese ? "閉じた操作範囲" : "Closed interaction domain");
+            isJapanese ? "サーバー申告の閉じた操作範囲" : "Declared closed interaction domain");
         ToolAnnotations = new ObservableCollection<McpToolAnnotationViewModel>(annotations);
         Message = markdown.ToSafeText(request.Message).Trim();
         OriginDisplay = markdown.ToSafeText(request.OriginDisplay ?? string.Empty).Trim();
@@ -292,11 +291,11 @@ public sealed class McpElicitationViewModel : ObservableObject
         CancelCommand = new AsyncCommand(() => ResolveAsync(McpElicitationAction.Cancel), () => CanResolve);
         OpenAuthorizationCommand = new AsyncCommand(OpenAuthorizationAsync, () => CanOpenAuthorization);
 
-        void AddAnnotation(bool? hint, string trueLabel, string falseLabel, bool destructive = false)
+        void AddAnnotation(bool? hint, string trueLabel, string? falseLabel = null, bool destructive = false)
         {
-            if (hint is not null)
+            if (hint is true || (hint is false && falseLabel is not null))
             {
-                annotations.Add(new McpToolAnnotationViewModel(hint.Value ? trueLabel : falseLabel, destructive && hint.Value));
+                annotations.Add(new McpToolAnnotationViewModel(hint == true ? trueLabel : falseLabel!, destructive && hint == true));
             }
         }
     }
