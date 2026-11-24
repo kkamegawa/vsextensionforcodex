@@ -2,6 +2,7 @@
 
 `plan.md` のフェーズ分割に対応する詳細タスク。各タスクは独立してレビュー可能な小さなスライスを意図する。
 
+
 ## 2026-11-24: Enterprise MCP sign-in and OTLP header helpers (Issue #330)
 
 Tracking: [Issue #330](https://github.com/kkamegawa/vsextensionforcodex/issues/330), under [Issue #326](https://github.com/kkamegawa/vsextensionforcodex/issues/326). The documentation is included in [PR #336](https://github.com/kkamegawa/vsextensionforcodex/pull/336), stacked on [PR #335](https://github.com/kkamegawa/vsextensionforcodex/pull/335).
@@ -26,6 +27,15 @@ Tracking: [Issue #331](https://github.com/kkamegawa/vsextensionforcodex/issues/3
 
 - [x] Record the real CLI initialization matrix and supported version/schema checks in PR #337.
 - [x] Preserve the confirmed `SignedOut` result when the owner's transport closes before a logout response, including overlapping requests; `WorkerRpcOwnerBoundaryTests` passed 14/14.
+
+## 2026-11-25: Approval checkpoints and MCP tool hints review follow-up (Issue #303)
+
+Tracking: [Issue #303](https://github.com/kkamegawa/vsextensionforcodex/issues/303), under [Issue #272](https://github.com/kkamegawa/vsextensionforcodex/issues/272), and [PR #338](https://github.com/kkamegawa/vsextensionforcodex/pull/338).
+
+- [x] Verify that `humanCommand` handling is limited to command approvals, requires a visible nonblank command, declines permissions the checkpoint cannot display, and uses only valid one-time decisions offered by the server.
+- [x] Verify that unknown approval kinds cannot reuse session grants or offer persistent choices, while `writeStdin` keeps its supported session-grant behavior.
+- [x] Add a v30 source contract gate to VSIX content inspection before comparing the built assembly contract. Focused Core tests passed 9/9, UI tests passed 2/2, and Release VSIX content inspection passed with contract v30.
+
 - [ ] Capture Visual Studio 2026 Light and Dark screenshots during the final Experimental Instance acceptance.
 
 ## 2026-11-21: Versioned assistant message display for 0.170+ (Issue #328)

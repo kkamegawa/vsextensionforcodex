@@ -149,6 +149,11 @@ try {
     $contractMatch = [regex]::Match($contractSource, 'public const int Current = (?<version>\d+);')
     if (-not $contractMatch.Success) { throw 'Worker contract version declaration was not found.' }
     $sourceContractVersion = [int]$contractMatch.Groups['version'].Value
+    # Update this gate in the same change as ContractVersions.Current.
+    $expectedSourceContractVersion = 30
+    if ($sourceContractVersion -ne $expectedSourceContractVersion) {
+        throw "Source Worker contract v$sourceContractVersion does not match required v$expectedSourceContractVersion."
+    }
     $contractsAssemblyPath = Join-Path $extensionOutput 'Codex.VisualStudio.Contracts.dll'
     $contractsAssembly = [Reflection.Assembly]::LoadFrom($contractsAssemblyPath)
     $contractVersionsType = $contractsAssembly.GetType('Codex.VisualStudio.Contracts.ContractVersions', $false, $false)
