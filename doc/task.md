@@ -20,6 +20,14 @@ Tracking: [Issue #330](https://github.com/kkamegawa/vsextensionforcodex/issues/3
 - [x] Verified a clean temporary install, frozen replay, and `apm audit --ci --no-policy`; all 15 audit checks passed with no drift. The GitHub plan/wiki package is registered as a Claude native plugin in the clean install.
 - [x] APM warns that an unrelated dotnet/skills primitive has invalid `keywords` frontmatter; it was not integrated. Existing ignored generated files in the PR worktree were preserved.
 
+## 2026-11-25: Codex CLI compatibility matrix and logout review follow-up (Issue #331)
+
+Tracking: [Issue #331](https://github.com/kkamegawa/vsextensionforcodex/issues/331) and [PR #337](https://github.com/kkamegawa/vsextensionforcodex/pull/337).
+
+- [x] Record the real CLI initialization matrix and supported version/schema checks in PR #337.
+- [x] Preserve the confirmed `SignedOut` result when the owner's transport closes before a logout response, including overlapping requests; `WorkerRpcOwnerBoundaryTests` passed 14/14.
+- [ ] Capture Visual Studio 2026 Light and Dark screenshots during the final Experimental Instance acceptance.
+
 ## 2026-11-21: Versioned assistant message display for 0.170+ (Issue #328)
 
 Tracking: [Issue #328](https://github.com/kkamegawa/vsextensionforcodex/issues/328), under [Issue #326](https://github.com/kkamegawa/vsextensionforcodex/issues/326). The implementation follows the approved [0.171 design](app-server-0-171-design.md).

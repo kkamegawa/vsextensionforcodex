@@ -1825,9 +1825,14 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             else if (!string.Equals(recorded, fingerprint, StringComparison.Ordinal))
             {
                 WorkerDiagnostics.Write("account identity changed; retiring the owner");
-                bool ownAccountChange = context.LogoutRequested || context.WorkspaceSwitchRequested;
-                invalidatedAccountState = context.LogoutRequested ? AccountState.SignedOut : AccountState.Unavailable;
-                invalidatedByOwnerAction = ownAccountChange;
+                bool confirmedLogout = context.LogoutRequested && status.State == AccountState.SignedOut;
+                if (confirmedLogout)
+                {
+                    context.ConfirmLogout();
+                }
+
+                invalidatedAccountState = confirmedLogout ? AccountState.SignedOut : AccountState.Unavailable;
+                invalidatedByOwnerAction = confirmedLogout || context.WorkspaceSwitchRequested;
                 await InvalidateOwnerPartitionAsync(context, cancellationToken).ConfigureAwait(false);
                 var changed = new AccountStatus
                 {
@@ -1919,6 +1924,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
     {
         WorkerDiagnostics.Write("app-server logout request starting");
         ConnectionContext? logoutContext = null;
+        bool logoutRequestStarted = false;
         try
         {
             ConnectionContext context = RequireContext();
@@ -1926,19 +1932,22 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
 
             // An account notification for this logout can be processed before the response. Marking
             // the request first lets that path retire the owner as the owner's own logout.
-            context.LogoutRequested = true;
+            context.BeginLogoutRequest();
+            logoutRequestStarted = true;
             await context.Connection.SendRequestAsync(
                 "account/logout",
                 new { },
                 TimeSpan.FromSeconds(15),
                 cancellationToken).ConfigureAwait(false);
-            if (!IsCurrent(context) && context.OwnerInvalidated && invalidatedByOwnerAction)
+            // A replacement connection can clear the session-wide flags before this response arrives.
+            if (!IsCurrent(context) && context.OwnerInvalidated && context.LogoutConfirmed)
             {
                 WorkerDiagnostics.Write("app-server logout request completed after its notification");
                 return new AccountStatus { State = AccountState.SignedOut };
             }
 
             EnsureCurrent(context);
+            context.ConfirmLogout();
             invalidatedAccountState = AccountState.SignedOut;
             invalidatedByOwnerAction = true;
             await InvalidateOwnerPartitionAsync(context, cancellationToken).ConfigureAwait(false);
@@ -1947,15 +1956,22 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             await EmitAccountStatusAsync(signedOut, CancellationToken.None).ConfigureAwait(false);
             return signedOut;
         }
+        catch (JsonRpcConnectionClosedException) when (
+            logoutContext is { LogoutConfirmed: true })
+        {
+            WorkerDiagnostics.Write("app-server logout request closed after its notification");
+            return new AccountStatus { State = AccountState.SignedOut };
+        }
         catch (JsonRpcConnectionClosedException)
         {
             throw;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            if (logoutContext is not null)
+            if (logoutContext is { LogoutConfirmed: true })
             {
-                logoutContext.LogoutRequested = false;
+                WorkerDiagnostics.Write("app-server logout request failed after its notification", ex);
+                return new AccountStatus { State = AccountState.SignedOut };
             }
 
             WorkerDiagnostics.Write("app-server logout request failed", ex);
@@ -1966,6 +1982,13 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             };
             await EmitAccountStatusAsync(unavailable, CancellationToken.None).ConfigureAwait(false);
             return unavailable;
+        }
+        finally
+        {
+            if (logoutRequestStarted)
+            {
+                logoutContext!.EndLogoutRequest();
+            }
         }
     }
 
@@ -4737,8 +4760,13 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             string? completedLoginId = method == "account/login/completed" ? GetString(parameters, "loginId") : null;
             bool loginCompleted = completedLoginId is not null
                 && string.Equals(completedLoginId, context.PendingLoginId, StringComparison.Ordinal);
-            if (context.LogoutRequested)
+            bool explicitSignOutNotification = method == "account/updated"
+                && parameters.ValueKind == JsonValueKind.Object
+                && parameters.TryGetProperty("authMode", out JsonElement authMode)
+                && authMode.ValueKind == JsonValueKind.Null;
+            if (context.LogoutRequested && explicitSignOutNotification)
             {
+                context.ConfirmLogout();
                 invalidatedAccountState = AccountState.SignedOut;
                 invalidatedByOwnerAction = true;
                 await InvalidateOwnerPartitionAsync(context, cancellationToken).ConfigureAwait(false);
@@ -7940,7 +7968,20 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             => Volatile.Write(ref workspaceOperationInProgress, 0);
 
         public string? AccountFingerprint { get; set; }
-        public bool LogoutRequested { get; set; }
+        private int pendingLogoutRequests;
+        private int logoutConfirmed;
+
+        public bool LogoutRequested => Volatile.Read(ref pendingLogoutRequests) > 0;
+        public bool LogoutConfirmed => Volatile.Read(ref logoutConfirmed) != 0;
+
+        public void BeginLogoutRequest()
+            => Interlocked.Increment(ref pendingLogoutRequests);
+
+        public void EndLogoutRequest()
+            => Interlocked.Decrement(ref pendingLogoutRequests);
+
+        public void ConfirmLogout()
+            => Interlocked.Exchange(ref logoutConfirmed, 1);
         public bool WorkspaceSwitchRequested { get; set; }
         public bool GatewayOAuthRequired { get; set; }
         public bool GatewayOAuthReady { get; set; }

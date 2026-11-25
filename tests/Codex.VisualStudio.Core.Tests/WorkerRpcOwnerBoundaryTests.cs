@@ -134,6 +134,7 @@ public sealed class WorkerRpcOwnerBoundaryTests
                 async () => await oldTurn.WaitAsync(TimeSpan.FromSeconds(5)));
             Assert.AreEqual(WorkerErrorCodes.UpstreamOperationFailed, turnFailure.ErrorCode);
             WorkerStatus ownerBStatus = await replacement.WaitAsync(TimeSpan.FromSeconds(5));
+            await client.WaitForReadyNotificationAsync(ownerBStatus.Target!).WaitAsync(TimeSpan.FromSeconds(5));
             WorkerNotification<WorkerStatus> busy = await client.BusyNotification.WaitAsync(TimeSpan.FromSeconds(5));
 
             StringAssert.Contains(turnFailure.Message, "generation");
@@ -206,10 +207,12 @@ public sealed class WorkerRpcOwnerBoundaryTests
         Directory.CreateDirectory(workspace);
         try
         {
+            var releaseResponse = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             var first = new RecordingConnection(workspace)
             {
                 AccountEmail = "a@example.test",
                 EmitAccountUpdatedDuringLogout = true,
+                LogoutResponseGate = releaseResponse,
             };
             var second = new RecordingConnection(workspace);
             var session = new CodexSessionService(new ApprovalPolicyEngine(new PathAccessPolicy()), new SecretRedactor());
@@ -217,14 +220,283 @@ public sealed class WorkerRpcOwnerBoundaryTests
             await using var client = new RpcClientChannel(worker);
             ConnectionTargetSnapshot ownerA = (await worker.ConnectAsync(Options(workspace), CancellationToken.None)).Target!;
 
-            AccountStatus result = await worker.LogoutAccountAsync(Request<LogoutAccountRequest>(ownerA), CancellationToken.None);
+            Task<AccountStatus> logout = worker.LogoutAccountAsync(Request<LogoutAccountRequest>(ownerA), CancellationToken.None);
+            WorkerNotification<WorkerStatus> ready;
+            try
+            {
+                ready = await client.WaitForAsync(notification =>
+                    notification.Value.State == WorkerConnectionState.Ready
+                    && notification.OwnerGeneration > ownerA.OwnerGeneration).WaitAsync(TimeSpan.FromSeconds(5));
+            }
+            finally
+            {
+                releaseResponse.TrySetResult();
+            }
 
-            WorkerNotification<WorkerStatus> ready = await client.WaitForAsync(notification =>
-                notification.Value.State == WorkerConnectionState.Ready
-                && notification.OwnerGeneration > ownerA.OwnerGeneration).WaitAsync(TimeSpan.FromSeconds(5));
+            AccountStatus result = await logout.WaitAsync(TimeSpan.FromSeconds(5));
             Assert.AreEqual(AccountState.SignedOut, result.State);
             Assert.AreNotEqual(ownerA.StatePartitionFingerprint, ready.StatePartitionFingerprint);
             Assert.IsFalse(client.Notifications.Any(notification => notification.Value.State == WorkerConnectionState.Degraded));
+        }
+        finally
+        {
+            Directory.Delete(workspace, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public async Task ConfirmedLogoutBeforeOwnerInvalidationReturnsSignedOutWhenConnectionCloses()
+    {
+        string workspace = Path.Combine(Path.GetTempPath(), $"worker-owner-logout-confirmed-close-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(workspace);
+        try
+        {
+            var notificationGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var responseGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var connection = new RecordingConnection(workspace)
+            {
+                AccountEmail = "a@example.test",
+                EmitAccountUpdatedDuringLogout = true,
+                LogoutNotificationGate = notificationGate,
+                LogoutResponseGate = responseGate,
+            };
+            await using var session = new CodexSessionService(new ApprovalPolicyEngine(new PathAccessPolicy()), new SecretRedactor());
+            await session.InitializeAsync(connection, Options(workspace), CancellationToken.None);
+
+            Task<AccountStatus> logout = session.LogoutAccountAsync(CancellationToken.None);
+            await connection.LogoutRequestSeen.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+            // Confirm logout through the real account/updated notification, then close the connection before its RPC response.
+            notificationGate.TrySetResult();
+            await connection.LogoutNotificationCompleted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            responseGate.TrySetException(new JsonRpcConnectionClosedException("The fake connection closed before owner invalidation."));
+
+            AccountStatus result = await logout.WaitAsync(TimeSpan.FromSeconds(5));
+
+            Assert.AreEqual(AccountState.SignedOut, result.State);
+        }
+        finally
+        {
+            Directory.Delete(workspace, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public async Task FailedOverlappingLogoutDoesNotHideConfirmedLogout()
+    {
+        string workspace = Path.Combine(Path.GetTempPath(), $"worker-owner-logout-overlap-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(workspace);
+        try
+        {
+            var requestBarrier = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var firstFailureGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var notificationGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            // Keep the response pending so owner invalidation stops the transport before the RPC replies.
+            var responseGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var first = new RecordingConnection(workspace)
+            {
+                AccountEmail = "a@example.test",
+                EmitAccountUpdatedDuringLogout = true,
+                LogoutRequestBarrier = requestBarrier,
+                FailLogoutRequestCall = 1,
+                LogoutFailureGate = firstFailureGate,
+                EmitAccountUpdatedDuringLogoutCall = 2,
+                LogoutNotificationGate = notificationGate,
+                LogoutResponseGate = responseGate,
+            };
+            var second = new RecordingConnection(workspace);
+            var session = new CodexSessionService(new ApprovalPolicyEngine(new PathAccessPolicy()), new SecretRedactor());
+            await using var worker = new WorkerRpcService(new SecretRedactor(), new SequenceProcessHost(first, second), session);
+            await using var client = new RpcClientChannel(worker);
+            ConnectionTargetSnapshot ownerA = (await worker.ConnectAsync(Options(workspace), CancellationToken.None)).Target!;
+
+            Task<AccountStatus> firstLogout = worker.LogoutAccountAsync(Request<LogoutAccountRequest>(ownerA), CancellationToken.None);
+            Task<AccountStatus> secondLogout = worker.LogoutAccountAsync(Request<LogoutAccountRequest>(ownerA), CancellationToken.None);
+            await first.LogoutRequestsSynchronized.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            requestBarrier.TrySetResult();
+
+            firstFailureGate.TrySetResult();
+            Task<AccountStatus> failedLogout = await Task.WhenAny(firstLogout, secondLogout)
+                .WaitAsync(TimeSpan.FromSeconds(5));
+            AccountStatus failedResult = await failedLogout.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.AreEqual(AccountState.Unavailable, failedResult.State);
+            Task<AccountStatus> confirmedLogout = ReferenceEquals(failedLogout, firstLogout)
+                ? secondLogout
+                : firstLogout;
+
+            notificationGate.TrySetResult();
+            AccountStatus secondResult = await confirmedLogout.WaitAsync(TimeSpan.FromSeconds(5));
+            WorkerNotification<WorkerStatus> ready = await client.WaitForAsync(notification =>
+                notification.Value.State == WorkerConnectionState.Ready
+                && notification.OwnerGeneration > ownerA.OwnerGeneration).WaitAsync(TimeSpan.FromSeconds(5));
+
+            Assert.AreEqual(AccountState.SignedOut, secondResult.State);
+            Assert.AreNotEqual(ownerA.StatePartitionFingerprint, ready.StatePartitionFingerprint);
+            Assert.AreEqual(1, second.MethodCount("initialize"));
+            Assert.AreEqual(0, second.MethodCount("account/logout"));
+        }
+        finally
+        {
+            Directory.Delete(workspace, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public async Task OverlappingLogoutFailureAfterConfirmationDoesNotPublishUnavailable()
+    {
+        string workspace = Path.Combine(Path.GetTempPath(), $"worker-owner-logout-confirmed-overlap-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(workspace);
+        try
+        {
+            var requestBarrier = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var notificationGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var failureGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var responseGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var connection = new RecordingConnection(workspace)
+            {
+                AccountEmail = "a@example.test",
+                EmitAccountUpdatedDuringLogout = true,
+                LogoutRequestBarrier = requestBarrier,
+                LogoutNotificationGate = notificationGate,
+                EmitAccountUpdatedDuringLogoutCall = 1,
+                FailLogoutRequestAfterNotificationCall = 2,
+                LogoutFailureGate = failureGate,
+                LogoutResponseGate = responseGate,
+            };
+            var accountStates = new ConcurrentQueue<AccountState>();
+            await using var session = new CodexSessionService(new ApprovalPolicyEngine(new PathAccessPolicy()), new SecretRedactor());
+            session.AccountStatusChanged += (status, _) =>
+            {
+                accountStates.Enqueue(status.State);
+                return Task.CompletedTask;
+            };
+            await session.InitializeAsync(connection, Options(workspace), CancellationToken.None);
+            Assert.AreEqual(AccountState.SignedIn, (await session.GetAccountStatusAsync(CancellationToken.None)).State);
+
+            Task<AccountStatus> firstLogout = session.LogoutAccountAsync(CancellationToken.None);
+            Task<AccountStatus> secondLogout = session.LogoutAccountAsync(CancellationToken.None);
+            await connection.LogoutRequestsSynchronized.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            requestBarrier.TrySetResult();
+            notificationGate.TrySetResult();
+            await connection.LogoutNotificationCompleted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+            failureGate.TrySetResult();
+            Task<AccountStatus> failedAfterConfirmation = await Task.WhenAny(firstLogout, secondLogout)
+                .WaitAsync(TimeSpan.FromSeconds(5));
+            AccountStatus failureResult = await failedAfterConfirmation.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.AreEqual(AccountState.SignedOut, failureResult.State);
+            Assert.IsFalse(accountStates.Contains(AccountState.Unavailable),
+                "A late failure from the retired owner must not publish Unavailable over the confirmed sign-out.");
+
+            Task<AccountStatus> notificationLogout = ReferenceEquals(failedAfterConfirmation, firstLogout)
+                ? secondLogout
+                : firstLogout;
+            responseGate.TrySetResult();
+            AccountStatus notificationResult = await notificationLogout.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.AreEqual(AccountState.SignedOut, notificationResult.State);
+            Assert.IsFalse(accountStates.Contains(AccountState.Unavailable));
+        }
+        finally
+        {
+            Directory.Delete(workspace, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public async Task AuthenticatedAccountUpdateDuringLogoutIsNotConfirmedAsSignOut()
+    {
+        string workspace = Path.Combine(Path.GetTempPath(), $"worker-owner-logout-authenticated-update-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(workspace);
+        try
+        {
+            var responseGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var connection = new RecordingConnection(workspace)
+            {
+                AccountEmail = "before@example.test",
+                LogoutResponseGate = responseGate,
+            };
+            await using var session = new CodexSessionService(new ApprovalPolicyEngine(new PathAccessPolicy()), new SecretRedactor());
+            await session.InitializeAsync(connection, Options(workspace), CancellationToken.None);
+            Assert.AreEqual(AccountState.SignedIn, (await session.GetAccountStatusAsync(CancellationToken.None)).State);
+
+            Task<AccountStatus> logout = session.LogoutAccountAsync(CancellationToken.None);
+            await connection.LogoutRequestSeen.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            connection.AccountEmail = "after@example.test";
+            await connection.EmitNotificationAsync("account/updated", new { authMode = "chatgpt", planType = "plus" });
+
+            Assert.AreEqual(AccountState.Unavailable, session.InvalidatedAccountState);
+            Assert.IsFalse(session.InvalidatedByOwnerAction);
+            connection.Stop();
+            await Assert.ThrowsExactlyAsync<JsonRpcConnectionClosedException>(() => logout.WaitAsync(TimeSpan.FromSeconds(5)));
+        }
+        finally
+        {
+            Directory.Delete(workspace, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public async Task LoginCompletionDuringLogoutIsNotConfirmedAsSignOut()
+    {
+        string workspace = Path.Combine(Path.GetTempPath(), $"worker-owner-logout-login-completed-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(workspace);
+        try
+        {
+            var responseGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var connection = new RecordingConnection(workspace)
+            {
+                AccountEmail = "before@example.test",
+                LogoutResponseGate = responseGate,
+            };
+            await using var session = new CodexSessionService(new ApprovalPolicyEngine(new PathAccessPolicy()), new SecretRedactor());
+            await session.InitializeAsync(connection, Options(workspace), CancellationToken.None);
+            await session.GetAccountStatusAsync(CancellationToken.None);
+            StartAccountLoginResult login = await session.StartAccountLoginAsync(CancellationToken.None);
+
+            Task<AccountStatus> logout = session.LogoutAccountAsync(CancellationToken.None);
+            await connection.LogoutRequestSeen.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await connection.EmitNotificationAsync("account/login/completed", new { loginId = login.LoginId, success = true });
+
+            Assert.AreEqual(AccountState.Unavailable, session.InvalidatedAccountState);
+            Assert.IsTrue(session.InvalidatedByOwnerAction);
+            connection.Stop();
+            await Assert.ThrowsExactlyAsync<JsonRpcConnectionClosedException>(() => logout.WaitAsync(TimeSpan.FromSeconds(5)));
+        }
+        finally
+        {
+            Directory.Delete(workspace, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public async Task SuccessfulLogoutResponseRetiresContextBeforeDelayedSignOutNotification()
+    {
+        string workspace = Path.Combine(Path.GetTempPath(), $"worker-owner-logout-response-first-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(workspace);
+        try
+        {
+            var connection = new RecordingConnection(workspace) { AccountEmail = "before@example.test" };
+            var accountStates = new ConcurrentQueue<AccountState>();
+            await using var session = new CodexSessionService(new ApprovalPolicyEngine(new PathAccessPolicy()), new SecretRedactor());
+            session.AccountStatusChanged += (status, _) =>
+            {
+                accountStates.Enqueue(status.State);
+                return Task.CompletedTask;
+            };
+            await session.InitializeAsync(connection, Options(workspace), CancellationToken.None);
+            await session.GetAccountStatusAsync(CancellationToken.None);
+
+            AccountStatus result = await session.LogoutAccountAsync(CancellationToken.None);
+            Assert.AreEqual(AccountState.SignedOut, result.State);
+            Assert.IsFalse(session.IsConnectionActive);
+            Assert.AreEqual(AccountState.SignedOut, session.InvalidatedAccountState);
+
+            await connection.EmitNotificationAsync("account/updated", new { authMode = (string?)null });
+
+            Assert.AreEqual(AccountState.SignedOut, session.InvalidatedAccountState);
+            Assert.IsFalse(accountStates.Contains(AccountState.Unavailable),
+                "A delayed notification from the retired connection must not replace the successful logout state.");
+            Assert.AreEqual(AccountState.SignedOut, accountStates.Last());
         }
         finally
         {
@@ -558,6 +830,7 @@ public sealed class WorkerRpcOwnerBoundaryTests
 
         public Task StopAsync(CancellationToken cancellationToken)
         {
+            (connection as RecordingConnection)?.Stop();
             connection = null;
             return Task.CompletedTask;
         }
@@ -590,6 +863,7 @@ public sealed class WorkerRpcOwnerBoundaryTests
 
         public Task StopAsync(CancellationToken cancellationToken)
         {
+            (connection as RecordingConnection)?.Stop();
             connection = null;
             return Task.CompletedTask;
         }
@@ -603,6 +877,9 @@ public sealed class WorkerRpcOwnerBoundaryTests
         private readonly ConcurrentQueue<(string Method, JsonElement Parameters)> requests = new();
         private readonly TaskCompletionSource turnStartSeen = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private readonly TaskCompletionSource releaseTurnStart = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly CancellationTokenSource stoppedTokenSource = new();
+        private int logoutCallCount;
+        private int stopped;
 
         public bool DelayTurnStart { get; set; }
 
@@ -611,6 +888,26 @@ public sealed class WorkerRpcOwnerBoundaryTests
         public bool EmitAccountUpdatedDuringRead { get; set; }
 
         public bool EmitAccountUpdatedDuringLogout { get; set; }
+
+        public TaskCompletionSource? LogoutResponseGate { get; set; }
+
+        public TaskCompletionSource LogoutRequestSeen { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TaskCompletionSource LogoutNotificationCompleted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TaskCompletionSource? LogoutRequestBarrier { get; set; }
+
+        public TaskCompletionSource? LogoutFailureGate { get; set; }
+
+        public TaskCompletionSource? LogoutNotificationGate { get; set; }
+
+        public int FailLogoutRequestCall { get; set; }
+
+        public int FailLogoutRequestAfterNotificationCall { get; set; }
+
+        public int EmitAccountUpdatedDuringLogoutCall { get; set; } = 1;
+
+        public TaskCompletionSource LogoutRequestsSynchronized { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public Task TurnStartSeen => turnStartSeen.Task;
 
@@ -656,11 +953,62 @@ public sealed class WorkerRpcOwnerBoundaryTests
                 await EmitNotificationAsync("account/updated", new { authMode = "chatgpt", planType = "plus" });
             }
 
-            if (method == "account/logout" && EmitAccountUpdatedDuringLogout)
+            if (method == "account/logout")
             {
-                EmitAccountUpdatedDuringLogout = false;
-                AccountEmail = null;
-                await EmitNotificationAsync("account/updated", new { authMode = (string?)null });
+                int call = Interlocked.Increment(ref logoutCallCount);
+                LogoutRequestSeen.TrySetResult();
+                if (call >= 2)
+                {
+                    LogoutRequestsSynchronized.TrySetResult();
+                }
+
+                if (EmitAccountUpdatedDuringLogout && LogoutRequestBarrier is not null)
+                {
+                    await WaitForPendingRequestAsync(LogoutRequestBarrier.Task, cancellationToken);
+                }
+
+                if (EmitAccountUpdatedDuringLogout && call == FailLogoutRequestCall)
+                {
+                    if (LogoutFailureGate is not null)
+                    {
+                        await WaitForPendingRequestAsync(LogoutFailureGate.Task, cancellationToken);
+                    }
+
+                    throw new InvalidOperationException("The first overlapping logout failed before its notification.");
+                }
+
+                if (EmitAccountUpdatedDuringLogout && call == FailLogoutRequestAfterNotificationCall)
+                {
+                    await WaitForPendingRequestAsync(LogoutNotificationCompleted.Task, cancellationToken);
+                    if (LogoutFailureGate is not null)
+                    {
+                        await WaitForPendingRequestAsync(LogoutFailureGate.Task, cancellationToken);
+                    }
+
+                    throw new InvalidOperationException("The overlapping logout failed after its notification.");
+                }
+
+                if (EmitAccountUpdatedDuringLogout && call == EmitAccountUpdatedDuringLogoutCall)
+                {
+                    if (LogoutNotificationGate is not null)
+                    {
+                        await WaitForPendingRequestAsync(LogoutNotificationGate.Task, cancellationToken);
+                    }
+
+                    AccountEmail = null;
+                    await EmitNotificationAsync("account/updated", new { authMode = (string?)null });
+                    LogoutNotificationCompleted.TrySetResult();
+                }
+
+                if (LogoutResponseGate is not null)
+                {
+                    await WaitForPendingRequestAsync(LogoutResponseGate.Task, cancellationToken);
+                }
+
+                if (Volatile.Read(ref stopped) != 0)
+                {
+                    throw new JsonRpcConnectionClosedException("The fake connection stopped before the response arrived.");
+                }
             }
 
             JsonElement result = method switch
@@ -713,5 +1061,23 @@ public sealed class WorkerRpcOwnerBoundaryTests
                 CancellationToken.None) ?? Task.CompletedTask;
 
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+
+        public void Stop()
+        {
+            Interlocked.Exchange(ref stopped, 1);
+            stoppedTokenSource.Cancel();
+        }
+
+        private async Task WaitForPendingRequestAsync(Task task, CancellationToken cancellationToken)
+        {
+            try
+            {
+                await task.WaitAsync(cancellationToken).WaitAsync(stoppedTokenSource.Token);
+            }
+            catch (OperationCanceledException) when (stoppedTokenSource.IsCancellationRequested)
+            {
+                throw new JsonRpcConnectionClosedException("The fake connection stopped before the response arrived.");
+            }
+        }
     }
 }
