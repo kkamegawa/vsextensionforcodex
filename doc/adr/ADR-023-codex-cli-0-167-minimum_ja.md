@@ -2,8 +2,10 @@
 
 [English](ADR-023-codex-cli-0-167-minimum.md)
 
+> 現行 CLI 対応方針は 2026-11-20 の [ADR-024](ADR-024-codex-cli-0-169-minimum.md) に置き換わりました。この記録は元の 0.169 機能フェーズにおける判断履歴として保持します。
+
 - 日付: 2026-11-16
-- 状態: 承認済み
+- 状態: ADR-024 により置き換え済み
 - 追跡: [Issue #268](https://github.com/kkamegawa/vsextensionforcodex/issues/268)([#274](https://github.com/kkamegawa/vsextensionforcodex/issues/274)、[#276](https://github.com/kkamegawa/vsextensionforcodex/issues/276))。実装は [Issue #270](https://github.com/kkamegawa/vsextensionforcodex/issues/270) と [Issue #272](https://github.com/kkamegawa/vsextensionforcodex/issues/272)
 - 関連: [ADR-011](ADR-011-app-server-contract.md)、[ADR-020](ADR-020-app-server-0-166_ja.md)、[ADR-022](ADR-022-visual-studio-2026-dotnet-10_ja.md)
 

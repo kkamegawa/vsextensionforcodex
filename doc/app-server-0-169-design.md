@@ -4,6 +4,8 @@
 
 Tracking: [Issue #268](https://github.com/kkamegawa/vsextensionforcodex/issues/268) and child Issues [#273](https://github.com/kkamegawa/vsextensionforcodex/issues/273), [#274](https://github.com/kkamegawa/vsextensionforcodex/issues/274), [#275](https://github.com/kkamegawa/vsextensionforcodex/issues/275), [#276](https://github.com/kkamegawa/vsextensionforcodex/issues/276). Implementation: [#269](https://github.com/kkamegawa/vsextensionforcodex/issues/269) (platform), [#270](https://github.com/kkamegawa/vsextensionforcodex/issues/270) (contract), [#271](https://github.com/kkamegawa/vsextensionforcodex/issues/271) (.NET 10 and C# 14), [#272](https://github.com/kkamegawa/vsextensionforcodex/issues/272) (features). Approved on 2026-11-16.
 
+> Historical design for the original Phase 4 in #272, approved on 2026-11-16. The version policy and feature tiers below record the target at that time and do not define current CLI support. Current policy is in [ADR-024](adr/ADR-024-codex-cli-0-169-minimum.md) and [the 0.171 design](app-server-0-171-design.md). The feature requirements remain tracked by #272 and #302–#305.
+
 ## Purpose
 
 Support Codex App Server 0.167.0 through 0.169.0 on the Visual Studio 2026 and .NET 10 platform, and add four groups of features from those releases: model provider switching, approval UI improvements, thread management, and diagnostics and status display.

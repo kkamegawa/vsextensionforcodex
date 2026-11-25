@@ -190,8 +190,8 @@ public sealed partial class CodexSessionServiceTests
     }
 
     [TestMethod]
-    [DataRow("Codex Desktop/0.167.0 (Windows 10.0.26200; x86_64) xterm-256color (Codex Desktop; 1.0.0)")]
-    [DataRow("codex_vscode/0.167.0 (Windows 10.0.26200; x86_64) vscode/1.99.0")]
+    [DataRow("Codex Desktop/0.169.0 (Windows 10.0.26200; x86_64) xterm-256color (Codex Desktop; 1.0.0)")]
+    [DataRow("codex_vscode/0.169.0 (Windows 10.0.26200; x86_64) vscode/1.99.0")]
     public async Task InitializeReadsVersionWhenTheOriginatorContainsSpaces(string userAgent)
     {
         var connection = new RecordingConnection
@@ -204,8 +204,36 @@ public sealed partial class CodexSessionServiceTests
 
         await service.InitializeAsync(connection, Options(), CancellationToken.None);
 
-        Assert.AreEqual("0.167.0", service.CodexVersion);
+        Assert.AreEqual("0.169.0", service.CodexVersion);
         Assert.AreEqual(CodexFeatureTier.Baseline, service.FeatureTier);
+    }
+
+    [TestMethod]
+    [DataRow(false, "0.168.0", DisplayName = "local app-server 0.168.0")]
+    [DataRow(false, "0.168.9", DisplayName = "local app-server 0.168.9")]
+    [DataRow(false, "0.168.0+build.7", DisplayName = "local app-server 0.168.0 build metadata")]
+    [DataRow(true, "0.168.0", DisplayName = "remote app-server 0.168.0")]
+    [DataRow(true, "0.168.9", DisplayName = "remote app-server 0.168.9")]
+    [DataRow(true, "0.168.0+build.7", DisplayName = "remote app-server 0.168.0 build metadata")]
+    public async Task InitializeRejectsVersionsBelowMinimumBeforeInitializedForLocalAndRemote(bool remote, string version)
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "initialize"
+                ? JsonSerializer.SerializeToElement(new { userAgent = $"codex-cli/{version}" })
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        await using var service = CreateService();
+
+        UnsupportedCodexVersionException error = await Assert.ThrowsExactlyAsync<UnsupportedCodexVersionException>(
+            () => service.InitializeAsync(connection, Options(remote: remote), CancellationToken.None));
+
+        StringAssert.Contains(error.Message, $"version {version}");
+        StringAssert.Contains(error.Message, SupportedCodexVersions.Minimum);
+        Assert.IsNull(service.CodexVersion);
+        Assert.AreEqual(CodexFeatureTier.Unsupported, service.FeatureTier);
+        Assert.IsFalse(connection.Notifications.Any(notification => notification.Method == "initialized"));
+        CollectionAssert.AreEqual(new[] { "initialize" }, connection.Requests.Select(request => request.Method).ToArray());
     }
 
     [TestMethod]
@@ -265,18 +293,22 @@ public sealed partial class CodexSessionServiceTests
     }
 
     [TestMethod]
-    [DataRow("0.166.0", CodexFeatureTier.Unsupported, false)]
-    [DataRow("0.166.9", CodexFeatureTier.Unsupported, false)]
-    [DataRow("0.167.0-alpha.1", CodexFeatureTier.Unsupported, false)]
-    [DataRow("0.167.0", CodexFeatureTier.Baseline, false)]
-    [DataRow("0.167.2", CodexFeatureTier.Baseline, false)]
-    [DataRow("0.168.0-alpha.1", CodexFeatureTier.Baseline, false)]
-    [DataRow("0.168.0+build.7", CodexFeatureTier.Tier168, false)]
-    [DataRow("0.168.0", CodexFeatureTier.Tier168, false)]
-    [DataRow("0.169.0-alpha.1", CodexFeatureTier.Tier168, false)]
-    [DataRow("0.169.0+build.7", CodexFeatureTier.Tier169, false)]
-    [DataRow("0.169.0", CodexFeatureTier.Tier169, false)]
-    [DataRow("0.170.0", CodexFeatureTier.Tier169, true)]
+    [DataRow("0.168.0", CodexFeatureTier.Unsupported, false)]
+    [DataRow("0.168.0+build.7", CodexFeatureTier.Unsupported, false)]
+    [DataRow("0.168.9", CodexFeatureTier.Unsupported, false)]
+    [DataRow("0.169.0-alpha.1", CodexFeatureTier.Unsupported, false)]
+    [DataRow("0.169.0+build.7", CodexFeatureTier.Baseline, false)]
+    [DataRow("0.169.0", CodexFeatureTier.Baseline, false)]
+    [DataRow("0.169.1", CodexFeatureTier.Baseline, false)]
+    [DataRow("0.170.0-alpha.1", CodexFeatureTier.Baseline, false)]
+    [DataRow("0.170.0+build.7", CodexFeatureTier.Tier170, false)]
+    [DataRow("0.170.0", CodexFeatureTier.Tier170, false)]
+    [DataRow("0.170.1", CodexFeatureTier.Tier170, false)]
+    [DataRow("0.171.0-alpha.1", CodexFeatureTier.Tier170, false)]
+    [DataRow("0.171.0+build.7", CodexFeatureTier.Tier171, false)]
+    [DataRow("0.171.0", CodexFeatureTier.Tier171, false)]
+    [DataRow("0.171.1", CodexFeatureTier.Tier171, true)]
+    [DataRow("0.172.0", CodexFeatureTier.Tier171, true)]
     public async Task InitializeAssignsTheFeatureTierOrRejectsTheServer(string version, CodexFeatureTier expected, bool newer)
     {
         var connection = new RecordingConnection
@@ -4103,11 +4135,14 @@ public sealed partial class CodexSessionServiceTests
             null,
             skillCatalogStore ?? new NullSkillCatalogStore());
 
-    private static WorkerOptions Options(string? workingDirectory = null, bool experimentalApi = false) => new()
+    private static WorkerOptions Options(string? workingDirectory = null, bool experimentalApi = false, bool remote = false) => new()
     {
         WorkingDirectory = workingDirectory ?? Path.GetTempPath(),
         ExtensionVersion = "test",
         ExperimentalApi = experimentalApi,
+        RemoteEndpoint = remote ? "wss://app-server.example.invalid" : null,
+        LocalRoot = remote ? Path.GetTempPath() : null,
+        ServerRoot = remote ? "/srv/repo" : null,
     };
 
     private static JsonElement ParametersFor(RecordingConnection connection, string method)

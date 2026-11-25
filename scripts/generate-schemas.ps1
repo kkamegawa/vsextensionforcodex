@@ -1,6 +1,6 @@
 ﻿param(
     [string]$OutputDirectory = 'schemas',
-    # Defaults to the manifest target; only versions pinned in app-server-contract.json are accepted.
+    # Defaults to the manifest target; accepts contract pins and the declared minimum boundary.
     [string]$Version,
     [ValidateSet('stable', 'experimental')][string]$Surface = 'stable',
     [string]$CodexPath,
@@ -8,12 +8,13 @@
 )
 
 $ErrorActionPreference = 'Stop'
+Import-Module (Join-Path $PSScriptRoot 'ContractManifest.psm1') -Force -ErrorAction Stop
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $manifest = Get-Content -Raw -LiteralPath (Join-Path $root 'app-server-contract.json') | ConvertFrom-Json
 if ([string]::IsNullOrWhiteSpace($Version)) { $Version = $manifest.targetVersion }
-$pinnedVersions = @($manifest.releases.psobject.Properties.Name)
-if ($Version -notin $pinnedVersions) { throw "Unsupported schema contract version: $Version" }
-$release = $manifest.releases.$Version
+$schemaVersions = @(Get-CodexSchemaVersions -Manifest $manifest)
+if ($Version -notin $schemaVersions) { throw "Unsupported schema contract version: $Version" }
+$release = Get-CodexReleaseDefinition -Manifest $manifest -Version $Version
 $surfaceDefinition = $manifest.surfaces.$Surface
 if ($null -eq $release -or $null -eq $surfaceDefinition) { throw "Unsupported schema contract: $Version/$Surface" }
 $outputRoot = [IO.Path]::GetFullPath($OutputDirectory).TrimEnd([IO.Path]::DirectorySeparatorChar)
@@ -82,7 +83,7 @@ try {
     if (-not (Test-Path -LiteralPath $sentinel -PathType Leaf)) { throw "Codex did not emit the required schema sentinel: $sentinel" }
     $resolvedDestination = $destination.TrimEnd([IO.Path]::DirectorySeparatorChar)
     if (-not $resolvedDestination.StartsWith($outputRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase) -or
-        (Split-Path -Leaf (Split-Path -Parent $resolvedDestination)) -notin $pinnedVersions -or
+        (Split-Path -Leaf (Split-Path -Parent $resolvedDestination)) -notin $schemaVersions -or
         (Split-Path -Leaf $resolvedDestination) -notin @('stable', 'experimental')) { throw "Refusing to replace schema path outside the versioned schema cache: $destination" }
     $backup = "$destination.backup-$([guid]::NewGuid().ToString('N'))"
     $hadDestination = Test-Path -LiteralPath $destination

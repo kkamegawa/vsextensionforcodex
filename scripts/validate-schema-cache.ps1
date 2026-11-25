@@ -6,10 +6,11 @@
 )
 
 $ErrorActionPreference = 'Stop'
+Import-Module (Join-Path $PSScriptRoot 'ContractManifest.psm1') -Force -ErrorAction Stop
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $manifest = Get-Content -Raw -LiteralPath (Join-Path $root 'app-server-contract.json') | ConvertFrom-Json
 if ([string]::IsNullOrWhiteSpace($Version)) { $Version = $manifest.targetVersion }
-$release = $manifest.releases.$Version
+$release = Get-CodexReleaseDefinition -Manifest $manifest -Version $Version
 $surfaceDefinition = $manifest.surfaces.$Surface
 $outputRoot = [IO.Path]::GetFullPath($OutputDirectory).TrimEnd([IO.Path]::DirectorySeparatorChar)
 $destination = [IO.Path]::GetFullPath((Join-Path $outputRoot "$Version\$Surface"))

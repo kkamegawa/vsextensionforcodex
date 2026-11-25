@@ -555,6 +555,10 @@ The approved [design and plan](interaction-theme-plan.md) ([日本語](interacti
 
 The approved [design and plan](app-server-0-162-1-plan.md) ([日本語](app-server-0-162-1-plan_ja.md)) and [ADR-018](adr/ADR-018-app-server-0-162-1.md) ([日本語](adr/ADR-018-app-server-0-162-1_ja.md)) target CLI 0.162.1 with 0.159.1 as the regression fixture. Every goal mutation sends `origin: "user"`; MCP OAuth completion is matched by `loginId` with a server-name fallback for servers that omit it; skill paths are opaque catalog identifiers; partial answers, turn lineage and unknown error variants are read without contract changes. The local app-server can follow the Codex configuration, prefer MXC, or require MXC through allow-listed launch overrides that apply on the next local start and never reach remote profiles. Sandbox status reports the effective configuration and managed policy without claiming which backend ran a command. Tracking: [Issue #198](https://github.com/kkamegawa/vsextensionforcodex/issues/198), with #199 for the contract baseline, #200 for MXC, #201 for goal origin and OAuth, #202 for receive-side changes and #203 for validation and documentation.
 
-## Codex App Server 0.169.0 support
+## Current Codex App Server support
 
-[Codex App Server 0.169.0 Support Design](app-server-0-169-design.md) ([日本語](app-server-0-169-design_ja.md)) defines the version policy (minimum 0.167.0, target 0.169.0, regression 0.167.2 and 0.168.0), the feature tiers `Baseline`, `Tier168`, and `Tier169`, the schema-to-parser mapping, and four feature groups: model provider switching, approval UI improvements, thread management, and diagnostics and status display. Decisions are in [ADR-022](adr/ADR-022-visual-studio-2026-dotnet-10.md) and [ADR-023](adr/ADR-023-codex-cli-0-167-minimum.md). Tracking: [Issue #268](https://github.com/kkamegawa/vsextensionforcodex/issues/268).
+[The 0.171 support design](app-server-0-171-design.md) ([日本語](app-server-0-171-design_ja.md)) defines the current version policy and protocol changes.
+
+## Historical Codex App Server 0.169 feature phase
+
+The [0.169 feature design](app-server-0-169-design.md) ([日本語](app-server-0-169-design_ja.md)) records the historical Phase 4 scope and its version policy as approved on 2026-11-16. That old minimum and tier table are superseded by current [ADR-024](adr/ADR-024-codex-cli-0-169-minimum.md) and the [0.171 support design](app-server-0-171-design.md). The four feature groups remain tracked in #272 and #302–#305.

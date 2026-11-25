@@ -6,10 +6,12 @@
 )
 
 $ErrorActionPreference = 'Stop'
+Import-Module (Join-Path $PSScriptRoot 'ContractManifest.psm1') -Force -ErrorAction Stop
 $manifest = Get-Content -Raw -LiteralPath $ManifestPath | ConvertFrom-Json
-$expectedMethods = $manifest.methodsByVersion.$Version.$Surface
+$methodVersion = Get-CodexMethodVersion -Manifest $manifest -Version $Version
+$expectedMethods = $manifest.methodsByVersion.$methodVersion.$Surface
 if ($null -eq $expectedMethods) {
-    throw "The contract manifest has no method table for $Version/$Surface."
+    throw "The contract manifest has no method table for $methodVersion/$Surface (used to verify $Version/$Surface)."
 }
 
 function Get-MethodTable {
