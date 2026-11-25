@@ -54,6 +54,9 @@ Reuse the existing model catalog/default/hidden-default/reasoning/service-tier h
 - Require explicit elevated/unelevated mode and Start. Optional `cwd` is the active solution root validated by `LocalPathBoundary` and shown before Start, or null when no solution is open.
 - States: Not observed, Starting, Running, Succeeded, Failed, Unsupported, OutcomeUnknown. `started=true` is not success; `started=false` is not proof of success; completion may precede acknowledgement. Progress is indeterminate.
 - Allow one attempt per connection generation, including after failure or unknown outcome. Ignore stale or unsolicited completions. Bound and redact errors; do not retry automatically.
+- Render the Windows Sandbox panel as the first presentation-only row of the virtualized conversation list, so it scrolls with the transcript. Keep `Items` canonical and expose a separate UI projection; the panel row is not conversation history or persisted state.
+- Keep the empty-thread welcome content in the same scroll surface so it cannot cover the sandbox controls. Keep app-server notices and shell-command confirmation in the fixed status area. Preserve recycling virtualization and pixel scrolling.
+- This layout does not change sandbox preference persistence, backend selection, setup commands, or the next-local-server-start behavior.
 
 ## Additive 0.159.1 fields and exclusions
 

@@ -186,7 +186,7 @@ public sealed class InteractionThemePresentationTests
         XDocument document = LoadXaml();
         XElement transcript = document
             .Descendants(Presentation + "ListBox")
-            .Single(element => element.Attribute("ItemsSource")?.Value == "{Binding Items}");
+            .Single(element => element.Attribute("ItemsSource")?.Value == "{Binding TranscriptItems}");
         XElement rawPlanText = transcript
             .Descendants(Presentation + "TextBox")
             .Single(element => element.Attribute("Text")?.Value == "{Binding PlanDeltaText, Mode=OneWay}");

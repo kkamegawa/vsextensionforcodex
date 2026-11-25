@@ -1,5 +1,6 @@
 ﻿using System.Collections.Specialized;
 using System.Globalization;
+using System.Collections;
 using System.IO;
 using System.Reflection;
 using System.Runtime.Serialization;
@@ -107,6 +108,139 @@ public sealed partial class ViewModelTests
     }
 
     private static readonly string[] ExpectedWindowsSandboxBackendIds = ["follow", "preferMxc", "requireMxc", "disableMxc"];
+
+    [TestMethod]
+    public async Task TranscriptItems_MirrorCanonicalItemsAndKeepTheSyntheticHeaderOutOfStoredItems()
+    {
+        var bridge = new FakeWorkerBridge();
+        using var vm = new ChatViewModel(
+            bridge,
+            autoConnect: false,
+            settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        ChatItemViewModel header = vm.TranscriptItems.Single();
+        WindowsSandboxTranscriptHeaderPresentationViewModel headerPresentation = header.TranscriptHeaderPresentation!;
+        var headerPresentationChanges = new List<string?>();
+        headerPresentation.PropertyChanged += (_, e) => headerPresentationChanges.Add(e.PropertyName);
+        var first = new ChatItemViewModel("You", "first", ConversationEventKind.ItemStarted);
+        var second = new ChatItemViewModel("Codex", "second", ConversationEventKind.AgentMessageDelta);
+
+        Assert.IsTrue(header.IsWindowsSandboxPanelHeader);
+        Assert.AreSame(vm.WindowsSandboxBackends, headerPresentation.WindowsSandboxBackends);
+        Assert.IsNotNull(typeof(ChatItemViewModel).GetProperty(nameof(header.TranscriptHeaderPresentation))!
+            .GetCustomAttribute<DataMemberAttribute>());
+        Assert.IsTrue(typeof(WindowsSandboxTranscriptHeaderPresentationViewModel).IsDefined(typeof(DataContractAttribute), inherit: false));
+        Assert.IsNotNull(typeof(WindowsSandboxTranscriptHeaderPresentationViewModel)
+            .GetProperty(nameof(headerPresentation.SelectedWindowsSandboxBackendId))!
+            .GetCustomAttribute<DataMemberAttribute>());
+        MethodInfo ownerPropertyChanged = typeof(ChatViewModel).GetMethod("OnPropertyChanged", BindingFlags.NonPublic | BindingFlags.Instance)!;
+        ownerPropertyChanged.Invoke(vm, [string.Empty]);
+        CollectionAssert.Contains(headerPresentationChanges, string.Empty,
+            "An empty property name must forward the INotifyPropertyChanged all-properties notification.");
+        headerPresentationChanges.Clear();
+        Assert.AreEqual(0, vm.Items.Count);
+        Assert.IsTrue(vm.IsThreadEmpty);
+        Assert.IsNotNull(typeof(ChatViewModel).GetProperty(nameof(vm.TranscriptItems))!.GetCustomAttribute<DataMemberAttribute>());
+        Assert.IsNull(typeof(ChatViewModel).GetProperty(nameof(vm.Items))!.GetCustomAttribute<DataMemberAttribute>());
+
+        await bridge.PublishStateAsync(OwnerStatus("owner-a", 1, 4));
+        Assert.IsTrue(vm.ShowWindowsSandboxPanel);
+        CollectionAssert.Contains(headerPresentationChanges, nameof(headerPresentation.ShowWindowsSandboxPanel));
+        vm.Items.Add(first);
+        CollectionAssert.AreEqual(new[] { header, first }, vm.TranscriptItems.ToArray());
+        vm.Items.Add(second);
+        CollectionAssert.AreEqual(new[] { header, first, second }, vm.TranscriptItems.ToArray());
+        Assert.IsFalse(vm.IsThreadEmpty);
+
+        vm.Items.Move(1, 0);
+        CollectionAssert.AreEqual(new[] { header, second, first }, vm.TranscriptItems.ToArray());
+
+        var replacement = new ChatItemViewModel("Codex", "replacement", ConversationEventKind.AgentMessageDelta);
+        vm.Items[0] = replacement;
+        CollectionAssert.AreEqual(new[] { header, replacement, first }, vm.TranscriptItems.ToArray());
+
+        vm.Items.RemoveAt(1);
+        CollectionAssert.AreEqual(new[] { header, replacement }, vm.TranscriptItems.ToArray());
+
+        MethodInfo setConnectedProfile = typeof(ChatViewModel).GetMethod("SetConnectedProfileName", BindingFlags.NonPublic | BindingFlags.Instance)!;
+        setConnectedProfile.Invoke(vm, ["remote-profile"]);
+        Assert.IsFalse(vm.ShowWindowsSandboxPanel);
+        CollectionAssert.AreEqual(new[] { replacement }, vm.TranscriptItems.ToArray(),
+            "The synthetic row must leave a non-empty transcript when local controls are unavailable.");
+        setConnectedProfile.Invoke(vm, [null]);
+        CollectionAssert.AreEqual(new[] { header, replacement }, vm.TranscriptItems.ToArray(),
+            "The same stable header must return when local sandbox controls become visible.");
+
+        vm.Items.Clear();
+        CollectionAssert.AreEqual(new[] { header }, vm.TranscriptItems.ToArray());
+        Assert.IsTrue(vm.IsThreadEmpty);
+    }
+
+    [TestMethod]
+    public void TranscriptItems_MirrorRangeChangesAndRepairNonEmptyReset()
+    {
+        using var vm = new ChatViewModel(
+            new FakeWorkerBridge(),
+            autoConnect: false,
+            settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        var first = new ChatItemViewModel("You", "first", ConversationEventKind.ItemStarted);
+        var second = new ChatItemViewModel("Codex", "second", ConversationEventKind.AgentMessageDelta);
+        var third = new ChatItemViewModel("Codex", "third", ConversationEventKind.AgentMessageDelta);
+        var fourth = new ChatItemViewModel("Codex", "fourth", ConversationEventKind.AgentMessageDelta);
+        vm.Items.Add(first);
+        vm.Items.Add(fourth);
+
+        NotifyCollectionChangedEventHandler collectionHandler = CreateItemsCollectionHandler(vm);
+        vm.Items.CollectionChanged -= collectionHandler;
+        try
+        {
+            vm.Items.Insert(1, second);
+            vm.Items.Insert(2, third);
+        }
+        finally
+        {
+            vm.Items.CollectionChanged += collectionHandler;
+        }
+
+        InvokeMirrorTranscriptItems(vm, new NotifyCollectionChangedEventArgs(
+            NotifyCollectionChangedAction.Add,
+            new ArrayList { second, third },
+            1));
+        CollectionAssert.AreEqual(new[] { first, second, third, fourth }, vm.TranscriptItems.ToArray());
+
+        vm.Items.CollectionChanged -= collectionHandler;
+        try
+        {
+            vm.Items.RemoveAt(1);
+            vm.Items.RemoveAt(1);
+        }
+        finally
+        {
+            vm.Items.CollectionChanged += collectionHandler;
+        }
+
+        InvokeMirrorTranscriptItems(vm, new NotifyCollectionChangedEventArgs(
+            NotifyCollectionChangedAction.Remove,
+            new ArrayList { second, third },
+            1));
+        CollectionAssert.AreEqual(new[] { first, fourth }, vm.TranscriptItems.ToArray());
+
+        var stray = new ChatItemViewModel("Codex", "stale projection row", ConversationEventKind.AgentMessageDelta);
+        vm.TranscriptItems.Insert(1, stray);
+        InvokeMirrorTranscriptItems(vm, new NotifyCollectionChangedEventArgs(NotifyCollectionChangedAction.Reset));
+        CollectionAssert.AreEqual(new[] { first, fourth }, vm.TranscriptItems.ToArray());
+    }
+
+    private static NotifyCollectionChangedEventHandler CreateItemsCollectionHandler(ChatViewModel vm)
+    {
+        MethodInfo handler = typeof(ChatViewModel).GetMethod("OnItemsCollectionChanged", BindingFlags.NonPublic | BindingFlags.Instance)!;
+        return handler.CreateDelegate<NotifyCollectionChangedEventHandler>(vm);
+    }
+
+    private static void InvokeMirrorTranscriptItems(ChatViewModel vm, NotifyCollectionChangedEventArgs args)
+    {
+        MethodInfo mirror = typeof(ChatViewModel).GetMethod("MirrorTranscriptItems", BindingFlags.NonPublic | BindingFlags.Instance)!;
+        mirror.Invoke(vm, [args]);
+    }
 
     [TestMethod]
     public void WindowsSandboxBackendSelection_PersistsStableIdAndReportsPendingRestart()
