@@ -1874,7 +1874,11 @@ public sealed partial class ViewModelTests
     {
         string? dismissedOperationId = null;
         var vm = new McpServerAuthPresentationViewModel(
-            new McpServerAuthStatus { ServerName = "server", State = InteractionAuthState.ReauthenticationRequired },
+            new McpServerAuthStatus
+            {
+                ServerName = "server", ThreadId = "thread-original", IsRegistrationAmbiguous = true,
+                State = InteractionAuthState.ReauthenticationRequired,
+            },
             new SafeMarkdownService(),
             _ => Task.CompletedTask,
             operationId =>
@@ -1894,6 +1898,8 @@ public sealed partial class ViewModelTests
         }, new SafeMarkdownService());
 
         Assert.IsTrue(vm.CanDismiss);
+        Assert.AreEqual("thread-original", vm.ThreadId, "A login response without thread identity retains the request's pinned thread.");
+        Assert.IsTrue(vm.IsRegistrationAmbiguous, "A login response cannot resolve or clear an existing ambiguity.");
         Assert.IsTrue(changedProperties.Contains(nameof(vm.CanDismiss), StringComparer.Ordinal));
 
         await RunCommandAsync(vm.DismissCommand);
@@ -1914,6 +1920,801 @@ public sealed partial class ViewModelTests
         Assert.IsFalse(vm.CanDismiss);
         Assert.IsFalse(vm.DismissCommand.CanExecute);
         Assert.IsTrue(changedProperties.Contains(nameof(vm.CanDismiss), StringComparer.Ordinal));
+    }
+
+    [TestMethod]
+    public async Task McpAuthPresentation_KeepsSameNameRegistrationsDistinctAndRoutesSelectedScope()
+    {
+        McpServerAuthStatus? loginTarget = null;
+        var presentation = new InteractionAuthStatusPresentationViewModel(
+            new InteractionAuthStatus
+            {
+                McpServers =
+                [
+                    new McpServerAuthStatus
+                    {
+                        ServerName = "docs",
+                        ThreadId = "thread-1",
+                        HasRegistrationIdentity = true,
+                        EnvironmentId = "env-a",
+                        DisplayEnvironmentId = "env-a",
+                        State = InteractionAuthState.ReauthenticationRequired,
+                    },
+                    new McpServerAuthStatus
+                    {
+                        ServerName = "docs",
+                        ThreadId = "thread-1",
+                        HasRegistrationIdentity = true,
+                        EnvironmentId = "env-b",
+                        DisplayEnvironmentId = "env-b",
+                        State = InteractionAuthState.ReauthenticationRequired,
+                    },
+                ],
+            },
+            new SafeMarkdownService(),
+            server =>
+            {
+                loginTarget = server;
+                return Task.CompletedTask;
+            },
+            _ => Task.CompletedTask,
+            _ => Task.CompletedTask);
+
+        Assert.AreEqual(2, presentation.McpServers.Count);
+        Assert.AreEqual("env-a", presentation.McpServers[0].EnvironmentId);
+        Assert.AreEqual("env-b", presentation.McpServers[1].EnvironmentId);
+        Assert.AreEqual("docs (environment env-a)", presentation.McpServers[0].ServerName);
+        Assert.AreEqual("docs (environment env-b)", presentation.McpServers[1].ServerName);
+        await RunCommandAsync(presentation.McpServers[1].LoginCommand);
+        Assert.AreEqual("docs", loginTarget?.ServerName);
+        Assert.IsTrue(loginTarget?.HasRegistrationIdentity);
+        Assert.AreEqual("env-b", loginTarget?.EnvironmentId);
+        Assert.AreEqual("thread-1", loginTarget?.ThreadId);
+        Assert.IsTrue(presentation.McpServers[1].MatchesServer(new McpServerAuthStatus
+        {
+            ServerName = "docs",
+            HasRegistrationIdentity = true,
+            EnvironmentId = "env-b",
+            ThreadId = null,
+        }, expectedThreadId: "thread-1"), "A response without threadId should match its selected-thread row by stable server identity.");
+
+        var ambiguousPresentation = new InteractionAuthStatusPresentationViewModel(
+            new InteractionAuthStatus
+            {
+                McpServers =
+                [
+                    new McpServerAuthStatus { ServerName = "docs", ThreadId = "thread-1", State = InteractionAuthState.ReauthenticationRequired },
+                    new McpServerAuthStatus
+                    {
+                        ServerName = "docs",
+                        ThreadId = "thread-1",
+                        HasRegistrationIdentity = true,
+                        EnvironmentId = "env-a",
+                        State = InteractionAuthState.ReauthenticationRequired,
+                    },
+                ],
+            },
+            new SafeMarkdownService(),
+            _ => Task.CompletedTask,
+            _ => Task.CompletedTask,
+            _ => Task.CompletedTask);
+        McpServerAuthPresentationViewModel[] sameNameRows = ambiguousPresentation.McpServers.ToArray();
+        Assert.IsFalse(sameNameRows.Single(row => !row.HasRegistrationIdentity).LoginCommand.CanExecute,
+            "Only the row without sufficient registration identity is disabled when same-name candidates coexist.");
+        Assert.IsTrue(sameNameRows.Single(row => row.HasRegistrationIdentity).LoginCommand.CanExecute);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_ReadGatewayOAuth_OnlyListsMcpInventoryWhenCapabilityIsEnabled()
+    {
+        foreach (bool identityEnabled in new[] { false, true })
+        {
+            var bridge = new FakeWorkerBridge();
+            using var vm = new ChatViewModel(bridge, autoConnect: false);
+            await bridge.PublishStateAsync(ReadyOwnerStatus(1, "auth-owner-gate"));
+            bridge.ReadGatewayOAuthHandler = (_, _) => Task.FromResult(new InteractionAuthStatus
+            {
+                IsLocal = true,
+                IsSupported = true,
+                McpEnvironmentIdentityEnabled = identityEnabled,
+                McpServers = [new McpServerAuthStatus { ServerName = "docs", State = InteractionAuthState.ReauthenticationRequired }],
+            });
+
+            await RunCommandAsync(vm.ReadGatewayOAuthCommand);
+
+            Assert.AreEqual(identityEnabled ? 1 : 0, bridge.ListMcpServersCallCount,
+                "Only the 0.171 negotiated identity feature may issue inventory hydration calls.");
+        }
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_ReadGatewayOAuth_DisablesOnlyRowsWithoutResolvedIdentity()
+    {
+        foreach (string scenario in new[] { "zero", "multiple", "failure", "unique-missing-identity" })
+        {
+            var bridge = new FakeWorkerBridge();
+            using var vm = new ChatViewModel(bridge, autoConnect: false);
+            await bridge.PublishStateAsync(ReadyOwnerStatus(1, "auth-owner-hydration"));
+            vm.SelectedThread = new ThreadSummary { Id = "thread-hydration" };
+            bridge.ReadGatewayOAuthHandler = (_, _) => Task.FromResult(new InteractionAuthStatus
+            {
+                IsLocal = true,
+                IsSupported = true,
+                McpEnvironmentIdentityEnabled = true,
+                McpServers =
+                [
+                    new McpServerAuthStatus { ServerName = "docs-private", DisplayServerName = "[REDACTED]", State = InteractionAuthState.ReauthenticationRequired },
+                    new McpServerAuthStatus
+                    {
+                        ServerName = "safe-server",
+                        DisplayServerName = "safe-server",
+                        HasRegistrationIdentity = true,
+                        EnvironmentId = "private-environment",
+                        DisplayEnvironmentId = "safe-display-environment",
+                        State = InteractionAuthState.ReauthenticationRequired,
+                        OriginDisplay = "https://safe-origin.example.test",
+                    },
+                ],
+            });
+            bridge.ListMcpServersHandler = (_, _) => scenario switch
+            {
+                "zero" => Task.FromResult(new McpServerListResult()),
+                "multiple" => Task.FromResult(new McpServerListResult
+                {
+                    Servers =
+                    [
+                        new McpServerStatusInfo { Name = "docs-private", HasRegistrationIdentity = true, EnvironmentId = "environment-a" },
+                        new McpServerStatusInfo { Name = "docs-private", HasRegistrationIdentity = true, EnvironmentId = "environment-b" },
+                    ],
+                }),
+                "unique-missing-identity" => Task.FromResult(new McpServerListResult
+                {
+                    Servers = [new McpServerStatusInfo { Name = "docs-private" }],
+                }),
+                _ => Task.FromException<McpServerListResult>(new InvalidOperationException("private diagnostic payload")),
+            };
+            StartMcpOAuthLoginRequest? uniqueLoginRequest = null;
+            bridge.StartMcpOAuthLoginHandler = (request, _) =>
+            {
+                uniqueLoginRequest = request;
+                return Task.FromResult(new McpOAuthLoginStatus
+                {
+                    OperationId = "unique-hydration-operation",
+                    ServerName = request.ServerName,
+                    DisplayServerName = "[REDACTED]",
+                    ThreadId = request.ThreadId,
+                    State = InteractionAuthState.LoginPending,
+                });
+            };
+
+            var capturedDiagnostics = new System.Collections.Concurrent.ConcurrentQueue<string>();
+            using IDisposable diagnosticCapture = ExtensionDiagnostics.CaptureWrites(capturedDiagnostics.Enqueue);
+            await RunCommandAsync(vm.ReadGatewayOAuthCommand);
+
+            McpServerAuthPresentationViewModel[] rows = vm.InteractionAuthStatus!.McpServers.ToArray();
+            McpServerAuthPresentationViewModel unresolved = rows.Single(row => row.RawServerName == "docs-private");
+            McpServerAuthPresentationViewModel resolved = rows.Single(row => row.RawServerName == "safe-server");
+            Assert.AreEqual(scenario != "unique-missing-identity", unresolved.IsRegistrationAmbiguous, scenario);
+            Assert.AreEqual(scenario == "unique-missing-identity", unresolved.LoginCommand.CanExecute, scenario);
+            Assert.IsTrue(resolved.LoginCommand.CanExecute, "A separate registration with complete identity stays actionable.");
+            foreach (McpServerAuthPresentationViewModel row in rows)
+            {
+                foreach (string visibleValue in new[] { row.ServerName, row.StatusText, row.OriginDisplay })
+                {
+                    Assert.IsFalse(visibleValue.Contains("docs-private", StringComparison.Ordinal));
+                    Assert.IsFalse(visibleValue.Contains("private-environment", StringComparison.Ordinal));
+                    Assert.IsFalse(visibleValue.Contains("environment-a", StringComparison.Ordinal));
+                    Assert.IsFalse(visibleValue.Contains("environment-b", StringComparison.Ordinal));
+                    Assert.IsFalse(visibleValue.Contains("private diagnostic payload", StringComparison.Ordinal));
+                }
+            }
+            Assert.AreEqual(1, bridge.ListMcpServersCallCount, "Rows sharing a thread use one complete inventory read.");
+
+            if (scenario == "unique-missing-identity")
+            {
+                // Issue #329 permits one complete-inventory name match without environmentId; the pinned thread is sent so Worker preflight can confirm uniqueness again.
+                await RunCommandAsync(unresolved.LoginCommand);
+                Assert.IsNotNull(uniqueLoginRequest);
+                Assert.AreEqual("thread-hydration", uniqueLoginRequest!.ThreadId);
+                Assert.IsFalse(uniqueLoginRequest.HasRegistrationIdentity);
+            }
+
+            string? expectedDiagnostic = scenario switch
+            {
+                "zero" => "MCP sign-in disabled because identity hydration found no matching registration.",
+                "multiple" => "MCP sign-in disabled because identity hydration found multiple matching registrations.",
+                "failure" => "MCP sign-in disabled because registration identity hydration failed.",
+                _ => null,
+            };
+            if (expectedDiagnostic is not null)
+            {
+                string[] diagnosticLines = capturedDiagnostics.ToArray()
+                    .Where(line => line.Contains(expectedDiagnostic, StringComparison.Ordinal))
+                    .ToArray();
+                Assert.IsTrue(diagnosticLines.Length > 0, "Identity hydration outcomes are emitted through the diagnostics path.");
+            }
+            else
+            {
+                Assert.IsFalse(capturedDiagnostics.Any(line => line.Contains("identity hydration found", StringComparison.Ordinal)),
+                    "A unique inventory candidate without environmentId is issue-approved and must not be diagnosed as ambiguous.");
+            }
+
+            string[] allCapturedLines = capturedDiagnostics.ToArray();
+            Assert.IsTrue(allCapturedLines.All(line => !line.Contains("docs-private", StringComparison.Ordinal)
+                && !line.Contains("private-environment", StringComparison.Ordinal)
+                && !line.Contains("environment-a", StringComparison.Ordinal)
+                && !line.Contains("environment-b", StringComparison.Ordinal)
+                && !line.Contains("private diagnostic payload", StringComparison.Ordinal)
+                && !line.Contains(nameof(InvalidOperationException), StringComparison.Ordinal)
+                && !line.Contains(" at ", StringComparison.Ordinal)),
+                "Every captured diagnostic line excludes identity values, exception details, and stack traces.");
+        }
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_ReadGatewayOAuth_CoalescesConcurrentInventoryHydration()
+    {
+        var bridge = new FakeWorkerBridge();
+        using var vm = new ChatViewModel(bridge, autoConnect: false);
+        await bridge.PublishStateAsync(ReadyOwnerStatus(1, "auth-owner-concurrent-hydration"));
+        int statusReadCount = 0;
+        var bothStatusReads = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        bridge.ReadGatewayOAuthHandler = (_, _) =>
+        {
+            if (Interlocked.Increment(ref statusReadCount) == 2)
+            {
+                bothStatusReads.TrySetResult();
+            }
+
+            return Task.FromResult(new InteractionAuthStatus
+            {
+                IsLocal = true,
+                IsSupported = true,
+                McpEnvironmentIdentityEnabled = true,
+                McpServers = [new McpServerAuthStatus { ServerName = "docs", State = InteractionAuthState.ReauthenticationRequired }],
+            });
+        };
+        var inventory = new TaskCompletionSource<McpServerListResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var inventoryCallStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+#pragma warning disable VSTHRD003 // The test-controlled inventory task is the RPC completion returned to the ViewModel.
+        bridge.ListMcpServersHandler = (_, _) =>
+        {
+            inventoryCallStarted.TrySetResult();
+            return inventory.Task;
+        };
+#pragma warning restore VSTHRD003
+
+        MethodInfo readStatus = typeof(ChatViewModel).GetMethod("ReadGatewayOAuthAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
+        Task firstRead = (Task)readStatus.Invoke(vm, null)!;
+#pragma warning disable VSTHRD003 // This signal is completed by the two status reads started by this test.
+        await inventoryCallStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+#pragma warning restore VSTHRD003
+
+        // The first call is now blocked on its inventory task. Start the second only after that
+        // join point, so it must observe the in-flight entry before the shared RPC is released.
+        Task secondRead = (Task)readStatus.Invoke(vm, null)!;
+#pragma warning disable VSTHRD003 // This signal is completed by the two status reads started by this test.
+        await bothStatusReads.Task.WaitAsync(TimeSpan.FromSeconds(2));
+#pragma warning restore VSTHRD003
+
+        Assert.AreEqual(1, bridge.ListMcpServersCallCount, "Concurrent status reads for the same thread share one inventory request.");
+        inventory.TrySetResult(new McpServerListResult
+        {
+            Servers = [new McpServerStatusInfo { Name = "docs", HasRegistrationIdentity = true, EnvironmentId = "docs-env" }],
+        });
+#pragma warning disable VSTHRD003 // These tasks were started directly through the private async method above.
+        await Task.WhenAll(firstRead, secondRead).WaitAsync(TimeSpan.FromSeconds(2));
+#pragma warning restore VSTHRD003
+        Assert.AreEqual(1, bridge.ListMcpServersCallCount, "Only one inventory request is issued after both coalesced reads complete.");
+        Assert.IsTrue(vm.InteractionAuthStatus!.McpServers.Single().HasRegistrationIdentity);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_ReadGatewayOAuth_PinsHydratedThreadAndPreservesPendingAction()
+    {
+        var bridge = new FakeWorkerBridge();
+        using var vm = new ChatViewModel(bridge, autoConnect: false);
+        await bridge.PublishStateAsync(ReadyOwnerStatus(1, "auth-owner-thread-hydration"));
+        vm.SelectedThread = new ThreadSummary { Id = "thread-original" };
+        bridge.ReadGatewayOAuthHandler = (_, _) => Task.FromResult(new InteractionAuthStatus
+        {
+            IsLocal = true,
+            IsSupported = true,
+            McpEnvironmentIdentityEnabled = true,
+            McpServers =
+            [
+                new McpServerAuthStatus
+                {
+                    ServerName = "docs", DisplayServerName = "docs", ThreadId = "thread-original",
+                    HasRegistrationIdentity = true, EnvironmentId = "environment-original",
+                    State = InteractionAuthState.ReauthenticationRequired,
+                },
+                new McpServerAuthStatus
+                {
+                    ServerName = "docs", State = InteractionAuthState.ReauthenticationRequired,
+                    OpenAuthorizationActionId = "hydration-action",
+                },
+            ],
+        });
+        var inventoryCallStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var inventory = new TaskCompletionSource<McpServerListResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+#pragma warning disable VSTHRD003 // This test-controlled task represents the pending inventory RPC.
+        bridge.ListMcpServersHandler = (_, _) =>
+        {
+            inventoryCallStarted.TrySetResult();
+            return inventory.Task;
+        };
+#pragma warning restore VSTHRD003
+        StartMcpOAuthLoginRequest? loginRequest = null;
+        string? openedHydratedAction = null;
+        bridge.StartMcpOAuthLoginHandler = (request, _) =>
+        {
+            loginRequest = request;
+            return Task.FromResult(new McpOAuthLoginStatus { State = InteractionAuthState.LoginPending });
+        };
+        bridge.OpenAuthorizationUrlHandler = (request, _) =>
+        {
+            openedHydratedAction = request.ActionId;
+            return Task.CompletedTask;
+        };
+
+        MethodInfo readStatus = typeof(ChatViewModel).GetMethod("ReadGatewayOAuthAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
+        Task read = (Task)readStatus.Invoke(vm, null)!;
+#pragma warning disable VSTHRD003 // This signal is completed when the test-controlled inventory request starts.
+        await inventoryCallStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+#pragma warning restore VSTHRD003
+        McpServerAuthPresentationViewModel resolvedRow = vm.InteractionAuthStatus!.McpServers
+            .Single(row => row.HasRegistrationIdentity);
+        vm.SelectedThread = new ThreadSummary { Id = "thread-after-switch" };
+        inventory.TrySetResult(new McpServerListResult
+        {
+            Servers = [new McpServerStatusInfo { Name = "docs", HasRegistrationIdentity = true, EnvironmentId = "environment-original", DisplayEnvironmentId = "environment" }],
+        });
+#pragma warning disable VSTHRD003 // This task was started directly through the private async method above.
+        await read.WaitAsync(TimeSpan.FromSeconds(2));
+#pragma warning restore VSTHRD003
+
+        McpServerAuthPresentationViewModel row = vm.InteractionAuthStatus!.McpServers.Single();
+        Assert.AreSame(resolvedRow, row, "Hydration coalesces into the row already carrying this registration identity.");
+        Assert.AreEqual("thread-original", row.ThreadId);
+        Assert.AreEqual("environment-original", row.EnvironmentId);
+        Assert.AreEqual(InteractionAuthState.ReauthenticationRequired, row.State);
+        Assert.IsTrue(row.CanOpenAuthorization, "Hydration through the ViewModel must preserve the pending authorization action.");
+        await RunCommandAsync(row.LoginCommand);
+        Assert.IsNotNull(loginRequest);
+        Assert.AreEqual("thread-original", loginRequest!.ThreadId, "Changing SelectedThread while hydration is pending must not retarget the action.");
+        Assert.AreEqual("environment-original", loginRequest.EnvironmentId);
+        await RunCommandAsync(row.OpenAuthorizationCommand);
+        Assert.AreEqual("hydration-action", openedHydratedAction);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_ThreadlessStatusUpdatePreservesHydratedPendingMcpRow()
+    {
+        var bridge = new FakeWorkerBridge();
+        using var vm = new ChatViewModel(bridge, autoConnect: false);
+        await bridge.PublishStateAsync(ReadyOwnerStatus(1, "auth-owner-threadless-status-update"));
+        vm.SelectedThread = new ThreadSummary { Id = "thread-pinned" };
+        bridge.ReadGatewayOAuthHandler = (_, _) => Task.FromResult(new InteractionAuthStatus
+        {
+            IsLocal = true,
+            IsSupported = true,
+            McpEnvironmentIdentityEnabled = true,
+            McpServers = [new McpServerAuthStatus
+            {
+                ServerName = "docs", State = InteractionAuthState.ReauthenticationRequired,
+            }],
+        });
+        bridge.ListMcpServersHandler = (_, _) => Task.FromResult(new McpServerListResult
+        {
+            Servers = [new McpServerStatusInfo
+            {
+                Name = "docs", HasRegistrationIdentity = true, EnvironmentId = "environment-a", DisplayEnvironmentId = "safe-env",
+            }],
+        });
+        await RunCommandAsync(vm.ReadGatewayOAuthCommand);
+
+        McpServerAuthPresentationViewModel row = vm.InteractionAuthStatus!.McpServers.Single();
+        Assert.AreEqual("thread-pinned", row.ThreadId);
+        bridge.StartMcpOAuthLoginHandler = (request, _) => Task.FromResult(new McpOAuthLoginStatus
+        {
+            OperationId = "threadless-status-operation",
+            ServerName = request.ServerName,
+            DisplayServerName = "docs",
+            HasRegistrationIdentity = request.HasRegistrationIdentity,
+            EnvironmentId = request.EnvironmentId,
+            DisplayEnvironmentId = "safe-env",
+            ThreadId = null,
+            State = InteractionAuthState.LoginPending,
+            Message = "Sign-in is pending.",
+        });
+        await RunCommandAsync(row.LoginCommand);
+        Assert.IsTrue(row.CanDismiss);
+
+        await bridge.PublishInteractionAuthStatusAsync(new InteractionAuthStatus
+        {
+            IsLocal = true,
+            IsSupported = true,
+            McpEnvironmentIdentityEnabled = true,
+            McpServers = [new McpServerAuthStatus
+            {
+                ServerName = "docs", DisplayServerName = "docs", HasRegistrationIdentity = false,
+                EnvironmentId = null, DisplayEnvironmentId = null, ThreadId = null,
+                State = InteractionAuthState.LoginPending, Message = "Server startup is still pending.",
+            }],
+        });
+
+        McpServerAuthPresentationViewModel[] rows = vm.InteractionAuthStatus!.McpServers.ToArray();
+        Assert.AreEqual(1, rows.Length, "A threadless update uniquely matches the one hydrated server/environment row.");
+        Assert.AreSame(row, rows[0], "The existing row instance retains its local operation state.");
+        Assert.AreEqual("thread-pinned", rows[0].ThreadId, "A missing threadId on a later status update cannot erase the hydrated thread scope.");
+        Assert.IsTrue(rows[0].HasRegistrationIdentity, "A later identity-less status update must not erase the hydrated environment scope.");
+        Assert.AreEqual("environment-a", rows[0].EnvironmentId);
+        Assert.IsTrue(rows[0].CanDismiss, "A threadless status update must not drop the pending operation ID.");
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_ThreadlessAndIdentitylessStatusesKeepExactScopedRowsSeparate()
+    {
+        var bridge = new FakeWorkerBridge();
+        using var vm = new ChatViewModel(bridge, autoConnect: false);
+        await bridge.PublishStateAsync(ReadyOwnerStatus(1, "auth-owner-scoped-status-separation"));
+
+        await bridge.PublishInteractionAuthStatusAsync(new InteractionAuthStatus
+        {
+            IsLocal = true,
+            IsSupported = true,
+            McpEnvironmentIdentityEnabled = true,
+            McpServers =
+            [
+                new McpServerAuthStatus
+                {
+                    ServerName = "docs", ThreadId = "thread-a", HasRegistrationIdentity = true,
+                    EnvironmentId = "environment-a", State = InteractionAuthState.LoginPending,
+                    OpenAuthorizationActionId = "scoped-action-a",
+                },
+                new McpServerAuthStatus
+                {
+                    ServerName = "docs", ThreadId = "thread-b", HasRegistrationIdentity = true,
+                    EnvironmentId = "environment-a", State = InteractionAuthState.LoginPending,
+                    OpenAuthorizationActionId = "scoped-action-b",
+                },
+            ],
+        });
+
+        await bridge.PublishInteractionAuthStatusAsync(new InteractionAuthStatus
+        {
+            IsLocal = true,
+            IsSupported = true,
+            McpEnvironmentIdentityEnabled = true,
+            McpServers =
+            [
+                new McpServerAuthStatus
+                {
+                    ServerName = "docs", ThreadId = "thread-a", State = InteractionAuthState.Failed,
+                    Message = "Unscoped startup failure.",
+                },
+                new McpServerAuthStatus
+                {
+                    ServerName = "docs", ThreadId = null, State = InteractionAuthState.Failed,
+                    Message = "Threadless startup failure.",
+                },
+                new McpServerAuthStatus
+                {
+                    ServerName = "docs", ThreadId = "thread-a", HasRegistrationIdentity = true,
+                    EnvironmentId = "environment-a", State = InteractionAuthState.LoginPending,
+                    OpenAuthorizationActionId = "scoped-action-a",
+                },
+                new McpServerAuthStatus
+                {
+                    ServerName = "docs", ThreadId = "thread-b", HasRegistrationIdentity = true,
+                    EnvironmentId = "environment-a", State = InteractionAuthState.LoginPending,
+                    OpenAuthorizationActionId = "scoped-action-b",
+                },
+            ],
+        });
+
+        McpServerAuthPresentationViewModel[] rows = vm.InteractionAuthStatus!.McpServers.ToArray();
+        McpServerAuthPresentationViewModel threadA = rows.Single(row => row.ThreadId == "thread-a" && row.HasRegistrationIdentity);
+        McpServerAuthPresentationViewModel threadB = rows.Single(row => row.ThreadId == "thread-b" && row.HasRegistrationIdentity);
+        Assert.IsTrue(threadA.CanOpenAuthorization);
+        Assert.IsTrue(threadB.CanOpenAuthorization);
+        Assert.AreEqual(InteractionAuthState.LoginPending, threadA.State);
+        Assert.AreEqual(InteractionAuthState.LoginPending, threadB.State);
+        Assert.IsTrue(rows.Any(row => !row.HasRegistrationIdentity && row.IsRegistrationAmbiguous && row.ThreadId == "thread-a"));
+        Assert.IsTrue(rows.Any(row => !row.HasRegistrationIdentity && row.IsRegistrationAmbiguous && row.ThreadId is null));
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_LegacyThreadlessUpdateDoesNotMarkRowsAmbiguous()
+    {
+        var bridge = new FakeWorkerBridge();
+        using var vm = new ChatViewModel(bridge, autoConnect: false);
+        await bridge.PublishStateAsync(ReadyOwnerStatus(1, "auth-owner-legacy-threadless-update"));
+        await bridge.PublishInteractionAuthStatusAsync(new InteractionAuthStatus
+        {
+            IsLocal = true,
+            IsSupported = true,
+            McpEnvironmentIdentityEnabled = false,
+            McpServers =
+            [
+                new McpServerAuthStatus { ServerName = "docs", ThreadId = "thread-a", State = InteractionAuthState.ReauthenticationRequired },
+                new McpServerAuthStatus { ServerName = "docs", ThreadId = "thread-b", State = InteractionAuthState.ReauthenticationRequired },
+            ],
+        });
+
+        await bridge.PublishInteractionAuthStatusAsync(new InteractionAuthStatus
+        {
+            IsLocal = true,
+            IsSupported = true,
+            McpEnvironmentIdentityEnabled = false,
+            McpServers = [new McpServerAuthStatus
+            {
+                ServerName = "docs", ThreadId = null, State = InteractionAuthState.Failed,
+            }],
+        });
+
+        McpServerAuthPresentationViewModel[] rows = vm.InteractionAuthStatus!.McpServers.ToArray();
+        Assert.AreEqual(2, rows.Length, "A legacy threadless status retains matching historical rows.");
+        Assert.AreEqual("thread-a", rows.Single(row => row.ThreadId == "thread-a").ThreadId);
+        Assert.AreEqual("thread-b", rows.Single(row => row.ThreadId == "thread-b").ThreadId);
+        Assert.IsTrue(rows.All(row => row.State == InteractionAuthState.ReauthenticationRequired),
+            "A threadless legacy update is not applied to a row from an unknown thread.");
+        Assert.IsTrue(rows.All(row => !row.IsRegistrationAmbiguous && row.CanStartLogin),
+            "Legacy routing has no environment identity ambiguity state and must not permanently disable sign-in.");
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_ReadGatewayOAuth_PreservesWorkerAmbiguityDuringHydration()
+    {
+        var bridge = new FakeWorkerBridge();
+        using var vm = new ChatViewModel(bridge, autoConnect: false);
+        await bridge.PublishStateAsync(ReadyOwnerStatus(1, "auth-owner-worker-ambiguity"));
+        bridge.ReadGatewayOAuthHandler = (_, _) => Task.FromResult(new InteractionAuthStatus
+        {
+            IsLocal = true,
+            IsSupported = true,
+            McpEnvironmentIdentityEnabled = true,
+            McpServers = [new McpServerAuthStatus
+            {
+                ServerName = "docs-private", DisplayServerName = "[REDACTED]", ThreadId = "thread-worker",
+                IsRegistrationAmbiguous = true, State = InteractionAuthState.ReauthenticationRequired,
+            }],
+        });
+        bridge.ListMcpServersHandler = (_, _) => Task.FromResult(new McpServerListResult
+        {
+            Servers = [new McpServerStatusInfo { Name = "docs-private", HasRegistrationIdentity = true, EnvironmentId = "environment-only" }],
+        });
+
+        await RunCommandAsync(vm.ReadGatewayOAuthCommand);
+
+        McpServerAuthPresentationViewModel row = vm.InteractionAuthStatus!.McpServers.Single();
+        Assert.IsTrue(row.IsRegistrationAmbiguous, "Hydration cannot clear an ambiguity explicitly supplied by the Worker.");
+        Assert.IsFalse(row.LoginCommand.CanExecute);
+        Assert.AreEqual(0, bridge.ListMcpServersCallCount, "An authoritative Worker ambiguity is retained without attempting to overwrite it with a UI name match.");
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_StatusNotificationMarksDuplicateIdentitylessRowsAmbiguous()
+    {
+        var bridge = new FakeWorkerBridge();
+        using var vm = new ChatViewModel(bridge, autoConnect: false);
+        await bridge.PublishStateAsync(ReadyOwnerStatus(1, "auth-owner-duplicate-mcp-notification"));
+
+        await bridge.PublishInteractionAuthStatusAsync(new InteractionAuthStatus
+        {
+            IsLocal = true,
+            IsSupported = true,
+            McpEnvironmentIdentityEnabled = true,
+            McpServers =
+            [
+                new McpServerAuthStatus
+                {
+                    ServerName = "docs-private", DisplayServerName = "[REDACTED]", ThreadId = "thread-duplicate",
+                    State = InteractionAuthState.ReauthenticationRequired,
+                },
+                new McpServerAuthStatus
+                {
+                    ServerName = "docs-private", DisplayServerName = "[REDACTED]", ThreadId = "thread-duplicate",
+                    State = InteractionAuthState.ReauthenticationRequired,
+                },
+            ],
+        });
+
+        McpServerAuthPresentationViewModel[] rows = vm.InteractionAuthStatus!.McpServers.ToArray();
+        Assert.AreEqual(1, rows.Length, "The presentation coalesces duplicate name/thread notifications into one visible action row.");
+        Assert.IsTrue(rows[0].IsRegistrationAmbiguous,
+            "SetInteractionAuthStatus notification updates must keep an identity-less same-name row ambiguous.");
+        Assert.IsFalse(rows[0].LoginCommand.CanExecute,
+            "A Worker status notification without a registration identity cannot enable a name-only action.");
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_GatewayLoginResultPreservesExistingMcpIdentityAndAmbiguity()
+    {
+        var bridge = new FakeWorkerBridge();
+        using var vm = new ChatViewModel(bridge, autoConnect: false);
+        await bridge.PublishStateAsync(ReadyOwnerStatus(1, "auth-owner-gateway-login-mcp-rows"));
+        vm.SelectedThread = new ThreadSummary { Id = "thread-original" };
+        bridge.ReadGatewayOAuthHandler = (_, _) => Task.FromResult(new InteractionAuthStatus
+        {
+            IsLocal = true,
+            IsSupported = true,
+            State = InteractionAuthState.ReauthenticationRequired,
+            McpEnvironmentIdentityEnabled = true,
+            McpServers =
+            [
+                new McpServerAuthStatus
+                {
+                    ServerName = "docs-private", DisplayServerName = "[REDACTED]", ThreadId = "thread-original",
+                    HasRegistrationIdentity = true, EnvironmentId = "environment-private", DisplayEnvironmentId = "safe-env",
+                    State = InteractionAuthState.ReauthenticationRequired,
+                },
+                new McpServerAuthStatus
+                {
+                    ServerName = "docs-private", DisplayServerName = "[REDACTED]", ThreadId = "thread-original",
+                    IsRegistrationAmbiguous = true, State = InteractionAuthState.ReauthenticationRequired,
+                },
+            ],
+        });
+        await RunCommandAsync(vm.ReadGatewayOAuthCommand);
+        McpServerAuthPresentationViewModel[] before = vm.InteractionAuthStatus!.McpServers.ToArray();
+        bridge.StartMcpOAuthLoginHandler = (request, _) => Task.FromResult(new McpOAuthLoginStatus
+        {
+            OperationId = "mcp-operation-pending",
+            ServerName = request.ServerName,
+            DisplayServerName = "[REDACTED]",
+            ThreadId = request.ThreadId,
+            HasRegistrationIdentity = request.HasRegistrationIdentity,
+            EnvironmentId = request.EnvironmentId,
+            DisplayEnvironmentId = "safe-env",
+            State = InteractionAuthState.LoginPending,
+            Message = "MCP login is pending.",
+        });
+        await RunCommandAsync(before[0].LoginCommand);
+        Assert.IsTrue(before[0].CanDismiss, "The active MCP operation should retain its dismiss action before a gateway refresh.");
+        Assert.AreEqual(2, vm.InteractionAuthStatus!.McpServers.Count,
+            "A login result must not coalesce an already ambiguous same-name row into a resolved environment row.");
+        bridge.LoginGatewayOAuthHandler = (_, _) => Task.FromResult(new InteractionAuthStatus
+        {
+            IsLocal = true,
+            IsSupported = true,
+            State = InteractionAuthState.LoginPending,
+            Message = "Gateway login pending",
+        });
+
+        await RunCommandAsync(vm.LoginGatewayOAuthCommand);
+
+        McpServerAuthPresentationViewModel[] after = vm.InteractionAuthStatus!.McpServers.ToArray();
+        Assert.AreEqual(2, after.Length);
+        Assert.AreSame(before[0], after[0], "Gateway status refresh must update gateway fields without rebuilding MCP rows.");
+        Assert.IsTrue(after[0].CanDismiss, "Gateway refresh must preserve the operation ID and dismiss action for LoginPending MCP rows.");
+        Assert.AreEqual("thread-original", after[0].ThreadId);
+        Assert.AreEqual("environment-private", after[0].EnvironmentId);
+        Assert.IsTrue(after[0].HasRegistrationIdentity);
+        Assert.IsFalse(after[0].IsRegistrationAmbiguous);
+        Assert.AreEqual("thread-original", after[1].ThreadId);
+        Assert.IsTrue(after[1].IsRegistrationAmbiguous);
+        Assert.IsFalse(after[1].LoginCommand.CanExecute);
+        Assert.AreEqual(before[0].EnvironmentId, after[0].EnvironmentId, "Gateway result must retain MCP routing state.");
+        Assert.IsFalse(after.SelectMany(row => new[] { row.ServerName, row.StatusText, row.OriginDisplay })
+            .Any(value => value.Contains("docs-private", StringComparison.Ordinal)
+                || value.Contains("environment-private", StringComparison.Ordinal)));
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_ReadGatewayOAuth_DoesNotMarkResolvedSameNameRegistrationAmbiguous()
+    {
+        var bridge = new FakeWorkerBridge();
+        using var vm = new ChatViewModel(bridge, autoConnect: false);
+        await bridge.PublishStateAsync(ReadyOwnerStatus(1, "auth-owner-same-name-hydration"));
+        vm.SelectedThread = new ThreadSummary { Id = "thread-1" };
+        bridge.ReadGatewayOAuthHandler = (_, _) => Task.FromResult(new InteractionAuthStatus
+        {
+            IsLocal = true,
+            IsSupported = true,
+            McpEnvironmentIdentityEnabled = true,
+            McpServers =
+            [
+                new McpServerAuthStatus { ServerName = "docs-private", DisplayServerName = "[REDACTED]", ThreadId = "thread-1", State = InteractionAuthState.ReauthenticationRequired },
+                new McpServerAuthStatus
+                {
+                    ServerName = "docs-private", DisplayServerName = "[REDACTED]", ThreadId = "thread-1", HasRegistrationIdentity = true,
+                    EnvironmentId = "private-env-a", DisplayEnvironmentId = "safe-a", State = InteractionAuthState.ReauthenticationRequired,
+                },
+            ],
+        });
+        bridge.ListMcpServersHandler = (_, _) => Task.FromResult(new McpServerListResult
+        {
+            Servers =
+            [
+                new McpServerStatusInfo { Name = "docs-private", HasRegistrationIdentity = true, EnvironmentId = "private-env-a", DisplayEnvironmentId = "safe-a" },
+                new McpServerStatusInfo { Name = "docs-private", HasRegistrationIdentity = true, EnvironmentId = "private-env-b", DisplayEnvironmentId = "safe-b" },
+            ],
+        });
+
+        await RunCommandAsync(vm.ReadGatewayOAuthCommand);
+
+        McpServerAuthPresentationViewModel[] rows = vm.InteractionAuthStatus!.McpServers.ToArray();
+        McpServerAuthPresentationViewModel resolved = rows.Single(row => row.EnvironmentId == "private-env-a");
+        McpServerAuthPresentationViewModel unresolved = rows.Single(row => !row.HasRegistrationIdentity);
+        Assert.IsFalse(resolved.ServerName.Contains("docs-private", StringComparison.Ordinal));
+        Assert.IsFalse(resolved.ServerName.Contains("private-env-a", StringComparison.Ordinal));
+        Assert.IsTrue(resolved.ServerName.Contains("[REDACTED]", StringComparison.Ordinal));
+        Assert.IsFalse(resolved.IsRegistrationAmbiguous, "Hydration of a same-name unresolved row must not disable an already-resolved environment row.");
+        Assert.IsTrue(resolved.LoginCommand.CanExecute);
+        Assert.IsTrue(unresolved.IsRegistrationAmbiguous);
+        Assert.IsFalse(unresolved.LoginCommand.CanExecute);
+        Assert.IsFalse(rows.SelectMany(row => new[] { row.ServerName, row.StatusText, row.OriginDisplay })
+            .Any(value => value.Contains("docs-private", StringComparison.Ordinal)
+                || value.Contains("private-env-a", StringComparison.Ordinal)
+                || value.Contains("private-env-b", StringComparison.Ordinal)),
+            "All visible row properties must omit both raw identities and diagnostic environment values.");
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_LegacyLoginResponseAfterThreadSwitchUpdatesOnlyOriginalServerRow()
+    {
+        var bridge = new FakeWorkerBridge();
+        using var vm = new ChatViewModel(bridge, autoConnect: false);
+        await bridge.PublishStateAsync(ReadyOwnerStatus(1, "auth-owner-legacy-thread-switch"));
+        vm.SelectedThread = new ThreadSummary { Id = "thread-original" };
+        bridge.ReadGatewayOAuthHandler = (_, _) => Task.FromResult(new InteractionAuthStatus
+        {
+            IsLocal = true,
+            IsSupported = true,
+            McpEnvironmentIdentityEnabled = false,
+            McpServers =
+            [
+                new McpServerAuthStatus { ServerName = "docs", DisplayServerName = "docs", ThreadId = "thread-original", State = InteractionAuthState.ReauthenticationRequired },
+                new McpServerAuthStatus { ServerName = "docs", DisplayServerName = "docs", ThreadId = "thread-other", State = InteractionAuthState.ReauthenticationRequired },
+            ],
+        });
+        await RunCommandAsync(vm.ReadGatewayOAuthCommand);
+
+        var started = new TaskCompletionSource<StartMcpOAuthLoginRequest>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var response = new TaskCompletionSource<McpOAuthLoginStatus>(TaskCreationOptions.RunContinuationsAsynchronously);
+        string? openedActionId = null;
+        bridge.OpenAuthorizationUrlHandler = (request, _) =>
+        {
+            openedActionId = request.ActionId;
+            return Task.CompletedTask;
+        };
+#pragma warning disable VSTHRD003 // The test-controlled response represents the pending login RPC.
+        bridge.StartMcpOAuthLoginHandler = (request, _) =>
+        {
+            started.TrySetResult(request);
+            return response.Task;
+        };
+#pragma warning restore VSTHRD003
+        McpServerAuthPresentationViewModel original = vm.InteractionAuthStatus!.McpServers.Single(row => row.ThreadId == "thread-original");
+        Assert.IsTrue(original.LoginCommand.CanExecute, "The selected legacy authentication row should allow login.");
+        Task login = RunCommandAsync(original.LoginCommand);
+#pragma warning disable VSTHRD003 // This signal is completed by the pending login RPC started by the command.
+        StartMcpOAuthLoginRequest request = await started.Task.WaitAsync(TimeSpan.FromSeconds(2));
+#pragma warning restore VSTHRD003
+        Assert.AreEqual("thread-original", request.ThreadId);
+
+        vm.SelectedThread = new ThreadSummary { Id = "thread-other" };
+        response.TrySetResult(new McpOAuthLoginStatus
+        {
+            OperationId = "legacy-operation",
+            ServerName = "docs",
+            DisplayServerName = "docs",
+            ThreadId = null,
+            State = InteractionAuthState.LoginPending,
+            OpenAuthorizationActionId = "legacy-action",
+        });
+#pragma warning disable VSTHRD003 // This task represents the login command started above.
+        await login.WaitAsync(TimeSpan.FromSeconds(2));
+#pragma warning restore VSTHRD003
+
+        Assert.IsTrue(original.CanOpenAuthorization);
+        await RunCommandAsync(original.OpenAuthorizationCommand);
+        Assert.AreEqual("legacy-action", openedActionId, "The login result must pass the action ID installed by the VM to the worker bridge.");
+        McpServerAuthPresentationViewModel other = vm.InteractionAuthStatus!.McpServers.Single(row => row.ThreadId == "thread-other");
+        Assert.AreEqual(InteractionAuthState.ReauthenticationRequired, other.State);
+        Assert.IsFalse(other.CanOpenAuthorization, "A legacy response without thread identity must not update another thread's same-name row.");
     }
 
     [TestMethod]
@@ -11167,8 +11968,17 @@ public sealed partial class ViewModelTests
             });
         }
 
+        private int listMcpServersCallCount;
+
+        public int ListMcpServersCallCount => Volatile.Read(ref listMcpServersCallCount);
+
+        public Func<ListMcpServersRequest, CancellationToken, Task<McpServerListResult>>? ListMcpServersHandler { get; set; }
+
         public Task<McpServerListResult> ListMcpServersAsync(ListMcpServersRequest request, CancellationToken cancellationToken)
-            => Task.FromResult(new McpServerListResult());
+        {
+            Interlocked.Increment(ref listMcpServersCallCount);
+            return ListMcpServersHandler?.Invoke(request, cancellationToken) ?? Task.FromResult(new McpServerListResult());
+        }
 
         public Task<ListSkillsResult> ListSkillsAsync(ListSkillsRequest request, CancellationToken cancellationToken)
         {
@@ -11219,16 +12029,22 @@ public sealed partial class ViewModelTests
         }
 
         public Task<InteractionAuthStatus> LoginGatewayOAuthAsync(LoginGatewayOAuthRequest request, CancellationToken cancellationToken)
-            => Task.FromResult(new InteractionAuthStatus());
+            => LoginGatewayOAuthHandler?.Invoke(request, cancellationToken) ?? Task.FromResult(new InteractionAuthStatus());
+
+        public Func<LoginGatewayOAuthRequest, CancellationToken, Task<InteractionAuthStatus>>? LoginGatewayOAuthHandler { get; set; }
 
         public Task<InteractionAuthStatus> CancelGatewayOAuthAsync(CancelGatewayOAuthRequest request, CancellationToken cancellationToken)
             => Task.FromResult(new InteractionAuthStatus());
 
         public Task OpenAuthorizationUrlAsync(OpenAuthorizationUrlRequest request, CancellationToken cancellationToken)
-            => Task.CompletedTask;
+            => OpenAuthorizationUrlHandler?.Invoke(request, cancellationToken) ?? Task.CompletedTask;
+
+        public Func<OpenAuthorizationUrlRequest, CancellationToken, Task>? OpenAuthorizationUrlHandler { get; set; }
+
+        public Func<StartMcpOAuthLoginRequest, CancellationToken, Task<McpOAuthLoginStatus>>? StartMcpOAuthLoginHandler { get; set; }
 
         public Task<McpOAuthLoginStatus> StartMcpOAuthLoginAsync(StartMcpOAuthLoginRequest request, CancellationToken cancellationToken)
-            => Task.FromResult(new McpOAuthLoginStatus());
+            => StartMcpOAuthLoginHandler?.Invoke(request, cancellationToken) ?? Task.FromResult(new McpOAuthLoginStatus());
 
         public Task DismissMcpOAuthLoginAsync(DismissMcpOAuthLoginRequest request, CancellationToken cancellationToken)
             => Task.CompletedTask;

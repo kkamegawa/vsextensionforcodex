@@ -9,6 +9,7 @@ namespace Codex.VisualStudio.Extension;
 internal static partial class ExtensionDiagnostics
 {
     private static readonly Lock FileLock = new();
+    private static readonly AsyncLocal<Action<string>?> CaptureSink = new();
 
     public static string LogPath { get; } = Path.Combine(
         Path.GetTempPath(),
@@ -21,6 +22,15 @@ internal static partial class ExtensionDiagnostics
             ? string.Empty
             : $" exception={exception.GetType().FullName} message={Sanitize(exception.Message)}";
         string line = $"{DateTimeOffset.Now:O} pid={Environment.ProcessId} [EXTENSION] {Sanitize(stage)}{detail}";
+        try
+        {
+            CaptureSink.Value?.Invoke(line);
+        }
+        catch
+        {
+            // Diagnostic capture must never alter extension behavior.
+        }
+
         Debug.WriteLine(line);
         try
         {
@@ -33,6 +43,24 @@ internal static partial class ExtensionDiagnostics
         catch
         {
             // Diagnostics must never alter extension behavior.
+        }
+    }
+
+    internal static IDisposable CaptureWrites(Action<string> sink)
+    {
+        ArgumentNullException.ThrowIfNull(sink);
+        Action<string>? previous = CaptureSink.Value;
+        CaptureSink.Value = sink;
+        return new CaptureScope(previous);
+    }
+
+    private sealed class CaptureScope(Action<string>? previous) : IDisposable
+    {
+        private Action<string>? previousSink = previous;
+
+        public void Dispose()
+        {
+            CaptureSink.Value = Interlocked.Exchange(ref previousSink, null);
         }
     }
 

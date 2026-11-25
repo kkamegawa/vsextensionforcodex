@@ -64,6 +64,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
     // are unique for the ViewModel lifetime, so a request that outlives an owner reset can never
     // release or match an update started after the reset.
     private readonly ConcurrentDictionary<string, long> threadReadStateUpdatesInFlight = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<McpInventoryScope, Task<McpServerListResult>> mcpInventoryReadsInFlight = new();
     private long lastThreadReadStateRequestToken;
     // OnUiAsync runs inline on the calling thread in the OOP host, so worker notifications and
     // response continuations can interleave. This gate makes each check-then-apply step on the
@@ -1573,6 +1574,8 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         long ConnectionGeneration);
 
     private readonly record struct LocalTurnKey(OwnerSnapshot Owner, string ThreadId, string TurnId);
+
+    private readonly record struct McpInventoryScope(OwnerSnapshot Owner, string? ThreadId);
 
     private readonly record struct InterruptibilityDiagnostic(
         WorkerConnectionState State,
@@ -8979,7 +8982,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             InteractionAuthStatus = new InteractionAuthStatusPresentationViewModel(
                 status,
                 markdown,
-                serverName => StartMcpOAuthLoginAsync(serverName, owner),
+                server => StartMcpOAuthLoginAsync(server, owner),
                 operationId => DismissMcpOAuthLoginAsync(operationId, owner),
                 actionId => OpenAuthorizationUrlAsync(actionId, owner));
         }
@@ -9016,11 +9019,13 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
     private async Task ReadGatewayOAuthAsync()
     {
         OwnerSnapshot owner = CaptureOwnerSnapshot();
+        string? selectedThreadId = null;
         await OnUiAsync(() =>
         {
             if (IsCurrentOwner(owner))
             {
                 IsInteractionAuthStatusExpanded = true;
+                selectedThreadId = SelectedThread?.Id;
             }
         }).ConfigureAwait(false);
 
@@ -9029,6 +9034,17 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             InteractionAuthStatus result = await bridge.ReadGatewayOAuthAsync(
                 StampOwner(new ReadGatewayOAuthRequest(), owner),
                 lifetime.Token).ConfigureAwait(false);
+            McpServerAuthStatus[] unresolvedServers = result.McpServers
+                .Where(server => result.McpEnvironmentIdentityEnabled
+                    && !server.HasRegistrationIdentity
+                    && !server.IsRegistrationAmbiguous)
+                .ToArray();
+            foreach (McpServerAuthStatus server in unresolvedServers)
+            {
+                server.ThreadId ??= selectedThreadId;
+                server.IsRegistrationAmbiguous = true;
+            }
+
             if (IsCurrentOwner(owner))
             {
                 await OnUiAsync(() =>
@@ -9039,11 +9055,82 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                     }
                 }).ConfigureAwait(false);
             }
+
+            foreach (IGrouping<string?, McpServerAuthStatus> threadGroup in unresolvedServers
+                    .GroupBy(server => server.ThreadId))
+            {
+                    McpServerListResult inventory;
+                    try
+                    {
+                        inventory = await ReadMcpInventoryForHydrationAsync(threadGroup.Key, owner).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+                    {
+                        throw;
+                    }
+                    catch (Exception)
+                    {
+                        ExtensionDiagnostics.Write("MCP sign-in disabled because registration identity hydration failed.");
+                        foreach (McpServerAuthStatus server in threadGroup)
+                        {
+                            server.IsRegistrationAmbiguous = true;
+                            server.Message = "Registration identity could not be verified. Sign-in is disabled.";
+                        }
+
+                        continue;
+                    }
+
+                    Dictionary<string, int> unresolvedNameCounts = threadGroup
+                        .GroupBy(server => server.ServerName, StringComparer.Ordinal)
+                        .ToDictionary(group => group.Key, group => group.Count(), StringComparer.Ordinal);
+                    foreach (McpServerAuthStatus server in threadGroup)
+                    {
+                        if (unresolvedNameCounts[server.ServerName] > 1)
+                        {
+                            server.IsRegistrationAmbiguous = true;
+                            server.Message = "Multiple sign-in requests for this server are unresolved. Refresh status before signing in.";
+                            ExtensionDiagnostics.Write("MCP sign-in disabled because multiple unresolved rows share a server name.");
+                            continue;
+                        }
+
+                        McpServerStatusInfo[] candidates = inventory.Servers
+                            .Where(candidate => string.Equals(candidate.Name, server.ServerName, StringComparison.Ordinal))
+                            .ToArray();
+                        if (candidates.Length == 1)
+                        {
+                            server.HasRegistrationIdentity = candidates[0].HasRegistrationIdentity;
+                            server.EnvironmentId = candidates[0].EnvironmentId;
+                            server.DisplayEnvironmentId = candidates[0].DisplayEnvironmentId;
+                            server.IsRegistrationAmbiguous = false;
+                        }
+                        else
+                        {
+                            server.IsRegistrationAmbiguous = true;
+                            ExtensionDiagnostics.Write(candidates.Length == 0
+                                ? "MCP sign-in disabled because identity hydration found no matching registration."
+                                : "MCP sign-in disabled because identity hydration found multiple matching registrations.");
+                            server.Message = candidates.Length == 0
+                                ? "No matching registration was found. Refresh status before signing in."
+                                : "Multiple matching registrations were found. Choose a specific registration before signing in.";
+                        }
+                    }
+            }
+            if (unresolvedServers.Length > 0 && IsCurrentOwner(owner))
+            {
+                await OnUiAsync(() =>
+                {
+                    if (IsCurrentOwner(owner))
+                    {
+                        ApplyMcpIdentityHydrationToCurrentPresentation(unresolvedServers);
+                    }
+                }).ConfigureAwait(false);
+            }
+
         }
         catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
         {
         }
-        catch (Exception ex)
+        catch (Exception)
         {
             await OnUiAsync(() =>
             {
@@ -9054,10 +9141,91 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                         IsLocal = !IsRemoteTarget,
                         IsSupported = false,
                         State = InteractionAuthState.Failed,
-                        Message = "Gateway OAuth status could not be read (" + ex.GetType().Name + ").",
+                        Message = "Gateway OAuth status could not be read.",
                     }, owner);
                 }
             }).ConfigureAwait(false);
+        }
+    }
+
+    private void ApplyMcpIdentityHydrationToCurrentPresentation(IReadOnlyList<McpServerAuthStatus> hydratedServers)
+    {
+        if (InteractionAuthStatus is null)
+        {
+            return;
+        }
+
+        foreach (McpServerAuthStatus hydratedServer in hydratedServers)
+        {
+            McpServerAuthPresentationViewModel[] matchingRows = InteractionAuthStatus.McpServers
+                .Where(row => row.MatchesServerForHydration(hydratedServer.ServerName, hydratedServer.ThreadId))
+                .ToArray();
+            if (matchingRows.Length == 1)
+            {
+                McpServerAuthPresentationViewModel unresolvedRow = matchingRows[0];
+                McpServerAuthPresentationViewModel[] resolvedRows = InteractionAuthStatus.McpServers
+                    .Where(row => row.HasRegistrationIdentity && row.MatchesServer(hydratedServer))
+                    .ToArray();
+                if (resolvedRows.Length == 1 && !ReferenceEquals(resolvedRows[0], unresolvedRow))
+                {
+                    resolvedRows[0].MergeHydratedRegistrationIdentityFrom(unresolvedRow, hydratedServer, markdown);
+                    InteractionAuthStatus.RemoveMcpServer(unresolvedRow);
+                }
+                else
+                {
+                    unresolvedRow.ApplyHydratedRegistrationIdentity(hydratedServer, markdown);
+                }
+            }
+            else if (matchingRows.Length > 1)
+            {
+                foreach (McpServerAuthPresentationViewModel matchingRow in matchingRows)
+                {
+                    matchingRow.SetHydrationAmbiguous(hydratedServer.Message ?? "Multiple matching registrations were found. Choose a specific registration before signing in.", markdown);
+                }
+            }
+        }
+    }
+
+    private async Task<McpServerListResult> ReadMcpInventoryForHydrationAsync(string? threadId, OwnerSnapshot owner)
+    {
+        var scope = new McpInventoryScope(owner, threadId);
+        while (true)
+        {
+            if (mcpInventoryReadsInFlight.TryGetValue(scope, out Task<McpServerListResult>? existing))
+            {
+#pragma warning disable VSTHRD003 // This task is the shared completion for the inventory request started by this ViewModel.
+                return await existing.ConfigureAwait(false);
+#pragma warning restore VSTHRD003
+            }
+
+            var completion = new TaskCompletionSource<McpServerListResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+            if (!mcpInventoryReadsInFlight.TryAdd(scope, completion.Task))
+            {
+                continue;
+            }
+
+            try
+            {
+                try
+                {
+                    McpServerListResult result = await bridge.ListMcpServersAsync(
+                        StampOwner(new ListMcpServersRequest { ThreadId = threadId }, owner),
+                        lifetime.Token).ConfigureAwait(false);
+                    completion.TrySetResult(result);
+                }
+                catch (Exception ex)
+                {
+                    completion.TrySetException(ex);
+                }
+
+#pragma warning disable VSTHRD003 // The task is completed by the RPC awaited immediately above.
+                return await completion.Task.ConfigureAwait(false);
+#pragma warning restore VSTHRD003
+            }
+            finally
+            {
+                mcpInventoryReadsInFlight.TryRemove(new KeyValuePair<McpInventoryScope, Task<McpServerListResult>>(scope, completion.Task));
+            }
         }
     }
 
@@ -9086,7 +9254,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                 {
                     if (IsCurrentOwner(owner))
                     {
-                        SetInteractionAuthStatus(result, owner);
+                        SetGatewayOAuthStatusPreservingMcpRows(result, owner);
                     }
                 }).ConfigureAwait(false);
             }
@@ -9100,7 +9268,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             {
                 if (IsCurrentOwner(owner))
                 {
-                    SetInteractionAuthStatus(new InteractionAuthStatus
+                    SetGatewayOAuthStatusPreservingMcpRows(new InteractionAuthStatus
                     {
                         IsLocal = true,
                         IsSupported = false,
@@ -9112,25 +9280,61 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         }
     }
 
+    // Gateway login/cancel responses update gateway state only. MCP rows are updated by the
+    // dedicated status read and Worker status notifications, which also perform identity hydration.
+    private void SetGatewayOAuthStatusPreservingMcpRows(InteractionAuthStatus gatewayStatus, OwnerSnapshot owner)
+    {
+        var merged = new InteractionAuthStatus
+        {
+            IsLocal = gatewayStatus.IsLocal,
+            IsSupported = gatewayStatus.IsSupported,
+            McpEnvironmentIdentityEnabled = interactionAuthStatus?.McpEnvironmentIdentityEnabled ?? gatewayStatus.McpEnvironmentIdentityEnabled,
+            State = gatewayStatus.State,
+            Message = gatewayStatus.Message,
+            OriginDisplay = gatewayStatus.OriginDisplay,
+            OpenAuthorizationActionId = gatewayStatus.OpenAuthorizationActionId,
+            McpServers = interactionAuthStatus?.McpServers ?? gatewayStatus.McpServers,
+        };
+
+        interactionAuthStatus = merged;
+        if (InteractionAuthStatus is null)
+        {
+            SetInteractionAuthStatus(merged, owner);
+            return;
+        }
+
+        InteractionAuthStatus.UpdateGatewayStatus(merged);
+        OnPropertyChanged(nameof(InteractionAuthStatus));
+        OnPropertyChanged(nameof(HasInteractionAuthStatus));
+        ReadGatewayOAuthCommand.RaiseCanExecuteChanged();
+        LoginGatewayOAuthCommand.RaiseCanExecuteChanged();
+        CancelGatewayOAuthCommand.RaiseCanExecuteChanged();
+        OpenGatewayAuthorizationCommand.RaiseCanExecuteChanged();
+    }
+
     private Task OpenGatewayAuthorizationAsync()
         => interactionAuthStatus?.OpenAuthorizationActionId is { Length: > 0 } actionId
             ? OpenAuthorizationUrlAsync(actionId, CaptureOwnerSnapshot())
             : Task.CompletedTask;
 
-    private async Task StartMcpOAuthLoginAsync(string serverName, OwnerSnapshot owner)
+    private async Task StartMcpOAuthLoginAsync(McpServerAuthStatus server, OwnerSnapshot owner)
     {
-        if (!IsCurrentOwner(owner) || string.IsNullOrWhiteSpace(serverName))
+        if (!IsCurrentOwner(owner) || server.IsRegistrationAmbiguous || string.IsNullOrWhiteSpace(server.ServerName))
         {
             return;
         }
+
+        string? expectedThreadId = server.ThreadId ?? SelectedThread?.Id;
 
         try
         {
             McpOAuthLoginStatus result = await bridge.StartMcpOAuthLoginAsync(
                 StampOwner(new StartMcpOAuthLoginRequest
                 {
-                    ServerName = serverName,
-                    ThreadId = SelectedThread?.Id,
+                    ServerName = server.ServerName,
+                    HasRegistrationIdentity = server.HasRegistrationIdentity,
+                    EnvironmentId = server.EnvironmentId,
+                    ThreadId = expectedThreadId,
                 }, owner),
                 lifetime.Token).ConfigureAwait(false);
             await OnUiAsync(() =>
@@ -9140,9 +9344,15 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                     return;
                 }
 
-                McpServerAuthPresentationViewModel? server = InteractionAuthStatus.McpServers
-                    .FirstOrDefault(item => item.MatchesServer(result.ServerName));
-                server?.Update(result, markdown);
+                McpServerAuthPresentationViewModel? serverPresentation = InteractionAuthStatus.McpServers
+                    .FirstOrDefault(item => item.MatchesServer(new McpServerAuthStatus
+                    {
+                        ServerName = result.ServerName,
+                        HasRegistrationIdentity = result.HasRegistrationIdentity,
+                        EnvironmentId = result.EnvironmentId,
+                        ThreadId = result.ThreadId,
+                    }, expectedThreadId));
+                serverPresentation?.Update(result, markdown);
             }).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (lifetime.IsCancellationRequested)

@@ -43,6 +43,12 @@ public sealed class FakeInteractionIntegrationTests
 
         await using var connection = new JsonLineRpcConnection(process.StandardOutput.BaseStream, process.StandardInput.BaseStream);
         await connection.StartAsync(CancellationToken.None);
+        var incomingNotificationMethods = new ConcurrentQueue<string>();
+        connection.NotificationReceived += (message, _) =>
+        {
+            incomingNotificationMethods.Enqueue(message.Method ?? "(missing method)");
+            return Task.CompletedTask;
+        };
         await using var service = new CodexSessionService(
             new ApprovalPolicyEngine(new PathAccessPolicy()),
             new SecretRedactor());
@@ -53,12 +59,22 @@ public sealed class FakeInteractionIntegrationTests
         var elicitations = new ConcurrentQueue<McpElicitationRequest>();
         var notices = new ConcurrentQueue<UnsupportedInteractionNotice>();
         var authStatuses = new ConcurrentQueue<InteractionAuthStatus>();
+        var workerErrors = new ConcurrentQueue<string>();
         service.UserInputRequested += (value, _) => { questions.Enqueue(value); return Task.CompletedTask; };
         service.ApprovalRequested += (value, _) => { approvals.Enqueue(value); return Task.CompletedTask; };
         service.PermissionRequested += (value, _) => { permissions.Enqueue(value); return Task.CompletedTask; };
         service.McpElicitationRequested += (value, _) => { elicitations.Enqueue(value); return Task.CompletedTask; };
         service.UnsupportedInteraction += (value, _) => { notices.Enqueue(value); return Task.CompletedTask; };
         service.InteractionAuthStatusChanged += (value, _) => { authStatuses.Enqueue(value); return Task.CompletedTask; };
+        service.ConversationEventReceived += (value, _) =>
+        {
+            if (value.Kind == ConversationEventKind.Error)
+            {
+                workerErrors.Enqueue(value.Text ?? "(no error text)");
+            }
+
+            return Task.CompletedTask;
+        };
 
         try
         {
@@ -70,11 +86,14 @@ public sealed class FakeInteractionIntegrationTests
             }, CancellationToken.None);
 
             Assert.IsTrue(service.GatewayOAuthRequired);
+            int authStatusCountBeforeLogin = authStatuses.Count;
             InteractionAuthStatus login = await service.LoginGatewayOAuthAsync(CancellationToken.None);
             Assert.IsTrue(login.State is InteractionAuthState.LoginPending or InteractionAuthState.Authenticated);
             await WaitUntilAsync(
-                () => authStatuses.Any(status => status.State == InteractionAuthState.Authenticated),
-                "The gateway changed notification did not finish the login.");
+                () => incomingNotificationMethods.Count(method => method == "account/gatewayOAuth/changed") >= 2
+                    && authStatuses.Count >= authStatusCountBeforeLogin + 2
+                    && authStatuses.LastOrDefault()?.State == InteractionAuthState.Authenticated,
+                "Both gateway changed notifications did not finish the login.");
 
             ThreadSummary thread = await service.StartThreadAsync(CancellationToken.None);
             Assert.AreEqual("fake-thread-1", thread.Id);
@@ -221,10 +240,36 @@ public sealed class FakeInteractionIntegrationTests
                 ServerName = "docs",
                 ThreadId = thread.Id,
             }, CancellationToken.None);
-            await WaitUntilAsync(
-                () => authStatuses.Any(status => status.McpServers.Any(server =>
-                    server.ServerName == "docs" && server.State == InteractionAuthState.ReauthenticationRequired)),
-                "The startup failure requiring reauthentication was not reflected in status.");
+            try
+            {
+                await WaitUntilAsync(
+                    () => authStatuses.Any(status => status.McpServers.Any(server =>
+                        server.State == InteractionAuthState.ReauthenticationRequired
+                        && string.Equals(server.ThreadId, thread.Id, StringComparison.Ordinal)
+                        && string.Equals(server.DisplayServerName, "docs", StringComparison.Ordinal))),
+                    "The docs startup failure for the thread started by this test was not reflected in status.");
+                Assert.IsTrue(authStatuses.SelectMany(status => status.McpServers).Any(server =>
+                    server.State == InteractionAuthState.ReauthenticationRequired
+                    && string.Equals(server.ThreadId, thread.Id, StringComparison.Ordinal)
+                    && string.Equals(server.DisplayServerName, "docs", StringComparison.Ordinal)),
+                    "The reauthentication status must retain the originating thread scope.");
+            }
+            catch (OperationCanceledException)
+            {
+                string[] observedAuthStatuses = authStatuses.SelectMany(status => status.McpServers)
+                    .Select(server => $"{server.State}:{server.DisplayServerName}")
+                    .ToArray();
+                JsonElement diagnosticState = await connection.SendRequestAsync(
+                    "fake/interactions/state",
+                    new { },
+                    Timeout,
+                    CancellationToken.None);
+                Assert.Fail(
+                    $"The startup failure requiring reauthentication was not reflected in status. Auth events: [{string.Join(", ", observedAuthStatuses)}]. "
+                    + $"Incoming server notifications: [{string.Join(", ", incomingNotificationMethods)}]. "
+                    + $"Worker errors: [{string.Join(" | ", workerErrors)}]. "
+                    + $"Fake client methods: [{string.Join(", ", diagnosticState.GetProperty("methods").EnumerateArray().Select(method => method.GetString()))}].");
+            }
 
             InteractionAuthStatus canceled = await service.CancelGatewayOAuthAsync(CancellationToken.None);
             Assert.AreEqual(InteractionAuthState.Failed, canceled.State);

@@ -343,7 +343,7 @@ public sealed partial class CodexSessionServiceTests
         await using var service = CreateService();
         await service.InitializeAsync(connection, Options(), CancellationToken.None);
 
-        McpServerListResult result = await service.ListMcpServersAsync(null, CancellationToken.None);
+        McpServerListResult result = await service.ListMcpServersAsync(new ListMcpServersRequest(), CancellationToken.None);
 
         McpServerStatusInfo docs = result.Servers.Single(server => server.Name == "docs");
         McpServerStatusInfo future = result.Servers.Single(server => server.Name == "future");

@@ -1395,7 +1395,7 @@ public sealed partial class WorkerRpcService : ICodexWorkerClient, IAsyncDisposa
             cancellationToken);
 
     public Task<McpServerListResult> ListMcpServersAsync(ListMcpServersRequest request, CancellationToken cancellationToken)
-        => ExecuteOwnerScopedAsync(request, () => session.ListMcpServersAsync(request.ThreadId, cancellationToken), cancellationToken);
+        => ExecuteOwnerScopedAsync(request, () => session.ListMcpServersAsync(request, cancellationToken), cancellationToken);
 
     public Task<ListSkillsResult> ListSkillsAsync(ListSkillsRequest request, CancellationToken cancellationToken)
         => ExecuteOwnerScopedAsync(request, () => session.ListSkillsAsync(request.ForceReload, cancellationToken), cancellationToken);

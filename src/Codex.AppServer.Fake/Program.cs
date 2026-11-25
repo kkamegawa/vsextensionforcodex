@@ -333,7 +333,7 @@ while (await Console.In.ReadLineAsync().ConfigureAwait(false) is { } line)
     if (method == "mcpServer/oauth/login" && scenario == "interaction")
     {
         await WriteAsync(new { method = "mcpServer/oauthLogin/completed", @params = new { name = "docs", threadId = "fake-thread-1", success = true, loginId = "fake-login-1" } }).ConfigureAwait(false);
-        await WriteAsync(new { method = "mcpServer/startupStatus/updated", @params = new { name = "docs", status = "failed", failureReason = "reauthenticationRequired" } }).ConfigureAwait(false);
+        await WriteAsync(new { method = "mcpServer/startupStatus/updated", @params = new { name = "docs", threadId = "fake-thread-1", status = "failed", failureReason = "reauthenticationRequired" } }).ConfigureAwait(false);
     }
 
     if (method == "account/gatewayOAuth/login" && scenario == "interaction")

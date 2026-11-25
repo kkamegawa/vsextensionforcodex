@@ -81,6 +81,12 @@ public sealed class ArtifactPart
 {
     public ArtifactPartKind Kind { get; set; }
 
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
+    public bool HasRegistrationIdentity { get; set; }
+
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public string? DisplayEnvironmentId { get; set; }
+
     public string? Text { get; set; }
 
     public string? MimeType { get; set; }
