@@ -1,21 +1,375 @@
-lockfile_version: '1'
-generated_at: '2026-10-23T02:17:28.072770+00:00'
-apm_version: 0.34.0
+﻿lockfile_version: '4'
+generated_at: '2026-11-24T08:16:36.366273+00:00'
+apm_version: 0.38.0
+manifest_targets:
+- claude
+- codex
+- copilot
 dependencies:
 - repo_url: dotnet/skills
-  name: skills
+  name: b7b5400a22d3356b
   host: github.com
-  resolved_commit: a6bf43ab61967c30919334986515163ab24d7635
-  version: a6bf43a
+  resolved_commit: c227688ed14de4467e3e45f95dc69a94e905e219
+  version: c227688
   package_type: marketplace_plugin
-  content_hash: sha256:12457cfa738be2d3e7d62ffda6ba6e41a64b000977c15155ded062a373db3881
+  content_hash: sha256:37adff77abe1b4487a93f2932a7a95a20e517e7952aca76272c6bb6f178875a0
+  carried_licenses:
+  - path: .agents/skills/authoring-github-workflows/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: .agents/skills/create-custom-agent/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: .agents/skills/create-skill-test/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: .agents/skills/create-skill/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: .agents/skills/improve-skill-quality/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: .github/skills/agentic-workflows/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: eng/skill-validator/tests/fixtures/no-eval-skill/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: eng/skill-validator/tests/fixtures/sample-skill/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet-advanced/skills/csharp-scripts/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet-advanced/skills/dotnet-pinvoke/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet-advanced/skills/nuget-trusted-publishing/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet-advanced/skills/vectorization/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet-ai/skills/technology-selection/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet-aspnetcore/skills/convert-blazor-server-to-webapp/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet-aspnetcore/skills/dotnet-webapi/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet-blazor/skills/author-component/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet-blazor/skills/collect-user-input/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet-blazor/skills/configure-auth/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet-blazor/skills/coordinate-components/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet-blazor/skills/create-blazor-project/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet-blazor/skills/fetch-and-send-data/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet-blazor/skills/plan-ui-change/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet-blazor/skills/support-prerendering/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet-blazor/skills/use-igniteui-blazor/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet-blazor/skills/use-js-interop/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet-data/skills/create-datadriven-aspnetcore/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet-data/skills/optimizing-ef-core-queries/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet-diag/skills/analyzing-dotnet-performance/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet-diag/skills/android-tombstone-symbolication/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet-diag/skills/apple-crash-symbolication/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet-diag/skills/clr-activation-debugging/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet-diag/skills/dotnet-trace-collect/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet-diag/skills/dump-collect/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet-diag/skills/microbenchmarking/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet-experimental/skills/exp-mock-usage-analysis/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet-experimental/skills/exp-test-maintainability/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet-maui/skills/dotnet-maui-doctor/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet-maui/skills/maui-app-lifecycle/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet-maui/skills/maui-collectionview/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet-maui/skills/maui-data-binding/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet-maui/skills/maui-dependency-injection/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet-maui/skills/maui-safe-area/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet-maui/skills/maui-shell-navigation/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet-maui/skills/maui-theming/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet-msbuild/skills/binlog-failure-analysis/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet-msbuild/skills/binlog-generation/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet-msbuild/skills/build-parallelism/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet-msbuild/skills/build-perf-baseline/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet-msbuild/skills/build-perf-diagnostics/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet-msbuild/skills/check-bin-obj-clash/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet-msbuild/skills/copy-to-output-directory/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet-msbuild/skills/directory-build-organization/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet-msbuild/skills/eliminate-redundant-restores/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet-msbuild/skills/eval-performance/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet-msbuild/skills/extension-points/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet-msbuild/skills/find-repeated-work-within-one-build/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet-msbuild/skills/including-generated-files/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet-msbuild/skills/incremental-build/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet-msbuild/skills/item-management/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet-msbuild/skills/msbuild-antipatterns/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet-msbuild/skills/msbuild-modernization/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet-msbuild/skills/property-patterns/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet-msbuild/skills/resolve-project-references/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet-msbuild/skills/target-authoring/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet-msbuild/skills/troubleshoot-binlog-mcp/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet-nuget/skills/convert-to-cpm/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet-template-engine/skills/template-authoring/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet-template-engine/skills/template-comparison/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet-template-engine/skills/template-discovery/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet-template-engine/skills/template-instantiation/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet-template-engine/skills/template-smart-defaults/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet-template-engine/skills/template-validation/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet-test-migration/skills/migrate-mstest-v1v2-to-v3/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet-test-migration/skills/migrate-mstest-v3-to-v4/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet-test-migration/skills/migrate-nunit-to-mstest/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet-test-migration/skills/migrate-vstest-to-mtp/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet-test-migration/skills/migrate-xunit-to-mstest/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet-test-migration/skills/migrate-xunit-to-xunit-v3/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet-test/skills/assertion-quality/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet-test/skills/code-testing-agent/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet-test/skills/code-testing-extensions/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet-test/skills/code-testing/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet-test/skills/coverage-analysis/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet-test/skills/crap-score/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet-test/skills/detect-static-dependencies/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet-test/skills/filter-syntax/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet-test/skills/find-untested-sources/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet-test/skills/generate-testability-wrappers/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet-test/skills/grade-tests/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet-test/skills/migrate-static-to-wrapper/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet-test/skills/mtp-hot-reload/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet-test/skills/platform-detection/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet-test/skills/run-tests/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet-test/skills/scaffold-dotnet-test-project/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet-test/skills/test-analysis-extensions/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet-test/skills/test-anti-patterns/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet-test/skills/test-gap-analysis/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet-test/skills/test-smell-detection/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet-test/skills/test-tagging/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet-test/skills/test-value-evidence/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet-test/skills/testability-obstacle/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet-test/skills/writing-mstest-tests/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet-upgrade/skills/dotnet-aot-compat/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet-upgrade/skills/migrate-dotnet10-to-dotnet11/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet-upgrade/skills/migrate-dotnet8-to-dotnet9/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet-upgrade/skills/migrate-dotnet9-to-dotnet10/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet-upgrade/skills/migrate-nullable-references/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet-upgrade/skills/thread-abort-migration/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet-winforms/skills/winforms-expert/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet/skills/csharp-expert/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet/skills/csharp-refactoring/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet/skills/dotnet-breaking-changes/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet/skills/msbuild/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet/skills/setup-local-sdk/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet11/skills/process-api-net11/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
+  - path: plugins/dotnet11/skills/system-text-json-net11/LICENSE
+    source: LICENSE
+    hash: sha256:cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310
 - repo_url: github/awesome-copilot
   name: awesome-copilot-api-architect
   host: github.com
-  resolved_commit: d85f762d6e521abf5fe16703946e9b38adc42da7
+  resolved_commit: f10fdb8b2660ce85c98f220b2f1ca24653768a5c
   version: 1.0.0
   virtual_path: agents/api-architect.agent.md
   is_virtual: true
+  package_type: apm_package
   deployed_files:
   - .claude/agents/api-architect.md
   - .codex/agents/api-architect.toml
@@ -24,80 +378,428 @@ dependencies:
     .claude/agents/api-architect.md: sha256:0a503c0c0d18b1e78645262e12d70857978f14463e1bbb1db8fc80451ed50e41
     .codex/agents/api-architect.toml: sha256:a067567cb324a19484096a72d29f85bc00affebb74a07a6be8b2908c18f22e85
     .github/agents/api-architect.agent.md: sha256:0a503c0c0d18b1e78645262e12d70857978f14463e1bbb1db8fc80451ed50e41
-  content_hash: sha256:9737dd83c02900b1f1f4ed0ca6aeb438f90a1d36d20272f83cf4d52fe270e2b1
+  content_hash: sha256:90e07d9d51c57aa42fb06ad13b33ac6504624a4ec44ec621cd357e16b32e2fa9
+- repo_url: tfsugjp/skills
+  name: agent-sandbox-troubleshooting
+  host: github.com
+  resolved_commit: b0a86ec27fd431d929f14566fe494f0feafd68f2
+  resolved_ref: b0a86ec27fd431d929f14566fe494f0feafd68f2
+  version: unknown
+  virtual_path: plugins/dotnet-azure-lessons/skills/agent-sandbox-troubleshooting
+  is_virtual: true
+  package_type: claude_skill
+  deployed_files:
+  - .agents/skills/agent-sandbox-troubleshooting
+  - .agents/skills/agent-sandbox-troubleshooting/LICENSE
+  - .agents/skills/agent-sandbox-troubleshooting/SKILL.md
+  - .claude/skills/agent-sandbox-troubleshooting
+  - .claude/skills/agent-sandbox-troubleshooting/LICENSE
+  - .claude/skills/agent-sandbox-troubleshooting/SKILL.md
+  deployed_file_hashes:
+    .agents/skills/agent-sandbox-troubleshooting/LICENSE: sha256:b6d9c7b6bc8606afcad921d9f548fabed6684e9f4556f99254fed664866af704
+    .agents/skills/agent-sandbox-troubleshooting/SKILL.md: sha256:6076a7f219220966211b7d5f7c48aee7fc22884f66aaf2b7b6779d0496e42671
+    .claude/skills/agent-sandbox-troubleshooting/LICENSE: sha256:b6d9c7b6bc8606afcad921d9f548fabed6684e9f4556f99254fed664866af704
+    .claude/skills/agent-sandbox-troubleshooting/SKILL.md: sha256:6076a7f219220966211b7d5f7c48aee7fc22884f66aaf2b7b6779d0496e42671
+  content_hash: sha256:6339fea2f7f2363c59da169353aef11b487857516bb824e692ae221180550ebc
+  carried_licenses:
+  - path: LICENSE
+    source: plugins/dotnet-azure-lessons/LICENSE
+    hash: sha256:b6d9c7b6bc8606afcad921d9f548fabed6684e9f4556f99254fed664866af704
+- repo_url: tfsugjp/skills
+  name: dotnet-architecture-design
+  host: github.com
+  resolved_commit: b0a86ec27fd431d929f14566fe494f0feafd68f2
+  resolved_ref: b0a86ec27fd431d929f14566fe494f0feafd68f2
+  version: unknown
+  virtual_path: plugins/dotnet-azure-lessons/skills/dotnet-architecture-design
+  is_virtual: true
+  package_type: claude_skill
+  deployed_files:
+  - .agents/skills/dotnet-architecture-design
+  - .agents/skills/dotnet-architecture-design/LICENSE
+  - .agents/skills/dotnet-architecture-design/SKILL.md
+  - .claude/skills/dotnet-architecture-design
+  - .claude/skills/dotnet-architecture-design/LICENSE
+  - .claude/skills/dotnet-architecture-design/SKILL.md
+  deployed_file_hashes:
+    .agents/skills/dotnet-architecture-design/LICENSE: sha256:b6d9c7b6bc8606afcad921d9f548fabed6684e9f4556f99254fed664866af704
+    .agents/skills/dotnet-architecture-design/SKILL.md: sha256:5b330a6ca548fe90efcaa008f57c5ff602eb06cbfd2f3388bfad9a0bcf04719d
+    .claude/skills/dotnet-architecture-design/LICENSE: sha256:b6d9c7b6bc8606afcad921d9f548fabed6684e9f4556f99254fed664866af704
+    .claude/skills/dotnet-architecture-design/SKILL.md: sha256:5b330a6ca548fe90efcaa008f57c5ff602eb06cbfd2f3388bfad9a0bcf04719d
+  content_hash: sha256:2d5f3057a1f4ee34c3e5a3acedb4caae203cc747709de4ce12a1778ffadf325d
+  carried_licenses:
+  - path: LICENSE
+    source: plugins/dotnet-azure-lessons/LICENSE
+    hash: sha256:b6d9c7b6bc8606afcad921d9f548fabed6684e9f4556f99254fed664866af704
+- repo_url: tfsugjp/skills
+  name: dotnet-ci-cd
+  host: github.com
+  resolved_commit: b0a86ec27fd431d929f14566fe494f0feafd68f2
+  resolved_ref: b0a86ec27fd431d929f14566fe494f0feafd68f2
+  version: unknown
+  virtual_path: plugins/dotnet-azure-lessons/skills/dotnet-ci-cd
+  is_virtual: true
+  package_type: claude_skill
+  deployed_files:
+  - .agents/skills/dotnet-ci-cd
+  - .agents/skills/dotnet-ci-cd/LICENSE
+  - .agents/skills/dotnet-ci-cd/SKILL.md
+  - .claude/skills/dotnet-ci-cd
+  - .claude/skills/dotnet-ci-cd/LICENSE
+  - .claude/skills/dotnet-ci-cd/SKILL.md
+  deployed_file_hashes:
+    .agents/skills/dotnet-ci-cd/LICENSE: sha256:b6d9c7b6bc8606afcad921d9f548fabed6684e9f4556f99254fed664866af704
+    .agents/skills/dotnet-ci-cd/SKILL.md: sha256:1a00903d5ee015c54093be51ec43ed87571fa112ea63602bbe43106d9b232261
+    .claude/skills/dotnet-ci-cd/LICENSE: sha256:b6d9c7b6bc8606afcad921d9f548fabed6684e9f4556f99254fed664866af704
+    .claude/skills/dotnet-ci-cd/SKILL.md: sha256:1a00903d5ee015c54093be51ec43ed87571fa112ea63602bbe43106d9b232261
+  content_hash: sha256:b16978f2ad1ada30b3b4065a4cd84448a6a1042179d55bf6aa6d97ab2d4ad489
+  carried_licenses:
+  - path: LICENSE
+    source: plugins/dotnet-azure-lessons/LICENSE
+    hash: sha256:b6d9c7b6bc8606afcad921d9f548fabed6684e9f4556f99254fed664866af704
+- repo_url: tfsugjp/skills
+  name: dotnet-coding
+  host: github.com
+  resolved_commit: b0a86ec27fd431d929f14566fe494f0feafd68f2
+  resolved_ref: b0a86ec27fd431d929f14566fe494f0feafd68f2
+  version: unknown
+  virtual_path: plugins/dotnet-azure-lessons/skills/dotnet-coding
+  is_virtual: true
+  package_type: claude_skill
+  deployed_files:
+  - .agents/skills/dotnet-coding
+  - .agents/skills/dotnet-coding/LICENSE
+  - .agents/skills/dotnet-coding/SKILL.md
+  - .claude/skills/dotnet-coding
+  - .claude/skills/dotnet-coding/LICENSE
+  - .claude/skills/dotnet-coding/SKILL.md
+  deployed_file_hashes:
+    .agents/skills/dotnet-coding/LICENSE: sha256:b6d9c7b6bc8606afcad921d9f548fabed6684e9f4556f99254fed664866af704
+    .agents/skills/dotnet-coding/SKILL.md: sha256:e35929be14cb7a40769042a7f282b130e47123ddd53f8a982f8d5baa30257577
+    .claude/skills/dotnet-coding/LICENSE: sha256:b6d9c7b6bc8606afcad921d9f548fabed6684e9f4556f99254fed664866af704
+    .claude/skills/dotnet-coding/SKILL.md: sha256:e35929be14cb7a40769042a7f282b130e47123ddd53f8a982f8d5baa30257577
+  content_hash: sha256:bd4ae991900ba73bfbf364cc13f279d3a261df4a724be8712a5ea80a5e8a57a3
+  carried_licenses:
+  - path: LICENSE
+    source: plugins/dotnet-azure-lessons/LICENSE
+    hash: sha256:b6d9c7b6bc8606afcad921d9f548fabed6684e9f4556f99254fed664866af704
+- repo_url: tfsugjp/skills
+  name: dotnet-debugging
+  host: github.com
+  resolved_commit: b0a86ec27fd431d929f14566fe494f0feafd68f2
+  resolved_ref: b0a86ec27fd431d929f14566fe494f0feafd68f2
+  version: unknown
+  virtual_path: plugins/dotnet-azure-lessons/skills/dotnet-debugging
+  is_virtual: true
+  package_type: claude_skill
+  deployed_files:
+  - .agents/skills/dotnet-debugging
+  - .agents/skills/dotnet-debugging/LICENSE
+  - .agents/skills/dotnet-debugging/SKILL.md
+  - .claude/skills/dotnet-debugging
+  - .claude/skills/dotnet-debugging/LICENSE
+  - .claude/skills/dotnet-debugging/SKILL.md
+  deployed_file_hashes:
+    .agents/skills/dotnet-debugging/LICENSE: sha256:b6d9c7b6bc8606afcad921d9f548fabed6684e9f4556f99254fed664866af704
+    .agents/skills/dotnet-debugging/SKILL.md: sha256:c4d781bf2a74f8599a6abf153e4d4bf2fee41f43088884dfafd68e4524d192d6
+    .claude/skills/dotnet-debugging/LICENSE: sha256:b6d9c7b6bc8606afcad921d9f548fabed6684e9f4556f99254fed664866af704
+    .claude/skills/dotnet-debugging/SKILL.md: sha256:c4d781bf2a74f8599a6abf153e4d4bf2fee41f43088884dfafd68e4524d192d6
+  content_hash: sha256:84922be41ecb9d964f3b1a591cb6679726aab1a004ea51a1e5374389c6564e0a
+  carried_licenses:
+  - path: LICENSE
+    source: plugins/dotnet-azure-lessons/LICENSE
+    hash: sha256:b6d9c7b6bc8606afcad921d9f548fabed6684e9f4556f99254fed664866af704
+- repo_url: tfsugjp/skills
+  name: dotnet-documentation
+  host: github.com
+  resolved_commit: b0a86ec27fd431d929f14566fe494f0feafd68f2
+  resolved_ref: b0a86ec27fd431d929f14566fe494f0feafd68f2
+  version: unknown
+  virtual_path: plugins/dotnet-azure-lessons/skills/dotnet-documentation
+  is_virtual: true
+  package_type: claude_skill
+  deployed_files:
+  - .agents/skills/dotnet-documentation
+  - .agents/skills/dotnet-documentation/LICENSE
+  - .agents/skills/dotnet-documentation/SKILL.md
+  - .claude/skills/dotnet-documentation
+  - .claude/skills/dotnet-documentation/LICENSE
+  - .claude/skills/dotnet-documentation/SKILL.md
+  deployed_file_hashes:
+    .agents/skills/dotnet-documentation/LICENSE: sha256:b6d9c7b6bc8606afcad921d9f548fabed6684e9f4556f99254fed664866af704
+    .agents/skills/dotnet-documentation/SKILL.md: sha256:df8161f158495ffa5da2d0e1c35c20e46c4ed800a931c14747490b84fae1eb44
+    .claude/skills/dotnet-documentation/LICENSE: sha256:b6d9c7b6bc8606afcad921d9f548fabed6684e9f4556f99254fed664866af704
+    .claude/skills/dotnet-documentation/SKILL.md: sha256:df8161f158495ffa5da2d0e1c35c20e46c4ed800a931c14747490b84fae1eb44
+  content_hash: sha256:c0082c735f19110a1db3b46ea13224075a0b6050fbbfac4fc43e8eca7ccf2c05
+  carried_licenses:
+  - path: LICENSE
+    source: plugins/dotnet-azure-lessons/LICENSE
+    hash: sha256:b6d9c7b6bc8606afcad921d9f548fabed6684e9f4556f99254fed664866af704
+- repo_url: tfsugjp/skills
+  name: dotnet-macos-development
+  host: github.com
+  resolved_commit: b0a86ec27fd431d929f14566fe494f0feafd68f2
+  resolved_ref: b0a86ec27fd431d929f14566fe494f0feafd68f2
+  version: unknown
+  virtual_path: plugins/dotnet-azure-lessons/skills/dotnet-macos-development
+  is_virtual: true
+  package_type: claude_skill
+  deployed_files:
+  - .agents/skills/dotnet-macos-development
+  - .agents/skills/dotnet-macos-development/LICENSE
+  - .agents/skills/dotnet-macos-development/SKILL.md
+  - .claude/skills/dotnet-macos-development
+  - .claude/skills/dotnet-macos-development/LICENSE
+  - .claude/skills/dotnet-macos-development/SKILL.md
+  deployed_file_hashes:
+    .agents/skills/dotnet-macos-development/LICENSE: sha256:b6d9c7b6bc8606afcad921d9f548fabed6684e9f4556f99254fed664866af704
+    .agents/skills/dotnet-macos-development/SKILL.md: sha256:cae8e62219f8c5ba99dec453c73b5c1636bb1d5f5fb3de58ce5f1ac3ede3db30
+    .claude/skills/dotnet-macos-development/LICENSE: sha256:b6d9c7b6bc8606afcad921d9f548fabed6684e9f4556f99254fed664866af704
+    .claude/skills/dotnet-macos-development/SKILL.md: sha256:cae8e62219f8c5ba99dec453c73b5c1636bb1d5f5fb3de58ce5f1ac3ede3db30
+  content_hash: sha256:193ef1f33341f8e84edd8b2e417b3cb75a4a2f7808e28bf99da60eff9c6f22d5
+  carried_licenses:
+  - path: LICENSE
+    source: plugins/dotnet-azure-lessons/LICENSE
+    hash: sha256:b6d9c7b6bc8606afcad921d9f548fabed6684e9f4556f99254fed664866af704
+- repo_url: tfsugjp/skills
+  name: dotnet-testing
+  host: github.com
+  resolved_commit: b0a86ec27fd431d929f14566fe494f0feafd68f2
+  resolved_ref: b0a86ec27fd431d929f14566fe494f0feafd68f2
+  version: unknown
+  virtual_path: plugins/dotnet-azure-lessons/skills/dotnet-testing
+  is_virtual: true
+  package_type: claude_skill
+  deployed_files:
+  - .agents/skills/dotnet-testing
+  - .agents/skills/dotnet-testing/LICENSE
+  - .agents/skills/dotnet-testing/SKILL.md
+  - .claude/skills/dotnet-testing
+  - .claude/skills/dotnet-testing/LICENSE
+  - .claude/skills/dotnet-testing/SKILL.md
+  deployed_file_hashes:
+    .agents/skills/dotnet-testing/LICENSE: sha256:b6d9c7b6bc8606afcad921d9f548fabed6684e9f4556f99254fed664866af704
+    .agents/skills/dotnet-testing/SKILL.md: sha256:0f200960d71e224a45d0c325400ec1ef88971c06718b57feb3f7801a49952e97
+    .claude/skills/dotnet-testing/LICENSE: sha256:b6d9c7b6bc8606afcad921d9f548fabed6684e9f4556f99254fed664866af704
+    .claude/skills/dotnet-testing/SKILL.md: sha256:0f200960d71e224a45d0c325400ec1ef88971c06718b57feb3f7801a49952e97
+  content_hash: sha256:c22c77b41f8a8ea4cbfdffea38106d35cdfb9d216fa0fd23cdc2343c33994eb5
+  carried_licenses:
+  - path: LICENSE
+    source: plugins/dotnet-azure-lessons/LICENSE
+    hash: sha256:b6d9c7b6bc8606afcad921d9f548fabed6684e9f4556f99254fed664866af704
+- repo_url: tfsugjp/skills
+  name: powershell-scripting
+  host: github.com
+  resolved_commit: b0a86ec27fd431d929f14566fe494f0feafd68f2
+  resolved_ref: b0a86ec27fd431d929f14566fe494f0feafd68f2
+  version: unknown
+  virtual_path: plugins/dotnet-azure-lessons/skills/powershell-scripting
+  is_virtual: true
+  package_type: claude_skill
+  deployed_files:
+  - .agents/skills/powershell-scripting
+  - .agents/skills/powershell-scripting/LICENSE
+  - .agents/skills/powershell-scripting/SKILL.md
+  - .claude/skills/powershell-scripting
+  - .claude/skills/powershell-scripting/LICENSE
+  - .claude/skills/powershell-scripting/SKILL.md
+  deployed_file_hashes:
+    .agents/skills/powershell-scripting/LICENSE: sha256:b6d9c7b6bc8606afcad921d9f548fabed6684e9f4556f99254fed664866af704
+    .agents/skills/powershell-scripting/SKILL.md: sha256:1b51450ced0276c775d14d9ebd213c421f191c40b419c5ce821d61593f8791a7
+    .claude/skills/powershell-scripting/LICENSE: sha256:b6d9c7b6bc8606afcad921d9f548fabed6684e9f4556f99254fed664866af704
+    .claude/skills/powershell-scripting/SKILL.md: sha256:1b51450ced0276c775d14d9ebd213c421f191c40b419c5ce821d61593f8791a7
+  content_hash: sha256:40e7ac209ef7c82909d982d569c70de3bc452bd1d1b4f66a07c252641280302e
+  carried_licenses:
+  - path: LICENSE
+    source: plugins/dotnet-azure-lessons/LICENSE
+    hash: sha256:b6d9c7b6bc8606afcad921d9f548fabed6684e9f4556f99254fed664866af704
+- repo_url: tfsugjp/skills
+  name: pr-issue-workflow
+  host: github.com
+  resolved_commit: b0a86ec27fd431d929f14566fe494f0feafd68f2
+  resolved_ref: b0a86ec27fd431d929f14566fe494f0feafd68f2
+  version: unknown
+  virtual_path: plugins/dotnet-azure-lessons/skills/pr-issue-workflow
+  is_virtual: true
+  package_type: claude_skill
+  deployed_files:
+  - .agents/skills/pr-issue-workflow
+  - .agents/skills/pr-issue-workflow/LICENSE
+  - .agents/skills/pr-issue-workflow/SKILL.md
+  - .claude/skills/pr-issue-workflow
+  - .claude/skills/pr-issue-workflow/LICENSE
+  - .claude/skills/pr-issue-workflow/SKILL.md
+  deployed_file_hashes:
+    .agents/skills/pr-issue-workflow/LICENSE: sha256:b6d9c7b6bc8606afcad921d9f548fabed6684e9f4556f99254fed664866af704
+    .agents/skills/pr-issue-workflow/SKILL.md: sha256:e44f52e8bae48f56e45ffebffa826980a36a550b43fe639ce2be7d50622ccc59
+    .claude/skills/pr-issue-workflow/LICENSE: sha256:b6d9c7b6bc8606afcad921d9f548fabed6684e9f4556f99254fed664866af704
+    .claude/skills/pr-issue-workflow/SKILL.md: sha256:e44f52e8bae48f56e45ffebffa826980a36a550b43fe639ce2be7d50622ccc59
+  content_hash: sha256:63c56aee512b9a9a8330fe191e245dae27a5306ba386de62be38066e7eb1a6b5
+  carried_licenses:
+  - path: LICENSE
+    source: plugins/dotnet-azure-lessons/LICENSE
+    hash: sha256:b6d9c7b6bc8606afcad921d9f548fabed6684e9f4556f99254fed664866af704
+- repo_url: tfsugjp/skills
+  name: vs-extension-remote-ui
+  host: github.com
+  resolved_commit: b0a86ec27fd431d929f14566fe494f0feafd68f2
+  resolved_ref: b0a86ec27fd431d929f14566fe494f0feafd68f2
+  version: unknown
+  virtual_path: plugins/dotnet-azure-lessons/skills/vs-extension-remote-ui
+  is_virtual: true
+  package_type: claude_skill
+  deployed_files:
+  - .agents/skills/vs-extension-remote-ui
+  - .agents/skills/vs-extension-remote-ui/LICENSE
+  - .agents/skills/vs-extension-remote-ui/SKILL.md
+  - .claude/skills/vs-extension-remote-ui
+  - .claude/skills/vs-extension-remote-ui/LICENSE
+  - .claude/skills/vs-extension-remote-ui/SKILL.md
+  deployed_file_hashes:
+    .agents/skills/vs-extension-remote-ui/LICENSE: sha256:b6d9c7b6bc8606afcad921d9f548fabed6684e9f4556f99254fed664866af704
+    .agents/skills/vs-extension-remote-ui/SKILL.md: sha256:cd84ab6ae6e1ea42be46df36ff76a639c3a3532858bdc1512eadbca20ddda73e
+    .claude/skills/vs-extension-remote-ui/LICENSE: sha256:b6d9c7b6bc8606afcad921d9f548fabed6684e9f4556f99254fed664866af704
+    .claude/skills/vs-extension-remote-ui/SKILL.md: sha256:cd84ab6ae6e1ea42be46df36ff76a639c3a3532858bdc1512eadbca20ddda73e
+  content_hash: sha256:54862d9d0eaefbc0f58b837fa76a7564aaeefad9e7493f46db943c7f3e324859
+  carried_licenses:
+  - path: LICENSE
+    source: plugins/dotnet-azure-lessons/LICENSE
+    hash: sha256:b6d9c7b6bc8606afcad921d9f548fabed6684e9f4556f99254fed664866af704
+- repo_url: tfsugjp/skills
+  name: dotnet-mutation-testing
+  host: github.com
+  resolved_commit: b0a86ec27fd431d929f14566fe494f0feafd68f2
+  resolved_ref: b0a86ec27fd431d929f14566fe494f0feafd68f2
+  version: 0.1.0
+  virtual_path: plugins/dotnet-mutation-testing
+  is_virtual: true
+  package_type: marketplace_plugin
+  deployed_files:
+  - .agents/skills/dotnet-mutation-testing
+  - .agents/skills/dotnet-mutation-testing/LICENSE
+  - .agents/skills/dotnet-mutation-testing/SKILL.md
+  - .agents/skills/dotnet-mutation-testing/scripts/mutation-run.cs
+  - .agents/skills/dotnet-mutation-testing/templates/azure-pipelines-mutation-testing.yml
+  - .agents/skills/dotnet-mutation-testing/templates/github-actions-mutation-testing.yml
+  - .agents/skills/dotnet-mutation-testing/templates/stryker-config.json
+  deployed_file_hashes:
+    .agents/skills/dotnet-mutation-testing/LICENSE: sha256:b6d9c7b6bc8606afcad921d9f548fabed6684e9f4556f99254fed664866af704
+    .agents/skills/dotnet-mutation-testing/SKILL.md: sha256:17402fdbec9fcae7766f23b7529ae0230538a7dd17050d229068a47aa0572a83
+    .agents/skills/dotnet-mutation-testing/scripts/mutation-run.cs: sha256:fca4d504d84c3f72f42f956f6dce2b43b46b15c70cf495c0b1b446427043cc9a
+    .agents/skills/dotnet-mutation-testing/templates/azure-pipelines-mutation-testing.yml: sha256:78c5735847999d3b3ac99f603cbdfa1023a9451d242b3519569b4f79108c959a
+    .agents/skills/dotnet-mutation-testing/templates/github-actions-mutation-testing.yml: sha256:84552207a84d2f3582626a90c6fa638fa047e31174ff3131f89e4438289c3dc4
+    .agents/skills/dotnet-mutation-testing/templates/stryker-config.json: sha256:648cfe2abad6c27f9df27ca76331bb519a4d59f3c7d003ab827f4d02e4aaa437
+  content_hash: sha256:bbd96a4e2219aa800585232afeadb4895aa155075827b7da06e65295ccef57ea
+  discovered_via: tfsugjp-agent-skills
+  marketplace_plugin_name: dotnet-mutation-testing
+  declared_license: MIT
+  carried_licenses:
+  - path: .apm/skills/dotnet-mutation-testing/LICENSE
+    source: plugins/dotnet-mutation-testing/LICENSE
+    hash: sha256:b6d9c7b6bc8606afcad921d9f548fabed6684e9f4556f99254fed664866af704
+  - path: skills/dotnet-mutation-testing/LICENSE
+    source: plugins/dotnet-mutation-testing/LICENSE
+    hash: sha256:b6d9c7b6bc8606afcad921d9f548fabed6684e9f4556f99254fed664866af704
+  native_plugin:
+    name: dotnet-mutation-testing
+    root: .agents/plugins/dotnet-mutation-testing
+    fingerprint: sha256:8174566423b0f0f963f05bd0bb486d17ffa774fed99459819a2113b0a99873f9
+    marketplace:
+      name: apm-p-6acaae52
+      path: ./.agents/plugins
+  native_declared:
+  - claude
+  - copilot
 - repo_url: tfsugjp/skills
   name: github-plan-wiki
   host: github.com
-  resolved_commit: 1c7aba1a5348261536cc92c1d7d7ff4ffd43b095
-  version: 0.2.0
+  resolved_commit: b0a86ec27fd431d929f14566fe494f0feafd68f2
+  version: 0.2.1
   virtual_path: plugins/github-plan-wiki
   is_virtual: true
   package_type: marketplace_plugin
   deployed_files:
+  - .agents/skills/github-issue-artifacts
+  - .agents/skills/github-issue-artifacts/LICENSE
+  - .agents/skills/github-issue-artifacts/SKILL.md
   - .agents/skills/github-plan-issues
+  - .agents/skills/github-plan-issues/LICENSE
   - .agents/skills/github-plan-issues/SKILL.md
   - .agents/skills/github-plan-issues/references/gh-subissue-commands.md
   - .agents/skills/github-plan-issues/scripts/validate_body.py
   - .agents/skills/github-pull-request
+  - .agents/skills/github-pull-request/LICENSE
   - .agents/skills/github-pull-request/SKILL.md
   - .agents/skills/github-pull-request/agents/openai.yaml
   - .agents/skills/github-pull-request/scripts/validate_closing_keywords.py
   - .agents/skills/github-pull-request/tests/test_closing_keywords.py
   - .agents/skills/github-wiki-plan
+  - .agents/skills/github-wiki-plan/LICENSE
   - .agents/skills/github-wiki-plan/SKILL.md
   - .agents/skills/github-wiki-plan/scripts/validate_wiki.py
   - .agents/skills/github-wiki-plan/templates/home.md
   - .agents/skills/github-wiki-plan/templates/home_ja.md
   - .agents/skills/github-wiki-plan/templates/plan-page.md
   - .agents/skills/github-wiki-plan/tests/test_wiki_links.py
-  - .claude/skills/github-plan-issues
-  - .claude/skills/github-plan-issues/SKILL.md
-  - .claude/skills/github-plan-issues/references/gh-subissue-commands.md
-  - .claude/skills/github-plan-issues/scripts/validate_body.py
-  - .claude/skills/github-pull-request
-  - .claude/skills/github-pull-request/SKILL.md
-  - .claude/skills/github-pull-request/agents/openai.yaml
-  - .claude/skills/github-pull-request/scripts/validate_closing_keywords.py
-  - .claude/skills/github-pull-request/tests/test_closing_keywords.py
-  - .claude/skills/github-wiki-plan
-  - .claude/skills/github-wiki-plan/SKILL.md
-  - .claude/skills/github-wiki-plan/scripts/validate_wiki.py
-  - .claude/skills/github-wiki-plan/templates/home.md
-  - .claude/skills/github-wiki-plan/templates/home_ja.md
-  - .claude/skills/github-wiki-plan/templates/plan-page.md
-  - .claude/skills/github-wiki-plan/tests/test_wiki_links.py
   deployed_file_hashes:
-    .agents/skills/github-plan-issues/SKILL.md: sha256:d354a0593bf5272bc752e7b5150b3dcf7bf958abd87b68884a9561afff87b3f2
+    .agents/skills/github-issue-artifacts/LICENSE: sha256:b6d9c7b6bc8606afcad921d9f548fabed6684e9f4556f99254fed664866af704
+    .agents/skills/github-issue-artifacts/SKILL.md: sha256:71be58d93417b4d2f561cbc404801c7bc6b662e8d868198ea592b1424ac7d31e
+    .agents/skills/github-plan-issues/LICENSE: sha256:b6d9c7b6bc8606afcad921d9f548fabed6684e9f4556f99254fed664866af704
+    .agents/skills/github-plan-issues/SKILL.md: sha256:95240c8926d6f1d954854329b431b4f57a4a1592cbd3384ed823332e087eb16f
     .agents/skills/github-plan-issues/references/gh-subissue-commands.md: sha256:abde9e32cde71880cc00aeaefcb5471ab67d91a047f564017c56eab3afaa315e
     .agents/skills/github-plan-issues/scripts/validate_body.py: sha256:6e6bbb603ef4f1ed89a4c3f22bf48e57627278b9c00e57764500e6c83dc6e1b5
-    .agents/skills/github-pull-request/SKILL.md: sha256:e73ee74ab957809e7aec6b77c2925746726310d909188523ec2d794c75d957ef
+    .agents/skills/github-pull-request/LICENSE: sha256:b6d9c7b6bc8606afcad921d9f548fabed6684e9f4556f99254fed664866af704
+    .agents/skills/github-pull-request/SKILL.md: sha256:3d4adf230420e2977fcc1dae361d1c2aaa89db4b065e45c16fd0c112507e702c
     .agents/skills/github-pull-request/agents/openai.yaml: sha256:0e3b5b9ffde3f15c3ecf6cd4ac9a75cf0ce8b328efd21f61195887639cc7464b
     .agents/skills/github-pull-request/scripts/validate_closing_keywords.py: sha256:3e1ccd96e5bba5a85f6d605735b3cd1f7f781607cab5534abd597bd0e006e296
     .agents/skills/github-pull-request/tests/test_closing_keywords.py: sha256:3eea61f3174b8c27544fd1c157b783c7158fa3641f7c71090d95fbbc5a155f41
+    .agents/skills/github-wiki-plan/LICENSE: sha256:b6d9c7b6bc8606afcad921d9f548fabed6684e9f4556f99254fed664866af704
     .agents/skills/github-wiki-plan/SKILL.md: sha256:aa1d43ce3424dc340c73a8cf7e1cb04fa833b314a04bb90fd1a16ad8cc8342e1
     .agents/skills/github-wiki-plan/scripts/validate_wiki.py: sha256:f5d39396fb73302adbc2a50cfd55e00c3be6a099695a121221aa2124262ab65b
     .agents/skills/github-wiki-plan/templates/home.md: sha256:9cd9da840f136f516f949cf15af96ed2f6ba8218278459c8c5395397549dd5b9
     .agents/skills/github-wiki-plan/templates/home_ja.md: sha256:6a75a1870e9cf466cf0a189b69d00d71d9c9b458b52fbf166d1189bf0cf3d051
     .agents/skills/github-wiki-plan/templates/plan-page.md: sha256:8a3bfaf287d2204b1039abc9ed945b2d8b5c23b5b43211fbc68daba5f92ff9d4
     .agents/skills/github-wiki-plan/tests/test_wiki_links.py: sha256:638d037351acd8d2bb9bcab5976d94c89948e53a6ca35b2ea4dd0de19bd8d05f
-    .claude/skills/github-plan-issues/SKILL.md: sha256:d354a0593bf5272bc752e7b5150b3dcf7bf958abd87b68884a9561afff87b3f2
-    .claude/skills/github-plan-issues/references/gh-subissue-commands.md: sha256:abde9e32cde71880cc00aeaefcb5471ab67d91a047f564017c56eab3afaa315e
-    .claude/skills/github-plan-issues/scripts/validate_body.py: sha256:6e6bbb603ef4f1ed89a4c3f22bf48e57627278b9c00e57764500e6c83dc6e1b5
-    .claude/skills/github-pull-request/SKILL.md: sha256:e73ee74ab957809e7aec6b77c2925746726310d909188523ec2d794c75d957ef
-    .claude/skills/github-pull-request/agents/openai.yaml: sha256:0e3b5b9ffde3f15c3ecf6cd4ac9a75cf0ce8b328efd21f61195887639cc7464b
-    .claude/skills/github-pull-request/scripts/validate_closing_keywords.py: sha256:3e1ccd96e5bba5a85f6d605735b3cd1f7f781607cab5534abd597bd0e006e296
-    .claude/skills/github-pull-request/tests/test_closing_keywords.py: sha256:3eea61f3174b8c27544fd1c157b783c7158fa3641f7c71090d95fbbc5a155f41
-    .claude/skills/github-wiki-plan/SKILL.md: sha256:aa1d43ce3424dc340c73a8cf7e1cb04fa833b314a04bb90fd1a16ad8cc8342e1
-    .claude/skills/github-wiki-plan/scripts/validate_wiki.py: sha256:f5d39396fb73302adbc2a50cfd55e00c3be6a099695a121221aa2124262ab65b
-    .claude/skills/github-wiki-plan/templates/home.md: sha256:9cd9da840f136f516f949cf15af96ed2f6ba8218278459c8c5395397549dd5b9
-    .claude/skills/github-wiki-plan/templates/home_ja.md: sha256:6a75a1870e9cf466cf0a189b69d00d71d9c9b458b52fbf166d1189bf0cf3d051
-    .claude/skills/github-wiki-plan/templates/plan-page.md: sha256:8a3bfaf287d2204b1039abc9ed945b2d8b5c23b5b43211fbc68daba5f92ff9d4
-    .claude/skills/github-wiki-plan/tests/test_wiki_links.py: sha256:638d037351acd8d2bb9bcab5976d94c89948e53a6ca35b2ea4dd0de19bd8d05f
-  content_hash: sha256:35acb6cc9a9cf6b5168f0ddc6a599b4bd9bcc45cf186afbdc42b2639522157b8
+  content_hash: sha256:5708c971b9bf1b783c8ffe51ed298db801049ca14efc91687f8cb6411153926e
   is_dev: true
   discovered_via: tfsugjp-agent-skills
   marketplace_plugin_name: github-plan-wiki
   declared_license: MIT
+  carried_licenses:
+  - path: .apm/skills/github-issue-artifacts/LICENSE
+    source: plugins/github-plan-wiki/LICENSE
+    hash: sha256:b6d9c7b6bc8606afcad921d9f548fabed6684e9f4556f99254fed664866af704
+  - path: .apm/skills/github-plan-issues/LICENSE
+    source: plugins/github-plan-wiki/LICENSE
+    hash: sha256:b6d9c7b6bc8606afcad921d9f548fabed6684e9f4556f99254fed664866af704
+  - path: .apm/skills/github-pull-request/LICENSE
+    source: plugins/github-plan-wiki/LICENSE
+    hash: sha256:b6d9c7b6bc8606afcad921d9f548fabed6684e9f4556f99254fed664866af704
+  - path: .apm/skills/github-wiki-plan/LICENSE
+    source: plugins/github-plan-wiki/LICENSE
+    hash: sha256:b6d9c7b6bc8606afcad921d9f548fabed6684e9f4556f99254fed664866af704
+  - path: skills/github-issue-artifacts/LICENSE
+    source: plugins/github-plan-wiki/LICENSE
+    hash: sha256:b6d9c7b6bc8606afcad921d9f548fabed6684e9f4556f99254fed664866af704
+  - path: skills/github-plan-issues/LICENSE
+    source: plugins/github-plan-wiki/LICENSE
+    hash: sha256:b6d9c7b6bc8606afcad921d9f548fabed6684e9f4556f99254fed664866af704
+  - path: skills/github-pull-request/LICENSE
+    source: plugins/github-plan-wiki/LICENSE
+    hash: sha256:b6d9c7b6bc8606afcad921d9f548fabed6684e9f4556f99254fed664866af704
+  - path: skills/github-wiki-plan/LICENSE
+    source: plugins/github-plan-wiki/LICENSE
+    hash: sha256:b6d9c7b6bc8606afcad921d9f548fabed6684e9f4556f99254fed664866af704
+  native_plugin:
+    name: github-plan-wiki
+    root: .agents/plugins/github-plan-wiki
+    fingerprint: sha256:62cb8389c9b71aed9977cc060c585901e7cf54d0d686312bc467fe13cf4d0371
+    marketplace:
+      name: apm-p-6acaae52
+      path: ./.agents/plugins
+  native_declared:
+  - claude
+  - copilot
 deployments:
 - kind: project-relative
   target: claude
@@ -110,7 +812,583 @@ deployments:
   content_hash: sha256:0a503c0c0d18b1e78645262e12d70857978f14463e1bbb1db8fc80451ed50e41
 - kind: project-relative
   target: claude
-  value: .claude/skills/github-plan-issues
+  value: .claude/skills/agent-sandbox-troubleshooting
+  runtime: null
+  scope: project
+  owners:
+  - tfsugjp/skills/plugins/dotnet-azure-lessons/skills/agent-sandbox-troubleshooting
+  active_owner: tfsugjp/skills/plugins/dotnet-azure-lessons/skills/agent-sandbox-troubleshooting
+  content_hash: null
+- kind: project-relative
+  target: claude
+  value: .claude/skills/agent-sandbox-troubleshooting/LICENSE
+  runtime: null
+  scope: project
+  owners:
+  - tfsugjp/skills/plugins/dotnet-azure-lessons/skills/agent-sandbox-troubleshooting
+  active_owner: tfsugjp/skills/plugins/dotnet-azure-lessons/skills/agent-sandbox-troubleshooting
+  content_hash: sha256:b6d9c7b6bc8606afcad921d9f548fabed6684e9f4556f99254fed664866af704
+- kind: project-relative
+  target: claude
+  value: .claude/skills/agent-sandbox-troubleshooting/SKILL.md
+  runtime: null
+  scope: project
+  owners:
+  - tfsugjp/skills/plugins/dotnet-azure-lessons/skills/agent-sandbox-troubleshooting
+  active_owner: tfsugjp/skills/plugins/dotnet-azure-lessons/skills/agent-sandbox-troubleshooting
+  content_hash: sha256:6076a7f219220966211b7d5f7c48aee7fc22884f66aaf2b7b6779d0496e42671
+- kind: project-relative
+  target: claude
+  value: .claude/skills/dotnet-architecture-design
+  runtime: null
+  scope: project
+  owners:
+  - tfsugjp/skills/plugins/dotnet-azure-lessons/skills/dotnet-architecture-design
+  active_owner: tfsugjp/skills/plugins/dotnet-azure-lessons/skills/dotnet-architecture-design
+  content_hash: null
+- kind: project-relative
+  target: claude
+  value: .claude/skills/dotnet-architecture-design/LICENSE
+  runtime: null
+  scope: project
+  owners:
+  - tfsugjp/skills/plugins/dotnet-azure-lessons/skills/dotnet-architecture-design
+  active_owner: tfsugjp/skills/plugins/dotnet-azure-lessons/skills/dotnet-architecture-design
+  content_hash: sha256:b6d9c7b6bc8606afcad921d9f548fabed6684e9f4556f99254fed664866af704
+- kind: project-relative
+  target: claude
+  value: .claude/skills/dotnet-architecture-design/SKILL.md
+  runtime: null
+  scope: project
+  owners:
+  - tfsugjp/skills/plugins/dotnet-azure-lessons/skills/dotnet-architecture-design
+  active_owner: tfsugjp/skills/plugins/dotnet-azure-lessons/skills/dotnet-architecture-design
+  content_hash: sha256:5b330a6ca548fe90efcaa008f57c5ff602eb06cbfd2f3388bfad9a0bcf04719d
+- kind: project-relative
+  target: claude
+  value: .claude/skills/dotnet-ci-cd
+  runtime: null
+  scope: project
+  owners:
+  - tfsugjp/skills/plugins/dotnet-azure-lessons/skills/dotnet-ci-cd
+  active_owner: tfsugjp/skills/plugins/dotnet-azure-lessons/skills/dotnet-ci-cd
+  content_hash: null
+- kind: project-relative
+  target: claude
+  value: .claude/skills/dotnet-ci-cd/LICENSE
+  runtime: null
+  scope: project
+  owners:
+  - tfsugjp/skills/plugins/dotnet-azure-lessons/skills/dotnet-ci-cd
+  active_owner: tfsugjp/skills/plugins/dotnet-azure-lessons/skills/dotnet-ci-cd
+  content_hash: sha256:b6d9c7b6bc8606afcad921d9f548fabed6684e9f4556f99254fed664866af704
+- kind: project-relative
+  target: claude
+  value: .claude/skills/dotnet-ci-cd/SKILL.md
+  runtime: null
+  scope: project
+  owners:
+  - tfsugjp/skills/plugins/dotnet-azure-lessons/skills/dotnet-ci-cd
+  active_owner: tfsugjp/skills/plugins/dotnet-azure-lessons/skills/dotnet-ci-cd
+  content_hash: sha256:1a00903d5ee015c54093be51ec43ed87571fa112ea63602bbe43106d9b232261
+- kind: project-relative
+  target: claude
+  value: .claude/skills/dotnet-coding
+  runtime: null
+  scope: project
+  owners:
+  - tfsugjp/skills/plugins/dotnet-azure-lessons/skills/dotnet-coding
+  active_owner: tfsugjp/skills/plugins/dotnet-azure-lessons/skills/dotnet-coding
+  content_hash: null
+- kind: project-relative
+  target: claude
+  value: .claude/skills/dotnet-coding/LICENSE
+  runtime: null
+  scope: project
+  owners:
+  - tfsugjp/skills/plugins/dotnet-azure-lessons/skills/dotnet-coding
+  active_owner: tfsugjp/skills/plugins/dotnet-azure-lessons/skills/dotnet-coding
+  content_hash: sha256:b6d9c7b6bc8606afcad921d9f548fabed6684e9f4556f99254fed664866af704
+- kind: project-relative
+  target: claude
+  value: .claude/skills/dotnet-coding/SKILL.md
+  runtime: null
+  scope: project
+  owners:
+  - tfsugjp/skills/plugins/dotnet-azure-lessons/skills/dotnet-coding
+  active_owner: tfsugjp/skills/plugins/dotnet-azure-lessons/skills/dotnet-coding
+  content_hash: sha256:e35929be14cb7a40769042a7f282b130e47123ddd53f8a982f8d5baa30257577
+- kind: project-relative
+  target: claude
+  value: .claude/skills/dotnet-debugging
+  runtime: null
+  scope: project
+  owners:
+  - tfsugjp/skills/plugins/dotnet-azure-lessons/skills/dotnet-debugging
+  active_owner: tfsugjp/skills/plugins/dotnet-azure-lessons/skills/dotnet-debugging
+  content_hash: null
+- kind: project-relative
+  target: claude
+  value: .claude/skills/dotnet-debugging/LICENSE
+  runtime: null
+  scope: project
+  owners:
+  - tfsugjp/skills/plugins/dotnet-azure-lessons/skills/dotnet-debugging
+  active_owner: tfsugjp/skills/plugins/dotnet-azure-lessons/skills/dotnet-debugging
+  content_hash: sha256:b6d9c7b6bc8606afcad921d9f548fabed6684e9f4556f99254fed664866af704
+- kind: project-relative
+  target: claude
+  value: .claude/skills/dotnet-debugging/SKILL.md
+  runtime: null
+  scope: project
+  owners:
+  - tfsugjp/skills/plugins/dotnet-azure-lessons/skills/dotnet-debugging
+  active_owner: tfsugjp/skills/plugins/dotnet-azure-lessons/skills/dotnet-debugging
+  content_hash: sha256:c4d781bf2a74f8599a6abf153e4d4bf2fee41f43088884dfafd68e4524d192d6
+- kind: project-relative
+  target: claude
+  value: .claude/skills/dotnet-documentation
+  runtime: null
+  scope: project
+  owners:
+  - tfsugjp/skills/plugins/dotnet-azure-lessons/skills/dotnet-documentation
+  active_owner: tfsugjp/skills/plugins/dotnet-azure-lessons/skills/dotnet-documentation
+  content_hash: null
+- kind: project-relative
+  target: claude
+  value: .claude/skills/dotnet-documentation/LICENSE
+  runtime: null
+  scope: project
+  owners:
+  - tfsugjp/skills/plugins/dotnet-azure-lessons/skills/dotnet-documentation
+  active_owner: tfsugjp/skills/plugins/dotnet-azure-lessons/skills/dotnet-documentation
+  content_hash: sha256:b6d9c7b6bc8606afcad921d9f548fabed6684e9f4556f99254fed664866af704
+- kind: project-relative
+  target: claude
+  value: .claude/skills/dotnet-documentation/SKILL.md
+  runtime: null
+  scope: project
+  owners:
+  - tfsugjp/skills/plugins/dotnet-azure-lessons/skills/dotnet-documentation
+  active_owner: tfsugjp/skills/plugins/dotnet-azure-lessons/skills/dotnet-documentation
+  content_hash: sha256:df8161f158495ffa5da2d0e1c35c20e46c4ed800a931c14747490b84fae1eb44
+- kind: project-relative
+  target: claude
+  value: .claude/skills/dotnet-macos-development
+  runtime: null
+  scope: project
+  owners:
+  - tfsugjp/skills/plugins/dotnet-azure-lessons/skills/dotnet-macos-development
+  active_owner: tfsugjp/skills/plugins/dotnet-azure-lessons/skills/dotnet-macos-development
+  content_hash: null
+- kind: project-relative
+  target: claude
+  value: .claude/skills/dotnet-macos-development/LICENSE
+  runtime: null
+  scope: project
+  owners:
+  - tfsugjp/skills/plugins/dotnet-azure-lessons/skills/dotnet-macos-development
+  active_owner: tfsugjp/skills/plugins/dotnet-azure-lessons/skills/dotnet-macos-development
+  content_hash: sha256:b6d9c7b6bc8606afcad921d9f548fabed6684e9f4556f99254fed664866af704
+- kind: project-relative
+  target: claude
+  value: .claude/skills/dotnet-macos-development/SKILL.md
+  runtime: null
+  scope: project
+  owners:
+  - tfsugjp/skills/plugins/dotnet-azure-lessons/skills/dotnet-macos-development
+  active_owner: tfsugjp/skills/plugins/dotnet-azure-lessons/skills/dotnet-macos-development
+  content_hash: sha256:cae8e62219f8c5ba99dec453c73b5c1636bb1d5f5fb3de58ce5f1ac3ede3db30
+- kind: project-relative
+  target: claude
+  value: .claude/skills/dotnet-testing
+  runtime: null
+  scope: project
+  owners:
+  - tfsugjp/skills/plugins/dotnet-azure-lessons/skills/dotnet-testing
+  active_owner: tfsugjp/skills/plugins/dotnet-azure-lessons/skills/dotnet-testing
+  content_hash: null
+- kind: project-relative
+  target: claude
+  value: .claude/skills/dotnet-testing/LICENSE
+  runtime: null
+  scope: project
+  owners:
+  - tfsugjp/skills/plugins/dotnet-azure-lessons/skills/dotnet-testing
+  active_owner: tfsugjp/skills/plugins/dotnet-azure-lessons/skills/dotnet-testing
+  content_hash: sha256:b6d9c7b6bc8606afcad921d9f548fabed6684e9f4556f99254fed664866af704
+- kind: project-relative
+  target: claude
+  value: .claude/skills/dotnet-testing/SKILL.md
+  runtime: null
+  scope: project
+  owners:
+  - tfsugjp/skills/plugins/dotnet-azure-lessons/skills/dotnet-testing
+  active_owner: tfsugjp/skills/plugins/dotnet-azure-lessons/skills/dotnet-testing
+  content_hash: sha256:0f200960d71e224a45d0c325400ec1ef88971c06718b57feb3f7801a49952e97
+- kind: project-relative
+  target: claude
+  value: .claude/skills/powershell-scripting
+  runtime: null
+  scope: project
+  owners:
+  - tfsugjp/skills/plugins/dotnet-azure-lessons/skills/powershell-scripting
+  active_owner: tfsugjp/skills/plugins/dotnet-azure-lessons/skills/powershell-scripting
+  content_hash: null
+- kind: project-relative
+  target: claude
+  value: .claude/skills/powershell-scripting/LICENSE
+  runtime: null
+  scope: project
+  owners:
+  - tfsugjp/skills/plugins/dotnet-azure-lessons/skills/powershell-scripting
+  active_owner: tfsugjp/skills/plugins/dotnet-azure-lessons/skills/powershell-scripting
+  content_hash: sha256:b6d9c7b6bc8606afcad921d9f548fabed6684e9f4556f99254fed664866af704
+- kind: project-relative
+  target: claude
+  value: .claude/skills/powershell-scripting/SKILL.md
+  runtime: null
+  scope: project
+  owners:
+  - tfsugjp/skills/plugins/dotnet-azure-lessons/skills/powershell-scripting
+  active_owner: tfsugjp/skills/plugins/dotnet-azure-lessons/skills/powershell-scripting
+  content_hash: sha256:1b51450ced0276c775d14d9ebd213c421f191c40b419c5ce821d61593f8791a7
+- kind: project-relative
+  target: claude
+  value: .claude/skills/pr-issue-workflow
+  runtime: null
+  scope: project
+  owners:
+  - tfsugjp/skills/plugins/dotnet-azure-lessons/skills/pr-issue-workflow
+  active_owner: tfsugjp/skills/plugins/dotnet-azure-lessons/skills/pr-issue-workflow
+  content_hash: null
+- kind: project-relative
+  target: claude
+  value: .claude/skills/pr-issue-workflow/LICENSE
+  runtime: null
+  scope: project
+  owners:
+  - tfsugjp/skills/plugins/dotnet-azure-lessons/skills/pr-issue-workflow
+  active_owner: tfsugjp/skills/plugins/dotnet-azure-lessons/skills/pr-issue-workflow
+  content_hash: sha256:b6d9c7b6bc8606afcad921d9f548fabed6684e9f4556f99254fed664866af704
+- kind: project-relative
+  target: claude
+  value: .claude/skills/pr-issue-workflow/SKILL.md
+  runtime: null
+  scope: project
+  owners:
+  - tfsugjp/skills/plugins/dotnet-azure-lessons/skills/pr-issue-workflow
+  active_owner: tfsugjp/skills/plugins/dotnet-azure-lessons/skills/pr-issue-workflow
+  content_hash: sha256:e44f52e8bae48f56e45ffebffa826980a36a550b43fe639ce2be7d50622ccc59
+- kind: project-relative
+  target: claude
+  value: .claude/skills/vs-extension-remote-ui
+  runtime: null
+  scope: project
+  owners:
+  - tfsugjp/skills/plugins/dotnet-azure-lessons/skills/vs-extension-remote-ui
+  active_owner: tfsugjp/skills/plugins/dotnet-azure-lessons/skills/vs-extension-remote-ui
+  content_hash: null
+- kind: project-relative
+  target: claude
+  value: .claude/skills/vs-extension-remote-ui/LICENSE
+  runtime: null
+  scope: project
+  owners:
+  - tfsugjp/skills/plugins/dotnet-azure-lessons/skills/vs-extension-remote-ui
+  active_owner: tfsugjp/skills/plugins/dotnet-azure-lessons/skills/vs-extension-remote-ui
+  content_hash: sha256:b6d9c7b6bc8606afcad921d9f548fabed6684e9f4556f99254fed664866af704
+- kind: project-relative
+  target: claude
+  value: .claude/skills/vs-extension-remote-ui/SKILL.md
+  runtime: null
+  scope: project
+  owners:
+  - tfsugjp/skills/plugins/dotnet-azure-lessons/skills/vs-extension-remote-ui
+  active_owner: tfsugjp/skills/plugins/dotnet-azure-lessons/skills/vs-extension-remote-ui
+  content_hash: sha256:cd84ab6ae6e1ea42be46df36ff76a639c3a3532858bdc1512eadbca20ddda73e
+- kind: project-relative
+  target: codex
+  value: .agents/skills/agent-sandbox-troubleshooting
+  runtime: null
+  scope: project
+  owners:
+  - tfsugjp/skills/plugins/dotnet-azure-lessons/skills/agent-sandbox-troubleshooting
+  active_owner: tfsugjp/skills/plugins/dotnet-azure-lessons/skills/agent-sandbox-troubleshooting
+  content_hash: null
+- kind: project-relative
+  target: codex
+  value: .agents/skills/agent-sandbox-troubleshooting/LICENSE
+  runtime: null
+  scope: project
+  owners:
+  - tfsugjp/skills/plugins/dotnet-azure-lessons/skills/agent-sandbox-troubleshooting
+  active_owner: tfsugjp/skills/plugins/dotnet-azure-lessons/skills/agent-sandbox-troubleshooting
+  content_hash: sha256:b6d9c7b6bc8606afcad921d9f548fabed6684e9f4556f99254fed664866af704
+- kind: project-relative
+  target: codex
+  value: .agents/skills/agent-sandbox-troubleshooting/SKILL.md
+  runtime: null
+  scope: project
+  owners:
+  - tfsugjp/skills/plugins/dotnet-azure-lessons/skills/agent-sandbox-troubleshooting
+  active_owner: tfsugjp/skills/plugins/dotnet-azure-lessons/skills/agent-sandbox-troubleshooting
+  content_hash: sha256:6076a7f219220966211b7d5f7c48aee7fc22884f66aaf2b7b6779d0496e42671
+- kind: project-relative
+  target: codex
+  value: .agents/skills/dotnet-architecture-design
+  runtime: null
+  scope: project
+  owners:
+  - tfsugjp/skills/plugins/dotnet-azure-lessons/skills/dotnet-architecture-design
+  active_owner: tfsugjp/skills/plugins/dotnet-azure-lessons/skills/dotnet-architecture-design
+  content_hash: null
+- kind: project-relative
+  target: codex
+  value: .agents/skills/dotnet-architecture-design/LICENSE
+  runtime: null
+  scope: project
+  owners:
+  - tfsugjp/skills/plugins/dotnet-azure-lessons/skills/dotnet-architecture-design
+  active_owner: tfsugjp/skills/plugins/dotnet-azure-lessons/skills/dotnet-architecture-design
+  content_hash: sha256:b6d9c7b6bc8606afcad921d9f548fabed6684e9f4556f99254fed664866af704
+- kind: project-relative
+  target: codex
+  value: .agents/skills/dotnet-architecture-design/SKILL.md
+  runtime: null
+  scope: project
+  owners:
+  - tfsugjp/skills/plugins/dotnet-azure-lessons/skills/dotnet-architecture-design
+  active_owner: tfsugjp/skills/plugins/dotnet-azure-lessons/skills/dotnet-architecture-design
+  content_hash: sha256:5b330a6ca548fe90efcaa008f57c5ff602eb06cbfd2f3388bfad9a0bcf04719d
+- kind: project-relative
+  target: codex
+  value: .agents/skills/dotnet-ci-cd
+  runtime: null
+  scope: project
+  owners:
+  - tfsugjp/skills/plugins/dotnet-azure-lessons/skills/dotnet-ci-cd
+  active_owner: tfsugjp/skills/plugins/dotnet-azure-lessons/skills/dotnet-ci-cd
+  content_hash: null
+- kind: project-relative
+  target: codex
+  value: .agents/skills/dotnet-ci-cd/LICENSE
+  runtime: null
+  scope: project
+  owners:
+  - tfsugjp/skills/plugins/dotnet-azure-lessons/skills/dotnet-ci-cd
+  active_owner: tfsugjp/skills/plugins/dotnet-azure-lessons/skills/dotnet-ci-cd
+  content_hash: sha256:b6d9c7b6bc8606afcad921d9f548fabed6684e9f4556f99254fed664866af704
+- kind: project-relative
+  target: codex
+  value: .agents/skills/dotnet-ci-cd/SKILL.md
+  runtime: null
+  scope: project
+  owners:
+  - tfsugjp/skills/plugins/dotnet-azure-lessons/skills/dotnet-ci-cd
+  active_owner: tfsugjp/skills/plugins/dotnet-azure-lessons/skills/dotnet-ci-cd
+  content_hash: sha256:1a00903d5ee015c54093be51ec43ed87571fa112ea63602bbe43106d9b232261
+- kind: project-relative
+  target: codex
+  value: .agents/skills/dotnet-coding
+  runtime: null
+  scope: project
+  owners:
+  - tfsugjp/skills/plugins/dotnet-azure-lessons/skills/dotnet-coding
+  active_owner: tfsugjp/skills/plugins/dotnet-azure-lessons/skills/dotnet-coding
+  content_hash: null
+- kind: project-relative
+  target: codex
+  value: .agents/skills/dotnet-coding/LICENSE
+  runtime: null
+  scope: project
+  owners:
+  - tfsugjp/skills/plugins/dotnet-azure-lessons/skills/dotnet-coding
+  active_owner: tfsugjp/skills/plugins/dotnet-azure-lessons/skills/dotnet-coding
+  content_hash: sha256:b6d9c7b6bc8606afcad921d9f548fabed6684e9f4556f99254fed664866af704
+- kind: project-relative
+  target: codex
+  value: .agents/skills/dotnet-coding/SKILL.md
+  runtime: null
+  scope: project
+  owners:
+  - tfsugjp/skills/plugins/dotnet-azure-lessons/skills/dotnet-coding
+  active_owner: tfsugjp/skills/plugins/dotnet-azure-lessons/skills/dotnet-coding
+  content_hash: sha256:e35929be14cb7a40769042a7f282b130e47123ddd53f8a982f8d5baa30257577
+- kind: project-relative
+  target: codex
+  value: .agents/skills/dotnet-debugging
+  runtime: null
+  scope: project
+  owners:
+  - tfsugjp/skills/plugins/dotnet-azure-lessons/skills/dotnet-debugging
+  active_owner: tfsugjp/skills/plugins/dotnet-azure-lessons/skills/dotnet-debugging
+  content_hash: null
+- kind: project-relative
+  target: codex
+  value: .agents/skills/dotnet-debugging/LICENSE
+  runtime: null
+  scope: project
+  owners:
+  - tfsugjp/skills/plugins/dotnet-azure-lessons/skills/dotnet-debugging
+  active_owner: tfsugjp/skills/plugins/dotnet-azure-lessons/skills/dotnet-debugging
+  content_hash: sha256:b6d9c7b6bc8606afcad921d9f548fabed6684e9f4556f99254fed664866af704
+- kind: project-relative
+  target: codex
+  value: .agents/skills/dotnet-debugging/SKILL.md
+  runtime: null
+  scope: project
+  owners:
+  - tfsugjp/skills/plugins/dotnet-azure-lessons/skills/dotnet-debugging
+  active_owner: tfsugjp/skills/plugins/dotnet-azure-lessons/skills/dotnet-debugging
+  content_hash: sha256:c4d781bf2a74f8599a6abf153e4d4bf2fee41f43088884dfafd68e4524d192d6
+- kind: project-relative
+  target: codex
+  value: .agents/skills/dotnet-documentation
+  runtime: null
+  scope: project
+  owners:
+  - tfsugjp/skills/plugins/dotnet-azure-lessons/skills/dotnet-documentation
+  active_owner: tfsugjp/skills/plugins/dotnet-azure-lessons/skills/dotnet-documentation
+  content_hash: null
+- kind: project-relative
+  target: codex
+  value: .agents/skills/dotnet-documentation/LICENSE
+  runtime: null
+  scope: project
+  owners:
+  - tfsugjp/skills/plugins/dotnet-azure-lessons/skills/dotnet-documentation
+  active_owner: tfsugjp/skills/plugins/dotnet-azure-lessons/skills/dotnet-documentation
+  content_hash: sha256:b6d9c7b6bc8606afcad921d9f548fabed6684e9f4556f99254fed664866af704
+- kind: project-relative
+  target: codex
+  value: .agents/skills/dotnet-documentation/SKILL.md
+  runtime: null
+  scope: project
+  owners:
+  - tfsugjp/skills/plugins/dotnet-azure-lessons/skills/dotnet-documentation
+  active_owner: tfsugjp/skills/plugins/dotnet-azure-lessons/skills/dotnet-documentation
+  content_hash: sha256:df8161f158495ffa5da2d0e1c35c20e46c4ed800a931c14747490b84fae1eb44
+- kind: project-relative
+  target: codex
+  value: .agents/skills/dotnet-macos-development
+  runtime: null
+  scope: project
+  owners:
+  - tfsugjp/skills/plugins/dotnet-azure-lessons/skills/dotnet-macos-development
+  active_owner: tfsugjp/skills/plugins/dotnet-azure-lessons/skills/dotnet-macos-development
+  content_hash: null
+- kind: project-relative
+  target: codex
+  value: .agents/skills/dotnet-macos-development/LICENSE
+  runtime: null
+  scope: project
+  owners:
+  - tfsugjp/skills/plugins/dotnet-azure-lessons/skills/dotnet-macos-development
+  active_owner: tfsugjp/skills/plugins/dotnet-azure-lessons/skills/dotnet-macos-development
+  content_hash: sha256:b6d9c7b6bc8606afcad921d9f548fabed6684e9f4556f99254fed664866af704
+- kind: project-relative
+  target: codex
+  value: .agents/skills/dotnet-macos-development/SKILL.md
+  runtime: null
+  scope: project
+  owners:
+  - tfsugjp/skills/plugins/dotnet-azure-lessons/skills/dotnet-macos-development
+  active_owner: tfsugjp/skills/plugins/dotnet-azure-lessons/skills/dotnet-macos-development
+  content_hash: sha256:cae8e62219f8c5ba99dec453c73b5c1636bb1d5f5fb3de58ce5f1ac3ede3db30
+- kind: project-relative
+  target: codex
+  value: .agents/skills/dotnet-mutation-testing
+  runtime: null
+  scope: project
+  owners:
+  - tfsugjp/skills/plugins/dotnet-mutation-testing
+  active_owner: tfsugjp/skills/plugins/dotnet-mutation-testing
+  content_hash: null
+- kind: project-relative
+  target: codex
+  value: .agents/skills/dotnet-mutation-testing/LICENSE
+  runtime: null
+  scope: project
+  owners:
+  - tfsugjp/skills/plugins/dotnet-mutation-testing
+  active_owner: tfsugjp/skills/plugins/dotnet-mutation-testing
+  content_hash: sha256:b6d9c7b6bc8606afcad921d9f548fabed6684e9f4556f99254fed664866af704
+- kind: project-relative
+  target: codex
+  value: .agents/skills/dotnet-mutation-testing/SKILL.md
+  runtime: null
+  scope: project
+  owners:
+  - tfsugjp/skills/plugins/dotnet-mutation-testing
+  active_owner: tfsugjp/skills/plugins/dotnet-mutation-testing
+  content_hash: sha256:17402fdbec9fcae7766f23b7529ae0230538a7dd17050d229068a47aa0572a83
+- kind: project-relative
+  target: codex
+  value: .agents/skills/dotnet-mutation-testing/scripts/mutation-run.cs
+  runtime: null
+  scope: project
+  owners:
+  - tfsugjp/skills/plugins/dotnet-mutation-testing
+  active_owner: tfsugjp/skills/plugins/dotnet-mutation-testing
+  content_hash: sha256:fca4d504d84c3f72f42f956f6dce2b43b46b15c70cf495c0b1b446427043cc9a
+- kind: project-relative
+  target: codex
+  value: .agents/skills/dotnet-mutation-testing/templates/azure-pipelines-mutation-testing.yml
+  runtime: null
+  scope: project
+  owners:
+  - tfsugjp/skills/plugins/dotnet-mutation-testing
+  active_owner: tfsugjp/skills/plugins/dotnet-mutation-testing
+  content_hash: sha256:78c5735847999d3b3ac99f603cbdfa1023a9451d242b3519569b4f79108c959a
+- kind: project-relative
+  target: codex
+  value: .agents/skills/dotnet-mutation-testing/templates/github-actions-mutation-testing.yml
+  runtime: null
+  scope: project
+  owners:
+  - tfsugjp/skills/plugins/dotnet-mutation-testing
+  active_owner: tfsugjp/skills/plugins/dotnet-mutation-testing
+  content_hash: sha256:84552207a84d2f3582626a90c6fa638fa047e31174ff3131f89e4438289c3dc4
+- kind: project-relative
+  target: codex
+  value: .agents/skills/dotnet-mutation-testing/templates/stryker-config.json
+  runtime: null
+  scope: project
+  owners:
+  - tfsugjp/skills/plugins/dotnet-mutation-testing
+  active_owner: tfsugjp/skills/plugins/dotnet-mutation-testing
+  content_hash: sha256:648cfe2abad6c27f9df27ca76331bb519a4d59f3c7d003ab827f4d02e4aaa437
+- kind: project-relative
+  target: codex
+  value: .agents/skills/dotnet-testing
+  runtime: null
+  scope: project
+  owners:
+  - tfsugjp/skills/plugins/dotnet-azure-lessons/skills/dotnet-testing
+  active_owner: tfsugjp/skills/plugins/dotnet-azure-lessons/skills/dotnet-testing
+  content_hash: null
+- kind: project-relative
+  target: codex
+  value: .agents/skills/dotnet-testing/LICENSE
+  runtime: null
+  scope: project
+  owners:
+  - tfsugjp/skills/plugins/dotnet-azure-lessons/skills/dotnet-testing
+  active_owner: tfsugjp/skills/plugins/dotnet-azure-lessons/skills/dotnet-testing
+  content_hash: sha256:b6d9c7b6bc8606afcad921d9f548fabed6684e9f4556f99254fed664866af704
+- kind: project-relative
+  target: codex
+  value: .agents/skills/dotnet-testing/SKILL.md
+  runtime: null
+  scope: project
+  owners:
+  - tfsugjp/skills/plugins/dotnet-azure-lessons/skills/dotnet-testing
+  active_owner: tfsugjp/skills/plugins/dotnet-azure-lessons/skills/dotnet-testing
+  content_hash: sha256:0f200960d71e224a45d0c325400ec1ef88971c06718b57feb3f7801a49952e97
+- kind: project-relative
+  target: codex
+  value: .agents/skills/github-issue-artifacts
   runtime: null
   scope: project
   owners:
@@ -118,140 +1396,23 @@ deployments:
   active_owner: tfsugjp/skills/plugins/github-plan-wiki
   content_hash: null
 - kind: project-relative
-  target: claude
-  value: .claude/skills/github-plan-issues/SKILL.md
+  target: codex
+  value: .agents/skills/github-issue-artifacts/LICENSE
   runtime: null
   scope: project
   owners:
   - tfsugjp/skills/plugins/github-plan-wiki
   active_owner: tfsugjp/skills/plugins/github-plan-wiki
-  content_hash: sha256:d354a0593bf5272bc752e7b5150b3dcf7bf958abd87b68884a9561afff87b3f2
+  content_hash: sha256:b6d9c7b6bc8606afcad921d9f548fabed6684e9f4556f99254fed664866af704
 - kind: project-relative
-  target: claude
-  value: .claude/skills/github-plan-issues/references/gh-subissue-commands.md
+  target: codex
+  value: .agents/skills/github-issue-artifacts/SKILL.md
   runtime: null
   scope: project
   owners:
   - tfsugjp/skills/plugins/github-plan-wiki
   active_owner: tfsugjp/skills/plugins/github-plan-wiki
-  content_hash: sha256:abde9e32cde71880cc00aeaefcb5471ab67d91a047f564017c56eab3afaa315e
-- kind: project-relative
-  target: claude
-  value: .claude/skills/github-plan-issues/scripts/validate_body.py
-  runtime: null
-  scope: project
-  owners:
-  - tfsugjp/skills/plugins/github-plan-wiki
-  active_owner: tfsugjp/skills/plugins/github-plan-wiki
-  content_hash: sha256:6e6bbb603ef4f1ed89a4c3f22bf48e57627278b9c00e57764500e6c83dc6e1b5
-- kind: project-relative
-  target: claude
-  value: .claude/skills/github-pull-request
-  runtime: null
-  scope: project
-  owners:
-  - tfsugjp/skills/plugins/github-plan-wiki
-  active_owner: tfsugjp/skills/plugins/github-plan-wiki
-  content_hash: null
-- kind: project-relative
-  target: claude
-  value: .claude/skills/github-pull-request/SKILL.md
-  runtime: null
-  scope: project
-  owners:
-  - tfsugjp/skills/plugins/github-plan-wiki
-  active_owner: tfsugjp/skills/plugins/github-plan-wiki
-  content_hash: sha256:e73ee74ab957809e7aec6b77c2925746726310d909188523ec2d794c75d957ef
-- kind: project-relative
-  target: claude
-  value: .claude/skills/github-pull-request/agents/openai.yaml
-  runtime: null
-  scope: project
-  owners:
-  - tfsugjp/skills/plugins/github-plan-wiki
-  active_owner: tfsugjp/skills/plugins/github-plan-wiki
-  content_hash: sha256:0e3b5b9ffde3f15c3ecf6cd4ac9a75cf0ce8b328efd21f61195887639cc7464b
-- kind: project-relative
-  target: claude
-  value: .claude/skills/github-pull-request/scripts/validate_closing_keywords.py
-  runtime: null
-  scope: project
-  owners:
-  - tfsugjp/skills/plugins/github-plan-wiki
-  active_owner: tfsugjp/skills/plugins/github-plan-wiki
-  content_hash: sha256:3e1ccd96e5bba5a85f6d605735b3cd1f7f781607cab5534abd597bd0e006e296
-- kind: project-relative
-  target: claude
-  value: .claude/skills/github-pull-request/tests/test_closing_keywords.py
-  runtime: null
-  scope: project
-  owners:
-  - tfsugjp/skills/plugins/github-plan-wiki
-  active_owner: tfsugjp/skills/plugins/github-plan-wiki
-  content_hash: sha256:3eea61f3174b8c27544fd1c157b783c7158fa3641f7c71090d95fbbc5a155f41
-- kind: project-relative
-  target: claude
-  value: .claude/skills/github-wiki-plan
-  runtime: null
-  scope: project
-  owners:
-  - tfsugjp/skills/plugins/github-plan-wiki
-  active_owner: tfsugjp/skills/plugins/github-plan-wiki
-  content_hash: null
-- kind: project-relative
-  target: claude
-  value: .claude/skills/github-wiki-plan/SKILL.md
-  runtime: null
-  scope: project
-  owners:
-  - tfsugjp/skills/plugins/github-plan-wiki
-  active_owner: tfsugjp/skills/plugins/github-plan-wiki
-  content_hash: sha256:aa1d43ce3424dc340c73a8cf7e1cb04fa833b314a04bb90fd1a16ad8cc8342e1
-- kind: project-relative
-  target: claude
-  value: .claude/skills/github-wiki-plan/scripts/validate_wiki.py
-  runtime: null
-  scope: project
-  owners:
-  - tfsugjp/skills/plugins/github-plan-wiki
-  active_owner: tfsugjp/skills/plugins/github-plan-wiki
-  content_hash: sha256:f5d39396fb73302adbc2a50cfd55e00c3be6a099695a121221aa2124262ab65b
-- kind: project-relative
-  target: claude
-  value: .claude/skills/github-wiki-plan/templates/home.md
-  runtime: null
-  scope: project
-  owners:
-  - tfsugjp/skills/plugins/github-plan-wiki
-  active_owner: tfsugjp/skills/plugins/github-plan-wiki
-  content_hash: sha256:9cd9da840f136f516f949cf15af96ed2f6ba8218278459c8c5395397549dd5b9
-- kind: project-relative
-  target: claude
-  value: .claude/skills/github-wiki-plan/templates/home_ja.md
-  runtime: null
-  scope: project
-  owners:
-  - tfsugjp/skills/plugins/github-plan-wiki
-  active_owner: tfsugjp/skills/plugins/github-plan-wiki
-  content_hash: sha256:6a75a1870e9cf466cf0a189b69d00d71d9c9b458b52fbf166d1189bf0cf3d051
-- kind: project-relative
-  target: claude
-  value: .claude/skills/github-wiki-plan/templates/plan-page.md
-  runtime: null
-  scope: project
-  owners:
-  - tfsugjp/skills/plugins/github-plan-wiki
-  active_owner: tfsugjp/skills/plugins/github-plan-wiki
-  content_hash: sha256:8a3bfaf287d2204b1039abc9ed945b2d8b5c23b5b43211fbc68daba5f92ff9d4
-- kind: project-relative
-  target: claude
-  value: .claude/skills/github-wiki-plan/tests/test_wiki_links.py
-  runtime: null
-  scope: project
-  owners:
-  - tfsugjp/skills/plugins/github-plan-wiki
-  active_owner: tfsugjp/skills/plugins/github-plan-wiki
-  content_hash: sha256:638d037351acd8d2bb9bcab5976d94c89948e53a6ca35b2ea4dd0de19bd8d05f
+  content_hash: sha256:71be58d93417b4d2f561cbc404801c7bc6b662e8d868198ea592b1424ac7d31e
 - kind: project-relative
   target: codex
   value: .agents/skills/github-plan-issues
@@ -263,13 +1424,22 @@ deployments:
   content_hash: null
 - kind: project-relative
   target: codex
+  value: .agents/skills/github-plan-issues/LICENSE
+  runtime: null
+  scope: project
+  owners:
+  - tfsugjp/skills/plugins/github-plan-wiki
+  active_owner: tfsugjp/skills/plugins/github-plan-wiki
+  content_hash: sha256:b6d9c7b6bc8606afcad921d9f548fabed6684e9f4556f99254fed664866af704
+- kind: project-relative
+  target: codex
   value: .agents/skills/github-plan-issues/SKILL.md
   runtime: null
   scope: project
   owners:
   - tfsugjp/skills/plugins/github-plan-wiki
   active_owner: tfsugjp/skills/plugins/github-plan-wiki
-  content_hash: sha256:d354a0593bf5272bc752e7b5150b3dcf7bf958abd87b68884a9561afff87b3f2
+  content_hash: sha256:95240c8926d6f1d954854329b431b4f57a4a1592cbd3384ed823332e087eb16f
 - kind: project-relative
   target: codex
   value: .agents/skills/github-plan-issues/references/gh-subissue-commands.md
@@ -299,13 +1469,22 @@ deployments:
   content_hash: null
 - kind: project-relative
   target: codex
+  value: .agents/skills/github-pull-request/LICENSE
+  runtime: null
+  scope: project
+  owners:
+  - tfsugjp/skills/plugins/github-plan-wiki
+  active_owner: tfsugjp/skills/plugins/github-plan-wiki
+  content_hash: sha256:b6d9c7b6bc8606afcad921d9f548fabed6684e9f4556f99254fed664866af704
+- kind: project-relative
+  target: codex
   value: .agents/skills/github-pull-request/SKILL.md
   runtime: null
   scope: project
   owners:
   - tfsugjp/skills/plugins/github-plan-wiki
   active_owner: tfsugjp/skills/plugins/github-plan-wiki
-  content_hash: sha256:e73ee74ab957809e7aec6b77c2925746726310d909188523ec2d794c75d957ef
+  content_hash: sha256:3d4adf230420e2977fcc1dae361d1c2aaa89db4b065e45c16fd0c112507e702c
 - kind: project-relative
   target: codex
   value: .agents/skills/github-pull-request/agents/openai.yaml
@@ -342,6 +1521,15 @@ deployments:
   - tfsugjp/skills/plugins/github-plan-wiki
   active_owner: tfsugjp/skills/plugins/github-plan-wiki
   content_hash: null
+- kind: project-relative
+  target: codex
+  value: .agents/skills/github-wiki-plan/LICENSE
+  runtime: null
+  scope: project
+  owners:
+  - tfsugjp/skills/plugins/github-plan-wiki
+  active_owner: tfsugjp/skills/plugins/github-plan-wiki
+  content_hash: sha256:b6d9c7b6bc8606afcad921d9f548fabed6684e9f4556f99254fed664866af704
 - kind: project-relative
   target: codex
   value: .agents/skills/github-wiki-plan/SKILL.md
@@ -396,6 +1584,87 @@ deployments:
   - tfsugjp/skills/plugins/github-plan-wiki
   active_owner: tfsugjp/skills/plugins/github-plan-wiki
   content_hash: sha256:638d037351acd8d2bb9bcab5976d94c89948e53a6ca35b2ea4dd0de19bd8d05f
+- kind: project-relative
+  target: codex
+  value: .agents/skills/powershell-scripting
+  runtime: null
+  scope: project
+  owners:
+  - tfsugjp/skills/plugins/dotnet-azure-lessons/skills/powershell-scripting
+  active_owner: tfsugjp/skills/plugins/dotnet-azure-lessons/skills/powershell-scripting
+  content_hash: null
+- kind: project-relative
+  target: codex
+  value: .agents/skills/powershell-scripting/LICENSE
+  runtime: null
+  scope: project
+  owners:
+  - tfsugjp/skills/plugins/dotnet-azure-lessons/skills/powershell-scripting
+  active_owner: tfsugjp/skills/plugins/dotnet-azure-lessons/skills/powershell-scripting
+  content_hash: sha256:b6d9c7b6bc8606afcad921d9f548fabed6684e9f4556f99254fed664866af704
+- kind: project-relative
+  target: codex
+  value: .agents/skills/powershell-scripting/SKILL.md
+  runtime: null
+  scope: project
+  owners:
+  - tfsugjp/skills/plugins/dotnet-azure-lessons/skills/powershell-scripting
+  active_owner: tfsugjp/skills/plugins/dotnet-azure-lessons/skills/powershell-scripting
+  content_hash: sha256:1b51450ced0276c775d14d9ebd213c421f191c40b419c5ce821d61593f8791a7
+- kind: project-relative
+  target: codex
+  value: .agents/skills/pr-issue-workflow
+  runtime: null
+  scope: project
+  owners:
+  - tfsugjp/skills/plugins/dotnet-azure-lessons/skills/pr-issue-workflow
+  active_owner: tfsugjp/skills/plugins/dotnet-azure-lessons/skills/pr-issue-workflow
+  content_hash: null
+- kind: project-relative
+  target: codex
+  value: .agents/skills/pr-issue-workflow/LICENSE
+  runtime: null
+  scope: project
+  owners:
+  - tfsugjp/skills/plugins/dotnet-azure-lessons/skills/pr-issue-workflow
+  active_owner: tfsugjp/skills/plugins/dotnet-azure-lessons/skills/pr-issue-workflow
+  content_hash: sha256:b6d9c7b6bc8606afcad921d9f548fabed6684e9f4556f99254fed664866af704
+- kind: project-relative
+  target: codex
+  value: .agents/skills/pr-issue-workflow/SKILL.md
+  runtime: null
+  scope: project
+  owners:
+  - tfsugjp/skills/plugins/dotnet-azure-lessons/skills/pr-issue-workflow
+  active_owner: tfsugjp/skills/plugins/dotnet-azure-lessons/skills/pr-issue-workflow
+  content_hash: sha256:e44f52e8bae48f56e45ffebffa826980a36a550b43fe639ce2be7d50622ccc59
+- kind: project-relative
+  target: codex
+  value: .agents/skills/vs-extension-remote-ui
+  runtime: null
+  scope: project
+  owners:
+  - tfsugjp/skills/plugins/dotnet-azure-lessons/skills/vs-extension-remote-ui
+  active_owner: tfsugjp/skills/plugins/dotnet-azure-lessons/skills/vs-extension-remote-ui
+  content_hash: null
+- kind: project-relative
+  target: codex
+  value: .agents/skills/vs-extension-remote-ui/LICENSE
+  runtime: null
+  scope: project
+  owners:
+  - tfsugjp/skills/plugins/dotnet-azure-lessons/skills/vs-extension-remote-ui
+  active_owner: tfsugjp/skills/plugins/dotnet-azure-lessons/skills/vs-extension-remote-ui
+  content_hash: sha256:b6d9c7b6bc8606afcad921d9f548fabed6684e9f4556f99254fed664866af704
+- kind: project-relative
+  target: codex
+  value: .agents/skills/vs-extension-remote-ui/SKILL.md
+  runtime: null
+  scope: project
+  owners:
+  - tfsugjp/skills/plugins/dotnet-azure-lessons/skills/vs-extension-remote-ui
+  active_owner: tfsugjp/skills/plugins/dotnet-azure-lessons/skills/vs-extension-remote-ui
+  content_hash: sha256:cd84ab6ae6e1ea42be46df36ff76a639c3a3532858bdc1512eadbca20ddda73e
 - kind: project-relative
   target: codex
   value: .codex/agents/api-architect.toml

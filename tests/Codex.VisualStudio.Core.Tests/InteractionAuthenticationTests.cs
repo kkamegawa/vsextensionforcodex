@@ -107,6 +107,89 @@ public sealed class InteractionAuthenticationTests
     }
 
     [TestMethod]
+    public async Task EnterpriseMcpOAuthCompletionUsesOnlyPublicStatusAndRegistration()
+    {
+        const string privateToken = "synthetic-id-token-do-not-project";
+        const string privateHeader = "synthetic-telemetry-header-do-not-project";
+        var connection = EnvironmentIdentityConnection(
+            new { name = "docs", environmentId = "managed" },
+            new { name = "docs", environmentId = "other" },
+            oauthLoginIdFactory: static environmentId => $"oauth-login-{environmentId}");
+        var statuses = new ConcurrentQueue<InteractionAuthStatus>();
+        var events = new ConcurrentQueue<ConversationEvent>();
+        await using var service = CreateService();
+        service.InteractionAuthStatusChanged += (status, _) =>
+        {
+            statuses.Enqueue(status);
+            return Task.CompletedTask;
+        };
+        service.ConversationEventReceived += (value, _) =>
+        {
+            events.Enqueue(value);
+            return Task.CompletedTask;
+        };
+
+        await service.InitializeAsync(connection, Options(experimentalApi: true), CancellationToken.None);
+        McpOAuthLoginStatus pending = await service.StartMcpOAuthLoginAsync(
+            new StartMcpOAuthLoginRequest
+            {
+                ServerName = "docs",
+                ThreadId = "thread-1",
+                HasRegistrationIdentity = true,
+                EnvironmentId = "managed",
+            },
+            CancellationToken.None);
+        Assert.AreEqual(InteractionAuthState.LoginPending, pending.State);
+        Assert.IsNotNull(pending.OpenAuthorizationActionId);
+        int statusCountBeforeMismatch = statuses.Count;
+        McpServerAuthStatus pendingServerStatus = statuses.Last().McpServers.Single();
+        Assert.AreEqual(pending.OpenAuthorizationActionId, pendingServerStatus.OpenAuthorizationActionId);
+
+        await connection.EmitNotificationAsync("mcpServer/oauthLogin/completed", new
+        {
+            name = "docs",
+            threadId = "thread-1",
+            environmentId = "managed",
+            // This distinct ID belongs to the other same-named registration.
+            loginId = "oauth-login-other",
+            success = true,
+            idToken = privateToken,
+            headers = new { authorization = privateHeader },
+        });
+
+        Assert.AreEqual(statusCountBeforeMismatch, statuses.Count,
+            "A completion for another OAuth login must not publish a status update.");
+        McpServerAuthStatus stillPending = statuses.Last().McpServers.Single();
+        Assert.AreEqual(InteractionAuthState.LoginPending, stillPending.State,
+            "A completion for another OAuth login must not complete this registration's pending action.");
+        Assert.AreEqual(pending.OpenAuthorizationActionId, stillPending.OpenAuthorizationActionId,
+            "A mismatched completion must not clear the pending authorization action.");
+
+        // A CLI-owned token exchange ends with public status and contains no refresh token.
+        await connection.EmitNotificationAsync("mcpServer/oauthLogin/completed", new
+        {
+            name = "docs",
+            threadId = "thread-1",
+            environmentId = "managed",
+            loginId = "oauth-login-managed",
+            success = true,
+            idToken = privateToken,
+            headers = new { authorization = privateHeader },
+        });
+
+        McpServerAuthStatus completed = statuses.Last().McpServers.Single();
+        Assert.AreEqual(InteractionAuthState.Authenticated, completed.State);
+        Assert.IsNull(completed.OpenAuthorizationActionId);
+        Assert.AreEqual("managed", completed.EnvironmentId);
+        Assert.AreEqual("thread-1", completed.ThreadId);
+        Assert.AreEqual("docs", completed.ServerName);
+        Assert.AreEqual(1, connection.Requests.Count(request => request.Method == "mcpServer/oauth/login"));
+        string projected = JsonSerializer.Serialize(new { Statuses = statuses.ToArray(), Events = events.ToArray() });
+        Assert.IsFalse(projected.Contains(privateToken, StringComparison.Ordinal));
+        Assert.IsFalse(projected.Contains(privateHeader, StringComparison.Ordinal));
+    }
+
+    [TestMethod]
     public async Task McpEnvironmentIdentity_ThreadWideNullIsForwardedAndAmbiguousNameIsRejected()
     {
         var threadWideConnection = EnvironmentIdentityConnection(new { name = "docs", environmentId = (string?)null });
@@ -2112,7 +2195,11 @@ public sealed class InteractionAuthenticationTests
         Assert.AreEqual("[REDACTED]", status.McpServers.Single().DisplayServerName);
     }
 
-    private static RecordingConnection EnvironmentIdentityConnection(object first, object? second = null, string version = "0.171.0")
+    private static RecordingConnection EnvironmentIdentityConnection(
+        object first,
+        object? second = null,
+        string version = "0.171.0",
+        Func<string?, string>? oauthLoginIdFactory = null)
     {
         var connection = new RecordingConnection
         {
@@ -2148,7 +2235,7 @@ public sealed class InteractionAuthenticationTests
                     && environment.ValueKind == JsonValueKind.String ? environment.GetString() : null;
                 return Task.FromResult(JsonSerializer.SerializeToElement(new
                 {
-                    loginId = environmentId ?? "thread-wide",
+                    loginId = oauthLoginIdFactory?.Invoke(environmentId) ?? environmentId ?? "thread-wide",
                     authorizationUrl = "https://login.example.test/authorize",
                 }));
             }
