@@ -251,10 +251,13 @@ public sealed class WorkerRpcOwnerBoundaryTests
         Directory.CreateDirectory(workspace);
         try
         {
+            var notificationGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             var responseGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             var connection = new RecordingConnection(workspace)
             {
                 AccountEmail = "a@example.test",
+                EmitAccountUpdatedDuringLogout = true,
+                LogoutNotificationGate = notificationGate,
                 LogoutResponseGate = responseGate,
             };
             await using var session = new CodexSessionService(new ApprovalPolicyEngine(new PathAccessPolicy()), new SecretRedactor());
@@ -263,25 +266,9 @@ public sealed class WorkerRpcOwnerBoundaryTests
             Task<AccountStatus> logout = session.LogoutAccountAsync(CancellationToken.None);
             await connection.LogoutRequestSeen.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
-            // Reproduce the transient state between confirming the notification and retiring its owner.
-            System.Reflection.FieldInfo? contextField = typeof(CodexSessionService).GetField(
-                "connectionContext",
-                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
-            Assert.IsNotNull(contextField, "CodexSessionService should retain its active connection context.");
-            Assert.AreEqual("ConnectionContext", contextField.FieldType.Name, "The active context field should reference the logout state owner.");
-            object? context = contextField.GetValue(session);
-            Assert.IsNotNull(context, "The logout request should have an active connection context.");
-            System.Reflection.MethodInfo? confirmLogout = context.GetType().GetMethod(
-                "ConfirmLogout",
-                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic);
-            Assert.IsNotNull(confirmLogout, "The connection context should expose its logout confirmation transition.");
-            Assert.AreEqual(0, confirmLogout.GetParameters().Length, "ConfirmLogout should remain parameterless for this fixture.");
-            confirmLogout.Invoke(context, Array.Empty<object>());
-            System.Reflection.PropertyInfo? logoutConfirmed = context.GetType().GetProperty(
-                "LogoutConfirmed",
-                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic);
-            Assert.IsNotNull(logoutConfirmed, "The connection context should expose whether logout has been confirmed.");
-            Assert.IsTrue((bool)logoutConfirmed.GetValue(context)!, "ConfirmLogout should set the context's confirmation flag.");
+            // Confirm logout through the real account/updated notification, then close the connection before its RPC response.
+            notificationGate.TrySetResult();
+            await connection.LogoutNotificationCompleted.Task.WaitAsync(TimeSpan.FromSeconds(5));
             responseGate.TrySetException(new JsonRpcConnectionClosedException("The fake connection closed before owner invalidation."));
 
             AccountStatus result = await logout.WaitAsync(TimeSpan.FromSeconds(5));
