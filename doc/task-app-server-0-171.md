@@ -29,7 +29,7 @@ The checks used [schema generation](../scripts/generate-schemas.ps1), [schema co
 
 The integrated Release build at `004f733` passed with zero warnings and errors. VSIX validation passed for Worker contract v29. The local UI suite had 648 passes and 3 filesystem-link skips. The first local Core run had 707 passes, 7 filesystem-link skips, and 2 owner-boundary failures. Both failing tests passed on a focused rerun. The Ready-notification assertion also failed at the pre-review head `9ff68d5`; the test now waits for the replacement owner's Ready notification before asserting its count. [CI run 395](https://github.com/kkamegawa/vsextensionforcodex/actions/runs/45040239905) passed for the same integrated review revision.
 
-The logout failure was reproduced by holding the old connection response until the replacement sent Ready. Logout completion now reads the retired connection's logout flag. All eight focused owner-boundary tests passed with the corrected ordering.
+The logout failure was reproduced by holding the old connection response until the replacement sent Ready. Logout completion now reads the retired connection's logout flag. The eight focused owner-boundary tests present at that revision passed with the corrected ordering. At the final PR #337 head, all 14 `WorkerRpcOwnerBoundaryTests` passed.
 
 The full local Core rerun after both owner-boundary fixes finished with 709 passes, seven filesystem-link skips, and zero failures. CI run 398 passed for the same code.
 
