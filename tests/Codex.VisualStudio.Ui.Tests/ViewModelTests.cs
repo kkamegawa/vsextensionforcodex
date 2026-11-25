@@ -1,4 +1,5 @@
 ﻿using System.Collections.Specialized;
+using System.Globalization;
 using System.IO;
 using System.Reflection;
 using System.Runtime.Serialization;
@@ -1792,6 +1793,11 @@ public sealed partial class ViewModelTests
         {
             RequestId = "mcp-1",
             ServerName = "forms",
+            DisplayToolName = "read_file",
+            ReadOnlyHint = true,
+            DestructiveHint = false,
+            IdempotentHint = true,
+            OpenWorldHint = true,
             Kind = McpElicitationKind.Form,
             Message = "Provide values",
             Fields =
@@ -1845,6 +1851,13 @@ public sealed partial class ViewModelTests
             return Task.CompletedTask;
         }, new SafeMarkdownService());
 
+        Assert.AreEqual("read_file", vm.ToolName);
+        Assert.AreEqual(3, vm.ToolAnnotations.Count);
+        bool isJapanese = CultureInfo.CurrentUICulture.TwoLetterISOLanguageName == "ja";
+        Assert.AreEqual(isJapanese ? "読み取り専用" : "Read-only", vm.ToolAnnotations[0].Label);
+        Assert.AreEqual(isJapanese ? "冪等" : "Idempotent", vm.ToolAnnotations[1].Label);
+        Assert.AreEqual(isJapanese ? "外部システムにアクセス" : "Accesses external systems", vm.ToolAnnotations[2].Label);
+
         Assert.IsFalse(vm.IsResolved);
         Assert.IsTrue(vm.CanAccept);
         Assert.AreEqual("**x**", vm.Fields[0].InputText);
@@ -1867,6 +1880,41 @@ public sealed partial class ViewModelTests
         Assert.AreEqual(0d, submittedValues[3].NumberValue);
         CollectionAssert.AreEqual(ExpectedModeChoiceIds, submittedValues[4].ChoiceIds.ToArray());
         Assert.IsTrue(vm.IsResolved);
+    }
+
+    [TestMethod]
+    public void McpElicitation_LabelsClosedDomainAsServerReported()
+    {
+        var vm = new McpElicitationViewModel(
+            new McpElicitationRequest
+            {
+                RequestId = "mcp-closed",
+                ServerName = "database",
+                OpenWorldHint = false,
+            },
+            (_, _, _) => Task.CompletedTask,
+            new SafeMarkdownService());
+
+        bool isJapanese = CultureInfo.CurrentUICulture.TwoLetterISOLanguageName == "ja";
+        Assert.AreEqual(isJapanese ? "サーバー申告の閉じた操作範囲" : "Declared closed interaction domain", vm.ToolAnnotations.Single().Label);
+    }
+
+    [TestMethod]
+    public void McpElicitation_OmitsFalseDestructiveAndOtherReassuringHints()
+    {
+        var vm = new McpElicitationViewModel(
+            new McpElicitationRequest
+            {
+                RequestId = "mcp-false-hints",
+                ServerName = "database",
+                ReadOnlyHint = false,
+                DestructiveHint = false,
+                IdempotentHint = false,
+            },
+            (_, _, _) => Task.CompletedTask,
+            new SafeMarkdownService());
+
+        Assert.AreEqual(0, vm.ToolAnnotations.Count);
     }
 
     [TestMethod]
@@ -3738,6 +3786,31 @@ public sealed partial class ViewModelTests
         Assert.IsFalse(vm.ShowAcceptForThread);
         Assert.IsFalse(vm.ShowAcceptForSession);
         Assert.IsFalse(vm.ShowDecline);
+        Assert.IsTrue(vm.ShowCancel);
+    }
+
+    [TestMethod]
+    public void ApprovalViewModel_HumanCommandShowsOrganizationCheckpointAndOnlyOneTimeActions()
+    {
+        var request = new ApprovalRequest
+        {
+            RequestId = "human-approval",
+            IsHumanCommand = true,
+            DisplayText = "dotnet build",
+            Reason = "Required by organization policy",
+            AvailableDecisions = [ApprovalDecision.Accept, ApprovalDecision.Decline, ApprovalDecision.Cancel],
+        };
+
+        var vm = new ApprovalViewModel(request, (_, _, _) => Task.CompletedTask, new SafeMarkdownService());
+
+        bool isJapanese = CultureInfo.CurrentUICulture.TwoLetterISOLanguageName == "ja";
+        Assert.AreEqual(isJapanese ? "組織ポリシーによる承認が必要です" : "Approval required by your organization", vm.Title);
+        Assert.AreEqual(isJapanese ? "承認" : "Approve", vm.ApproveLabel);
+        Assert.IsTrue(vm.ShowAccept);
+        Assert.IsFalse(vm.ShowAcceptForSession);
+        Assert.IsFalse(vm.ShowAcceptForTurn);
+        Assert.IsFalse(vm.ShowAcceptForThread);
+        Assert.IsTrue(vm.ShowDecline);
         Assert.IsTrue(vm.ShowCancel);
     }
 
@@ -5953,6 +6026,7 @@ public sealed partial class ViewModelTests
             typeof(ChatViewModel), typeof(ChatItemViewModel), typeof(ChatBlockViewModel), typeof(TranscriptSearchResultViewModel), typeof(ApprovalViewModel),
             typeof(InteractionCardViewModel), typeof(ApprovalChoiceViewModel), typeof(PermissionSelectionViewModel),
             typeof(PermissionGrantOptionViewModel), typeof(McpElicitationViewModel), typeof(McpElicitationFieldViewModel),
+            typeof(McpToolAnnotationViewModel),
             typeof(McpElicitationChoiceViewModel), typeof(InteractionAuthStatusPresentationViewModel),
             typeof(McpServerAuthPresentationViewModel), typeof(UserInputViewModel), typeof(UserInputQuestionViewModel), typeof(UserInputOptionViewModel),
             typeof(SuggestionChip), typeof(SlashCommandPresentationViewModel),

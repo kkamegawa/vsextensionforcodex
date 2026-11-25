@@ -1897,6 +1897,8 @@
                         Visibility="{Binding CanDismiss, Converter={StaticResource BoolToVis}}" />
 
                 <StackPanel Visibility="{Binding IsApproval, Converter={StaticResource BoolToVis}}">
+                  <TextBlock FontWeight="Bold" Text="{Binding Approval.Title}" TextWrapping="Wrap"
+                             Visibility="{Binding Approval.IsHumanCommand, Converter={StaticResource BoolToVis}}" />
                   <TextBlock FontWeight="SemiBold" Text="{Binding Approval.Risk}" />
                   <TextBlock Margin="0,4,0,0" Text="{Binding Approval.DisplayText}" TextWrapping="Wrap" />
                   <TextBlock Margin="0,4,0,0" Text="{Binding Approval.Reason}" TextWrapping="Wrap" />
@@ -1916,7 +1918,7 @@
                     </ItemsControl.ItemTemplate>
                   </ItemsControl>
                   <WrapPanel Visibility="{Binding Approval.ShowLegacyDecisions, Converter={StaticResource BoolToVis}}">
-                    <Button Margin="0,0,6,6" Content="Accept" Command="{Binding Approval.AcceptCommand}"
+                    <Button Margin="0,0,6,6" Content="{Binding Approval.ApproveLabel}" Command="{Binding Approval.AcceptCommand}"
                             Style="{StaticResource RoundButtonStyle}" Visibility="{Binding Approval.ShowAccept, Converter={StaticResource BoolToVis}}" />
                     <Button Margin="0,0,6,6" Content="Accept for turn" Command="{Binding Approval.AcceptForTurnCommand}"
                             Style="{StaticResource RoundButtonStyle}" Visibility="{Binding Approval.ShowAcceptForTurn, Converter={StaticResource BoolToVis}}" />
@@ -1924,9 +1926,9 @@
                             Style="{StaticResource RoundButtonStyle}" Visibility="{Binding Approval.ShowAcceptForThread, Converter={StaticResource BoolToVis}}" />
                     <Button Margin="0,0,6,6" Content="Accept for session" Command="{Binding Approval.AcceptForSessionCommand}"
                             Style="{StaticResource RoundButtonStyle}" Visibility="{Binding Approval.ShowAcceptForSession, Converter={StaticResource BoolToVis}}" />
-                    <Button Margin="0,0,6,6" Content="Decline" Command="{Binding Approval.DeclineCommand}"
+                    <Button Margin="0,0,6,6" Content="{Binding Approval.DeclineLabel}" Command="{Binding Approval.DeclineCommand}"
                             Style="{StaticResource RoundButtonStyle}" Visibility="{Binding Approval.ShowDecline, Converter={StaticResource BoolToVis}}" />
-                    <Button Margin="0,0,6,6" Content="Cancel" Command="{Binding Approval.CancelCommand}"
+                    <Button Margin="0,0,6,6" Content="{Binding Approval.CancelLabel}" Command="{Binding Approval.CancelCommand}"
                             Style="{StaticResource RoundButtonStyle}" Visibility="{Binding Approval.ShowCancel, Converter={StaticResource BoolToVis}}" />
                   </WrapPanel>
                 </StackPanel>
@@ -2020,6 +2022,32 @@
 
                 <StackPanel Visibility="{Binding IsElicitation, Converter={StaticResource BoolToVis}}">
                   <TextBlock Text="{Binding Elicitation.ServerName}" FontWeight="SemiBold" />
+                  <TextBlock Margin="0,3,0,0" Text="{Binding Elicitation.ToolName}" FontWeight="Bold" TextWrapping="Wrap"
+                             Visibility="{Binding Elicitation.HasToolName, Converter={StaticResource BoolToVis}}" />
+                  <ItemsControl Margin="0,4,0,0" ItemsSource="{Binding Elicitation.ToolAnnotations}">
+                    <ItemsControl.ItemsPanel>
+                      <ItemsPanelTemplate><WrapPanel /></ItemsPanelTemplate>
+                    </ItemsControl.ItemsPanel>
+                    <ItemsControl.ItemTemplate>
+                      <DataTemplate>
+                        <Border Margin="0,0,5,4" Padding="5,2" CornerRadius="3"
+                                Background="{DynamicResource {x:Static colors:EnvironmentColors.SystemButtonFaceBrushKey}}">
+                          <Border.Style>
+                            <Style TargetType="Border">
+                              <Setter Property="BorderThickness" Value="1" />
+                              <Setter Property="BorderBrush" Value="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBorderBrushKey}}" />
+                              <Style.Triggers>
+                                <DataTrigger Binding="{Binding IsDestructive}" Value="True">
+                                  <Setter Property="BorderThickness" Value="2" />
+                                </DataTrigger>
+                              </Style.Triggers>
+                            </Style>
+                          </Border.Style>
+                          <TextBlock Text="{Binding Label}" FontWeight="SemiBold" />
+                        </Border>
+                      </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                  </ItemsControl>
                   <TextBlock Margin="0,3,0,0" Text="{Binding Elicitation.Message}" TextWrapping="Wrap" />
                   <TextBlock Margin="0,3,0,0" Text="{Binding Elicitation.OriginDisplay}" FontSize="11" Opacity="0.75" TextWrapping="Wrap" />
                   <ItemsControl Margin="0,6,0,0" ItemsSource="{Binding Elicitation.Fields}"

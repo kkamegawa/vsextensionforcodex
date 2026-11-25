@@ -11090,6 +11090,14 @@ public sealed class ApprovalViewModel : ObservableObject
     {
         this.resolver = resolver;
         RequestId = request.RequestId;
+        IsHumanCommand = request.IsHumanCommand;
+        bool isJapanese = CultureInfo.CurrentUICulture.TwoLetterISOLanguageName == "ja";
+        Title = request.IsHumanCommand
+            ? isJapanese ? "組織ポリシーによる承認が必要です" : "Approval required by your organization"
+            : string.Empty;
+        ApproveLabel = request.IsHumanCommand ? (isJapanese ? "承認" : "Approve") : "Accept";
+        DeclineLabel = request.IsHumanCommand ? (isJapanese ? "拒否" : "Decline") : "Decline";
+        CancelLabel = request.IsHumanCommand ? (isJapanese ? "キャンセル" : "Cancel") : "Cancel";
         // App-server strings are untrusted; sanitize them before they reach Remote UI.
         DisplayText = markdown.ToSafeText(request.DisplayText).Trim();
         Reason = request.Reason is null ? null : markdown.ToSafeText(request.Reason).Trim();
@@ -11125,6 +11133,21 @@ public sealed class ApprovalViewModel : ObservableObject
     }
 
     public string RequestId { get; }
+
+    [DataMember]
+    public bool IsHumanCommand { get; }
+
+    [DataMember]
+    public string Title { get; }
+
+    [DataMember]
+    public string ApproveLabel { get; }
+
+    [DataMember]
+    public string DeclineLabel { get; }
+
+    [DataMember]
+    public string CancelLabel { get; }
 
     [DataMember]
     public string DisplayText { get; }

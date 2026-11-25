@@ -152,6 +152,16 @@ public sealed class McpElicitationRequest
     public string? OriginDisplay { get; set; }
 
     public string? OpenAuthorizationActionId { get; set; }
+
+    public string? DisplayToolName { get; set; }
+
+    public bool? ReadOnlyHint { get; set; }
+
+    public bool? DestructiveHint { get; set; }
+
+    public bool? IdempotentHint { get; set; }
+
+    public bool? OpenWorldHint { get; set; }
 }
 
 public sealed class McpElicitationField

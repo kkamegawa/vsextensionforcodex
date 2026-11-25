@@ -106,7 +106,7 @@ Worker はペイロードを JSON 要素として読み取るため、Worker が
 | ワイヤー上の項目 | Worker のコード | 扱い |
 | --- | --- | --- |
 | `initialize` の `capabilities.requiredHumanApproval` | `CodexSessionService.CreateClientCapabilities` | `experimentalApi` を送るときだけ `true` で送ります |
-| `item/commandExecution/requestApproval` の `kind` | `CodexSessionService.CreateApprovalRequest`、`OfferedCommandChoiceSet` | 読み取ります。`command` は既存のカードのままです。`writeStdin` は実行中のターミナルへの入力としてカードを表示します。`humanCommand` は 4 章の組織のチェックポイントを表示します。不明な値はセッション単位の許可なしで通常のカードを表示します |
+| `item/commandExecution/requestApproval` の `kind` | `CodexSessionService.CreateApprovalRequest`、`OfferedCommandChoiceSet` | 読み取ります。`command` は既存のカードのままです。`writeStdin` は実行中のターミナルへの入力としてカードを表示します。`humanCommand` は 4 章の組織のチェックポイントを表示します。不明な値は永続的な許可やポリシー変更の選択肢を含めず、通常のカードを表示します |
 | `mcpServer/elicitation/request` の `_meta` | `McpElicitationFormParser` | 4 章のとおり `tool_name` と `tool_annotations` を読み取ります |
 | `item/completed` の `contentTokenCount` | `CodexSessionService.DispatchNotificationAsync` | `Tier168` で `agentMessage` 項目について読み取ります |
 | ライブと再生されたターンの `codexErrorInfo` にある `inferenceHookDenied`、`sessionBudgetExceeded` | `CodexSessionService.ReadTurnErrorReason` とライブ／再生ターンリーダー | 認識し、ペイロードのテキストを秘匿化して安全な固定説明を表示します。ターンは自動で再送しません |
@@ -150,8 +150,8 @@ Worker はペイロードを JSON 要素として読み取るため、Worker が
 
 **利用条件:** `Baseline`。組織のチェックポイントには `experimentalApi` が必要です。
 
-- **MCP ツールの承認:** MCP ツール呼び出しの `mcpServer/elicitation/request` には `_meta.tool_name` と `_meta.tool_annotations` が含まれます(openai/codex#58161)。`tool_annotations` には真偽値 `readOnlyHint`、`destructiveHint`、`idempotentHint`、`openWorldHint` が含まれることがあり、含まれないヒントは不明として扱います。カードはサーバー名とツール名をタイトルにし、その下に「読み取り専用」「破壊的」「冪等」「外部システムにアクセス」のバッジを表示します。バッジは該当するヒントがあるときだけ表示し、`destructiveHint: true` は警告スタイルにします。ヒントは MCP サーバーが申告する信頼できない値です。選べる決定を変えず、自動承認を有効にせず、`IApprovalPolicyEngine` を迂回しません。`tool_name` がない、文字列でない、または大きすぎる場合は既存のカードを表示します。
-- **組織のチェックポイント:** `experimentalApi` を交渉した場合、`initialize` で `requiredHumanApproval` を宣言します。`kind: "humanCommand"` のコマンド承認は、組織の管理ポリシーが要求するチェックポイントです。カードのタイトルは「組織が求める承認」で、コマンドと理由を表示し、「承認」「拒否」「キャンセル」だけを提示して、それぞれ `accept`、`decline`、`cancel` を送ります。チェックポイントには、セッション単位の許可、`acceptForSession`、実行ポリシーの修正、ローカルポリシーによる自動化、自動承認のいずれも使いません。タイムアウト時は `cancel` を送ります。`experimentalApi` がない場合は機能を宣言せず、サーバー側の動作に任せます。
+- **MCP ツールの承認:** MCP ツール呼び出しの `mcpServer/elicitation/request` には `_meta.tool_name` と `_meta.tool_annotations` が含まれます(openai/codex#58161)。`tool_annotations` には真偽値 `readOnlyHint`、`destructiveHint`、`idempotentHint`、`openWorldHint` が含まれることがあり、含まれないヒントは不明として扱います。カードはサーバー名とツール名をタイトルにします。「読み取り専用」「破壊的」「冪等」のバッジは、対応するヒントが `true` の場合だけ表示し、`destructiveHint: true` は警告記号を付け、Visual Studio のテーマリソースを使った太い境界線でバッジを強調します。`openWorldHint` は `true` のとき「外部システムにアクセス」、`false` のとき「サーバー申告の閉じた操作範囲」を表示します。読み取り専用、破壊的、冪等のヒントが `false` または未指定の場合はバッジを表示しません。これらは MCP サーバーが申告する信頼できない補助情報です。選べる決定を変えず、自動承認を有効にせず、`IApprovalPolicyEngine` を迂回しません。`tool_name` がない、文字列でない、または大きすぎる場合は既存のカードを表示します。
+- **組織のチェックポイント:** `experimentalApi` を交渉した場合、`initialize` で `requiredHumanApproval` を宣言します。`kind: "humanCommand"` のコマンド承認は、組織の管理ポリシーが要求するチェックポイントです。カードのタイトルは「組織ポリシーによる承認が必要です」で、コマンドと理由を表示し、サーバーが提示した「承認」「拒否」「キャンセル」のうち一回限りの決定だけを提示します。タイムアウト時に提示済みの `cancel` を返せるよう、`cancel` がない要求はカードを表示する前に拒否します。カードに表示できない空でない追加権限はカード表示前に拒否し、秘匿化した診断を記録します。空の権限コンテナーはチェックポイントを妨げません。チェックポイントには、セッション単位の許可、`acceptForSession`、実行ポリシーの修正、ローカルポリシーによる自動化、自動承認のいずれも使いません。タイムアウト時は `cancel` を送ります。`experimentalApi` がない場合は機能を宣言せず、サーバー側の動作に任せます。
 
 ### 4.3 スレッド管理
 

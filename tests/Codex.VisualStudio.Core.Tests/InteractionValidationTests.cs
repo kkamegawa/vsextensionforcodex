@@ -218,6 +218,87 @@ public sealed class InteractionValidationTests
     }
 
     [TestMethod]
+    public void HumanCommandChoices_ExposeOnlyOneTimeUserDecisions()
+    {
+        using JsonDocument request = JsonDocument.Parse("""
+        {"availableDecisions":["accept","acceptForSession","decline","cancel",
+         {"acceptWithExecpolicyAmendment":{"execpolicy_amendment":["allow read"]}}],
+         "proposedExecpolicyAmendment":["allow read"],
+         "proposedNetworkPolicyAmendments":[{"action":"allow","host":"example.test"}]}
+        """);
+        int id = 0;
+
+        Assert.IsTrue(OfferedCommandChoiceSet.TryCreateHumanCommand(request.RootElement, value => value, () => $"human-{++id}", out OfferedCommandChoiceSet? choices));
+        Assert.IsNotNull(choices);
+        CollectionAssert.AreEqual(new[] { "Approve", "Decline", "Cancel" }, choices.Choices.Select(choice => choice.Label).ToArray());
+        Assert.IsFalse(choices.TryResolveDecision("acceptForSession", out _));
+        Assert.IsFalse(choices.TryResolveDecision("acceptWithExecpolicyAmendment", out _));
+        Assert.IsTrue(choices.TryResolve(choices.Choices[0].ChoiceId, out JsonElement response));
+        Assert.AreEqual("accept", response.GetProperty("decision").GetString());
+        CollectionAssert.AreEqual(
+            new[] { ApprovalDecision.Accept, ApprovalDecision.Decline, ApprovalDecision.Cancel },
+            choices.AvailableDecisions.ToArray());
+    }
+
+    [TestMethod]
+    public void HumanCommandChoices_IntersectOnlyDecisionsOfferedByServer()
+    {
+        using JsonDocument request = JsonDocument.Parse("""
+        {"availableDecisions":["cancel","acceptForSession","accept","decline"]}
+        """);
+        int id = 0;
+
+        Assert.IsTrue(OfferedCommandChoiceSet.TryCreateHumanCommand(
+            request.RootElement, value => value, () => $"human-{++id}", out OfferedCommandChoiceSet? choices));
+        Assert.IsNotNull(choices);
+        CollectionAssert.AreEqual(new[] { "Cancel", "Approve", "Decline" }, choices.Choices.Select(choice => choice.Label).ToArray());
+        CollectionAssert.AreEqual(
+            new[] { ApprovalDecision.Cancel, ApprovalDecision.Accept, ApprovalDecision.Decline },
+            choices.AvailableDecisions.ToArray());
+        Assert.IsFalse(choices.TryResolveDecision("acceptForSession", out _));
+    }
+
+    [TestMethod]
+    public void HumanCommandChoices_RejectWhenServerOffersNoOneTimeDecision()
+    {
+        using JsonDocument request = JsonDocument.Parse("""
+        {"availableDecisions":["acceptForSession"]}
+        """);
+        Assert.IsFalse(OfferedCommandChoiceSet.TryCreateHumanCommand(
+            request.RootElement, value => value, () => "human-1", out _));
+    }
+
+    [TestMethod]
+    public void HumanCommandChoices_RejectWhenServerDoesNotOfferCancel()
+    {
+        using JsonDocument request = JsonDocument.Parse("""
+        {"availableDecisions":["accept","decline"]}
+        """);
+        Assert.IsFalse(OfferedCommandChoiceSet.TryCreateHumanCommand(
+            request.RootElement, value => value, () => "human-1", out _));
+    }
+
+    [TestMethod]
+    public void OrdinaryApprovalChoices_OmitSessionApprovalForUnknownKind()
+    {
+        using JsonDocument request = JsonDocument.Parse("""
+        {"kind":{"future":true},"availableDecisions":["accept","acceptForSession","decline","cancel",
+         {"acceptWithExecpolicyAmendment":{"execpolicy_amendment":["allow read"]}}]}
+        """);
+        int id = 0;
+
+        Assert.IsTrue(OfferedCommandChoiceSet.TryCreate(
+            request.RootElement, value => value, () => $"choice-{++id}", out OfferedCommandChoiceSet? choices,
+            allowPersistentApprovals: false));
+        Assert.IsNotNull(choices);
+        Assert.IsFalse(choices.TryResolveDecision("acceptForSession", out _));
+        Assert.IsFalse(choices.Choices.Any(choice => choice.Label.Contains("execution rule", StringComparison.OrdinalIgnoreCase)));
+        CollectionAssert.AreEqual(
+            new[] { "Approve this command", "Decline", "Cancel turn" },
+            choices.Choices.Select(choice => choice.Label).ToArray());
+    }
+
+    [TestMethod]
     public void PermissionSelection_RejectsForgedIdsAndPreservesDenyConstraints()
     {
         using JsonDocument requested = JsonDocument.Parse("""

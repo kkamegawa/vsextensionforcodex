@@ -148,8 +148,25 @@ try {
     $contractSource = Get-Content -LiteralPath (Join-Path $root 'src/Codex.VisualStudio.Contracts/WorkerContracts.cs') -Raw
     $contractMatch = [regex]::Match($contractSource, 'public const int Current = (?<version>\d+);')
     if (-not $contractMatch.Success) { throw 'Worker contract version declaration was not found.' }
-    $contractVersion = [int]$contractMatch.Groups['version'].Value
-    if ($contractVersion -ne 29) { throw "Expected Worker contract v29, found v$contractVersion." }
+    $sourceContractVersion = [int]$contractMatch.Groups['version'].Value
+    # Update this gate in the same change as ContractVersions.Current.
+    $expectedSourceContractVersion = 30
+    if ($sourceContractVersion -ne $expectedSourceContractVersion) {
+        throw "Source Worker contract v$sourceContractVersion does not match required v$expectedSourceContractVersion."
+    }
+    $contractsAssemblyPath = Join-Path $extensionOutput 'Codex.VisualStudio.Contracts.dll'
+    $contractsAssembly = [Reflection.Assembly]::LoadFrom($contractsAssemblyPath)
+    $contractVersionsType = $contractsAssembly.GetType('Codex.VisualStudio.Contracts.ContractVersions', $false, $false)
+    if ($null -eq $contractVersionsType) { throw "Built contracts assembly does not contain ContractVersions: $contractsAssemblyPath" }
+    $bindingFlags = [Reflection.BindingFlags]::Public -bor [Reflection.BindingFlags]::Static
+    $contractVersionField = $contractVersionsType.GetField('Current', $bindingFlags)
+    if ($null -eq $contractVersionField -or -not $contractVersionField.IsLiteral -or $contractVersionField.FieldType -ne [int]) {
+        throw "Built contracts assembly does not expose ContractVersions.Current as a public integer constant: $contractsAssemblyPath"
+    }
+    $contractVersion = [int]$contractVersionField.GetRawConstantValue()
+    if ($contractVersion -ne $sourceContractVersion) {
+        throw "Built Worker contract v$contractVersion does not match source Worker contract v$sourceContractVersion."
+    }
     $checks.Add([ordered]@{ source = 'WorkerContracts.cs'; contractVersion = $contractVersion; status = 'passed' })
 }
 finally { $archive.Dispose() }
