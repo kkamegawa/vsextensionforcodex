@@ -16,11 +16,9 @@ The 0.169 and 0.170 releases require a refresh token for this sign-in flow. For 
 | 0.170 | Set `otel.headers_helper` and optionally `otel.headers_helper_refresh_interval_ms` in user configuration for an explicitly configured user OTLP HTTP exporter. |
 | 0.171 | System `requirements.toml` and MDM requirements can also provide an absolute helper executable path and an OTLP HTTP exporter with a nonempty endpoint in the same policy layer. Managed helper support is limited to those two policy sources. |
 
-Before enabling managed helper settings, upgrade every targeted CLI to 0.171.0 or later. Older clients, including 0.170, may fail at startup when managed requirements contain either `otel.headers_helper` or `otel.headers_helper_refresh_interval_ms`. Before downgrading a client, remove both keys from policy and allow the updated policy to propagate to that machine.
+Before enabling either managed helper key, upgrade every targeted Codex CLI to 0.171.0 or later. Older clients, including 0.170 clients that support user-configured helpers, may fail at startup when managed requirements contain either key. Before downgrading a client, remove both helper keys from policy and wait for the policy change to propagate to that machine.
 
 The CLI validates and runs the helper and applies refreshed headers to the eligible exporter. Manage the executable and its configuration on the machine running the CLI. The extension displays MCP sign-in status and keeps credentials and telemetry header values within the CLI.
-
-Before enabling either managed helper key, upgrade every targeted Codex CLI to 0.171.0 or later. Older clients, including 0.170 clients that support user-configured helpers, may reject managed requirements containing either key when they start. Before downgrading a client, remove both helper keys from managed requirements and wait for the policy change to propagate to that machine.
 
 **Implemented, unverified in an Enterprise environment.** Enterprise environment acceptance is waived. Ordinary build and regression checks apply.
 
