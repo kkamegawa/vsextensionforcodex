@@ -54,6 +54,9 @@ CLI 0.159.1 stable を対象とし、0.155.1 の回帰 fixture を用いて、#1
 - elevated／unelevated mode を明示させて Start する。任意の `cwd` は開いている solution の root を `LocalPathBoundary` で検証し、Start 前に表示する。solution がない場合は null。
 - 状態は Not observed、Starting、Running、Succeeded、Failed、Unsupported、OutcomeUnknown とする。`started=true` は成功を意味せず、`started=false` も成功を否定しない。完了通知が応答より先の場合もある。進行表示は不定とする。
 - failure や outcome unknown 後も generation ごとに1回だけ試行できる。旧世代や未要求の完了通知を無視する。エラーは上限化・秘匿化し、自動再試行しない。
+- Windows Sandboxパネルを仮想化された会話リストの表示専用先頭行に置き、トランスクリプトとともにスクロールさせる。`Items`を正本として保ち、UI投影を別に公開する。パネル行は会話履歴や永続化状態に含めない。
+- 空会話の歓迎表示を同じスクロール領域へ置き、sandbox操作を覆わないようにする。App Server通知とshellコマンド確認は固定ステータス領域に残す。リサイクル仮想化とピクセル単位スクロールを維持する。
+- このレイアウト変更では、sandbox設定の永続化、backend選択、setupコマンド、次回のローカルサーバー起動時に適用する動作を変更しない。
 
 ## 0.159.1 追加フィールドと対象外
 

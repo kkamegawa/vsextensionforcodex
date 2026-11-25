@@ -571,6 +571,7 @@ public sealed partial class ChatViewModel
     {
         OnPropertyChanged(nameof(ShowWindowsSandboxSetup));
         OnPropertyChanged(nameof(ShowWindowsSandboxPanel));
+        SyncTranscriptSandboxHeaderPresence();
         CheckWindowsSandboxReadinessCommand?.RaiseCanExecuteChanged();
         if (previousGeneration != value.Target?.Generation)
         {

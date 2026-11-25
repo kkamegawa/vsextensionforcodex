@@ -176,6 +176,9 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
     private readonly ObservableCollection<ThreadAttachmentPresentationViewModel> threadAttachments = [];
     private readonly ObservableCollection<ThreadTurnSummary> threadTurns = [];
     private readonly ObservableCollection<ThreadHistoryRowViewModel> threadRows = [];
+    private readonly ObservableCollection<ChatItemViewModel> transcriptItems = [];
+    private readonly WindowsSandboxTranscriptHeaderPresentationViewModel transcriptHeaderPresentation;
+    private readonly ChatItemViewModel transcriptSandboxHeader;
 
     private sealed record UnifiedSlashSuggestionSnapshot(
         List<SlashCommandSuggestionDescriptor> Suggestions,
@@ -223,10 +226,13 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         remoteProfiles = new RemoteProfilesPresentationViewModel(settings, this.settingsStore, profileOperationGate);
         connectionHealth = new ConnectionHealthPresentationViewModel(markdown);
         connectedProfileName = remoteProfiles.AppliedProfileName;
+        transcriptHeaderPresentation = new WindowsSandboxTranscriptHeaderPresentationViewModel(this);
+        transcriptSandboxHeader = ChatItemViewModel.CreateWindowsSandboxPanelHeader(transcriptHeaderPresentation);
         slashCommandParser = new SlashCommandParser(slashCommandCatalog);
         SubscribeBridge(bridge);
-        // The welcome/empty state is driven by IsThreadEmpty; keep it in sync with every
-        // mutation of Items (Add/Clear from any call site) via a single subscription.
+        // The welcome/empty state and transcript projection are driven by Items; keep both in
+        // sync with every mutation (Add/Clear from any call site) via a single subscription.
+        transcriptItems.Add(transcriptSandboxHeader);
         Items.CollectionChanged += OnItemsCollectionChanged;
         Threads.CollectionChanged += OnThreadsCollectionChanged;
         ThreadTurns.CollectionChanged += (_, _) => OnPropertyChanged(nameof(HistoryTurnSummaryText));
@@ -429,8 +435,12 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         }
     }
 
-    [DataMember]
     public ObservableCollection<ChatItemViewModel> Items { get; } = new();
+
+    // Remote UI receives this presentation projection. Items remains the canonical conversation
+    // and history collection; its synthetic leading row is never persisted or counted as history.
+    [DataMember]
+    public ObservableCollection<ChatItemViewModel> TranscriptItems => transcriptItems;
 
     // Every outstanding interaction remains independently actionable while the composer and
     // transcript continue to work. The XAML hosts this collection in a bounded virtualized list.
@@ -2660,6 +2670,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         Interlocked.Increment(ref usageConnectionGeneration);
         InvalidateUsage();
         connectionHealth.Clear();
+        transcriptHeaderPresentation.Detach();
         recoveryCancellation?.Cancel();
         recoveryCancellation?.Dispose();
         recoveryCancellation = null;
@@ -2927,6 +2938,9 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         connectedProfileName = profileName;
         OnPropertyChanged(nameof(ConnectionTargetText));
         OnPropertyChanged(nameof(ConnectionTargetAutomationName));
+        OnPropertyChanged(nameof(ShowWindowsSandboxSetup));
+        OnPropertyChanged(nameof(ShowWindowsSandboxPanel));
+        SyncTranscriptSandboxHeaderPresence();
     }
 
     // Switching the connection target replaces the Worker's app-server connection, so it waits
@@ -3842,6 +3856,8 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
 
     private void OnItemsCollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
     {
+        MirrorTranscriptItems(e);
+
         if (e.Action == NotifyCollectionChangedAction.Reset)
         {
             historyBytes = 0;
@@ -3865,7 +3881,211 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
 
         historyBytes = Math.Max(0, historyBytes);
         OnPropertyChanged(nameof(IsThreadEmpty));
+        SyncTranscriptSandboxHeaderPresence();
     }
+
+    private void MirrorTranscriptItems(NotifyCollectionChangedEventArgs e)
+    {
+        int headerOffset = GetTranscriptHeaderOffset();
+        switch (e.Action)
+        {
+            case NotifyCollectionChangedAction.Add when e.NewItems is { Count: > 0 } newItems
+                && e.NewStartingIndex >= 0
+                && e.NewStartingIndex + newItems.Count <= Items.Count
+                && transcriptItems.Count - headerOffset == Items.Count - newItems.Count
+                && CollectionItemsMatchCanonical(newItems, e.NewStartingIndex)
+                && (e.NewStartingIndex == 0
+                    || TranscriptRangeMatchesCanonical(e.NewStartingIndex - 1, e.NewStartingIndex - 1, 1))
+                && (e.NewStartingIndex + newItems.Count == Items.Count
+                    || TranscriptRangeMatchesCanonical(e.NewStartingIndex, e.NewStartingIndex + newItems.Count, 1)):
+            {
+                int index = e.NewStartingIndex + headerOffset;
+                foreach (ChatItemViewModel item in newItems)
+                {
+                    transcriptItems.Insert(index++, item);
+                }
+
+                break;
+            }
+
+            case NotifyCollectionChangedAction.Remove when e.OldItems is { Count: > 0 } oldItems
+                && e.OldStartingIndex >= 0
+                && e.OldStartingIndex <= Items.Count
+                && e.OldStartingIndex + oldItems.Count <= transcriptItems.Count - headerOffset
+                && transcriptItems.Count - headerOffset == Items.Count + oldItems.Count
+                && CollectionItemsMatchTranscript(oldItems, e.OldStartingIndex + headerOffset)
+                && (e.OldStartingIndex == 0
+                    || TranscriptRangeMatchesCanonical(e.OldStartingIndex - 1, e.OldStartingIndex - 1, 1))
+                && (e.OldStartingIndex == Items.Count
+                    || TranscriptRangeMatchesCanonical(e.OldStartingIndex + oldItems.Count, e.OldStartingIndex, 1)):
+                for (int removed = 0; removed < oldItems.Count; removed++)
+                {
+                    transcriptItems.RemoveAt(e.OldStartingIndex + headerOffset);
+                }
+
+                break;
+
+            case NotifyCollectionChangedAction.Replace when e.NewItems is { Count: > 0 } newItems
+                && e.OldItems is { Count: > 0 } oldItems
+                && newItems.Count == oldItems.Count
+                && e.NewStartingIndex >= 0
+                && e.NewStartingIndex + newItems.Count <= Items.Count
+                && transcriptItems.Count - headerOffset == Items.Count
+                && CollectionItemsMatchTranscript(oldItems, e.NewStartingIndex + headerOffset)
+                && CollectionItemsMatchCanonical(newItems, e.NewStartingIndex)
+                && (e.NewStartingIndex == 0
+                    || TranscriptRangeMatchesCanonical(e.NewStartingIndex - 1, e.NewStartingIndex - 1, 1))
+                && (e.NewStartingIndex + newItems.Count == Items.Count
+                    || TranscriptRangeMatchesCanonical(e.NewStartingIndex + newItems.Count, e.NewStartingIndex + newItems.Count, 1)):
+                for (int replaced = 0; replaced < newItems.Count; replaced++)
+                {
+                    transcriptItems[e.NewStartingIndex + replaced + headerOffset] = (ChatItemViewModel)newItems[replaced]!;
+                }
+
+                break;
+
+            case NotifyCollectionChangedAction.Move when e.OldItems is { Count: 1 } oldItems
+                && e.OldStartingIndex >= 0
+                && e.NewStartingIndex >= 0
+                && e.OldStartingIndex < Items.Count
+                && e.NewStartingIndex < Items.Count
+                && transcriptItems.Count - headerOffset == Items.Count
+                && CollectionItemsMatchTranscript(oldItems, e.OldStartingIndex + headerOffset):
+                transcriptItems.Move(e.OldStartingIndex + headerOffset, e.NewStartingIndex + headerOffset);
+                int movedRangeStart = Math.Min(e.OldStartingIndex, e.NewStartingIndex);
+                int movedRangeCount = Math.Abs(e.OldStartingIndex - e.NewStartingIndex) + 1;
+                if (!TranscriptRangeMatchesCanonical(movedRangeStart, movedRangeStart, movedRangeCount))
+                {
+                    RebuildTranscriptItems();
+                }
+
+                return;
+
+            case NotifyCollectionChangedAction.Reset:
+                RebuildTranscriptItems();
+                return;
+
+            default:
+                RebuildTranscriptItems();
+                return;
+        }
+
+    }
+
+    private bool TranscriptRangeMatchesCanonical(int transcriptIndex, int itemIndex, int count)
+    {
+        int headerOffset = GetTranscriptHeaderOffset();
+        if (transcriptIndex < 0
+            || itemIndex < 0
+            || count < 0
+            || transcriptIndex + count > transcriptItems.Count - headerOffset
+            || itemIndex + count > Items.Count)
+        {
+            return false;
+        }
+
+        for (int offset = 0; offset < count; offset++)
+        {
+            if (!ReferenceEquals(transcriptItems[transcriptIndex + offset + headerOffset], Items[itemIndex + offset]))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private bool CollectionItemsMatchCanonical(System.Collections.IList changedItems, int itemIndex)
+    {
+        if (itemIndex < 0 || itemIndex + changedItems.Count > Items.Count)
+        {
+            return false;
+        }
+
+        for (int offset = 0; offset < changedItems.Count; offset++)
+        {
+            if (changedItems[offset] is not ChatItemViewModel item || !ReferenceEquals(Items[itemIndex + offset], item))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private bool CollectionItemsMatchTranscript(System.Collections.IList changedItems, int transcriptIndex)
+    {
+        int headerOffset = GetTranscriptHeaderOffset();
+        if (transcriptIndex < headerOffset || transcriptIndex + changedItems.Count > transcriptItems.Count)
+        {
+            return false;
+        }
+
+        for (int offset = 0; offset < changedItems.Count; offset++)
+        {
+            if (changedItems[offset] is not ChatItemViewModel item
+                || !ReferenceEquals(transcriptItems[transcriptIndex + offset], item))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private void RebuildTranscriptItems()
+    {
+        SyncTranscriptSandboxHeaderPresence();
+
+        int headerOffset = GetTranscriptHeaderOffset();
+        int currentCount = transcriptItems.Count - headerOffset;
+        int sharedPrefix = 0;
+        while (sharedPrefix < currentCount
+            && sharedPrefix < Items.Count
+            && ReferenceEquals(transcriptItems[sharedPrefix + headerOffset], Items[sharedPrefix]))
+        {
+            sharedPrefix++;
+        }
+
+        int sharedSuffix = 0;
+        while (sharedSuffix < currentCount - sharedPrefix
+            && sharedSuffix < Items.Count - sharedPrefix
+            && ReferenceEquals(
+                transcriptItems[transcriptItems.Count - sharedSuffix - 1],
+                Items[Items.Count - sharedSuffix - 1]))
+        {
+            sharedSuffix++;
+        }
+
+        int oldMiddleCount = currentCount - sharedPrefix - sharedSuffix;
+        for (int removed = 0; removed < oldMiddleCount; removed++)
+        {
+            transcriptItems.RemoveAt(headerOffset + sharedPrefix);
+        }
+
+        int newMiddleCount = Items.Count - sharedPrefix - sharedSuffix;
+        for (int inserted = 0; inserted < newMiddleCount; inserted++)
+        {
+            transcriptItems.Insert(headerOffset + sharedPrefix + inserted, Items[sharedPrefix + inserted]);
+        }
+    }
+
+    private void SyncTranscriptSandboxHeaderPresence()
+    {
+        bool shouldIncludeHeader = ShowWindowsSandboxPanel || IsThreadEmpty;
+        bool hasHeader = GetTranscriptHeaderOffset() == 1;
+        if (shouldIncludeHeader && !hasHeader)
+        {
+            transcriptItems.Insert(0, transcriptSandboxHeader);
+        }
+        else if (!shouldIncludeHeader && hasHeader)
+        {
+            transcriptItems.RemoveAt(0);
+        }
+    }
+
+    private int GetTranscriptHeaderOffset()
+        => transcriptItems.Count > 0 && ReferenceEquals(transcriptItems[0], transcriptSandboxHeader) ? 1 : 0;
 
     // ThreadRows mirrors Threads position by position, so Remote UI receives incremental row
     // changes. threadRowsById additionally keeps the selected row when it is not on a loaded page.
@@ -10331,11 +10551,25 @@ public sealed partial class ChatItemViewModel : ObservableObject
         });
     }
 
+    internal static ChatItemViewModel CreateWindowsSandboxPanelHeader(
+        WindowsSandboxTranscriptHeaderPresentationViewModel presentation)
+        => new("Windows sandbox", string.Empty, ConversationEventKind.ItemCompleted)
+        {
+            IsWindowsSandboxPanelHeader = true,
+            TranscriptHeaderPresentation = presentation,
+        };
+
     [DataMember]
     public string Role { get; }
 
     [DataMember]
     public string DisplayRole => IsProposedPlan ? "Proposed plan" : Role;
+
+    [DataMember]
+    public bool IsWindowsSandboxPanelHeader { get; private set; }
+
+    [DataMember(EmitDefaultValue = false)]
+    public WindowsSandboxTranscriptHeaderPresentationViewModel? TranscriptHeaderPresentation { get; private set; }
 
     public ConversationEventKind Kind { get; }
 

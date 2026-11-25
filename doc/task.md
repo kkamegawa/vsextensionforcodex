@@ -3,6 +3,7 @@
 `plan.md` のフェーズ分割に対応する詳細タスク。各タスクは独立してレビュー可能な小さなスライスを意図する。
 
 
+
 ## 2026-11-24: Enterprise MCP sign-in and OTLP header helpers (Issue #330)
 
 Tracking: [Issue #330](https://github.com/kkamegawa/vsextensionforcodex/issues/330), under [Issue #326](https://github.com/kkamegawa/vsextensionforcodex/issues/326). The documentation is included in [PR #336](https://github.com/kkamegawa/vsextensionforcodex/pull/336), stacked on [PR #335](https://github.com/kkamegawa/vsextensionforcodex/pull/335).
@@ -27,6 +28,17 @@ Tracking: [Issue #331](https://github.com/kkamegawa/vsextensionforcodex/issues/3
 
 - [x] Record the real CLI initialization matrix and supported version/schema checks in PR #337.
 - [x] Preserve the confirmed `SignedOut` result when the owner's transport closes before a logout response, including overlapping requests; `WorkerRpcOwnerBoundaryTests` passed 14/14.
+
+## 2026-11-25: Windows Sandboxパネルを会話スクロール領域へ移動
+
+詳細: [English work record](task-windows-sandbox-panel-scroll.md) / [日本語作業記録](task-windows-sandbox-panel-scroll_ja.md)。関連する既存Issueは [#200](https://github.com/kkamegawa/vsextensionforcodex/issues/200)（終了済み）。設計は[英語Wiki](https://github.com/kkamegawa/vsextensionforcodex/wiki/windows-sandbox-panel-scroll) / [日本語Wiki](https://github.com/kkamegawa/vsextensionforcodex/wiki/windows-sandbox-panel-scroll_ja)で承認済み。
+
+- [x] Windows Sandboxパネルを会話リストの先頭行へ移し、会話内容と同じ縦スクロールに含める。会話履歴と保存状態には合成行を含めない。
+- [x] 空会話の歓迎表示を先頭行に移し、sandbox操作と同じスクロール面に置く。リサイクル仮想化とピクセルスクロールを維持する。
+- [x] 仮想化された通常メッセージ用DataTemplateとsandboxパネル用DataTemplateを分離し、パネルが非表示の非空スレッドでは合成行を外す。ViewModel投影は安定行と共通接頭・接尾を維持し、範囲変更やResetの不整合を修復する。
+- [x] ViewModel投影、XAML構造、範囲コレクション操作、空文字の全プロパティ通知の回帰テストを追加・更新。対象テスト9件成功。Release UI全体テストは654成功、3スキップ、0失敗（計657件）。Debug／Releaseソリューションビルドは警告0、エラー0。Claudeの最終差分レビューで実行可能な指摘なし。
+- [x] Visual Studio Experimental Instanceで処理を開始した後にsandboxパネルが表示領域から消えることを、2026-11-26のスクリーンショットで確認。ユーザーが受け入れを承認した。先行するActivityLogの`IToolWindowProvider`／ServiceHubエラー後に表示確認が完了した。
+
 
 ## 2026-11-25: Approval checkpoints and MCP tool hints review follow-up (Issue #303)
 

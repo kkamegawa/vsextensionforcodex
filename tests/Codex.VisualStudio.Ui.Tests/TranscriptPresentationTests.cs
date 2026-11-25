@@ -19,6 +19,91 @@ public sealed class TranscriptPresentationTests
     private static readonly XNamespace X = "http://schemas.microsoft.com/winfx/2006/xaml";
 
     [TestMethod]
+    public void Xaml_WindowsSandboxPanelAndEmptyWelcomeShareTheVirtualizedTranscript()
+    {
+        XDocument document = LoadXaml();
+        XElement transcript = GetTranscript(document);
+        string xaml = transcript.ToString(SaveOptions.DisableFormatting);
+
+        Assert.IsFalse(document.Descendants(Presentation + "ListBox").Any(element =>
+            element.Attribute("ItemsSource")?.Value == "{Binding Items}"),
+            "The canonical conversation collection must not be bound directly to the Remote UI.");
+        Assert.AreEqual("True", transcript.Attribute("VirtualizingPanel.IsVirtualizing")?.Value);
+        Assert.AreEqual("Recycling", transcript.Attribute("VirtualizingPanel.VirtualizationMode")?.Value);
+        Assert.AreEqual("Pixel", transcript.Attribute("VirtualizingPanel.ScrollUnit")?.Value);
+
+        XElement resources = transcript.Element(Presentation + "ListBox.Resources")!;
+        XElement messageTemplate = resources.Elements(Presentation + "DataTemplate")
+            .Single(element => element.Attribute(X + "Key")?.Value == "TranscriptMessageTemplate");
+        XElement panelTemplate = resources.Elements(Presentation + "DataTemplate")
+            .Single(element => element.Attribute(X + "Key")?.Value == "WindowsSandboxPanelTemplate");
+        XElement headerTemplate = resources.Elements(Presentation + "DataTemplate")
+            .Single(element => element.Attribute(X + "Key")?.Value == "TranscriptSandboxHeaderTemplate");
+        XElement emptyTemplate = resources.Elements(Presentation + "DataTemplate")
+            .Single(element => element.Attribute(X + "Key")?.Value == "EmptyTranscriptHeaderTemplate");
+
+        Assert.IsFalse(messageTemplate.Descendants(Presentation + "ComboBox").Any(),
+            "Sandbox controls must not be created as part of every virtualized transcript row.");
+        Assert.IsTrue(panelTemplate.Descendants(Presentation + "ComboBox").Any());
+        Assert.IsTrue(headerTemplate.Descendants(Presentation + "ContentControl").Any(element =>
+            element.Attribute("Content")?.Value == "{Binding TranscriptHeaderPresentation}"),
+            "The header must bind controls to its typed presentation object.");
+        Assert.IsFalse(headerTemplate.DescendantsAndSelf().Attributes().Any(attribute =>
+            attribute.Value.Contains("RelativeSource", StringComparison.Ordinal)),
+            "The Remote UI header must not recover the ChatViewModel through an ancestor proxy.");
+        Assert.IsFalse(panelTemplate.DescendantsAndSelf().Attributes().Any(attribute =>
+            attribute.Value.Contains("RelativeSource", StringComparison.Ordinal)),
+            "Sandbox bindings must resolve directly on the header presentation object.");
+
+        XElement emptyGrid = emptyTemplate.Element(Presentation + "Grid")!;
+        Assert.AreEqual(
+            "{Binding ViewportHeight, RelativeSource={RelativeSource AncestorType={x:Type ScrollViewer}}}",
+            emptyGrid.Attribute("MinHeight")?.Value,
+            "The empty welcome fills the viewport by reading only the client-side scroll viewer's layout size.");
+        Assert.AreEqual("{Binding TranscriptHeaderPresentation}", emptyGrid.Attribute("DataContext")?.Value);
+        Assert.IsTrue(emptyGrid.Descendants(Presentation + "StackPanel").Any(element =>
+            element.Attribute("VerticalAlignment")?.Value == "Center"
+            && element.Attribute("Visibility")?.Value == "{Binding IsThreadEmpty, Converter={StaticResource BoolToVis}}"),
+            "The welcome content must remain centered in the empty transcript viewport.");
+
+        XElement itemContainerStyle = transcript.Element(Presentation + "ListBox.ItemContainerStyle")!
+            .Element(Presentation + "Style")!;
+        XElement headerContainerTrigger = itemContainerStyle.Element(Presentation + "Style.Triggers")!
+            .Elements(Presentation + "DataTrigger")
+            .Single(element => element.Attribute("Binding")?.Value == "{Binding IsWindowsSandboxPanelHeader}");
+        Assert.AreEqual("False", headerContainerTrigger.Elements(Presentation + "Setter")
+            .Single(element => element.Attribute("Property")?.Value == "Focusable").Attribute("Value")?.Value);
+        Assert.AreEqual("False", headerContainerTrigger.Elements(Presentation + "Setter")
+            .Single(element => element.Attribute("Property")?.Value == "IsTabStop").Attribute("Value")?.Value);
+        Assert.AreEqual("False", headerContainerTrigger.Elements(Presentation + "Setter")
+            .Single(element => element.Attribute("Property")?.Value == "IsSelected").Attribute("Value")?.Value);
+        Assert.AreEqual("0", headerContainerTrigger.Elements(Presentation + "Setter")
+            .Single(element => element.Attribute("Property")?.Value == "Margin").Attribute("Value")?.Value);
+        Assert.AreEqual("0", headerContainerTrigger.Elements(Presentation + "Setter")
+            .Single(element => element.Attribute("Property")?.Value == "Padding").Attribute("Value")?.Value);
+
+        XElement sandboxPanel = transcript
+            .Descendants(Presentation + "Border")
+            .Single(element => element.Attribute("Visibility")?.Value
+                == "{Binding ShowWindowsSandboxPanel, Converter={StaticResource BoolToVis}}");
+        Assert.AreSame(transcript, sandboxPanel.Ancestors(Presentation + "ListBox").First());
+        Assert.IsTrue(xaml.Contains("{Binding StartWindowsSandboxSetupCommand}", StringComparison.Ordinal));
+        Assert.IsTrue(xaml.Contains("{Binding CheckWindowsSandboxReadinessCommand}", StringComparison.Ordinal));
+
+        XElement welcome = transcript
+            .Descendants(Presentation + "StackPanel")
+            .Single(element => element.Attribute("Visibility")?.Value
+                == "{Binding IsThreadEmpty, Converter={StaticResource BoolToVis}}");
+        Assert.IsTrue(welcome.Ancestors(Presentation + "DataTemplate").Any());
+        Assert.IsFalse(
+            document.Descendants(Presentation + "StackPanel").Any(element =>
+                element.Attribute("VerticalAlignment")?.Value == "Center"
+                && element.Attribute("Visibility")?.Value == "{Binding IsThreadEmpty, Converter={StaticResource BoolToVis}}"
+                && !element.Ancestors(Presentation + "ListBox").Any()),
+            "The empty-thread welcome must not remain as a fixed overlay over the transcript.");
+    }
+
+    [TestMethod]
     public void Xaml_TranscriptAuthorUsesPairedVsThemeColorsAtFullOpacity()
     {
         XDocument document = LoadXaml();
@@ -290,7 +375,7 @@ public sealed class TranscriptPresentationTests
     private static XElement GetTranscript(XDocument document)
         => document
             .Descendants(Presentation + "ListBox")
-            .Single(element => element.Attribute("ItemsSource")?.Value == "{Binding Items}");
+            .Single(element => element.Attribute("ItemsSource")?.Value == "{Binding TranscriptItems}");
 
     private static void AssertSelectableTranscriptText(XElement textBox)
     {
