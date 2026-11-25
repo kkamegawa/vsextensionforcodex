@@ -5628,6 +5628,23 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
                 : approvalPolicy.EvaluateCommand(command, cwd, options.WorkingDirectory, networkHost, networkPort);
         bool isHumanCommand = method == "item/commandExecution/requestApproval"
             && string.Equals(GetString(parameters, "kind"), "humanCommand", StringComparison.Ordinal);
+        string riskKey = policy.RiskKey;
+        if (method == "item/commandExecution/requestApproval")
+        {
+            string approvalKindScope = parameters.ValueKind != JsonValueKind.Object
+                || !parameters.TryGetProperty("kind", out JsonElement approvalKindValue)
+                || approvalKindValue.ValueKind == JsonValueKind.Null
+                    ? "command"
+                    : approvalKindValue.ValueKind == JsonValueKind.String
+                        ? approvalKindValue.GetString() switch
+                        {
+                            "command" => "command",
+                            "writeStdin" => "writeStdin",
+                            _ => "other",
+                        }
+                        : "other";
+            riskKey = $"{policy.RiskKey}:approval-kind:{approvalKindScope}";
+        }
         return new ApprovalRequest
         {
             RequestId = requestId,
@@ -5636,7 +5653,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             TurnId = GetString(parameters, "turnId") ?? string.Empty,
             ItemId = GetString(parameters, "itemId"),
             Risk = policy.Risk,
-            RiskKey = policy.RiskKey,
+            RiskKey = riskKey,
             DisplayText = redactor.Redact(command ?? grantRoot ?? networkHost ?? method),
             Reason = redactor.Redact(GetString(parameters, "reason")),
             IsHumanCommand = isHumanCommand,

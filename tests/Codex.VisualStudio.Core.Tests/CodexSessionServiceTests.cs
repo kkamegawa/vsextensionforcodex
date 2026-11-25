@@ -4494,9 +4494,9 @@ public sealed partial class CodexSessionServiceTests
         };
         await service.InitializeAsync(connection, Options(), CancellationToken.None);
 
-        object WriteStdin(string turnId) => new
+        object WriteStdin(string turnId, string command = "dotnet build") => new
         {
-            command = "dotnet build",
+            command,
             cwd = Options().WorkingDirectory,
             itemId = Guid.NewGuid().ToString("N"),
             threadId = "thread-1",
@@ -4510,6 +4510,48 @@ public sealed partial class CodexSessionServiceTests
             "write-stdin-1", "item/commandExecution/requestApproval", WriteStdin("turn-1"));
         JsonElement reusedWriteStdin = await connection.EmitRequestAsync(
             "write-stdin-2", "item/commandExecution/requestApproval", WriteStdin("turn-2"));
+        JsonElement commandAfterWriteStdin = await connection.EmitRequestAsync(
+            "command-after-write-stdin", "item/commandExecution/requestApproval", new
+            {
+                command = "dotnet build",
+                cwd = Options().WorkingDirectory,
+                itemId = Guid.NewGuid().ToString("N"),
+                threadId = "thread-1",
+                turnId = "turn-3",
+                startedAtMs = 1L,
+                kind = "command",
+                availableDecisions = new[] { "accept", "acceptForSession", "decline", "cancel" },
+            });
+        Assert.AreEqual(2, shown.Count, "A writeStdin grant must not auto-approve a command request with the same command text.");
+        JsonElement commandGrantForReverse = await connection.EmitRequestAsync(
+            "command-grant-for-reverse", "item/commandExecution/requestApproval", new
+            {
+                command = "dotnet test",
+                cwd = Options().WorkingDirectory,
+                itemId = Guid.NewGuid().ToString("N"),
+                threadId = "thread-1",
+                turnId = "turn-4",
+                startedAtMs = 1L,
+                kind = "command",
+                availableDecisions = new[] { "accept", "acceptForSession", "decline", "cancel" },
+            });
+        Assert.AreEqual(3, shown.Count, "The separate command should prompt before its session grant is created.");
+        JsonElement writeStdinAfterCommand = await connection.EmitRequestAsync(
+            "write-stdin-after-command", "item/commandExecution/requestApproval", WriteStdin("turn-5", "dotnet test"));
+        Assert.AreEqual(4, shown.Count, "A command grant must not auto-approve writeStdin with the same command text.");
+        JsonElement nonStringKindAfterCommand = await connection.EmitRequestAsync(
+            "non-string-kind-after-command", "item/commandExecution/requestApproval", new
+            {
+                command = "dotnet build",
+                cwd = Options().WorkingDirectory,
+                itemId = Guid.NewGuid().ToString("N"),
+                threadId = "thread-1",
+                turnId = "turn-6",
+                startedAtMs = 1L,
+                kind = new { futureKind = true },
+                availableDecisions = new[] { "accept", "acceptForSession", "decline", "cancel" },
+            });
+        Assert.AreEqual(5, shown.Count, "A non-string kind must not reuse an existing command session grant.");
         JsonElement commandWithExtraPermissions = await connection.EmitRequestAsync(
             "command-with-permissions", "item/commandExecution/requestApproval", new
             {
@@ -4517,7 +4559,7 @@ public sealed partial class CodexSessionServiceTests
                 cwd = Options().WorkingDirectory,
                 itemId = Guid.NewGuid().ToString("N"),
                 threadId = "thread-1",
-                turnId = "turn-3",
+                turnId = "turn-7",
                 startedAtMs = 1L,
                 kind = "command",
                 availableDecisions = new[] { "accept", "acceptForSession", "decline", "cancel" },
@@ -4530,7 +4572,7 @@ public sealed partial class CodexSessionServiceTests
                 cwd = Options().WorkingDirectory,
                 itemId = Guid.NewGuid().ToString("N"),
                 threadId = "thread-1",
-                turnId = "turn-4",
+                turnId = "turn-8",
                 startedAtMs = 1L,
                 kind = new { futureKind = true },
                 availableDecisions = new object[]
@@ -4545,16 +4587,28 @@ public sealed partial class CodexSessionServiceTests
 
         Assert.AreEqual("acceptForSession", firstWriteStdin.GetProperty("decision").GetString());
         Assert.AreEqual("acceptForSession", reusedWriteStdin.GetProperty("decision").GetString());
+        Assert.AreEqual("acceptForSession", commandAfterWriteStdin.GetProperty("decision").GetString());
+        Assert.AreEqual("acceptForSession", commandGrantForReverse.GetProperty("decision").GetString());
+        Assert.AreEqual("acceptForSession", writeStdinAfterCommand.GetProperty("decision").GetString());
+        Assert.AreEqual("accept", nonStringKindAfterCommand.GetProperty("decision").GetString());
         Assert.AreEqual("acceptForSession", commandWithExtraPermissions.GetProperty("decision").GetString());
         Assert.AreEqual("accept", unknown.GetProperty("decision").GetString());
-        Assert.AreEqual(3, shown.Count, "writeStdin reuses its grant; known command and unknown kind requests both prompt.");
+        Assert.AreEqual(7, shown.Count, "Matching kinds may reuse their grants; cross-kind and unsafe requests prompt.");
         Assert.IsTrue(shown[1].AvailableDecisions.Contains(ApprovalDecision.AcceptForSession));
         Assert.IsTrue(shown[1].Choices.Any(choice => choice.Label == "Approve for this session"));
+        Assert.IsTrue(shown[2].AvailableDecisions.Contains(ApprovalDecision.AcceptForSession));
+        Assert.IsTrue(shown[2].Choices.Any(choice => choice.Label == "Approve for this session"));
+        Assert.IsTrue(shown[3].AvailableDecisions.Contains(ApprovalDecision.AcceptForSession));
+        Assert.IsTrue(shown[3].Choices.Any(choice => choice.Label == "Approve for this session"));
+        Assert.IsFalse(shown[4].AvailableDecisions.Contains(ApprovalDecision.AcceptForSession));
+        Assert.IsFalse(shown[4].Choices.Any(choice => choice.Label == "Approve for this session"));
+        Assert.IsTrue(shown[5].AvailableDecisions.Contains(ApprovalDecision.AcceptForSession));
+        Assert.IsTrue(shown[5].Choices.Any(choice => choice.Label == "Approve for this session"));
         CollectionAssert.AreEqual(
             new[] { ApprovalDecision.Accept, ApprovalDecision.Decline, ApprovalDecision.Cancel },
-            shown[2].AvailableDecisions.ToArray());
-        Assert.IsFalse(shown[2].Choices.Any(choice => choice.Label == "Approve for this session"));
-        Assert.IsFalse(shown[2].Choices.Any(choice => choice.Label == "Approve and add execution rule"));
+            shown[6].AvailableDecisions.ToArray());
+        Assert.IsFalse(shown[6].Choices.Any(choice => choice.Label == "Approve for this session"));
+        Assert.IsFalse(shown[6].Choices.Any(choice => choice.Label == "Approve and add execution rule"));
     }
 
     [TestMethod]
