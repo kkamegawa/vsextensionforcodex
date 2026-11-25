@@ -1,6 +1,7 @@
 ﻿using Codex.VisualStudio.Contracts;
 using Codex.VisualStudio.Extension;
 using System.IO;
+using System.Reflection;
 
 namespace Codex.VisualStudio.Ui.Tests;
 
@@ -78,6 +79,97 @@ public sealed partial class ViewModelTests
     }
 
     [TestMethod]
+    public async Task TranscriptSearch_UsesDisplayApprovedHistoryText()
+    {
+        var bridge = new FakeWorkerBridge
+        {
+            ListThreadItemsHandler = (_, _) => Task.FromResult(new ThreadItemsPage
+            {
+                Items =
+                [
+                    new ThreadHistoryItem
+                    {
+                        Id = "hidden-answer",
+                        TurnId = "turn-1",
+                        Type = "agentMessage",
+                        Text = "private phrase hidden by moderation",
+                        AgentMessageDisplayDecision = new AgentMessageDisplayDecision
+                        {
+                            Mode = AgentMessageDisplayMode.Hide,
+                            DisplayText = "This response was hidden.",
+                        },
+                    },
+                ],
+            }),
+        };
+        using ChatViewModel vm = await CreateJoinedViewModelAsync(bridge);
+
+        vm.TranscriptSearchText = "private phrase";
+        await RunCommandAsync(vm.SearchTranscriptCommand);
+        Assert.AreEqual(0, vm.TranscriptSearchResults.Count, "Hidden answer text must not be searchable or returned.");
+
+        vm.TranscriptSearchText = "This response was hidden";
+        await RunCommandAsync(vm.SearchTranscriptCommand);
+        Assert.AreEqual(1, vm.TranscriptSearchResults.Count);
+        Assert.AreEqual("This response was hidden.", vm.TranscriptSearchResults.Single().Text.TrimEnd());
+    }
+
+    [TestMethod]
+    public async Task TranscriptSearch_UsesDisplayApprovedLiveText()
+    {
+        var bridge = new FakeWorkerBridge();
+        using ChatViewModel vm = await CreateJoinedViewModelAsync(bridge, CodexFeatureTier.Tier170);
+        string threadId = vm.SelectedThread!.Id;
+        var liveMessages = new (string ItemId, string RawText, AgentMessageDisplayDecision Decision, string VisibleText)[]
+        {
+            ("hidden-live", "private hidden phrase", new AgentMessageDisplayDecision { Mode = AgentMessageDisplayMode.Hide, DisplayText = "hidden safe display" }, "hidden safe display"),
+            ("blocked-live", "private blocked phrase", new AgentMessageDisplayDecision { Mode = AgentMessageDisplayMode.Block, DisplayText = "blocked safe display" }, "blocked safe display"),
+            ("suppressed-live", "private suppressed phrase", new AgentMessageDisplayDecision { Mode = AgentMessageDisplayMode.Suppress, DisplayText = null! },
+                new AgentMessageDisplayDecision { Mode = AgentMessageDisplayMode.Suppress, DisplayText = null! }.GetDisplayText("private suppressed phrase")!),
+            ("shown-live", "public live answer", new AgentMessageDisplayDecision { Mode = AgentMessageDisplayMode.Show, DisplayText = "decoy display text" }, "public live answer"),
+        };
+
+        foreach (var message in liveMessages)
+        {
+            var value = new ConversationEvent
+            {
+                Kind = ConversationEventKind.ItemCompleted,
+                ThreadId = threadId,
+                TurnId = "turn-live",
+                ItemId = message.ItemId,
+                IsAgentMessage = true,
+                Text = message.RawText,
+                AgentMessageDisplayDecision = message.Decision,
+            };
+            MethodInfo eventHandler = typeof(ChatViewModel).GetMethod("OnConversationEventAsync", BindingFlags.NonPublic | BindingFlags.Instance)
+                ?? throw new InvalidOperationException("Could not find OnConversationEventAsync.");
+            await (Task)eventHandler.Invoke(vm, [Notification(value, vm.Status)])!;
+        }
+
+        Assert.AreEqual(liveMessages.Length, vm.Items.Count(item => liveMessages.Any(message => message.ItemId == item.ItemId)),
+            "The test must exercise live transcript rows that are not part of loaded history.");
+
+        foreach (var message in liveMessages)
+        {
+            vm.TranscriptSearchText = message.VisibleText;
+            await RunCommandAsync(vm.SearchTranscriptCommand);
+            Assert.AreEqual(1, vm.TranscriptSearchResults.Count, $"The display-approved text for '{message.ItemId}' should be searchable.");
+            Assert.AreEqual(message.ItemId, vm.TranscriptSearchResults.Single().ItemId);
+        }
+
+        foreach (var message in liveMessages.Where(static value => value.Decision.Mode != AgentMessageDisplayMode.Show))
+        {
+            vm.TranscriptSearchText = message.RawText;
+            await RunCommandAsync(vm.SearchTranscriptCommand);
+            Assert.AreEqual(0, vm.TranscriptSearchResults.Count, "Restricted assistant text must not be searchable from live rows.");
+        }
+
+        vm.TranscriptSearchText = "decoy display text";
+        await RunCommandAsync(vm.SearchTranscriptCommand);
+        Assert.AreEqual(0, vm.TranscriptSearchResults.Count, "Show mode must preserve the approved original text instead of its unused replacement field.");
+    }
+
+    [TestMethod]
     public async Task TranscriptSearch_FailedPageDoesNotPublishPartialResults()
     {
         var bridge = new FakeWorkerBridge
@@ -97,7 +189,12 @@ public sealed partial class ViewModelTests
 
         Assert.AreEqual(0, vm.TranscriptSearchResults.Count);
         Assert.IsNull(vm.SelectedTranscriptSearchResult);
-        StringAssert.Contains(vm.TranscriptSearchStatusText, "No partial results are shown");
+        Assert.IsTrue(
+            (vm.TranscriptSearchStatusText.Contains("failed", StringComparison.OrdinalIgnoreCase)
+                || vm.TranscriptSearchStatusText.Contains("失敗", StringComparison.Ordinal))
+            && (vm.TranscriptSearchStatusText.Contains("No partial results are shown", StringComparison.Ordinal)
+                || vm.TranscriptSearchStatusText.Contains("部分的な結果は表示していません", StringComparison.Ordinal)),
+            "The status should explain that the search failed and partial results were discarded.");
     }
 
     [TestMethod]

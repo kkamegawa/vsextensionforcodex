@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using Codex.VisualStudio.Contracts;
 using Codex.VisualStudio.Worker;
 
@@ -7,6 +7,43 @@ namespace Codex.VisualStudio.Core.Tests;
 [TestClass]
 public sealed class StreamingBufferTests
 {
+    [TestMethod]
+    public async Task AgentMessageClone_PreservesDisplayDecisionAndAgentMessageFlag()
+    {
+        string directory = Path.Combine(Path.GetTempPath(), "CodexVsTests", Guid.NewGuid().ToString("N"));
+        var events = new List<ConversationEvent>();
+        await using var buffer = new StreamingBuffer(
+            (value, _) =>
+            {
+                lock (events)
+                {
+                    events.Add(value);
+                }
+
+                return Task.CompletedTask;
+            },
+            directory);
+        var template = new ConversationEvent
+        {
+            Kind = ConversationEventKind.AgentMessageDelta,
+            ItemId = "agent-1",
+            IsAgentMessage = true,
+            AgentMessageDisplayDecision = new AgentMessageDisplayDecision
+            {
+                Mode = AgentMessageDisplayMode.Hide,
+                DisplayText = "The answer was replaced with a support message.",
+            },
+        };
+
+        buffer.Append("agent-1", template, "buffered delta", StreamingBuffer.CommandOutputLimit);
+        await WaitUntilAsync(() => CountEvents(events) == 1, TimeSpan.FromSeconds(2));
+
+        ConversationEvent flushed = events.Single();
+        Assert.IsTrue(flushed.IsAgentMessage);
+        Assert.AreEqual(AgentMessageDisplayMode.Hide, flushed.AgentMessageDisplayDecision?.Mode);
+        Assert.AreEqual("The answer was replaced with a support message.", flushed.AgentMessageDisplayDecision?.DisplayText);
+    }
+
     [TestMethod]
     public async Task Burst_IsBatchedAndOverflowIsWritten()
     {
@@ -78,6 +115,42 @@ public sealed class StreamingBufferTests
         Assert.IsTrue(last.Truncated, "Expected Truncated = true after exceeding memory limit.");
         Assert.IsNotNull(last.OverflowFile, "Expected an overflow file path.");
         Assert.IsTrue(File.Exists(last.OverflowFile), "Overflow file must exist on disk.");
+    }
+
+    [TestMethod]
+    public async Task AssistantOverflow_IsBoundedInMemoryWithoutWritingBodyToDisk()
+    {
+        string directory = Path.Combine(Path.GetTempPath(), "CodexVsTests", Guid.NewGuid().ToString("N"));
+        var events = new List<ConversationEvent>();
+        await using var buffer = new StreamingBuffer(
+            (value, _) =>
+            {
+                lock (events)
+                {
+                    events.Add(value);
+                }
+
+                return Task.CompletedTask;
+            },
+            directory);
+        var template = new ConversationEvent
+        {
+            Kind = ConversationEventKind.AgentMessageDelta,
+            ItemId = "agent-private",
+            IsAgentMessage = true,
+        };
+
+        buffer.Append(
+            "agent-private",
+            template,
+            new string('x', StreamingBuffer.CommandOutputLimit + 1),
+            StreamingBuffer.CommandOutputLimit,
+            writeOverflowToDisk: false);
+
+        await WaitUntilAsync(() => CountEvents(events) == 1, TimeSpan.FromSeconds(2));
+        Assert.IsTrue(events[0].Truncated);
+        Assert.IsNull(events[0].OverflowFile);
+        Assert.AreEqual(0, Directory.GetFiles(directory, "*.log").Length);
     }
 
     [TestMethod]

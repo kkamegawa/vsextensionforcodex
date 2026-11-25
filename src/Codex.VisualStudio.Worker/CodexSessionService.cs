@@ -296,6 +296,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
     private const int MaxAttachmentIdentityBytes = 256;
     private const int MaxThreadPreviewBytes = 8 * 1024;
     private const int MaxHistoryTextBytes = 64 * 1024;
+    private const int MaxCompletedAgentMessageTextBytes = StreamingBuffer.CommandOutputLimit;
 
     private static readonly SearchValues<char> ControlCharacters = CreateControlCharacterSearchValues();
     private static readonly SearchValues<char> WireIdentifierCharacters =
@@ -1872,12 +1873,20 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
                 continue;
             }
 
+            AgentMessageDisplayDecision? displayDecision = itemType == "agentMessage"
+                ? ReadAgentMessageDisplayDecision(item, context.FeatureTier)
+                : null;
+            string? rawHistoryText = ReadHistoryText(item, itemType);
+            string? displayHistoryText = rawHistoryText is null
+                ? null
+                : ProjectHistoryDisplayText(itemType, rawHistoryText, displayDecision);
             var historyItem = new ThreadHistoryItem
             {
                 Id = id,
                 TurnId = itemTurnId,
                 Type = itemType,
-                Text = ReadHistoryText(item, itemType) is { } historyText ? redactor.Redact(historyText) : null,
+                Text = displayHistoryText is null ? null : redactor.Redact(displayHistoryText),
+                AgentMessageDisplayDecision = displayDecision,
                 StartedAtMs = GetInt64(item, "startedAtMs") ?? GetInt64(entry, "startedAtMs"),
                 CompletedAtMs = GetInt64(item, "completedAtMs") ?? GetInt64(entry, "completedAtMs"),
             };
@@ -1894,7 +1903,9 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
                 };
             }
 
-            historyItem.Parts = ProjectHistoryParts(context, item, itemType, historyItem.Text);
+            historyItem.Parts = displayDecision is { Mode: not AgentMessageDisplayMode.Show }
+                ? []
+                : ProjectHistoryParts(context, item, itemType, rawHistoryText);
             items.Add(historyItem);
             if (items.Count == boundedLimit)
             {
@@ -4200,8 +4211,15 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             Kind = kind,
             ThreadId = threadId,
             TurnId = turnId,
-            ItemId = itemId,
-            PayloadJson = redactor.Redact(parameters.GetRawText()),
+            ItemId = itemId
+                ?? (method == "item/completed"
+                    && parameters.TryGetProperty("item", out JsonElement completedItemIdentity)
+                    ? GetString(completedItemIdentity, "id")
+                    : null),
+            IsAgentMessage = method == "item/agentMessage/delta",
+            PayloadJson = method is "item/agentMessage/delta" or "item/completed" or "turn/completed"
+                ? null
+                : redactor.Redact(parameters.GetRawText()),
             StartedAtMs = ReadItemTimestamp(parameters, "startedAtMs"),
             CompletedAtMs = ReadItemTimestamp(parameters, "completedAtMs"),
         };
@@ -4231,7 +4249,14 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
                 ConversationEventKind.DiffUpdated => StreamingBuffer.DiffLimit,
                 _ => StreamingBuffer.CommandOutputLimit,
             };
-            streamingBuffer.Append($"{method}:{itemId ?? turnId ?? "global"}", output, redactor.Redact(delta), limit);
+            bool isBufferedAssistantMessage = method == "item/agentMessage/delta"
+                && context.FeatureTier != CodexFeatureTier.Baseline;
+            streamingBuffer.Append(
+                $"{method}:{output.ItemId ?? turnId ?? "global"}",
+                output,
+                redactor.Redact(delta),
+                limit,
+                writeOverflowToDisk: !isBufferedAssistantMessage);
             return;
         }
 
@@ -4249,6 +4274,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             && startedItem.ValueKind == JsonValueKind.Object)
         {
             string? startedType = GetBoundedString(startedItem, "type", 64);
+            output.IsAgentMessage = string.Equals(startedType, "agentMessage", StringComparison.Ordinal);
             output.PayloadJson = null;
             output.Text = startedType is null ? "An app-server item started." : $"App-server item started: {redactor.Redact(startedType)}.";
             // Lifecycle only: no artifact parts, so the extension routes it to diagnostics
@@ -6251,6 +6277,155 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
 
         return cursor.GetString();
     }
+
+    private static AgentMessageDisplayDecision? ReadAgentMessageDisplayDecision(
+        JsonElement item,
+        CodexFeatureTier featureTier)
+    {
+        if (featureTier == CodexFeatureTier.Baseline)
+        {
+            return null;
+        }
+
+        if (!item.TryGetProperty("moderation", out JsonElement moderation))
+        {
+            return null;
+        }
+
+        if (moderation.ValueKind == JsonValueKind.Null)
+        {
+            return null;
+        }
+
+        if (moderation.ValueKind != JsonValueKind.Object
+            || !moderation.TryGetProperty("moderated", out JsonElement moderated)
+            || moderated.ValueKind != JsonValueKind.True && moderated.ValueKind != JsonValueKind.False)
+        {
+            return CreateSuppressedAgentMessageDecision();
+        }
+
+        if (moderated.ValueKind == JsonValueKind.False
+            && (!moderation.TryGetProperty("display", out JsonElement unmoderatedDisplay)
+                || unmoderatedDisplay.ValueKind == JsonValueKind.Null))
+        {
+            return null;
+        }
+
+        if (!moderation.TryGetProperty("display", out JsonElement display)
+            || display.ValueKind != JsonValueKind.Object
+            || !display.TryGetProperty("version", out JsonElement version)
+            || version.ValueKind != JsonValueKind.Number
+            || !version.TryGetInt32(out int displayVersion)
+            || displayVersion != 1
+            || GetString(display, "mode") is not { } mode)
+        {
+            return CreateSuppressedAgentMessageDecision();
+        }
+
+        if (mode == "show"
+            && IsValidTrustedContactsInstruction(display)
+            && IsValidAnswerAnnotation(display))
+        {
+            if (display.TryGetProperty("trustedContacts", out JsonElement trustedContacts)
+                && trustedContacts.GetString() == "check")
+            {
+                return CreateSuppressedAgentMessageDecision();
+            }
+
+            if (display.TryGetProperty("annotation", out JsonElement annotation)
+                && annotation.ValueKind != JsonValueKind.Null)
+            {
+                return CreateSuppressedAgentMessageDecision();
+            }
+
+            return new AgentMessageDisplayDecision { Mode = AgentMessageDisplayMode.Show };
+        }
+
+        if (mode == "hide"
+            && display.TryGetProperty("replacement", out JsonElement replacement)
+            && replacement.ValueKind == JsonValueKind.Object
+            && GetString(replacement, "kind") == "wellbeingPromptHelpline")
+        {
+            return new AgentMessageDisplayDecision
+            {
+                Mode = AgentMessageDisplayMode.Hide,
+                DisplayText = "If you may be in immediate danger, contact your local emergency services now. You can also reach out to someone you trust. Find a crisis helpline in your country at https://findahelpline.com",
+            };
+        }
+
+        if (mode == "block"
+            && display.TryGetProperty("reason", out JsonElement reason)
+            && IsValidBlockReason(reason))
+        {
+            return new AgentMessageDisplayDecision
+            {
+                Mode = AgentMessageDisplayMode.Block,
+                DisplayText = "The answer was blocked by moderation.",
+            };
+        }
+
+        return CreateSuppressedAgentMessageDecision();
+    }
+
+    private static bool IsValidTrustedContactsInstruction(JsonElement display)
+        => display.TryGetProperty("trustedContacts", out JsonElement trustedContacts)
+            && trustedContacts.ValueKind == JsonValueKind.String
+            && trustedContacts.GetString() is "check" or "skip";
+
+    private static string ProjectHistoryDisplayText(
+        string? itemType,
+        string historyText,
+        AgentMessageDisplayDecision? decision)
+    {
+        if (itemType != "agentMessage")
+        {
+            return historyText;
+        }
+
+        return decision?.GetDisplayText(historyText) ?? historyText;
+    }
+
+    private static bool IsValidAnswerAnnotation(JsonElement display)
+    {
+        if (!display.TryGetProperty("annotation", out JsonElement annotation)
+            || annotation.ValueKind == JsonValueKind.Null)
+        {
+            return true;
+        }
+
+        return annotation.ValueKind == JsonValueKind.Object
+            && GetString(annotation, "kind") == "wellbeingHelpline"
+            && GetString(annotation, "subject") is "answer" or "prompt";
+    }
+
+    private static bool IsValidBlockReason(JsonElement reason)
+    {
+        if (reason.ValueKind != JsonValueKind.Object)
+        {
+            return false;
+        }
+
+        string? kind = GetString(reason, "kind");
+        if (kind == "protection")
+        {
+            return GetBoundedString(reason, "protectionType", 128) is not null;
+        }
+
+        if (kind != "cyber")
+        {
+            return false;
+        }
+
+        return !reason.TryGetProperty("trustedAccess", out JsonElement trustedAccess)
+            || trustedAccess.ValueKind is JsonValueKind.True or JsonValueKind.False or JsonValueKind.Null;
+    }
+
+    private static AgentMessageDisplayDecision CreateSuppressedAgentMessageDecision()
+        => new()
+        {
+            Mode = AgentMessageDisplayMode.Suppress,
+            DisplayText = "This response was hidden because its display instructions could not be verified.",
+        };
 
     private static string? ReadHistoryText(JsonElement item, string itemType)
     {

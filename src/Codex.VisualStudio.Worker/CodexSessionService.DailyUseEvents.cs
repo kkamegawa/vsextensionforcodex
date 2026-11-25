@@ -752,6 +752,24 @@ public sealed partial class CodexSessionService
         CancellationToken cancellationToken)
     {
         string? itemType = GetString(item, "type");
+        if (itemType == "agentMessage")
+        {
+            output.IsAgentMessage = true;
+            output.PayloadJson = null;
+            output.AgentMessageDisplayDecision = ReadAgentMessageDisplayDecision(item, context.FeatureTier);
+            if (output.AgentMessageDisplayDecision is { Mode: not AgentMessageDisplayMode.Show } restrictedDecision)
+            {
+                output.Text = BoundAndRedact(
+                    restrictedDecision.GetDisplayText(null) ?? string.Empty,
+                    MaxCompletedAgentMessageTextBytes);
+                output.Parts = [];
+                output.OverflowFile = null;
+                output.Truncated = false;
+                await EmitForContextAsync(context, output, cancellationToken).ConfigureAwait(false);
+                return;
+            }
+        }
+
         if (itemType == "plan" && output.Kind == ConversationEventKind.ItemCompleted)
         {
             await EmitCompletedPlanItemAsync(context, item, output.ThreadId, output.TurnId, cancellationToken).ConfigureAwait(false);
@@ -770,16 +788,19 @@ public sealed partial class CodexSessionService
         if (itemType == "agentMessage")
         {
             string? rawText = GetString(item, "text");
-            string? text = rawText is null ? null : ClipUtf8(rawText, MaxHistoryTextBytes);
+            string? text = rawText is null ? null : ClipUtf8(rawText, MaxCompletedAgentMessageTextBytes);
             if (text is not null)
             {
                 output.Text = redactor.Redact(text);
+                bool serverTruncated = output.Truncated;
+                bool locallyTruncated = Encoding.UTF8.GetByteCount(rawText!) > MaxCompletedAgentMessageTextBytes;
+                output.Truncated = serverTruncated || locallyTruncated;
                 output.Parts = [new ArtifactPart
                 {
                     Kind = ArtifactPartKind.Text,
                     Text = output.Text,
-                    IsServerTruncated = output.Truncated,
-                    IsLocallyTruncated = Encoding.UTF8.GetByteCount(rawText!) > MaxHistoryTextBytes,
+                    IsServerTruncated = serverTruncated,
+                    IsLocallyTruncated = locallyTruncated,
                 }];
                 output.PayloadJson = null;
                 await EmitForContextAsync(context, output, cancellationToken).ConfigureAwait(false);

@@ -1,4 +1,5 @@
 ﻿using System.IO;
+using System.Reflection;
 using System.Text;
 using Codex.VisualStudio.Contracts;
 using Codex.VisualStudio.Extension;
@@ -268,6 +269,164 @@ public sealed partial class ViewModelTests
         Assert.IsFalse(Path.GetFileName(documents.Path!).Contains("thread", StringComparison.OrdinalIgnoreCase));
         documents.Closed!(documents.Path!);
         Assert.IsFalse(File.Exists(documents.Path!), "Closing the tab removes the snapshot.");
+    }
+
+    [TestMethod]
+    public async Task ConversationText_AppliesRestrictiveLiveDecisionToConflictingHistory()
+    {
+        const string hiddenBody = "private answer body from stale history";
+        const string replacement = "This answer was blocked by the live completion.";
+        var documents = new RecordingConversationTextDocuments();
+        var bridge = new FakeWorkerBridge
+        {
+            ListThreadItemsHandler = (_, _) => Task.FromResult(new ThreadItemsPage
+            {
+                Items =
+                [
+                    new ThreadHistoryItem
+                    {
+                        Id = "answer-1",
+                        TurnId = "turn-1",
+                        Type = "agentMessage",
+                        Text = hiddenBody,
+                        AgentMessageDisplayDecision = new AgentMessageDisplayDecision { Mode = AgentMessageDisplayMode.Show },
+                    },
+                ],
+            }),
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        await bridge.PublishStateAsync(new WorkerStatus
+        {
+            State = WorkerConnectionState.Ready,
+            ThreadId = "thread-1",
+            FeatureTier = CodexFeatureTier.Tier170,
+            Target = new ConnectionTargetSnapshot
+            {
+                Kind = ConnectionTargetKind.Local,
+                StatePartitionFingerprint = "display-decision-test-owner",
+                OwnerGeneration = 3,
+                Generation = 7,
+            },
+        });
+        var thread = new ThreadSummary { Id = "thread-1" };
+        vm.Threads.Add(thread);
+        vm.SelectedThread = thread;
+        await RunCommandAsync(vm.JoinThreadCommand);
+        vm.ConversationTextDocuments = documents;
+
+        await bridge.PublishConversationEventAsync(new ConversationEvent
+        {
+            Kind = ConversationEventKind.ItemCompleted,
+            ThreadId = "thread-1",
+            TurnId = "turn-1",
+            ItemId = "answer-1",
+            IsAgentMessage = true,
+            Text = hiddenBody,
+            AgentMessageDisplayDecision = new AgentMessageDisplayDecision
+            {
+                Mode = AgentMessageDisplayMode.Block,
+                DisplayText = replacement,
+            },
+        });
+        await WaitForAsync(() => vm.Items.Any(item => item.ItemId == "answer-1"
+            && item.Text == replacement
+            && item.AgentDisplayDecision?.Mode == AgentMessageDisplayMode.Block));
+
+        for (int index = 0; index < 1_001; index++)
+        {
+            vm.Items.Add(new ChatItemViewModel("Codex", "history filler", ConversationEventKind.AgentMessageDelta));
+        }
+
+        MethodInfo trimHistory = typeof(ChatViewModel).GetMethod("TrimHistoryWindow", BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("Could not find TrimHistoryWindow.");
+        trimHistory.Invoke(vm, null);
+        Assert.IsFalse(vm.Items.Any(item => item.ItemId == "answer-1"), "The test must exercise a restricted item after it leaves the visible window.");
+
+        await bridge.PublishStateAsync(new WorkerStatus
+        {
+            State = WorkerConnectionState.Ready,
+            ThreadId = "thread-1",
+            FeatureTier = CodexFeatureTier.Tier170,
+            Target = new ConnectionTargetSnapshot
+            {
+                Kind = ConnectionTargetKind.Local,
+                StatePartitionFingerprint = "display-decision-test-owner",
+                OwnerGeneration = 3,
+                Generation = 8,
+            },
+        });
+
+        await RunCommandAsync(vm.OpenConversationTextCommand);
+        await WaitForAsync(() => documents.Path is not null);
+
+        string text = await File.ReadAllTextAsync(documents.Path!, Encoding.UTF8);
+        StringAssert.Contains(text, replacement);
+        Assert.IsFalse(text.Contains(hiddenBody, StringComparison.Ordinal));
+        documents.Closed!(documents.Path!);
+    }
+
+    [TestMethod]
+    public async Task ConversationText_AppliesTurnScopedRestrictionToEveryHistoryItemInThatTurn()
+    {
+        const string hiddenBody = "private answer body from stale history";
+        const string replacement = "This turn was hidden because its display instructions could not be verified.";
+        var documents = new RecordingConversationTextDocuments();
+        var bridge = new FakeWorkerBridge
+        {
+            ListThreadItemsHandler = (_, _) => Task.FromResult(new ThreadItemsPage
+            {
+                Items =
+                [
+                    new ThreadHistoryItem
+                    {
+                        TurnId = "turn-with-missing-item-id",
+                        Type = "agentMessage",
+                        Text = hiddenBody,
+                        AgentMessageDisplayDecision = new AgentMessageDisplayDecision
+                        {
+                            Mode = AgentMessageDisplayMode.Hide,
+                            DisplayText = replacement,
+                        },
+                    },
+                    new ThreadHistoryItem
+                    {
+                        Id = "same-turn-answer",
+                        TurnId = "turn-with-missing-item-id",
+                        Type = "agentMessage",
+                        Text = hiddenBody,
+                        AgentMessageDisplayDecision = new AgentMessageDisplayDecision { Mode = AgentMessageDisplayMode.Show },
+                    },
+                ],
+            }),
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        await bridge.PublishStateAsync(new WorkerStatus
+        {
+            State = WorkerConnectionState.Ready,
+            ThreadId = "thread-turn-scoped-export",
+            FeatureTier = CodexFeatureTier.Tier170,
+            Target = new ConnectionTargetSnapshot
+            {
+                Kind = ConnectionTargetKind.Local,
+                StatePartitionFingerprint = "turn-scoped-export-owner",
+                OwnerGeneration = 3,
+                Generation = 7,
+            },
+        });
+        var thread = new ThreadSummary { Id = "thread-turn-scoped-export" };
+        vm.Threads.Add(thread);
+        vm.SelectedThread = thread;
+        await RunCommandAsync(vm.JoinThreadCommand);
+        vm.ConversationTextDocuments = documents;
+        await WaitForAsync(() => vm.Items.Any(item => item.ItemId == "same-turn-answer" && item.Text == replacement));
+
+        await RunCommandAsync(vm.OpenConversationTextCommand);
+        await WaitForAsync(() => documents.Path is not null);
+
+        string text = await File.ReadAllTextAsync(documents.Path!, Encoding.UTF8);
+        StringAssert.Contains(text, replacement);
+        Assert.IsFalse(text.Contains(hiddenBody, StringComparison.Ordinal));
+        documents.Closed!(documents.Path!);
     }
 
     [TestMethod]

@@ -2,6 +2,17 @@
 
 `plan.md` のフェーズ分割に対応する詳細タスク。各タスクは独立してレビュー可能な小さなスライスを意図する。
 
+## 2026-11-21: Versioned assistant message display for 0.170+ (Issue #328)
+
+Tracking: [Issue #328](https://github.com/kkamegawa/vsextensionforcodex/issues/328), under [Issue #326](https://github.com/kkamegawa/vsextensionforcodex/issues/326). The implementation follows the approved [0.171 design](app-server-0-171-design.md).
+
+- [x] Preserve live assistant streaming for CLI 0.169 while buffering 0.170+ assistant deltas until the completed item or authoritative history provides its display decision.
+- [x] Apply `show`, `hide`, and `block` decisions before rendering; suppress moderated messages when instructions are absent, invalid, unsupported, or unknown. Treat absent and explicit `null` moderation as ordinary unmoderated messages.
+- [x] Apply the same decision to restored history, resumed and forked conversations, conversation export, and diagnostics while retaining safe Markdown handling, redaction, fallback parts, and choice-prompt detection.
+- [x] Drop pending assistant text on disconnect and recover from authoritative history after reconnect.
+- [x] Initial Core regression tests: 3 passed; the final focused Core set passed 5/5. Related UI tests, including all `ConversationTextFormatterTests`: 15 passed; the final UI/formatter set passed 14/14 and future-tier buffering UI tests passed 4/4. PR #333 CI exposed 15 UI fixtures that still modeled delta-only messages; they now explicitly select Baseline for legacy streaming or send ItemCompleted with Show for 0.170+. The previously failing focused tests passed 15/15; two Claude review regression cases were added, the focused review-regression set passed 8/8 after the first follow-up and 4/4 after the final history/live overlap fix, and the complete Release UI suite passed 632/632 on the final code. Follow-up fixes preserve approved history text on overlap with live completion, omit empty completed rows, fail closed without an item ID, suppress late deltas, and prevent hidden choice prompts from creating synthetic input. `git diff --check` passed; changed source and test files use UTF-8 BOM and CRLF.
+- [ ] Visual Studio screenshot acceptance could not run because the computer-use service timed out; real IDE acceptance remains tracked by [Issue #331](https://github.com/kkamegawa/vsextensionforcodex/issues/331).
+
 ## 2026-11-21: Codex CLI 0.169–0.171 compatibility baseline (Issue #327)
 
 Tracking: [Issue #327](https://github.com/kkamegawa/vsextensionforcodex/issues/327), under [Issue #326](https://github.com/kkamegawa/vsextensionforcodex/issues/326). Approved policy: [ADR-024](adr/ADR-024-codex-cli-0-169-minimum.md); protocol decisions: [0.171 design](app-server-0-171-design.md).
@@ -12,8 +23,8 @@ Tracking: [Issue #327](https://github.com/kkamegawa/vsextensionforcodex/issues/3
 - [x] Verify the minimum CLI initialize smoke, all four version method surfaces, schema cache contract, manifest outputs, PowerShell parsing, and UTF-8 BOM/CRLF formatting.
 - [x] Release Core version-boundary tests: 20 passed, 0 failed, 0 skipped.
 - [x] Extend the local release verifier to include the minimum-boundary download, initialize smoke, stable/experimental schema generation, and equivalence check, while keeping regression comparisons separate.
-- [ ] Verify the installer package download and extraction end to end; the pinned package download did not return during this run.
-- [ ] Full Release solution build, complete Core/UI suites, and Visual Studio acceptance are tracked by #331.
+- [x] Verify the installer package download and extraction end to end; the local pinned-package attempt did not return, and PR #332 CI later passed package download, digest verification, and extraction.
+- [ ] Complete Core/UI suites and Visual Studio acceptance remain tracked by #331; the Release solution build passed in PR #332 CI.
 
 ## 2026-10-09: Integrated release validation design and documentation (Issue #156)
 

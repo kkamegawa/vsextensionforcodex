@@ -162,7 +162,10 @@ public sealed partial class ChatViewModel
 
                     // Match the same literal text as the conversation snapshot, so command output
                     // and code such as Task<T> or C:\path are found as written.
-                    string safeText = SafeMarkdownService.ToSafeLiteralText(item.Text ?? string.Empty);
+                    string projectedText = item.Type == "agentMessage" && item.AgentMessageDisplayDecision is { } decision
+                        ? decision.GetDisplayText(item.Text) ?? string.Empty
+                        : item.Text ?? string.Empty;
+                    string safeText = SafeMarkdownService.ToSafeLiteralText(projectedText);
                     int matchCount = CountMatches(safeText, query);
                     if (matchCount > 0)
                     {
@@ -207,7 +210,10 @@ public sealed partial class ChatViewModel
                 {
                     liveItemCount++;
                     // Live rows already hold display-safe text; only control characters are removed.
-                    string safeText = SafeMarkdownService.ToSafeLiteralText(item.Text);
+                    string projectedText = item.AgentDisplayDecision is { } decision
+                        ? decision.GetDisplayText(item.Text) ?? string.Empty
+                        : item.Text;
+                    string safeText = SafeMarkdownService.ToSafeLiteralText(projectedText);
                     int matchCount = CountMatches(safeText, query);
                     if (matchCount > 0)
                     {

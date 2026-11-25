@@ -5,7 +5,7 @@ namespace Codex.VisualStudio.Contracts;
 
 public static class ContractVersions
 {
-    public const int Current = 27;
+    public const int Current = 28;
 }
 
 public enum GoalStopStepOutcome
@@ -122,6 +122,31 @@ public enum ConversationEventKind
     Error,
     Unknown,
     ThreadClosed,
+}
+
+public enum AgentMessageDisplayMode
+{
+    Suppress = 0,
+    Show = 1,
+    Hide = 2,
+    Block = 3,
+}
+
+[DataContract]
+public sealed class AgentMessageDisplayDecision
+{
+    [DataMember]
+    public AgentMessageDisplayMode Mode { get; set; }
+
+    [DataMember]
+    public string DisplayText { get; set; } = "This response was hidden because its display instructions could not be verified.";
+
+    public string? GetDisplayText(string? originalText)
+        => Mode == AgentMessageDisplayMode.Show
+            ? originalText
+            : string.IsNullOrWhiteSpace(DisplayText)
+                ? "This response was hidden because its display instructions could not be verified."
+                : DisplayText;
 }
 
 public enum ApprovalRiskCategory
@@ -728,6 +753,9 @@ public sealed class ThreadHistoryItem
 
     [DataMember]
     public string? ErrorReason { get; set; }
+
+    [DataMember]
+    public AgentMessageDisplayDecision? AgentMessageDisplayDecision { get; set; }
 }
 
 [DataContract]
@@ -1451,6 +1479,10 @@ public sealed class ConversationEvent
     public AppServerNotice? Notice { get; set; }
 
     public IReadOnlyList<ArtifactPart> Parts { get; set; } = Array.Empty<ArtifactPart>();
+
+    public bool IsAgentMessage { get; set; }
+
+    public AgentMessageDisplayDecision? AgentMessageDisplayDecision { get; set; }
 }
 
 public sealed class ApprovalRequest

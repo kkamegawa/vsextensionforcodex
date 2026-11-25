@@ -84,6 +84,7 @@ public sealed partial class ChatViewModel
         try
         {
             List<ThreadHistoryItem> items = await ReadWholeHistoryAsync(thread.Id, owner, cancellation.Token).ConfigureAwait(false);
+            await ApplyTranscriptDisplayDecisionOverridesAsync(items, thread.Id, owner).ConfigureAwait(false);
             items.Reverse();
             string title = GetConversationTextTitle(thread);
             string text = ConversationTextFormatter.Format(title, timeProvider.GetUtcNow(), items, markdown);
@@ -137,6 +138,79 @@ public sealed partial class ChatViewModel
         }
         while (cursor is not null);
         return items;
+    }
+
+    private async Task ApplyTranscriptDisplayDecisionOverridesAsync(
+        IReadOnlyList<ThreadHistoryItem> historyItems,
+        string threadId,
+        OwnerSnapshot owner)
+    {
+        var decisions = new Dictionary<AgentMessageDisplayIdentity, AgentMessageDisplayDecision>();
+        bool overflowed = false;
+        var scope = new AgentMessageDisplayScope(owner.StatePartitionFingerprint ?? string.Empty, owner.OwnerGeneration);
+        await OnUiAsync(() =>
+        {
+            if (!IsCurrentOwner(owner))
+            {
+                return;
+            }
+
+            overflowed = overflowedAgentDisplayDecisionScopes.Contains(scope);
+            foreach (KeyValuePair<AgentMessageDisplayIdentity, AgentMessageDisplayDecision> entry in restrictedAgentDisplayDecisions)
+            {
+                AgentMessageDisplayIdentity identity = entry.Key;
+                if (!string.Equals(identity.StatePartitionFingerprint, owner.StatePartitionFingerprint ?? string.Empty, StringComparison.Ordinal)
+                    || identity.OwnerGeneration != owner.OwnerGeneration
+                    || !string.Equals(identity.ThreadId, threadId, StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                decisions[identity] = entry.Value;
+            }
+        }).ConfigureAwait(false);
+
+        if (!IsCurrentOwner(owner))
+        {
+            throw new InvalidOperationException("The connection changed while applying assistant display decisions.");
+        }
+
+        foreach (ThreadHistoryItem item in historyItems)
+        {
+            if (item.Type != "agentMessage")
+            {
+                continue;
+            }
+
+            if (overflowed)
+            {
+                item.AgentMessageDisplayDecision = ResolveAgentMessageDisplayDecision(
+                    item.AgentMessageDisplayDecision,
+                    new AgentMessageDisplayDecision { Mode = AgentMessageDisplayMode.Suppress });
+            }
+            else
+            {
+                string turnId = item.TurnId ?? string.Empty;
+                string itemId = item.Id ?? string.Empty;
+                AgentMessageDisplayIdentity[] candidateKeys =
+                [
+                    new(owner.StatePartitionFingerprint ?? string.Empty, owner.OwnerGeneration, threadId, turnId, itemId),
+                    new(owner.StatePartitionFingerprint ?? string.Empty, owner.OwnerGeneration, threadId, turnId, string.Empty),
+                    new(owner.StatePartitionFingerprint ?? string.Empty, owner.OwnerGeneration, threadId, string.Empty, itemId),
+                    new(owner.StatePartitionFingerprint ?? string.Empty, owner.OwnerGeneration, threadId, string.Empty, string.Empty),
+                ];
+                AgentMessageDisplayDecision? decision = null;
+                foreach (AgentMessageDisplayIdentity key in candidateKeys)
+                {
+                    if (decisions.TryGetValue(key, out AgentMessageDisplayDecision? candidate))
+                    {
+                        decision = ResolveAgentMessageDisplayDecision(decision, candidate);
+                    }
+                }
+
+                item.AgentMessageDisplayDecision = ResolveAgentMessageDisplayDecision(item.AgentMessageDisplayDecision, decision);
+            }
+        }
     }
 
     private string GetConversationTextTitle(ThreadSummary thread)

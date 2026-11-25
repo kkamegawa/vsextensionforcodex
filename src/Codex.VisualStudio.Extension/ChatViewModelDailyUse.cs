@@ -385,7 +385,8 @@ public sealed partial class ChatViewModel
         ChatItemViewModel item,
         ThreadHistoryItem historyItem,
         string threadId,
-        OwnerSnapshot owner)
+        OwnerSnapshot owner,
+        AgentMessageDisplayDecision? agentMessageDisplayDecision)
     {
         item.ApplyTiming(historyItem.StartedAtMs, historyItem.CompletedAtMs);
         if (historyItem.Plan is { } plan
@@ -408,6 +409,13 @@ public sealed partial class ChatViewModel
                     completedPlanKeys.Remove(completedPlanKeys.First());
                 }
             }
+        }
+
+        if (historyItem.Type == "agentMessage"
+            && agentMessageDisplayDecision is { Mode: not AgentMessageDisplayMode.Show })
+        {
+            item.ReplaceArtifactParts([]);
+            return;
         }
 
         if (historyItem.Parts is { Count: > 0 })
