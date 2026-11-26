@@ -14,11 +14,9 @@ public sealed partial class ViewModelTests
 
     private static async Task<ChatViewModel> CreateJoinedViewModelAsync(FakeWorkerBridge bridge, CodexFeatureTier tier = CodexFeatureTier.Baseline)
     {
-        var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()))
-        {
-            SelectedThread = new ThreadSummary { Id = "thread-1" },
-        };
+        var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
         await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready, ThreadId = "thread-1", FeatureTier = tier });
+        vm.SelectedThread = new ThreadSummary { Id = "thread-1" };
         await RunCommandAsync(vm.JoinThreadCommand);
         return vm;
     }
@@ -371,6 +369,10 @@ public sealed partial class ViewModelTests
                 Generation = 8,
             },
         });
+        var reconnectedThread = new ThreadSummary { Id = "thread-1" };
+        vm.Threads.Add(reconnectedThread);
+        vm.SelectedThread = reconnectedThread;
+        await RunCommandAsync(vm.JoinThreadCommand);
 
         await RunCommandAsync(vm.OpenConversationTextCommand);
         await WaitForAsync(() => documents.Path is not null);

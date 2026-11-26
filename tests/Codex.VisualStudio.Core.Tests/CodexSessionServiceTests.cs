@@ -6426,6 +6426,11 @@ public sealed partial class CodexSessionServiceTests
                     },
                     nextCursor = (string?)null,
                 }),
+                "thread/turns/list" => JsonSerializer.SerializeToElement(new
+                {
+                    data = Array.Empty<object>(),
+                    nextCursor = (string?)null,
+                }),
                 "thread/read" => JsonSerializer.SerializeToElement(new
                 {
                     thread = new { id = ReadStringParameter(parameters, "threadId") ?? "thread-1", model = "model-a" },

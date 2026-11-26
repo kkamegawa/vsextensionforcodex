@@ -1,5 +1,4 @@
 ﻿using System.Collections.Generic;
-using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using Codex.AppServer.Protocol;
@@ -13,6 +12,78 @@ public sealed partial class CodexSessionService
     private readonly object searchRequestIdGate = new();
     private readonly HashSet<(long ConnectionGeneration, string RequestId)> usedSearchRequestIds = [];
     private readonly Queue<(long ConnectionGeneration, string RequestId)> searchRequestIdOrder = new();
+    private readonly HashSet<(long ConnectionGeneration, string ThreadId)> threadMutationsInFlight = [];
+    private readonly HashSet<(long ConnectionGeneration, string ThreadId)> knownBusyThreadIds = [];
+
+    private void ReserveThreadMutation(ConnectionContext context, string threadId)
+    {
+        lock (turnStateLock)
+        {
+            if (!IsCurrent(context))
+            {
+                throw new InvalidOperationException("The connection changed before the conversation could be checked.");
+            }
+
+            var key = (context.Generation, threadId);
+            if (IsThreadTurnBusyLocked(context.Generation, threadId) || !threadMutationsInFlight.Add(key))
+            {
+                throw new InvalidOperationException("A turn or conversation operation is already running for this conversation.");
+            }
+        }
+    }
+
+    private void ReleaseThreadMutation(ConnectionContext context, string threadId)
+    {
+        lock (turnStateLock)
+        {
+            threadMutationsInFlight.Remove((context.Generation, threadId));
+        }
+    }
+
+    private bool IsThreadTurnBusyLocked(long generation, string threadId)
+        => (ActiveTurnId is not null && string.Equals(ActiveThreadId, threadId, StringComparison.Ordinal))
+            || string.Equals(pendingTurnThreadId, threadId, StringComparison.Ordinal)
+            || string.Equals(unconfirmedTurnThreadId, threadId, StringComparison.Ordinal)
+            || knownBusyThreadIds.Contains((generation, threadId));
+
+    private async Task EnsureThreadIdleAsync(ConnectionContext context, string threadId, CancellationToken cancellationToken)
+    {
+        EnsureCurrent(context);
+        EnsureCredentialReady(context);
+        JsonElement response;
+        try
+        {
+            response = await context.Connection.SendReadOnlyRequestAsync(
+                "thread/turns/list",
+                new { threadId, cursor = (string?)null, limit = 50, itemsView = "summary", sortDirection = "desc" },
+                TimeSpan.FromSeconds(20),
+                cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            throw new InvalidOperationException("The conversation's turn state could not be verified, so delete and revert are unavailable.", exception);
+        }
+
+        EnsureCurrent(context);
+        JsonElement turns = RequireArray(response, "data");
+        bool busy = turns.EnumerateArray().Any(turn => IsBusyTurnStatus(GetBoundedString(turn, "status", 64)));
+        if (busy)
+        {
+            throw new InvalidOperationException("A turn is running; delete and revert are unavailable for this conversation.");
+        }
+    }
+
+    private static bool IsBusyTurnStatus(string? status)
+        => status is not null
+            && (status.Equals("inProgress", StringComparison.OrdinalIgnoreCase)
+                || status.Equals("in_progress", StringComparison.OrdinalIgnoreCase)
+                || status.Equals("running", StringComparison.OrdinalIgnoreCase)
+                || status.Equals("pending", StringComparison.OrdinalIgnoreCase)
+                || status.Equals("cancelling", StringComparison.OrdinalIgnoreCase));
     public async Task<ThreadSectionsResult> ListThreadSectionsAsync(CancellationToken cancellationToken)
     {
         ConnectionContext context = RequireContext();
@@ -84,15 +155,36 @@ public sealed partial class CodexSessionService
         if (action == "revert") ArgumentException.ThrowIfNullOrWhiteSpace(beforeTurnId);
         ConnectionContext context = RequireContext();
         EnsureCurrent(context);
-        if (action is "delete" or "revert" && ActiveTurnId is not null)
-            throw new InvalidOperationException("A turn is running; delete and revert are unavailable.");
+        EnsureCredentialReady(context);
         ApprovalPolicyResult policy = approvalPolicy.EvaluateThreadMutation(threadId, action);
         if (policy.IsBlocked) throw new InvalidOperationException(policy.BlockReason ?? "Thread operation is blocked by policy.");
 
-        // A failure after dispatch cannot establish whether the server applied the mutation.
-        cancellationToken.ThrowIfCancellationRequested();
+        bool requiresIdleThread = action is "delete" or "revert";
+        if (requiresIdleThread)
+        {
+            ReserveThreadMutation(context, threadId);
+        }
+
+        bool mutationDispatched = false;
         try
         {
+            if (requiresIdleThread)
+            {
+                await EnsureThreadIdleAsync(context, threadId, cancellationToken).ConfigureAwait(false);
+                lock (turnStateLock)
+                {
+                    if (IsThreadTurnBusyLocked(context.Generation, threadId))
+                    {
+                        throw new InvalidOperationException("A turn is running; delete and revert are unavailable for this conversation.");
+                    }
+                }
+            }
+
+            EnsureCurrent(context);
+            EnsureCredentialReady(context);
+            // A failure after dispatch cannot establish whether the server applied the mutation.
+            cancellationToken.ThrowIfCancellationRequested();
+            mutationDispatched = true;
             await context.Connection.SendRequestAsync(method,
                 action == "revert" ? new { threadId, beforeTurnId } : new { threadId },
                 TimeSpan.FromSeconds(20), cancellationToken).ConfigureAwait(false);
@@ -106,9 +198,16 @@ public sealed partial class CodexSessionService
         {
             return new ThreadMutationResult
             {
-                OutcomeUnknown = true,
+                OutcomeUnknown = mutationDispatched,
                 Message = IsCurrent(context) ? BoundRedacted(exception.Message, 1024) : null,
             };
+        }
+        finally
+        {
+            if (requiresIdleThread)
+            {
+                ReleaseThreadMutation(context, threadId);
+            }
         }
 
         if (!IsCurrent(context)) return new ThreadMutationResult { OutcomeUnknown = true };
@@ -120,10 +219,13 @@ public sealed partial class CodexSessionService
         string term = request.SearchTerm?.Trim() ?? string.Empty;
         if (term.Length is < 1 or > 512) throw new ArgumentException("Search text must contain 1 to 512 characters.", nameof(request));
         ConnectionContext context = RequireContext();
+        EnsureCurrent(context);
+        EnsureCredentialReady(context);
         if (!Guid.TryParseExact(request.RequestId, "N", out Guid parsedRequestId) || parsedRequestId == Guid.Empty)
         {
             throw new ArgumentException("Search request IDs must be nonempty GUIDs in N format.", nameof(request));
         }
+        string? cursor = request.Cursor is null ? null : ValidateCursor(request.Cursor);
         string requestId = parsedRequestId.ToString("N");
         if (!context.ExperimentalApi)
         {
@@ -132,7 +234,18 @@ public sealed partial class CodexSessionService
         }
         bool streamSearch = context.FeatureTier >= CodexFeatureTier.Tier171;
         RememberUniqueSearchRequestId(context.Generation, requestId);
-        object parameters = new { searchTerm = term, limit = 50, sortKey = "updated_at", sortDirection = "desc" };
+        var parameters = new Dictionary<string, object?>
+        {
+            ["searchTerm"] = term,
+            ["archived"] = request.Archived,
+            ["limit"] = 50,
+            ["sortKey"] = "updated_at",
+            ["sortDirection"] = "desc",
+        };
+        if (cursor is not null)
+        {
+            parameters["cursor"] = cursor;
+        }
         JsonElement response;
         try
         {
@@ -214,7 +327,7 @@ public sealed partial class CodexSessionService
             }
         }
         EnsureCurrent(context);
-        return new ThreadSearchResult { Results = hits };
+        return new ThreadSearchResult { Results = hits, NextCursor = ReadOptionalCursor(response) };
     }
 
     private string BoundRedacted(string value, int maxChars)
@@ -239,20 +352,6 @@ public sealed partial class CodexSessionService
                 usedSearchRequestIds.Remove(searchRequestIdOrder.Dequeue());
             }
         }
-    }
-    private string CreateTurnDisplayLabel(string id, string status)
-    {
-        bool japanese = CultureInfo.CurrentUICulture.TwoLetterISOLanguageName.Equals("ja", StringComparison.OrdinalIgnoreCase);
-        string state = status switch
-        {
-            "completed" => japanese ? "完了" : "Completed",
-            "inProgress" or "in_progress" => japanese ? "実行中" : "In progress",
-            "failed" => japanese ? "失敗" : "Failed",
-            "interrupted" => japanese ? "中断" : "Interrupted",
-            _ => japanese ? "ターン" : "Turn",
-        };
-        string shortId = BoundRedacted(id[..Math.Min(id.Length, 8)], 8);
-        return $"{state} · {shortId}";
     }
     private ThreadSearchHit? ReadThreadSearchHit(JsonElement value)
     {

@@ -47,6 +47,44 @@ public sealed partial class ViewModelTests
     }
 
     [TestMethod]
+    public async Task RevertedHistoryNotificationReplacesTheSelectedTranscript()
+    {
+        int historyRead = 0;
+        var bridge = new FakeWorkerBridge
+        {
+            ListThreadItemsHandler = (_, _) => Task.FromResult(new ThreadItemsPage
+            {
+                Items =
+                [
+                    new ThreadHistoryItem
+                    {
+                        Id = "reverted-item",
+                        TurnId = "turn-1",
+                        Type = "userMessage",
+                        Text = Interlocked.Increment(ref historyRead) == 1 ? "stale before revert" : "fresh after revert",
+                    },
+                ],
+            }),
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        await bridge.PublishStateAsync(OwnerStatus("history-transcript-revert", 1, 1));
+        vm.IsHistoryOpen = true;
+        vm.SelectedThread = new ThreadSummary { Id = "thread-transcript-revert", Preview = "Reverted transcript" };
+        await WaitUntilAsync(() => vm.Items.Any(static item => item.Text.Contains("stale before revert", StringComparison.Ordinal)));
+
+        await bridge.RaiseThreadHistoryChangedAsync(new WorkerNotification<ThreadHistoryChangedEvent>
+        {
+            Value = new ThreadHistoryChangedEvent { ThreadId = "thread-transcript-revert", ChangeKind = "thread/reverted" },
+            StatePartitionFingerprint = "history-transcript-revert",
+            OwnerGeneration = 1,
+            ConnectionGeneration = 1,
+        });
+        await WaitUntilAsync(() => vm.Items.Any(static item => item.Text.Contains("fresh after revert", StringComparison.Ordinal)));
+
+        Assert.IsFalse(vm.Items.Any(static item => item.Text.Contains("stale before revert", StringComparison.Ordinal)));
+    }
+
+    [TestMethod]
     public async Task TranscriptSearch_FindsLiteralCommandOutputAndCode()
     {
         var bridge = new FakeWorkerBridge

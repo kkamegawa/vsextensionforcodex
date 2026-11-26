@@ -1047,33 +1047,43 @@ public sealed partial class WorkerRpcService : ICodexWorkerClient, IAsyncDisposa
         }
     }
 
-    private async Task<T> ExecuteOwnerScopedMutationAsync<T>(
+    internal async Task<T> ExecuteOwnerScopedMutationAsync<T>(
         OwnerScopedRequest request,
         Func<Task<T>> operation,
         CancellationToken cancellationToken)
         where T : WorkerGenerationResult
     {
-        ConnectionTargetSnapshot captured = await ValidateOwnerScopeUnderGateAsync(request, cancellationToken)
-            .ConfigureAwait(false);
+        // Invoke the session operation while the transition gate is still held. The session method
+        // captures its ConnectionContext synchronously before its first await; releasing the gate
+        // between owner validation and that capture could route a destructive request to a newer
+        // account or connection. Do not await the operation itself while holding the gate because
+        // its response can wait on notifications that need the transition gate.
+        await connectionTransitionGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        ConnectionTargetSnapshot captured;
+        Task<T> operationTask;
         ConnectionTargetSnapshot? previous = requestEmissionTarget.Value;
-        requestEmissionTarget.Value = captured;
         try
         {
-            T result = await operation().ConfigureAwait(false);
-            result.StatePartitionFingerprint = captured.StatePartitionFingerprint;
-            result.OwnerGeneration = captured.OwnerGeneration;
-            result.ConnectionGeneration = captured.Generation;
-            return result;
+            captured = ValidateOwnerScope(request);
+            requestEmissionTarget.Value = captured;
+            operationTask = operation();
         }
         finally
         {
             requestEmissionTarget.Value = previous;
+            ReleaseTransitionGate();
         }
+
+        T result = await operationTask.ConfigureAwait(false);
+        result.StatePartitionFingerprint = captured.StatePartitionFingerprint;
+        result.OwnerGeneration = captured.OwnerGeneration;
+        result.ConnectionGeneration = captured.Generation;
+        return result;
     }
     public Task<ThreadPage> ListThreadsAsync(ListThreadsRequest request, CancellationToken cancellationToken)
         => ExecuteOwnerScopedGenerationAsync(
             request,
-            () => session.ListThreadsAsync(request.Cursor, request.WorkingDirectories, request.Archived, request.SearchTerm, request.SectionId, cancellationToken),
+            () => session.ListThreadsAsync(request.Cursor, request.WorkingDirectories, request.Archived, request.SearchTerm, request.SectionId, request.IncludeAttachedThreads, cancellationToken),
             cancellationToken);
 
     public Task<ThreadSectionsResult> ListThreadSectionsAsync(GetThreadListScopesRequest request, CancellationToken cancellationToken)
@@ -2000,8 +2010,12 @@ public sealed partial class WorkerRpcService : ICodexWorkerClient, IAsyncDisposa
     private bool MatchesCurrentOwner(WorkerGenerationResult value)
     {
         ConnectionTargetSnapshot current = SnapshotTarget();
+        // Session connection generations advance only after session initialization begins, while
+        // Worker generations advance for every connection attempt. They can differ after a failed
+        // start/handshake followed by a successful retry. The session fences notifications against
+        // its captured ConnectionContext before raising these events; IsCurrentEmission additionally
+        // fences any request/process emission against the Worker target generation.
         return value.OwnerGeneration == current.OwnerGeneration
-            && value.ConnectionGeneration == current.Generation
             && string.Equals(value.StatePartitionFingerprint, current.StatePartitionFingerprint, StringComparison.Ordinal);
     }
 

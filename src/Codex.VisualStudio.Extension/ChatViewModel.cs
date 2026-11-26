@@ -19,6 +19,23 @@ using ReentrantSemaphore = Microsoft.VisualStudio.Threading.ReentrantSemaphore;
 
 namespace Codex.VisualStudio.Extension;
 
+[DataContract]
+public sealed class ThreadTurnOptionViewModel
+{
+    public ThreadTurnOptionViewModel(string id, string displayLabel, string? errorText = null, string? errorReason = null)
+    {
+        Id = id;
+        DisplayLabel = displayLabel;
+        ErrorText = errorText;
+        ErrorReason = errorReason;
+    }
+
+    [DataMember] public string Id { get; }
+    [DataMember] public string DisplayLabel { get; }
+    [DataMember] public string? ErrorText { get; }
+    [DataMember] public string? ErrorReason { get; }
+}
+
 // Remote UI serializes the data context to a proxy in the VS process. Only DataMember
 // properties of DataContract types reach that proxy — a class without the attributes is
 // serialized as an EMPTY object and every binding to it silently fails (buttons with bound
@@ -174,7 +191,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
     private const int MaximumBufferedHistoryEvents = 1024;
     private const long MaximumBufferedHistoryBytes = 8 * 1024 * 1024;
     private readonly ObservableCollection<ThreadAttachmentPresentationViewModel> threadAttachments = [];
-    private readonly ObservableCollection<ThreadTurnSummary> threadTurns = [];
+    private readonly ObservableCollection<ThreadTurnOptionViewModel> threadTurns = [];
     private readonly ObservableCollection<ThreadHistoryRowViewModel> threadRows = [];
     private readonly ObservableCollection<ChatItemViewModel> transcriptItems = [];
     private readonly WindowsSandboxTranscriptHeaderPresentationViewModel transcriptHeaderPresentation;
@@ -1331,6 +1348,25 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             {
                 activeThreadListRequest = null;
             }
+        }
+    }
+
+    private bool QueueThreadListRefreshIfBusy(OwnerSnapshot requestedOwner)
+    {
+        _ = requestedOwner; // A stale caller can still queue a refresh for the current owner.
+        lock (threadListRequestGate)
+        {
+            if (activeThreadListRequest is not { } active
+                || !IsCurrentOwner(active.Owner))
+            {
+                return false;
+            }
+
+            // requestedOwner can become stale between observing Busy and acquiring this gate.
+            // The pending refresh is drained through ReloadThreadsAsync, which captures the current
+            // owner, so keep it when any live owner's request can drain it.
+            Volatile.Write(ref threadListReloadPending, 1);
+            return true;
         }
     }
 
@@ -2643,7 +2679,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
     } = string.Empty;
 
     [DataMember]
-    public ObservableCollection<ThreadTurnSummary> ThreadTurns => threadTurns;
+    public ObservableCollection<ThreadTurnOptionViewModel> ThreadTurns => threadTurns;
 
     [DataMember]
     public string HistoryTurnSummaryText => ThreadTurns.Count == 1 ? "1 turn in loaded history" : $"{ThreadTurns.Count} turns in loaded history";
@@ -3528,9 +3564,18 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         await DrainSlashQueuesAsync(thread.Id).ConfigureAwait(false);
     }
 
-    private async Task ReadSelectedThreadHistoryAsync(ThreadSummary thread, string? completionStatusText = null)
+    private async Task ReadSelectedThreadHistoryAsync(
+        ThreadSummary thread,
+        string? completionStatusText = null,
+        bool replaceTranscript = false,
+        OwnerSnapshot? ownerFence = null)
     {
-        OwnerSnapshot owner = CaptureOwnerSnapshot();
+        OwnerSnapshot owner = ownerFence ?? CaptureOwnerSnapshot();
+        if (!IsCurrentOwner(owner))
+        {
+            return;
+        }
+
         long selectionGeneration = Interlocked.Read(ref selectedThreadGeneration);
 
         // A watermark, not a reservation: the row keeps its last known state while this read is
@@ -3568,6 +3613,11 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                 {
                     MarkHistoryStale("History changed while it was loading. Refresh before relying on this transcript.");
                     return;
+                }
+
+                if (replaceTranscript)
+                {
+                    ResetSelectedHistoryState(thread);
                 }
 
                 thread.Preview = read.Thread.Preview;
@@ -4368,8 +4418,13 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
     private void MergeThreadTurns(string threadId, IEnumerable<ThreadTurnSummary> turns, OwnerSnapshot owner, bool prepend)
     {
         var knownIds = ThreadTurns.Select(static turn => turn.Id).ToHashSet(StringComparer.Ordinal);
-        foreach (ThreadTurnSummary turn in turns)
+        foreach (ThreadTurnSummary summary in turns)
         {
+            var turn = new ThreadTurnOptionViewModel(
+                summary.Id,
+                CreateThreadTurnDisplayLabel(summary),
+                summary.ErrorText,
+                summary.ErrorReason);
             if (knownIds.Add(turn.Id))
             {
                 if (prepend)
@@ -4399,6 +4454,29 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                 }
             }
         }
+    }
+
+    private string CreateThreadTurnDisplayLabel(ThreadTurnSummary turn)
+    {
+        string normalizedId = new(turn.Id.Where(static character => !char.IsControl(character)).ToArray());
+        string displayId = normalizedId.Length > 16
+            ? $"{normalizedId[..8]}…{normalizedId[^8..]}"
+            : normalizedId;
+        if (displayId.Length == 0)
+        {
+            displayId = IsJapaneseUi ? "不明" : "unknown";
+        }
+        displayId = SafeMarkdownService.ToSafeLiteralText(displayId);
+
+        string status = turn.Status switch
+        {
+            "completed" => IsJapaneseUi ? "完了" : "completed",
+            "inProgress" or "in_progress" => IsJapaneseUi ? "進行中" : "in progress",
+            "failed" => IsJapaneseUi ? "失敗" : "failed",
+            "interrupted" => IsJapaneseUi ? "中断" : "interrupted",
+            _ => IsJapaneseUi ? "状態不明" : "status unknown",
+        };
+        return IsJapaneseUi ? $"ターン {displayId} · {status}" : $"Turn {displayId} · {status}";
     }
 
     private static string TurnErrorItemId(string? turnId) => $"turn-error-{turnId}";
@@ -5014,9 +5092,30 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             lifetime.Token).ConfigureAwait(false);
         if (outcome == ThreadListRefreshOutcome.Busy)
         {
+            if (QueueThreadListRefreshIfBusy(owner))
+            {
+                return;
+            }
+
+            outcome = await RefreshCompleteThreadListAsync(
+                owner,
+                "Conversation list refreshed. Select one to inspect read-only history.",
+                lifetime.Token).ConfigureAwait(false);
+            if (outcome == ThreadListRefreshOutcome.Busy && !QueueThreadListRefreshIfBusy(owner))
+            {
+                await SetThreadListFailureStatusAsync(
+                    owner,
+                    "Conversation list refresh is busy. Try again.").ConfigureAwait(false);
+            }
+
+            return;
+        }
+
+        if (outcome == ThreadListRefreshOutcome.Failed)
+        {
             await SetThreadListFailureStatusAsync(
                 owner,
-                "The conversation list is still loading. Refresh again after it finishes.").ConfigureAwait(false);
+                "Conversation list could not be refreshed. Existing conversations were kept; try again.").ConfigureAwait(false);
         }
     }
 
@@ -7058,6 +7157,13 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                 return;
             }
 
+            if (string.IsNullOrWhiteSpace(result.Thread.LinkedParentThreadId)
+                && !string.IsNullOrWhiteSpace(result.ParentThreadId))
+            {
+                result.Thread.LinkedParentThreadId = result.ParentThreadId;
+            }
+
+            TrackLinkedForkRelationship(result.Thread);
             Threads.Insert(0, result.Thread);
             // Selection loads read-only history. Joining the forked conversation remains an
             // explicit user action, just like selecting any other history entry.
@@ -8405,6 +8511,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         WorkerStatus value = notification.Value;
         bool applied = false;
         bool reconnected = false;
+        bool refreshThreadManagementData = false;
         await OnUiAsync(() =>
         {
             if (!CanApplyStatusNotification(notification))
@@ -8417,7 +8524,8 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             reconnected = value.State == WorkerConnectionState.Ready
                 && previous is not (WorkerConnectionState.Ready or WorkerConnectionState.Busy or WorkerConnectionState.WaitingForApproval);
             Status = value;
-            OnThreadManagementOwnerChanged();
+            _ = OnThreadManagementOwnerChanged();
+            refreshThreadManagementData = value.State == WorkerConnectionState.Ready && threadManagementOwnerDataRefreshPending;
             NotifyThreadManagementCanExecuteChanged();
             ReadGatewayOAuthCommand.RaiseCanExecuteChanged();
             LoginGatewayOAuthCommand.RaiseCanExecuteChanged();
@@ -8487,6 +8595,25 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                 }
             }
         }).ConfigureAwait(false);
+
+        if (applied && refreshThreadManagementData)
+        {
+            bool refreshIsCurrent = false;
+            await OnUiAsync(() =>
+            {
+                refreshIsCurrent = IsNotificationCurrent(notification)
+                    && Status.State == WorkerConnectionState.Ready
+                    && threadManagementOwnerDataRefreshPending;
+                if (refreshIsCurrent)
+                {
+                    threadManagementOwnerDataRefreshPending = false;
+                }
+            }).ConfigureAwait(false);
+            if (refreshIsCurrent)
+            {
+                await RefreshThreadManagementOwnerDataAsync().ConfigureAwait(false);
+            }
+        }
 
         // Only a reconnect refreshes the goal read-only; turn boundaries are covered by goal
         // notifications. No stop or other goal mutation is ever replayed.

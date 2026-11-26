@@ -1067,7 +1067,7 @@
                                AutomationProperties.LiveSetting="Polite" />
                     <Border Margin="2,4" Padding="6" BorderThickness="1" Focusable="True"
                             FocusManager.IsFocusScope="True"
-                            FocusManager.FocusedElement="{Binding ElementName=ConfirmThreadMutationButton}"
+                            FocusManager.FocusedElement="{Binding ElementName=CancelThreadMutationButton}"
                             BorderBrush="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBorderBrushKey}}"
                             Visibility="{Binding IsThreadMutationConfirmationOpen, Converter={StaticResource BoolToVis}}">
                       <Border.InputBindings>
@@ -1078,11 +1078,11 @@
                         <TextBlock Margin="0,4,0,0" Text="{Binding ThreadMutationConfirmationText}"
                                    TextWrapping="Wrap" AutomationProperties.LiveSetting="Polite" />
                         <WrapPanel Margin="0,6,0,0" HorizontalAlignment="Right">
-                          <Button x:Name="ConfirmThreadMutationButton" IsDefault="True" Margin="0,0,4,0" Content="{Binding ThreadMutationConfirmButtonText}"
+                          <Button x:Name="ConfirmThreadMutationButton" Margin="0,0,4,0" Content="{Binding ThreadMutationConfirmButtonText}"
                                   Command="{Binding ConfirmThreadMutationCommand}"
                                   Style="{StaticResource SmallRoundButtonStyle}"
                                   AutomationProperties.Name="{Binding ThreadMutationConfirmAutomationName}" />
-                          <Button IsCancel="True" Content="{Binding ThreadMutationCancelButtonText}"
+                          <Button x:Name="CancelThreadMutationButton" IsCancel="True" Content="{Binding ThreadMutationCancelButtonText}"
                                   Command="{Binding CancelThreadMutationCommand}"
                                   Style="{StaticResource SmallRoundButtonStyle}"
                                   AutomationProperties.Name="{Binding ThreadMutationCancelAutomationName}" />

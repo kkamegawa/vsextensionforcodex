@@ -38,12 +38,10 @@ public sealed partial class ViewModelTests
         var vm = new ChatViewModel(
             bridge,
             autoConnect: false,
-            settingsStore: new MemorySettingsStore(settings ?? new ExtensionSettings()))
-        {
-            SelectedThread = new ThreadSummary { Id = "thread-1" },
-        };
+            settingsStore: new MemorySettingsStore(settings ?? new ExtensionSettings()));
         await vm.PopulateModelsAsync();
         await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready, ThreadId = "thread-1" });
+        vm.SelectedThread = new ThreadSummary { Id = "thread-1" };
         return vm;
     }
 
@@ -207,11 +205,9 @@ public sealed partial class ViewModelTests
     public async Task PermissionsConfirmation_HoldsQueuedCommandsUntilResolved()
     {
         var bridge = new FakeWorkerBridge();
-        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()))
-        {
-            SelectedThread = new ThreadSummary { Id = "thread-1" },
-        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
         await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready, ThreadId = "thread-1" });
+        vm.SelectedThread = new ThreadSummary { Id = "thread-1" };
         await RunCommandAsync(vm.JoinThreadCommand);
         await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Busy, ThreadId = "thread-1", TurnId = "turn-1" });
 
@@ -230,11 +226,9 @@ public sealed partial class ViewModelTests
     public async Task PermissionsConfirmation_HoldsCommandsSubmittedWhileItIsPending()
     {
         var bridge = new FakeWorkerBridge();
-        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()))
-        {
-            SelectedThread = new ThreadSummary { Id = "thread-1" },
-        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
         await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready, ThreadId = "thread-1" });
+        vm.SelectedThread = new ThreadSummary { Id = "thread-1" };
         await RunCommandAsync(vm.JoinThreadCommand);
 
         await RunComposerAsync(vm, "/permissions full");

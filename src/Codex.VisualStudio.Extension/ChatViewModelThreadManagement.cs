@@ -21,11 +21,17 @@ public sealed partial class ChatViewModel
     private string? pendingMutationBeforeTurnId;
     private string? activeThreadSearchRequestId;
     private HashSet<string>? activeSearchEligibleThreads;
+    private readonly List<ThreadSearchHit> accumulatedHistorySearchHits = [];
+    private readonly HashSet<string> accumulatedHistorySearchIds = new(StringComparer.Ordinal);
+    private IReadOnlyList<ThreadSearchHit> activeHistorySearchPartialHits = Array.Empty<ThreadSearchHit>();
     private readonly Dictionary<string, string> linkedForkParentByChildId = new(StringComparer.Ordinal);
+    private readonly object linkedForkIndexStateGate = new();
     private readonly ReentrantSemaphore linkedForkIndexRefreshGate = ExtensionConcurrency.CreateSemaphore();
     private Dictionary<string, string?>? linkedForkIndexUpdatesDuringRefresh;
     private OwnerSnapshot? linkedForkIndexOwner;
+    private OwnerSnapshot? threadManagementOwner;
     private bool linkedForkIndexComplete;
+    private bool threadManagementOwnerDataRefreshPending;
     private OwnerSnapshot? pendingMutationOwner;
     private bool useThreadListTitleSearchFallback;
     private string historyManagementStatusText = string.Empty;
@@ -117,7 +123,7 @@ public sealed partial class ChatViewModel
     public string ThreadManagementStatusText => markdown.ToSafeText(historyManagementStatusText);
 
     [DataMember]
-    public string ThreadArchiveActionText => ShowArchivedThreads
+    public string ThreadArchiveActionText => SelectedThread?.Archived == true
         ? (IsJapaneseUi ? "アーカイブ解除" : "Unarchive")
         : (IsJapaneseUi ? "アーカイブ" : "Archive");
 
@@ -146,12 +152,22 @@ public sealed partial class ChatViewModel
     public bool HasThreadManagementStatus => !string.IsNullOrWhiteSpace(historyManagementStatusText);
 
     [DataMember]
-    public bool CanDeleteSelectedThread => SelectedThread is { } thread
-        && !IsThreadRunning(thread.Id)
-        && linkedForkIndexComplete
-        && !HasLinkedChildren(thread.Id)
-        && !HasLinkedParent(thread.Id)
-        && Status.State == WorkerConnectionState.Ready;
+    public bool CanDeleteSelectedThread
+    {
+        get
+        {
+            lock (linkedForkIndexStateGate)
+            {
+                EnsureLinkedForkIndexOwner();
+                return SelectedThread is { } thread
+                    && !IsThreadRunning(thread.Id)
+                    && linkedForkIndexComplete
+                    && !HasLinkedChildren(thread.Id)
+                    && !HasLinkedParent(thread.Id)
+                    && Status.State == WorkerConnectionState.Ready;
+            }
+        }
+    }
 
     [DataMember]
     public bool CanRevertSelectedThread => SelectedThread is { } thread
@@ -215,45 +231,57 @@ public sealed partial class ChatViewModel
 
     private bool HasLinkedChildren(string threadId)
     {
-        EnsureLinkedForkIndexOwner();
-        return linkedForkParentByChildId.Values.Contains(threadId, StringComparer.Ordinal);
+        lock (linkedForkIndexStateGate)
+        {
+            EnsureLinkedForkIndexOwner();
+            return linkedForkParentByChildId.Values.Contains(threadId, StringComparer.Ordinal);
+        }
     }
 
     internal void TrackLinkedForkRelationship(ThreadSummary thread)
     {
-        EnsureLinkedForkIndexOwner();
-        if (string.IsNullOrWhiteSpace(thread.LinkedParentThreadId))
+        lock (linkedForkIndexStateGate)
         {
-            // A summary may omit its parent relationship. Only an explicit deletion
-            // notification can safely remove a previously observed fork link.
-            return;
-        }
+            EnsureLinkedForkIndexOwner();
+            if (string.IsNullOrWhiteSpace(thread.LinkedParentThreadId))
+            {
+                // A summary may omit its parent relationship. Only an explicit deletion
+                // notification can safely remove a previously observed fork link.
+                return;
+            }
 
-        linkedForkParentByChildId[thread.Id] = thread.LinkedParentThreadId;
-        if (linkedForkIndexUpdatesDuringRefresh is { } updates)
-        {
-            updates[thread.Id] = thread.LinkedParentThreadId;
+            linkedForkParentByChildId[thread.Id] = thread.LinkedParentThreadId;
+            if (linkedForkIndexUpdatesDuringRefresh is { } updates)
+            {
+                updates[thread.Id] = thread.LinkedParentThreadId;
+            }
         }
     }
 
     private bool HasLinkedParent(string threadId)
     {
-        EnsureLinkedForkIndexOwner();
-        return linkedForkParentByChildId.ContainsKey(threadId);
+        lock (linkedForkIndexStateGate)
+        {
+            EnsureLinkedForkIndexOwner();
+            return linkedForkParentByChildId.ContainsKey(threadId);
+        }
     }
 
     private void EnsureLinkedForkIndexOwner()
     {
-        OwnerSnapshot owner = CaptureOwnerSnapshot();
-        if (linkedForkIndexOwner is OwnerSnapshot current && current == owner)
+        lock (linkedForkIndexStateGate)
         {
-            return;
-        }
+            OwnerSnapshot owner = CaptureOwnerSnapshot();
+            if (linkedForkIndexOwner is OwnerSnapshot current && current == owner)
+            {
+                return;
+            }
 
-        linkedForkParentByChildId.Clear();
-        linkedForkIndexUpdatesDuringRefresh = null;
-        linkedForkIndexComplete = false;
-        linkedForkIndexOwner = owner;
+            linkedForkParentByChildId.Clear();
+            linkedForkIndexUpdatesDuringRefresh = null;
+            linkedForkIndexComplete = false;
+            linkedForkIndexOwner = owner;
+        }
     }
 
     internal async Task RefreshCompleteLinkedForkIndexAsync(OwnerSnapshot owner, CancellationToken cancellationToken)
@@ -270,17 +298,23 @@ public sealed partial class ChatViewModel
                 long historyGeneration = Interlocked.Read(ref historyManagementGeneration);
                 bool indexComplete = false;
                 bool isCurrent = false;
+                bool includeAttachedThreads = false;
                 Dictionary<string, string?>? updatesForThisRefresh = null;
                 await OnUiAsync(() =>
                 {
-                    EnsureLinkedForkIndexOwner();
-                    isCurrent = IsCurrentOwner(owner)
-                        && historyGeneration == Interlocked.Read(ref historyManagementGeneration);
-                    indexComplete = isCurrent && linkedForkIndexComplete;
-                    if (isCurrent && !indexComplete)
+                    includeAttachedThreads = settings.ExperimentalApiEnabled
+                        && Status.FeatureTier != CodexFeatureTier.Unsupported;
+                    lock (linkedForkIndexStateGate)
                     {
-                        updatesForThisRefresh = new Dictionary<string, string?>(StringComparer.Ordinal);
-                        linkedForkIndexUpdatesDuringRefresh = updatesForThisRefresh;
+                        EnsureLinkedForkIndexOwner();
+                        isCurrent = IsCurrentOwner(owner)
+                            && historyGeneration == Interlocked.Read(ref historyManagementGeneration);
+                        indexComplete = isCurrent && linkedForkIndexComplete;
+                        if (isCurrent && !indexComplete)
+                        {
+                            updatesForThisRefresh = new Dictionary<string, string?>(StringComparer.Ordinal);
+                            linkedForkIndexUpdatesDuringRefresh = updatesForThisRefresh;
+                        }
                     }
                 }).ConfigureAwait(false);
                 if (!isCurrent || indexComplete)
@@ -289,6 +323,7 @@ public sealed partial class ChatViewModel
                 }
 
                 var relationships = new Dictionary<string, string>(StringComparer.Ordinal);
+                var allThreadIds = new HashSet<string>(StringComparer.Ordinal);
                 try
                 {
                     foreach (bool archived in ThreadArchiveStates)
@@ -301,6 +336,7 @@ public sealed partial class ChatViewModel
                             {
                                 Cursor = cursor,
                                 Archived = archived,
+                                IncludeAttachedThreads = includeAttachedThreads,
                             }, owner), cancellationToken).ConfigureAwait(false);
                             if (!IsCurrentOwner(owner) || historyGeneration != Interlocked.Read(ref historyManagementGeneration) || !MatchesOwner(page, owner))
                             {
@@ -309,6 +345,7 @@ public sealed partial class ChatViewModel
 
                             foreach (ThreadSummary thread in page.Threads)
                             {
+                                allThreadIds.Add(thread.Id);
                                 if (!string.IsNullOrWhiteSpace(thread.LinkedParentThreadId))
                                 {
                                     relationships[thread.Id] = thread.LinkedParentThreadId;
@@ -328,37 +365,101 @@ public sealed partial class ChatViewModel
                         }
                     }
 
+                    if (!includeAttachedThreads)
+                    {
+                        await Parallel.ForEachAsync(
+                            allThreadIds,
+                            new ParallelOptions
+                            {
+                                MaxDegreeOfParallelism = 8,
+                                CancellationToken = cancellationToken,
+                            },
+                            async (parentThreadId, token) =>
+                            {
+                                var seenCursors = new HashSet<string>(StringComparer.Ordinal);
+                                var childrenForParent = new List<string>();
+                                string? cursor = null;
+                                for (int pageNumber = 0; pageNumber < 100; pageNumber++)
+                                {
+                                    ForkThreadResult page = await bridge.ForkThreadAsync(StampOwner(new ForkThreadRequest
+                                    {
+                                        ThreadId = parentThreadId,
+                                        ListLinkedForks = true,
+                                        Cursor = cursor,
+                                    }, owner), token).ConfigureAwait(false);
+                                    if (!IsCurrentOwner(owner)
+                                        || historyGeneration != Interlocked.Read(ref historyManagementGeneration))
+                                    {
+                                        return;
+                                    }
+
+                                    if (!page.IsSupported)
+                                    {
+                                        throw new InvalidDataException("The app-server did not support linked-fork discovery.");
+                                    }
+
+                                    foreach (ThreadSummary child in page.RelatedThreads)
+                                    {
+                                        child.LinkedParentThreadId = parentThreadId;
+                                        childrenForParent.Add(child.Id);
+                                    }
+
+                                    cursor = page.NextCursor;
+                                    if (string.IsNullOrWhiteSpace(cursor))
+                                    {
+                                        break;
+                                    }
+
+                                    if (!seenCursors.Add(cursor) || pageNumber == 99)
+                                    {
+                                        throw new InvalidDataException("Linked-fork discovery did not terminate within its paging bounds.");
+                                    }
+                                }
+
+                                lock (relationships)
+                                {
+                                    foreach (string childId in childrenForParent)
+                                    {
+                                        relationships[childId] = parentThreadId;
+                                    }
+                                }
+                            }).ConfigureAwait(false);
+                    }
+
                     await OnUiAsync(() =>
                     {
-                        if (!IsCurrentOwner(owner) || historyGeneration != Interlocked.Read(ref historyManagementGeneration))
+                        lock (linkedForkIndexStateGate)
                         {
-                            return;
-                        }
-
-                        linkedForkParentByChildId.Clear();
-                        foreach ((string childId, string parentId) in relationships)
-                        {
-                            linkedForkParentByChildId[childId] = parentId;
-                        }
-
-                        if (linkedForkIndexUpdatesDuringRefresh is { } updates)
-                        {
-                            foreach ((string childId, string? parentId) in updates)
+                            if (!IsCurrentOwner(owner) || historyGeneration != Interlocked.Read(ref historyManagementGeneration))
                             {
-                                if (parentId is null)
+                                return;
+                            }
+
+                            linkedForkParentByChildId.Clear();
+                            foreach ((string childId, string parentId) in relationships)
+                            {
+                                linkedForkParentByChildId[childId] = parentId;
+                            }
+
+                            if (linkedForkIndexUpdatesDuringRefresh is { } updates)
+                            {
+                                foreach ((string childId, string? parentId) in updates)
                                 {
-                                    linkedForkParentByChildId.Remove(childId);
-                                }
-                                else
-                                {
-                                    linkedForkParentByChildId[childId] = parentId;
+                                    if (parentId is null)
+                                    {
+                                        linkedForkParentByChildId.Remove(childId);
+                                    }
+                                    else
+                                    {
+                                        linkedForkParentByChildId[childId] = parentId;
+                                    }
                                 }
                             }
-                        }
 
-                        linkedForkIndexUpdatesDuringRefresh = null;
-                        linkedForkIndexOwner = owner;
-                        linkedForkIndexComplete = true;
+                            linkedForkIndexUpdatesDuringRefresh = null;
+                            linkedForkIndexOwner = owner;
+                            linkedForkIndexComplete = true;
+                        }
                         NotifyThreadManagementCanExecuteChanged();
                     }).ConfigureAwait(false);
                 }
@@ -370,11 +471,14 @@ public sealed partial class ChatViewModel
                     ExtensionDiagnostics.Write($"Complete linked-fork index failed ({exception.GetType().Name}).");
                     await OnUiAsync(() =>
                     {
-                        if (IsCurrentOwner(owner) && historyGeneration == Interlocked.Read(ref historyManagementGeneration))
+                        lock (linkedForkIndexStateGate)
                         {
-                            linkedForkIndexUpdatesDuringRefresh = null;
-                            linkedForkIndexComplete = false;
-                            NotifyThreadManagementCanExecuteChanged();
+                            if (IsCurrentOwner(owner) && historyGeneration == Interlocked.Read(ref historyManagementGeneration))
+                            {
+                                linkedForkIndexUpdatesDuringRefresh = null;
+                                linkedForkIndexComplete = false;
+                                NotifyThreadManagementCanExecuteChanged();
+                            }
                         }
                     }).ConfigureAwait(false);
                 }
@@ -384,11 +488,14 @@ public sealed partial class ChatViewModel
                     {
                         await OnUiAsync(() =>
                         {
-                            if (ReferenceEquals(linkedForkIndexUpdatesDuringRefresh, updatesForThisRefresh))
+                            lock (linkedForkIndexStateGate)
                             {
-                                linkedForkIndexUpdatesDuringRefresh = null;
-                                linkedForkIndexComplete = false;
-                                NotifyThreadManagementCanExecuteChanged();
+                                if (ReferenceEquals(linkedForkIndexUpdatesDuringRefresh, updatesForThisRefresh))
+                                {
+                                    linkedForkIndexUpdatesDuringRefresh = null;
+                                    linkedForkIndexComplete = false;
+                                    NotifyThreadManagementCanExecuteChanged();
+                                }
                             }
                         }).ConfigureAwait(false);
                     }
@@ -441,7 +548,7 @@ public sealed partial class ChatViewModel
             await LoadThreadSectionsAsync().ConfigureAwait(false);
         }
 
-        await RefreshCompleteThreadListAsync(
+        await RefreshManagedListForCurrentViewAsync(
             owner,
             IsJapaneseUi ? "会話一覧を更新しました。" : "Conversation list refreshed.",
             lifetime.Token).ConfigureAwait(false);
@@ -509,12 +616,19 @@ public sealed partial class ChatViewModel
         lock (historySearchCancellationGate)
         {
             activeThreadSearchRequestId = null;
+            activeSearchEligibleThreads = null;
             historySearchCancellation?.Cancel();
             historySearchCancellation = cancellation;
             requestGeneration = Interlocked.Increment(ref historyManagementGeneration);
         }
+        lock (threadHistoryStateGate)
+        {
+            accumulatedHistorySearchHits.Clear();
+            accumulatedHistorySearchIds.Clear();
+            activeHistorySearchPartialHits = Array.Empty<ThreadSearchHit>();
+        }
 
-        string requestId = Guid.NewGuid().ToString("N", CultureInfo.InvariantCulture);
+        bool useExperimentalSearchResults = settings.ExperimentalApiEnabled;
         OwnerSnapshot owner = CaptureOwnerSnapshot();
         try
         {
@@ -540,52 +654,134 @@ public sealed partial class ChatViewModel
                     }
 
                     activeSearchEligibleThreads = eligibleThreads;
-                    activeThreadSearchRequestId = requestId;
                 }
 
-                ThreadSearchResult result = await bridge.SearchThreadsAsync(
-                    StampOwner(new ThreadSearchRequest { SearchTerm = term, RequestId = requestId }, owner),
-                    cancellationToken).ConfigureAwait(false);
-                if (cancellationToken.IsCancellationRequested
-                    || requestGeneration != Interlocked.Read(ref historyManagementGeneration)
-                    || !IsCurrentOwner(owner))
+                var seenCursors = new HashSet<string>(StringComparer.Ordinal);
+                string? cursor = null;
+                bool finalSearchPageSeen = false;
+                for (int pageNumber = 0; pageNumber < 100; pageNumber++)
                 {
-                    return;
-                }
+                    string requestId = Guid.NewGuid().ToString("N", CultureInfo.InvariantCulture);
+                    lock (historySearchCancellationGate)
+                    {
+                        if (cancellationToken.IsCancellationRequested
+                            || requestGeneration != Interlocked.Read(ref historyManagementGeneration)
+                            || !IsCurrentOwner(owner))
+                        {
+                            return;
+                        }
 
-                if (!result.IsSupported)
-                {
-                    useThreadListTitleSearchFallback = true;
-                    await RefreshCompleteThreadListAsync(
-                        owner,
-                        IsJapaneseUi ? "タイトルの検索結果を表示しています。" : "Showing title search results.",
+                        activeThreadSearchRequestId = requestId;
+                    }
+
+                    await OnUiAsync(() =>
+                    {
+                        lock (threadHistoryStateGate)
+                        {
+                            if (!cancellationToken.IsCancellationRequested
+                                && requestGeneration == Interlocked.Read(ref historyManagementGeneration)
+                                && IsCurrentOwner(owner)
+                                && string.Equals(activeThreadSearchRequestId, requestId, StringComparison.Ordinal))
+                            {
+                                activeHistorySearchPartialHits = Array.Empty<ThreadSearchHit>();
+                                ApplyThreadSearchHits(FilterEligibleSearchHits(accumulatedHistorySearchHits, eligibleThreads));
+                            }
+                        }
+                    }).ConfigureAwait(false);
+
+                    ThreadSearchResult result = await bridge.SearchThreadsAsync(
+                        StampOwner(new ThreadSearchRequest
+                        {
+                            SearchTerm = term,
+                            Archived = showArchivedThreads,
+                            Cursor = cursor,
+                            RequestId = requestId,
+                        }, owner),
                         cancellationToken).ConfigureAwait(false);
-                    return;
-                }
-
-                await OnUiAsync(() =>
-                {
-                    if (cancellation.IsCancellationRequested || requestGeneration != Interlocked.Read(ref historyManagementGeneration)
-                        || !IsCurrentOwner(owner) || !MatchesOwner(result, owner))
+                    if (cancellationToken.IsCancellationRequested
+                        || requestGeneration != Interlocked.Read(ref historyManagementGeneration)
+                        || !IsCurrentOwner(owner))
                     {
                         return;
                     }
 
-                    ApplyThreadSearchHits(FilterEligibleSearchHits(result.Results, eligibleThreads));
-                    HistoryStatusText = IsJapaneseUi ? "検索結果を表示しています。" : "Showing search results.";
-                    nextCursor = null;
-                    OnPropertyChanged(nameof(ThreadRows));
-                }).ConfigureAwait(false);
+                    if (!result.IsSupported)
+                    {
+                        if (cursor is not null)
+                        {
+                            throw new InvalidDataException("Thread search became unsupported after returning a cursor.");
+                        }
+
+                        useThreadListTitleSearchFallback = true;
+                        useExperimentalSearchResults = false;
+                        await RefreshManagedListForCurrentViewAsync(
+                            owner,
+                            IsJapaneseUi ? "タイトルの検索結果を表示しています。" : "Showing title search results.",
+                            cancellationToken).ConfigureAwait(false);
+                        return;
+                    }
+
+                    if (!MatchesOwner(result, owner))
+                    {
+                        return;
+                    }
+
+                    bool complete = string.IsNullOrWhiteSpace(result.NextCursor);
+                    cursor = result.NextCursor;
+                    if (cursor is not null && !seenCursors.Add(cursor))
+                    {
+                        throw new InvalidDataException("Thread search repeated a page cursor.");
+                    }
+                    bool pageLimitReached = !complete && pageNumber == 99;
+
+                    await OnUiAsync(() =>
+                    {
+                        lock (threadHistoryStateGate)
+                        {
+                            if (cancellation.IsCancellationRequested
+                                || requestGeneration != Interlocked.Read(ref historyManagementGeneration)
+                                || !IsCurrentOwner(owner)
+                                || !string.Equals(activeThreadSearchRequestId, requestId, StringComparison.Ordinal))
+                            {
+                                return;
+                            }
+
+                            if (!finalSearchPageSeen)
+                            {
+                                accumulatedHistorySearchHits.Clear();
+                                accumulatedHistorySearchIds.Clear();
+                                finalSearchPageSeen = true;
+                            }
+
+                            MergeHistorySearchHits(result.Results);
+                            activeHistorySearchPartialHits = Array.Empty<ThreadSearchHit>();
+                            activeThreadSearchRequestId = null;
+                            ApplyThreadSearchHits(FilterEligibleSearchHits(accumulatedHistorySearchHits, eligibleThreads));
+                            HistoryStatusText = complete
+                                ? (IsJapaneseUi ? "検索結果を表示しています。" : "Showing search results.")
+                                : pageLimitReached
+                                    ? (IsJapaneseUi ? "検索を100ページで停止し、取得済みの結果を表示しています。" : "Search stopped at the 100-page limit. Showing results retrieved so far.")
+                                    : (IsJapaneseUi ? "検索を続けています…" : "Searching more results…");
+                            nextCursor = null;
+                            OnPropertyChanged(nameof(ThreadRows));
+                        }
+                    }).ConfigureAwait(false);
+
+                    if (complete || pageLimitReached)
+                    {
+                        break;
+                    }
+                }
             }
             else
             {
                 // The stable thread/list title filter remains available when experimental APIs are off.
-                await RefreshCompleteThreadListAsync(owner,
+                await RefreshManagedListForCurrentViewAsync(owner,
                     IsJapaneseUi ? "タイトルの検索結果を表示しています。" : "Showing title search results.",
                     cancellationToken).ConfigureAwait(false);
             }
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
         }
         catch (Exception ex)
@@ -605,11 +801,16 @@ public sealed partial class ChatViewModel
         }
         finally
         {
+            bool currentSearch = false;
+            HashSet<string>? eligibleThreadsForCleanup = null;
             lock (historySearchCancellationGate)
             {
-                if (string.Equals(activeThreadSearchRequestId, requestId, StringComparison.Ordinal))
+                currentSearch = requestGeneration == Interlocked.Read(ref historyManagementGeneration)
+                    && IsCurrentOwner(owner);
+                if (currentSearch)
                 {
                     activeThreadSearchRequestId = null;
+                    eligibleThreadsForCleanup = activeSearchEligibleThreads;
                 }
 
                 if (ReferenceEquals(historySearchCancellation, cancellation))
@@ -618,6 +819,59 @@ public sealed partial class ChatViewModel
                 }
 
                 cancellation.Dispose();
+            }
+
+            if (currentSearch)
+            {
+                await OnUiAsync(() =>
+                {
+                    if (requestGeneration != Interlocked.Read(ref historyManagementGeneration) || !IsCurrentOwner(owner))
+                    {
+                        return;
+                    }
+
+                    lock (threadHistoryStateGate)
+                    {
+                        activeHistorySearchPartialHits = Array.Empty<ThreadSearchHit>();
+                        if (useExperimentalSearchResults
+                            && string.Equals(historySearchText.Trim(), term, StringComparison.Ordinal))
+                        {
+                            ApplyThreadSearchHits(FilterEligibleSearchHits(
+                                accumulatedHistorySearchHits,
+                                eligibleThreadsForCleanup));
+                        }
+                    }
+                }).ConfigureAwait(false);
+
+                lock (historySearchCancellationGate)
+                {
+                    if (requestGeneration == Interlocked.Read(ref historyManagementGeneration)
+                        && IsCurrentOwner(owner))
+                    {
+                        activeSearchEligibleThreads = null;
+                    }
+                }
+            }
+        }
+    }
+
+    private async Task RefreshManagedListForCurrentViewAsync(
+        OwnerSnapshot owner,
+        string successMessage,
+        CancellationToken cancellationToken)
+    {
+        ThreadListRefreshOutcome outcome = await RefreshCompleteThreadListAsync(
+            owner,
+            successMessage,
+            cancellationToken).ConfigureAwait(false);
+        if (outcome == ThreadListRefreshOutcome.Busy && !QueueThreadListRefreshIfBusy(owner))
+        {
+            outcome = await RefreshCompleteThreadListAsync(owner, successMessage, cancellationToken).ConfigureAwait(false);
+            if (outcome == ThreadListRefreshOutcome.Busy && !QueueThreadListRefreshIfBusy(owner))
+            {
+                await SetThreadListFailureStatusAsync(
+                    owner,
+                    IsJapaneseUi ? "会話一覧の更新が混み合っています。もう一度お試しください。" : "Conversation list refresh is busy. Try again.").ConfigureAwait(false);
             }
         }
     }
@@ -664,16 +918,64 @@ public sealed partial class ChatViewModel
         long expectedGeneration = Interlocked.Read(ref historyManagementGeneration);
         _ = OnUiAsync(() =>
         {
-            if (expectedGeneration == Interlocked.Read(ref historyManagementGeneration)
-                && IsCurrentOwner(owner)
-                && !string.IsNullOrWhiteSpace(activeThreadSearchRequestId)
-                && string.Equals(notification.Value.RequestId, activeThreadSearchRequestId, StringComparison.Ordinal))
+            lock (threadHistoryStateGate)
             {
-                ApplyThreadSearchHits(FilterEligibleSearchHits(notification.Value.Results, activeSearchEligibleThreads));
-                HistoryStatusText = IsJapaneseUi ? "検索中…" : "Searching…";
+                if (expectedGeneration == Interlocked.Read(ref historyManagementGeneration)
+                    && IsCurrentOwner(owner)
+                    && !string.IsNullOrWhiteSpace(activeThreadSearchRequestId)
+                    && string.Equals(notification.Value.RequestId, activeThreadSearchRequestId, StringComparison.Ordinal))
+                {
+                    activeHistorySearchPartialHits = notification.Value.Results;
+                    ApplyThreadSearchHits(FilterEligibleSearchHits(GetDisplayedHistorySearchHits(), activeSearchEligibleThreads));
+                    HistoryStatusText = IsJapaneseUi ? "検索中…" : "Searching…";
+                }
             }
         });
         return Task.CompletedTask;
+    }
+
+    private List<ThreadSearchHit> GetDisplayedHistorySearchHits()
+    {
+        var hits = accumulatedHistorySearchHits.ToList();
+        var indicesByThreadId = new Dictionary<string, int>(StringComparer.Ordinal);
+        for (int index = 0; index < hits.Count; index++)
+        {
+            indicesByThreadId[hits[index].Thread.Id] = index;
+        }
+
+        foreach (ThreadSearchHit partialHit in activeHistorySearchPartialHits)
+        {
+            if (indicesByThreadId.TryGetValue(partialHit.Thread.Id, out int existingIndex))
+            {
+                hits[existingIndex] = partialHit;
+            }
+            else
+            {
+                indicesByThreadId[partialHit.Thread.Id] = hits.Count;
+                hits.Add(partialHit);
+            }
+        }
+
+        return hits;
+    }
+
+    private void MergeHistorySearchHits(IEnumerable<ThreadSearchHit> hits)
+    {
+        foreach (ThreadSearchHit hit in hits)
+        {
+            if (accumulatedHistorySearchIds.Add(hit.Thread.Id))
+            {
+                accumulatedHistorySearchHits.Add(hit);
+                continue;
+            }
+
+            int existingIndex = accumulatedHistorySearchHits.FindIndex(existing =>
+                string.Equals(existing.Thread.Id, hit.Thread.Id, StringComparison.Ordinal));
+            if (existingIndex >= 0)
+            {
+                accumulatedHistorySearchHits[existingIndex] = hit;
+            }
+        }
     }
 
     private void ApplyThreadSearchHits(IEnumerable<ThreadSearchHit> hits)
@@ -693,6 +995,7 @@ public sealed partial class ChatViewModel
                 EffectiveServiceTier = source.EffectiveServiceTier,
                 EffectiveModelId = source.EffectiveModelId,
                 LinkedParentThreadId = source.LinkedParentThreadId,
+                Archived = source.Archived,
                 SectionId = source.SectionId,
                 SectionName = source.SectionName,
                 SearchSnippet = hit.Snippet,
@@ -765,7 +1068,7 @@ public sealed partial class ChatViewModel
         }
 
         OwnerSnapshot owner = CaptureOwnerSnapshot();
-        bool unarchive = ShowArchivedThreads;
+        bool unarchive = thread.Archived;
         var request = StampOwner(new ThreadMutationRequest { ThreadId = thread.Id }, owner);
         ThreadMutationResult result;
         try
@@ -773,6 +1076,14 @@ public sealed partial class ChatViewModel
             result = unarchive
                 ? await bridge.UnarchiveThreadAsync(request, lifetime.Token).ConfigureAwait(false)
                 : await bridge.ArchiveThreadAsync(request, lifetime.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+        {
+            return;
+        }
+        catch (WorkerRpcUnavailableException exception)
+        {
+            result = new ThreadMutationResult { Message = exception.Message };
         }
         catch (Exception)
         {
@@ -789,6 +1100,11 @@ public sealed partial class ChatViewModel
             historyManagementStatusText = MutationStatusMessage(result, unarchive ? "unarchive" : "archive");
             OnPropertyChanged(nameof(ThreadManagementStatusText));
             OnPropertyChanged(nameof(HasThreadManagementStatus));
+            if (result.Succeeded && SelectedThread?.Id == thread.Id)
+            {
+                thread.Archived = !unarchive;
+                OnPropertyChanged(nameof(ThreadArchiveActionText));
+            }
         }).ConfigureAwait(false);
         if (IsCurrentOwner(owner))
         {
@@ -897,6 +1213,14 @@ public sealed partial class ChatViewModel
                 ? await bridge.DeleteThreadAsync(request, lifetime.Token).ConfigureAwait(false)
                 : await bridge.RevertThreadAsync(request, lifetime.Token).ConfigureAwait(false);
         }
+        catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+        {
+            return;
+        }
+        catch (WorkerRpcUnavailableException exception)
+        {
+            result = new ThreadMutationResult { Message = exception.Message };
+        }
         catch (Exception)
         {
             result = new ThreadMutationResult { OutcomeUnknown = true };
@@ -928,7 +1252,7 @@ public sealed partial class ChatViewModel
             await RefreshManagedThreadListAsync().ConfigureAwait(false);
             if (reloadTranscript && SelectedThread is { } selected && selected.Id == threadId && IsCurrentOwner(owner))
             {
-                await ReadSelectedThreadHistoryAsync(selected).ConfigureAwait(false);
+                await ReadSelectedThreadHistoryAsync(selected, replaceTranscript: true, ownerFence: owner).ConfigureAwait(false);
             }
         }
     }
@@ -967,8 +1291,14 @@ public sealed partial class ChatViewModel
 
     private void OnManagedSelectedThreadChanged()
     {
+        if (SelectedThread is { } selected)
+        {
+            TrackLinkedForkRelationship(selected);
+        }
+
         OnPropertyChanged(nameof(HasSelectedThread));
         OnPropertyChanged(nameof(ShowThreadRevertControls));
+        OnPropertyChanged(nameof(ThreadArchiveActionText));
         SelectedRevertTurnId = null;
         pendingThreadMutation = null;
         pendingMutationOwner = null;
@@ -979,15 +1309,69 @@ public sealed partial class ChatViewModel
         NotifyThreadManagementCanExecuteChanged();
     }
 
-    private void OnThreadManagementOwnerChanged()
+    private bool OnThreadManagementOwnerChanged()
     {
-        EnsureLinkedForkIndexOwner();
         OwnerSnapshot owner = CaptureOwnerSnapshot();
+        if (threadManagementOwner is OwnerSnapshot previous && previous == owner)
+        {
+            EnsureLinkedForkIndexOwner();
+            return false;
+        }
+
+        threadManagementOwner = owner;
+        threadManagementOwnerDataRefreshPending = true;
+        CancelHistorySearchAndAdvanceGeneration();
+        useThreadListTitleSearchFallback = false;
+        EnsureLinkedForkIndexOwner();
+        lock (threadHistoryStateGate)
+        {
+            accumulatedHistorySearchHits.Clear();
+            accumulatedHistorySearchIds.Clear();
+            activeHistorySearchPartialHits = Array.Empty<ThreadSearchHit>();
+            activeSearchEligibleThreads = null;
+            Threads.Clear();
+        }
+        ResetThreadListScope();
+        threadSections = Array.Empty<ThreadSectionInfo>();
+        ThreadSections.Clear();
+        ThreadSections.Add(new ThreadSectionOption(string.Empty, IsJapaneseUi ? "すべてのセクション" : "All sections"));
+        Interlocked.Increment(ref linkedForkRequestGeneration);
+        RelatedConversations.Clear();
+        relatedConversationsParentId = null;
+        relatedConversationsNextCursor = null;
+        LinkedForkStatusText = string.Empty;
+        OnPropertyChanged(nameof(HasRelatedConversations));
+        OnPropertyChanged(nameof(HasMoreRelatedConversations));
+        historyManagementStatusText = string.Empty;
+        OnPropertyChanged(nameof(ThreadManagementStatusText));
+        OnPropertyChanged(nameof(HasThreadManagementStatus));
+        if (historySearchText.Length > 0)
+        {
+            historySearchText = string.Empty;
+            OnPropertyChanged(nameof(HistorySearchText));
+            SearchHistoryCommand.RaiseCanExecuteChanged();
+        }
+        nextCursor = null;
+        SelectedThread = null;
+        HistoryStatusText = string.Empty;
         if (pendingMutationOwner is OwnerSnapshot pendingOwner && pendingOwner != owner)
         {
             _ = CancelThreadMutationAsync();
         }
+
+        return true;
     }
+
+    private async Task RefreshThreadManagementOwnerDataAsync()
+    {
+        OwnerSnapshot owner = CaptureOwnerSnapshot();
+        await LoadThreadSectionsAsync().ConfigureAwait(false);
+        if (IsCurrentOwner(owner))
+        {
+            await RefreshCompleteLinkedForkIndexAsync(owner, lifetime.Token).ConfigureAwait(false);
+        }
+    }
+
     private async Task OnThreadHistoryChangedAsync(WorkerNotification<ThreadHistoryChangedEvent> notification)
     {
         OwnerSnapshot owner = CaptureOwnerSnapshot();
@@ -1001,6 +1385,8 @@ public sealed partial class ChatViewModel
         ThreadHistoryChangedEvent change = notification.Value;
         bool refreshHistory = false;
         bool refreshSections = false;
+        bool replaceSelectedTranscript = false;
+        ThreadSummary? selectedTranscriptForReplacement = null;
         await OnUiAsync(() =>
         {
             if (!IsCurrentOwner(owner))
@@ -1008,14 +1394,21 @@ public sealed partial class ChatViewModel
                 return;
             }
 
-            EnsureLinkedForkIndexOwner();
-            refreshSections = IsHistoryOpen && change.ChangeKind == "thread/section/changed";
-            bool removedLinkedChild = change.ChangeKind == "thread/deleted"
-                && linkedForkParentByChildId.Remove(change.ThreadId);
-            if (change.ChangeKind == "thread/deleted" && linkedForkIndexUpdatesDuringRefresh is { } updates)
+            lock (linkedForkIndexStateGate)
             {
-                updates[change.ThreadId] = null;
-                removedLinkedChild = true;
+                EnsureLinkedForkIndexOwner();
+            }
+            refreshSections = IsHistoryOpen && change.ChangeKind == "thread/section/changed";
+            bool removedLinkedChild;
+            lock (linkedForkIndexStateGate)
+            {
+                removedLinkedChild = change.ChangeKind == "thread/deleted"
+                    && linkedForkParentByChildId.Remove(change.ThreadId);
+                if (change.ChangeKind == "thread/deleted" && linkedForkIndexUpdatesDuringRefresh is { } updates)
+                {
+                    updates[change.ThreadId] = null;
+                    removedLinkedChild = true;
+                }
             }
             if (removedLinkedChild)
             {
@@ -1027,14 +1420,26 @@ public sealed partial class ChatViewModel
                 SelectedThread = null;
             }
 
+            if (change.ChangeKind == "thread/reverted"
+                && SelectedThread is { } selectedForRevert
+                && string.Equals(selectedForRevert.Id, change.ThreadId, StringComparison.Ordinal))
+            {
+                replaceSelectedTranscript = true;
+                selectedTranscriptForReplacement = selectedForRevert;
+            }
+
+            bool affectsForkIndex;
+            lock (linkedForkIndexStateGate)
+            {
+                affectsForkIndex = linkedForkParentByChildId.ContainsKey(change.ThreadId)
+                    || linkedForkParentByChildId.Values.Contains(change.ThreadId, StringComparer.Ordinal);
+            }
+            bool membershipChange = change.ChangeKind is "thread/archived" or "thread/unarchived" or "thread/section/changed";
             bool affectsDisplayedHistory = Threads.Any(thread => thread.Id == change.ThreadId)
                 || ThreadRows.Any(row => row.Id == change.ThreadId)
-                || linkedForkParentByChildId.ContainsKey(change.ThreadId)
-                || linkedForkParentByChildId.Values.Contains(change.ThreadId, StringComparer.Ordinal)
-                || (change.ChangeKind == "thread/section/changed"
-                    && SelectedThreadSectionId is not null
-                    && string.Equals(change.SectionId, SelectedThreadSectionId, StringComparison.Ordinal));
-            refreshHistory = IsHistoryOpen && (removedLinkedChild || affectsDisplayedHistory);
+                || affectsForkIndex;
+            refreshHistory = IsHistoryOpen
+                && (removedLinkedChild || replaceSelectedTranscript || membershipChange || affectsDisplayedHistory);
         }).ConfigureAwait(false);
 
         if (refreshSections)
@@ -1044,6 +1449,11 @@ public sealed partial class ChatViewModel
 
         if (refreshHistory)
         {
+            if (replaceSelectedTranscript && selectedTranscriptForReplacement is { } selected)
+            {
+                await ReadSelectedThreadHistoryAsync(selected, replaceTranscript: true, ownerFence: owner).ConfigureAwait(false);
+            }
+
             await RefreshManagedThreadListAsync().ConfigureAwait(false);
         }
     }

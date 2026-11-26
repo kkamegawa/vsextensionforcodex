@@ -1,4 +1,5 @@
 ﻿using System.IO.Pipelines;
+using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Sockets;
 using System.Net.WebSockets;
@@ -48,6 +49,58 @@ public sealed class WebSocketJsonRpcConnectionTests
         await done.Task.WaitAsync(TimeSpan.FromSeconds(10));
         Assert.IsFalse(overlapped);
         CollectionAssert.AreEqual(Enumerable.Range(0, count).ToList(), received);
+    }
+
+    [TestMethod]
+    public async Task NotificationHandlers_AreAwaitedInOrderAndFailureDoesNotStopLaterObservers()
+    {
+        await using var harness = new SocketHarness();
+        var events = new ConcurrentQueue<string>();
+        var firstStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseFirst = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var failedNotificationSecondHandled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var nextNotificationSecondHandled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        harness.Connection.NotificationReceived += async (message, cancellationToken) =>
+        {
+            if (message.Method == "test/failure")
+            {
+                events.Enqueue("first-start");
+                firstStarted.TrySetResult();
+                await releaseFirst.Task.WaitAsync(cancellationToken);
+                events.Enqueue("first-end");
+                throw new InvalidOperationException("observer failure");
+            }
+
+            events.Enqueue("first-next");
+        };
+        harness.Connection.NotificationReceived += (message, _) =>
+        {
+            events.Enqueue(string.Concat("second-", message.Method));
+            if (message.Method == "test/failure")
+            {
+                failedNotificationSecondHandled.TrySetResult();
+            }
+            else if (message.Method == "test/next")
+            {
+                nextNotificationSecondHandled.TrySetResult();
+            }
+
+            return Task.CompletedTask;
+        };
+        await harness.Connection.StartAsync(CancellationToken.None);
+
+        await harness.SendServerTextAsync("""{"method":"test/failure","params":{}}""");
+        await firstStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        CollectionAssert.AreEqual(new[] { "first-start" }, events.ToArray());
+        releaseFirst.TrySetResult();
+        await failedNotificationSecondHandled.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        await harness.SendServerTextAsync("""{"method":"test/next","params":{}}""");
+        await nextNotificationSecondHandled.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        CollectionAssert.AreEqual(
+            new[] { "first-start", "first-end", "second-test/failure", "first-next", "second-test/next" },
+            events.ToArray());
     }
 
     [TestMethod]

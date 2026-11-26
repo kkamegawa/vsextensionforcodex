@@ -167,6 +167,7 @@ public sealed partial class ChatViewModel
             }
 
             result.Thread.LinkedParentThreadId = parent.Id;
+            TrackLinkedForkRelationship(result.Thread);
             await OnUiAsync(() =>
             {
                 if (!IsCurrentLinkedForkRequest(owner, parent.Id, requestGeneration))
@@ -290,6 +291,7 @@ public sealed partial class ChatViewModel
                 foreach (ThreadSummary thread in result.RelatedThreads)
                 {
                     thread.LinkedParentThreadId = parentId;
+                    TrackLinkedForkRelationship(thread);
                     if (RelatedConversations.All(
                         item => !string.Equals(item.Thread.Id, thread.Id, StringComparison.Ordinal)))
                     {

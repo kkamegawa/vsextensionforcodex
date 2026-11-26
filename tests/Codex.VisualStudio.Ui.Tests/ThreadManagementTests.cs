@@ -2,11 +2,16 @@
 using Codex.VisualStudio.Contracts;
 using Codex.VisualStudio.Extension;
 
+using System.Reflection;
+
 namespace Codex.VisualStudio.Ui.Tests;
 
 public sealed partial class ViewModelTests
 {
     private static readonly string[] EligibleSearchWorkingDirectories = [@"C:\workspace"];
+    private static readonly string[] SearchPageRowsWithPartial = ["first-page-final", "second-page-partial"];
+    private static readonly string[] SearchPageRowsAfterFinal = ["first-page-final", "second-page-final"];
+    private static readonly string[] SearchPageRowsAfterSecondPageFailure = ["first-page-final"];
 
     [TestMethod]
     public async Task HistoryArchiveView_ArchivesAndUnarchivesTheSelectedConversation()
@@ -23,10 +28,28 @@ public sealed partial class ViewModelTests
         Assert.IsFalse(bridge.LastThreadMutationRequest?.UserConfirmed ?? true);
 
         vm.ShowArchivedThreads = true;
+        vm.SelectedThread!.Archived = true;
         await RunCommandAsync(vm.ArchiveThreadCommand);
 
         Assert.AreEqual(1, bridge.UnarchiveThreadCallCount);
         Assert.IsTrue(bridge.LastListThreadsRequest?.Archived ?? false);
+    }
+
+    [TestMethod]
+    public async Task ThreadArchiveActionTextTracksSelectedConversationArchiveState()
+    {
+        var bridge = new FakeWorkerBridge();
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        await bridge.PublishStateAsync(OwnerStatus("history-archive-label", 1, 1));
+
+        vm.SelectedThread = new ThreadSummary { Id = "active-thread", Archived = false };
+        string archiveText = vm.ThreadArchiveActionText;
+        vm.SelectedThread = new ThreadSummary { Id = "archived-thread", Archived = true };
+
+        Assert.AreNotEqual(archiveText, vm.ThreadArchiveActionText,
+            "Changing the selected conversation must notify bindings when the archive action changes.");
+        Assert.IsTrue(vm.ThreadArchiveActionText.Contains("Unarchive", StringComparison.Ordinal)
+            || vm.ThreadArchiveActionText.Contains("アーカイブ解除", StringComparison.Ordinal));
     }
 
     [TestMethod]
@@ -48,6 +71,7 @@ public sealed partial class ViewModelTests
         StringAssert.Contains(vm.ThreadManagementStatusText, "Archive rejected by server.");
 
         vm.ShowArchivedThreads = true;
+        vm.SelectedThread!.Archived = true;
         await RunCommandAsync(vm.ArchiveThreadCommand);
 
         Assert.AreEqual("thread-archive-failure", vm.SelectedThread?.Id);
@@ -138,6 +162,100 @@ public sealed partial class ViewModelTests
         await RunCommandAsync(vm.ConfirmThreadMutationCommand);
         Assert.AreEqual(0, bridge.DeleteThreadCallCount);
     }
+
+    [TestMethod]
+    public async Task ThreadManagementOwnerRefreshRunsWhenNewOwnerReachesReady()
+    {
+        var bridge = new FakeWorkerBridge();
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        await bridge.PublishStateAsync(OwnerStatus("history-owner-before-connect", 1, 1));
+        int sectionReadsBeforeReconnect = bridge.ListThreadSectionsCallCount;
+        Assert.IsTrue(sectionReadsBeforeReconnect > 0);
+
+        WorkerStatus connecting = OwnerStatus("history-owner-after-connect", 2, 2);
+        connecting.State = WorkerConnectionState.Connecting;
+        await bridge.PublishStateAsync(connecting);
+        Assert.AreEqual(sectionReadsBeforeReconnect, bridge.ListThreadSectionsCallCount,
+            "Owner-scoped metadata should wait until the replacement worker is ready.");
+
+        await bridge.PublishStateAsync(OwnerStatus("history-owner-after-connect", 2, 2));
+
+        Assert.AreEqual(sectionReadsBeforeReconnect + 1, bridge.ListThreadSectionsCallCount,
+            "The pending refresh must run when Ready arrives for the same owner observed while Connecting.");
+    }
+
+    [TestMethod]
+    public async Task BusyThreadListRefreshFromRetiredOwnerQueuesAgainstCurrentOwner()
+    {
+        var bridge = new FakeWorkerBridge();
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        await bridge.PublishStateAsync(OwnerStatus("history-busy-old-owner", 1, 1));
+        object oldOwner = typeof(ChatViewModel).GetMethod("CaptureOwnerSnapshot", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .Invoke(vm, null)!;
+        await bridge.PublishStateAsync(OwnerStatus("history-busy-current-owner", 2, 2));
+        var replacementOwnerListStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseReplacementOwnerList = new TaskCompletionSource<ThreadPage>(TaskCreationOptions.RunContinuationsAsynchronously);
+        bridge.ListThreadsRequestHandler = (request, _) => request.OwnerGeneration == 2
+            ? WaitForReplacementOwnerListAsync()
+            : Task.FromResult(new ThreadPage());
+
+        async Task<ThreadPage> WaitForReplacementOwnerListAsync()
+        {
+            replacementOwnerListStarted.TrySetResult();
+#pragma warning disable VSTHRD003
+            return await releaseReplacementOwnerList.Task;
+#pragma warning restore VSTHRD003
+        }
+
+        MethodInfo captureOwnerMethod = typeof(ChatViewModel).GetMethod("CaptureOwnerSnapshot", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        MethodInfo refreshMethod = typeof(ChatViewModel).GetMethod("RefreshCompleteThreadListAsync", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        object replacementOwner = captureOwnerMethod.Invoke(vm, null)!;
+        Task replacementOwnerRefresh = (Task)refreshMethod.Invoke(vm, [replacementOwner, "Replacement owner refresh", CancellationToken.None])!;
+        await replacementOwnerListStarted.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        Task staleOwnerRefresh = (Task)refreshMethod.Invoke(vm, [oldOwner, "Stale owner refresh", CancellationToken.None])!;
+#pragma warning disable VSTHRD003
+        await staleOwnerRefresh.WaitAsync(TimeSpan.FromSeconds(10));
+#pragma warning restore VSTHRD003
+        Assert.AreEqual("Busy", staleOwnerRefresh.GetType().GetProperty("Result")!.GetValue(staleOwnerRefresh)?.ToString());
+
+        await bridge.PublishStateAsync(OwnerStatus("history-busy-latest-owner", 3, 3));
+        object currentOwner = captureOwnerMethod.Invoke(vm, null)!;
+        var currentOwnerListStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseCurrentOwnerList = new TaskCompletionSource<ThreadPage>(TaskCreationOptions.RunContinuationsAsynchronously);
+        int currentOwnerListCalls = 0;
+        bridge.ListThreadsRequestHandler = async (request, _) =>
+        {
+            if (request.OwnerGeneration == 3 && Interlocked.Increment(ref currentOwnerListCalls) == 1)
+            {
+                currentOwnerListStarted.TrySetResult();
+#pragma warning disable VSTHRD003
+                return await releaseCurrentOwnerList.Task;
+#pragma warning restore VSTHRD003
+            }
+
+            return new ThreadPage { Threads = [new ThreadSummary { Id = "current-owner-thread" }] };
+        };
+        Task currentOwnerRefresh = (Task)refreshMethod.Invoke(vm, [currentOwner, "Current owner refresh", CancellationToken.None])!;
+        await currentOwnerListStarted.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        MethodInfo queueMethod = typeof(ChatViewModel).GetMethod("QueueThreadListRefreshIfBusy", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        bool queued = (bool)queueMethod.Invoke(vm, [oldOwner])!;
+        releaseCurrentOwnerList.TrySetResult(new ThreadPage { Threads = [new ThreadSummary { Id = "current-owner-thread" }] });
+#pragma warning disable VSTHRD003
+        await currentOwnerRefresh.WaitAsync(TimeSpan.FromSeconds(10));
+        releaseReplacementOwnerList.TrySetResult(new ThreadPage { Threads = [new ThreadSummary { Id = "stale-owner-thread" }] });
+        await replacementOwnerRefresh.WaitAsync(TimeSpan.FromSeconds(10));
+#pragma warning restore VSTHRD003
+
+        Assert.IsTrue(queued, "A stale owner request that already observed Busy must preserve a refresh behind the latest owner's active request.");
+        Assert.AreEqual(2, currentOwnerListCalls,
+            "The pending refresh must be drained by re-reading the newest owner after the active request completes.");
+        Assert.AreEqual(1, vm.Threads.Count,
+            "A response from the retired owner must not overwrite the current owner's conversation list.");
+        Assert.AreEqual("current-owner-thread", vm.Threads[0].Id);
+    }
+
     [TestMethod]
     public async Task ThreadSearchFallsBackToTitleFilterWhenExperimentalSearchIsUnsupported()
     {
@@ -188,12 +306,58 @@ public sealed partial class ViewModelTests
     }
 
     [TestMethod]
+    public async Task ThreadSearchPagesPastFilteredHitsAndUsesArchivedView()
+    {
+        var requests = new List<ThreadSearchRequest>();
+        var bridge = new FakeWorkerBridge
+        {
+            ListThreadsHandler = (_, _) => Task.FromResult(new ThreadPage
+            {
+                Threads = [new ThreadSummary { Id = "eligible-match" }],
+            }),
+            SearchThreadsHandler = (request, _) =>
+            {
+                requests.Add(request);
+                return Task.FromResult(request.Cursor is null
+                    ? new ThreadSearchResult
+                    {
+                        Results = [new ThreadSearchHit { Thread = new ThreadSummary { Id = "filtered-out" }, Snippet = "hidden" }],
+                        NextCursor = "second-page",
+                    }
+                    : new ThreadSearchResult
+                    {
+                        Results = [new ThreadSearchHit { Thread = new ThreadSummary { Id = "eligible-match" }, Snippet = "visible" }],
+                    });
+            },
+        };
+        using var vm = new ChatViewModel(
+            bridge,
+            autoConnect: false,
+            settingsStore: new MemorySettingsStore(new ExtensionSettings { ExperimentalApiEnabled = true }));
+        await bridge.PublishStateAsync(OwnerStatus("history-search-paging", 1, 1));
+        typeof(ChatViewModel).GetField("showArchivedThreads", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(vm, true);
+        typeof(ChatViewModel).GetField("selectedThreadSectionId", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(vm, "section-allowed");
+        vm.HistorySearchText = "needle";
+
+        await RunCommandAsync(vm.SearchHistoryCommand);
+
+        Assert.AreEqual(2, requests.Count, "Search must continue past a filtered-out first page.");
+        Assert.IsTrue(requests.All(static request => request.Archived));
+        Assert.IsNull(requests[0].Cursor);
+        Assert.AreEqual("second-page", requests[1].Cursor);
+        Assert.AreEqual(2, requests.Select(static request => request.RequestId).Distinct(StringComparer.Ordinal).Count(),
+            "Each paged app-server search needs a unique correlation request ID.");
+        Assert.AreEqual("eligible-match", vm.ThreadRows.Single().Id);
+        Assert.AreEqual("visible", vm.ThreadRows.Single().SearchSnippet);
+        Assert.IsTrue(vm.HistoryStatusText.Contains("Showing search results", StringComparison.Ordinal)
+            || vm.HistoryStatusText.Contains("検索結果を表示しています", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
     public async Task ThreadSearch_CancellationDuringForkIndexRefreshDoesNotUseDisposedSource()
     {
         var firstListReadStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var cancellationObserved = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var releaseFirstListRead = new TaskCompletionSource<ThreadPage>(TaskCreationOptions.RunContinuationsAsynchronously);
-        CancellationTokenRegistration firstReadCancellationRegistration = default;
         int listCalls = 0;
         int searchCalls = 0;
         string? dispatchedRequestId = null;
@@ -204,7 +368,6 @@ public sealed partial class ViewModelTests
                 if (Interlocked.Increment(ref listCalls) == 1)
                 {
                     firstListReadStarted.TrySetResult();
-                    firstReadCancellationRegistration = cancellationToken.Register(() => cancellationObserved.TrySetResult());
 #pragma warning disable VSTHRD003
                     return releaseFirstListRead.Task;
 #pragma warning restore VSTHRD003
@@ -223,18 +386,17 @@ public sealed partial class ViewModelTests
             bridge,
             autoConnect: false,
             settingsStore: new MemorySettingsStore(new ExtensionSettings { ExperimentalApiEnabled = true }));
-        await bridge.PublishStateAsync(OwnerStatus("history-search-cancel", 1, 1));
+        Task ownerRefresh = bridge.PublishStateAsync(OwnerStatus("history-search-cancel", 1, 1));
+        await firstListReadStarted.Task.WaitAsync(TimeSpan.FromSeconds(10));
         vm.HistorySearchText = "needle";
 
         Task firstSearch = vm.SearchHistoryAsync();
-        await firstListReadStarted.Task.WaitAsync(TimeSpan.FromSeconds(10));
         vm.ShowArchivedThreads = true;
-        await cancellationObserved.Task.WaitAsync(TimeSpan.FromSeconds(10));
-        firstReadCancellationRegistration.Unregister();
         releaseFirstListRead.TrySetResult(new ThreadPage());
 
 #pragma warning disable VSTHRD003
         await firstSearch;
+        await ownerRefresh;
 #pragma warning restore VSTHRD003
         await WaitUntilAsync(() => Volatile.Read(ref searchCalls) > 0
             && (vm.HistoryStatusText.Contains("Showing search results", StringComparison.Ordinal)
@@ -278,7 +440,7 @@ public sealed partial class ViewModelTests
         vm.SelectedThread = new ThreadSummary { Id = "thread-revert", Preview = "Revert target" };
         typeof(ChatViewModel).GetProperty(nameof(ChatViewModel.IsThreadJoined))!
             .GetSetMethod(nonPublic: true)!.Invoke(vm, [true]);
-        vm.ThreadTurns.Add(new ThreadTurnSummary { Id = "turn-before", Status = "completed" });
+        vm.ThreadTurns.Add(new ThreadTurnOptionViewModel("turn-before", "Turn turn-bef · completed"));
         vm.SelectedRevertTurnId = "turn-before";
 
         await RunCommandAsync(vm.RevertThreadCommand);
@@ -293,6 +455,28 @@ public sealed partial class ViewModelTests
         Assert.AreEqual("thread-revert", bridge.LastThreadMutationRequest?.ThreadId);
         Assert.AreEqual("turn-before", bridge.LastThreadMutationRequest?.BeforeTurnId);
         Assert.IsTrue(bridge.LastThreadMutationRequest?.UserConfirmed ?? false);
+    }
+
+    [TestMethod]
+    public void ThreadTurnDisplayLabelsDistinguishIdsWithSameSortablePrefix()
+    {
+        using var vm = new ChatViewModel(new FakeWorkerBridge(), autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        var createLabel = typeof(ChatViewModel).GetMethod("CreateThreadTurnDisplayLabel", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        string firstLabel = (string)createLabel.Invoke(vm, [new ThreadTurnSummary
+        {
+            Id = "019a1b2c-0000-7000-8000-000000000001",
+            Status = "completed",
+        }])!;
+        string secondLabel = (string)createLabel.Invoke(vm, [new ThreadTurnSummary
+        {
+            Id = "019a1b2c-0000-7000-8000-000000000002",
+            Status = "completed",
+        }])!;
+
+        Assert.AreNotEqual(firstLabel, secondLabel,
+            "Turn choices used by revert must remain distinguishable when sortable IDs share their prefix.");
+        StringAssert.Contains(firstLabel, "00000001");
+        StringAssert.Contains(secondLabel, "00000002");
     }
 
     [TestMethod]
@@ -356,6 +540,123 @@ public sealed partial class ViewModelTests
             ConnectionGeneration = bridge.LastThreadSearchRequest.ConnectionGeneration,
         });
         Assert.AreEqual("final", vm.ThreadRows.Single().Id, "A partial hit after completion must not repopulate a finished search.");
+    }
+
+    [TestMethod]
+    public async Task ThreadSearch_SecondPagePartialHitsAreReplacedByThatPagesFinalResults()
+    {
+        var secondPageStarted = new TaskCompletionSource<ThreadSearchRequest>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var secondPageCompletion = new TaskCompletionSource<ThreadSearchResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var requests = new List<ThreadSearchRequest>();
+        var bridge = new FakeWorkerBridge
+        {
+            SearchThreadsHandler = (request, _) =>
+            {
+                requests.Add(request);
+                if (request.Cursor is null)
+                {
+                    return Task.FromResult(new ThreadSearchResult
+                    {
+                        Results = [new ThreadSearchHit { Thread = new ThreadSummary { Id = "first-page-final" }, Snippet = "first final" }],
+                        NextCursor = "second-page",
+                    });
+                }
+
+                secondPageStarted.TrySetResult(request);
+#pragma warning disable VSTHRD003
+                return secondPageCompletion.Task;
+#pragma warning restore VSTHRD003
+            },
+        };
+        using var vm = new ChatViewModel(
+            bridge,
+            autoConnect: false,
+            settingsStore: new MemorySettingsStore(new ExtensionSettings { ExperimentalApiEnabled = true }));
+        await bridge.PublishStateAsync(OwnerStatus("history-search-page-partials", 1, 1));
+        vm.HistorySearchText = "needle";
+        Task search = RunCommandAsync(vm.SearchHistoryCommand);
+        ThreadSearchRequest secondRequest = await secondPageStarted.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        await bridge.RaiseThreadSearchPartialAsync(new WorkerNotification<ThreadSearchPartialEvent>
+        {
+            Value = new ThreadSearchPartialEvent
+            {
+                RequestId = secondRequest.RequestId!,
+                Results = [new ThreadSearchHit { Thread = new ThreadSummary { Id = "second-page-partial" }, Snippet = "provisional" }],
+            },
+            StatePartitionFingerprint = secondRequest.StatePartitionFingerprint,
+            OwnerGeneration = secondRequest.OwnerGeneration,
+            ConnectionGeneration = secondRequest.ConnectionGeneration,
+        });
+        CollectionAssert.AreEqual(SearchPageRowsWithPartial, vm.ThreadRows.Select(static row => row.Id).ToArray());
+
+        secondPageCompletion.SetResult(new ThreadSearchResult
+        {
+            Results = [new ThreadSearchHit { Thread = new ThreadSummary { Id = "second-page-final" }, Snippet = "second final" }],
+        });
+#pragma warning disable VSTHRD003
+        await search;
+#pragma warning restore VSTHRD003
+
+        Assert.AreEqual(2, requests.Select(static request => request.RequestId).Distinct(StringComparer.Ordinal).Count());
+        CollectionAssert.AreEqual(SearchPageRowsAfterFinal, vm.ThreadRows.Select(static row => row.Id).ToArray());
+        Assert.AreEqual("second final", vm.ThreadRows.Single(static row => row.Id == "second-page-final").SearchSnippet);
+    }
+
+    [TestMethod]
+    public async Task ThreadSearch_FailedPageDoesNotLeaveItsPartialHitsInTheResults()
+    {
+        var secondPageStarted = new TaskCompletionSource<ThreadSearchRequest>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var secondPageCompletion = new TaskCompletionSource<ThreadSearchResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var bridge = new FakeWorkerBridge
+        {
+            SearchThreadsHandler = (request, _) =>
+            {
+                if (request.Cursor is null)
+                {
+                    return Task.FromResult(new ThreadSearchResult
+                    {
+                        Results = [new ThreadSearchHit { Thread = new ThreadSummary { Id = "first-page-final" }, Snippet = "first final" }],
+                        NextCursor = "second-page",
+                    });
+                }
+
+                secondPageStarted.TrySetResult(request);
+#pragma warning disable VSTHRD003
+                return secondPageCompletion.Task;
+#pragma warning restore VSTHRD003
+            },
+        };
+        using var vm = new ChatViewModel(
+            bridge,
+            autoConnect: false,
+            settingsStore: new MemorySettingsStore(new ExtensionSettings { ExperimentalApiEnabled = true }));
+        await bridge.PublishStateAsync(OwnerStatus("history-search-failed-partial", 1, 1));
+        vm.HistorySearchText = "needle";
+        Task search = RunCommandAsync(vm.SearchHistoryCommand);
+        ThreadSearchRequest secondRequest = await secondPageStarted.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        await bridge.RaiseThreadSearchPartialAsync(new WorkerNotification<ThreadSearchPartialEvent>
+        {
+            Value = new ThreadSearchPartialEvent
+            {
+                RequestId = secondRequest.RequestId!,
+                Results = [new ThreadSearchHit { Thread = new ThreadSummary { Id = "second-page-partial" }, Snippet = "provisional" }],
+            },
+            StatePartitionFingerprint = secondRequest.StatePartitionFingerprint,
+            OwnerGeneration = secondRequest.OwnerGeneration,
+            ConnectionGeneration = secondRequest.ConnectionGeneration,
+        });
+        Assert.AreEqual("second-page-partial", vm.ThreadRows.Last().Id);
+
+        secondPageCompletion.SetException(new IOException("search transport failed"));
+#pragma warning disable VSTHRD003
+        await search;
+#pragma warning restore VSTHRD003
+
+        CollectionAssert.AreEqual(SearchPageRowsAfterSecondPageFailure, vm.ThreadRows.Select(static row => row.Id).ToArray());
+        Assert.IsTrue(vm.ThreadManagementStatusText.Contains("Search failed", StringComparison.Ordinal)
+            || vm.ThreadManagementStatusText.Contains("検索できません", StringComparison.Ordinal));
     }
 
     [TestMethod]
@@ -433,7 +734,7 @@ public sealed partial class ViewModelTests
         vm.SelectedThread = new ThreadSummary { Id = "thread-active", Preview = "Active conversation" };
         typeof(ChatViewModel).GetProperty(nameof(ChatViewModel.IsThreadJoined))!
             .GetSetMethod(nonPublic: true)!.Invoke(vm, [true]);
-        vm.ThreadTurns.Add(new ThreadTurnSummary { Id = "turn-before", Status = "completed" });
+        vm.ThreadTurns.Add(new ThreadTurnOptionViewModel("turn-before", "Turn turn-bef · completed"));
         vm.SelectedRevertTurnId = "turn-before";
 
         await RunCommandAsync(vm.DeleteThreadCommand);
@@ -564,6 +865,38 @@ public sealed partial class ViewModelTests
     }
 
     [TestMethod]
+    public async Task LinkedForkIndexIncludesAttachedThreadsWithoutPerThreadRequests()
+    {
+        var bridge = new FakeWorkerBridge
+        {
+            ListThreadsRequestHandler = (request, _) => Task.FromResult(new ThreadPage
+            {
+                Threads = request.Archived
+                    ? []
+                    : [
+                        new ThreadSummary { Id = "thread-parent" },
+                        new ThreadSummary { Id = "thread-child", LinkedParentThreadId = "thread-parent" },
+                    ],
+            }),
+        };
+        using var vm = new ChatViewModel(
+            bridge,
+            autoConnect: false,
+            settingsStore: new MemorySettingsStore(new ExtensionSettings { ExperimentalApiEnabled = true }));
+        WorkerStatus status = OwnerStatus("history-attached-threads", 1, 1);
+        status.FeatureTier = CodexFeatureTier.Baseline;
+
+        await bridge.PublishStateAsync(status);
+
+        Assert.AreEqual(2, bridge.ThreadListRequests.Count(static request => request.IncludeAttachedThreads),
+            "Both archived and active full-history scans must ask for attached children.");
+        Assert.AreEqual(0, bridge.ForkThreadRequests.Count,
+            "A complete attached-thread scan must avoid one child-list request per conversation.");
+        vm.SelectedThread = new ThreadSummary { Id = "thread-parent" };
+        Assert.IsFalse(vm.CanDeleteSelectedThread, "The included child's parent relationship must block parent deletion.");
+    }
+
+    [TestMethod]
     public async Task LiveForkRelationshipWinsOverPagedSnapshotAndParentlessSummary()
     {
         var firstListReadStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -592,9 +925,9 @@ public sealed partial class ViewModelTests
             },
         };
         using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings { ExperimentalApiEnabled = true }));
-        await bridge.PublishStateAsync(OwnerStatus("history-link-race", 1, 1));
-        Task refresh = vm.RefreshCompleteLinkedForkIndexAsync(vm.CaptureOwnerSnapshot(), CancellationToken.None);
+        Task ownerRefresh = bridge.PublishStateAsync(OwnerStatus("history-link-race", 1, 1));
         await firstListReadStarted.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        Task refresh = vm.RefreshCompleteLinkedForkIndexAsync(vm.CaptureOwnerSnapshot(), CancellationToken.None);
         Assert.IsFalse(refresh.IsCompleted, "The fork-index refresh must still be waiting on its first page.");
         vm.TrackLinkedForkRelationship(new ThreadSummary { Id = "thread-child", LinkedParentThreadId = "thread-parent-live" });
         vm.TrackLinkedForkRelationship(new ThreadSummary { Id = "thread-child" });
@@ -608,6 +941,7 @@ public sealed partial class ViewModelTests
         });
 #pragma warning disable VSTHRD003
         await refresh;
+        await ownerRefresh;
 #pragma warning restore VSTHRD003
 
         vm.SelectedThread = new ThreadSummary { Id = "thread-index-ready-parent" };
@@ -651,9 +985,9 @@ public sealed partial class ViewModelTests
             bridge,
             autoConnect: false,
             settingsStore: new MemorySettingsStore(new ExtensionSettings { ExperimentalApiEnabled = true }));
-        await bridge.PublishStateAsync(OwnerStatus("history-delete-index-race", 1, 1));
-        Task refresh = vm.RefreshCompleteLinkedForkIndexAsync(vm.CaptureOwnerSnapshot(), CancellationToken.None);
+        Task ownerRefresh = bridge.PublishStateAsync(OwnerStatus("history-delete-index-race", 1, 1));
         await firstListReadStarted.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        Task refresh = vm.RefreshCompleteLinkedForkIndexAsync(vm.CaptureOwnerSnapshot(), CancellationToken.None);
         Assert.IsFalse(refresh.IsCompleted, "The fork-index refresh must still be waiting on its first page.");
         await bridge.RaiseThreadHistoryChangedAsync(new WorkerNotification<ThreadHistoryChangedEvent>
         {
@@ -672,6 +1006,7 @@ public sealed partial class ViewModelTests
         });
 #pragma warning disable VSTHRD003
         await refresh;
+        await ownerRefresh;
 #pragma warning restore VSTHRD003
 
         vm.SelectedThread = new ThreadSummary { Id = "thread-index-ready-parent" };

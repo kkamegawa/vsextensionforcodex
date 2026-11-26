@@ -365,6 +365,8 @@ public sealed class ListThreadsRequest : OwnerScopedRequest
 
     public bool Archived { get; set; }
 
+    public bool IncludeAttachedThreads { get; set; }
+
     public string? SearchTerm { get; set; }
 
     public string? SectionId { get; set; }
@@ -406,6 +408,8 @@ public sealed class ThreadMutationResult : WorkerGenerationResult
 public sealed class ThreadSearchRequest : OwnerScopedRequest
 {
     [DataMember] public string SearchTerm { get; set; } = string.Empty;
+    [DataMember] public bool Archived { get; set; }
+    [DataMember] public string? Cursor { get; set; }
     [DataMember] public string? RequestId { get; set; }
 }
 
@@ -429,6 +433,7 @@ public sealed class ThreadSearchResult : WorkerGenerationResult
 {
     [DataMember] public bool IsSupported { get; set; } = true;
     [DataMember] public IReadOnlyList<ThreadSearchHit> Results { get; set; } = Array.Empty<ThreadSearchHit>();
+    [DataMember] public string? NextCursor { get; set; }
 }
 
 [DataContract]
@@ -668,6 +673,9 @@ public sealed class ThreadSummary
     public string? LinkedParentThreadId { get; set; }
 
     [DataMember]
+    public bool Archived { get; set; }
+
+    [DataMember]
     public string? SectionId { get; set; }
 
     [DataMember]
@@ -790,9 +798,6 @@ public sealed class ThreadTurnSummary
 
     [DataMember]
     public string Status { get; set; } = string.Empty;
-
-    [DataMember]
-    public string DisplayLabel { get; set; } = string.Empty;
 
     [DataMember]
     public long? StartedAt { get; set; }

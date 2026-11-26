@@ -110,6 +110,7 @@ public sealed partial class ChatViewModel
                     _ => null,
                 };
                 Interlocked.Increment(ref threadListScopeGeneration);
+                CancelHistorySearchAndAdvanceGeneration();
                 nextCursor = null;
                 RaiseCommandStates();
             }).ConfigureAwait(false);
@@ -121,8 +122,21 @@ public sealed partial class ChatViewModel
                 lifetime.Token).ConfigureAwait(false);
             if (outcome == ThreadListRefreshOutcome.Busy)
             {
-                // The running request carries the old scope, so its response is dropped.
-                Volatile.Write(ref threadListReloadPending, 1);
+                // Queue while holding the same gate used to retire the active lease. If it
+                // finished between the Busy result and this point, start the refresh here.
+                if (!QueueThreadListRefreshIfBusy(owner))
+                {
+                    outcome = await RefreshCompleteThreadListAsync(
+                        owner,
+                        "Conversation list refreshed. Select one to inspect read-only history.",
+                        lifetime.Token).ConfigureAwait(false);
+                    if (outcome == ThreadListRefreshOutcome.Busy && !QueueThreadListRefreshIfBusy(owner))
+                    {
+                        await SetThreadListFailureStatusAsync(
+                            owner,
+                            IsJapaneseUi ? "会話一覧の更新が混み合っています。もう一度お試しください。" : "Conversation list refresh is busy. Try again.").ConfigureAwait(false);
+                    }
+                }
             }
         }
         catch (OperationCanceledException) when (lifetime.IsCancellationRequested)

@@ -423,21 +423,44 @@ public sealed class WebSocketJsonRpcConnection : IJsonRpcConnection, IInboundAct
 
                 try
                 {
-                    await handler(message, cancellationToken).ConfigureAwait(false);
+                    await InvokeNotificationHandlersAsync(handler, message, cancellationToken).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                 {
                     return;
                 }
-                catch (Exception ex)
-                {
-                    // One failing observer must not stop delivery of later notifications.
-                    _ = ex;
-                }
             }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
+        }
+    }
+
+    private static async Task InvokeNotificationHandlersAsync(
+        Func<JsonRpcMessage, CancellationToken, Task> handlers,
+        JsonRpcMessage message,
+        CancellationToken cancellationToken)
+    {
+        foreach (Delegate subscriber in handlers.GetInvocationList())
+        {
+            if (subscriber is not Func<JsonRpcMessage, CancellationToken, Task> handler)
+            {
+                continue;
+            }
+
+            try
+            {
+                await handler(message, cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                // One failing observer must not stop delivery to later observers or notifications.
+                _ = ex;
+            }
         }
     }
 

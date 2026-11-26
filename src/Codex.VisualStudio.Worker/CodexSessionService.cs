@@ -167,6 +167,11 @@ public partial interface ICodexSessionService : IAsyncDisposable
     Task<ThreadPage> ListThreadsAsync(string? cursor, IReadOnlyList<string>? workingDirectories, bool archived, string? searchTerm, string? sectionId, CancellationToken cancellationToken)
         => ListThreadsAsync(cursor, workingDirectories, cancellationToken);
 
+    Task<ThreadPage> ListThreadsAsync(string? cursor, IReadOnlyList<string>? workingDirectories, bool archived, string? searchTerm, string? sectionId, bool includeAttachedThreads, CancellationToken cancellationToken)
+        => includeAttachedThreads
+            ? Task.FromException<ThreadPage>(new NotSupportedException("This session cannot request attached conversations in a complete thread list."))
+            : ListThreadsAsync(cursor, workingDirectories, archived, searchTerm, sectionId, cancellationToken);
+
     Task<ThreadSectionsResult> ListThreadSectionsAsync(CancellationToken cancellationToken) => throw new NotSupportedException();
     Task<ThreadMutationResult> ArchiveThreadAsync(ThreadMutationRequest request, CancellationToken cancellationToken) => throw new NotSupportedException();
     Task<ThreadMutationResult> UnarchiveThreadAsync(ThreadMutationRequest request, CancellationToken cancellationToken) => throw new NotSupportedException();
@@ -641,6 +646,8 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         {
             completedTurnIds.Clear();
             interruptRequestedAt.Clear();
+            threadMutationsInFlight.Clear();
+            knownBusyThreadIds.Clear();
             pendingTurnThreadId = null;
             unconfirmedTurnThreadId = null;
             ActiveThreadId = null;
@@ -2068,12 +2075,22 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         return result;
     }
 
+    public Task<ThreadPage> ListThreadsAsync(
+        string? cursor,
+        IReadOnlyList<string>? workingDirectories,
+        bool archived,
+        string? searchTerm,
+        string? sectionId,
+        CancellationToken cancellationToken)
+        => ListThreadsAsync(cursor, workingDirectories, archived, searchTerm, sectionId, includeAttachedThreads: false, cancellationToken);
+
     public async Task<ThreadPage> ListThreadsAsync(
         string? cursor,
         IReadOnlyList<string>? workingDirectories,
         bool archived,
         string? searchTerm,
         string? sectionId,
+        bool includeAttachedThreads,
         CancellationToken cancellationToken)
     {
         if (cursor is { Length: > 256 }) throw new ArgumentException("Thread list cursor exceeds 256 characters.", nameof(cursor));
@@ -2089,6 +2106,16 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         };
         if (!string.IsNullOrWhiteSpace(searchTerm)) parameters["searchTerm"] = searchTerm.Trim();
         if (!string.IsNullOrWhiteSpace(sectionId)) parameters["sectionId"] = sectionId;
+        if (includeAttachedThreads)
+        {
+            if (!context.ExperimentalApi || context.FeatureTier == CodexFeatureTier.Unsupported)
+            {
+                throw new NotSupportedException("This Codex app-server session cannot include attached conversations in a thread list.");
+            }
+
+            parameters["includeAttachedThreads"] = true;
+        }
+
         if (workingDirectories is not null)
         {
             parameters["cwd"] = workingDirectories;
@@ -2284,7 +2311,6 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             {
                 Id = id,
                 Status = status,
-                DisplayLabel = CreateTurnDisplayLabel(id, status),
                 StartedAt = GetInt64(turn, "startedAt"),
                 CompletedAt = GetInt64(turn, "completedAt"),
                 ErrorReason = errorReason,
@@ -2633,6 +2659,11 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
 
         lock (turnStateLock)
         {
+            if (threadMutationsInFlight.Contains((context.Generation, request.ThreadId)))
+            {
+                throw new InvalidOperationException("A conversation operation is in progress for this conversation.");
+            }
+
             pendingTurnThreadId = request.ThreadId;
         }
 
@@ -4770,6 +4801,11 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
                     && IsTrackedTurnThreadLocked(threadId)
                     && !IsTurnCompletedLocked(context.Generation, threadId, startedTurnId, startedRootTurnId))
                 {
+                    if (threadId is not null)
+                    {
+                        knownBusyThreadIds.Add((context.Generation, threadId));
+                    }
+
                     ActiveTurnId = startedTurnId;
                     activeRootTurnId = startedRootTurnId;
                     turnId = startedTurnId;
@@ -4793,11 +4829,19 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
                 ? GetString(completedTurnForRoot, "rootTurnId")
                 : null;
             bool otherThread;
+            string? completedThreadId;
             lock (turnStateLock)
             {
                 otherThread = !IsTrackedTurnThreadLocked(threadId);
+                completedThreadId = threadId
+                    ?? (otherThread ? null : ActiveThreadId ?? pendingTurnThreadId ?? unconfirmedTurnThreadId);
+                if (completedThreadId is not null)
+                {
+                    knownBusyThreadIds.Remove((context.Generation, completedThreadId));
+                }
+
                 completedId ??= otherThread ? null : ActiveTurnId;
-                RecordCompletedTurnLocked(context.Generation, threadId, completedId, completedRootTurnId);
+                RecordCompletedTurnLocked(context.Generation, completedThreadId, completedId, completedRootTurnId);
 
                 if (!otherThread
                     && (completedId is null && completedRootTurnId is null
@@ -4809,13 +4853,13 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
 
                 if (!otherThread)
                 {
-                    ClearUnconfirmedTurnLocked(threadId);
+                    ClearUnconfirmedTurnLocked(completedThreadId);
                 }
             }
 
             turnId = completedId;
-            LogInterruptedTurnCompletion(context, threadId, completedId, parameters);
-            context.ApprovalGrants.EndTurn(threadId, completedId);
+            LogInterruptedTurnCompletion(context, completedThreadId, completedId, parameters);
+            context.ApprovalGrants.EndTurn(completedThreadId, completedId);
             if (otherThread)
             {
                 return;
@@ -4826,6 +4870,11 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             context.ApprovalGrants.EndThread(threadId);
             lock (turnStateLock)
             {
+                if (threadId is not null)
+                {
+                    knownBusyThreadIds.Remove((context.Generation, threadId));
+                }
+
                 if (string.Equals(ActiveThreadId, threadId, StringComparison.Ordinal))
                 {
                     ActiveThreadId = null;
@@ -6073,6 +6122,8 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         {
             completedTurnIds.Clear();
             interruptRequestedAt.Clear();
+            threadMutationsInFlight.Clear();
+            knownBusyThreadIds.Clear();
             pendingTurnThreadId = null;
             unconfirmedTurnThreadId = null;
             ActiveThreadId = null;
@@ -6529,6 +6580,9 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             EffectiveReasoningEffort = effectiveReasoningEffort,
             EffectiveServiceTier = effectiveServiceTier,
             EffectiveModelId = ReadEffectiveModelId(thread),
+            LinkedParentThreadId = GetBoundedString(thread, "attachedToThreadId", 256)
+                ?? GetBoundedString(thread, "forkedFromId", 256),
+            Archived = GetBoolean(thread, "archived") == true,
             SectionId = sectionId,
             SectionName = sectionName,
             DisabledPluginIds = ReadStringArray(thread, "disabledPluginIds", 128),
