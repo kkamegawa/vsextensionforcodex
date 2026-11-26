@@ -23,6 +23,19 @@ public sealed class SecurityServicesTests
     }
 
     [TestMethod]
+    public void ApprovalPolicyEngine_ThreadMutationFailsClosedForInvalidIdentityAndClassifiesValidActions()
+    {
+        var policy = new ApprovalPolicyEngine(new PathAccessPolicy());
+        Assert.IsTrue(policy.EvaluateThreadMutation(null, "delete").IsBlocked);
+        Assert.IsTrue(policy.EvaluateThreadMutation("thread-1", "delete;rm").IsBlocked);
+
+        ApprovalPolicyResult valid = policy.EvaluateThreadMutation("thread-1", "revert");
+        Assert.IsFalse(valid.IsBlocked);
+        Assert.AreEqual(ApprovalRiskCategory.Destructive, valid.Risk);
+        StringAssert.Contains(valid.RiskKey, "thread:revert:thread-1");
+    }
+
+    [TestMethod]
     public void SecretRedactor_DoesNotRedactCredentialLikeIdentifierSuffixes()
     {
         var redactor = new SecretRedactor();

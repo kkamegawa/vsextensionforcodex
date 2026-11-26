@@ -18,16 +18,28 @@ public sealed class TransportPoliciesTests
     ];
 
     [TestMethod]
-    public void Allowlist_ContainsExactlyTheFourteenReviewedReadOnlyMethods()
+    public void Allowlist_ContainsExactlyTheReviewedReadOnlyMethods()
     {
         CollectionAssert.AreEquivalent(
             new[]
             {
-                "account/read", "account/rateLimits/read", "account/usage/read", "thread/list", "thread/goal/get",
+                "account/read", "account/rateLimits/read", "account/usage/read", "thread/list", "threadSection/list", "thread/goal/get",
                 "model/list", "permissionProfile/list", "mcpServerStatus/list", "skills/list",
                 "thread/read", "thread/memory/read", "thread/turns/list", "thread/items/list", "thread/attachment/list",
+                "thread/search",
             },
             ReadOnlyRequestAllowlist.Methods.ToArray());
+    }
+
+    [TestMethod]
+    public void Allowlist_SearchRequiresBoundedTermAndMutationsAreNeverRetryable()
+    {
+        Assert.IsTrue(ReadOnlyRequestAllowlist.IsRetryable("thread/search", new { searchTerm = "hello" }));
+        Assert.IsFalse(ReadOnlyRequestAllowlist.IsRetryable("thread/search", new { searchTerm = " " }));
+        Assert.IsFalse(ReadOnlyRequestAllowlist.IsRetryable("thread/search", new { searchTerm = new string('x', 513) }));
+        Assert.IsFalse(ReadOnlyRequestAllowlist.IsRetryable("thread/archive", new { threadId = "thread-1" }));
+        Assert.IsFalse(ReadOnlyRequestAllowlist.IsRetryable("thread/delete", new { threadId = "thread-1" }));
+        Assert.IsFalse(ReadOnlyRequestAllowlist.IsRetryable("thread/revert", new { threadId = "thread-1", beforeTurnId = "turn-1" }));
     }
 
     [TestMethod]
@@ -75,6 +87,14 @@ public sealed class TransportPoliciesTests
         }
     }
 
+    [TestMethod]
+    public void Allowlist_ThreadSectionListRequiresBoundedPagingParameters()
+    {
+        Assert.IsTrue(ReadOnlyRequestAllowlist.IsRetryable("threadSection/list", new { cursor = (string?)null, limit = 100 }));
+        Assert.IsFalse(ReadOnlyRequestAllowlist.IsRetryable("threadSection/list", new { cursor = new string('c', 257), limit = 100 }));
+        Assert.IsFalse(ReadOnlyRequestAllowlist.IsRetryable("threadSection/list", new { cursor = (string?)null, limit = 101 }));
+        Assert.IsFalse(ReadOnlyRequestAllowlist.IsRetryable("threadSection/list", null));
+    }
     [TestMethod]
     public void Allowlist_AccountReadRequiresExplicitFalseRefreshToken()
     {

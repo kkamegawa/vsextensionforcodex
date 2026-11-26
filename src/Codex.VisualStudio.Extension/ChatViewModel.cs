@@ -235,7 +235,11 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         transcriptItems.Add(transcriptSandboxHeader);
         Items.CollectionChanged += OnItemsCollectionChanged;
         Threads.CollectionChanged += OnThreadsCollectionChanged;
-        ThreadTurns.CollectionChanged += (_, _) => OnPropertyChanged(nameof(HistoryTurnSummaryText));
+        ThreadTurns.CollectionChanged += (_, _) =>
+        {
+            OnPropertyChanged(nameof(HistoryTurnSummaryText));
+            NotifyThreadManagementCanExecuteChanged();
+        };
         PendingSkills.CollectionChanged += (_, _) =>
         {
             OnPropertyChanged(nameof(HasPendingSkill));
@@ -265,6 +269,11 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         ToggleHistoryCommand = new AsyncCommand(() =>
         {
             IsHistoryOpen = !IsHistoryOpen;
+            if (IsHistoryOpen)
+            {
+                OnThreadManagementHistoryOpened();
+            }
+
             return IsHistoryOpen ? RefreshThreadListScopesAsync() : Task.CompletedTask;
         });
         CloseHistoryCommand = new AsyncCommand(() =>
@@ -806,6 +815,8 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         source.AccountChanged += OnAccountChangedAsync;
         source.ConversationEventReceived += OnConversationEventAsync;
         source.ThreadReadStateChanged += OnThreadReadStateChangedAsync;
+        source.ThreadSearchPartial += OnThreadSearchPartialAsync;
+        source.ThreadHistoryChanged += OnThreadHistoryChangedAsync;
         source.ThreadAttachmentUpdated += OnThreadAttachmentUpdatedAsync;
         source.WindowsSandboxSetupChanged += OnWindowsSandboxSetupChangedAsync;
         source.ApprovalRequested += OnApprovalRequestedAsync;
@@ -837,6 +848,8 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         source.AccountChanged -= OnAccountChangedAsync;
         source.ConversationEventReceived -= OnConversationEventAsync;
         source.ThreadReadStateChanged -= OnThreadReadStateChangedAsync;
+        source.ThreadSearchPartial -= OnThreadSearchPartialAsync;
+        source.ThreadHistoryChanged -= OnThreadHistoryChangedAsync;
         source.ThreadAttachmentUpdated -= OnThreadAttachmentUpdatedAsync;
         source.ApprovalRequested -= OnApprovalRequestedAsync;
         source.ApprovalResolved -= OnApprovalResolvedAsync;
@@ -1222,12 +1235,13 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
 
         try
         {
+            long historyGeneration = Interlocked.Read(ref historyManagementGeneration);
             await OnUiAsync(RaiseCommandStates).ConfigureAwait(false);
             Dictionary<string, long> readStateWatermark = CaptureThreadReadStateSequences();
             long scopeGeneration = Interlocked.Read(ref threadListScopeGeneration);
             IReadOnlyList<string>? workingDirectories = threadListWorkingDirectories;
             ThreadPage page = await bridge.ListThreadsAsync(
-                StampOwner(new ListThreadsRequest { WorkingDirectories = workingDirectories }, owner), cancellationToken).ConfigureAwait(false);
+                StampOwner(CreateManagedThreadListRequest(workingDirectories), owner), cancellationToken).ConfigureAwait(false);
             bool applied = false;
             IReadOnlyList<SlashCommandInvocation> canceled = Array.Empty<SlashCommandInvocation>();
             await OnUiAsync(() =>
@@ -1236,7 +1250,8 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                 {
                     if (!IsCurrentOwner(owner)
                         || !MatchesOwner(page, owner)
-                        || scopeGeneration != Interlocked.Read(ref threadListScopeGeneration))
+                        || scopeGeneration != Interlocked.Read(ref threadListScopeGeneration)
+                        || historyGeneration != Interlocked.Read(ref historyManagementGeneration))
                     {
                         return;
                     }
@@ -1250,7 +1265,10 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                     HistoryStatusText = successMessage;
 
                     // A filtered list says nothing about conversations outside it.
-                    if (page.NextCursor is null && workingDirectories is null)
+                    if (page.NextCursor is null && workingDirectories is null
+                        && !showArchivedThreads
+                        && string.IsNullOrWhiteSpace(historySearchText)
+                        && string.IsNullOrWhiteSpace(selectedThreadSectionId))
                     {
                         canceled = CancelMissingThreads(owner);
                     }
@@ -1951,6 +1969,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         {
             if (SetProperty(ref selectedThread, value))
             {
+                OnManagedSelectedThreadChanged();
                 ResetTranscriptSearchForThreadChange();
                 lock (threadHistoryStateGate)
                 {
@@ -2558,6 +2577,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             if (SetProperty(ref field, value))
             {
                 OnPropertyChanged(nameof(IsHistoryOnly));
+                NotifyThreadManagementCanExecuteChanged();
                 NotifyInterruptibilityChanged();
                 RaiseCommandStates();
             }
@@ -4942,15 +4962,17 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             string? cursor = nextCursor;
             Dictionary<string, long> readStateWatermark = CaptureThreadReadStateSequences();
             long scopeGeneration = Interlocked.Read(ref threadListScopeGeneration);
+            long historyGeneration = Interlocked.Read(ref historyManagementGeneration);
             ThreadPage page = await bridge.ListThreadsAsync(
-                StampOwner(new ListThreadsRequest { Cursor = cursor, WorkingDirectories = threadListWorkingDirectories }, owner), lifetime.Token).ConfigureAwait(false);
+                StampOwner(CreateManagedThreadListRequest(threadListWorkingDirectories, cursor), owner), lifetime.Token).ConfigureAwait(false);
             await OnUiAsync(() =>
             {
                 lock (threadHistoryStateGate)
                 {
                     if (!IsCurrentOwner(owner)
                         || !MatchesOwner(page, owner)
-                        || scopeGeneration != Interlocked.Read(ref threadListScopeGeneration))
+                        || scopeGeneration != Interlocked.Read(ref threadListScopeGeneration)
+                        || historyGeneration != Interlocked.Read(ref historyManagementGeneration))
                     {
                         return;
                     }
@@ -4998,13 +5020,18 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         }
     }
 
-    private void AddDistinctThreads(IEnumerable<ThreadSummary> pageThreads, bool skipExisting)
+    private void AddDistinctThreads(IEnumerable<ThreadSummary> pageThreads, bool skipExisting, bool trackLinkedRelationships = true)
     {
         var existingIds = skipExisting
             ? new HashSet<string>(Threads.Select(static thread => thread.Id), StringComparer.Ordinal)
             : new HashSet<string>(StringComparer.Ordinal);
         foreach (ThreadSummary thread in pageThreads)
         {
+            if (trackLinkedRelationships)
+            {
+                TrackLinkedForkRelationship(thread);
+            }
+
             if (string.IsNullOrWhiteSpace(thread.LinkedParentThreadId) && existingIds.Add(thread.Id))
             {
                 Threads.Add(thread);
@@ -8390,6 +8417,8 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             reconnected = value.State == WorkerConnectionState.Ready
                 && previous is not (WorkerConnectionState.Ready or WorkerConnectionState.Busy or WorkerConnectionState.WaitingForApproval);
             Status = value;
+            OnThreadManagementOwnerChanged();
+            NotifyThreadManagementCanExecuteChanged();
             ReadGatewayOAuthCommand.RaiseCanExecuteChanged();
             LoginGatewayOAuthCommand.RaiseCanExecuteChanged();
             CancelGatewayOAuthCommand.RaiseCanExecuteChanged();
@@ -10413,6 +10442,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         RaiseThreadReadStateCommandStates();
         RestoreQuarantinedDraftCommand?.RaiseCanExecuteChanged();
         DiscardQuarantinedDraftCommand?.RaiseCanExecuteChanged();
+        NotifyThreadManagementCanExecuteChanged();
     }
 
     private void RaiseThreadReadStateCommandStates()
@@ -11838,11 +11868,13 @@ public sealed class ThreadHistoryRowViewModel : ObservableObject
 {
     private readonly SafeMarkdownService markdown = new();
     private ThreadSummary thread;
+    private string searchSnippet;
     private ThreadReadStateSnapshot readState = new() { Kind = ThreadReadStateKind.Unavailable };
 
     internal ThreadHistoryRowViewModel(ThreadSummary thread)
     {
         this.thread = thread;
+        searchSnippet = SafeMarkdownService.ToSafeLiteralText(thread.SearchSnippet ?? string.Empty);
     }
 
     internal ThreadSummary Thread => thread;
@@ -11855,6 +11887,18 @@ public sealed class ThreadHistoryRowViewModel : ObservableObject
 
     [DataMember]
     public string Cwd => markdown.ToSafeText(thread.Cwd ?? string.Empty);
+
+    [DataMember]
+    public string SearchSnippet => searchSnippet;
+
+    [DataMember]
+    public string SectionName => markdown.ToSafeText(thread.SectionName ?? string.Empty);
+
+    [DataMember]
+    public bool HasSectionName => !string.IsNullOrWhiteSpace(thread.SectionName);
+
+    [DataMember]
+    public bool HasSearchSnippet => !string.IsNullOrWhiteSpace(searchSnippet);
 
     [DataMember]
     public bool IsUnread => readState.Kind is ThreadReadStateKind.UnreadThreadStart or ThreadReadStateKind.UnreadTurn;
@@ -11873,16 +11917,26 @@ public sealed class ThreadHistoryRowViewModel : ObservableObject
     {
         if (ReferenceEquals(thread, value))
         {
+            searchSnippet = SafeMarkdownService.ToSafeLiteralText(value.SearchSnippet ?? string.Empty);
             OnPropertyChanged(nameof(Preview));
             OnPropertyChanged(nameof(Cwd));
+            OnPropertyChanged(nameof(SearchSnippet));
+            OnPropertyChanged(nameof(SectionName));
+            OnPropertyChanged(nameof(HasSectionName));
+            OnPropertyChanged(nameof(HasSearchSnippet));
             OnPropertyChanged(nameof(AccessibilityName));
             return;
         }
 
         thread = value;
+        searchSnippet = SafeMarkdownService.ToSafeLiteralText(value.SearchSnippet ?? string.Empty);
         OnPropertyChanged(nameof(Id));
         OnPropertyChanged(nameof(Preview));
         OnPropertyChanged(nameof(Cwd));
+        OnPropertyChanged(nameof(SearchSnippet));
+        OnPropertyChanged(nameof(SectionName));
+        OnPropertyChanged(nameof(HasSectionName));
+        OnPropertyChanged(nameof(HasSearchSnippet));
         OnPropertyChanged(nameof(AccessibilityName));
     }
 

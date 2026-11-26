@@ -6176,6 +6176,7 @@ public sealed partial class ViewModelTests
             typeof(ConnectionHealthPresentationViewModel), typeof(ConnectionTargetSnapshot),
             typeof(PresetSlotViewModel), typeof(LinkedForkConversationViewModel),
             typeof(AccountWorkspacePresentationViewModel),
+            typeof(ThreadSectionOption),
         ];
 
     [TestMethod]
@@ -11597,6 +11598,10 @@ public sealed partial class ViewModelTests
 
         public event Func<WorkerNotification<ThreadReadStateChangedEvent>, Task>? ThreadReadStateChanged;
 
+        public event Func<WorkerNotification<ThreadSearchPartialEvent>, Task>? ThreadSearchPartial;
+
+        public event Func<WorkerNotification<ThreadHistoryChangedEvent>, Task>? ThreadHistoryChanged;
+
         public event Func<WorkerNotification<ThreadAttachmentUpdatedEvent>, Task>? ThreadAttachmentUpdated { add { } remove { } }
 
         public event Func<WorkerNotification<WindowsSandboxSetupCompletedEvent>, Task>? WindowsSandboxSetupChanged;
@@ -11680,6 +11685,32 @@ public sealed partial class ViewModelTests
         public bool PreserveThreadPageOwner { get; set; }
 
         public int ListThreadsCallCount { get; private set; }
+
+        public ListThreadsRequest? LastListThreadsRequest { get; private set; }
+
+        public Func<ThreadSearchRequest, CancellationToken, Task<ThreadSearchResult>>? SearchThreadsHandler { get; set; }
+
+        public ThreadSectionsResult ThreadSectionsResult { get; set; } = new();
+
+        public ThreadSearchRequest? LastThreadSearchRequest { get; private set; }
+
+        public Func<ThreadMutationRequest, CancellationToken, Task<ThreadMutationResult>>? ArchiveThreadHandler { get; set; }
+
+        public Func<ThreadMutationRequest, CancellationToken, Task<ThreadMutationResult>>? UnarchiveThreadHandler { get; set; }
+
+        public Func<ThreadMutationRequest, CancellationToken, Task<ThreadMutationResult>>? DeleteThreadHandler { get; set; }
+
+        public Func<ThreadMutationRequest, CancellationToken, Task<ThreadMutationResult>>? RevertThreadHandler { get; set; }
+
+        public ThreadMutationRequest? LastThreadMutationRequest { get; private set; }
+
+        public int ArchiveThreadCallCount { get; private set; }
+
+        public int UnarchiveThreadCallCount { get; private set; }
+
+        public int DeleteThreadCallCount { get; private set; }
+
+        public int RevertThreadCallCount { get; private set; }
 
         public int ReadThreadCallCount { get; private set; }
 
@@ -11908,6 +11939,7 @@ public sealed partial class ViewModelTests
         public async Task<ThreadPage> ListThreadsAsync(ListThreadsRequest request, CancellationToken cancellationToken)
         {
             ListThreadsCallCount++;
+            LastListThreadsRequest = request;
             ListedWorkingDirectories.Add(request.WorkingDirectories);
             ThreadPage page = await (ListThreadsHandler?.Invoke(request.Cursor, cancellationToken)
                 ?? Task.FromResult(new ThreadPage()));
@@ -11920,6 +11952,61 @@ public sealed partial class ViewModelTests
 
             return page;
         }
+
+        public Task<ThreadSectionsResult> ListThreadSectionsAsync(GetThreadListScopesRequest request, CancellationToken cancellationToken)
+        {
+            ThreadSectionsResult result = ThreadSectionsResult;
+            result.StatePartitionFingerprint = request.StatePartitionFingerprint;
+            result.OwnerGeneration = request.OwnerGeneration;
+            result.ConnectionGeneration = request.ConnectionGeneration;
+            return Task.FromResult(result);
+        }
+
+        public async Task<ThreadSearchResult> SearchThreadsAsync(ThreadSearchRequest request, CancellationToken cancellationToken)
+        {
+            LastThreadSearchRequest = request;
+            ThreadSearchResult result = await (SearchThreadsHandler?.Invoke(request, cancellationToken)
+                ?? Task.FromResult(new ThreadSearchResult()));
+            result.StatePartitionFingerprint = request.StatePartitionFingerprint;
+            result.OwnerGeneration = request.OwnerGeneration;
+            result.ConnectionGeneration = request.ConnectionGeneration;
+            return result;
+        }
+
+        public Task<ThreadMutationResult> ArchiveThreadAsync(ThreadMutationRequest request, CancellationToken cancellationToken)
+            => RunThreadMutationAsync(request, ArchiveThreadHandler, mutation => ArchiveThreadCallCount++, cancellationToken);
+
+        public Task<ThreadMutationResult> UnarchiveThreadAsync(ThreadMutationRequest request, CancellationToken cancellationToken)
+            => RunThreadMutationAsync(request, UnarchiveThreadHandler, mutation => UnarchiveThreadCallCount++, cancellationToken);
+
+        public Task<ThreadMutationResult> DeleteThreadAsync(ThreadMutationRequest request, CancellationToken cancellationToken)
+            => RunThreadMutationAsync(request, DeleteThreadHandler, mutation => DeleteThreadCallCount++, cancellationToken);
+
+        public Task<ThreadMutationResult> RevertThreadAsync(ThreadMutationRequest request, CancellationToken cancellationToken)
+            => RunThreadMutationAsync(request, RevertThreadHandler, mutation => RevertThreadCallCount++, cancellationToken);
+
+        private async Task<ThreadMutationResult> RunThreadMutationAsync(
+            ThreadMutationRequest request,
+            Func<ThreadMutationRequest, CancellationToken, Task<ThreadMutationResult>>? handler,
+            Action<ThreadMutationRequest> count,
+            CancellationToken cancellationToken)
+        {
+            LastThreadMutationRequest = request;
+            count(request);
+            ThreadMutationResult result = await (handler?.Invoke(request, cancellationToken)
+                ?? Task.FromResult(new ThreadMutationResult { Succeeded = true }))
+                .ConfigureAwait(false);
+            result.StatePartitionFingerprint = request.StatePartitionFingerprint;
+            result.OwnerGeneration = request.OwnerGeneration;
+            result.ConnectionGeneration = request.ConnectionGeneration;
+            return result;
+        }
+
+        public Task RaiseThreadSearchPartialAsync(WorkerNotification<ThreadSearchPartialEvent> notification)
+            => ThreadSearchPartial?.Invoke(notification) ?? Task.CompletedTask;
+
+        public Task RaiseThreadHistoryChangedAsync(WorkerNotification<ThreadHistoryChangedEvent> notification)
+            => ThreadHistoryChanged?.Invoke(notification) ?? Task.CompletedTask;
 
         public async Task<ThreadReadResult> ReadThreadAsync(ReadThreadRequest request, CancellationToken cancellationToken)
         {

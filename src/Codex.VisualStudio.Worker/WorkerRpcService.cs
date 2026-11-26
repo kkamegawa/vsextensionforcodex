@@ -66,6 +66,8 @@ public sealed partial class WorkerRpcService : ICodexWorkerClient, IAsyncDisposa
         this.timeProvider = timeProvider ?? TimeProvider.System;
         session.ConversationEventReceived += PublishEventAsync;
         session.ThreadReadStateChanged += PublishThreadReadStateChangedAsync;
+        session.ThreadSearchPartial += PublishThreadSearchPartialAsync;
+        session.ThreadHistoryChanged += PublishThreadHistoryChangedAsync;
         session.ApprovalRequested += PublishApprovalAsync;
         session.ApprovalResolved += PublishApprovalResolvedAsync;
         session.AccountStatusChanged += PublishAccountStatusAsync;
@@ -1045,11 +1047,52 @@ public sealed partial class WorkerRpcService : ICodexWorkerClient, IAsyncDisposa
         }
     }
 
+    private async Task<T> ExecuteOwnerScopedMutationAsync<T>(
+        OwnerScopedRequest request,
+        Func<Task<T>> operation,
+        CancellationToken cancellationToken)
+        where T : WorkerGenerationResult
+    {
+        ConnectionTargetSnapshot captured = await ValidateOwnerScopeUnderGateAsync(request, cancellationToken)
+            .ConfigureAwait(false);
+        ConnectionTargetSnapshot? previous = requestEmissionTarget.Value;
+        requestEmissionTarget.Value = captured;
+        try
+        {
+            T result = await operation().ConfigureAwait(false);
+            result.StatePartitionFingerprint = captured.StatePartitionFingerprint;
+            result.OwnerGeneration = captured.OwnerGeneration;
+            result.ConnectionGeneration = captured.Generation;
+            return result;
+        }
+        finally
+        {
+            requestEmissionTarget.Value = previous;
+        }
+    }
     public Task<ThreadPage> ListThreadsAsync(ListThreadsRequest request, CancellationToken cancellationToken)
         => ExecuteOwnerScopedGenerationAsync(
             request,
-            () => session.ListThreadsAsync(request.Cursor, request.WorkingDirectories, cancellationToken),
+            () => session.ListThreadsAsync(request.Cursor, request.WorkingDirectories, request.Archived, request.SearchTerm, request.SectionId, cancellationToken),
             cancellationToken);
+
+    public Task<ThreadSectionsResult> ListThreadSectionsAsync(GetThreadListScopesRequest request, CancellationToken cancellationToken)
+        => ExecuteOwnerScopedGenerationAsync(request, () => session.ListThreadSectionsAsync(cancellationToken), cancellationToken);
+
+    public Task<ThreadMutationResult> ArchiveThreadAsync(ThreadMutationRequest request, CancellationToken cancellationToken)
+        => ExecuteOwnerScopedMutationAsync(request, () => session.ArchiveThreadAsync(request, cancellationToken), cancellationToken);
+
+    public Task<ThreadMutationResult> UnarchiveThreadAsync(ThreadMutationRequest request, CancellationToken cancellationToken)
+        => ExecuteOwnerScopedMutationAsync(request, () => session.UnarchiveThreadAsync(request, cancellationToken), cancellationToken);
+
+    public Task<ThreadMutationResult> DeleteThreadAsync(ThreadMutationRequest request, CancellationToken cancellationToken)
+        => ExecuteOwnerScopedMutationAsync(request, () => session.DeleteThreadAsync(request, cancellationToken), cancellationToken);
+
+    public Task<ThreadMutationResult> RevertThreadAsync(ThreadMutationRequest request, CancellationToken cancellationToken)
+        => ExecuteOwnerScopedMutationAsync(request, () => session.RevertThreadAsync(request, cancellationToken), cancellationToken);
+
+    public Task<ThreadSearchResult> SearchThreadsAsync(ThreadSearchRequest request, CancellationToken cancellationToken)
+        => ExecuteOwnerScopedGenerationAsync(request, () => session.SearchThreadsAsync(request, cancellationToken), cancellationToken);
 
     public Task<ThreadListScopesResult> GetThreadListScopesAsync(GetThreadListScopesRequest request, CancellationToken cancellationToken)
         => ExecuteOwnerScopedAsync(request, () => session.GetThreadListScopesAsync(cancellationToken), cancellationToken);
@@ -1938,6 +1981,28 @@ public sealed partial class WorkerRpcService : ICodexWorkerClient, IAsyncDisposa
         await clientRpc.NotifyWithParameterObjectAsync(
             "observer/threadReadStateChanged",
             new { notification = Stamp(value) }).ConfigureAwait(false);
+    }
+
+    private async Task PublishThreadSearchPartialAsync(ThreadSearchPartialEvent value, CancellationToken cancellationToken)
+    {
+        if (!MatchesCurrentOwner(value) || !IsCurrentEmission() || clientRpc is null) return;
+        await clientRpc.NotifyWithParameterObjectAsync(
+            "observer/threadSearchPartial", new { notification = Stamp(value) }).ConfigureAwait(false);
+    }
+
+    private async Task PublishThreadHistoryChangedAsync(ThreadHistoryChangedEvent value, CancellationToken cancellationToken)
+    {
+        if (!MatchesCurrentOwner(value) || !IsCurrentEmission() || clientRpc is null) return;
+        await clientRpc.NotifyWithParameterObjectAsync(
+            "observer/threadHistoryChanged", new { notification = Stamp(value) }).ConfigureAwait(false);
+    }
+
+    private bool MatchesCurrentOwner(WorkerGenerationResult value)
+    {
+        ConnectionTargetSnapshot current = SnapshotTarget();
+        return value.OwnerGeneration == current.OwnerGeneration
+            && value.ConnectionGeneration == current.Generation
+            && string.Equals(value.StatePartitionFingerprint, current.StatePartitionFingerprint, StringComparison.Ordinal);
     }
 
     private async Task PublishRateLimitsChangedAsync(RateLimitsResult value, CancellationToken cancellationToken)

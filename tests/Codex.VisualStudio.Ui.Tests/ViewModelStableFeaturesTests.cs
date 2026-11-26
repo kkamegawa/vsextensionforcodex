@@ -192,13 +192,16 @@ public sealed partial class ViewModelTests
         var bridge = new FakeWorkerBridge
         {
             ThreadListScopesResult = new ThreadListScopesResult { CurrentFolder = @"C:\repo" },
-            ListThreadsHandler = async (_, cancellationToken) => ++calls == 1
-                ? await firstPage.Task.WaitAsync(cancellationToken)
-                : new ThreadPage { Threads = [new ThreadSummary { Id = "current-folder" }] },
+            ListThreadsHandler = (_, _) => Task.FromResult(new ThreadPage()),
         };
         using ChatViewModel vm = await CreateJoinedViewModelAsync(bridge);
         await RunCommandAsync(vm.ToggleHistoryCommand);
         await WaitForAsync(() => vm.ThreadListScopes.Count == 2);
+        await WaitForAsync(() => bridge.ListThreadsCallCount >= 2);
+        await Task.Delay(50);
+        bridge.ListThreadsHandler = async (_, cancellationToken) => ++calls == 1
+            ? await firstPage.Task.WaitAsync(cancellationToken)
+            : new ThreadPage { Threads = [new ThreadSummary { Id = "current-folder" }] };
 
         vm.SelectedThreadListScopeId = ChatViewModel.CurrentFolderScopeId;
         await WaitForAsync(() => calls == 1);

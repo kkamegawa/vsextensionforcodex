@@ -1,4 +1,5 @@
 ﻿using System.Runtime.Serialization;
+using Newtonsoft.Json;
 using StreamJsonRpc;
 
 namespace Codex.VisualStudio.Contracts;
@@ -344,14 +345,14 @@ public sealed class StartThreadRequest : OwnerScopedRequest
 
 public sealed class ResumeThreadRequest : OwnerScopedRequest
 {
-    public string ThreadId { get; set; } = string.Empty;
+    [DataMember] public string ThreadId { get; set; } = string.Empty;
 
-    public bool UserConfirmed { get; set; }
+    [DataMember] public bool UserConfirmed { get; set; }
 }
 
 public sealed class ThreadGoalRequest : OwnerScopedRequest
 {
-    public string ThreadId { get; set; } = string.Empty;
+    [DataMember] public string ThreadId { get; set; } = string.Empty;
 }
 
 public sealed class StartAccountLoginRequest : OwnerScopedRequest
@@ -362,8 +363,79 @@ public sealed class ListThreadsRequest : OwnerScopedRequest
 {
     public string? Cursor { get; set; }
 
+    public bool Archived { get; set; }
+
+    public string? SearchTerm { get; set; }
+
+    public string? SectionId { get; set; }
+
     // Server paths fixed when paging starts. Null lists every conversation.
     public IReadOnlyList<string>? WorkingDirectories { get; set; }
+}
+
+[DataContract]
+public sealed class ThreadSectionInfo
+{
+    [DataMember] public string Id { get; set; } = string.Empty;
+    [DataMember] public string Name { get; set; } = string.Empty;
+}
+
+[DataContract]
+public sealed class ThreadSectionsResult : WorkerGenerationResult
+{
+    [DataMember] public IReadOnlyList<ThreadSectionInfo> Sections { get; set; } = Array.Empty<ThreadSectionInfo>();
+}
+
+[DataContract]
+public sealed class ThreadMutationRequest : OwnerScopedRequest
+{
+    [DataMember] public string ThreadId { get; set; } = string.Empty;
+    [DataMember] public string? BeforeTurnId { get; set; }
+    [DataMember] public bool UserConfirmed { get; set; }
+}
+
+[DataContract]
+public sealed class ThreadMutationResult : WorkerGenerationResult
+{
+    [DataMember] public bool Succeeded { get; set; }
+    [DataMember] public bool OutcomeUnknown { get; set; }
+    [DataMember] public string? Message { get; set; }
+}
+
+[DataContract]
+public sealed class ThreadSearchRequest : OwnerScopedRequest
+{
+    [DataMember] public string SearchTerm { get; set; } = string.Empty;
+    [DataMember] public string? RequestId { get; set; }
+}
+
+[DataContract]
+public sealed class ThreadSearchPartialEvent : WorkerGenerationResult
+{
+    [DataMember] public string RequestId { get; set; } = string.Empty;
+    [DataMember] public IReadOnlyList<ThreadSearchHit> Results { get; set; } = Array.Empty<ThreadSearchHit>();
+}
+
+[DataContract]
+public sealed class ThreadHistoryChangedEvent : WorkerGenerationResult
+{
+    [DataMember] public string ThreadId { get; set; } = string.Empty;
+    [DataMember] public string ChangeKind { get; set; } = string.Empty;
+    [DataMember] public string? SectionId { get; set; }
+}
+
+[DataContract]
+public sealed class ThreadSearchResult : WorkerGenerationResult
+{
+    [DataMember] public bool IsSupported { get; set; } = true;
+    [DataMember] public IReadOnlyList<ThreadSearchHit> Results { get; set; } = Array.Empty<ThreadSearchHit>();
+}
+
+[DataContract]
+public sealed class ThreadSearchHit
+{
+    [DataMember] public ThreadSummary Thread { get; set; } = new();
+    [DataMember] public string Snippet { get; set; } = string.Empty;
 }
 
 public sealed class GetThreadListScopesRequest : OwnerScopedRequest
@@ -380,12 +452,12 @@ public sealed class ThreadListScopesResult
 
 public sealed class ReadThreadRequest : OwnerScopedRequest
 {
-    public string ThreadId { get; set; } = string.Empty;
+    [DataMember] public string ThreadId { get; set; } = string.Empty;
 }
 
 public sealed class UpdateThreadReadStateRequest : OwnerScopedRequest
 {
-    public string ThreadId { get; set; } = string.Empty;
+    [DataMember] public string ThreadId { get; set; } = string.Empty;
 
     public string ExpectedRevision { get; set; } = string.Empty;
 
@@ -394,7 +466,7 @@ public sealed class UpdateThreadReadStateRequest : OwnerScopedRequest
 
 public sealed class ListThreadTurnsRequest : OwnerScopedRequest
 {
-    public string ThreadId { get; set; } = string.Empty;
+    [DataMember] public string ThreadId { get; set; } = string.Empty;
 
     public string? Cursor { get; set; }
 
@@ -414,7 +486,7 @@ public sealed class ThreadItemCursor
 
 public sealed class ListThreadItemsRequest : OwnerScopedRequest
 {
-    public string ThreadId { get; set; } = string.Empty;
+    [DataMember] public string ThreadId { get; set; } = string.Empty;
 
     public string? TurnId { get; set; }
 
@@ -425,7 +497,7 @@ public sealed class ListThreadItemsRequest : OwnerScopedRequest
 
 public sealed class ListThreadAttachmentsRequest : OwnerScopedRequest
 {
-    public string ThreadId { get; set; } = string.Empty;
+    [DataMember] public string ThreadId { get; set; } = string.Empty;
 
     public string? Cursor { get; set; }
 
@@ -478,7 +550,7 @@ public sealed class NetworkDiagnosticsResult : AppServerOperationResult
 
 public sealed class GetThreadUsageRequest : OwnerScopedRequest
 {
-    public string ThreadId { get; set; } = string.Empty;
+    [DataMember] public string ThreadId { get; set; } = string.Empty;
 }
 
 public sealed class LogoutAccountRequest : OwnerScopedRequest
@@ -528,7 +600,7 @@ public sealed class SwitchWorkspaceRequest : OwnerScopedRequest
 
     public string AccountId { get; set; } = string.Empty;
 
-    public bool UserConfirmed { get; set; }
+    [DataMember] public bool UserConfirmed { get; set; }
 }
 
 public enum WorkspaceSwitchState
@@ -594,6 +666,18 @@ public sealed class ThreadSummary
 
     [DataMember]
     public string? LinkedParentThreadId { get; set; }
+
+    [DataMember]
+    public string? SectionId { get; set; }
+
+    [DataMember]
+    public string? SectionName { get; set; }
+
+    [DataMember]
+    public string? SearchSnippet { get; set; }
+
+    [DataMember]
+    public string? Status { get; set; }
 
     // True when a 0.164.0+ resume returned the thread's saved settings. Model, reasoning effort,
     // and service tier then replace the composer settings together; a null tier means normal
@@ -706,6 +790,9 @@ public sealed class ThreadTurnSummary
 
     [DataMember]
     public string Status { get; set; } = string.Empty;
+
+    [DataMember]
+    public string DisplayLabel { get; set; } = string.Empty;
 
     [DataMember]
     public long? StartedAt { get; set; }
@@ -933,7 +1020,7 @@ public sealed class EffectiveApprovalState
 public sealed class StartTurnRequest
     : OwnerScopedRequest
 {
-    public string ThreadId { get; set; } = string.Empty;
+    [DataMember] public string ThreadId { get; set; } = string.Empty;
 
     public string Text { get; set; } = string.Empty;
 
@@ -1017,7 +1104,7 @@ public sealed class IdeContextInfo
 
 public sealed class SteerTurnRequest : OwnerScopedRequest
 {
-    public string ThreadId { get; set; } = string.Empty;
+    [DataMember] public string ThreadId { get; set; } = string.Empty;
 
     public string ExpectedTurnId { get; set; } = string.Empty;
 
@@ -1026,7 +1113,7 @@ public sealed class SteerTurnRequest : OwnerScopedRequest
 
 public sealed class InterruptTurnRequest : OwnerScopedRequest
 {
-    public string ThreadId { get; set; } = string.Empty;
+    [DataMember] public string ThreadId { get; set; } = string.Empty;
 
     public string TurnId { get; set; } = string.Empty;
 }
@@ -1039,18 +1126,20 @@ public abstract class AppServerOperationResult
 }
 
 /// <summary>Scope captured by the Extension when an owner-bound operation is dispatched.</summary>
+[DataContract]
+[JsonObject(MemberSerialization.OptOut)]
 public abstract class OwnerScopedRequest
 {
-    public string? StatePartitionFingerprint { get; set; }
+    [DataMember] public string? StatePartitionFingerprint { get; set; }
 
-    public long OwnerGeneration { get; set; }
+    [DataMember] public long OwnerGeneration { get; set; }
 
-    public long ConnectionGeneration { get; set; }
+    [DataMember] public long ConnectionGeneration { get; set; }
 }
 
 public sealed class CompactThreadRequest : OwnerScopedRequest
 {
-    public string ThreadId { get; set; } = string.Empty;
+    [DataMember] public string ThreadId { get; set; } = string.Empty;
 }
 
 public sealed class CompactThreadResult : AppServerOperationResult
@@ -1068,7 +1157,7 @@ public sealed class ReviewTarget
 
 public sealed class StartReviewRequest : OwnerScopedRequest
 {
-    public string ThreadId { get; set; } = string.Empty;
+    [DataMember] public string ThreadId { get; set; } = string.Empty;
 
     public ReviewTarget Target { get; set; } = new();
 
@@ -1091,7 +1180,7 @@ public sealed class StartReviewResult : AppServerOperationResult
 
 public sealed class ForkThreadRequest : OwnerScopedRequest
 {
-    public string ThreadId { get; set; } = string.Empty;
+    [DataMember] public string ThreadId { get; set; } = string.Empty;
     public bool CreateLinkedFork { get; set; }
 
     // Lists the linked children of ThreadId through thread/list.attachedToThreadId instead of forking.
@@ -1113,7 +1202,7 @@ public sealed class ForkThreadResult : AppServerOperationResult
 
 public sealed class ThreadGoalInfo
 {
-    public string ThreadId { get; set; } = string.Empty;
+    [DataMember] public string ThreadId { get; set; } = string.Empty;
 
     public string Objective { get; set; } = string.Empty;
 
@@ -1132,7 +1221,7 @@ public sealed class ThreadGoalInfo
 
 public sealed class SetThreadGoalRequest : OwnerScopedRequest
 {
-    public string ThreadId { get; set; } = string.Empty;
+    [DataMember] public string ThreadId { get; set; } = string.Empty;
 
     public string? Objective { get; set; }
 
@@ -1150,7 +1239,7 @@ public sealed class ThreadGoalResult : AppServerOperationResult
 
 public sealed class StopThreadGoalRequest : OwnerScopedRequest
 {
-    public string ThreadId { get; set; } = string.Empty;
+    [DataMember] public string ThreadId { get; set; } = string.Empty;
 }
 
 [DataContract]
@@ -1410,7 +1499,7 @@ public sealed class RateLimitInfo
 // Integer micro-units as reported by the server. A null value is unknown and is never zero.
 public sealed class ThreadUsageResult : AppServerOperationResult
 {
-    public string ThreadId { get; set; } = string.Empty;
+    [DataMember] public string ThreadId { get; set; } = string.Empty;
 
     public long? NativeUsageUsdMicros { get; set; }
 
@@ -1429,7 +1518,7 @@ public sealed class RateLimitsResult : AppServerOperationResult
 
 public sealed class ContextCompactionEvent
 {
-    public string ThreadId { get; set; } = string.Empty;
+    [DataMember] public string ThreadId { get; set; } = string.Empty;
 
     public string TurnId { get; set; } = string.Empty;
 
@@ -1440,7 +1529,7 @@ public sealed class ContextCompactionEvent
 
 public sealed class ReviewModeEvent
 {
-    public string ThreadId { get; set; } = string.Empty;
+    [DataMember] public string ThreadId { get; set; } = string.Empty;
 
     public string TurnId { get; set; } = string.Empty;
 
@@ -1453,7 +1542,7 @@ public sealed class ReviewModeEvent
 
 public sealed class ThreadGoalEvent
 {
-    public string ThreadId { get; set; } = string.Empty;
+    [DataMember] public string ThreadId { get; set; } = string.Empty;
 
     public string? TurnId { get; set; }
 
@@ -1505,7 +1594,7 @@ public sealed class ApprovalRequest
 
     public string Method { get; set; } = string.Empty;
 
-    public string ThreadId { get; set; } = string.Empty;
+    [DataMember] public string ThreadId { get; set; } = string.Empty;
 
     public string TurnId { get; set; } = string.Empty;
 
@@ -1563,7 +1652,7 @@ public sealed class UserInputRequest
 {
     public string RequestId { get; set; } = string.Empty;
 
-    public string ThreadId { get; set; } = string.Empty;
+    [DataMember] public string ThreadId { get; set; } = string.Empty;
 
     public string TurnId { get; set; } = string.Empty;
 
@@ -1618,6 +1707,14 @@ public interface ICodexWorkerObserver
 
     [JsonRpcMethod("observer/threadReadStateChanged")]
     Task OnThreadReadStateChangedAsync(WorkerNotification<ThreadReadStateChangedEvent> notification, CancellationToken cancellationToken);
+
+    [JsonRpcMethod("observer/threadHistoryChanged")]
+    Task OnThreadHistoryChangedAsync(WorkerNotification<ThreadHistoryChangedEvent> notification, CancellationToken cancellationToken)
+        => Task.CompletedTask;
+
+    [JsonRpcMethod("observer/threadSearchPartial")]
+    Task OnThreadSearchPartialAsync(WorkerNotification<ThreadSearchPartialEvent> notification, CancellationToken cancellationToken)
+        => Task.CompletedTask;
 
     [JsonRpcMethod("observer/approvalRequested")]
     Task OnApprovalRequestedAsync(WorkerNotification<ApprovalRequest> notification, CancellationToken cancellationToken);
@@ -1723,6 +1820,26 @@ public interface ICodexWorkerClient
 
     [JsonRpcMethod("worker/thread/list")]
     Task<ThreadPage> ListThreadsAsync(ListThreadsRequest request, CancellationToken cancellationToken);
+
+    [JsonRpcMethod("worker/thread/sections/list")]
+    Task<ThreadSectionsResult> ListThreadSectionsAsync(GetThreadListScopesRequest request, CancellationToken cancellationToken)
+        => Task.FromResult(new ThreadSectionsResult());
+
+    [JsonRpcMethod("worker/thread/archive")]
+    Task<ThreadMutationResult> ArchiveThreadAsync(ThreadMutationRequest request, CancellationToken cancellationToken) => throw new NotSupportedException();
+
+    [JsonRpcMethod("worker/thread/unarchive")]
+    Task<ThreadMutationResult> UnarchiveThreadAsync(ThreadMutationRequest request, CancellationToken cancellationToken) => throw new NotSupportedException();
+
+    [JsonRpcMethod("worker/thread/delete")]
+    Task<ThreadMutationResult> DeleteThreadAsync(ThreadMutationRequest request, CancellationToken cancellationToken) => throw new NotSupportedException();
+
+    [JsonRpcMethod("worker/thread/revert")]
+    Task<ThreadMutationResult> RevertThreadAsync(ThreadMutationRequest request, CancellationToken cancellationToken) => throw new NotSupportedException();
+
+    [JsonRpcMethod("worker/thread/search")]
+    Task<ThreadSearchResult> SearchThreadsAsync(ThreadSearchRequest request, CancellationToken cancellationToken)
+        => Task.FromResult(new ThreadSearchResult { IsSupported = false });
 
     [JsonRpcMethod("worker/threads/scopes")]
     Task<ThreadListScopesResult> GetThreadListScopesAsync(GetThreadListScopesRequest request, CancellationToken cancellationToken);

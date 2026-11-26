@@ -112,6 +112,34 @@ public sealed class JsonLineRpcConnection : IJsonRpcConnection
         }
     }
 
+    public async Task<JsonElement> SendCorrelatedRequestAsync(
+        string method, object? parameters, string requestId, TimeSpan timeout, CancellationToken cancellationToken)
+    {
+        ThrowIfClosed();
+        ArgumentException.ThrowIfNullOrWhiteSpace(requestId);
+        JsonRpcCorrelatedRequestPolicy.Validate(method, parameters, requestId);
+        string key = JsonRpcRequestId.GetStringKey(requestId);
+        var completion = new TaskCompletionSource<JsonElement>(TaskCreationOptions.RunContinuationsAsynchronously);
+        if (!pending.TryAdd(key, completion))
+        {
+            throw new InvalidOperationException($"Duplicate JSON-RPC request id '{requestId}'.");
+        }
+
+        try
+        {
+            using var timeoutSource = new CancellationTokenSource(timeout);
+            using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutSource.Token, lifetime.Token);
+            using CancellationTokenRegistration registration = linked.Token.Register(
+                static state => ((TaskCompletionSource<JsonElement>)state!).TrySetCanceled(), completion);
+            await EnqueueAsync(new { method, @params = parameters, id = requestId }, linked.Token).ConfigureAwait(false);
+            return await completion.Task.ConfigureAwait(false);
+        }
+        finally
+        {
+            pending.TryRemove(key, out _);
+        }
+    }
+
     public Task SendNotificationAsync(string method, object? parameters, CancellationToken cancellationToken)
     {
         ThrowIfClosed();

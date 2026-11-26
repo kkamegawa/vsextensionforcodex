@@ -568,12 +568,15 @@ public sealed class WorkerRpcServiceTests
     public async Task Connect_RejectsPreviousContractVersion()
     {
         var session = new CodexSessionService(new ApprovalPolicyEngine(new PathAccessPolicy()), new SecretRedactor());
-        await using var worker = new WorkerRpcService(new SecretRedactor(), new FakeProcessHost(), session);
+        var processHost = new FakeProcessHost();
+        await using var worker = new WorkerRpcService(new SecretRedactor(), processHost, session);
 
         await Assert.ThrowsExactlyAsync<InvalidOperationException>(
             () => worker.ConnectAsync(new WorkerOptions { ContractVersion = ContractVersions.Current - 1 }, CancellationToken.None));
-    }
 
+        Assert.AreEqual(0, processHost.RemoteStarts, "The contract version gate runs before starting a legacy worker.");
+        Assert.AreEqual(0, processHost.LocalSandboxBackends.Count, "A legacy worker must not start with an incompatible contract.");
+    }
     [TestMethod]
     public async Task ThreadClosedChangesStatusOnlyForTheActiveThread()
     {

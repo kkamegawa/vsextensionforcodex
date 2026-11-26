@@ -110,6 +110,67 @@ public sealed class WebSocketJsonRpcConnectionTests
     }
 
     [TestMethod]
+    public async Task CorrelatedRequest_UsesCallerStringIdForStreamNotificationsAndFinalResponse()
+    {
+        await using var harness = new SocketHarness();
+        const string requestId = "dc48a8f8bc704c8aa60785863cc33431";
+        await harness.Connection.StartAsync(CancellationToken.None);
+        Task<JsonElement> pending = harness.Connection.SendCorrelatedRequestAsync(
+            "thread/search/stream", new { searchTerm = "needle" }, requestId, TimeSpan.FromSeconds(5), CancellationToken.None);
+
+        using JsonDocument request = JsonDocument.Parse(await harness.ReceiveServerTextAsync());
+        Assert.AreEqual(requestId, request.RootElement.GetProperty("id").GetString());
+        await harness.SendServerTextAsync($"{{\"method\":\"thread/search/partial\",\"params\":{{\"requestId\":\"{requestId}\",\"data\":[]}}}}");
+        await harness.SendServerTextAsync($"{{\"id\":\"{requestId}\",\"result\":{{\"data\":[]}}}}");
+
+        Assert.AreEqual(JsonValueKind.Array, (await pending).GetProperty("data").ValueKind);
+    }
+
+    [TestMethod]
+    public async Task CorrelatedRequest_ValidatesScopeAndCleansRegistrationOnSetupFailure()
+    {
+        await using var harness = new SocketHarness();
+        const string requestId = "fe69b2a30c03451c9f1ea6f492d779a0";
+        await harness.Connection.StartAsync(CancellationToken.None);
+
+        await Assert.ThrowsAsync<ArgumentException>(() => harness.Connection.SendCorrelatedRequestAsync(
+            "account/read", new { searchTerm = "needle" }, requestId, TimeSpan.FromSeconds(5), CancellationToken.None));
+        await Assert.ThrowsAsync<ArgumentException>(() => harness.Connection.SendCorrelatedRequestAsync(
+            "thread/search/stream", new { searchTerm = string.Empty }, requestId, TimeSpan.FromSeconds(5), CancellationToken.None));
+        await Assert.ThrowsAsync<ArgumentException>(() => harness.Connection.SendCorrelatedRequestAsync(
+            "thread/search/stream", new { searchTerm = "   " }, requestId, TimeSpan.FromSeconds(5), CancellationToken.None));
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => harness.Connection.SendCorrelatedRequestAsync(
+            "thread/search/stream", new { searchTerm = "needle" }, requestId, TimeSpan.FromMilliseconds(-2), CancellationToken.None));
+
+        Task<JsonElement> pending = harness.Connection.SendCorrelatedRequestAsync(
+            "thread/search/stream", new { searchTerm = "needle" }, requestId, TimeSpan.FromSeconds(5), CancellationToken.None);
+        using JsonDocument request = JsonDocument.Parse(await harness.ReceiveServerTextAsync());
+        Assert.AreEqual(requestId, request.RootElement.GetProperty("id").GetString());
+        await Assert.ThrowsAsync<InvalidOperationException>(() => harness.Connection.SendCorrelatedRequestAsync(
+            "thread/search/stream", new { searchTerm = "another" }, requestId, TimeSpan.FromSeconds(5), CancellationToken.None));
+        await harness.SendServerTextAsync($"{{\"id\":\"{requestId}\",\"result\":{{\"data\":[]}}}}");
+        Assert.AreEqual(JsonValueKind.Array, (await pending).GetProperty("data").ValueKind);
+    }
+    [TestMethod]
+    public async Task CorrelatedRequest_TimeoutClearsPendingRegistration()
+    {
+        await using var harness = new SocketHarness();
+        const string requestId = "dd134765ca7643c286526e195175df12";
+        await harness.Connection.StartAsync(CancellationToken.None);
+        Task<JsonElement> timedOut = harness.Connection.SendCorrelatedRequestAsync(
+            "thread/search/stream", new { searchTerm = "needle" }, requestId, TimeSpan.FromMilliseconds(100), CancellationToken.None);
+        using JsonDocument firstRequest = JsonDocument.Parse(await harness.ReceiveServerTextAsync());
+        Assert.AreEqual(requestId, firstRequest.RootElement.GetProperty("id").GetString());
+        await Assert.ThrowsAsync<OperationCanceledException>(async () => await timedOut);
+
+        Task<JsonElement> retry = harness.Connection.SendCorrelatedRequestAsync(
+            "thread/search/stream", new { searchTerm = "needle" }, requestId, TimeSpan.FromSeconds(5), CancellationToken.None);
+        using JsonDocument secondRequest = JsonDocument.Parse(await harness.ReceiveServerTextAsync());
+        Assert.AreEqual(requestId, secondRequest.RootElement.GetProperty("id").GetString());
+        await harness.SendServerTextAsync($"{{\"id\":\"{requestId}\",\"result\":{{\"data\":[]}}}}");
+        Assert.AreEqual(JsonValueKind.Array, (await retry).GetProperty("data").ValueKind);
+    }
+    [TestMethod]
     public async Task ServerRequest_ReturnsHandlerResultAndIgnoresDuplicateOutstandingId()
     {
         await using var harness = new SocketHarness();

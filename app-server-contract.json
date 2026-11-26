@@ -97,7 +97,12 @@
           "feedback/save",
           "modelProvider/list",
           "modelProvider/config/write",
-          "account/securitySetup/read"
+          "account/securitySetup/read",
+          "thread/archive",
+          "thread/unarchive",
+          "thread/delete",
+          "thread/revert",
+          "threadSection/list"
         ],
         "serverRequests": [
           "item/commandExecution/requestApproval",
@@ -138,7 +143,11 @@
           "mcpServer/oauthLogin/completed",
           "mcpServer/startupStatus/updated",
           "account/gatewayOAuth/changed",
-          "thread/section/changed"
+          "thread/section/changed",
+          "thread/archived",
+          "thread/unarchived",
+          "thread/deleted",
+          "thread/reverted"
         ],
         "experimentalServerNotifications": [
           "item/plan/delta"
@@ -192,7 +201,8 @@
           "config/batchWrite",
           "feedback/save",
           "thread/guardianReview",
-          "thread/prepareApprovedPlan"
+          "thread/prepareApprovedPlan",
+          "thread/search"
         ],
         "serverRequests": [
           "item/commandExecution/requestApproval",
@@ -286,7 +296,12 @@
           "feedback/save",
           "modelProvider/list",
           "modelProvider/config/write",
-          "account/securitySetup/read"
+          "account/securitySetup/read",
+          "thread/archive",
+          "thread/unarchive",
+          "thread/delete",
+          "thread/revert",
+          "threadSection/list"
         ],
         "serverRequests": [
           "item/commandExecution/requestApproval",
@@ -327,7 +342,11 @@
           "mcpServer/oauthLogin/completed",
           "mcpServer/startupStatus/updated",
           "account/gatewayOAuth/changed",
-          "thread/section/changed"
+          "thread/section/changed",
+          "thread/archived",
+          "thread/unarchived",
+          "thread/deleted",
+          "thread/reverted"
         ],
         "experimentalServerNotifications": [
           "item/plan/delta"
@@ -381,7 +400,8 @@
           "config/batchWrite",
           "feedback/save",
           "thread/guardianReview",
-          "thread/prepareApprovedPlan"
+          "thread/prepareApprovedPlan",
+          "thread/search"
         ],
         "serverRequests": [
           "item/commandExecution/requestApproval",
@@ -475,7 +495,12 @@
           "feedback/save",
           "modelProvider/list",
           "modelProvider/config/write",
-          "account/securitySetup/read"
+          "account/securitySetup/read",
+          "thread/archive",
+          "thread/unarchive",
+          "thread/delete",
+          "thread/revert",
+          "threadSection/list"
         ],
         "serverRequests": [
           "item/commandExecution/requestApproval",
@@ -516,7 +541,11 @@
           "mcpServer/oauthLogin/completed",
           "mcpServer/startupStatus/updated",
           "account/gatewayOAuth/changed",
-          "thread/section/changed"
+          "thread/section/changed",
+          "thread/archived",
+          "thread/unarchived",
+          "thread/deleted",
+          "thread/reverted"
         ],
         "experimentalServerNotifications": [
           "item/plan/delta"
@@ -570,7 +599,9 @@
           "config/batchWrite",
           "feedback/save",
           "thread/guardianReview",
-          "thread/prepareApprovedPlan"
+          "thread/prepareApprovedPlan",
+          "thread/search/stream",
+          "thread/search/stream/cancel"
         ],
         "serverRequests": [
           "item/commandExecution/requestApproval",
@@ -611,7 +642,8 @@
           "mcpServer/oauthLogin/completed",
           "mcpServer/startupStatus/updated",
           "account/gatewayOAuth/changed",
-          "thread/readState/changed"
+          "thread/readState/changed",
+          "thread/search/partial"
         ],
         "experimentalServerNotifications": [
           "item/plan/delta"
