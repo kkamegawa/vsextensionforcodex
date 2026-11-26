@@ -996,22 +996,22 @@
                   <CheckBox DockPanel.Dock="Top" Margin="2,0,2,6"
                             Content="{Binding ArchivedToggleText}"
                             IsChecked="{Binding ShowArchivedThreads, Mode=TwoWay}"
-                            AutomationProperties.Name="Show archived conversations" />
+                            AutomationProperties.Name="{Binding ArchivedToggleAutomationName}" />
                   <ComboBox DockPanel.Dock="Top" Margin="0,0,0,6"
                             ItemsSource="{Binding ThreadSections}"
                             DisplayMemberPath="Name"
                             SelectedValuePath="Id"
                             SelectedValue="{Binding SelectedThreadSectionId, Mode=TwoWay}"
                             ToolTip="{Binding SectionFilterToolTipText}"
-                            AutomationProperties.Name="Conversation section filter" />
+                            AutomationProperties.Name="{Binding ThreadSectionsAutomationName}" />
                   <DockPanel DockPanel.Dock="Top" Margin="0,0,0,6">
                     <Button DockPanel.Dock="Right" Margin="4,0,0,0" Content="{Binding HistorySearchButtonText}"
                             Command="{Binding SearchHistoryCommand}"
                             Style="{StaticResource SmallRoundButtonStyle}"
-                            AutomationProperties.Name="Search conversation history" />
+                            AutomationProperties.Name="{Binding HistorySearchButtonAutomationName}" />
                     <TextBox Text="{Binding HistorySearchText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
                              ToolTip="{Binding HistorySearchToolTipText}"
-                             AutomationProperties.Name="Search conversation history" />
+                             AutomationProperties.Name="{Binding HistorySearchAutomationName}" />
                   </DockPanel>
                   <Button DockPanel.Dock="Top" Margin="0,0,0,6" HorizontalAlignment="Right"
                           Content="Close history"
@@ -1122,12 +1122,12 @@
                                 DisplayMemberPath="DisplayLabel"
                                 SelectedValuePath="Id"
                                 SelectedValue="{Binding SelectedRevertTurnId, Mode=TwoWay}"
-                                ToolTip="Turn to remove and all following turns"
-                                AutomationProperties.Name="Revert to before turn" />
+                                ToolTip="{Binding ThreadRevertTurnSelectorToolTip}"
+                                AutomationProperties.Name="{Binding ThreadRevertTurnSelectorAutomationName}" />
                       <Button Margin="0,0,4,4" Content="{Binding ThreadRevertButtonText}"
                               Command="{Binding RevertThreadCommand}"
                               Style="{StaticResource SmallRoundButtonStyle}"
-                              AutomationProperties.Name="Revert conversation before selected turn" />
+                              AutomationProperties.Name="{Binding ThreadRevertButtonAutomationName}" />
                     </DockPanel>
                     <StackPanel Margin="2,0,2,4"
                                 Visibility="{Binding ShowSelectedThreadReadState, Converter={StaticResource BoolToVis}}">

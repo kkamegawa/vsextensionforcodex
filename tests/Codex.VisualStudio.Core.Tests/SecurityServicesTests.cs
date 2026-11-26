@@ -23,16 +23,22 @@ public sealed class SecurityServicesTests
     }
 
     [TestMethod]
-    public void ApprovalPolicyEngine_ThreadMutationFailsClosedForInvalidIdentityAndClassifiesValidActions()
+    [DataRow("archive", ApprovalRiskCategory.Destructive)]
+    [DataRow("unarchive", ApprovalRiskCategory.Destructive)]
+    [DataRow("delete", ApprovalRiskCategory.Destructive)]
+    [DataRow("revert", ApprovalRiskCategory.Destructive)]
+    public void ApprovalPolicyEngine_ThreadMutationFailsClosedForInvalidIdentityAndClassifiesValidActions(
+        string action,
+        ApprovalRiskCategory expectedRisk)
     {
         var policy = new ApprovalPolicyEngine(new PathAccessPolicy());
         Assert.IsTrue(policy.EvaluateThreadMutation(null, "delete").IsBlocked);
         Assert.IsTrue(policy.EvaluateThreadMutation("thread-1", "delete;rm").IsBlocked);
 
-        ApprovalPolicyResult valid = policy.EvaluateThreadMutation("thread-1", "revert");
+        ApprovalPolicyResult valid = policy.EvaluateThreadMutation("thread-1", action);
         Assert.IsFalse(valid.IsBlocked);
-        Assert.AreEqual(ApprovalRiskCategory.Destructive, valid.Risk);
-        StringAssert.Contains(valid.RiskKey, "thread:revert:thread-1");
+        Assert.AreEqual(expectedRisk, valid.Risk);
+        StringAssert.Contains(valid.RiskKey, $"thread:{action}:thread-1");
     }
 
     [TestMethod]

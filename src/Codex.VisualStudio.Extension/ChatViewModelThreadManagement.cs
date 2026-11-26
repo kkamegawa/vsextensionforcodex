@@ -3,22 +3,27 @@ using System.Globalization;
 using System.IO;
 using System.Runtime.Serialization;
 using Codex.VisualStudio.Contracts;
+using ReentrantSemaphore = Microsoft.VisualStudio.Threading.ReentrantSemaphore;
 
 namespace Codex.VisualStudio.Extension;
 
 /// <summary>Presentation state and commands for the conversation history management surface.</summary>
 public sealed partial class ChatViewModel
 {
+    private static readonly bool[] ThreadArchiveStates = [false, true];
     private bool showArchivedThreads;
     private string historySearchText = string.Empty;
     private string? selectedThreadSectionId;
     private string? selectedRevertTurnId;
     private string? pendingThreadMutation;
     private string? pendingMutationThreadId;
+    private string? pendingMutationThreadTitle;
     private string? pendingMutationBeforeTurnId;
     private string? activeThreadSearchRequestId;
     private HashSet<string>? activeSearchEligibleThreads;
     private readonly Dictionary<string, string> linkedForkParentByChildId = new(StringComparer.Ordinal);
+    private readonly ReentrantSemaphore linkedForkIndexRefreshGate = ExtensionConcurrency.CreateSemaphore();
+    private Dictionary<string, string?>? linkedForkIndexUpdatesDuringRefresh;
     private OwnerSnapshot? linkedForkIndexOwner;
     private bool linkedForkIndexComplete;
     private OwnerSnapshot? pendingMutationOwner;
@@ -100,11 +105,11 @@ public sealed partial class ChatViewModel
     public string ThreadMutationConfirmationText => pendingThreadMutation switch
     {
         "delete" => IsJapaneseUi
-            ? $"「{SafeThreadTitle(pendingMutationThreadId)}」を完全に削除します。この操作は取り消せません。ローカルファイルの変更は保持されます。"
-            : $"Permanently delete “{SafeThreadTitle(pendingMutationThreadId)}”? This cannot be undone. Local file changes are preserved.",
+            ? $"「{pendingMutationThreadTitle ?? SafeThreadTitle(pendingMutationThreadId)}」を完全に削除します。この操作は取り消せません。ローカルファイルの変更は保持されます。"
+            : $"Permanently delete “{pendingMutationThreadTitle ?? SafeThreadTitle(pendingMutationThreadId)}”? This cannot be undone. Local file changes are preserved.",
         "revert" => IsJapaneseUi
-            ? $"「{SafeThreadTitle(pendingMutationThreadId)}」の選択したターンとそれ以降を会話履歴から削除します。ローカルファイルの変更は元に戻りません。"
-            : $"Revert “{SafeThreadTitle(pendingMutationThreadId)}” to before the selected turn? This turn and every later turn will be removed from conversation history. Local file changes will not be reverted.",
+            ? $"「{pendingMutationThreadTitle ?? SafeThreadTitle(pendingMutationThreadId)}」の選択したターンとそれ以降を会話履歴から削除します。ローカルファイルの変更は元に戻りません。"
+            : $"Revert “{pendingMutationThreadTitle ?? SafeThreadTitle(pendingMutationThreadId)}” to before the selected turn? This turn and every later turn will be removed from conversation history. Local file changes will not be reverted.",
         _ => string.Empty,
     };
 
@@ -125,10 +130,17 @@ public sealed partial class ChatViewModel
     [DataMember] public string ThreadMutationCancelButtonText => IsJapaneseUi ? "キャンセル" : "Cancel";
     [DataMember] public string ThreadDeleteButtonText => IsJapaneseUi ? "会話を削除" : "Delete conversation";
     [DataMember] public string ThreadArchiveAutomationName => IsJapaneseUi ? "選択した会話をアーカイブまたは解除" : "Archive or unarchive selected conversation";
+    [DataMember] public string ArchivedToggleAutomationName => ArchivedToggleText;
+    [DataMember] public string ThreadSectionsAutomationName => IsJapaneseUi ? "会話のセクションで絞り込む" : "Filter conversations by section";
+    [DataMember] public string HistorySearchAutomationName => IsJapaneseUi ? "会話履歴を検索" : "Search conversation history";
+    [DataMember] public string HistorySearchButtonAutomationName => IsJapaneseUi ? "会話履歴を検索" : "Search conversation history";
     [DataMember] public string ThreadDeleteAutomationName => IsJapaneseUi ? "選択した会話を削除" : "Delete selected conversation";
     [DataMember] public string ThreadMutationConfirmAutomationName => pendingThreadMutation == "delete" ? (IsJapaneseUi ? "削除を確定" : "Confirm deletion") : (IsJapaneseUi ? "戻す操作を確定" : "Confirm revert");
     [DataMember] public string ThreadMutationCancelAutomationName => IsJapaneseUi ? "操作をキャンセル" : "Cancel conversation change";
     [DataMember] public string ThreadRevertButtonText => IsJapaneseUi ? "選択したターンの前に戻す" : "Revert before turn";
+    [DataMember] public string ThreadRevertTurnSelectorToolTip => IsJapaneseUi ? "選択したターンとそれ以降を削除します" : "Remove the selected turn and all following turns";
+    [DataMember] public string ThreadRevertTurnSelectorAutomationName => IsJapaneseUi ? "会話履歴を戻すターンを選択" : "Select the turn to revert the conversation to";
+    [DataMember] public string ThreadRevertButtonAutomationName => IsJapaneseUi ? "選択したターンの前に会話を戻す" : "Revert conversation before selected turn";
 
     [DataMember]
     public bool HasThreadManagementStatus => !string.IsNullOrWhiteSpace(historyManagementStatusText);
@@ -181,9 +193,15 @@ public sealed partial class ChatViewModel
 
     private string SafeThreadTitle(string? threadId)
     {
-        string? title = ThreadRows.FirstOrDefault(row => row.Id == threadId)?.Preview
-            ?? Threads.FirstOrDefault(thread => thread.Id == threadId)?.Preview
-            ?? (SelectedThread is { } selected && selected.Id == threadId ? selected.Preview : null);
+        string? title = ThreadRows.FirstOrDefault(row => row.Id == threadId)?.Preview;
+        if (string.IsNullOrWhiteSpace(title))
+        {
+            title = Threads.FirstOrDefault(thread => thread.Id == threadId)?.Preview;
+        }
+        if (string.IsNullOrWhiteSpace(title) && SelectedThread is { } selected && selected.Id == threadId)
+        {
+            title = selected.Preview;
+        }
         if (string.IsNullOrWhiteSpace(title))
         {
             return IsJapaneseUi ? "タイトルなしの会話" : "Untitled conversation";
@@ -201,15 +219,21 @@ public sealed partial class ChatViewModel
         return linkedForkParentByChildId.Values.Contains(threadId, StringComparer.Ordinal);
     }
 
-    private void TrackLinkedForkRelationship(ThreadSummary thread)
+    internal void TrackLinkedForkRelationship(ThreadSummary thread)
     {
         EnsureLinkedForkIndexOwner();
         if (string.IsNullOrWhiteSpace(thread.LinkedParentThreadId))
         {
+            // A summary may omit its parent relationship. Only an explicit deletion
+            // notification can safely remove a previously observed fork link.
             return;
         }
 
         linkedForkParentByChildId[thread.Id] = thread.LinkedParentThreadId;
+        if (linkedForkIndexUpdatesDuringRefresh is { } updates)
+        {
+            updates[thread.Id] = thread.LinkedParentThreadId;
+        }
     }
 
     private bool HasLinkedParent(string threadId)
@@ -227,105 +251,185 @@ public sealed partial class ChatViewModel
         }
 
         linkedForkParentByChildId.Clear();
+        linkedForkIndexUpdatesDuringRefresh = null;
         linkedForkIndexComplete = false;
         linkedForkIndexOwner = owner;
     }
 
-    private async Task RefreshCompleteLinkedForkIndexAsync(OwnerSnapshot owner, CancellationToken cancellationToken)
+    internal async Task RefreshCompleteLinkedForkIndexAsync(OwnerSnapshot owner, CancellationToken cancellationToken)
     {
-        long historyGeneration = Interlocked.Read(ref historyManagementGeneration);
-        bool indexComplete = false;
-        await OnUiAsync(() =>
-        {
-            EnsureLinkedForkIndexOwner();
-            indexComplete = linkedForkIndexComplete;
-        }).ConfigureAwait(false);
-        if (indexComplete)
-        {
-            return;
-        }
-
-        var relationships = new Dictionary<string, string>(StringComparer.Ordinal);
         try
         {
-            foreach (bool archived in new[] { false, true })
+            await linkedForkIndexRefreshGate.ExecuteAsync(async () =>
             {
-                var seenCursors = new HashSet<string>(StringComparer.Ordinal);
-                string? cursor = null;
-                for (int pageNumber = 0; pageNumber < 100; pageNumber++)
-                {
-                    ThreadPage page = await bridge.ListThreadsAsync(StampOwner(new ListThreadsRequest
-                    {
-                        Cursor = cursor,
-                        Archived = archived,
-                    }, owner), cancellationToken).ConfigureAwait(false);
-                    if (!IsCurrentOwner(owner) || historyGeneration != Interlocked.Read(ref historyManagementGeneration) || !MatchesOwner(page, owner))
-                    {
-                        return;
-                    }
-
-                    foreach (ThreadSummary thread in page.Threads)
-                    {
-                        if (!string.IsNullOrWhiteSpace(thread.LinkedParentThreadId))
-                        {
-                            relationships[thread.Id] = thread.LinkedParentThreadId;
-                        }
-                    }
-
-                    cursor = page.NextCursor;
-                    if (string.IsNullOrWhiteSpace(cursor))
-                    {
-                        break;
-                    }
-
-                    if (!seenCursors.Add(cursor) || pageNumber == 99)
-                    {
-                        throw new InvalidDataException("The complete thread list did not terminate within its paging bounds.");
-                    }
-                }
-            }
-
-            await OnUiAsync(() =>
-            {
-                if (!IsCurrentOwner(owner) || historyGeneration != Interlocked.Read(ref historyManagementGeneration))
+                if (cancellationToken.IsCancellationRequested)
                 {
                     return;
                 }
 
-                linkedForkParentByChildId.Clear();
-                foreach ((string childId, string parentId) in relationships)
+                long historyGeneration = Interlocked.Read(ref historyManagementGeneration);
+                bool indexComplete = false;
+                bool isCurrent = false;
+                Dictionary<string, string?>? updatesForThisRefresh = null;
+                await OnUiAsync(() =>
                 {
-                    linkedForkParentByChildId[childId] = parentId;
+                    EnsureLinkedForkIndexOwner();
+                    isCurrent = IsCurrentOwner(owner)
+                        && historyGeneration == Interlocked.Read(ref historyManagementGeneration);
+                    indexComplete = isCurrent && linkedForkIndexComplete;
+                    if (isCurrent && !indexComplete)
+                    {
+                        updatesForThisRefresh = new Dictionary<string, string?>(StringComparer.Ordinal);
+                        linkedForkIndexUpdatesDuringRefresh = updatesForThisRefresh;
+                    }
+                }).ConfigureAwait(false);
+                if (!isCurrent || indexComplete)
+                {
+                    return;
                 }
 
-                linkedForkIndexOwner = owner;
-                linkedForkIndexComplete = true;
-                NotifyThreadManagementCanExecuteChanged();
-            }).ConfigureAwait(false);
+                var relationships = new Dictionary<string, string>(StringComparer.Ordinal);
+                try
+                {
+                    foreach (bool archived in ThreadArchiveStates)
+                    {
+                        var seenCursors = new HashSet<string>(StringComparer.Ordinal);
+                        string? cursor = null;
+                        for (int pageNumber = 0; pageNumber < 100; pageNumber++)
+                        {
+                            ThreadPage page = await bridge.ListThreadsAsync(StampOwner(new ListThreadsRequest
+                            {
+                                Cursor = cursor,
+                                Archived = archived,
+                            }, owner), cancellationToken).ConfigureAwait(false);
+                            if (!IsCurrentOwner(owner) || historyGeneration != Interlocked.Read(ref historyManagementGeneration) || !MatchesOwner(page, owner))
+                            {
+                                return;
+                            }
+
+                            foreach (ThreadSummary thread in page.Threads)
+                            {
+                                if (!string.IsNullOrWhiteSpace(thread.LinkedParentThreadId))
+                                {
+                                    relationships[thread.Id] = thread.LinkedParentThreadId;
+                                }
+                            }
+
+                            cursor = page.NextCursor;
+                            if (string.IsNullOrWhiteSpace(cursor))
+                            {
+                                break;
+                            }
+
+                            if (!seenCursors.Add(cursor) || pageNumber == 99)
+                            {
+                                throw new InvalidDataException("The complete thread list did not terminate within its paging bounds.");
+                            }
+                        }
+                    }
+
+                    await OnUiAsync(() =>
+                    {
+                        if (!IsCurrentOwner(owner) || historyGeneration != Interlocked.Read(ref historyManagementGeneration))
+                        {
+                            return;
+                        }
+
+                        linkedForkParentByChildId.Clear();
+                        foreach ((string childId, string parentId) in relationships)
+                        {
+                            linkedForkParentByChildId[childId] = parentId;
+                        }
+
+                        if (linkedForkIndexUpdatesDuringRefresh is { } updates)
+                        {
+                            foreach ((string childId, string? parentId) in updates)
+                            {
+                                if (parentId is null)
+                                {
+                                    linkedForkParentByChildId.Remove(childId);
+                                }
+                                else
+                                {
+                                    linkedForkParentByChildId[childId] = parentId;
+                                }
+                            }
+                        }
+
+                        linkedForkIndexUpdatesDuringRefresh = null;
+                        linkedForkIndexOwner = owner;
+                        linkedForkIndexComplete = true;
+                        NotifyThreadManagementCanExecuteChanged();
+                    }).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                }
+                catch (Exception exception)
+                {
+                    ExtensionDiagnostics.Write($"Complete linked-fork index failed ({exception.GetType().Name}).");
+                    await OnUiAsync(() =>
+                    {
+                        if (IsCurrentOwner(owner) && historyGeneration == Interlocked.Read(ref historyManagementGeneration))
+                        {
+                            linkedForkIndexUpdatesDuringRefresh = null;
+                            linkedForkIndexComplete = false;
+                            NotifyThreadManagementCanExecuteChanged();
+                        }
+                    }).ConfigureAwait(false);
+                }
+                finally
+                {
+                    if (updatesForThisRefresh is not null)
+                    {
+                        await OnUiAsync(() =>
+                        {
+                            if (ReferenceEquals(linkedForkIndexUpdatesDuringRefresh, updatesForThisRefresh))
+                            {
+                                linkedForkIndexUpdatesDuringRefresh = null;
+                                linkedForkIndexComplete = false;
+                                NotifyThreadManagementCanExecuteChanged();
+                            }
+                        }).ConfigureAwait(false);
+                    }
+                }
+            }, cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-        }
-        catch (Exception exception)
-        {
-            ExtensionDiagnostics.Write($"Complete linked-fork index failed ({exception.GetType().Name}).");
-            await OnUiAsync(() =>
-            {
-                if (IsCurrentOwner(owner) && historyGeneration == Interlocked.Read(ref historyManagementGeneration))
-                {
-                    linkedForkIndexComplete = false;
-                    NotifyThreadManagementCanExecuteChanged();
-                }
-            }).ConfigureAwait(false);
         }
     }
     private async Task RefreshManagedThreadListAsync()
     {
         CancelHistorySearchAndAdvanceGeneration();
         SelectedRevertTurnId = null;
+        long historyGeneration = Interlocked.Read(ref historyManagementGeneration);
         OwnerSnapshot owner = CaptureOwnerSnapshot();
         await RefreshCompleteLinkedForkIndexAsync(owner, lifetime.Token).ConfigureAwait(false);
-        useThreadListTitleSearchFallback = !settings.ExperimentalApiEnabled;
+        if (lifetime.IsCancellationRequested
+            || historyGeneration != Interlocked.Read(ref historyManagementGeneration)
+            || !IsCurrentOwner(owner))
+        {
+            return;
+        }
+
+        bool useTitleSearchFallback = !settings.ExperimentalApiEnabled;
+        await OnUiAsync(() =>
+        {
+            if (!lifetime.IsCancellationRequested
+                && historyGeneration == Interlocked.Read(ref historyManagementGeneration)
+                && IsCurrentOwner(owner))
+            {
+                useThreadListTitleSearchFallback = useTitleSearchFallback;
+            }
+        }).ConfigureAwait(false);
+        if (lifetime.IsCancellationRequested
+            || historyGeneration != Interlocked.Read(ref historyManagementGeneration)
+            || !IsCurrentOwner(owner))
+        {
+            return;
+        }
+
         if (settings.ExperimentalApiEnabled && !string.IsNullOrWhiteSpace(historySearchText))
         {
             await SearchHistoryAsync().ConfigureAwait(false);
@@ -389,7 +493,7 @@ public sealed partial class ChatViewModel
         }
     }
 
-    private async Task SearchHistoryAsync()
+    internal async Task SearchHistoryAsync()
     {
         string term = HistorySearchText.Trim();
         if (term.Length == 0)
@@ -424,7 +528,8 @@ public sealed partial class ChatViewModel
 
             if (settings.ExperimentalApiEnabled)
             {
-                HashSet<string>? eligibleThreads = await LoadEligibleSearchThreadIdsAsync(owner, cancellationToken).ConfigureAwait(false);
+                HashSet<string>? eligibleThreads = await LoadEligibleSearchThreadIdsAsync(
+                    owner, threadListWorkingDirectories, cancellationToken).ConfigureAwait(false);
                 lock (historySearchCancellationGate)
                 {
                     if (cancellationToken.IsCancellationRequested
@@ -441,6 +546,13 @@ public sealed partial class ChatViewModel
                 ThreadSearchResult result = await bridge.SearchThreadsAsync(
                     StampOwner(new ThreadSearchRequest { SearchTerm = term, RequestId = requestId }, owner),
                     cancellationToken).ConfigureAwait(false);
+                if (cancellationToken.IsCancellationRequested
+                    || requestGeneration != Interlocked.Read(ref historyManagementGeneration)
+                    || !IsCurrentOwner(owner))
+                {
+                    return;
+                }
+
                 if (!result.IsSupported)
                 {
                     useThreadListTitleSearchFallback = true;
@@ -481,7 +593,9 @@ public sealed partial class ChatViewModel
             ExtensionDiagnostics.Write($"Thread search failed ({ex.GetType().Name}).");
             await OnUiAsync(() =>
             {
-                if (requestGeneration == Interlocked.Read(ref historyManagementGeneration) && IsCurrentOwner(owner))
+                if (!cancellationToken.IsCancellationRequested
+                    && requestGeneration == Interlocked.Read(ref historyManagementGeneration)
+                    && IsCurrentOwner(owner))
                 {
                     historyManagementStatusText = IsJapaneseUi ? "検索できませんでした。再試行してください。" : "Search failed. Try again.";
                     OnPropertyChanged(nameof(ThreadManagementStatusText));
@@ -592,10 +706,12 @@ public sealed partial class ChatViewModel
         KeepSelectedThreadRow();
     }
 
-    private async Task<HashSet<string>?> LoadEligibleSearchThreadIdsAsync(OwnerSnapshot owner, CancellationToken cancellationToken)
+    internal async Task<HashSet<string>?> LoadEligibleSearchThreadIdsAsync(
+        OwnerSnapshot owner,
+        IReadOnlyList<string>? workingDirectories,
+        CancellationToken cancellationToken)
     {
         long historyGeneration = Interlocked.Read(ref historyManagementGeneration);
-        IReadOnlyList<string>? workingDirectories = threadListWorkingDirectories;
         if (!showArchivedThreads && string.IsNullOrWhiteSpace(selectedThreadSectionId) && workingDirectories is null)
         {
             return null;
@@ -716,6 +832,7 @@ public sealed partial class ChatViewModel
         pendingThreadMutation = "delete";
         pendingMutationOwner = CaptureOwnerSnapshot();
         pendingMutationThreadId = thread.Id;
+        pendingMutationThreadTitle = SafeThreadTitle(thread.Id);
         pendingMutationBeforeTurnId = null;
         NotifyThreadMutationConfirmationChanged();
         return Task.CompletedTask;
@@ -731,6 +848,7 @@ public sealed partial class ChatViewModel
         pendingThreadMutation = "revert";
         pendingMutationOwner = CaptureOwnerSnapshot();
         pendingMutationThreadId = thread.Id;
+        pendingMutationThreadTitle = SafeThreadTitle(thread.Id);
         pendingMutationBeforeTurnId = SelectedRevertTurnId;
         NotifyThreadMutationConfirmationChanged();
         return Task.CompletedTask;
@@ -741,6 +859,7 @@ public sealed partial class ChatViewModel
         pendingThreadMutation = null;
         pendingMutationOwner = null;
         pendingMutationThreadId = null;
+        pendingMutationThreadTitle = null;
         pendingMutationBeforeTurnId = null;
         NotifyThreadMutationConfirmationChanged();
         return Task.CompletedTask;
@@ -795,19 +914,19 @@ public sealed partial class ChatViewModel
             historyManagementStatusText = MutationStatusMessage(result, mutation);
             OnPropertyChanged(nameof(ThreadManagementStatusText));
             OnPropertyChanged(nameof(HasThreadManagementStatus));
-            if (result.Succeeded && mutation == "delete")
+            if (result.Succeeded && mutation == "delete" && SelectedThread?.Id == threadId)
             {
                 SelectedThread = null;
             }
 
             refresh = true;
-            reloadTranscript = result.Succeeded && mutation == "revert" && SelectedThread is not null;
+            reloadTranscript = result.Succeeded && mutation == "revert" && SelectedThread?.Id == threadId;
         }).ConfigureAwait(false);
 
         if (refresh && IsCurrentOwner(owner))
         {
             await RefreshManagedThreadListAsync().ConfigureAwait(false);
-            if (reloadTranscript && SelectedThread is { } selected && IsCurrentOwner(owner))
+            if (reloadTranscript && SelectedThread is { } selected && selected.Id == threadId && IsCurrentOwner(owner))
             {
                 await ReadSelectedThreadHistoryAsync(selected).ConfigureAwait(false);
             }
@@ -818,6 +937,9 @@ public sealed partial class ChatViewModel
     {
         OnPropertyChanged(nameof(IsThreadMutationConfirmationOpen));
         OnPropertyChanged(nameof(ThreadMutationConfirmationText));
+        OnPropertyChanged(nameof(ThreadMutationConfirmHeading));
+        OnPropertyChanged(nameof(ThreadMutationConfirmButtonText));
+        OnPropertyChanged(nameof(ThreadMutationConfirmAutomationName));
         ConfirmThreadMutationCommand.RaiseCanExecuteChanged();
         CancelThreadMutationCommand.RaiseCanExecuteChanged();
     }
@@ -851,6 +973,7 @@ public sealed partial class ChatViewModel
         pendingThreadMutation = null;
         pendingMutationOwner = null;
         pendingMutationThreadId = null;
+        pendingMutationThreadTitle = null;
         pendingMutationBeforeTurnId = null;
         NotifyThreadMutationConfirmationChanged();
         NotifyThreadManagementCanExecuteChanged();
@@ -889,12 +1012,17 @@ public sealed partial class ChatViewModel
             refreshSections = IsHistoryOpen && change.ChangeKind == "thread/section/changed";
             bool removedLinkedChild = change.ChangeKind == "thread/deleted"
                 && linkedForkParentByChildId.Remove(change.ThreadId);
+            if (change.ChangeKind == "thread/deleted" && linkedForkIndexUpdatesDuringRefresh is { } updates)
+            {
+                updates[change.ThreadId] = null;
+                removedLinkedChild = true;
+            }
             if (removedLinkedChild)
             {
                 NotifyThreadManagementCanExecuteChanged();
             }
 
-            if (SelectedThread?.Id == change.ThreadId)
+            if (change.ChangeKind == "thread/deleted" && SelectedThread?.Id == change.ThreadId)
             {
                 SelectedThread = null;
             }

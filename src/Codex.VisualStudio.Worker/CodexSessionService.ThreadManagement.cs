@@ -1,5 +1,6 @@
 ﻿using System.Collections.Generic;
 using System.Globalization;
+using System.Text;
 using System.Text.Json;
 using Codex.AppServer.Protocol;
 using Codex.VisualStudio.Contracts;
@@ -23,6 +24,11 @@ public sealed partial class CodexSessionService
             JsonElement response = await SendReadOnlyAsync("threadSection/list", new { cursor, limit = 100 }, cancellationToken).ConfigureAwait(false);
             if (response.TryGetProperty("data", out JsonElement data) && data.ValueKind == JsonValueKind.Array)
             {
+                if (data.GetArrayLength() > 100)
+                {
+                    throw InvalidHistoryResponse();
+                }
+
                 foreach (JsonElement value in data.EnumerateArray())
                 {
                     string? id = GetBoundedString(value, "id", 256);
@@ -31,7 +37,21 @@ public sealed partial class CodexSessionService
                 }
             }
 
-            cursor = GetBoundedString(response, "nextCursor", 256);
+            if (!response.TryGetProperty("nextCursor", out JsonElement nextCursor) || nextCursor.ValueKind == JsonValueKind.Null)
+            {
+                cursor = null;
+            }
+            else if (nextCursor.ValueKind != JsonValueKind.String
+                || string.IsNullOrWhiteSpace(nextCursor.GetString())
+                || Encoding.UTF8.GetByteCount(nextCursor.GetString()!) > 4096)
+            {
+                throw InvalidHistoryResponse();
+            }
+            else
+            {
+                cursor = nextCursor.GetString();
+            }
+
             if (cursor is null) break;
             if (!seenCursors.Add(cursor)) throw InvalidHistoryResponse();
             if (page == 49) throw InvalidHistoryResponse();
@@ -57,7 +77,10 @@ public sealed partial class CodexSessionService
         string method, string threadId, string? beforeTurnId, bool userConfirmed, string action, CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(threadId);
-        if (!userConfirmed) throw new InvalidOperationException("Thread changes require explicit user confirmation.");
+        if (action is "delete" or "revert" && !userConfirmed)
+        {
+            throw new InvalidOperationException("Thread changes require explicit user confirmation.");
+        }
         if (action == "revert") ArgumentException.ThrowIfNullOrWhiteSpace(beforeTurnId);
         ConnectionContext context = RequireContext();
         EnsureCurrent(context);
@@ -76,7 +99,7 @@ public sealed partial class CodexSessionService
         }
         catch (JsonRpcRemoteException exception)
         {
-            EnsureCurrent(context);
+            if (!IsCurrent(context)) return new ThreadMutationResult { OutcomeUnknown = true };
             return new ThreadMutationResult { Succeeded = false, Message = BoundRedacted(exception.Message, 1024) };
         }
         catch (Exception exception)
@@ -84,10 +107,11 @@ public sealed partial class CodexSessionService
             return new ThreadMutationResult
             {
                 OutcomeUnknown = true,
-                Message = BoundRedacted(exception.Message, 1024),
+                Message = IsCurrent(context) ? BoundRedacted(exception.Message, 1024) : null,
             };
         }
 
+        if (!IsCurrent(context)) return new ThreadMutationResult { OutcomeUnknown = true };
         return new ThreadMutationResult { Succeeded = true };
     }
 
@@ -148,7 +172,7 @@ public sealed partial class CodexSessionService
                     response = await context.Connection.SendCorrelatedRequestAsync(
                         "thread/search/stream", parameters, requestId, TimeSpan.FromSeconds(60), cancellationToken).ConfigureAwait(false);
                 }
-                catch (Exception)
+                catch (Exception exception) when (exception is not JsonRpcRemoteException)
                 {
                     try
                     {
@@ -183,7 +207,7 @@ public sealed partial class CodexSessionService
         var hits = new List<ThreadSearchHit>();
         if (response.TryGetProperty("data", out JsonElement data) && data.ValueKind == JsonValueKind.Array)
         {
-            foreach (JsonElement value in data.EnumerateArray())
+            foreach (JsonElement value in data.EnumerateArray().Take(50))
             {
                 ThreadSearchHit? hit = ReadThreadSearchHit(value);
                 if (hit is not null) hits.Add(hit);

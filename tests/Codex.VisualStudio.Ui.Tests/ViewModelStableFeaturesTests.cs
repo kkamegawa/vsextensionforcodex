@@ -188,23 +188,36 @@ public sealed partial class ViewModelTests
     public async Task HistoryScope_LateResponseForOldScopeIsDropped()
     {
         var firstPage = new TaskCompletionSource<ThreadPage>(TaskCreationOptions.RunContinuationsAsynchronously);
-        int calls = 0;
+        int raceListCalls = 0;
+        var setupArchivedListStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var bridge = new FakeWorkerBridge
         {
             ThreadListScopesResult = new ThreadListScopesResult { CurrentFolder = @"C:\repo" },
-            ListThreadsHandler = (_, _) => Task.FromResult(new ThreadPage()),
+            ListThreadsRequestHandler = (request, _) =>
+            {
+                if (request.Archived)
+                {
+                    setupArchivedListStarted.TrySetResult();
+                }
+
+                return Task.FromResult(new ThreadPage());
+            },
         };
         using ChatViewModel vm = await CreateJoinedViewModelAsync(bridge);
         await RunCommandAsync(vm.ToggleHistoryCommand);
         await WaitForAsync(() => vm.ThreadListScopes.Count == 2);
-        await WaitForAsync(() => bridge.ListThreadsCallCount >= 2);
-        await Task.Delay(50);
-        bridge.ListThreadsHandler = async (_, cancellationToken) => ++calls == 1
+        await setupArchivedListStarted.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        await vm.RefreshCompleteLinkedForkIndexAsync(vm.CaptureOwnerSnapshot(), CancellationToken.None);
+        vm.SelectedThread = new ThreadSummary { Id = "fork-index-ready-barrier" };
+        Assert.IsTrue(vm.CanDeleteSelectedThread, "The initial complete fork index must be ready before switching the list handler.");
+        vm.SelectedThread = null;
+        bridge.ListThreadsRequestHandler = null;
+        bridge.ListThreadsHandler = async (_, cancellationToken) => Interlocked.Increment(ref raceListCalls) == 1
             ? await firstPage.Task.WaitAsync(cancellationToken)
             : new ThreadPage { Threads = [new ThreadSummary { Id = "current-folder" }] };
 
         vm.SelectedThreadListScopeId = ChatViewModel.CurrentFolderScopeId;
-        await WaitForAsync(() => calls == 1);
+        await WaitForAsync(() => Volatile.Read(ref raceListCalls) == 1);
         vm.SelectedThreadListScopeId = ChatViewModel.AllConversationsScopeId;
         firstPage.SetResult(new ThreadPage { Threads = [new ThreadSummary { Id = "stale" }] });
         await WaitForAsync(() => vm.Threads.Any(thread => thread.Id == "current-folder"));

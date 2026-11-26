@@ -11588,6 +11588,10 @@ public sealed partial class ViewModelTests
 
     private sealed class FakeWorkerBridge : IWorkerBridge
     {
+        private int listThreadsCallCount;
+        private int listThreadSectionsCallCount;
+        private int searchThreadsCallCount;
+
         public event Action<WorkerRecoveryFailureKind>? ConnectionLost { add { } remove { } }
 
         public event Func<WorkerNotification<WorkerStatus>, Task>? StateChanged;
@@ -11682,9 +11686,13 @@ public sealed partial class ViewModelTests
 
         public Func<string?, CancellationToken, Task<ThreadPage>>? ListThreadsHandler { get; set; }
 
+        public Func<ListThreadsRequest, CancellationToken, Task<ThreadPage>>? ListThreadsRequestHandler { get; set; }
+
         public bool PreserveThreadPageOwner { get; set; }
 
-        public int ListThreadsCallCount { get; private set; }
+        public int ListThreadsCallCount => Volatile.Read(ref listThreadsCallCount);
+
+        public System.Collections.Concurrent.ConcurrentQueue<ListThreadsRequest> ThreadListRequests { get; } = new();
 
         public ListThreadsRequest? LastListThreadsRequest { get; private set; }
 
@@ -11692,7 +11700,13 @@ public sealed partial class ViewModelTests
 
         public ThreadSectionsResult ThreadSectionsResult { get; set; } = new();
 
+        public bool PreserveThreadManagementResultOwner { get; set; }
+
+        public int ListThreadSectionsCallCount => Volatile.Read(ref listThreadSectionsCallCount);
+
         public ThreadSearchRequest? LastThreadSearchRequest { get; private set; }
+
+        public int SearchThreadsCallCount => Volatile.Read(ref searchThreadsCallCount);
 
         public Func<ThreadMutationRequest, CancellationToken, Task<ThreadMutationResult>>? ArchiveThreadHandler { get; set; }
 
@@ -11938,10 +11952,12 @@ public sealed partial class ViewModelTests
 
         public async Task<ThreadPage> ListThreadsAsync(ListThreadsRequest request, CancellationToken cancellationToken)
         {
-            ListThreadsCallCount++;
+            Interlocked.Increment(ref listThreadsCallCount);
             LastListThreadsRequest = request;
+            ThreadListRequests.Enqueue(request);
             ListedWorkingDirectories.Add(request.WorkingDirectories);
-            ThreadPage page = await (ListThreadsHandler?.Invoke(request.Cursor, cancellationToken)
+            ThreadPage page = await (ListThreadsRequestHandler?.Invoke(request, cancellationToken)
+                ?? ListThreadsHandler?.Invoke(request.Cursor, cancellationToken)
                 ?? Task.FromResult(new ThreadPage()));
             if (!PreserveThreadPageOwner)
             {
@@ -11955,21 +11971,40 @@ public sealed partial class ViewModelTests
 
         public Task<ThreadSectionsResult> ListThreadSectionsAsync(GetThreadListScopesRequest request, CancellationToken cancellationToken)
         {
-            ThreadSectionsResult result = ThreadSectionsResult;
-            result.StatePartitionFingerprint = request.StatePartitionFingerprint;
-            result.OwnerGeneration = request.OwnerGeneration;
-            result.ConnectionGeneration = request.ConnectionGeneration;
+            Interlocked.Increment(ref listThreadSectionsCallCount);
+            ThreadSectionsResult source = ThreadSectionsResult;
+            var result = new ThreadSectionsResult
+            {
+                Sections = source.Sections.ToArray(),
+                StatePartitionFingerprint = source.StatePartitionFingerprint,
+                OwnerGeneration = source.OwnerGeneration,
+                ConnectionGeneration = source.ConnectionGeneration,
+            };
+            if (!PreserveThreadManagementResultOwner)
+            {
+                StampMissingOwnerScope(result, request);
+            }
             return Task.FromResult(result);
         }
 
         public async Task<ThreadSearchResult> SearchThreadsAsync(ThreadSearchRequest request, CancellationToken cancellationToken)
         {
+            Interlocked.Increment(ref searchThreadsCallCount);
             LastThreadSearchRequest = request;
-            ThreadSearchResult result = await (SearchThreadsHandler?.Invoke(request, cancellationToken)
+            ThreadSearchResult source = await (SearchThreadsHandler?.Invoke(request, cancellationToken)
                 ?? Task.FromResult(new ThreadSearchResult()));
-            result.StatePartitionFingerprint = request.StatePartitionFingerprint;
-            result.OwnerGeneration = request.OwnerGeneration;
-            result.ConnectionGeneration = request.ConnectionGeneration;
+            var result = new ThreadSearchResult
+            {
+                IsSupported = source.IsSupported,
+                Results = source.Results.ToArray(),
+                StatePartitionFingerprint = source.StatePartitionFingerprint,
+                OwnerGeneration = source.OwnerGeneration,
+                ConnectionGeneration = source.ConnectionGeneration,
+            };
+            if (!PreserveThreadManagementResultOwner)
+            {
+                StampMissingOwnerScope(result, request);
+            }
             return result;
         }
 
@@ -11993,13 +12028,37 @@ public sealed partial class ViewModelTests
         {
             LastThreadMutationRequest = request;
             count(request);
-            ThreadMutationResult result = await (handler?.Invoke(request, cancellationToken)
+            ThreadMutationResult source = await (handler?.Invoke(request, cancellationToken)
                 ?? Task.FromResult(new ThreadMutationResult { Succeeded = true }))
                 .ConfigureAwait(false);
-            result.StatePartitionFingerprint = request.StatePartitionFingerprint;
-            result.OwnerGeneration = request.OwnerGeneration;
-            result.ConnectionGeneration = request.ConnectionGeneration;
+            var result = new ThreadMutationResult
+            {
+                Succeeded = source.Succeeded,
+                OutcomeUnknown = source.OutcomeUnknown,
+                Message = source.Message,
+                StatePartitionFingerprint = source.StatePartitionFingerprint,
+                OwnerGeneration = source.OwnerGeneration,
+                ConnectionGeneration = source.ConnectionGeneration,
+            };
+            if (!PreserveThreadManagementResultOwner)
+            {
+                StampMissingOwnerScope(result, request);
+            }
             return result;
+        }
+
+        private static void StampMissingOwnerScope(WorkerGenerationResult result, OwnerScopedRequest request)
+        {
+            result.StatePartitionFingerprint ??= request.StatePartitionFingerprint;
+            if (result.OwnerGeneration == 0)
+            {
+                result.OwnerGeneration = request.OwnerGeneration;
+            }
+
+            if (result.ConnectionGeneration == 0)
+            {
+                result.ConnectionGeneration = request.ConnectionGeneration;
+            }
         }
 
         public Task RaiseThreadSearchPartialAsync(WorkerNotification<ThreadSearchPartialEvent> notification)

@@ -78,6 +78,8 @@ public sealed partial class CodexSessionServiceTests
         Assert.AreEqual(listThreads.SectionId, restoredListThreads.SectionId);
         CollectionAssert.AreEqual(listThreads.WorkingDirectories!.ToArray(), restoredListThreads.WorkingDirectories!.ToArray());
         Assert.AreEqual(listThreads.StatePartitionFingerprint, restoredListThreads.StatePartitionFingerprint);
+        Assert.AreEqual(listThreads.OwnerGeneration, restoredListThreads.OwnerGeneration);
+        Assert.AreEqual(listThreads.ConnectionGeneration, restoredListThreads.ConnectionGeneration);
 
         var startTurn = new StartTurnRequest
         {
@@ -92,6 +94,8 @@ public sealed partial class CodexSessionServiceTests
         Assert.AreEqual(startTurn.ThreadId, restoredStartTurn.ThreadId);
         Assert.AreEqual(startTurn.Text, restoredStartTurn.Text);
         Assert.AreEqual(startTurn.StatePartitionFingerprint, restoredStartTurn.StatePartitionFingerprint);
+        Assert.AreEqual(startTurn.OwnerGeneration, restoredStartTurn.OwnerGeneration);
+        Assert.AreEqual(startTurn.ConnectionGeneration, restoredStartTurn.ConnectionGeneration);
 
         var steerTurn = new SteerTurnRequest
         {
@@ -101,6 +105,7 @@ public sealed partial class CodexSessionServiceTests
         };
         SteerTurnRequest restoredSteerTurn = await extensionRpc.InvokeWithParameterObjectAsync<SteerTurnRequest>(
             "test/echoSteerTurn", steerTurn, CancellationToken.None);
+        Assert.AreEqual(steerTurn.ThreadId, restoredSteerTurn.ThreadId);
         Assert.AreEqual(steerTurn.ExpectedTurnId, restoredSteerTurn.ExpectedTurnId);
         Assert.AreEqual(steerTurn.Text, restoredSteerTurn.Text);
 
@@ -111,6 +116,7 @@ public sealed partial class CodexSessionServiceTests
         };
         InterruptTurnRequest restoredInterrupt = await extensionRpc.InvokeWithParameterObjectAsync<InterruptTurnRequest>(
             "test/echoInterruptTurn", interruptTurn, CancellationToken.None);
+        Assert.AreEqual(interruptTurn.ThreadId, restoredInterrupt.ThreadId);
         Assert.AreEqual(interruptTurn.TurnId, restoredInterrupt.TurnId);
 
         var readState = new UpdateThreadReadStateRequest
@@ -121,6 +127,7 @@ public sealed partial class CodexSessionServiceTests
         };
         UpdateThreadReadStateRequest restoredReadState = await extensionRpc.InvokeWithParameterObjectAsync<UpdateThreadReadStateRequest>(
             "test/echoReadState", readState, CancellationToken.None);
+        Assert.AreEqual(readState.ThreadId, restoredReadState.ThreadId);
         Assert.AreEqual(readState.ExpectedRevision, restoredReadState.ExpectedRevision);
         Assert.IsTrue(restoredReadState.MarkRead);
 
@@ -133,6 +140,7 @@ public sealed partial class CodexSessionServiceTests
         };
         ForkThreadRequest restoredFork = await extensionRpc.InvokeWithParameterObjectAsync<ForkThreadRequest>(
             "test/echoFork", fork, CancellationToken.None);
+        Assert.AreEqual(fork.ThreadId, restoredFork.ThreadId);
         Assert.IsTrue(restoredFork.CreateLinkedFork);
         Assert.IsTrue(restoredFork.ListLinkedForks);
         Assert.AreEqual(fork.Cursor, restoredFork.Cursor);
@@ -164,18 +172,14 @@ public sealed partial class CodexSessionServiceTests
 
     }
     [TestMethod]
-    public async Task ThreadArchiveRequiresExplicitConfirmationAndSendsMutationOnce()
+    public async Task ThreadArchiveDoesNotRequireDeleteConfirmationAndSendsMutationOnce()
     {
         var connection = new RecordingConnection();
         await using var service = CreateService();
         await service.InitializeAsync(connection, Options(), CancellationToken.None);
 
-        await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => service.ArchiveThreadAsync(
-            new ThreadMutationRequest { ThreadId = "thread-1", UserConfirmed = false }, CancellationToken.None));
-        Assert.IsFalse(connection.Requests.Any(item => item.Method == "thread/archive"));
-
         ThreadMutationResult result = await service.ArchiveThreadAsync(
-            new ThreadMutationRequest { ThreadId = "thread-1", UserConfirmed = true }, CancellationToken.None);
+            new ThreadMutationRequest { ThreadId = "thread-1" }, CancellationToken.None);
 
         Assert.IsTrue(result.Succeeded);
         Assert.AreEqual(1, connection.Requests.Count(item => item.Method == "thread/archive"), "A mutation is sent once and never retried.");
@@ -199,6 +203,24 @@ public sealed partial class CodexSessionServiceTests
             new ThreadMutationRequest { ThreadId = "thread-1", BeforeTurnId = "turn-1", UserConfirmed = true }, CancellationToken.None));
 
         Assert.IsFalse(connection.Requests.Any(item => item.Method is "thread/delete" or "thread/revert"));
+
+        var approvedConnection = new RecordingConnection();
+        await using var approvedService = CreateService();
+        await approvedService.InitializeAsync(approvedConnection, Options(), CancellationToken.None);
+        await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => approvedService.DeleteThreadAsync(
+            new ThreadMutationRequest { ThreadId = "thread-1", UserConfirmed = false }, CancellationToken.None));
+        await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => approvedService.RevertThreadAsync(
+            new ThreadMutationRequest { ThreadId = "thread-1", BeforeTurnId = "turn-1", UserConfirmed = false }, CancellationToken.None));
+        Assert.IsFalse(approvedConnection.Requests.Any(item => item.Method is "thread/delete" or "thread/revert"));
+
+        ThreadMutationResult delete = await approvedService.DeleteThreadAsync(
+            new ThreadMutationRequest { ThreadId = "thread-1", UserConfirmed = true }, CancellationToken.None);
+        ThreadMutationResult revert = await approvedService.RevertThreadAsync(
+            new ThreadMutationRequest { ThreadId = "thread-1", BeforeTurnId = "turn-1", UserConfirmed = true }, CancellationToken.None);
+        Assert.IsTrue(delete.Succeeded);
+        Assert.IsTrue(revert.Succeeded);
+        Assert.AreEqual(1, approvedConnection.Requests.Count(item => item.Method == "thread/delete"));
+        Assert.AreEqual(1, approvedConnection.Requests.Count(item => item.Method == "thread/revert"));
     }
 
     [TestMethod]
@@ -207,7 +229,7 @@ public sealed partial class CodexSessionServiceTests
         var connection = new RecordingConnection
         {
             AsyncHandler = (method, _, _) => method == "thread/delete"
-                ? throw new JsonRpcConnectionClosedException("connection closed after dispatch")
+                ? Task.FromException<JsonElement>(new JsonRpcConnectionClosedException("connection closed after dispatch"))
                 : Task.FromResult(JsonSerializer.SerializeToElement(new { })),
         };
         await using var service = CreateService();
@@ -219,6 +241,72 @@ public sealed partial class CodexSessionServiceTests
         Assert.IsFalse(result.Succeeded);
         Assert.IsTrue(result.OutcomeUnknown);
         Assert.AreEqual(1, connection.Requests.Count(item => item.Method == "thread/delete"));
+    }
+
+    [TestMethod]
+    public async Task ThreadArchiveAndUnarchiveDoNotRequireDeleteConfirmation()
+    {
+        var connection = new RecordingConnection();
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        ThreadMutationResult archive = await service.ArchiveThreadAsync(
+            new ThreadMutationRequest { ThreadId = "thread-archive" }, CancellationToken.None);
+        ThreadMutationResult unarchive = await service.UnarchiveThreadAsync(
+            new ThreadMutationRequest { ThreadId = "thread-archive" }, CancellationToken.None);
+
+        Assert.IsTrue(archive.Succeeded);
+        Assert.IsTrue(unarchive.Succeeded);
+        Assert.AreEqual(1, connection.Requests.Count(item => item.Method == "thread/archive"));
+        Assert.AreEqual(1, connection.Requests.Count(item => item.Method == "thread/unarchive"));
+    }
+
+    [TestMethod]
+    public async Task ThreadMutationBecomingStaleAfterDispatchReturnsUnknownOutcome()
+    {
+        var replacement = new RecordingConnection();
+        CodexSessionService? service = null;
+        var connection = new RecordingConnection
+        {
+            AsyncHandler = async (method, _, _) =>
+            {
+                if (method == "thread/delete")
+                {
+                    await service!.InitializeAsync(replacement, Options(), CancellationToken.None);
+                }
+
+                return JsonSerializer.SerializeToElement(new { });
+            },
+        };
+        await using (service = CreateService())
+        {
+            await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+            ThreadMutationResult result = await service.DeleteThreadAsync(
+                new ThreadMutationRequest { ThreadId = "thread-stale-delete", UserConfirmed = true }, CancellationToken.None);
+
+            Assert.IsFalse(result.Succeeded);
+            Assert.IsTrue(result.OutcomeUnknown);
+        }
+    }
+
+    [TestMethod]
+    public async Task ThreadHistoryNotificationSubscriberFailureDoesNotBlockOtherSubscribers()
+    {
+        var connection = new RecordingConnection();
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+        int successfulSubscriberCalls = 0;
+        service.ThreadHistoryChanged += (_, _) => Task.FromException(new InvalidOperationException("test subscriber failure"));
+        service.ThreadHistoryChanged += (_, _) =>
+        {
+            successfulSubscriberCalls++;
+            return Task.CompletedTask;
+        };
+
+        await connection.EmitNotificationAsync("thread/deleted", new { threadId = "thread-notification" });
+
+        Assert.AreEqual(1, successfulSubscriberCalls);
     }
     [TestMethod]
     public async Task ThreadDeleteIsBlockedWhileItsTurnIsRunning()
@@ -294,10 +382,59 @@ public sealed partial class CodexSessionServiceTests
     }
 
     [TestMethod]
+    public async Task ThreadSearchUsesStableSingleResponseMethodForTargetCli169()
+    {
+        var connection = new RecordingConnection
+        {
+            AsyncHandler = (method, _, _) => method switch
+            {
+                "initialize" => Task.FromResult(JsonSerializer.SerializeToElement(new { userAgent = "codex-cli/0.169.0" })),
+                "thread/search" => Task.FromResult(JsonSerializer.SerializeToElement(new
+                {
+                    data = new[] { new { thread = new { id = "stable-result" }, snippet = "stable" } },
+                })),
+                _ => Task.FromResult(JsonSerializer.SerializeToElement(new { })),
+            },
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(experimentalApi: true), CancellationToken.None);
+
+        ThreadSearchResult result = await service.SearchThreadsAsync(
+            new ThreadSearchRequest { SearchTerm = "needle", RequestId = Guid.NewGuid().ToString("N") }, CancellationToken.None);
+
+        Assert.IsTrue(result.IsSupported);
+        Assert.AreEqual(1, connection.Requests.Count(item => item.Method == "thread/search"));
+        Assert.AreEqual("stable-result", result.Results.Single().Thread.Id);
+        Assert.AreEqual(0, connection.Requests.Count(item => item.Method == "thread/search/stream"));
+    }
+
+    [TestMethod]
+    public async Task ThreadSearchBoundsTheAuthoritativeResultPage()
+    {
+        var connection = new RecordingConnection
+        {
+            AsyncHandler = (method, _, _) => Task.FromResult(JsonSerializer.SerializeToElement(new
+            {
+                data = Enumerable.Range(0, 100)
+                    .Select(index => new { thread = new { id = $"thread-{index}" }, snippet = "match" })
+                    .ToArray(),
+            })),
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(experimentalApi: true), CancellationToken.None);
+
+        ThreadSearchResult result = await service.SearchThreadsAsync(
+            new ThreadSearchRequest { SearchTerm = "needle", RequestId = Guid.NewGuid().ToString("N") }, CancellationToken.None);
+
+        Assert.AreEqual(50, result.Results.Count);
+    }
+
+    [TestMethod]
     public async Task ThreadSearchCancellationSendsCorrelatedCancelOnTheSameConnection()
     {
         const string requestId = "9b67a9d0246640269cb701ec2d9a790c";
         var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        bool cancelTokenWasCanceled = true;
         RecordingConnection connection = null!;
         connection = new RecordingConnection
         {
@@ -307,6 +444,10 @@ public sealed partial class CodexSessionServiceTests
                 {
                     started.TrySetResult();
                     await Task.Delay(Timeout.InfiniteTimeSpan, token);
+                }
+                else if (method == "thread/search/stream/cancel")
+                {
+                    cancelTokenWasCanceled = token.IsCancellationRequested;
                 }
 
                 return JsonSerializer.SerializeToElement(new { });
@@ -323,11 +464,12 @@ public sealed partial class CodexSessionServiceTests
         await Assert.ThrowsAsync<OperationCanceledException>(async () => await search);
         Assert.AreEqual(1, connection.Requests.Count(item => item.Method == "thread/search/stream"));
         Assert.AreEqual(1, connection.Requests.Count(item => item.Method == "thread/search/stream/cancel"));
+        Assert.IsFalse(cancelTokenWasCanceled, "The cancellation request must use an independent, non-canceled token.");
         Assert.AreEqual(requestId, JsonDocument.Parse(JsonSerializer.Serialize(connection.Requests.Single(item => item.Method == "thread/search/stream/cancel").Parameters)).RootElement.GetProperty("requestId").GetString());
     }
 
     [TestMethod]
-    public async Task ThreadSearchCancelsStreamAfterRemoteFailure()
+    public async Task ThreadSearchDoesNotCancelStreamAfterRemoteFailure()
     {
         var connection = new RecordingConnection
         {
@@ -341,7 +483,7 @@ public sealed partial class CodexSessionServiceTests
         await Assert.ThrowsExactlyAsync<JsonRpcRemoteException>(() => service.SearchThreadsAsync(
             new ThreadSearchRequest { SearchTerm = "needle", RequestId = Guid.NewGuid().ToString("N") }, CancellationToken.None));
 
-        Assert.AreEqual(1, connection.Requests.Count(item => item.Method == "thread/search/stream/cancel"));
+        Assert.AreEqual(0, connection.Requests.Count(item => item.Method == "thread/search/stream/cancel"));
     }
     [TestMethod]
     public async Task ThreadSearchTimeoutSendsCancelAndUnsubscribesPartials()
@@ -359,7 +501,7 @@ public sealed partial class CodexSessionServiceTests
                         requestId,
                         data = new[] { new { thread = new { id = "before-timeout" }, snippet = "partial" } },
                     });
-                    throw new OperationCanceledException("The correlated search request timed out.");
+                    throw new TimeoutException("The correlated search request timed out.");
                 }
 
                 return JsonSerializer.SerializeToElement(new { });
@@ -374,7 +516,7 @@ public sealed partial class CodexSessionServiceTests
         };
         await service.InitializeAsync(connection, Options(experimentalApi: true), CancellationToken.None);
 
-        await Assert.ThrowsExactlyAsync<OperationCanceledException>(() => service.SearchThreadsAsync(
+        await Assert.ThrowsExactlyAsync<TimeoutException>(() => service.SearchThreadsAsync(
             new ThreadSearchRequest { SearchTerm = "needle", RequestId = requestId }, CancellationToken.None));
         Assert.AreEqual(1, connection.Requests.Count(item => item.Method == "thread/search/stream/cancel"));
         Assert.AreEqual(1, partialCount, "The partial published before timeout should be delivered once.");
@@ -416,6 +558,7 @@ public sealed partial class CodexSessionServiceTests
 
         Assert.IsFalse(result.IsSupported);
         Assert.AreEqual(1, connection.Requests.Count(item => item.Method is "thread/search" or "thread/search/stream"));
+        Assert.AreEqual(0, connection.Requests.Count(item => item.Method == "thread/search/stream/cancel"));
     }
 
     [TestMethod]
@@ -460,14 +603,41 @@ public sealed partial class CodexSessionServiceTests
 
         CollectionAssert.AreEqual(new[] { "section-1", "section-2" }, sections.Sections.Select(item => item.Id).ToArray());
         Assert.AreEqual(2, connection.Requests.Count(item => item.Method == "threadSection/list"));
+        JsonElement secondPageParameters = JsonSerializer.SerializeToElement(
+            connection.Requests.Where(item => item.Method == "threadSection/list").ElementAt(1).Parameters);
+        Assert.AreEqual("next", secondPageParameters.GetProperty("cursor").GetString());
         Assert.AreEqual("section-1", page.Threads.Single().SectionId);
         Assert.AreEqual("Inbox", page.Threads.Single().SectionName);
     }
 
     [TestMethod]
+    public async Task ThreadSectionsRejectAnOversizedNextCursor()
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "threadSection/list"
+                ? JsonSerializer.SerializeToElement(new
+                {
+                    data = Array.Empty<object>(),
+                    nextCursor = new string('c', 4097),
+                })
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        await Assert.ThrowsExactlyAsync<InvalidDataException>(() => service.ListThreadSectionsAsync(CancellationToken.None));
+    }
+
+    [TestMethod]
     public async Task ThreadListRejectsOversizedSectionAndSearchParameters()
     {
-        var connection = new RecordingConnection();
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "thread/list"
+                ? JsonSerializer.SerializeToElement(new { data = Array.Empty<object>(), nextCursor = (string?)null })
+                : JsonSerializer.SerializeToElement(new { }),
+        };
         await using var service = CreateService();
         await service.InitializeAsync(connection, Options(), CancellationToken.None);
 
@@ -476,6 +646,8 @@ public sealed partial class CodexSessionServiceTests
         await Assert.ThrowsExactlyAsync<ArgumentException>(() => service.ListThreadsAsync(
             null, null, false, null, new string('s', 257), CancellationToken.None));
         Assert.IsFalse(connection.Requests.Any(item => item.Method == "thread/list"));
+        await service.ListThreadsAsync(null, null, false, new string('s', 512), new string('s', 256), CancellationToken.None);
+        Assert.AreEqual(1, connection.Requests.Count(item => item.Method == "thread/list"));
     }
 
     [TestMethod]
@@ -505,14 +677,25 @@ public sealed partial class CodexSessionServiceTests
         });
         Assert.AreEqual("thread-1", observed?.ThreadId);
         Assert.IsNull(observed?.SectionId);
+
+        string maximumThreadId = new('t', 256);
+        string maximumSectionId = new('s', 256);
+        await connection.EmitNotificationAsync("thread/section/changed", new
+        {
+            threadId = maximumThreadId,
+            sectionId = maximumSectionId,
+        });
+        Assert.AreEqual(maximumThreadId, observed?.ThreadId);
+        Assert.AreEqual(maximumSectionId, observed?.SectionId);
     }
     [TestMethod]
     public async Task ThreadDeletePreservesSanitizedServerRejectionWithoutRetry()
     {
+        string serverMessage = $"Delete blocked token=secret {new string('x', 1200)}";
         var connection = new RecordingConnection
         {
             AsyncHandler = (method, _, _) => method == "thread/delete"
-                ? Task.FromException<JsonElement>(new JsonRpcRemoteException(-32600, "Delete blocked because linked child threads remain."))
+                ? Task.FromException<JsonElement>(new JsonRpcRemoteException(-32600, serverMessage))
                 : Task.FromResult(JsonSerializer.SerializeToElement(new { })),
         };
         await using var service = CreateService();
@@ -522,7 +705,9 @@ public sealed partial class CodexSessionServiceTests
             new ThreadMutationRequest { ThreadId = "thread-parent", UserConfirmed = true }, CancellationToken.None);
 
         Assert.IsFalse(result.Succeeded);
-        StringAssert.Contains(result.Message!, "linked child threads remain");
+        Assert.IsFalse(result.Message!.Contains("secret", StringComparison.Ordinal));
+        StringAssert.Contains(result.Message, "Delete blocked");
+        Assert.IsTrue(result.Message.Length <= 1024);
         Assert.AreEqual(1, connection.Requests.Count(item => item.Method == "thread/delete"));
     }
     private sealed class ThreadRequestContractEcho

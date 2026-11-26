@@ -769,7 +769,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
     [GeneratedRegex(@"\s+", RegexOptions.CultureInvariant)]
     private static partial Regex HeaderWhitespace();
 
-    private OwnerSnapshot CaptureOwnerSnapshot()
+    internal OwnerSnapshot CaptureOwnerSnapshot()
     {
         ConnectionTargetSnapshot? target = Status.Target;
         return new OwnerSnapshot(
@@ -1596,7 +1596,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             || connectionGeneration >= current.ConnectionGeneration;
     }
 
-    private readonly record struct OwnerSnapshot(
+    internal readonly record struct OwnerSnapshot(
         string? StatePartitionFingerprint,
         long OwnerGeneration,
         long ConnectionGeneration);

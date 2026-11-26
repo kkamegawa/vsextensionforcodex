@@ -57,7 +57,7 @@ public sealed partial class ViewModelTests
         Assert.AreEqual(1, bridge.UnarchiveThreadCallCount);
     }
     [TestMethod]
-    public async Task DeleteConversation_RequiresNamedConfirmationAndBlocksRunningOrLinkedParent()
+    public async Task DeleteConversationRequiresNamedConfirmationAndBlocksLinkedParent()
     {
         bool childPresent = true;
         int linkedChildPageReads = 0;
@@ -89,9 +89,10 @@ public sealed partial class ViewModelTests
         Assert.IsTrue(linkedChildPageReads > 0, "The production list ingestion must read the linked child page.");
         Assert.AreEqual("thread-parent", vm.ThreadRows.Single().Id, "The linked child must remain hidden from history rows.");
         var parent = vm.Threads.Single(thread => thread.Id == "thread-parent");
+        Assert.AreEqual("Parent conversation", parent.Preview);
         vm.SelectedThread = new ThreadSummary { Id = "thread-child", LinkedParentThreadId = "thread-parent" };
         Assert.IsFalse(vm.CanDeleteSelectedThread, "A linked child cannot be deleted through history management.");
-        vm.SelectedThread = parent;
+        vm.SelectedThread = new ThreadSummary { Id = "thread-parent", Preview = "Parent conversation" };
         Assert.IsFalse(vm.CanDeleteSelectedThread, "The unfiltered fork index must block deletion even though the child row is hidden.");
         await RunCommandAsync(vm.DeleteThreadCommand);
         Assert.IsFalse(vm.IsThreadMutationConfirmationOpen);
@@ -106,10 +107,11 @@ public sealed partial class ViewModelTests
             ConnectionGeneration = 1,
         });
         Assert.IsTrue(vm.CanDeleteSelectedThread, "Deleting the linked child invalidates its parent constraint.");
+        vm.SelectedThread = new ThreadSummary { Id = "thread-parent", Preview = "Parent conversation" };
         await RunCommandAsync(vm.DeleteThreadCommand);
         Assert.IsTrue(vm.IsThreadMutationConfirmationOpen);
         Assert.IsFalse(string.IsNullOrWhiteSpace(vm.ThreadMutationConfirmationText));
-        Assert.IsTrue(vm.ThreadMutationConfirmationText.Contains("Parent conversation", StringComparison.Ordinal) || vm.ThreadMutationConfirmationText.Contains("親会話", StringComparison.Ordinal) || vm.ThreadMutationConfirmationText.Contains("親の会話", StringComparison.Ordinal) || vm.ThreadMutationConfirmationText.Contains("タイトルなし", StringComparison.Ordinal));
+        StringAssert.Contains(vm.ThreadMutationConfirmationText, "Parent conversation");
         Assert.AreEqual(0, bridge.DeleteThreadCallCount, "Opening the inline confirmation must not dispatch the destructive request.");
 
         await RunCommandAsync(vm.ConfirmThreadMutationCommand);
@@ -153,9 +155,12 @@ public sealed partial class ViewModelTests
             settingsStore: new MemorySettingsStore(new ExtensionSettings { ExperimentalApiEnabled = true }));
         await bridge.PublishStateAsync(OwnerStatus("history-search-fallback", 1, 1));
         vm.HistorySearchText = "needle";
+        int listCallsBeforeSearch = bridge.ListThreadsCallCount;
 
         await RunCommandAsync(vm.SearchHistoryCommand);
 
+        Assert.AreEqual(1, bridge.SearchThreadsCallCount);
+        Assert.IsTrue(bridge.ListThreadsCallCount > listCallsBeforeSearch);
         Assert.AreEqual("needle", bridge.LastListThreadsRequest?.SearchTerm);
         Assert.AreEqual("title-match", vm.ThreadRows.Single().Id);
     }
@@ -172,13 +177,14 @@ public sealed partial class ViewModelTests
             autoConnect: false,
             settingsStore: new MemorySettingsStore(new ExtensionSettings { ExperimentalApiEnabled = true }));
         await bridge.PublishStateAsync(OwnerStatus("history-search-failure", 1, 1));
-        int listCallsBeforeSearch = bridge.ListThreadsCallCount;
         vm.HistorySearchText = "needle";
 
         await RunCommandAsync(vm.SearchHistoryCommand);
 
+        Assert.AreEqual(1, bridge.SearchThreadsCallCount, "The search request should be sent exactly once before its failure is surfaced.");
         Assert.IsFalse(string.Equals("needle", bridge.LastListThreadsRequest?.SearchTerm, StringComparison.Ordinal), "Arbitrary search failures must not trigger title-filter fallback.");
-        Assert.IsFalse(string.IsNullOrWhiteSpace(vm.ThreadManagementStatusText));
+        Assert.IsTrue(vm.ThreadManagementStatusText.Contains("Search failed", StringComparison.Ordinal)
+            || vm.ThreadManagementStatusText.Contains("検索できません", StringComparison.Ordinal));
     }
 
     [TestMethod]
@@ -220,9 +226,7 @@ public sealed partial class ViewModelTests
         await bridge.PublishStateAsync(OwnerStatus("history-search-cancel", 1, 1));
         vm.HistorySearchText = "needle";
 
-        Task firstSearch = (Task)typeof(ChatViewModel).GetMethod(
-            "SearchHistoryAsync",
-            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!.Invoke(vm, null)!;
+        Task firstSearch = vm.SearchHistoryAsync();
         await firstListReadStarted.Task.WaitAsync(TimeSpan.FromSeconds(10));
         vm.ShowArchivedThreads = true;
         await cancellationObserved.Task.WaitAsync(TimeSpan.FromSeconds(10));
@@ -232,7 +236,9 @@ public sealed partial class ViewModelTests
 #pragma warning disable VSTHRD003
         await firstSearch;
 #pragma warning restore VSTHRD003
-        await WaitUntilAsync(() => Volatile.Read(ref searchCalls) > 0);
+        await WaitUntilAsync(() => Volatile.Read(ref searchCalls) > 0
+            && (vm.HistoryStatusText.Contains("Showing search results", StringComparison.Ordinal)
+                || vm.HistoryStatusText.Contains("検索結果を表示しています", StringComparison.Ordinal)));
         Assert.AreEqual(1, Volatile.Read(ref searchCalls), "The canceled search must not dispatch a search request; only the replacement search should run.");
         Assert.IsFalse(string.IsNullOrWhiteSpace(Volatile.Read(ref dispatchedRequestId)));
     }
@@ -245,13 +251,8 @@ public sealed partial class ViewModelTests
             ListThreadsHandler = (_, _) => Task.FromResult(new ThreadPage { NextCursor = "repeated-cursor" }),
         };
         using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
-        typeof(ChatViewModel).GetField("threadListWorkingDirectories", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!
-            .SetValue(vm, EligibleSearchWorkingDirectories);
-        object owner = CaptureOwnerSnapshot(vm);
-        var method = typeof(ChatViewModel).GetMethod("LoadEligibleSearchThreadIdsAsync", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!;
-
-        Task<HashSet<string>?> load = (Task<HashSet<string>?>)method.Invoke(vm, [owner, CancellationToken.None])!;
-        // The reflected task is created by the view model; this test awaits it only to observe its guard exception.
+        ChatViewModel.OwnerSnapshot owner = vm.CaptureOwnerSnapshot();
+        Task<HashSet<string>?> load = vm.LoadEligibleSearchThreadIdsAsync(owner, EligibleSearchWorkingDirectories, CancellationToken.None);
 #pragma warning disable VSTHRD003
         await Assert.ThrowsExactlyAsync<InvalidDataException>(() => load);
 #pragma warning restore VSTHRD003
@@ -341,7 +342,9 @@ public sealed partial class ViewModelTests
         {
             Results = [new ThreadSearchHit { Thread = new ThreadSummary { Id = "final", Preview = "Final" }, Snippet = "final snippet" }],
         });
+#pragma warning disable VSTHRD003
         await search;
+#pragma warning restore VSTHRD003
 
         Assert.AreEqual("final", vm.ThreadRows.Single().Id);
         Assert.AreEqual("final snippet", vm.ThreadRows.Single().SearchSnippet);
@@ -364,11 +367,8 @@ public sealed partial class ViewModelTests
             ListThreadsHandler = (_, _) => Task.FromResult(new ThreadPage { NextCursor = "cursor-" + ++calls }),
         };
         using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
-        typeof(ChatViewModel).GetField("threadListWorkingDirectories", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!
-            .SetValue(vm, EligibleSearchWorkingDirectories);
-        object owner = CaptureOwnerSnapshot(vm);
-        var method = typeof(ChatViewModel).GetMethod("LoadEligibleSearchThreadIdsAsync", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!;
-        Task<HashSet<string>?> load = (Task<HashSet<string>?>)method.Invoke(vm, [owner, CancellationToken.None])!;
+        ChatViewModel.OwnerSnapshot owner = vm.CaptureOwnerSnapshot();
+        Task<HashSet<string>?> load = vm.LoadEligibleSearchThreadIdsAsync(owner, EligibleSearchWorkingDirectories, CancellationToken.None);
 #pragma warning disable VSTHRD003
         await Assert.ThrowsExactlyAsync<InvalidDataException>(() => load);
 #pragma warning restore VSTHRD003
@@ -392,11 +392,20 @@ public sealed partial class ViewModelTests
         Assert.IsTrue(vm.ThreadSections[0].Name is "All sections" or "すべてのセクション");
         Assert.AreEqual("section-inbox", vm.ThreadSections[1].Id);
 
-        int priorListCalls = bridge.ListThreadsCallCount;
+        int priorListCallsBeforeSectionSelection = bridge.ListThreadsCallCount;
         vm.SelectedThreadSectionId = "section-inbox";
         await WaitUntilAsync(() => bridge.LastListThreadsRequest?.SectionId == "section-inbox");
-        Assert.IsTrue(bridge.ListThreadsCallCount > priorListCalls);
-        int priorSections = vm.ThreadSections.Count;
+        Assert.IsTrue(bridge.ListThreadsCallCount > priorListCallsBeforeSectionSelection);
+        int priorSectionsCalls = bridge.ListThreadSectionsCallCount;
+        int priorListCalls = bridge.ListThreadsCallCount;
+        bridge.ThreadSectionsResult = new ThreadSectionsResult
+        {
+            Sections =
+            [
+                new ThreadSectionInfo { Id = "section-inbox", Name = "Renamed inbox" },
+                new ThreadSectionInfo { Id = "section-done", Name = "Done" },
+            ],
+        };
         await bridge.RaiseThreadHistoryChangedAsync(new WorkerNotification<ThreadHistoryChangedEvent>
         {
             Value = new ThreadHistoryChangedEvent { ThreadId = "thread-inbox", SectionId = "section-inbox", ChangeKind = "thread/section/changed" },
@@ -404,7 +413,10 @@ public sealed partial class ViewModelTests
             OwnerGeneration = 1,
             ConnectionGeneration = 1,
         });
-        Assert.AreEqual(priorSections, vm.ThreadSections.Count);
+        await WaitUntilAsync(() => bridge.ListThreadSectionsCallCount > priorSectionsCalls
+            && bridge.ListThreadsCallCount > priorListCalls);
+        Assert.AreEqual("Renamed inbox", vm.ThreadSections.Single(section => section.Id == "section-inbox").Name);
+        Assert.AreEqual(3, vm.ThreadSections.Count);
         Assert.AreEqual("section-inbox", bridge.LastListThreadsRequest?.SectionId);
     }
 
@@ -458,6 +470,257 @@ public sealed partial class ViewModelTests
         });
         Assert.IsFalse(vm.ThreadRows.Any(row => row.Id == "stale-partial"));
     }
+
+    [TestMethod]
+    public async Task SearchResultWithMismatchedOwnerScopeIsDropped()
+    {
+        var bridge = new FakeWorkerBridge
+        {
+            PreserveThreadManagementResultOwner = true,
+            SearchThreadsHandler = (_, _) => Task.FromResult(new ThreadSearchResult
+            {
+                Results = [new ThreadSearchHit { Thread = new ThreadSummary { Id = "wrong-owner-hit", Preview = "Wrong owner" } }],
+                StatePartitionFingerprint = "different-partition",
+                OwnerGeneration = 90,
+                ConnectionGeneration = 91,
+            }),
+        };
+        using var vm = new ChatViewModel(
+            bridge,
+            autoConnect: false,
+            settingsStore: new MemorySettingsStore(new ExtensionSettings { ExperimentalApiEnabled = true }));
+        await bridge.PublishStateAsync(OwnerStatus("history-owner-result", 1, 1));
+        vm.HistorySearchText = "needle";
+
+        await RunCommandAsync(vm.SearchHistoryCommand);
+
+        Assert.AreEqual(1, bridge.SearchThreadsCallCount);
+        Assert.IsFalse(vm.ThreadRows.Any(row => row.Id == "wrong-owner-hit"));
+    }
+
+    [TestMethod]
+    public async Task SectionChangeDoesNotClearTheSelectedConversation()
+    {
+        var bridge = new FakeWorkerBridge();
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        await bridge.PublishStateAsync(OwnerStatus("history-section-selection", 1, 1));
+        vm.SelectedThread = new ThreadSummary { Id = "thread-selected", Preview = "Selected conversation" };
+
+        await bridge.RaiseThreadHistoryChangedAsync(new WorkerNotification<ThreadHistoryChangedEvent>
+        {
+            Value = new ThreadHistoryChangedEvent
+            {
+                ThreadId = "thread-selected",
+                SectionId = "section-inbox",
+                ChangeKind = "thread/section/changed",
+            },
+            StatePartitionFingerprint = "history-section-selection",
+            OwnerGeneration = 1,
+            ConnectionGeneration = 1,
+        });
+
+        Assert.AreEqual("thread-selected", vm.SelectedThread?.Id);
+    }
+
+    [TestMethod]
+    public async Task StaleUnsupportedSearchCannotEnableFallbackForReplacementSearch()
+    {
+        var firstSearchStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseFirstSearch = new TaskCompletionSource<ThreadSearchResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        int searchCalls = 0;
+        var bridge = new FakeWorkerBridge
+        {
+            SearchThreadsHandler = async (_, _) =>
+            {
+                if (Interlocked.Increment(ref searchCalls) == 1)
+                {
+                    firstSearchStarted.TrySetResult();
+#pragma warning disable VSTHRD003
+                    return await releaseFirstSearch.Task;
+#pragma warning restore VSTHRD003
+                }
+
+                return new ThreadSearchResult();
+            },
+        };
+        using var vm = new ChatViewModel(
+            bridge,
+            autoConnect: false,
+            settingsStore: new MemorySettingsStore(new ExtensionSettings { ExperimentalApiEnabled = true }));
+        await bridge.PublishStateAsync(OwnerStatus("history-replacement-search", 1, 1));
+        vm.HistorySearchText = "first term";
+        Task firstSearch = vm.SearchHistoryAsync();
+        await firstSearchStarted.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        vm.HistorySearchText = "replacement term";
+        await RunCommandAsync(vm.SearchHistoryCommand);
+        releaseFirstSearch.TrySetResult(new ThreadSearchResult { IsSupported = false });
+#pragma warning disable VSTHRD003
+        await firstSearch;
+#pragma warning restore VSTHRD003
+
+        Assert.IsFalse(bridge.ThreadListRequests.Any(request => request.SearchTerm is "first term" or "replacement term"),
+            "Neither the canceled search nor its replacement should issue a title-filter fallback.");
+    }
+
+    [TestMethod]
+    public async Task LiveForkRelationshipWinsOverPagedSnapshotAndParentlessSummary()
+    {
+        var firstListReadStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseFirstListRead = new TaskCompletionSource<ThreadPage>(TaskCreationOptions.RunContinuationsAsynchronously);
+        int listCalls = 0;
+        var bridge = new FakeWorkerBridge
+        {
+            ListThreadsHandler = (_, _) =>
+            {
+                if (Interlocked.Increment(ref listCalls) == 1)
+                {
+#pragma warning disable VSTHRD003
+                    firstListReadStarted.TrySetResult();
+                    return releaseFirstListRead.Task;
+#pragma warning restore VSTHRD003
+                }
+
+                return Task.FromResult(new ThreadPage
+                {
+                    Threads =
+                    [
+                        new ThreadSummary { Id = "thread-child", LinkedParentThreadId = "thread-parent-snapshot" },
+                        new ThreadSummary { Id = "thread-control-child", LinkedParentThreadId = "thread-parent-snapshot" },
+                    ],
+                });
+            },
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings { ExperimentalApiEnabled = true }));
+        await bridge.PublishStateAsync(OwnerStatus("history-link-race", 1, 1));
+        Task refresh = vm.RefreshCompleteLinkedForkIndexAsync(vm.CaptureOwnerSnapshot(), CancellationToken.None);
+        await firstListReadStarted.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.IsFalse(refresh.IsCompleted, "The fork-index refresh must still be waiting on its first page.");
+        vm.TrackLinkedForkRelationship(new ThreadSummary { Id = "thread-child", LinkedParentThreadId = "thread-parent-live" });
+        vm.TrackLinkedForkRelationship(new ThreadSummary { Id = "thread-child" });
+        releaseFirstListRead.TrySetResult(new ThreadPage
+        {
+            Threads =
+            [
+                new ThreadSummary { Id = "thread-child", LinkedParentThreadId = "thread-parent-snapshot" },
+                new ThreadSummary { Id = "thread-control-child", LinkedParentThreadId = "thread-parent-snapshot" },
+            ],
+        });
+#pragma warning disable VSTHRD003
+        await refresh;
+#pragma warning restore VSTHRD003
+
+        vm.SelectedThread = new ThreadSummary { Id = "thread-index-ready-parent" };
+        await WaitUntilAsync(() => vm.CanDeleteSelectedThread);
+        Assert.IsTrue(vm.CanDeleteSelectedThread, "The complete fork index must be ready before relationship assertions.");
+        vm.SelectedThread = new ThreadSummary { Id = "thread-parent-snapshot" };
+        Assert.IsFalse(vm.CanDeleteSelectedThread, "The unmodified control relationship from the paged snapshot must remain indexed.");
+        vm.SelectedThread = new ThreadSummary { Id = "thread-parent-live" };
+        Assert.IsFalse(vm.CanDeleteSelectedThread, "The live relationship must override the earlier paged snapshot, and a parentless summary must not erase it.");
+    }
+
+    [TestMethod]
+    public async Task DeletedChildDuringIndexRefreshIsNotRestoredFromPagedSnapshot()
+    {
+        var firstListReadStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseFirstListRead = new TaskCompletionSource<ThreadPage>(TaskCreationOptions.RunContinuationsAsynchronously);
+        int listCalls = 0;
+        var bridge = new FakeWorkerBridge
+        {
+            ListThreadsHandler = (_, _) =>
+            {
+                if (Interlocked.Increment(ref listCalls) == 1)
+                {
+#pragma warning disable VSTHRD003
+                    firstListReadStarted.TrySetResult();
+                    return releaseFirstListRead.Task;
+#pragma warning restore VSTHRD003
+                }
+
+                return Task.FromResult(new ThreadPage
+                {
+                    Threads =
+                    [
+                        new ThreadSummary { Id = "thread-child", LinkedParentThreadId = "thread-parent" },
+                        new ThreadSummary { Id = "thread-control-child", LinkedParentThreadId = "thread-control-parent" },
+                    ],
+                });
+            },
+        };
+        using var vm = new ChatViewModel(
+            bridge,
+            autoConnect: false,
+            settingsStore: new MemorySettingsStore(new ExtensionSettings { ExperimentalApiEnabled = true }));
+        await bridge.PublishStateAsync(OwnerStatus("history-delete-index-race", 1, 1));
+        Task refresh = vm.RefreshCompleteLinkedForkIndexAsync(vm.CaptureOwnerSnapshot(), CancellationToken.None);
+        await firstListReadStarted.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.IsFalse(refresh.IsCompleted, "The fork-index refresh must still be waiting on its first page.");
+        await bridge.RaiseThreadHistoryChangedAsync(new WorkerNotification<ThreadHistoryChangedEvent>
+        {
+            Value = new ThreadHistoryChangedEvent { ThreadId = "thread-child", ChangeKind = "thread/deleted" },
+            StatePartitionFingerprint = "history-delete-index-race",
+            OwnerGeneration = 1,
+            ConnectionGeneration = 1,
+        });
+        releaseFirstListRead.TrySetResult(new ThreadPage
+        {
+            Threads =
+            [
+                new ThreadSummary { Id = "thread-child", LinkedParentThreadId = "thread-parent" },
+                new ThreadSummary { Id = "thread-control-child", LinkedParentThreadId = "thread-control-parent" },
+            ],
+        });
+#pragma warning disable VSTHRD003
+        await refresh;
+#pragma warning restore VSTHRD003
+
+        vm.SelectedThread = new ThreadSummary { Id = "thread-index-ready-parent" };
+        await WaitUntilAsync(() => vm.CanDeleteSelectedThread);
+        Assert.IsTrue(vm.CanDeleteSelectedThread, "The complete fork index must be ready before relationship assertions.");
+        vm.SelectedThread = new ThreadSummary { Id = "thread-control-parent" };
+        Assert.IsFalse(vm.CanDeleteSelectedThread, "The unaffected control relationship from the paged snapshot must remain indexed.");
+        vm.SelectedThread = new ThreadSummary { Id = "thread-parent", Preview = "Parent conversation" };
+        Assert.IsTrue(vm.CanDeleteSelectedThread, "A deletion notification received during paging must override a stale child summary.");
+    }
+
+    [TestMethod]
+    public async Task DeleteCompletionDoesNotClearAConversationSelectedWhileTheRequestWasPending()
+    {
+        var deleteStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseDelete = new TaskCompletionSource<ThreadMutationResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var bridge = new FakeWorkerBridge
+        {
+            ListThreadsHandler = (_, _) => Task.FromResult(new ThreadPage
+            {
+                Threads = [new ThreadSummary { Id = "thread-other", Preview = "Other conversation" }],
+            }),
+            DeleteThreadHandler = async (_, _) =>
+            {
+                deleteStarted.TrySetResult();
+#pragma warning disable VSTHRD003
+                return await releaseDelete.Task;
+#pragma warning restore VSTHRD003
+            },
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        await bridge.PublishStateAsync(OwnerStatus("history-selection-race", 1, 1));
+        Task refresh = vm.RefreshCompleteLinkedForkIndexAsync(vm.CaptureOwnerSnapshot(), CancellationToken.None);
+#pragma warning disable VSTHRD003
+        await refresh;
+#pragma warning restore VSTHRD003
+        vm.SelectedThread = new ThreadSummary { Id = "thread-delete-target", Preview = "Delete target" };
+        await RunCommandAsync(vm.DeleteThreadCommand);
+        Task delete = RunCommandAsync(vm.ConfirmThreadMutationCommand);
+        await deleteStarted.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        vm.SelectedThread = new ThreadSummary { Id = "thread-other", Preview = "Other conversation" };
+        releaseDelete.TrySetResult(new ThreadMutationResult { Succeeded = true });
+#pragma warning disable VSTHRD003
+        await delete;
+#pragma warning restore VSTHRD003
+
+        Assert.AreEqual("thread-other", vm.SelectedThread?.Id);
+    }
+
     private static async Task WaitUntilAsync(Func<bool> predicate)
     {
         for (int attempt = 0; attempt < 100 && !predicate(); attempt++)

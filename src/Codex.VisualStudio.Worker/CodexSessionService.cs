@@ -4710,9 +4710,10 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         if (method is "thread/archived" or "thread/unarchived" or "thread/deleted" or "thread/reverted" or "thread/section/changed")
         {
             string? changedThreadId = GetBoundedString(parameters, "threadId", 256);
-            if (!string.IsNullOrWhiteSpace(changedThreadId) && ThreadHistoryChanged is not null)
+            Func<ThreadHistoryChangedEvent, CancellationToken, Task>? handlers = ThreadHistoryChanged;
+            if (!string.IsNullOrWhiteSpace(changedThreadId) && handlers is not null)
             {
-                await ThreadHistoryChanged(new ThreadHistoryChangedEvent
+                var change = new ThreadHistoryChangedEvent
                 {
                     ThreadId = changedThreadId,
                     ChangeKind = method,
@@ -4720,7 +4721,23 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
                     StatePartitionFingerprint = context.StatePartitionFingerprint,
                     OwnerGeneration = context.OwnerGeneration,
                     ConnectionGeneration = context.Generation,
-                }, cancellationToken).ConfigureAwait(false);
+                };
+                foreach (Func<ThreadHistoryChangedEvent, CancellationToken, Task> handler in handlers.GetInvocationList()
+                    .Cast<Func<ThreadHistoryChangedEvent, CancellationToken, Task>>())
+                {
+                    try
+                    {
+                        await handler(change, cancellationToken).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                    {
+                        throw;
+                    }
+                    catch (Exception exception)
+                    {
+                        WorkerDiagnostics.Write("thread history notification subscriber failed", exception);
+                    }
+                }
             }
 
             return;
