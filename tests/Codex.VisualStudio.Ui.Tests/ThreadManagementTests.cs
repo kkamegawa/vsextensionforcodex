@@ -132,10 +132,12 @@ public sealed partial class ViewModelTests
             using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
             await bridge.PublishStateAsync(OwnerStatus($"history-revert-error-{errorCode}", 1, 1));
             vm.SelectedThread = new ThreadSummary { Id = "thread-revert-error" };
+            await WaitUntilAsync(() => bridge.ReadThreadCallCount > 0 && !IsHistoryLoading(vm));
             typeof(ChatViewModel).GetProperty(nameof(ChatViewModel.IsThreadJoined))!
                 .GetSetMethod(nonPublic: true)!.Invoke(vm, [true]);
             vm.ThreadTurns.Add(new ThreadTurnOptionViewModel("turn-before", "Turn before · completed"));
             vm.SelectedRevertTurnId = "turn-before";
+            int historyReadsBeforeMutation = bridge.ReadThreadCallCount;
 
             await RunCommandAsync(vm.RevertThreadCommand);
             await RunCommandAsync(vm.ConfirmThreadMutationCommand);
@@ -143,12 +145,87 @@ public sealed partial class ViewModelTests
             bool reportedUnknown = vm.ThreadManagementStatusText.Contains("outcome is unknown", StringComparison.Ordinal)
                 || vm.ThreadManagementStatusText.Contains("結果を確認できません", StringComparison.Ordinal);
             Assert.AreEqual(expectedUnknown, reportedUnknown, $"Unexpected classification for Worker error code {errorCode}.");
+            Assert.AreEqual(
+                historyReadsBeforeMutation + (expectedUnknown ? 1 : 0),
+                bridge.ReadThreadCallCount,
+                "An unknown revert outcome must reload the selected transcript before it is displayed as current.");
             if (!expectedUnknown)
             {
                 StringAssert.Contains(vm.ThreadManagementStatusText, "App server returned a revert error.");
             }
+            else
+            {
+                Assert.IsFalse(vm.ThreadManagementStatusText.Contains("App server returned a revert error.", StringComparison.Ordinal),
+                    "Unknown outcomes must use the fixed status instead of displaying an untrusted remote exception message.");
+            }
         }
     }
+
+    [TestMethod]
+    public async Task ThreadMutationFailureMessageIsSanitizedAndBounded()
+    {
+        string sanitizedMessage = await RunRemoteRevertFailureAsync($"<script>unsafe</script>\u001b[31m{new string('x', 900)}\u0000");
+        Assert.IsFalse(sanitizedMessage.Contains("<script>", StringComparison.Ordinal));
+        Assert.IsFalse(sanitizedMessage.Contains('\u001b'));
+        Assert.IsFalse(sanitizedMessage.Contains('\u0000'));
+        Assert.IsTrue(sanitizedMessage.Length <= 512);
+
+        string outputBoundaryMessage = await RunRemoteRevertFailureAsync($"{new string('x', 510)}\U0001F680{new string('y', 900)}");
+        Assert.IsFalse(ContainsUnpairedSurrogate(outputBoundaryMessage));
+        Assert.IsTrue(outputBoundaryMessage.Length <= 512);
+
+        string inputBoundaryMessage = await RunRemoteRevertFailureAsync($"{new string(' ', 4095)}\U0001F680after-input-limit");
+        Assert.IsFalse(ContainsUnpairedSurrogate(inputBoundaryMessage));
+        Assert.IsTrue(inputBoundaryMessage.Contains("could not be completed", StringComparison.Ordinal)
+            || inputBoundaryMessage.Contains("完了できませんでした", StringComparison.Ordinal),
+            $"A message sanitized to empty must use the localized fallback. Actual: '{inputBoundaryMessage}'.");
+    }
+
+    private static async Task<string> RunRemoteRevertFailureAsync(string remoteMessage)
+    {
+        var bridge = new FakeWorkerBridge
+        {
+            RevertThreadHandler = (_, _) => Task.FromException<ThreadMutationResult>(
+                new StreamJsonRpc.RemoteInvocationException(remoteMessage, WorkerErrorCodes.PreDispatchRejected, errorData: null)),
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        await bridge.PublishStateAsync(OwnerStatus("history-revert-sanitized-error", 1, 1));
+        vm.SelectedThread = new ThreadSummary { Id = "thread-revert-sanitized-error" };
+        await WaitUntilAsync(() => bridge.ReadThreadCallCount > 0 && !IsHistoryLoading(vm));
+        typeof(ChatViewModel).GetProperty(nameof(ChatViewModel.IsThreadJoined))!
+            .GetSetMethod(nonPublic: true)!.Invoke(vm, [true]);
+        vm.ThreadTurns.Add(new ThreadTurnOptionViewModel("turn-before", "Turn before · completed"));
+        vm.SelectedRevertTurnId = "turn-before";
+
+        await RunCommandAsync(vm.RevertThreadCommand);
+        await RunCommandAsync(vm.ConfirmThreadMutationCommand);
+        return vm.ThreadManagementStatusText;
+    }
+
+    private static bool ContainsUnpairedSurrogate(string value)
+    {
+        for (int index = 0; index < value.Length; index++)
+        {
+            if (char.IsHighSurrogate(value[index]))
+            {
+                if (index + 1 >= value.Length || !char.IsLowSurrogate(value[index + 1]))
+                {
+                    return true;
+                }
+
+                index++;
+            }
+            else if (char.IsLowSurrogate(value[index]))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool IsHistoryLoading(ChatViewModel viewModel)
+        => (bool)typeof(ChatViewModel).GetField("isHistoryLoading", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(viewModel)!;
 
     [TestMethod]
     public async Task DeleteMutationUsesKnownRejectionsAsDefiniteFailures()
@@ -503,6 +580,73 @@ public sealed partial class ViewModelTests
                 || vm.HistoryStatusText.Contains("検索結果を表示しています", StringComparison.Ordinal)));
         Assert.AreEqual(1, Volatile.Read(ref searchCalls), "The canceled search must not dispatch a search request; only the replacement search should run.");
         Assert.IsFalse(string.IsNullOrWhiteSpace(Volatile.Read(ref dispatchedRequestId)));
+    }
+
+    [TestMethod]
+    public async Task ThreadSearchScopeChangeCancelsOldSearchAndRestartsWithScopedEligibility()
+    {
+        var firstSearchStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseFirstSearch = new TaskCompletionSource<ThreadSearchResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var searchRequests = new System.Collections.Concurrent.ConcurrentQueue<ThreadSearchRequest>();
+        int searchCalls = 0;
+        var bridge = new FakeWorkerBridge
+        {
+            ThreadListScopesResult = new ThreadListScopesResult { CurrentFolder = @"C:\repo" },
+            ListThreadsRequestHandler = (request, _) => Task.FromResult(new ThreadPage
+            {
+                Threads = request.WorkingDirectories is { Count: > 0 }
+                    ? [new ThreadSummary { Id = "folder-match", Preview = "Folder result" }]
+                    : [],
+            }),
+            SearchThreadsHandler = async (request, _) =>
+            {
+                searchRequests.Enqueue(request);
+                if (Interlocked.Increment(ref searchCalls) == 1)
+                {
+                    firstSearchStarted.TrySetResult();
+#pragma warning disable VSTHRD003
+                    return await releaseFirstSearch.Task;
+#pragma warning restore VSTHRD003
+                }
+
+                return new ThreadSearchResult
+                {
+                    Results = [new ThreadSearchHit { Thread = new ThreadSummary { Id = "folder-match" }, Snippet = "folder match" }],
+                };
+            },
+        };
+        using var vm = new ChatViewModel(
+            bridge,
+            autoConnect: false,
+            settingsStore: new MemorySettingsStore(new ExtensionSettings { ExperimentalApiEnabled = true }));
+        await bridge.PublishStateAsync(OwnerStatus("history-search-scope-change", 1, 1));
+        await RunCommandAsync(vm.ToggleHistoryCommand);
+        await WaitUntilAsync(() => vm.ThreadListScopes.Any(scope => scope.Id == ChatViewModel.CurrentFolderScopeId));
+        vm.HistorySearchText = "needle";
+        Task firstSearch = vm.SearchHistoryAsync();
+        await firstSearchStarted.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        vm.SelectedThreadListScopeId = ChatViewModel.CurrentFolderScopeId;
+        await WaitUntilAsync(() => Volatile.Read(ref searchCalls) == 2
+            && vm.ThreadRows.Any(static row => row.Id == "folder-match"));
+
+        releaseFirstSearch.TrySetResult(new ThreadSearchResult
+        {
+            Results = [new ThreadSearchHit { Thread = new ThreadSummary { Id = "all-scope-only" }, Snippet = "stale unfiltered result" }],
+        });
+#pragma warning disable VSTHRD003
+        await firstSearch.WaitAsync(TimeSpan.FromSeconds(10));
+#pragma warning restore VSTHRD003
+
+        Assert.AreEqual(2, Volatile.Read(ref searchCalls), "Changing the scope must replace the canceled search exactly once.");
+        ThreadSearchRequest[] requests = searchRequests.ToArray();
+        Assert.AreEqual(2, requests.Length);
+        Assert.AreEqual("needle", requests[1].SearchTerm);
+        Assert.IsTrue(bridge.ListedWorkingDirectories.Any(static directories => directories is { Count: 1 } && directories[0] == @"C:\repo"),
+            "The replacement search must calculate eligible conversation IDs from the selected folder scope.");
+        Assert.IsTrue(vm.ThreadRows.Any(static row => row.Id == "folder-match"));
+        Assert.IsFalse(vm.ThreadRows.Any(static row => row.Id == "all-scope-only"),
+            "A late result from the old scope must not replace the current folder-filtered results.");
     }
 
     [TestMethod]

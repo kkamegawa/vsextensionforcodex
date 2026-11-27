@@ -10,6 +10,8 @@ namespace Codex.VisualStudio.Extension;
 /// <summary>Presentation state and commands for the conversation history management surface.</summary>
 public sealed partial class ChatViewModel
 {
+    private const int MaximumThreadMutationMessageLength = 512;
+
     private static readonly bool[] ThreadArchiveStates = [false, true];
     private bool showArchivedThreads;
     private string historySearchText = string.Empty;
@@ -120,7 +122,7 @@ public sealed partial class ChatViewModel
     };
 
     [DataMember]
-    public string ThreadManagementStatusText => markdown.ToSafeText(historyManagementStatusText);
+    public string ThreadManagementStatusText => LimitThreadManagementStatusText(markdown.ToSafeText(historyManagementStatusText));
 
     [DataMember]
     public string ThreadArchiveActionText => SelectedThread?.Archived == true
@@ -1132,21 +1134,60 @@ public sealed partial class ChatViewModel
                 : "The operation outcome is unknown. Refresh the conversation list to check its status.";
         }
 
-        if (!result.Succeeded)
-        {
-            return markdown.ToSafeText(result.Message ?? (IsJapaneseUi ? "操作を完了できませんでした。" : "The operation could not be completed."));
-        }
-
-        return result.Message is { Length: > 0 } message
-            ? markdown.ToSafeText(message)
-            : action switch
+        string fallback = result.Succeeded
+            ? action switch
             {
                 "archive" => IsJapaneseUi ? "会話をアーカイブしました。" : "Conversation archived.",
                 "unarchive" => IsJapaneseUi ? "会話のアーカイブを解除しました。" : "Conversation unarchived.",
                 "delete" => IsJapaneseUi ? "会話を削除しました。" : "Conversation deleted.",
                 "revert" => IsJapaneseUi ? "会話を選択したターンの前に戻しました。" : "Conversation reverted to the selected turn.",
                 _ => IsJapaneseUi ? "操作が完了しました。" : "Operation completed.",
-            };
+            }
+            : IsJapaneseUi ? "操作を完了できませんでした。" : "The operation could not be completed.";
+        return SafeThreadMutationMessage(result.Message, fallback);
+    }
+
+    private string SafeThreadMutationMessage(string? message, string fallback)
+    {
+        if (string.IsNullOrWhiteSpace(message))
+        {
+            return fallback;
+        }
+
+        const int maximumInputLength = 4096;
+        string boundedMessage = TruncateUtf16AtCodePointBoundary(message, maximumInputLength);
+        string safeMessage = markdown.ToSafeText(boundedMessage).Trim();
+        if (safeMessage.Length == 0)
+        {
+            return fallback;
+        }
+
+        return safeMessage.Length > MaximumThreadMutationMessageLength
+            ? string.Concat(TruncateUtf16AtCodePointBoundary(safeMessage, MaximumThreadMutationMessageLength - 1), "…")
+            : safeMessage;
+    }
+
+    private static string TruncateUtf16AtCodePointBoundary(string value, int maximumLength)
+    {
+        if (value.Length <= maximumLength)
+        {
+            return value;
+        }
+
+        int length = maximumLength;
+        if (length > 0 && char.IsHighSurrogate(value[length - 1]) && char.IsLowSurrogate(value[length]))
+        {
+            length--;
+        }
+
+        return value[..length];
+    }
+
+    private static string LimitThreadManagementStatusText(string value)
+    {
+        return value.Length > MaximumThreadMutationMessageLength
+            ? string.Concat(TruncateUtf16AtCodePointBoundary(value, MaximumThreadMutationMessageLength - 1), "…")
+            : value;
     }
 
     private Task RequestDeleteSelectedThreadAsync()
@@ -1259,7 +1300,9 @@ public sealed partial class ChatViewModel
             }
 
             refresh = true;
-            reloadTranscript = result.Succeeded && mutation == "revert" && SelectedThread?.Id == threadId;
+            reloadTranscript = (result.Succeeded || result.OutcomeUnknown)
+                && mutation == "revert"
+                && SelectedThread?.Id == threadId;
             if (reloadTranscript)
             {
                 lock (threadHistoryStateGate)
