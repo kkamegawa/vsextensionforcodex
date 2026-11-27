@@ -210,8 +210,18 @@ public sealed class UsagePresentationTests
         Assert.AreEqual("True", popup.Attribute("StaysOpen")?.Value);
 
         XElement scopePicker = popup.Descendants(presentation + "ComboBox")
-            .Single(value => value.Attribute("AutomationProperties.Name")?.Value == "Conversation history scope");
+            .Single(value => value.Attribute("AutomationProperties.Name")?.Value == "{Binding ThreadListScopeAutomationName}");
         Assert.AreEqual("{Binding SelectedThreadListScopeId, Mode=TwoWay}", scopePicker.Attribute("SelectedValue")?.Value);
+        Assert.AreEqual("{Binding ThreadListScopeToolTipText}", scopePicker.Attribute("ToolTip")?.Value);
+        Assert.AreEqual("{Binding ThreadListScopeAutomationName}", scopePicker.Attribute("AutomationProperties.Name")?.Value);
+        Assert.AreEqual("{Binding ThreadListScopeHelpText}", scopePicker.Attribute("AutomationProperties.HelpText")?.Value);
+
+        XElement mutationConfirmation = popup.Descendants(presentation + "Border")
+            .Single(value => value.Attribute("Visibility")?.Value == "{Binding IsThreadMutationConfirmationOpen, Converter={StaticResource BoolToVis}}");
+        Assert.AreEqual("{Binding ElementName=CancelThreadMutationButton}", mutationConfirmation.Attribute("FocusManager.FocusedElement")?.Value);
+        XElement cancelMutationButton = mutationConfirmation.Descendants(presentation + "Button")
+            .Single(value => value.Attribute("Command")?.Value == "{Binding CancelThreadMutationCommand}");
+        Assert.AreEqual("True", cancelMutationButton.Attribute("IsCancel")?.Value);
 
         XElement closeButton = popup.Descendants(presentation + "Button")
             .Single(value => value.Attribute("Command")?.Value == "{Binding CloseHistoryCommand}");

@@ -356,6 +356,73 @@ public sealed class WorkerRpcServiceTests
     }
 
     [TestMethod]
+    public async Task ThreadMutation_MapsActualDeleteAndRevertPreDispatchRejectionsAndPreservesOwnerError()
+    {
+        var connection = new StubConnection();
+        var session = new CodexSessionService(new ApprovalPolicyEngine(new PathAccessPolicy()), new SecretRedactor());
+        await using var worker = new WorkerRpcService(new SecretRedactor(), new FakeProcessHost(connection), session);
+        await worker.ConnectAsync(Options(), CancellationToken.None);
+
+        LocalRpcException deleteRejected = await Assert.ThrowsExactlyAsync<LocalRpcException>(() => worker.DeleteThreadAsync(
+            Scoped(worker, new ThreadMutationRequest { ThreadId = "thread-delete-pre-dispatch" }),
+            CancellationToken.None));
+        Assert.AreEqual(WorkerErrorCodes.PreDispatchRejected, deleteRejected.ErrorCode);
+        Assert.IsFalse(connection.Methods.Contains("thread/delete", StringComparer.Ordinal));
+
+        LocalRpcException revertRejected = await Assert.ThrowsExactlyAsync<LocalRpcException>(() => worker.RevertThreadAsync(
+            Scoped(worker, new ThreadMutationRequest { ThreadId = "thread-revert-pre-dispatch", UserConfirmed = true }),
+            CancellationToken.None));
+        Assert.AreEqual(WorkerErrorCodes.PreDispatchRejected, revertRejected.ErrorCode);
+        Assert.IsFalse(connection.Methods.Contains("thread/revert", StringComparer.Ordinal));
+
+        LocalRpcException archiveRejected = await Assert.ThrowsExactlyAsync<LocalRpcException>(() => worker.ArchiveThreadAsync(
+            Scoped(worker, new ThreadMutationRequest { ThreadId = "   " }),
+            CancellationToken.None));
+        Assert.AreEqual(WorkerErrorCodes.PreDispatchRejected, archiveRejected.ErrorCode);
+        Assert.IsFalse(connection.Methods.Contains("thread/archive", StringComparer.Ordinal));
+        ThreadMutationRequest staleOwner = Scoped(worker, new ThreadMutationRequest { ThreadId = "thread-stale-owner" });
+        staleOwner.OwnerGeneration++;
+        LocalRpcException ownerRejected = await Assert.ThrowsExactlyAsync<LocalRpcException>(() => worker.ArchiveThreadAsync(
+            staleOwner,
+            CancellationToken.None));
+        Assert.AreEqual(WorkerErrorCodes.ConnectionOperationRejected, ownerRejected.ErrorCode);
+        Assert.IsFalse(connection.Methods.Contains("thread/archive", StringComparer.Ordinal));
+    }
+
+    [TestMethod]
+    public async Task ThreadMutation_MapsOnlyDedicatedPreDispatchFailureAndRedactsItsMessage()
+    {
+        const string secretValue = "thread-mutation-secret-value";
+        var redactor = new SecretRedactor();
+        using IDisposable secretLease = redactor.RegisterSecret(secretValue);
+        var session = new CodexSessionService(new ApprovalPolicyEngine(new PathAccessPolicy()), redactor);
+        await using var worker = new WorkerRpcService(redactor, new FakeProcessHost(new StubConnection()), session);
+        await worker.ConnectAsync(Options(), CancellationToken.None);
+        ThreadMutationRequest request = Scoped(worker, new ThreadMutationRequest { ThreadId = "thread-redaction" });
+
+        LocalRpcException rejected = await Assert.ThrowsExactlyAsync<LocalRpcException>(() => worker.ExecuteOwnerScopedMutationAsync(
+            request,
+            () => Task.FromException<ThreadMutationResult>(new ThreadMutationPreDispatchRejectedException($"Policy rejected {secretValue}.", new InvalidOperationException("policy"))),
+            CancellationToken.None));
+
+        Assert.AreEqual(WorkerErrorCodes.PreDispatchRejected, rejected.ErrorCode);
+        Assert.IsFalse(rejected.Message.Contains(secretValue, StringComparison.Ordinal));
+        Assert.IsTrue(rejected.Message.Contains("[REDACTED]", StringComparison.Ordinal));
+
+        ObjectDisposedException disposed = await Assert.ThrowsExactlyAsync<ObjectDisposedException>(() => worker.ExecuteOwnerScopedMutationAsync(
+            request,
+            () => Task.FromException<ThreadMutationResult>(new ObjectDisposedException("thread mutation")),
+            CancellationToken.None));
+        Assert.AreEqual("thread mutation", disposed.ObjectName);
+
+        InvalidOperationException unexpected = await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => worker.ExecuteOwnerScopedMutationAsync(
+            request,
+            () => Task.FromException<ThreadMutationResult>(new InvalidOperationException("unexpected mutation failure")),
+            CancellationToken.None));
+        Assert.AreEqual("unexpected mutation failure", unexpected.Message);
+    }
+
+    [TestMethod]
     public async Task StartTurn_RejectsStaleSkillWithTypedCodeBeforeSendingTurnStart()
     {
         var connection = new StubConnection

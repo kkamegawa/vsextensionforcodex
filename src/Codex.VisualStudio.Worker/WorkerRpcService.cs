@@ -1074,12 +1074,25 @@ public sealed partial class WorkerRpcService : ICodexWorkerClient, IAsyncDisposa
             ReleaseTransitionGate();
         }
 
-        T result = await operationTask.ConfigureAwait(false);
+        T result;
+        try
+        {
+            result = await operationTask.ConfigureAwait(false);
+        }
+        catch (ThreadMutationPreDispatchRejectedException exception)
+        {
+            throw new LocalRpcException(redactor.Redact(exception.Message))
+            {
+                ErrorCode = WorkerErrorCodes.PreDispatchRejected,
+            };
+        }
+
         result.StatePartitionFingerprint = captured.StatePartitionFingerprint;
         result.OwnerGeneration = captured.OwnerGeneration;
         result.ConnectionGeneration = captured.Generation;
         return result;
     }
+
     public Task<ThreadPage> ListThreadsAsync(ListThreadsRequest request, CancellationToken cancellationToken)
         => ExecuteOwnerScopedGenerationAsync(
             request,

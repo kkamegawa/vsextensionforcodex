@@ -239,6 +239,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         this.externalLinkOpener = externalLinkOpener ?? new ExternalLinkOpener();
         InitializeConversationText();
         InitializeTranscriptSearch();
+        InitializeThreadListScopeOptions();
         settings = this.settingsStore.Load();
         remoteProfiles = new RemoteProfilesPresentationViewModel(settings, this.settingsStore, profileOperationGate);
         connectionHealth = new ConnectionHealthPresentationViewModel(markdown);

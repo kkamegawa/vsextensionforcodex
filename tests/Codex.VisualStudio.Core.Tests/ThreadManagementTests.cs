@@ -262,13 +262,15 @@ public sealed partial class CodexSessionServiceTests
             new DenyThreadMutationPolicy(), new SecretRedactor(), null, null, null, new NullSkillCatalogStore());
         await service.InitializeAsync(connection, Options(), CancellationToken.None);
 
-        await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => service.DeleteThreadAsync(
+        await Assert.ThrowsExactlyAsync<ThreadMutationPreDispatchRejectedException>(() => service.DeleteThreadAsync(
             new ThreadMutationRequest { ThreadId = "thread-1", UserConfirmed = false }, CancellationToken.None));
-        await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => service.RevertThreadAsync(
+        await Assert.ThrowsExactlyAsync<ThreadMutationPreDispatchRejectedException>(() => service.RevertThreadAsync(
             new ThreadMutationRequest { ThreadId = "thread-1", BeforeTurnId = "turn-1", UserConfirmed = false }, CancellationToken.None));
-        await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => service.DeleteThreadAsync(
+        await Assert.ThrowsExactlyAsync<ThreadMutationPreDispatchRejectedException>(() => service.RevertThreadAsync(
             new ThreadMutationRequest { ThreadId = "thread-1", UserConfirmed = true }, CancellationToken.None));
-        await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => service.RevertThreadAsync(
+        await Assert.ThrowsExactlyAsync<ThreadMutationPreDispatchRejectedException>(() => service.DeleteThreadAsync(
+            new ThreadMutationRequest { ThreadId = "thread-1", UserConfirmed = true }, CancellationToken.None));
+        await Assert.ThrowsExactlyAsync<ThreadMutationPreDispatchRejectedException>(() => service.RevertThreadAsync(
             new ThreadMutationRequest { ThreadId = "thread-1", BeforeTurnId = "turn-1", UserConfirmed = true }, CancellationToken.None));
 
         Assert.IsFalse(connection.Requests.Any(item => item.Method is "thread/delete" or "thread/revert"));
@@ -276,9 +278,9 @@ public sealed partial class CodexSessionServiceTests
         var approvedConnection = new RecordingConnection();
         await using var approvedService = CreateService();
         await approvedService.InitializeAsync(approvedConnection, Options(), CancellationToken.None);
-        await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => approvedService.DeleteThreadAsync(
+        await Assert.ThrowsExactlyAsync<ThreadMutationPreDispatchRejectedException>(() => approvedService.DeleteThreadAsync(
             new ThreadMutationRequest { ThreadId = "thread-1", UserConfirmed = false }, CancellationToken.None));
-        await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => approvedService.RevertThreadAsync(
+        await Assert.ThrowsExactlyAsync<ThreadMutationPreDispatchRejectedException>(() => approvedService.RevertThreadAsync(
             new ThreadMutationRequest { ThreadId = "thread-1", BeforeTurnId = "turn-1", UserConfirmed = false }, CancellationToken.None));
         Assert.IsFalse(approvedConnection.Requests.Any(item => item.Method is "thread/delete" or "thread/revert"));
 
@@ -310,6 +312,97 @@ public sealed partial class CodexSessionServiceTests
         Assert.IsFalse(result.Succeeded);
         Assert.IsTrue(result.OutcomeUnknown);
         Assert.AreEqual(1, connection.Requests.Count(item => item.Method == "thread/delete"));
+    }
+
+    [TestMethod]
+    [DataRow("disposed")]
+    [DataRow("invalid-operation")]
+    public async Task ThreadMutationReturnsUnknownWhenTransportThrowsAfterRecordingDispatch(string failureKind)
+    {
+        var connection = new RecordingConnection
+        {
+            AsyncHandler = (method, _, _) => method == "thread/delete"
+                ? Task.FromException<JsonElement>(failureKind switch
+                {
+                    "disposed" => new ObjectDisposedException("recording-connection"),
+                    "invalid-operation" => new InvalidOperationException("transport failed after dispatch"),
+                    _ => throw new AssertFailedException($"Unexpected failure kind '{failureKind}'."),
+                })
+                : Task.FromResult(JsonSerializer.SerializeToElement(new { })),
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        ThreadMutationResult result = await service.DeleteThreadAsync(
+            new ThreadMutationRequest { ThreadId = "thread-recorded-dispatch", UserConfirmed = true }, CancellationToken.None);
+
+        Assert.IsFalse(result.Succeeded);
+        Assert.IsTrue(result.OutcomeUnknown);
+        Assert.AreEqual(1, connection.Requests.Count(item => item.Method == "thread/delete"));
+    }
+
+    [TestMethod]
+    public async Task ThreadMutationPreflightFailureReleasesReservationForRetry()
+    {
+        int idleCheckCount = 0;
+        var connection = new RecordingConnection
+        {
+            AsyncHandler = (method, _, _) => method == "thread/turns/list"
+                && Interlocked.Increment(ref idleCheckCount) == 1
+                    ? Task.FromException<JsonElement>(new IOException("preflight transport failed"))
+                    : Task.FromResult(method == "thread/turns/list"
+                        ? JsonSerializer.SerializeToElement(new { data = Array.Empty<object>() })
+                        : JsonSerializer.SerializeToElement(new { })),
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+
+        await Assert.ThrowsExactlyAsync<ThreadMutationPreDispatchRejectedException>(() => service.DeleteThreadAsync(
+            new ThreadMutationRequest { ThreadId = "thread-retry", UserConfirmed = true }, CancellationToken.None));
+        Assert.AreEqual(0, connection.Requests.Count(item => item.Method == "thread/delete"));
+
+        ThreadMutationResult retry = await service.DeleteThreadAsync(
+            new ThreadMutationRequest { ThreadId = "thread-retry", UserConfirmed = true }, CancellationToken.None);
+
+        Assert.IsTrue(retry.Succeeded);
+        Assert.AreEqual(2, connection.Requests.Count(item => item.Method == "thread/turns/list"));
+        Assert.AreEqual(1, connection.Requests.Count(item => item.Method == "thread/delete"));
+    }
+
+    [TestMethod]
+    public async Task RevertPreflightCancellationRemainsCancellationAndDoesNotDispatchMutation()
+    {
+        var preflightStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var connection = new RecordingConnection
+        {
+            AsyncHandler = async (method, _, cancellationToken) =>
+            {
+                if (method == "thread/turns/list")
+                {
+                    preflightStarted.TrySetResult();
+                    await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                }
+
+                return JsonSerializer.SerializeToElement(new { data = Array.Empty<object>() });
+            },
+        };
+        await using var service = CreateService();
+        await service.InitializeAsync(connection, Options(), CancellationToken.None);
+        using var cancellation = new CancellationTokenSource();
+
+        Task<ThreadMutationResult> revert = service.RevertThreadAsync(
+            new ThreadMutationRequest
+            {
+                ThreadId = "thread-cancel-preflight",
+                BeforeTurnId = "turn-1",
+                UserConfirmed = true,
+            }, cancellation.Token);
+        await preflightStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        cancellation.Cancel();
+
+        await Assert.ThrowsAsync<OperationCanceledException>(async () => await revert);
+        Assert.AreEqual(1, connection.Requests.Count(item => item.Method == "thread/turns/list"));
+        Assert.AreEqual(0, connection.Requests.Count(item => item.Method == "thread/revert"));
     }
 
     [TestMethod]
@@ -346,13 +439,13 @@ public sealed partial class CodexSessionServiceTests
         await using var service = CreateService();
         await service.InitializeAsync(connection, Options(experimentalApi: true), CancellationToken.None);
 
-        await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => service.ArchiveThreadAsync(
+        await Assert.ThrowsExactlyAsync<ThreadMutationPreDispatchRejectedException>(() => service.ArchiveThreadAsync(
             new ThreadMutationRequest { ThreadId = "thread-1" }, CancellationToken.None));
-        await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => service.UnarchiveThreadAsync(
+        await Assert.ThrowsExactlyAsync<ThreadMutationPreDispatchRejectedException>(() => service.UnarchiveThreadAsync(
             new ThreadMutationRequest { ThreadId = "thread-1" }, CancellationToken.None));
-        await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => service.DeleteThreadAsync(
+        await Assert.ThrowsExactlyAsync<ThreadMutationPreDispatchRejectedException>(() => service.DeleteThreadAsync(
             new ThreadMutationRequest { ThreadId = "thread-1", UserConfirmed = true }, CancellationToken.None));
-        await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => service.RevertThreadAsync(
+        await Assert.ThrowsExactlyAsync<ThreadMutationPreDispatchRejectedException>(() => service.RevertThreadAsync(
             new ThreadMutationRequest { ThreadId = "thread-1", BeforeTurnId = "turn-1", UserConfirmed = true }, CancellationToken.None));
         await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => service.SearchThreadsAsync(
             new ThreadSearchRequest { SearchTerm = "needle", RequestId = Guid.NewGuid().ToString("N") }, CancellationToken.None));
@@ -422,7 +515,7 @@ public sealed partial class CodexSessionServiceTests
         await service.ResumeThreadAsync("thread-1", CancellationToken.None);
         await connection.EmitNotificationAsync("turn/started", new { threadId = "thread-1", turn = new { id = "turn-1" } });
 
-        await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => service.DeleteThreadAsync(
+        await Assert.ThrowsExactlyAsync<ThreadMutationPreDispatchRejectedException>(() => service.DeleteThreadAsync(
             new ThreadMutationRequest { ThreadId = "thread-1", UserConfirmed = true }, CancellationToken.None));
         Assert.IsFalse(connection.Requests.Any(item => item.Method == "thread/delete"));
     }

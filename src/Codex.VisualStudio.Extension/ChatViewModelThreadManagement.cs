@@ -1087,11 +1087,7 @@ public sealed partial class ChatViewModel
         }
         catch (StreamJsonRpc.RemoteInvocationException exception)
         {
-            result = new ThreadMutationResult
-            {
-                OutcomeUnknown = exception.ErrorCode != WorkerErrorCodes.PreDispatchRejected,
-                Message = exception.Message,
-            };
+            result = CreateThreadMutationFailureResult(exception);
         }
         catch (Exception)
         {
@@ -1119,6 +1115,13 @@ public sealed partial class ChatViewModel
             await RefreshManagedThreadListAsync().ConfigureAwait(false);
         }
     }
+
+    private static ThreadMutationResult CreateThreadMutationFailureResult(StreamJsonRpc.RemoteInvocationException exception)
+        => new()
+        {
+            OutcomeUnknown = exception.ErrorCode is not (WorkerErrorCodes.ConnectionOperationRejected or WorkerErrorCodes.PreDispatchRejected),
+            Message = exception.Message,
+        };
 
     private string MutationStatusMessage(ThreadMutationResult result, string action)
     {
@@ -1231,11 +1234,7 @@ public sealed partial class ChatViewModel
         }
         catch (StreamJsonRpc.RemoteInvocationException exception)
         {
-            result = new ThreadMutationResult
-            {
-                OutcomeUnknown = exception.ErrorCode != WorkerErrorCodes.PreDispatchRejected,
-                Message = exception.Message,
-            };
+            result = CreateThreadMutationFailureResult(exception);
         }
         catch (Exception)
         {

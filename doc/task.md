@@ -1119,3 +1119,11 @@ Tracking: [Issue #304](https://github.com/kkamegawa/vsextensionforcodex/issues/3
 - Claude reviewed the follow-up twice. The first review's three test-coverage findings were addressed; the second review found no actionable defects.
 
 Validation: Release build passed with 0 warnings and 0 errors. Core tests passed 771/771 with 5 filesystem-link skips (776 total). UI tests passed 699/699 with 1 filesystem-link skip (700 total). All changed-path focused tests passed (Core 1/1, UI 6/6). One full-solution test run had a single timing-sensitive worker-start timeout failure; the test passed in isolation (1/1), and the complete UI suite passed on rerun. `git diff --check` passed. APM manifests match `HEAD` and have no changes for this commit. Visual Studio operation-by-operation acceptance remains pending.
+
+### 2026-11-28: Issue #304 Remote UI scope accessibility follow-up
+Tracking: [Issue #304](https://github.com/kkamegawa/vsextensionforcodex/issues/304) and [PR #340](https://github.com/kkamegawa/vsextensionforcodex/pull/340).
+
+- Localized the history scope names, tooltip, and screen-reader name/help text in English and Japanese. Bound the label text through Remote UI data members and added presentation-contract coverage for keyboard cancel targeting.
+- Claude first identified an inconsistent initial-culture check. The initial scope is now initialized with the same `IsJapaneseUi` value used by all other labels. Language is captured at view-model construction, consistent with existing localized presentation properties. Final Claude review found no actionable findings.
+
+Validation: Release solution build produced the VSIX with no warnings or errors. Core tests passed 777 with 5 filesystem-link skips (782 total); UI tests passed 703 with 1 filesystem-link skip (704 total). `git diff --check` and UTF-8 BOM/CRLF checks passed. Visual Studio operation-by-operation acceptance, including CLI 0.169.0 and Light/Dark screenshots, remains pending.

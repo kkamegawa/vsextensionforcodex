@@ -84,7 +84,7 @@ public static class WorkerErrorCodes
     // unknown to the client and must not be treated as a local pre-dispatch rejection.
     public const int UpstreamOperationFailed = -32053;
 
-    // Local or preflight validation rejected a turn before the Worker sent turn/start.
+    // Local or preflight validation rejected an operation before it was dispatched.
     public const int PreDispatchRejected = -32054;
 }
 

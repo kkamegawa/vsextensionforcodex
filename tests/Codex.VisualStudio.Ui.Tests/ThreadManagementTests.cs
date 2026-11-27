@@ -82,11 +82,12 @@ public sealed partial class ViewModelTests
     }
 
     [TestMethod]
-    public async Task MutationRemoteErrorsDistinguishPreDispatchRejectionFromUnknownOutcome()
+    public async Task MutationRemoteErrorsUseKnownRejectionsAsDefiniteFailures()
     {
         foreach ((int errorCode, bool expectedUnknown) in new[]
         {
             (WorkerErrorCodes.PreDispatchRejected, false),
+            (WorkerErrorCodes.ConnectionOperationRejected, false),
             (WorkerErrorCodes.UpstreamOperationFailed, true),
             (-32055, true),
         })
@@ -113,11 +114,12 @@ public sealed partial class ViewModelTests
     }
 
     [TestMethod]
-    public async Task RevertMutationTreatsOnlyPreDispatchRejectionAsADefiniteFailure()
+    public async Task RevertMutationUsesKnownRejectionsAsDefiniteFailures()
     {
         foreach ((int errorCode, bool expectedUnknown) in new[]
         {
             (WorkerErrorCodes.PreDispatchRejected, false),
+            (WorkerErrorCodes.ConnectionOperationRejected, false),
             (WorkerErrorCodes.UpstreamOperationFailed, true),
             (-32055, true),
         })
@@ -149,11 +151,12 @@ public sealed partial class ViewModelTests
     }
 
     [TestMethod]
-    public async Task DeleteMutationTreatsOnlyPreDispatchRejectionAsADefiniteFailure()
+    public async Task DeleteMutationUsesKnownRejectionsAsDefiniteFailures()
     {
         foreach ((int errorCode, bool expectedUnknown) in new[]
         {
             (WorkerErrorCodes.PreDispatchRejected, false),
+            (WorkerErrorCodes.ConnectionOperationRejected, false),
             (WorkerErrorCodes.UpstreamOperationFailed, true),
             (-32055, true),
         })

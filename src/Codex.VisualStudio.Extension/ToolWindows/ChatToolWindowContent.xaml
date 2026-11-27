@@ -990,9 +990,9 @@
                             DisplayMemberPath="DisplayText"
                             SelectedValuePath="Id"
                             SelectedValue="{Binding SelectedThreadListScopeId, Mode=TwoWay}"
-                            ToolTip="Conversations to list"
-                            AutomationProperties.Name="Conversation history scope"
-                            AutomationProperties.HelpText="Choose which conversations the history lists." />
+                            ToolTip="{Binding ThreadListScopeToolTipText}"
+                            AutomationProperties.Name="{Binding ThreadListScopeAutomationName}"
+                            AutomationProperties.HelpText="{Binding ThreadListScopeHelpText}" />
                   <CheckBox DockPanel.Dock="Top" Margin="2,0,2,6"
                             Content="{Binding ArchivedToggleText}"
                             IsChecked="{Binding ShowArchivedThreads, Mode=TwoWay}"

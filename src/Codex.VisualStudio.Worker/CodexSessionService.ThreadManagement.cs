@@ -6,6 +6,14 @@ using Codex.VisualStudio.Contracts;
 
 namespace Codex.VisualStudio.Worker;
 
+internal sealed class ThreadMutationPreDispatchRejectedException : InvalidOperationException
+{
+    public ThreadMutationPreDispatchRejectedException(string message, Exception innerException)
+        : base(message, innerException)
+    {
+    }
+}
+
 public sealed partial class CodexSessionService
 {
     private const int MaximumRememberedSearchRequestIds = 512;
@@ -147,29 +155,27 @@ public sealed partial class CodexSessionService
     private async Task<ThreadMutationResult> MutateThreadAsync(
         string method, string threadId, string? beforeTurnId, bool userConfirmed, string action, CancellationToken cancellationToken)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(threadId);
-        if (action is "delete" or "revert" && !userConfirmed)
-        {
-            throw new InvalidOperationException("Thread changes require explicit user confirmation.");
-        }
-        if (action == "revert") ArgumentException.ThrowIfNullOrWhiteSpace(beforeTurnId);
-        ConnectionContext context = RequireContext();
-        EnsureCurrent(context);
-        EnsureCredentialReady(context);
-        ApprovalPolicyResult policy = approvalPolicy.EvaluateThreadMutation(threadId, action);
-        if (policy.IsBlocked) throw new InvalidOperationException(policy.BlockReason ?? "Thread operation is blocked by policy.");
-
         bool requiresIdleThread = action is "delete" or "revert";
-        if (requiresIdleThread)
-        {
-            ReserveThreadMutation(context, threadId);
-        }
-
-        bool mutationDispatched = false;
+        ConnectionContext context = null!;
+        bool mutationReserved = false;
         try
         {
+            ArgumentException.ThrowIfNullOrWhiteSpace(threadId);
+            if (action is "delete" or "revert" && !userConfirmed)
+            {
+                throw new InvalidOperationException("Thread changes require explicit user confirmation.");
+            }
+            if (action == "revert") ArgumentException.ThrowIfNullOrWhiteSpace(beforeTurnId);
+            context = RequireContext();
+            EnsureCurrent(context);
+            EnsureCredentialReady(context);
+            ApprovalPolicyResult policy = approvalPolicy.EvaluateThreadMutation(threadId, action);
+            if (policy.IsBlocked) throw new InvalidOperationException(policy.BlockReason ?? "Thread operation is blocked by policy.");
+
             if (requiresIdleThread)
             {
+                ReserveThreadMutation(context, threadId);
+                mutationReserved = true;
                 await EnsureThreadIdleAsync(context, threadId, cancellationToken).ConfigureAwait(false);
                 lock (turnStateLock)
                 {
@@ -182,9 +188,28 @@ public sealed partial class CodexSessionService
 
             EnsureCurrent(context);
             EnsureCredentialReady(context);
-            // A failure after dispatch cannot establish whether the server applied the mutation.
             cancellationToken.ThrowIfCancellationRequested();
-            mutationDispatched = true;
+        }
+        catch (ArgumentException exception)
+        {
+            if (mutationReserved) ReleaseThreadMutation(context, threadId);
+            throw new ThreadMutationPreDispatchRejectedException(exception.Message, exception);
+        }
+        catch (InvalidOperationException exception)
+        {
+            if (mutationReserved) ReleaseThreadMutation(context, threadId);
+            throw new ThreadMutationPreDispatchRejectedException(exception.Message, exception);
+        }
+        catch
+        {
+            if (mutationReserved) ReleaseThreadMutation(context, threadId);
+            throw;
+        }
+
+        try
+        {
+            // Every exception after the request is handed to the connection can leave its outcome
+            // uncertain, even if the transport throws synchronously after recording the dispatch.
             await context.Connection.SendRequestAsync(method,
                 action == "revert" ? new { threadId, beforeTurnId } : new { threadId },
                 TimeSpan.FromSeconds(20), cancellationToken).ConfigureAwait(false);
@@ -198,16 +223,13 @@ public sealed partial class CodexSessionService
         {
             return new ThreadMutationResult
             {
-                OutcomeUnknown = mutationDispatched,
+                OutcomeUnknown = true,
                 Message = IsCurrent(context) ? BoundRedacted(exception.Message, 1024) : null,
             };
         }
         finally
         {
-            if (requiresIdleThread)
-            {
-                ReleaseThreadMutation(context, threadId);
-            }
+            if (mutationReserved) ReleaseThreadMutation(context, threadId);
         }
 
         if (!IsCurrent(context)) return new ThreadMutationResult { OutcomeUnknown = true };

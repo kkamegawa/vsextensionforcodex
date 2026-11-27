@@ -37,8 +37,19 @@ public sealed partial class ChatViewModel
     private int threadListReloadPending;
 
     [DataMember]
-    public ObservableCollection<ThreadListScopeOption> ThreadListScopes { get; } =
-        [new(AllConversationsScopeId, "All")];
+    public ObservableCollection<ThreadListScopeOption> ThreadListScopes { get; } = [];
+
+    private void InitializeThreadListScopeOptions()
+    {
+        ThreadListScopes.Add(new ThreadListScopeOption(AllConversationsScopeId, IsJapaneseUi ? "すべて" : "All"));
+    }
+
+    [DataMember]
+    public string ThreadListScopeToolTipText => IsJapaneseUi ? "会話履歴の表示範囲を選択" : "Conversations to list";
+    [DataMember]
+    public string ThreadListScopeAutomationName => IsJapaneseUi ? "会話履歴の範囲" : "Conversation history scope";
+    [DataMember]
+    public string ThreadListScopeHelpText => IsJapaneseUi ? "履歴一覧に表示する会話の範囲を選択します。" : "Choose which conversations the history lists.";
 
     [DataMember]
     public string SelectedThreadListScopeId
@@ -75,15 +86,15 @@ public sealed partial class ChatViewModel
                 threadListScopes = scopes;
                 threadListScopesOwner = owner;
                 ThreadListScopes.Clear();
-                ThreadListScopes.Add(new ThreadListScopeOption(AllConversationsScopeId, "All"));
+                ThreadListScopes.Add(new ThreadListScopeOption(AllConversationsScopeId, IsJapaneseUi ? "すべて" : "All"));
                 if (scopes.CurrentFolder is not null)
                 {
-                    ThreadListScopes.Add(new ThreadListScopeOption(CurrentFolderScopeId, "Current working folder"));
+                    ThreadListScopes.Add(new ThreadListScopeOption(CurrentFolderScopeId, IsJapaneseUi ? "現在の作業フォルダー" : "Current working folder"));
                 }
 
                 if (!IsRemoteTarget && scopes.WorktreeFolders.Count >= MinimumWorktreesForScope)
                 {
-                    ThreadListScopes.Add(new ThreadListScopeOption(RepositoryWorktreesScopeId, "Same repository worktrees"));
+                    ThreadListScopes.Add(new ThreadListScopeOption(RepositoryWorktreesScopeId, IsJapaneseUi ? "同じリポジトリのワークツリー" : "Same repository worktrees"));
                 }
             }).ConfigureAwait(false);
         }
@@ -114,6 +125,12 @@ public sealed partial class ChatViewModel
                 nextCursor = null;
                 RaiseCommandStates();
             }).ConfigureAwait(false);
+
+            if (settings.ExperimentalApiEnabled && !string.IsNullOrWhiteSpace(historySearchText))
+            {
+                await SearchHistoryAsync().ConfigureAwait(false);
+                return;
+            }
 
             OwnerSnapshot owner = CaptureOwnerSnapshot();
             ThreadListRefreshOutcome outcome = await RefreshCompleteThreadListAsync(
@@ -176,7 +193,7 @@ public sealed partial class ChatViewModel
         Interlocked.Increment(ref threadListScopeGeneration);
         Volatile.Write(ref threadListReloadPending, 0);
         ThreadListScopes.Clear();
-        ThreadListScopes.Add(new ThreadListScopeOption(AllConversationsScopeId, "All"));
+        ThreadListScopes.Add(new ThreadListScopeOption(AllConversationsScopeId, IsJapaneseUi ? "すべて" : "All"));
         selectedThreadListScopeId = AllConversationsScopeId;
         OnPropertyChanged(nameof(SelectedThreadListScopeId));
     }
