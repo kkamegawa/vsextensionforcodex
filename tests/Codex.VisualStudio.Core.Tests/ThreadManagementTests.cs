@@ -188,7 +188,11 @@ public sealed partial class CodexSessionServiceTests
                 "initialize" => JsonSerializer.SerializeToElement(new { userAgent = "codex-cli/0.171.0" }),
                 "thread/list" => JsonSerializer.SerializeToElement(new
                 {
-                    data = new[] { new { id = "child", attachedToThreadId = "parent" } },
+                    data = new object[]
+                    {
+                        new { id = "child", attachedToThreadId = "parent" },
+                        new { id = "independent-fork", forkedFromId = "other-thread" },
+                    },
                     nextCursor = (string?)null,
                 }),
                 _ => JsonSerializer.SerializeToElement(new { }),
@@ -207,7 +211,8 @@ public sealed partial class CodexSessionServiceTests
             CancellationToken.None);
 
         Assert.IsTrue(ParametersFor(connection, "thread/list").GetProperty("includeAttachedThreads").GetBoolean());
-        Assert.AreEqual("parent", page.Threads.Single().LinkedParentThreadId);
+        Assert.AreEqual("parent", page.Threads.Single(thread => thread.Id == "child").LinkedParentThreadId);
+        Assert.IsNull(page.Threads.Single(thread => thread.Id == "independent-fork").LinkedParentThreadId);
     }
 
     [TestMethod]
@@ -580,10 +585,22 @@ public sealed partial class CodexSessionServiceTests
                             thread = new
                             {
                                 id = "stable-result",
-                                attachedToThreadId = "parent-thread",
+                                attachedToThreadId = (string?)"parent-thread",
+                                forkedFromId = (string?)null,
                                 archived = true,
                             },
                             snippet = "stable",
+                        },
+                        new
+                        {
+                            thread = new
+                            {
+                                id = "legacy-fork-result",
+                                attachedToThreadId = (string?)null,
+                                forkedFromId = (string?)"legacy-parent-thread",
+                                archived = false,
+                            },
+                            snippet = "legacy fork",
                         },
                     },
                     nextCursor = "search-next-page",
@@ -605,9 +622,13 @@ public sealed partial class CodexSessionServiceTests
 
         Assert.IsTrue(result.IsSupported);
         Assert.AreEqual(1, connection.Requests.Count(item => item.Method == "thread/search"));
-        Assert.AreEqual("stable-result", result.Results.Single().Thread.Id);
-        Assert.AreEqual("parent-thread", result.Results.Single().Thread.LinkedParentThreadId);
-        Assert.IsTrue(result.Results.Single().Thread.Archived);
+        Assert.AreEqual(2, result.Results.Count);
+        ThreadSearchHit stableResult = result.Results.Single(static hit => hit.Thread.Id == "stable-result");
+        Assert.AreEqual("parent-thread", stableResult.Thread.LinkedParentThreadId);
+        Assert.IsTrue(stableResult.Thread.Archived);
+        ThreadSearchHit legacyForkResult = result.Results.Single(static hit => hit.Thread.Id == "legacy-fork-result");
+        Assert.IsNull(legacyForkResult.Thread.LinkedParentThreadId,
+            "Only attachedToThreadId represents a linked fork; forkedFromId is historical metadata.");
         Assert.AreEqual("search-next-page", result.NextCursor);
         JsonElement searchParameters = JsonSerializer.SerializeToElement(
             connection.Requests.Single(item => item.Method == "thread/search").Parameters);

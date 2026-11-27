@@ -80,6 +80,103 @@ public sealed partial class ViewModelTests
         Assert.AreEqual(1, bridge.ArchiveThreadCallCount);
         Assert.AreEqual(1, bridge.UnarchiveThreadCallCount);
     }
+
+    [TestMethod]
+    public async Task MutationRemoteErrorsDistinguishPreDispatchRejectionFromUnknownOutcome()
+    {
+        foreach ((int errorCode, bool expectedUnknown) in new[]
+        {
+            (WorkerErrorCodes.PreDispatchRejected, false),
+            (WorkerErrorCodes.UpstreamOperationFailed, true),
+            (-32055, true),
+        })
+        {
+            var bridge = new FakeWorkerBridge
+            {
+                ArchiveThreadHandler = (_, _) => Task.FromException<ThreadMutationResult>(
+                    new StreamJsonRpc.RemoteInvocationException("App server returned a mutation error.", errorCode, errorData: null)),
+            };
+            using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+            await bridge.PublishStateAsync(OwnerStatus($"history-mutation-error-{errorCode}", 1, 1));
+            vm.SelectedThread = new ThreadSummary { Id = "thread-mutation-error" };
+
+            await RunCommandAsync(vm.ArchiveThreadCommand);
+
+            bool reportedUnknown = vm.ThreadManagementStatusText.Contains("outcome is unknown", StringComparison.Ordinal)
+                || vm.ThreadManagementStatusText.Contains("結果を確認できません", StringComparison.Ordinal);
+            Assert.AreEqual(expectedUnknown, reportedUnknown, $"Unexpected classification for Worker error code {errorCode}.");
+            if (!expectedUnknown)
+            {
+                StringAssert.Contains(vm.ThreadManagementStatusText, "App server returned a mutation error.");
+            }
+        }
+    }
+
+    [TestMethod]
+    public async Task RevertMutationTreatsOnlyPreDispatchRejectionAsADefiniteFailure()
+    {
+        foreach ((int errorCode, bool expectedUnknown) in new[]
+        {
+            (WorkerErrorCodes.PreDispatchRejected, false),
+            (WorkerErrorCodes.UpstreamOperationFailed, true),
+            (-32055, true),
+        })
+        {
+            var bridge = new FakeWorkerBridge
+            {
+                RevertThreadHandler = (_, _) => Task.FromException<ThreadMutationResult>(
+                    new StreamJsonRpc.RemoteInvocationException("App server returned a revert error.", errorCode, errorData: null)),
+            };
+            using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+            await bridge.PublishStateAsync(OwnerStatus($"history-revert-error-{errorCode}", 1, 1));
+            vm.SelectedThread = new ThreadSummary { Id = "thread-revert-error" };
+            typeof(ChatViewModel).GetProperty(nameof(ChatViewModel.IsThreadJoined))!
+                .GetSetMethod(nonPublic: true)!.Invoke(vm, [true]);
+            vm.ThreadTurns.Add(new ThreadTurnOptionViewModel("turn-before", "Turn before · completed"));
+            vm.SelectedRevertTurnId = "turn-before";
+
+            await RunCommandAsync(vm.RevertThreadCommand);
+            await RunCommandAsync(vm.ConfirmThreadMutationCommand);
+
+            bool reportedUnknown = vm.ThreadManagementStatusText.Contains("outcome is unknown", StringComparison.Ordinal)
+                || vm.ThreadManagementStatusText.Contains("結果を確認できません", StringComparison.Ordinal);
+            Assert.AreEqual(expectedUnknown, reportedUnknown, $"Unexpected classification for Worker error code {errorCode}.");
+            if (!expectedUnknown)
+            {
+                StringAssert.Contains(vm.ThreadManagementStatusText, "App server returned a revert error.");
+            }
+        }
+    }
+
+    [TestMethod]
+    public async Task DeleteMutationTreatsOnlyPreDispatchRejectionAsADefiniteFailure()
+    {
+        foreach ((int errorCode, bool expectedUnknown) in new[]
+        {
+            (WorkerErrorCodes.PreDispatchRejected, false),
+            (WorkerErrorCodes.UpstreamOperationFailed, true),
+            (-32055, true),
+        })
+        {
+            var bridge = new FakeWorkerBridge
+            {
+                DeleteThreadHandler = (_, _) => Task.FromException<ThreadMutationResult>(
+                    new StreamJsonRpc.RemoteInvocationException("Remote mutation error.", errorCode, errorData: null)),
+            };
+            using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+            await bridge.PublishStateAsync(OwnerStatus($"history-delete-error-{errorCode}", 1, 1));
+            await vm.RefreshCompleteLinkedForkIndexAsync(vm.CaptureOwnerSnapshot(), CancellationToken.None);
+            vm.SelectedThread = new ThreadSummary { Id = "thread-delete-error", Preview = "Delete error" };
+
+            await RunCommandAsync(vm.DeleteThreadCommand);
+            await RunCommandAsync(vm.ConfirmThreadMutationCommand);
+
+            bool reportedUnknown = vm.ThreadManagementStatusText.Contains("outcome is unknown", StringComparison.Ordinal)
+                || vm.ThreadManagementStatusText.Contains("結果を確認できません", StringComparison.Ordinal);
+            Assert.AreEqual(expectedUnknown, reportedUnknown, $"Unexpected classification for Worker error code {errorCode}.");
+        }
+    }
+
     [TestMethod]
     public async Task DeleteConversationRequiresNamedConfirmationAndBlocksLinkedParent()
     {

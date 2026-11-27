@@ -1108,3 +1108,14 @@ Validation: Release solution build passed with 0 warnings and 0 errors. `WebSock
 - Focused Claude review found no actionable defects in the final Busy handling and test. The earlier Failed-status concern was not applicable because the refresh method sets an owner-scoped failure status before returning Failed.
 - Release solution build passed with 0 warnings and 0 errors. UI suite: 692 passed / 3 filesystem-link skips / 0 failed (695 total). Core suite: 769 passed / 7 filesystem-link skips / 0 failed (776 total). The focused Busy-owner regression passed 1/1. `git diff --check` passed before this task-log entry was appended.
 - The user reported reinstalling Visual Studio Insiders 0.172. The last desktop check still showed the Windows lock screen, so operation-by-operation Visual Studio acceptance remains pending. APM manifests were checked; no uncommitted APM changes were present in this worktree.
+
+### 2026-11-27: Issue #304 review follow-up
+
+Tracking: [Issue #304](https://github.com/kkamegawa/vsextensionforcodex/issues/304) and [PR #340](https://github.com/kkamegawa/vsextensionforcodex/pull/340).
+
+- Restricted linked-parent metadata to `attachedToThreadId`; `forkedFromId` no longer blocks independent threads from deletion. Added Core coverage for both list and search responses.
+- Classified only `PreDispatchRejected` as a definite remote mutation failure. Other `RemoteInvocationException` codes report an unknown outcome. Added archive, delete, and revert coverage for pre-dispatch, upstream, and unrecognized codes.
+- Reverted-history notifications now reload the selected transcript while the history list is closed. Successful reverts and notifications invalidate older selected-history reads before replacement. Added deterministic tests for both paths.
+- Claude reviewed the follow-up twice. The first review's three test-coverage findings were addressed; the second review found no actionable defects.
+
+Validation: Release build passed with 0 warnings and 0 errors. Core tests passed 771/771 with 5 filesystem-link skips (776 total). UI tests passed 699/699 with 1 filesystem-link skip (700 total). All changed-path focused tests passed (Core 1/1, UI 6/6). One full-solution test run had a single timing-sensitive worker-start timeout failure; the test passed in isolation (1/1), and the complete UI suite passed on rerun. `git diff --check` passed. APM manifests match `HEAD` and have no changes for this commit. Visual Studio operation-by-operation acceptance remains pending.

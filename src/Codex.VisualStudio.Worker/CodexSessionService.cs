@@ -6580,8 +6580,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             EffectiveReasoningEffort = effectiveReasoningEffort,
             EffectiveServiceTier = effectiveServiceTier,
             EffectiveModelId = ReadEffectiveModelId(thread),
-            LinkedParentThreadId = GetBoundedString(thread, "attachedToThreadId", 256)
-                ?? GetBoundedString(thread, "forkedFromId", 256),
+            LinkedParentThreadId = GetBoundedString(thread, "attachedToThreadId", 256),
             Archived = GetBoolean(thread, "archived") == true,
             SectionId = sectionId,
             SectionName = sectionName,

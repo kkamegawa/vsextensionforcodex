@@ -1085,6 +1085,14 @@ public sealed partial class ChatViewModel
         {
             result = new ThreadMutationResult { Message = exception.Message };
         }
+        catch (StreamJsonRpc.RemoteInvocationException exception)
+        {
+            result = new ThreadMutationResult
+            {
+                OutcomeUnknown = exception.ErrorCode != WorkerErrorCodes.PreDispatchRejected,
+                Message = exception.Message,
+            };
+        }
         catch (Exception)
         {
             result = new ThreadMutationResult { OutcomeUnknown = true };
@@ -1221,6 +1229,14 @@ public sealed partial class ChatViewModel
         {
             result = new ThreadMutationResult { Message = exception.Message };
         }
+        catch (StreamJsonRpc.RemoteInvocationException exception)
+        {
+            result = new ThreadMutationResult
+            {
+                OutcomeUnknown = exception.ErrorCode != WorkerErrorCodes.PreDispatchRejected,
+                Message = exception.Message,
+            };
+        }
         catch (Exception)
         {
             result = new ThreadMutationResult { OutcomeUnknown = true };
@@ -1245,6 +1261,13 @@ public sealed partial class ChatViewModel
 
             refresh = true;
             reloadTranscript = result.Succeeded && mutation == "revert" && SelectedThread?.Id == threadId;
+            if (reloadTranscript)
+            {
+                lock (threadHistoryStateGate)
+                {
+                    selectedThreadGeneration++;
+                }
+            }
         }).ConfigureAwait(false);
 
         if (refresh && IsCurrentOwner(owner))
@@ -1426,6 +1449,11 @@ public sealed partial class ChatViewModel
             {
                 replaceSelectedTranscript = true;
                 selectedTranscriptForReplacement = selectedForRevert;
+                lock (threadHistoryStateGate)
+                {
+                    // Invalidate any pre-revert read that could finish after this replacement.
+                    selectedThreadGeneration++;
+                }
             }
 
             bool affectsForkIndex;
@@ -1439,7 +1467,7 @@ public sealed partial class ChatViewModel
                 || ThreadRows.Any(row => row.Id == change.ThreadId)
                 || affectsForkIndex;
             refreshHistory = IsHistoryOpen
-                && (removedLinkedChild || replaceSelectedTranscript || membershipChange || affectsDisplayedHistory);
+                && (removedLinkedChild || membershipChange || affectsDisplayedHistory);
         }).ConfigureAwait(false);
 
         if (refreshSections)
@@ -1447,13 +1475,13 @@ public sealed partial class ChatViewModel
             await LoadThreadSectionsAsync().ConfigureAwait(false);
         }
 
+        if (replaceSelectedTranscript && selectedTranscriptForReplacement is { } selected)
+        {
+            await ReadSelectedThreadHistoryAsync(selected, replaceTranscript: true, ownerFence: owner).ConfigureAwait(false);
+        }
+
         if (refreshHistory)
         {
-            if (replaceSelectedTranscript && selectedTranscriptForReplacement is { } selected)
-            {
-                await ReadSelectedThreadHistoryAsync(selected, replaceTranscript: true, ownerFence: owner).ConfigureAwait(false);
-            }
-
             await RefreshManagedThreadListAsync().ConfigureAwait(false);
         }
     }
