@@ -226,6 +226,34 @@ public sealed class WebSocketJsonRpcConnection : IJsonRpcConnection, IInboundAct
         }
     }
 
+    public async Task<JsonElement> SendCorrelatedRequestAsync(
+        string method, object? parameters, string requestId, TimeSpan timeout, CancellationToken cancellationToken)
+    {
+        ThrowIfClosed();
+        ArgumentException.ThrowIfNullOrWhiteSpace(requestId);
+        JsonRpcCorrelatedRequestPolicy.Validate(method, parameters, requestId);
+        string key = JsonRpcRequestId.GetStringKey(requestId);
+        var completion = new TaskCompletionSource<JsonElement>(TaskCreationOptions.RunContinuationsAsynchronously);
+        if (!pending.TryAdd(key, completion))
+        {
+            throw new InvalidOperationException($"Duplicate JSON-RPC request id '{requestId}'.");
+        }
+
+        try
+        {
+            using var timeoutSource = new CancellationTokenSource(timeout);
+            using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutSource.Token, lifetime.Token);
+            using CancellationTokenRegistration registration = linked.Token.Register(
+                static state => ((TaskCompletionSource<JsonElement>)state!).TrySetCanceled(), completion);
+            await SendMessageAsync(new { method, @params = parameters, id = requestId }, linked.Token).ConfigureAwait(false);
+            return await completion.Task.ConfigureAwait(false);
+        }
+        finally
+        {
+            pending.TryRemove(key, out _);
+        }
+    }
+
     public Task SendNotificationAsync(string method, object? parameters, CancellationToken cancellationToken)
     {
         ThrowIfClosed();
@@ -395,21 +423,44 @@ public sealed class WebSocketJsonRpcConnection : IJsonRpcConnection, IInboundAct
 
                 try
                 {
-                    await handler(message, cancellationToken).ConfigureAwait(false);
+                    await InvokeNotificationHandlersAsync(handler, message, cancellationToken).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                 {
                     return;
                 }
-                catch (Exception ex)
-                {
-                    // One failing observer must not stop delivery of later notifications.
-                    _ = ex;
-                }
             }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
+        }
+    }
+
+    private static async Task InvokeNotificationHandlersAsync(
+        Func<JsonRpcMessage, CancellationToken, Task> handlers,
+        JsonRpcMessage message,
+        CancellationToken cancellationToken)
+    {
+        foreach (Delegate subscriber in handlers.GetInvocationList())
+        {
+            if (subscriber is not Func<JsonRpcMessage, CancellationToken, Task> handler)
+            {
+                continue;
+            }
+
+            try
+            {
+                await handler(message, cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                // One failing observer must not stop delivery to later observers or notifications.
+                _ = ex;
+            }
         }
     }
 

@@ -383,6 +383,9 @@ public interface IApprovalPolicyEngine
     ApprovalPolicyResult EvaluateCommand(string? command, string? cwd, string workspaceRoot, string? networkHost, int? networkPort);
 
     ApprovalPolicyResult EvaluateFile(string? path, string workspaceRoot);
+
+    ApprovalPolicyResult EvaluateThreadMutation(string? threadId, string? action)
+        => new(ApprovalRiskCategory.Destructive, "thread-mutation", true, "Thread mutation policy is unavailable.");
 }
 
 public sealed partial class ApprovalPolicyEngine : IApprovalPolicyEngine
@@ -464,6 +467,17 @@ public sealed partial class ApprovalPolicyEngine : IApprovalPolicyEngine
         return result.IsWithinWorkspace
             ? new ApprovalPolicyResult(ApprovalRiskCategory.WorkspaceWrite, $"file:{result.NormalizedPath}", false, null)
             : new ApprovalPolicyResult(ApprovalRiskCategory.WorkspaceOutside, $"file:{result.NormalizedPath}", false, result.Reason);
+    }
+
+    public ApprovalPolicyResult EvaluateThreadMutation(string? threadId, string? action)
+    {
+        if (string.IsNullOrWhiteSpace(threadId) || threadId.Length > 256
+            || action is not ("archive" or "unarchive" or "delete" or "revert"))
+        {
+            return new ApprovalPolicyResult(ApprovalRiskCategory.Destructive, "thread-mutation", true, "Thread mutation identity is invalid.");
+        }
+
+        return new ApprovalPolicyResult(ApprovalRiskCategory.Destructive, $"thread:{action.ToLowerInvariant()}:{threadId}", false, null);
     }
 
     [GeneratedRegex(@"(?i)\b(rm\s+-rf|del\s+/[fsq]|remove-item\b.*-recurse|format\b|git\s+reset\s+--hard|git\s+clean\s+-[a-z]*f|drop\s+(database|table))\b")]

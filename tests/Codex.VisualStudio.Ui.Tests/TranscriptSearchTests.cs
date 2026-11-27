@@ -47,6 +47,150 @@ public sealed partial class ViewModelTests
     }
 
     [TestMethod]
+    public async Task RevertedHistoryNotificationReplacesTheSelectedTranscriptWhenHistoryListIsClosed()
+    {
+        int historyRead = 0;
+        var bridge = new FakeWorkerBridge
+        {
+            ListThreadItemsHandler = (_, _) => Task.FromResult(new ThreadItemsPage
+            {
+                Items =
+                [
+                    new ThreadHistoryItem
+                    {
+                        Id = "reverted-item",
+                        TurnId = "turn-1",
+                        Type = "userMessage",
+                        Text = Interlocked.Increment(ref historyRead) == 1 ? "stale before revert" : "fresh after revert",
+                    },
+                ],
+            }),
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        await bridge.PublishStateAsync(OwnerStatus("history-transcript-revert", 1, 1));
+        vm.SelectedThread = new ThreadSummary { Id = "thread-transcript-revert", Preview = "Reverted transcript" };
+        await WaitUntilAsync(() => vm.Items.Any(static item => item.Text.Contains("stale before revert", StringComparison.Ordinal)));
+
+        await bridge.RaiseThreadHistoryChangedAsync(new WorkerNotification<ThreadHistoryChangedEvent>
+        {
+            Value = new ThreadHistoryChangedEvent { ThreadId = "thread-transcript-revert", ChangeKind = "thread/reverted" },
+            StatePartitionFingerprint = "history-transcript-revert",
+            OwnerGeneration = 1,
+            ConnectionGeneration = 1,
+        });
+        await WaitUntilAsync(() => vm.Items.Any(static item => item.Text.Contains("fresh after revert", StringComparison.Ordinal)));
+
+        Assert.IsFalse(vm.Items.Any(static item => item.Text.Contains("stale before revert", StringComparison.Ordinal)));
+    }
+
+    [TestMethod]
+    public async Task RevertedHistoryNotificationInvalidatesAnOlderSelectedHistoryRead()
+    {
+        var firstPageStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseStalePage = new TaskCompletionSource<ThreadItemsPage>(TaskCreationOptions.RunContinuationsAsynchronously);
+        int pageCallCount = 0;
+        var bridge = new FakeWorkerBridge
+        {
+            ListThreadItemsHandler = (_, _) =>
+            {
+                if (Interlocked.Increment(ref pageCallCount) == 1)
+                {
+                    firstPageStarted.TrySetResult();
+#pragma warning disable VSTHRD003
+                    return releaseStalePage.Task;
+#pragma warning restore VSTHRD003
+                }
+
+                return Task.FromResult(new ThreadItemsPage
+                {
+                    Items = [new ThreadHistoryItem { Id = "post-revert", TurnId = "turn-new", Type = "userMessage", Text = "fresh transcript" }],
+                });
+            },
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        await bridge.PublishStateAsync(OwnerStatus("history-revert-read-race", 1, 1));
+        var thread = new ThreadSummary { Id = "thread-revert-read-race" };
+        Task staleRead = StartControlledSelectedThreadHistoryReadAsync(vm, thread);
+        await firstPageStarted.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        await bridge.RaiseThreadHistoryChangedAsync(new WorkerNotification<ThreadHistoryChangedEvent>
+        {
+            Value = new ThreadHistoryChangedEvent { ThreadId = "thread-revert-read-race", ChangeKind = "thread/reverted" },
+            StatePartitionFingerprint = "history-revert-read-race",
+            OwnerGeneration = 1,
+            ConnectionGeneration = 1,
+        });
+        await WaitUntilAsync(() => vm.Items.Any(static item => item.Text.Contains("fresh transcript", StringComparison.Ordinal)));
+
+        releaseStalePage.TrySetResult(new ThreadItemsPage
+        {
+            Items = [new ThreadHistoryItem { Id = "pre-revert", TurnId = "turn-old", Type = "userMessage", Text = "stale transcript" }],
+        });
+        await staleRead.WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.IsTrue(vm.Items.Any(static item => item.Text.Contains("fresh transcript", StringComparison.Ordinal)));
+        Assert.IsFalse(vm.Items.Any(static item => item.Text.Contains("stale transcript", StringComparison.Ordinal)));
+    }
+
+    [TestMethod]
+    public async Task SuccessfulRevertMutationInvalidatesAnOlderSelectedHistoryRead()
+    {
+        var firstPageStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseStalePage = new TaskCompletionSource<ThreadItemsPage>(TaskCreationOptions.RunContinuationsAsynchronously);
+        int pageCallCount = 0;
+        var bridge = new FakeWorkerBridge
+        {
+            RevertThreadHandler = (_, _) => Task.FromResult(new ThreadMutationResult { Succeeded = true }),
+            ListThreadItemsHandler = (_, _) =>
+            {
+                if (Interlocked.Increment(ref pageCallCount) == 1)
+                {
+                    firstPageStarted.TrySetResult();
+#pragma warning disable VSTHRD003
+                    return releaseStalePage.Task;
+#pragma warning restore VSTHRD003
+                }
+
+                return Task.FromResult(new ThreadItemsPage
+                {
+                    Items = [new ThreadHistoryItem { Id = "post-revert", TurnId = "turn-new", Type = "userMessage", Text = "fresh transcript after mutation" }],
+                });
+            },
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        await bridge.PublishStateAsync(OwnerStatus("history-revert-mutation-read-race", 1, 1));
+        var thread = new ThreadSummary { Id = "thread-revert-mutation-read-race" };
+        Task staleRead = StartControlledSelectedThreadHistoryReadAsync(vm, thread);
+        await firstPageStarted.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        typeof(ChatViewModel).GetProperty(nameof(ChatViewModel.IsThreadJoined))!
+            .GetSetMethod(nonPublic: true)!.Invoke(vm, [true]);
+        vm.ThreadTurns.Add(new ThreadTurnOptionViewModel("turn-before", "Turn before · completed"));
+        vm.SelectedRevertTurnId = "turn-before";
+
+        await RunCommandAsync(vm.RevertThreadCommand);
+        await RunCommandAsync(vm.ConfirmThreadMutationCommand);
+        Assert.IsTrue(vm.Items.Any(static item => item.Text.Contains("fresh transcript after mutation", StringComparison.Ordinal)));
+
+        releaseStalePage.TrySetResult(new ThreadItemsPage
+        {
+            Items = [new ThreadHistoryItem { Id = "pre-revert", TurnId = "turn-old", Type = "userMessage", Text = "stale transcript" }],
+        });
+        await staleRead.WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.IsFalse(vm.Items.Any(static item => item.Text.Contains("stale transcript", StringComparison.Ordinal)));
+    }
+
+    private static Task StartControlledSelectedThreadHistoryReadAsync(ChatViewModel vm, ThreadSummary thread)
+    {
+        typeof(ChatViewModel).GetField("selectedThread", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+            .SetValue(vm, thread);
+        var readMethod = typeof(ChatViewModel).GetMethod(
+            "ReadSelectedThreadHistoryAsync",
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+        return (Task)readMethod.Invoke(vm, [thread, null, false, null])!;
+    }
+
+    [TestMethod]
     public async Task TranscriptSearch_FindsLiteralCommandOutputAndCode()
     {
         var bridge = new FakeWorkerBridge

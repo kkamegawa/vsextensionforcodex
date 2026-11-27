@@ -216,6 +216,213 @@ public sealed class WorkerRpcServiceTests
     }
 
     [TestMethod]
+    public async Task ThreadHistoryNotificationAfterFailedStartUsesWorkerConnectionGeneration()
+    {
+        int starts = 0;
+        var connection = new StubConnection();
+        var host = new FakeProcessHost(connection)
+        {
+            OnStartLocal = _ => Interlocked.Increment(ref starts) == 1
+                ? Task.FromException(new IOException("local process failed before session initialization"))
+                : Task.CompletedTask,
+        };
+        var session = new CodexSessionService(new ApprovalPolicyEngine(new PathAccessPolicy()), new SecretRedactor());
+        await using var worker = new WorkerRpcService(new SecretRedactor(), host, session);
+        await using var client = new ClientChannel(worker);
+
+        WorkerStatus failed = await worker.ConnectAsync(Options(), CancellationToken.None);
+        Assert.AreEqual(WorkerConnectionState.Degraded, failed.State);
+
+        WorkerStatus ready = await worker.ConnectAsync(Options(), CancellationToken.None);
+        Assert.AreEqual(WorkerConnectionState.Ready, ready.State);
+        Assert.IsTrue(ready.Target!.Generation > session.ConnectionGeneration);
+
+        await connection.EmitNotificationAsync("thread/archived", new { threadId = "thread-after-retry" });
+        WorkerNotification<ThreadHistoryChangedEvent> notification = await client.ThreadHistoryChangedSeen
+            .WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.AreEqual("thread-after-retry", notification.Value.ThreadId);
+        Assert.AreEqual(ready.Target.OwnerGeneration, notification.OwnerGeneration);
+        Assert.AreEqual(ready.Target.StatePartitionFingerprint, notification.StatePartitionFingerprint);
+        Assert.AreEqual(ready.Target.Generation, notification.ConnectionGeneration);
+    }
+
+    [TestMethod]
+    public async Task OwnerScopedMutationCapturesSessionContextBeforeReconnectCanChangeTarget()
+    {
+        var reconnectReachedProcessStart = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        int starts = 0;
+        var host = new FakeProcessHost(new StubConnection())
+        {
+            OnStartLocal = _ =>
+            {
+                if (Interlocked.Increment(ref starts) == 2)
+                {
+                    reconnectReachedProcessStart.TrySetResult();
+                }
+
+                return Task.CompletedTask;
+            },
+        };
+        var session = new CodexSessionService(new ApprovalPolicyEngine(new PathAccessPolicy()), new SecretRedactor());
+        await using var worker = new WorkerRpcService(new SecretRedactor(), host, session);
+        WorkerStatus original = await worker.ConnectAsync(Options(), CancellationToken.None);
+
+        var operationEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var releaseOperation = new ManualResetEventSlim();
+        WorkerStatus? statusAtSessionCapture = null;
+        ThreadMutationRequest request = Scoped(worker, new ThreadMutationRequest { ThreadId = "thread-owner-bound" });
+        Task<ThreadMutationResult> mutationTask = Task.Run(() => worker.ExecuteOwnerScopedMutationAsync(
+            request,
+            () =>
+            {
+                operationEntered.TrySetResult();
+                if (!releaseOperation.Wait(TimeSpan.FromSeconds(5)))
+                {
+                    throw new TimeoutException("The test did not release the mutation operation.");
+                }
+
+                statusAtSessionCapture = worker.GetStatusAsync(CancellationToken.None).GetAwaiter().GetResult();
+                return Task.FromResult(new ThreadMutationResult());
+            },
+            CancellationToken.None));
+        await operationEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Task<WorkerStatus> reconnectTask = worker.ConnectAsync(Options(), CancellationToken.None);
+        Assert.IsFalse(
+            reconnectReachedProcessStart.Task.IsCompleted,
+            "A reconnect must wait until the session operation has synchronously captured its connection context.");
+
+        releaseOperation.Set();
+        ThreadMutationResult result = await mutationTask.WaitAsync(TimeSpan.FromSeconds(5));
+        WorkerStatus reconnected = await reconnectTask.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.AreEqual(original.Target!.Generation, statusAtSessionCapture!.Target!.Generation);
+        Assert.AreEqual(original.Target.OwnerGeneration, result.OwnerGeneration);
+        Assert.AreEqual(original.Target.Generation, result.ConnectionGeneration);
+        Assert.AreNotEqual(reconnected.Target!.Generation, result.ConnectionGeneration);
+    }
+
+    [TestMethod]
+    public async Task OwnerScopedMutationKeepsValidatedConnectionWhenReconnectOverlapsItsResponse()
+    {
+        var archiveDispatched = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var finishArchive = new TaskCompletionSource<JsonElement>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var oldConnection = new StubConnection
+        {
+            AsyncHandler = async (method, _, _) =>
+            {
+                if (method == "thread/archive")
+                {
+                    archiveDispatched.TrySetResult();
+                    return await finishArchive.Task;
+                }
+
+                return JsonSerializer.SerializeToElement(new { });
+            },
+        };
+        var newConnection = new StubConnection();
+        int starts = 0;
+        var host = new FakeProcessHost(oldConnection);
+        host.OnStartLocal = _ =>
+        {
+            if (Interlocked.Increment(ref starts) == 2)
+            {
+                host.ConnectionForTest = newConnection;
+            }
+
+            return Task.CompletedTask;
+        };
+        var session = new CodexSessionService(new ApprovalPolicyEngine(new PathAccessPolicy()), new SecretRedactor());
+        await using var worker = new WorkerRpcService(new SecretRedactor(), host, session);
+        WorkerStatus original = await worker.ConnectAsync(Options(), CancellationToken.None);
+
+        Task<ThreadMutationResult> mutationTask = worker.ArchiveThreadAsync(
+            Scoped(worker, new ThreadMutationRequest { ThreadId = "thread-owner-bound" }),
+            CancellationToken.None);
+        await archiveDispatched.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        WorkerStatus reconnected = await worker.ConnectAsync(Options(), CancellationToken.None);
+        Assert.AreEqual(WorkerConnectionState.Ready, reconnected.State);
+        finishArchive.TrySetResult(JsonSerializer.SerializeToElement(new { }));
+        ThreadMutationResult result = await mutationTask.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.IsTrue(result.OutcomeUnknown, "A result retired with the original connection cannot be reported as success.");
+        Assert.AreEqual(original.Target!.OwnerGeneration, result.OwnerGeneration);
+        Assert.AreEqual(original.Target.Generation, result.ConnectionGeneration);
+        Assert.AreNotEqual(reconnected.Target!.Generation, result.ConnectionGeneration);
+        Assert.IsTrue(oldConnection.Methods.Contains("thread/archive"));
+        Assert.IsFalse(newConnection.Methods.Contains("thread/archive"), "The mutation must never be retargeted to the new connection.");
+    }
+
+    [TestMethod]
+    public async Task ThreadMutation_MapsActualDeleteAndRevertPreDispatchRejectionsAndPreservesOwnerError()
+    {
+        var connection = new StubConnection();
+        var session = new CodexSessionService(new ApprovalPolicyEngine(new PathAccessPolicy()), new SecretRedactor());
+        await using var worker = new WorkerRpcService(new SecretRedactor(), new FakeProcessHost(connection), session);
+        await worker.ConnectAsync(Options(), CancellationToken.None);
+
+        LocalRpcException deleteRejected = await Assert.ThrowsExactlyAsync<LocalRpcException>(() => worker.DeleteThreadAsync(
+            Scoped(worker, new ThreadMutationRequest { ThreadId = "thread-delete-pre-dispatch" }),
+            CancellationToken.None));
+        Assert.AreEqual(WorkerErrorCodes.PreDispatchRejected, deleteRejected.ErrorCode);
+        Assert.IsFalse(connection.Methods.Contains("thread/delete", StringComparer.Ordinal));
+
+        LocalRpcException revertRejected = await Assert.ThrowsExactlyAsync<LocalRpcException>(() => worker.RevertThreadAsync(
+            Scoped(worker, new ThreadMutationRequest { ThreadId = "thread-revert-pre-dispatch", UserConfirmed = true }),
+            CancellationToken.None));
+        Assert.AreEqual(WorkerErrorCodes.PreDispatchRejected, revertRejected.ErrorCode);
+        Assert.IsFalse(connection.Methods.Contains("thread/revert", StringComparer.Ordinal));
+
+        LocalRpcException archiveRejected = await Assert.ThrowsExactlyAsync<LocalRpcException>(() => worker.ArchiveThreadAsync(
+            Scoped(worker, new ThreadMutationRequest { ThreadId = "   " }),
+            CancellationToken.None));
+        Assert.AreEqual(WorkerErrorCodes.PreDispatchRejected, archiveRejected.ErrorCode);
+        Assert.IsFalse(connection.Methods.Contains("thread/archive", StringComparer.Ordinal));
+        ThreadMutationRequest staleOwner = Scoped(worker, new ThreadMutationRequest { ThreadId = "thread-stale-owner" });
+        staleOwner.OwnerGeneration++;
+        LocalRpcException ownerRejected = await Assert.ThrowsExactlyAsync<LocalRpcException>(() => worker.ArchiveThreadAsync(
+            staleOwner,
+            CancellationToken.None));
+        Assert.AreEqual(WorkerErrorCodes.ConnectionOperationRejected, ownerRejected.ErrorCode);
+        Assert.IsFalse(connection.Methods.Contains("thread/archive", StringComparer.Ordinal));
+    }
+
+    [TestMethod]
+    public async Task ThreadMutation_MapsOnlyDedicatedPreDispatchFailureAndRedactsItsMessage()
+    {
+        const string secretValue = "thread-mutation-secret-value";
+        var redactor = new SecretRedactor();
+        using IDisposable secretLease = redactor.RegisterSecret(secretValue);
+        var session = new CodexSessionService(new ApprovalPolicyEngine(new PathAccessPolicy()), redactor);
+        await using var worker = new WorkerRpcService(redactor, new FakeProcessHost(new StubConnection()), session);
+        await worker.ConnectAsync(Options(), CancellationToken.None);
+        ThreadMutationRequest request = Scoped(worker, new ThreadMutationRequest { ThreadId = "thread-redaction" });
+
+        LocalRpcException rejected = await Assert.ThrowsExactlyAsync<LocalRpcException>(() => worker.ExecuteOwnerScopedMutationAsync(
+            request,
+            () => Task.FromException<ThreadMutationResult>(new ThreadMutationPreDispatchRejectedException($"Policy rejected {secretValue}.", new InvalidOperationException("policy"))),
+            CancellationToken.None));
+
+        Assert.AreEqual(WorkerErrorCodes.PreDispatchRejected, rejected.ErrorCode);
+        Assert.IsFalse(rejected.Message.Contains(secretValue, StringComparison.Ordinal));
+        Assert.IsTrue(rejected.Message.Contains("[REDACTED]", StringComparison.Ordinal));
+
+        ObjectDisposedException disposed = await Assert.ThrowsExactlyAsync<ObjectDisposedException>(() => worker.ExecuteOwnerScopedMutationAsync(
+            request,
+            () => Task.FromException<ThreadMutationResult>(new ObjectDisposedException("thread mutation")),
+            CancellationToken.None));
+        Assert.AreEqual("thread mutation", disposed.ObjectName);
+
+        InvalidOperationException unexpected = await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => worker.ExecuteOwnerScopedMutationAsync(
+            request,
+            () => Task.FromException<ThreadMutationResult>(new InvalidOperationException("unexpected mutation failure")),
+            CancellationToken.None));
+        Assert.AreEqual("unexpected mutation failure", unexpected.Message);
+    }
+
+    [TestMethod]
     public async Task StartTurn_RejectsStaleSkillWithTypedCodeBeforeSendingTurnStart()
     {
         var connection = new StubConnection
@@ -568,12 +775,15 @@ public sealed class WorkerRpcServiceTests
     public async Task Connect_RejectsPreviousContractVersion()
     {
         var session = new CodexSessionService(new ApprovalPolicyEngine(new PathAccessPolicy()), new SecretRedactor());
-        await using var worker = new WorkerRpcService(new SecretRedactor(), new FakeProcessHost(), session);
+        var processHost = new FakeProcessHost();
+        await using var worker = new WorkerRpcService(new SecretRedactor(), processHost, session);
 
         await Assert.ThrowsExactlyAsync<InvalidOperationException>(
             () => worker.ConnectAsync(new WorkerOptions { ContractVersion = ContractVersions.Current - 1 }, CancellationToken.None));
-    }
 
+        Assert.AreEqual(0, processHost.RemoteStarts, "The contract version gate runs before starting a legacy worker.");
+        Assert.AreEqual(0, processHost.LocalSandboxBackends.Count, "A legacy worker must not start with an incompatible contract.");
+    }
     [TestMethod]
     public async Task ThreadClosedChangesStatusOnlyForTheActiveThread()
     {
@@ -1782,6 +1992,8 @@ public sealed class WorkerRpcServiceTests
 
         public Task<WorkerNotification<AccountStatus>> AccountChangedSeen => observer.AccountChangedSeen;
 
+        public Task<WorkerNotification<ThreadHistoryChangedEvent>> ThreadHistoryChangedSeen => observer.ThreadHistoryChangedSeen;
+
         public WorkerStatus[] StateChanges => observer.StateChanges;
 
         public ConversationEvent[] ConversationEvents => observer.ConversationEvents;
@@ -1809,6 +2021,8 @@ public sealed class WorkerRpcServiceTests
             private readonly TaskCompletionSource networkDiagnosticSeen =
                 new(TaskCreationOptions.RunContinuationsAsynchronously);
             private readonly TaskCompletionSource<WorkerNotification<AccountStatus>> accountChangedSeen =
+                new(TaskCreationOptions.RunContinuationsAsynchronously);
+            private readonly TaskCompletionSource<WorkerNotification<ThreadHistoryChangedEvent>> threadHistoryChangedSeen =
                 new(TaskCreationOptions.RunContinuationsAsynchronously);
 
             public Task<WorkerStatus> TurnIdSeen => turnIdSeen.Task;
@@ -1839,6 +2053,8 @@ public sealed class WorkerRpcServiceTests
             }
 
             public Task<WorkerNotification<AccountStatus>> AccountChangedSeen => accountChangedSeen.Task;
+
+            public Task<WorkerNotification<ThreadHistoryChangedEvent>> ThreadHistoryChangedSeen => threadHistoryChangedSeen.Task;
 
             public WorkerStatus[] StateChanges
             {
@@ -1905,6 +2121,15 @@ public sealed class WorkerRpcServiceTests
                     accountChangedSeen.TrySetResult(args.Notification);
                 }
             }
+
+            [JsonRpcMethod("observer/threadHistoryChanged", UseSingleObjectParameterDeserialization = true)]
+            public void OnThreadHistoryChanged(ThreadHistoryChangedArgs args)
+            {
+                if (args.Notification is not null)
+                {
+                    threadHistoryChangedSeen.TrySetResult(args.Notification);
+                }
+            }
         }
 
         private sealed class StateChangedArgs
@@ -1917,6 +2142,12 @@ public sealed class WorkerRpcServiceTests
         {
             [JsonPropertyName("notification")]
             public WorkerNotification<AccountStatus>? Notification { get; set; }
+        }
+
+        private sealed class ThreadHistoryChangedArgs
+        {
+            [JsonPropertyName("notification")]
+            public WorkerNotification<ThreadHistoryChangedEvent>? Notification { get; set; }
         }
 
         private sealed class ConversationEventArgs
@@ -1958,7 +2189,9 @@ public sealed class WorkerRpcServiceTests
 
         public int? ProcessId => 4242;
 
-        public IJsonRpcConnection? Connection => connection;
+        public IJsonRpcConnection? Connection => ConnectionForTest ?? connection;
+
+        public IJsonRpcConnection? ConnectionForTest { get; set; }
 
         public string? CredentialFingerprint => GetCredentialFingerprint?.Invoke();
 

@@ -37,6 +37,18 @@ internal partial interface IWorkerBridge : IAsyncDisposable
 
     event Func<WorkerNotification<ThreadReadStateChangedEvent>, Task>? ThreadReadStateChanged;
 
+    event Func<WorkerNotification<ThreadSearchPartialEvent>, Task>? ThreadSearchPartial
+    {
+        add { }
+        remove { }
+    }
+
+    event Func<WorkerNotification<ThreadHistoryChangedEvent>, Task>? ThreadHistoryChanged
+    {
+        add { }
+        remove { }
+    }
+
     event Func<WorkerNotification<ThreadAttachmentUpdatedEvent>, Task>? ThreadAttachmentUpdated;
 
     event Func<WorkerNotification<WindowsSandboxSetupCompletedEvent>, Task>? WindowsSandboxSetupChanged;
@@ -96,6 +108,13 @@ internal partial interface IWorkerBridge : IAsyncDisposable
     Task<AccountStatus> LogoutAccountAsync(LogoutAccountRequest request, CancellationToken cancellationToken);
 
     Task<ThreadPage> ListThreadsAsync(ListThreadsRequest request, CancellationToken cancellationToken);
+
+    Task<ThreadSectionsResult> ListThreadSectionsAsync(GetThreadListScopesRequest request, CancellationToken cancellationToken) => throw new NotSupportedException();
+    Task<ThreadMutationResult> ArchiveThreadAsync(ThreadMutationRequest request, CancellationToken cancellationToken) => throw new NotSupportedException();
+    Task<ThreadMutationResult> UnarchiveThreadAsync(ThreadMutationRequest request, CancellationToken cancellationToken) => throw new NotSupportedException();
+    Task<ThreadMutationResult> DeleteThreadAsync(ThreadMutationRequest request, CancellationToken cancellationToken) => throw new NotSupportedException();
+    Task<ThreadMutationResult> RevertThreadAsync(ThreadMutationRequest request, CancellationToken cancellationToken) => throw new NotSupportedException();
+    Task<ThreadSearchResult> SearchThreadsAsync(ThreadSearchRequest request, CancellationToken cancellationToken) => throw new NotSupportedException();
 
     Task<ThreadListScopesResult> GetThreadListScopesAsync(GetThreadListScopesRequest request, CancellationToken cancellationToken);
 
@@ -248,6 +267,10 @@ public sealed partial class WorkerBridge : IWorkerBridge, ICodexWorkerObserver
 
     public event Func<WorkerNotification<ThreadReadStateChangedEvent>, Task>? ThreadReadStateChanged;
 
+    public event Func<WorkerNotification<ThreadSearchPartialEvent>, Task>? ThreadSearchPartial;
+
+    public event Func<WorkerNotification<ThreadHistoryChangedEvent>, Task>? ThreadHistoryChanged;
+
     public event Func<WorkerNotification<ThreadAttachmentUpdatedEvent>, Task>? ThreadAttachmentUpdated;
 
     public event Func<WorkerNotification<WindowsSandboxSetupCompletedEvent>, Task>? WindowsSandboxSetupChanged;
@@ -393,6 +416,24 @@ public sealed partial class WorkerBridge : IWorkerBridge, ICodexWorkerObserver
 
     public Task<ThreadPage> ListThreadsAsync(ListThreadsRequest request, CancellationToken cancellationToken)
         => RequireRpc().InvokeWithCancellationAsync<ThreadPage>("worker/thread/list", new object[] { request }, cancellationToken);
+
+    public Task<ThreadSectionsResult> ListThreadSectionsAsync(GetThreadListScopesRequest request, CancellationToken cancellationToken)
+        => RequireRpc().InvokeWithCancellationAsync<ThreadSectionsResult>("worker/thread/sections/list", new object[] { request }, cancellationToken);
+
+    public Task<ThreadMutationResult> ArchiveThreadAsync(ThreadMutationRequest request, CancellationToken cancellationToken)
+        => RequireRpc().InvokeWithCancellationAsync<ThreadMutationResult>("worker/thread/archive", new object[] { request }, cancellationToken);
+
+    public Task<ThreadMutationResult> UnarchiveThreadAsync(ThreadMutationRequest request, CancellationToken cancellationToken)
+        => RequireRpc().InvokeWithCancellationAsync<ThreadMutationResult>("worker/thread/unarchive", new object[] { request }, cancellationToken);
+
+    public Task<ThreadMutationResult> DeleteThreadAsync(ThreadMutationRequest request, CancellationToken cancellationToken)
+        => RequireRpc().InvokeWithCancellationAsync<ThreadMutationResult>("worker/thread/delete", new object[] { request }, cancellationToken);
+
+    public Task<ThreadMutationResult> RevertThreadAsync(ThreadMutationRequest request, CancellationToken cancellationToken)
+        => RequireRpc().InvokeWithCancellationAsync<ThreadMutationResult>("worker/thread/revert", new object[] { request }, cancellationToken);
+
+    public Task<ThreadSearchResult> SearchThreadsAsync(ThreadSearchRequest request, CancellationToken cancellationToken)
+        => RequireRpc().InvokeWithCancellationAsync<ThreadSearchResult>("worker/thread/search", new object[] { request }, cancellationToken);
 
     public Task<ThreadListScopesResult> GetThreadListScopesAsync(GetThreadListScopesRequest request, CancellationToken cancellationToken)
         => RequireRpc().InvokeWithCancellationAsync<ThreadListScopesResult>("worker/threads/scopes", new object[] { request }, cancellationToken);
@@ -659,6 +700,16 @@ public sealed partial class WorkerBridge : IWorkerBridge, ICodexWorkerObserver
         WorkerNotification<ThreadReadStateChangedEvent> notification,
         CancellationToken cancellationToken)
         => ThreadReadStateChanged?.Invoke(notification) ?? Task.CompletedTask;
+
+    public Task OnThreadSearchPartialAsync(
+        WorkerNotification<ThreadSearchPartialEvent> notification,
+        CancellationToken cancellationToken)
+        => ThreadSearchPartial?.Invoke(notification) ?? Task.CompletedTask;
+
+    public Task OnThreadHistoryChangedAsync(
+        WorkerNotification<ThreadHistoryChangedEvent> notification,
+        CancellationToken cancellationToken)
+        => ThreadHistoryChanged?.Invoke(notification) ?? Task.CompletedTask;
 
     public Task OnThreadAttachmentUpdatedAsync(
         WorkerNotification<ThreadAttachmentUpdatedEvent> notification,

@@ -23,6 +23,25 @@ public sealed class SecurityServicesTests
     }
 
     [TestMethod]
+    [DataRow("archive", ApprovalRiskCategory.Destructive)]
+    [DataRow("unarchive", ApprovalRiskCategory.Destructive)]
+    [DataRow("delete", ApprovalRiskCategory.Destructive)]
+    [DataRow("revert", ApprovalRiskCategory.Destructive)]
+    public void ApprovalPolicyEngine_ThreadMutationFailsClosedForInvalidIdentityAndClassifiesValidActions(
+        string action,
+        ApprovalRiskCategory expectedRisk)
+    {
+        var policy = new ApprovalPolicyEngine(new PathAccessPolicy());
+        Assert.IsTrue(policy.EvaluateThreadMutation(null, "delete").IsBlocked);
+        Assert.IsTrue(policy.EvaluateThreadMutation("thread-1", "delete;rm").IsBlocked);
+
+        ApprovalPolicyResult valid = policy.EvaluateThreadMutation("thread-1", action);
+        Assert.IsFalse(valid.IsBlocked);
+        Assert.AreEqual(expectedRisk, valid.Risk);
+        StringAssert.Contains(valid.RiskKey, $"thread:{action}:thread-1");
+    }
+
+    [TestMethod]
     public void SecretRedactor_DoesNotRedactCredentialLikeIdentifierSuffixes()
     {
         var redactor = new SecretRedactor();

@@ -1,4 +1,6 @@
-﻿using System.IO;
+﻿using System.Collections.Concurrent;
+using System.Globalization;
+using System.IO;
 using System.Reflection;
 using System.Text;
 using Codex.VisualStudio.Contracts;
@@ -14,11 +16,9 @@ public sealed partial class ViewModelTests
 
     private static async Task<ChatViewModel> CreateJoinedViewModelAsync(FakeWorkerBridge bridge, CodexFeatureTier tier = CodexFeatureTier.Baseline)
     {
-        var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()))
-        {
-            SelectedThread = new ThreadSummary { Id = "thread-1" },
-        };
+        var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
         await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready, ThreadId = "thread-1", FeatureTier = tier });
+        vm.SelectedThread = new ThreadSummary { Id = "thread-1" };
         await RunCommandAsync(vm.JoinThreadCommand);
         return vm;
     }
@@ -159,6 +159,57 @@ public sealed partial class ViewModelTests
     }
 
     [TestMethod]
+    public async Task HistoryScope_LocalizesOptionsAndAccessibilityText()
+    {
+        CultureInfo originalUiCulture = CultureInfo.CurrentUICulture;
+        try
+        {
+            await VerifyScopeTextAsync(
+                "en-US",
+                ["All", "Current working folder", "Same repository worktrees"],
+                "Conversation history scope",
+                "Conversations to list",
+                "Choose which conversations the history lists.");
+            await VerifyScopeTextAsync(
+                "ja-JP",
+                ["すべて", "現在の作業フォルダー", "同じリポジトリのワークツリー"],
+                "会話履歴の範囲",
+                "会話履歴の表示範囲を選択",
+                "履歴一覧に表示する会話の範囲を選択します。");
+        }
+        finally
+        {
+            CultureInfo.CurrentUICulture = originalUiCulture;
+        }
+
+        async Task VerifyScopeTextAsync(
+            string cultureName,
+            string[] expectedLabels,
+            string expectedAutomationName,
+            string expectedToolTip,
+            string expectedHelpText)
+        {
+            CultureInfo.CurrentUICulture = CultureInfo.GetCultureInfo(cultureName);
+            var bridge = new FakeWorkerBridge
+            {
+                ThreadListScopesResult = new ThreadListScopesResult
+                {
+                    CurrentFolder = @"C:\repo",
+                    WorktreeFolders = WorktreeFolders,
+                },
+            };
+            using ChatViewModel vm = await CreateJoinedViewModelAsync(bridge);
+            await RunCommandAsync(vm.ToggleHistoryCommand);
+            await WaitForAsync(() => vm.ThreadListScopes.Count == expectedLabels.Length);
+
+            CollectionAssert.AreEqual(expectedLabels, vm.ThreadListScopes.Select(scope => scope.DisplayText).ToArray());
+            Assert.AreEqual(expectedAutomationName, vm.ThreadListScopeAutomationName);
+            Assert.AreEqual(expectedToolTip, vm.ThreadListScopeToolTipText);
+            Assert.AreEqual(expectedHelpText, vm.ThreadListScopeHelpText);
+        }
+    }
+
+    [TestMethod]
     public async Task HistoryScope_FixesFoldersForPagingAndDoesNotCancelConversationsOutsideIt()
     {
         var bridge = new FakeWorkerBridge
@@ -188,26 +239,211 @@ public sealed partial class ViewModelTests
     public async Task HistoryScope_LateResponseForOldScopeIsDropped()
     {
         var firstPage = new TaskCompletionSource<ThreadPage>(TaskCreationOptions.RunContinuationsAsynchronously);
-        int calls = 0;
+        int raceListCalls = 0;
+        var setupArchivedListStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var bridge = new FakeWorkerBridge
         {
             ThreadListScopesResult = new ThreadListScopesResult { CurrentFolder = @"C:\repo" },
-            ListThreadsHandler = async (_, cancellationToken) => ++calls == 1
-                ? await firstPage.Task.WaitAsync(cancellationToken)
-                : new ThreadPage { Threads = [new ThreadSummary { Id = "current-folder" }] },
+            ListThreadsRequestHandler = (request, _) =>
+            {
+                if (request.Archived)
+                {
+                    setupArchivedListStarted.TrySetResult();
+                }
+
+                return Task.FromResult(new ThreadPage());
+            },
         };
         using ChatViewModel vm = await CreateJoinedViewModelAsync(bridge);
         await RunCommandAsync(vm.ToggleHistoryCommand);
         await WaitForAsync(() => vm.ThreadListScopes.Count == 2);
+        await setupArchivedListStarted.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        await vm.RefreshCompleteLinkedForkIndexAsync(vm.CaptureOwnerSnapshot(), CancellationToken.None);
+        vm.SelectedThread = new ThreadSummary { Id = "fork-index-ready-barrier" };
+        Assert.IsTrue(vm.CanDeleteSelectedThread, "The initial complete fork index must be ready before switching the list handler.");
+        vm.SelectedThread = null;
+        bridge.ListThreadsRequestHandler = null;
+        bridge.ListThreadsHandler = async (_, cancellationToken) => Interlocked.Increment(ref raceListCalls) == 1
+            ? await firstPage.Task.WaitAsync(cancellationToken)
+            : new ThreadPage { Threads = [new ThreadSummary { Id = "current-folder" }] };
 
         vm.SelectedThreadListScopeId = ChatViewModel.CurrentFolderScopeId;
-        await WaitForAsync(() => calls == 1);
+        await WaitForAsync(() => Volatile.Read(ref raceListCalls) == 1);
         vm.SelectedThreadListScopeId = ChatViewModel.AllConversationsScopeId;
         firstPage.SetResult(new ThreadPage { Threads = [new ThreadSummary { Id = "stale" }] });
         await WaitForAsync(() => vm.Threads.Any(thread => thread.Id == "current-folder"));
 
         Assert.IsFalse(vm.Threads.Any(thread => thread.Id == "stale"));
         Assert.IsNull(bridge.ListedWorkingDirectories[^1]);
+    }
+
+    [TestMethod]
+    public async Task HistoryScopeChangeRestartsExperimentalSearchWithinTheSelectedFolder()
+    {
+        var bridge = new FakeWorkerBridge
+        {
+            ThreadListScopesResult = new ThreadListScopesResult { CurrentFolder = @"C:\repo" },
+            ListThreadsHandler = (_, _) => Task.FromResult(new ThreadPage
+            {
+                Threads = [new ThreadSummary { Id = "folder-match" }],
+            }),
+            SearchThreadsHandler = (_, _) => Task.FromResult(new ThreadSearchResult
+            {
+                Results = [new ThreadSearchHit
+                {
+                    Thread = new ThreadSummary { Id = "folder-match" },
+                    Snippet = "matching folder result",
+                }],
+            }),
+        };
+        using var vm = new ChatViewModel(
+            bridge,
+            autoConnect: false,
+            settingsStore: new MemorySettingsStore(new ExtensionSettings { ExperimentalApiEnabled = true }));
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready, ThreadId = "thread-1" });
+        await RunCommandAsync(vm.ToggleHistoryCommand);
+        await WaitForAsync(() => vm.ThreadListScopes.Any(scope => scope.Id == ChatViewModel.CurrentFolderScopeId));
+
+        vm.HistorySearchText = "needle";
+        await RunCommandAsync(vm.SearchHistoryCommand);
+        await WaitForAsync(() => vm.ThreadRows.Any(row => row.Id == "folder-match"));
+        Assert.AreEqual(1, bridge.SearchThreadsCallCount);
+
+        vm.SelectedThreadListScopeId = ChatViewModel.CurrentFolderScopeId;
+        await WaitForAsync(() => bridge.SearchThreadsCallCount == 2
+            && vm.ThreadRows.Count == 1
+            && vm.ThreadRows[0].SearchSnippet == "matching folder result");
+
+        Assert.AreEqual("needle", vm.HistorySearchText);
+        Assert.AreEqual("folder-match", vm.ThreadRows.Single().Id);
+        Assert.AreEqual(@"C:\repo", bridge.ListedWorkingDirectories[^1]!.Single());
+        Assert.IsFalse(bridge.ThreadListRequests.Any(request => string.Equals(request.SearchTerm, "needle", StringComparison.Ordinal)),
+            "Experimental search must not fall back to a title-filtered thread list.");
+    }
+
+    [TestMethod]
+    public async Task HistoryScopeChangeRejectsAnOlderPendingSearchResult()
+    {
+        var firstSearchStarted = new TaskCompletionSource<CancellationToken>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseFirstSearch = new TaskCompletionSource<ThreadSearchResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var listRequests = new ConcurrentQueue<(long Order, IReadOnlyList<string>? WorkingDirectories, string? SearchTerm)>();
+        int searchCallCount = 0;
+        long operationOrder = 0;
+        long secondSearchOrder = 0;
+        var bridge = new FakeWorkerBridge
+        {
+            ThreadListScopesResult = new ThreadListScopesResult { CurrentFolder = @"C:\repo" },
+            ListThreadsRequestHandler = (request, _) =>
+            {
+                listRequests.Enqueue((
+                    Interlocked.Increment(ref operationOrder),
+                    request.WorkingDirectories?.ToArray(),
+                    request.SearchTerm));
+                return Task.FromResult(new ThreadPage
+                {
+                    Threads = [new ThreadSummary { Id = "folder-match" }],
+                });
+            },
+            SearchThreadsHandler = (request, cancellationToken) =>
+            {
+                long requestOrder = Interlocked.Increment(ref operationOrder);
+                int call = Interlocked.Increment(ref searchCallCount);
+                if (call == 1)
+                {
+                    firstSearchStarted.TrySetResult(cancellationToken);
+#pragma warning disable VSTHRD003
+                    return releaseFirstSearch.Task;
+#pragma warning restore VSTHRD003
+                }
+
+                if (call == 2)
+                {
+                    Volatile.Write(ref secondSearchOrder, requestOrder);
+                    return Task.FromResult(new ThreadSearchResult
+                    {
+                        Results = [new ThreadSearchHit
+                        {
+                            Thread = new ThreadSummary { Id = "folder-match" },
+                            Snippet = "current scope result",
+                        }],
+                    });
+                }
+
+                throw new InvalidOperationException("The test expected exactly two search requests.");
+            },
+        };
+        using var vm = new ChatViewModel(
+            bridge,
+            autoConnect: false,
+            settingsStore: new MemorySettingsStore(new ExtensionSettings { ExperimentalApiEnabled = true }));
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready, ThreadId = "thread-1" });
+        await RunCommandAsync(vm.ToggleHistoryCommand);
+        await WaitForAsync(() => vm.ThreadListScopes.Any(scope => scope.Id == ChatViewModel.CurrentFolderScopeId));
+
+        vm.HistorySearchText = "needle";
+        Task firstSearch = vm.SearchHistoryAsync();
+        CancellationToken firstSearchToken = await firstSearchStarted.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        vm.SelectedThreadListScopeId = ChatViewModel.CurrentFolderScopeId;
+        await WaitForAsync(() => searchCallCount == 2
+            && vm.ThreadRows.Count == 1
+            && vm.ThreadRows[0].SearchSnippet == "current scope result");
+
+        Assert.IsTrue(listRequests.Any(request => request.Order < Volatile.Read(ref secondSearchOrder)
+            && request.WorkingDirectories is { Count: 1 } directories
+            && string.Equals(directories[0], @"C:\repo", StringComparison.Ordinal)),
+            "A selected-folder eligibility scan must occur before the second search request is dispatched.");
+        Assert.IsTrue(firstSearchToken.IsCancellationRequested,
+            "Changing history scope must cancel the first search request.");
+
+        Assert.IsFalse(listRequests.Any(request => string.Equals(request.SearchTerm, "needle", StringComparison.Ordinal)),
+            "The scoped search must not fall back to title-filtered thread/list results.");
+
+        releaseFirstSearch.SetResult(new ThreadSearchResult
+        {
+            Results = [new ThreadSearchHit
+            {
+                Thread = new ThreadSummary { Id = "stale-global-match" },
+                Snippet = "stale global result",
+            }],
+        });
+        await firstSearch.WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.AreEqual(2, bridge.SearchThreadsCallCount);
+        Assert.AreEqual("folder-match", vm.ThreadRows.Single().Id);
+        Assert.AreEqual("current scope result", vm.ThreadRows.Single().SearchSnippet);
+        Assert.IsFalse(vm.ThreadRows.Any(row => row.Id == "stale-global-match"));
+    }
+
+    [TestMethod]
+    public async Task ExperimentalApiWhitespaceSearchUsesRegularScopedListRefresh()
+    {
+        var bridge = new FakeWorkerBridge
+        {
+            ThreadListScopesResult = new ThreadListScopesResult { CurrentFolder = @"C:\repo" },
+            ListThreadsRequestHandler = (request, _) => Task.FromResult(new ThreadPage
+            {
+                Threads = [new ThreadSummary
+                {
+                    Id = request.WorkingDirectories is null ? "all-folder-list" : "current-folder-list",
+                }],
+            }),
+        };
+        using var vm = new ChatViewModel(
+            bridge,
+            autoConnect: false,
+            settingsStore: new MemorySettingsStore(new ExtensionSettings { ExperimentalApiEnabled = true }));
+        await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready, ThreadId = "thread-1" });
+        await RunCommandAsync(vm.ToggleHistoryCommand);
+        await WaitForAsync(() => vm.ThreadListScopes.Any(scope => scope.Id == ChatViewModel.CurrentFolderScopeId));
+
+        vm.HistorySearchText = "  \t";
+        vm.SelectedThreadListScopeId = ChatViewModel.CurrentFolderScopeId;
+        await WaitForAsync(() => vm.Threads.Any(thread => thread.Id == "current-folder-list")
+            && bridge.LastListThreadsRequest?.WorkingDirectories?.Single() == @"C:\repo");
+
+        Assert.AreEqual(0, bridge.SearchThreadsCallCount);
+        Assert.IsNull(bridge.LastListThreadsRequest?.SearchTerm);
     }
 
     [TestMethod]
@@ -355,6 +591,10 @@ public sealed partial class ViewModelTests
                 Generation = 8,
             },
         });
+        var reconnectedThread = new ThreadSummary { Id = "thread-1" };
+        vm.Threads.Add(reconnectedThread);
+        vm.SelectedThread = reconnectedThread;
+        await RunCommandAsync(vm.JoinThreadCommand);
 
         await RunCommandAsync(vm.OpenConversationTextCommand);
         await WaitForAsync(() => documents.Path is not null);

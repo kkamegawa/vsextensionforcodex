@@ -14,6 +14,9 @@ public interface IJsonRpcConnection : IAsyncDisposable
 
     Task<JsonElement> SendRequestAsync(string method, object? parameters, TimeSpan timeout, CancellationToken cancellationToken);
 
+    Task<JsonElement> SendCorrelatedRequestAsync(string method, object? parameters, string requestId, TimeSpan timeout, CancellationToken cancellationToken)
+        => throw new NotSupportedException("Correlated JSON-RPC request IDs are not supported by this connection.");
+
     Task SendNotificationAsync(string method, object? parameters, CancellationToken cancellationToken);
 }
 

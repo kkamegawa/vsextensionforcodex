@@ -1089,3 +1089,41 @@ Tracking: [Issue #300](https://github.com/kkamegawa/vsextensionforcodex/issues/3
 - [x] Add a local WebSocket peer test that accepts the handshake, observes a PING, withholds PONG, and verifies connection closure. Update the English and Japanese remote-connection design records.
 
 Validation: Release solution build passed with 0 warnings and 0 errors. `WebSocketJsonRpcConnectionTests` passed 14/14, including the missing-PONG timeout case. `git diff --check` passed.
+### 2026-11-26: Issue #304 thread management gap fixes
+
+- Tracked linked-fork relationships from an unfiltered complete `thread/list` scan before hiding child rows. The UI regression reads a real linked-child page through `FakeWorkerBridge.ListThreadsAsync`, verifies that the child remains hidden, and confirms parent deletion is blocked. The delete guard also blocks children with a linked parent; incomplete or stale scans leave deletion disabled. Owner changes invalidate pending confirmations and fork-index state.
+- Restricted correlated requests to `thread/search/stream`, bounded search terms, required nonempty GUID request IDs, and ensured pending entries are removed even when timeout-token setup fails. Search terms containing only whitespace are rejected. Added bounded `threadSection/list` retry validation and default worker-interface implementations for older workers.
+- `ThreadMutationRequest` and `ThreadSearchRequest` are WorkerBridge call arguments and are not part of the Remote UI `ChatViewModel` data-context graph. The production bridge uses StreamJsonRpc's default Newtonsoft `JsonMessageFormatter`; a real formatter roundtrip test verifies request payloads and inherited owner-scope fields. `OwnerScopedRequest` opts into normal property serialization, while list-section RPCs use the concrete `GetThreadListScopesRequest` type so Newtonsoft can instantiate requests.
+- Timeout tests verify cancel dispatch, late-partial handler removal, and correlated pending cleanup. Archive/unarchive rejections remain visible without changing selection/archive mode. The legacy contract-version test asserts that the previous version is rejected before local or remote process start.
+- Kept the history-search cancellation source alive until its owning search finishes, and moved linked-fork indexing inside the cancellation handler. A regression test cancels search during a blocked fork-index read, refreshes the archived view, then verifies the replacement search completes.
+- Claude review follow-up: fork summaries with missing parent IDs no longer erase known links; deletion notifications overlay in-flight index rebuilds; canceled/stale rebuilds clear their own overlay; mutation responses retired with their connection become outcome-unknown; stream timeouts send best-effort cancel; history notification subscribers fail independently. Archive/unarchive no longer require the delete/revert confirmation flag. Search title confirmation uses a stable, sanitized name.
+- Final Release solution build passed with 0 warnings and 0 errors. Core full suite: 758 passed / 7 filesystem-link skips / 0 failed (765 total). UI full suite: 683 passed / 3 filesystem-link skips / 0 failed (686 total). `git diff --check` passed. VSIX content inspection passed for Worker contract v30 (SHA-256 `54b1a6877369d80e484608dee21216e5272aa9348bb78563d31e8de0746444d7`).
+- Codex CLI 0.169.0 app-server initialize and thread lifecycle smoke (start, inject, unsubscribe, idle unload, resume, delete) passed with an isolated `CODEX_HOME`. Operation-by-operation acceptance and Visual Studio Light/Dark screenshots remain pending.
+
+
+### 2026-11-27: Issue #304 concurrency review follow-up
+
+- Fixed the thread-list Busy retry race where a request from a retired owner could lose its pending refresh while a live request for the replacement owner was active. The pending drain re-reads the current owner, and retired-owner results remain fenced from the current list.
+- Added a deterministic UI regression covering generations 1 through 3, Busy observation, queueing behind the latest owner's active request, pending-drain completion, and rejection of the delayed generation-2 result. All waits have bounded timeouts.
+- Focused Claude review found no actionable defects in the final Busy handling and test. The earlier Failed-status concern was not applicable because the refresh method sets an owner-scoped failure status before returning Failed.
+- Release solution build passed with 0 warnings and 0 errors. UI suite: 692 passed / 3 filesystem-link skips / 0 failed (695 total). Core suite: 769 passed / 7 filesystem-link skips / 0 failed (776 total). The focused Busy-owner regression passed 1/1. `git diff --check` passed before this task-log entry was appended.
+- The user reported reinstalling Visual Studio Insiders 0.172. The last desktop check still showed the Windows lock screen, so operation-by-operation Visual Studio acceptance remains pending. APM manifests were checked; no uncommitted APM changes were present in this worktree.
+
+### 2026-11-27: Issue #304 review follow-up
+
+Tracking: [Issue #304](https://github.com/kkamegawa/vsextensionforcodex/issues/304) and [PR #340](https://github.com/kkamegawa/vsextensionforcodex/pull/340).
+
+- Restricted linked-parent metadata to `attachedToThreadId`; `forkedFromId` no longer blocks independent threads from deletion. Added Core coverage for both list and search responses.
+- Classified only `PreDispatchRejected` as a definite remote mutation failure. Other `RemoteInvocationException` codes report an unknown outcome. Added archive, delete, and revert coverage for pre-dispatch, upstream, and unrecognized codes.
+- Reverted-history notifications now reload the selected transcript while the history list is closed. Successful reverts and notifications invalidate older selected-history reads before replacement. Added deterministic tests for both paths.
+- Claude reviewed the follow-up twice. The first review's three test-coverage findings were addressed; the second review found no actionable defects.
+
+Validation: Release build passed with 0 warnings and 0 errors. Core tests passed 771/771 with 5 filesystem-link skips (776 total). UI tests passed 699/699 with 1 filesystem-link skip (700 total). All changed-path focused tests passed (Core 1/1, UI 6/6). One full-solution test run had a single timing-sensitive worker-start timeout failure; the test passed in isolation (1/1), and the complete UI suite passed on rerun. `git diff --check` passed. APM manifests match `HEAD` and have no changes for this commit. Visual Studio operation-by-operation acceptance remains pending.
+
+### 2026-11-28: Issue #304 Remote UI scope accessibility follow-up
+Tracking: [Issue #304](https://github.com/kkamegawa/vsextensionforcodex/issues/304) and [PR #340](https://github.com/kkamegawa/vsextensionforcodex/pull/340).
+
+- Localized the history scope names, tooltip, and screen-reader name/help text in English and Japanese. Bound the label text through Remote UI data members and added presentation-contract coverage for keyboard cancel targeting.
+- Claude first identified an inconsistent initial-culture check. The initial scope is now initialized with the same `IsJapaneseUi` value used by all other labels. Language is captured at view-model construction, consistent with existing localized presentation properties. Final Claude review found no actionable findings.
+
+Validation: Release solution build produced the VSIX with no warnings or errors. Core tests passed 775 with 7 filesystem-link skips (782 total); UI tests passed 703 with 3 filesystem-link skips (706 total). `git diff --check` and UTF-8 BOM/CRLF checks passed. Visual Studio operation-by-operation acceptance, including CLI 0.169.0 and Light/Dark screenshots, remains pending.

@@ -237,11 +237,9 @@ public sealed partial class ViewModelTests
 
     private static async Task<ChatViewModel> CreateCompactionViewModelAsync(FakeWorkerBridge bridge)
     {
-        var vm = new ChatViewModel(bridge, autoConnect: false)
-        {
-            SelectedThread = new ThreadSummary { Id = "thread-1" },
-        };
+        var vm = new ChatViewModel(bridge, autoConnect: false);
         await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready, ThreadId = "thread-1" });
+        vm.SelectedThread = new ThreadSummary { Id = "thread-1" };
         await RunCommandAsync(vm.JoinThreadCommand);
         return vm;
     }

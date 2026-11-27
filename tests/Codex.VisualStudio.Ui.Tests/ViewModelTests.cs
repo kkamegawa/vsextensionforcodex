@@ -320,9 +320,12 @@ public sealed partial class ViewModelTests
         MethodInfo loadMore = typeof(ChatViewModel).GetMethod("LoadMoreAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
         Task loading = (Task)loadMore.Invoke(vm, null)!;
 
-        await bridge.PublishStateAsync(OwnerStatus("owner-b", 2, 5));
+        Task ownerChange = bridge.PublishStateAsync(OwnerStatus("owner-b", 2, 5));
         response.SetResult(new ThreadPage { Threads = [new ThreadSummary { Id = "old-owner-thread" }] });
+#pragma warning disable VSTHRD003 // Both owner refresh and the stale page are held by the test-controlled response.
         await loading;
+        await ownerChange;
+#pragma warning restore VSTHRD003
 
         Assert.AreEqual(0, vm.Threads.Count);
     }
@@ -506,24 +509,29 @@ public sealed partial class ViewModelTests
     {
         var bridge = new FakeWorkerBridge();
         var oldOwnerPage = new TaskCompletionSource<ThreadPage>(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        await bridge.PublishStateAsync(OwnerStatus("owner-a", 1, 4));
+        int callsBeforeSynchronization = bridge.ListThreadsCallCount;
 #pragma warning disable VSTHRD003 // The fake holds the retired owner's synchronization until the new owner has loaded.
         bridge.ListThreadsHandler = (_, _) => oldOwnerPage.Task;
 #pragma warning restore VSTHRD003
-        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
-        await bridge.PublishStateAsync(OwnerStatus("owner-a", 1, 4));
         Task oldSynchronization = (Task)typeof(ChatViewModel).GetMethod("SynchronizeRecoveredThreadListAsync", BindingFlags.NonPublic | BindingFlags.Instance)!
             .Invoke(vm, [CancellationToken.None])!;
-        await WaitForAsync(() => bridge.ListThreadsCallCount == 1);
+        await WaitForAsync(() => bridge.ListThreadsCallCount == callsBeforeSynchronization + 1);
 
-        await bridge.PublishStateAsync(OwnerStatus("owner-b", 2, 5));
+        int newOwnerListCalls = 0;
         bridge.ListThreadsHandler = (_, _) => Task.FromResult(new ThreadPage
         {
             Threads = [new ThreadSummary { Id = "new-owner-thread" }],
-            NextCursor = "next-page",
+            NextCursor = Interlocked.Increment(ref newOwnerListCalls) > 2 ? "next-page" : null,
         });
+        Task ownerChange = bridge.PublishStateAsync(OwnerStatus("owner-b", 2, 5));
+        await WaitForAsync(() => vm.Status.Target?.OwnerGeneration == 2);
         await InvokeThreadListMethodAsync(vm, "LoadMoreAsync");
+        await ownerChange;
 
-        Assert.AreEqual(2, bridge.ListThreadsCallCount, "A request of the retired owner must not suppress the new owner's first page.");
+        Assert.AreEqual(callsBeforeSynchronization + 4, bridge.ListThreadsCallCount,
+            "The retired synchronization, new-owner index, and new-owner first page all use independent list requests.");
         Assert.AreEqual("new-owner-thread", vm.Threads.Single().Id);
 
         oldOwnerPage.SetResult(new ThreadPage { Threads = [new ThreadSummary { Id = "old-owner-thread" }] });
@@ -739,11 +747,11 @@ public sealed partial class ViewModelTests
     {
         var bridge = new FakeWorkerBridge { ExperimentalApi = true };
         var listPage = new TaskCompletionSource<ThreadPage>(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        await bridge.PublishStateAsync(OwnerStatus("owner-a", 1, 4));
 #pragma warning disable VSTHRD003 // The fake deliberately holds this list response until the test publishes a newer state.
         bridge.ListThreadsHandler = async (_, _) => await listPage.Task.ConfigureAwait(false);
 #pragma warning restore VSTHRD003
-        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
-        await bridge.PublishStateAsync(OwnerStatus("owner-a", 1, 4));
         var thread = new ThreadSummary { Id = "thread-a" };
         vm.Threads.Add(thread);
         ApplyThreadReadState(vm, thread.Id, new ThreadReadStateSnapshot
@@ -836,17 +844,18 @@ public sealed partial class ViewModelTests
     {
         var bridge = new FakeWorkerBridge();
         var firstPage = new TaskCompletionSource<ThreadPage>(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        await bridge.PublishStateAsync(OwnerStatus("owner-a", 1, 4));
+        int callsBeforeFirstLoad = bridge.ListThreadsCallCount;
 #pragma warning disable VSTHRD003 // The fake deliberately holds the first page while a duplicate request is suppressed.
         bridge.ListThreadsHandler = async (_, _) => await firstPage.Task.ConfigureAwait(false);
 #pragma warning restore VSTHRD003
-        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
-        await bridge.PublishStateAsync(OwnerStatus("owner-a", 1, 4));
 
         Task firstLoad = InvokeThreadListMethodAsync(vm, "LoadMoreAsync");
         await Task.Delay(20);
         Task duplicateLoad = InvokeThreadListMethodAsync(vm, "LoadMoreAsync");
         await duplicateLoad;
-        Assert.AreEqual(1, bridge.ListThreadsCallCount);
+        Assert.AreEqual(callsBeforeFirstLoad + 1, bridge.ListThreadsCallCount);
         firstPage.SetResult(new ThreadPage
         {
             Threads =
@@ -3443,11 +3452,9 @@ public sealed partial class ViewModelTests
             sentTexts.Add(request.Text);
             return Task.FromResult($"multi-question-turn-{sentTexts.Count}");
         };
-        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()))
-        {
-            SelectedThread = new ThreadSummary { Id = "thread-multi-question" },
-        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
         await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready, ThreadId = "thread-multi-question" });
+        vm.SelectedThread = new ThreadSummary { Id = "thread-multi-question" };
         await RunCommandAsync(vm.JoinThreadCommand);
 
         await bridge.PublishConversationEventAsync(new ConversationEvent
@@ -6176,6 +6183,7 @@ public sealed partial class ViewModelTests
             typeof(ConnectionHealthPresentationViewModel), typeof(ConnectionTargetSnapshot),
             typeof(PresetSlotViewModel), typeof(LinkedForkConversationViewModel),
             typeof(AccountWorkspacePresentationViewModel),
+            typeof(ThreadSectionOption),
         ];
 
     [TestMethod]
@@ -7021,7 +7029,6 @@ public sealed partial class ViewModelTests
         var bridge = new FakeWorkerBridge { ExperimentalApi = true };
         using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: ExperimentalSettingsStore())
         {
-            SelectedThread = new ThreadSummary { Id = "thread-1" },
             SelectedModel = "gpt-5",
             ComposerText = "/plan design the change",
         };
@@ -7030,6 +7037,7 @@ public sealed partial class ViewModelTests
             State = WorkerConnectionState.Ready,
             ThreadId = "thread-1",
         });
+        vm.SelectedThread = new ThreadSummary { Id = "thread-1" };
 
         await InvokeComposerSendAsync(vm);
 
@@ -7082,11 +7090,9 @@ public sealed partial class ViewModelTests
     public async Task ChatViewModel_PlanMode_IsolatedBySelectedThread()
     {
         var bridge = new FakeWorkerBridge { ExperimentalApi = true };
-        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: ExperimentalSettingsStore())
-        {
-            SelectedThread = new ThreadSummary { Id = "thread-plan" },
-        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: ExperimentalSettingsStore());
         await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready });
+        vm.SelectedThread = new ThreadSummary { Id = "thread-plan" };
 
         vm.PlanModeEnabled = true;
         vm.SelectedThread = new ThreadSummary { Id = "thread-default" };
@@ -7286,12 +7292,10 @@ public sealed partial class ViewModelTests
     public async Task ChatViewModel_QueuedReviewRunsAfterTurnCompletionWithoutSteer()
     {
         var bridge = new FakeWorkerBridge();
-        using var vm = new ChatViewModel(bridge, autoConnect: false)
-        {
-            SelectedThread = new ThreadSummary { Id = "thread-1" },
-            ComposerText = "/review uncommitted",
-        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false);
         await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready, ThreadId = "thread-1" });
+        vm.SelectedThread = new ThreadSummary { Id = "thread-1" };
+        vm.ComposerText = "/review uncommitted";
         await RunCommandAsync(vm.JoinThreadCommand);
         await bridge.PublishStateAsync(new WorkerStatus
         {
@@ -7332,12 +7336,10 @@ public sealed partial class ViewModelTests
                 });
             },
         };
-        using var vm = new ChatViewModel(bridge, autoConnect: false)
-        {
-            SelectedThread = new ThreadSummary { Id = "thread-1" },
-            ComposerText = "/review --new-thread custom check the queued review",
-        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false);
         await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready, ThreadId = "thread-1" });
+        vm.SelectedThread = new ThreadSummary { Id = "thread-1" };
+        vm.ComposerText = "/review --new-thread custom check the queued review";
         await RunCommandAsync(vm.JoinThreadCommand);
         await bridge.PublishStateAsync(new WorkerStatus
         {
@@ -7431,10 +7433,7 @@ public sealed partial class ViewModelTests
                 DefaultModel = "gpt-5",
             },
         };
-        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: store)
-        {
-            SelectedThread = new ThreadSummary { Id = "thread-1", EffectiveServiceTier = "standard" },
-        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: store);
         await vm.PopulateModelsAsync();
         await bridge.PublishStateAsync(new WorkerStatus
         {
@@ -7442,6 +7441,8 @@ public sealed partial class ViewModelTests
             ThreadId = "thread-1",
             EffectiveServiceTier = "standard",
         });
+        vm.SelectedThread = new ThreadSummary { Id = "thread-1", EffectiveServiceTier = "standard" };
+        await RunCommandAsync(vm.JoinThreadCommand);
         vm.ComposerText = "/fast";
         await InvokeComposerSendAsync(vm);
 
@@ -8049,11 +8050,9 @@ public sealed partial class ViewModelTests
         var bridge = new FakeWorkerBridge();
         int turnNumber = 0;
         bridge.StartTurnHandler = (_, _) => Task.FromResult($"synthetic-turn-{Interlocked.Increment(ref turnNumber)}");
-        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()))
-        {
-            SelectedThread = new ThreadSummary { Id = "thread-synthetic" },
-        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
         await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready, ThreadId = "thread-synthetic" });
+        vm.SelectedThread = new ThreadSummary { Id = "thread-synthetic" };
         await RunCommandAsync(vm.JoinThreadCommand);
         await SendMessageAsync(vm, "start implementation", clearComposer: false);
         await bridge.PublishStateAsync(new WorkerStatus
@@ -8110,11 +8109,9 @@ public sealed partial class ViewModelTests
     public async Task ChatViewModel_DirectPlanPromptStartsAnInterruptibleLocalTurn()
     {
         var bridge = new FakeWorkerBridge { ExperimentalApi = true };
-        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: ExperimentalSettingsStore())
-        {
-            SelectedThread = new ThreadSummary { Id = "thread-direct-plan" },
-        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: ExperimentalSettingsStore());
         await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready, ThreadId = "thread-direct-plan" });
+        vm.SelectedThread = new ThreadSummary { Id = "thread-direct-plan" };
         await RunCommandAsync(vm.JoinThreadCommand);
         bridge.StartTurnHandler = (_, _) => Task.FromResult("direct-plan-turn");
 
@@ -8133,11 +8130,9 @@ public sealed partial class ViewModelTests
     public async Task ChatViewModel_DirectPlanPromptWithLostStartResponseAdoptsTheStartedTurn()
     {
         var bridge = new FakeWorkerBridge { ExperimentalApi = true };
-        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: ExperimentalSettingsStore())
-        {
-            SelectedThread = new ThreadSummary { Id = "thread-direct-plan-lost" },
-        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: ExperimentalSettingsStore());
         await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready, ThreadId = "thread-direct-plan-lost" });
+        vm.SelectedThread = new ThreadSummary { Id = "thread-direct-plan-lost" };
         await RunCommandAsync(vm.JoinThreadCommand);
         bridge.StartTurnHandler = (_, _) => throw new InvalidOperationException("The start response was lost after dispatch.");
 
@@ -8363,12 +8358,10 @@ public sealed partial class ViewModelTests
     public async Task ChatViewModel_QueueContinuesDrainingAfterFailedCommand()
     {
         var bridge = new FakeWorkerBridge();
-        using var vm = new ChatViewModel(bridge, autoConnect: false)
-        {
-            SelectedThread = new ThreadSummary { Id = "thread-1" },
-            SelectedModel = "gpt-5-codex",
-        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false);
         await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready, ThreadId = "thread-1" });
+        vm.SelectedThread = new ThreadSummary { Id = "thread-1" };
+        vm.SelectedModel = "gpt-5-codex";
         await RunCommandAsync(vm.JoinThreadCommand);
         await bridge.PublishStateAsync(new WorkerStatus
         {
@@ -8500,16 +8493,14 @@ public sealed partial class ViewModelTests
                 ],
             }),
         };
-        using var vm = new ChatViewModel(bridge, autoConnect: false)
-        {
-            SelectedThread = new ThreadSummary { Id = "thread-1" },
-        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false);
         await bridge.PublishStateAsync(new WorkerStatus
         {
             State = WorkerConnectionState.Ready,
             ThreadId = "thread-1",
             FeatureTier = CodexFeatureTier.Tier170,
         });
+        vm.SelectedThread = new ThreadSummary { Id = "thread-1" };
 
         vm.ComposerText = "/fork";
         await InvokeComposerSendAsync(vm);
@@ -8558,16 +8549,14 @@ public sealed partial class ViewModelTests
                 ],
             }),
         };
-        using var vm = new ChatViewModel(bridge, autoConnect: false)
-        {
-            SelectedThread = new ThreadSummary { Id = threadId },
-        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false);
         await bridge.PublishStateAsync(new WorkerStatus
         {
             State = WorkerConnectionState.Ready,
             ThreadId = threadId,
             FeatureTier = CodexFeatureTier.Tier170,
         });
+        vm.SelectedThread = new ThreadSummary { Id = threadId };
         int historyReadsBeforeJoin = bridge.ReadThreadCallCount;
 
         await RunCommandAsync(vm.JoinThreadCommand);
@@ -8621,11 +8610,9 @@ public sealed partial class ViewModelTests
         const string threadId = "thread-capacity";
         const string errorText = "Policy-restricted model capacity is temporarily unavailable. Try again later.";
         var bridge = new FakeWorkerBridge();
-        using var vm = new ChatViewModel(bridge, autoConnect: false)
-        {
-            SelectedThread = new ThreadSummary { Id = threadId },
-        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false);
         await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready, ThreadId = threadId });
+        vm.SelectedThread = new ThreadSummary { Id = threadId };
         await RunCommandAsync(vm.JoinThreadCommand);
 
         foreach (ConversationEventKind kind in new[] { ConversationEventKind.Error, ConversationEventKind.TurnCompleted })
@@ -8648,11 +8635,9 @@ public sealed partial class ViewModelTests
     {
         const string threadId = "thread-unloaded";
         var bridge = new FakeWorkerBridge();
-        using var vm = new ChatViewModel(bridge, autoConnect: false)
-        {
-            SelectedThread = new ThreadSummary { Id = threadId },
-        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false);
         await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready, ThreadId = threadId });
+        vm.SelectedThread = new ThreadSummary { Id = threadId };
         await RunCommandAsync(vm.JoinThreadCommand);
         Assert.IsFalse(vm.IsHistoryOnly);
 
@@ -10017,9 +10002,6 @@ public sealed partial class ViewModelTests
     {
         var bridge = new FakeWorkerBridge();
         using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
-        var thread = new ThreadSummary { Id = "t" };
-        vm.Threads.Add(thread);
-        vm.SelectedThread = thread;
         // Remote UI refreshes a button only when its command raises CanExecute; the value alone
         // is never polled. Every status change must therefore raise the turn and account commands.
         var raised = 0;
@@ -10028,6 +10010,9 @@ public sealed partial class ViewModelTests
         vm.AccountCommand.PropertyChanged += (_, _) => accountRaised++;
 
         await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready, ThreadId = "t" });
+        var thread = new ThreadSummary { Id = "t" };
+        vm.Threads.Add(thread);
+        vm.SelectedThread = thread;
         await RunCommandAsync(vm.JoinThreadCommand);
         Assert.IsFalse(vm.IsTurnActive);
         Assert.IsFalse(vm.InterruptCommand.CanExecute);
@@ -10057,11 +10042,9 @@ public sealed partial class ViewModelTests
     public async Task ChatViewModel_InterruptOwnershipSurvivesTransientStatusAndRetiresOnExactCompletion()
     {
         var bridge = new FakeWorkerBridge();
-        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()))
-        {
-            SelectedThread = new ThreadSummary { Id = "thread-interrupt" },
-        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
         await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready, ThreadId = "thread-interrupt" });
+        vm.SelectedThread = new ThreadSummary { Id = "thread-interrupt" };
         await RunCommandAsync(vm.JoinThreadCommand);
         bridge.StartTurnHandler = (_, _) => Task.FromResult("locally-started-turn");
 
@@ -10180,11 +10163,9 @@ public sealed partial class ViewModelTests
     public async Task ChatViewModel_InterruptOwnership_UnknownStartOutcomeAdoptsTheStartedTurn(bool startedBeforeFailure)
     {
         var bridge = new FakeWorkerBridge();
-        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()))
-        {
-            SelectedThread = new ThreadSummary { Id = "thread-unknown-start" },
-        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
         await bridge.PublishStateAsync(new WorkerStatus { State = WorkerConnectionState.Ready, ThreadId = "thread-unknown-start" });
+        vm.SelectedThread = new ThreadSummary { Id = "thread-unknown-start" };
         await RunCommandAsync(vm.JoinThreadCommand);
         var turnStarted = new ConversationEvent
         {
@@ -11587,6 +11568,10 @@ public sealed partial class ViewModelTests
 
     private sealed class FakeWorkerBridge : IWorkerBridge
     {
+        private int listThreadsCallCount;
+        private int listThreadSectionsCallCount;
+        private int searchThreadsCallCount;
+
         public event Action<WorkerRecoveryFailureKind>? ConnectionLost { add { } remove { } }
 
         public event Func<WorkerNotification<WorkerStatus>, Task>? StateChanged;
@@ -11596,6 +11581,10 @@ public sealed partial class ViewModelTests
         public event Func<WorkerNotification<ConversationEvent>, Task>? ConversationEventReceived;
 
         public event Func<WorkerNotification<ThreadReadStateChangedEvent>, Task>? ThreadReadStateChanged;
+
+        public event Func<WorkerNotification<ThreadSearchPartialEvent>, Task>? ThreadSearchPartial;
+
+        public event Func<WorkerNotification<ThreadHistoryChangedEvent>, Task>? ThreadHistoryChanged;
 
         public event Func<WorkerNotification<ThreadAttachmentUpdatedEvent>, Task>? ThreadAttachmentUpdated { add { } remove { } }
 
@@ -11677,9 +11666,45 @@ public sealed partial class ViewModelTests
 
         public Func<string?, CancellationToken, Task<ThreadPage>>? ListThreadsHandler { get; set; }
 
+        public Func<ListThreadsRequest, CancellationToken, Task<ThreadPage>>? ListThreadsRequestHandler { get; set; }
+
         public bool PreserveThreadPageOwner { get; set; }
 
-        public int ListThreadsCallCount { get; private set; }
+        public int ListThreadsCallCount => Volatile.Read(ref listThreadsCallCount);
+
+        public System.Collections.Concurrent.ConcurrentQueue<ListThreadsRequest> ThreadListRequests { get; } = new();
+
+        public ListThreadsRequest? LastListThreadsRequest { get; private set; }
+
+        public Func<ThreadSearchRequest, CancellationToken, Task<ThreadSearchResult>>? SearchThreadsHandler { get; set; }
+
+        public ThreadSectionsResult ThreadSectionsResult { get; set; } = new();
+
+        public bool PreserveThreadManagementResultOwner { get; set; }
+
+        public int ListThreadSectionsCallCount => Volatile.Read(ref listThreadSectionsCallCount);
+
+        public ThreadSearchRequest? LastThreadSearchRequest { get; private set; }
+
+        public int SearchThreadsCallCount => Volatile.Read(ref searchThreadsCallCount);
+
+        public Func<ThreadMutationRequest, CancellationToken, Task<ThreadMutationResult>>? ArchiveThreadHandler { get; set; }
+
+        public Func<ThreadMutationRequest, CancellationToken, Task<ThreadMutationResult>>? UnarchiveThreadHandler { get; set; }
+
+        public Func<ThreadMutationRequest, CancellationToken, Task<ThreadMutationResult>>? DeleteThreadHandler { get; set; }
+
+        public Func<ThreadMutationRequest, CancellationToken, Task<ThreadMutationResult>>? RevertThreadHandler { get; set; }
+
+        public ThreadMutationRequest? LastThreadMutationRequest { get; private set; }
+
+        public int ArchiveThreadCallCount { get; private set; }
+
+        public int UnarchiveThreadCallCount { get; private set; }
+
+        public int DeleteThreadCallCount { get; private set; }
+
+        public int RevertThreadCallCount { get; private set; }
 
         public int ReadThreadCallCount { get; private set; }
 
@@ -11907,9 +11932,12 @@ public sealed partial class ViewModelTests
 
         public async Task<ThreadPage> ListThreadsAsync(ListThreadsRequest request, CancellationToken cancellationToken)
         {
-            ListThreadsCallCount++;
+            Interlocked.Increment(ref listThreadsCallCount);
+            LastListThreadsRequest = request;
+            ThreadListRequests.Enqueue(request);
             ListedWorkingDirectories.Add(request.WorkingDirectories);
-            ThreadPage page = await (ListThreadsHandler?.Invoke(request.Cursor, cancellationToken)
+            ThreadPage page = await (ListThreadsRequestHandler?.Invoke(request, cancellationToken)
+                ?? ListThreadsHandler?.Invoke(request.Cursor, cancellationToken)
                 ?? Task.FromResult(new ThreadPage()));
             if (!PreserveThreadPageOwner)
             {
@@ -11920,6 +11948,105 @@ public sealed partial class ViewModelTests
 
             return page;
         }
+
+        public Task<ThreadSectionsResult> ListThreadSectionsAsync(GetThreadListScopesRequest request, CancellationToken cancellationToken)
+        {
+            Interlocked.Increment(ref listThreadSectionsCallCount);
+            ThreadSectionsResult source = ThreadSectionsResult;
+            var result = new ThreadSectionsResult
+            {
+                Sections = source.Sections.ToArray(),
+                StatePartitionFingerprint = source.StatePartitionFingerprint,
+                OwnerGeneration = source.OwnerGeneration,
+                ConnectionGeneration = source.ConnectionGeneration,
+            };
+            if (!PreserveThreadManagementResultOwner)
+            {
+                StampMissingOwnerScope(result, request);
+            }
+            return Task.FromResult(result);
+        }
+
+        public async Task<ThreadSearchResult> SearchThreadsAsync(ThreadSearchRequest request, CancellationToken cancellationToken)
+        {
+            Interlocked.Increment(ref searchThreadsCallCount);
+            LastThreadSearchRequest = request;
+            ThreadSearchResult source = await (SearchThreadsHandler?.Invoke(request, cancellationToken)
+                ?? Task.FromResult(new ThreadSearchResult()));
+            var result = new ThreadSearchResult
+            {
+                IsSupported = source.IsSupported,
+                Results = source.Results.ToArray(),
+                NextCursor = source.NextCursor,
+                StatePartitionFingerprint = source.StatePartitionFingerprint,
+                OwnerGeneration = source.OwnerGeneration,
+                ConnectionGeneration = source.ConnectionGeneration,
+            };
+            if (!PreserveThreadManagementResultOwner)
+            {
+                StampMissingOwnerScope(result, request);
+            }
+            return result;
+        }
+
+        public Task<ThreadMutationResult> ArchiveThreadAsync(ThreadMutationRequest request, CancellationToken cancellationToken)
+            => RunThreadMutationAsync(request, ArchiveThreadHandler, mutation => ArchiveThreadCallCount++, cancellationToken);
+
+        public Task<ThreadMutationResult> UnarchiveThreadAsync(ThreadMutationRequest request, CancellationToken cancellationToken)
+            => RunThreadMutationAsync(request, UnarchiveThreadHandler, mutation => UnarchiveThreadCallCount++, cancellationToken);
+
+        public Task<ThreadMutationResult> DeleteThreadAsync(ThreadMutationRequest request, CancellationToken cancellationToken)
+            => RunThreadMutationAsync(request, DeleteThreadHandler, mutation => DeleteThreadCallCount++, cancellationToken);
+
+        public Task<ThreadMutationResult> RevertThreadAsync(ThreadMutationRequest request, CancellationToken cancellationToken)
+            => RunThreadMutationAsync(request, RevertThreadHandler, mutation => RevertThreadCallCount++, cancellationToken);
+
+        private async Task<ThreadMutationResult> RunThreadMutationAsync(
+            ThreadMutationRequest request,
+            Func<ThreadMutationRequest, CancellationToken, Task<ThreadMutationResult>>? handler,
+            Action<ThreadMutationRequest> count,
+            CancellationToken cancellationToken)
+        {
+            LastThreadMutationRequest = request;
+            count(request);
+            ThreadMutationResult source = await (handler?.Invoke(request, cancellationToken)
+                ?? Task.FromResult(new ThreadMutationResult { Succeeded = true }))
+                .ConfigureAwait(false);
+            var result = new ThreadMutationResult
+            {
+                Succeeded = source.Succeeded,
+                OutcomeUnknown = source.OutcomeUnknown,
+                Message = source.Message,
+                StatePartitionFingerprint = source.StatePartitionFingerprint,
+                OwnerGeneration = source.OwnerGeneration,
+                ConnectionGeneration = source.ConnectionGeneration,
+            };
+            if (!PreserveThreadManagementResultOwner)
+            {
+                StampMissingOwnerScope(result, request);
+            }
+            return result;
+        }
+
+        private static void StampMissingOwnerScope(WorkerGenerationResult result, OwnerScopedRequest request)
+        {
+            result.StatePartitionFingerprint ??= request.StatePartitionFingerprint;
+            if (result.OwnerGeneration == 0)
+            {
+                result.OwnerGeneration = request.OwnerGeneration;
+            }
+
+            if (result.ConnectionGeneration == 0)
+            {
+                result.ConnectionGeneration = request.ConnectionGeneration;
+            }
+        }
+
+        public Task RaiseThreadSearchPartialAsync(WorkerNotification<ThreadSearchPartialEvent> notification)
+            => ThreadSearchPartial?.Invoke(notification) ?? Task.CompletedTask;
+
+        public Task RaiseThreadHistoryChangedAsync(WorkerNotification<ThreadHistoryChangedEvent> notification)
+            => ThreadHistoryChanged?.Invoke(notification) ?? Task.CompletedTask;
 
         public async Task<ThreadReadResult> ReadThreadAsync(ReadThreadRequest request, CancellationToken cancellationToken)
         {

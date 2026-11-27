@@ -3,6 +3,37 @@ using Codex.VisualStudio.Contracts;
 
 namespace Codex.AppServer.Protocol;
 
+
+
+/// <summary>Validation for request-correlated experimental search operations.</summary>
+public static class JsonRpcCorrelatedRequestPolicy
+{
+    public static void Validate(string method, object? parameters, string requestId)
+    {
+        if (!string.Equals(method, "thread/search/stream", StringComparison.Ordinal))
+        {
+            throw new ArgumentException("Correlated requests are restricted to streamed thread search.", nameof(method));
+        }
+
+        if (!Guid.TryParseExact(requestId, "N", out Guid parsedRequestId) || parsedRequestId == Guid.Empty)
+        {
+            throw new ArgumentException("A correlated search request requires a unique GUID request ID.", nameof(requestId));
+        }
+
+        JsonElement element = JsonSerializer.SerializeToElement(parameters);
+        string? searchTermValue = element.ValueKind == JsonValueKind.Object
+            && element.TryGetProperty("searchTerm", out JsonElement searchTerm)
+            && searchTerm.ValueKind == JsonValueKind.String
+                ? searchTerm.GetString()
+                : null;
+        if (searchTermValue is null
+            || searchTermValue.Length is < 1 or > 512
+            || string.IsNullOrWhiteSpace(searchTermValue))
+        {
+            throw new ArgumentException("Correlated thread search requires a searchTerm of 1 to 512 characters.", nameof(parameters));
+        }
+    }
+}
 /// <summary>
 /// Bounded overload retry for read-only requests. Retry eligibility is owned by
 /// <see cref="ReadOnlyRequestAllowlist"/>, never by the caller.
@@ -81,6 +112,8 @@ public static class ReadOnlyRequestAllowlist
         "thread/turns/list",
         "thread/items/list",
         "thread/attachment/list",
+        "thread/search",
+        "threadSection/list",
     ];
 
     public static bool IsRetryable(string method, object? parameters)
@@ -97,6 +130,8 @@ public static class ReadOnlyRequestAllowlist
 
         return method switch
         {
+            "thread/search" => HasBoundedString(parameters, "searchTerm", 1, 512),
+            "threadSection/list" => HasBoundedThreadSectionListParameters(parameters),
             // refreshToken=true asks the server to refresh credentials; only an explicit false
             // keeps the request a pure read.
             "account/read" => HasExplicitFalse(parameters, "refreshToken"),
@@ -108,6 +143,45 @@ public static class ReadOnlyRequestAllowlist
             "thread/memory/read" => HasNonEmptyString(parameters, "threadId"),
             _ => false,
         };
+    }
+
+    private static bool HasBoundedThreadSectionListParameters(object? parameters)
+    {
+        if (parameters is null)
+        {
+            return false;
+        }
+
+        JsonElement element = parameters is JsonElement json
+            ? json
+            : JsonSerializer.SerializeToElement(parameters, parameters.GetType());
+        if (element.ValueKind != JsonValueKind.Object
+            || !element.TryGetProperty("limit", out JsonElement limit)
+            || limit.ValueKind != JsonValueKind.Number
+            || !limit.TryGetInt32(out int count)
+            || count is < 1 or > 100)
+        {
+            return false;
+        }
+
+        if (!element.TryGetProperty("cursor", out JsonElement cursor) || cursor.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)
+        {
+            return true;
+        }
+
+        return cursor.ValueKind == JsonValueKind.String
+            && cursor.GetString() is { Length: > 0 and <= 256 };
+    }
+    private static bool HasBoundedString(object? parameters, string property, int minimumLength, int maximumLength)
+    {
+        if (parameters is null) return false;
+        JsonElement element = parameters is JsonElement json
+            ? json
+            : JsonSerializer.SerializeToElement(parameters, parameters.GetType());
+        if (element.ValueKind != JsonValueKind.Object || !element.TryGetProperty(property, out JsonElement value)
+            || value.ValueKind != JsonValueKind.String) return false;
+        string? text = value.GetString();
+        return text is not null && text.Trim().Length >= minimumLength && text.Length <= maximumLength;
     }
 
     private static bool HasExplicitFalse(object? parameters, string property)

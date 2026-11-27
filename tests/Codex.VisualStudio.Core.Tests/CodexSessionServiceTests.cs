@@ -6319,6 +6319,8 @@ public sealed partial class CodexSessionServiceTests
 
         public List<RecordedNotification> Notifications { get; } = new();
 
+        public string? LastCorrelatedRequestId { get; private set; }
+
         public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
 
         public Task<JsonElement> SendRequestAsync(string method, object? parameters, TimeSpan timeout, CancellationToken cancellationToken)
@@ -6330,6 +6332,16 @@ public sealed partial class CodexSessionServiceTests
                 return Task.FromResult(GatewayOAuthReadResponse.Clone());
             }
 
+            return ApplyUnconfiguredFixture(method, parameters,
+                AsyncHandler?.Invoke(method, parameters, cancellationToken)
+                ?? Task.FromResult(Handler(method, parameters)));
+        }
+
+        public Task<JsonElement> SendCorrelatedRequestAsync(string method, object? parameters, string requestId, TimeSpan timeout, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            LastCorrelatedRequestId = requestId;
+            Requests.Add(new RecordedRequest(method, parameters, timeout));
             return ApplyUnconfiguredFixture(method, parameters,
                 AsyncHandler?.Invoke(method, parameters, cancellationToken)
                 ?? Task.FromResult(Handler(method, parameters)));
@@ -6412,6 +6424,11 @@ public sealed partial class CodexSessionServiceTests
                         new { model = "gpt-5-codex", isDefault = false },
                         new { model = "model-x", isDefault = false },
                     },
+                    nextCursor = (string?)null,
+                }),
+                "thread/turns/list" => JsonSerializer.SerializeToElement(new
+                {
+                    data = Array.Empty<object>(),
                     nextCursor = (string?)null,
                 }),
                 "thread/read" => JsonSerializer.SerializeToElement(new

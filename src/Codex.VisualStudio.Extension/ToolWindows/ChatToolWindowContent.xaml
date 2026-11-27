@@ -990,9 +990,29 @@
                             DisplayMemberPath="DisplayText"
                             SelectedValuePath="Id"
                             SelectedValue="{Binding SelectedThreadListScopeId, Mode=TwoWay}"
-                            ToolTip="Conversations to list"
-                            AutomationProperties.Name="Conversation history scope"
-                            AutomationProperties.HelpText="Choose which conversations the history lists." />
+                            ToolTip="{Binding ThreadListScopeToolTipText}"
+                            AutomationProperties.Name="{Binding ThreadListScopeAutomationName}"
+                            AutomationProperties.HelpText="{Binding ThreadListScopeHelpText}" />
+                  <CheckBox DockPanel.Dock="Top" Margin="2,0,2,6"
+                            Content="{Binding ArchivedToggleText}"
+                            IsChecked="{Binding ShowArchivedThreads, Mode=TwoWay}"
+                            AutomationProperties.Name="{Binding ArchivedToggleAutomationName}" />
+                  <ComboBox DockPanel.Dock="Top" Margin="0,0,0,6"
+                            ItemsSource="{Binding ThreadSections}"
+                            DisplayMemberPath="Name"
+                            SelectedValuePath="Id"
+                            SelectedValue="{Binding SelectedThreadSectionId, Mode=TwoWay}"
+                            ToolTip="{Binding SectionFilterToolTipText}"
+                            AutomationProperties.Name="{Binding ThreadSectionsAutomationName}" />
+                  <DockPanel DockPanel.Dock="Top" Margin="0,0,0,6">
+                    <Button DockPanel.Dock="Right" Margin="4,0,0,0" Content="{Binding HistorySearchButtonText}"
+                            Command="{Binding SearchHistoryCommand}"
+                            Style="{StaticResource SmallRoundButtonStyle}"
+                            AutomationProperties.Name="{Binding HistorySearchButtonAutomationName}" />
+                    <TextBox Text="{Binding HistorySearchText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                             ToolTip="{Binding HistorySearchToolTipText}"
+                             AutomationProperties.Name="{Binding HistorySearchAutomationName}" />
+                  </DockPanel>
                   <Button DockPanel.Dock="Top" Margin="0,0,0,6" HorizontalAlignment="Right"
                           Content="Close history"
                           Command="{Binding CloseHistoryCommand}"
@@ -1042,6 +1062,33 @@
                     <TextBlock Margin="2,4" Text="{Binding HistoryStatusText}" TextWrapping="Wrap"
                                Visibility="{Binding HasHistoryNotice, Converter={StaticResource BoolToVis}}"
                                AutomationProperties.LiveSetting="Polite" />
+                    <TextBlock Margin="2,4" Text="{Binding ThreadManagementStatusText}" TextWrapping="Wrap"
+                               Visibility="{Binding HasThreadManagementStatus, Converter={StaticResource BoolToVis}}"
+                               AutomationProperties.LiveSetting="Polite" />
+                    <Border Margin="2,4" Padding="6" BorderThickness="1" Focusable="True"
+                            FocusManager.IsFocusScope="True"
+                            FocusManager.FocusedElement="{Binding ElementName=CancelThreadMutationButton}"
+                            BorderBrush="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBorderBrushKey}}"
+                            Visibility="{Binding IsThreadMutationConfirmationOpen, Converter={StaticResource BoolToVis}}">
+                      <Border.InputBindings>
+                        <KeyBinding Key="Escape" Command="{Binding CancelThreadMutationCommand}" />
+                      </Border.InputBindings>
+                      <StackPanel>
+                        <TextBlock FontWeight="SemiBold" Text="{Binding ThreadMutationConfirmHeading}" />
+                        <TextBlock Margin="0,4,0,0" Text="{Binding ThreadMutationConfirmationText}"
+                                   TextWrapping="Wrap" AutomationProperties.LiveSetting="Polite" />
+                        <WrapPanel Margin="0,6,0,0" HorizontalAlignment="Right">
+                          <Button x:Name="ConfirmThreadMutationButton" Margin="0,0,4,0" Content="{Binding ThreadMutationConfirmButtonText}"
+                                  Command="{Binding ConfirmThreadMutationCommand}"
+                                  Style="{StaticResource SmallRoundButtonStyle}"
+                                  AutomationProperties.Name="{Binding ThreadMutationConfirmAutomationName}" />
+                          <Button x:Name="CancelThreadMutationButton" IsCancel="True" Content="{Binding ThreadMutationCancelButtonText}"
+                                  Command="{Binding CancelThreadMutationCommand}"
+                                  Style="{StaticResource SmallRoundButtonStyle}"
+                                  AutomationProperties.Name="{Binding ThreadMutationCancelAutomationName}" />
+                        </WrapPanel>
+                      </StackPanel>
+                    </Border>
                     <TextBlock Margin="2,4" Text="{Binding ConversationTextStatusText}" TextWrapping="Wrap"
                                Visibility="{Binding HasConversationTextStatus, Converter={StaticResource BoolToVis}}"
                                AutomationProperties.LiveSetting="Polite" />
@@ -1053,6 +1100,35 @@
                                AutomationProperties.LiveSetting="Polite" />
                     <TextBlock Margin="2,0,2,4" Opacity="0.75" Text="{Binding HistoryTurnSummaryText}"
                                Visibility="{Binding IsHistoryOnly, Converter={StaticResource BoolToVis}}" />
+                    <WrapPanel Margin="2,0,2,4">
+                      <Button Margin="0,0,4,4" Content="{Binding ThreadArchiveActionText}"
+                              Command="{Binding ArchiveThreadCommand}"
+                              Visibility="{Binding HasSelectedThread, Converter={StaticResource BoolToVis}}"
+                              Style="{StaticResource SmallRoundButtonStyle}"
+                              AutomationProperties.Name="{Binding ThreadArchiveAutomationName}" />
+                      <Button Margin="0,0,4,4" Content="{Binding ThreadDeleteButtonText}"
+                              Command="{Binding DeleteThreadCommand}"
+                              Visibility="{Binding HasSelectedThread, Converter={StaticResource BoolToVis}}"
+                              Style="{StaticResource SmallRoundButtonStyle}"
+                              AutomationProperties.Name="{Binding ThreadDeleteAutomationName}" />
+                      <TextBlock Margin="0,0,4,4" Text="{Binding ThreadManagementDeleteUnavailableText}"
+                                 Visibility="{Binding ShowThreadManagementDeleteUnavailable, Converter={StaticResource BoolToVis}}"
+                                 TextWrapping="Wrap" />
+                    </WrapPanel>
+                    <DockPanel Margin="2,0,2,4" LastChildFill="False"
+                               Visibility="{Binding ShowThreadRevertControls, Converter={StaticResource BoolToVis}}">
+                      <ComboBox Width="180" Margin="0,0,4,4"
+                                ItemsSource="{Binding ThreadTurns}"
+                                DisplayMemberPath="DisplayLabel"
+                                SelectedValuePath="Id"
+                                SelectedValue="{Binding SelectedRevertTurnId, Mode=TwoWay}"
+                                ToolTip="{Binding ThreadRevertTurnSelectorToolTip}"
+                                AutomationProperties.Name="{Binding ThreadRevertTurnSelectorAutomationName}" />
+                      <Button Margin="0,0,4,4" Content="{Binding ThreadRevertButtonText}"
+                              Command="{Binding RevertThreadCommand}"
+                              Style="{StaticResource SmallRoundButtonStyle}"
+                              AutomationProperties.Name="{Binding ThreadRevertButtonAutomationName}" />
+                    </DockPanel>
                     <StackPanel Margin="2,0,2,4"
                                 Visibility="{Binding ShowSelectedThreadReadState, Converter={StaticResource BoolToVis}}">
                       <TextBlock Text="{Binding SelectedThreadReadStateText}"
@@ -1213,6 +1289,16 @@
                                      Style="{StaticResource SelectableContentTextStyle}"
                                      Text="{Binding Cwd}"
                                      TextTrimming="CharacterEllipsis" />
+                          <TextBlock Margin="0,2,0,0" Opacity="0.8" FontSize="10"
+                                     Style="{StaticResource SelectableContentTextStyle}"
+                                     Text="{Binding SectionName}"
+                                     TextTrimming="CharacterEllipsis"
+                                     Visibility="{Binding HasSectionName, Converter={StaticResource BoolToVis}}" />
+                          <TextBlock Margin="0,2,0,0" Opacity="0.85" FontSize="10"
+                                     Style="{StaticResource SelectableContentTextStyle}"
+                                     Text="{Binding SearchSnippet}"
+                                     TextWrapping="Wrap"
+                                     Visibility="{Binding HasSearchSnippet, Converter={StaticResource BoolToVis}}" />
                         </StackPanel>
                       </DataTemplate>
                     </ListBox.ItemTemplate>
