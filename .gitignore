@@ -51,3 +51,5 @@ src/Codex.AppServer.Fake/Codex.AppServer.Fake.csproj.lscache
 .claude/
 .codex/
 .github/agents/
+# Local Git worktrees
+/worktrees/
