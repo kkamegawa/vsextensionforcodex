@@ -582,7 +582,6 @@ public sealed partial class CodexSessionServiceTests
     public async Task WorkspaceRoutingReadyRefreshesOnlyAfterReadingTheCurrentAccount()
     {
         string workspaceName = "Workspace before refresh";
-        var securityReadStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var connection = new RecordingConnection
         {
             AsyncHandler = (method, _, _) => method switch
@@ -602,10 +601,7 @@ public sealed partial class CodexSessionServiceTests
             },
         };
         Task<JsonElement> ReadEmptySecuritySetupNoticeAsync()
-        {
-            securityReadStarted.TrySetResult();
-            return Task.FromResult(JsonSerializer.SerializeToElement(new { notice = (object?)null }));
-        }
+            => Task.FromResult(JsonSerializer.SerializeToElement(new { notice = (object?)null }));
         await using var service = CreateService();
         await service.InitializeAsync(connection, Options(), CancellationToken.None);
         var refreshedStatus = new TaskCompletionSource<AccountStatus>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -619,6 +615,7 @@ public sealed partial class CodexSessionServiceTests
             return Task.CompletedTask;
         };
         _ = await service.GetAccountStatusAsync(CancellationToken.None);
+        await WaitForSecuritySetupReadCompletionAsync(service, expectedAttempts: 1);
 
         workspaceName = "Workspace after routing";
         await connection.EmitNotificationAsync("account/updated", new
@@ -628,7 +625,6 @@ public sealed partial class CodexSessionServiceTests
             planType = "plus",
         });
         AccountStatus afterRouting = await refreshedStatus.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        await securityReadStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
         Assert.AreEqual(2, connection.Requests.Count(request => request.Method == "account/read"));
         Assert.IsTrue(service.IsConnectionActive);
