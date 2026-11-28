@@ -175,6 +175,144 @@ public sealed class WorkerRpcServiceTests
     }
 
     [TestMethod]
+    public async Task SetDefaultModelProvider_ReportsExplicitRemoteWriteRejectionWithoutRetrying()
+    {
+        const string secret = "secret-provider-response";
+        var connection = new StubConnection
+        {
+            Handler = method => method switch
+            {
+                "initialize" => JsonSerializer.SerializeToElement(new { userAgent = "codex-cli/0.169.0" }),
+                "modelProvider/list" => JsonSerializer.SerializeToElement(new
+                {
+                    defaultProviderId = "openai",
+                    canChangeDefault = true,
+                    data = new[]
+                    {
+                        new { id = "openai", name = "OpenAI", settings = new { type = "openai" } },
+                        new { id = "azure", name = "Azure", settings = new { type = "custom" } },
+                    },
+                }),
+                "config/value/write" => throw new JsonRpcRemoteException(-32000, $"Bearer {secret}"),
+                _ => JsonSerializer.SerializeToElement(new { }),
+            },
+        };
+        var redactor = new SecretRedactor();
+        using IDisposable registeredSecret = redactor.RegisterSecret(secret);
+        var session = new CodexSessionService(new ApprovalPolicyEngine(new PathAccessPolicy()), redactor);
+        await using var worker = new WorkerRpcService(redactor, new FakeProcessHost(connection), session);
+        await worker.ConnectAsync(Options(), CancellationToken.None);
+
+        LocalRpcException exception = await Assert.ThrowsExactlyAsync<LocalRpcException>(
+            () => worker.SetDefaultModelProviderAsync(
+                Scoped(worker, new SetDefaultModelProviderRequest { ProviderId = "azure" }),
+                CancellationToken.None));
+
+        Assert.AreEqual(WorkerErrorCodes.UpstreamOperationRejected, exception.ErrorCode);
+        Assert.AreEqual("The app-server rejected the default model provider change.", exception.Message);
+        Assert.IsFalse(exception.Message.Contains(secret, StringComparison.Ordinal));
+        Assert.AreEqual(1, connection.Methods.Count(method => method == "config/value/write"));
+        Assert.AreEqual(1, connection.Methods.Count(method => method == "modelProvider/list"));
+    }
+
+    [TestMethod]
+    public async Task SetDefaultModelProvider_PreflightRejectionDoesNotDispatchMutation()
+    {
+        var connection = new StubConnection
+        {
+            Handler = method => method switch
+            {
+                "initialize" => JsonSerializer.SerializeToElement(new { userAgent = "codex-cli/0.169.0" }),
+                "modelProvider/list" => JsonSerializer.SerializeToElement(new
+                {
+                    defaultProviderId = "openai",
+                    canChangeDefault = false,
+                    data = new[] { new { id = "openai", name = "OpenAI", settings = new { type = "openai" } } },
+                }),
+                _ => JsonSerializer.SerializeToElement(new { }),
+            },
+        };
+        var redactor = new SecretRedactor();
+        var session = new CodexSessionService(new ApprovalPolicyEngine(new PathAccessPolicy()), redactor);
+        await using var worker = new WorkerRpcService(redactor, new FakeProcessHost(connection), session);
+        await worker.ConnectAsync(Options(), CancellationToken.None);
+
+        LocalRpcException exception = await Assert.ThrowsExactlyAsync<LocalRpcException>(
+            () => worker.SetDefaultModelProviderAsync(
+                Scoped(worker, new SetDefaultModelProviderRequest { ProviderId = "openai" }),
+                CancellationToken.None));
+
+        Assert.AreEqual(WorkerErrorCodes.PreDispatchRejected, exception.ErrorCode);
+        Assert.IsFalse(connection.Methods.Contains("config/value/write", StringComparer.Ordinal));
+        Assert.IsFalse(connection.Methods.Contains("modelProvider/default/set", StringComparer.Ordinal));
+    }
+
+    [TestMethod]
+    public async Task ListModelProviders_ProjectsUnknownRemoteErrorsAsRedactedAndEndpointFree()
+    {
+        const string secret = "secret-provider-catalog-response";
+        var connection = new StubConnection
+        {
+            Handler = method => method switch
+            {
+                "initialize" => JsonSerializer.SerializeToElement(new { userAgent = "codex-cli/0.169.0" }),
+                "modelProvider/list" => throw new JsonRpcRemoteException(
+                    -32000,
+                    $"Provider discovery failed: Bearer {secret}\nendpoint_https://user:credential@example.invalid/v1?api_key={secret}\nwebsocket=wss://user:credential@socket.example.invalid/v2\nunix=unix:///var/run/codex.sock\nrelative=//gateway.example.invalid/v1\nhost=api.example.invalid/v1\nlocal=localhost:4312\nipv6=[::1]:4312\ndiagnostics=file.txt v1.2.3 Node.js 0.169.0",
+                    JsonSerializer.SerializeToElement(new { type = "unknownProviderFailure" })),
+                _ => JsonSerializer.SerializeToElement(new { }),
+            },
+        };
+        var redactor = new SecretRedactor();
+        using IDisposable registeredSecret = redactor.RegisterSecret(secret);
+        var session = new CodexSessionService(new ApprovalPolicyEngine(new PathAccessPolicy()), redactor);
+        await using var worker = new WorkerRpcService(redactor, new FakeProcessHost(connection), session);
+        await worker.ConnectAsync(Options(), CancellationToken.None);
+
+        LocalRpcException exception = await Assert.ThrowsExactlyAsync<LocalRpcException>(
+            () => worker.ListModelProvidersAsync(
+                Scoped(worker, new ListModelProvidersRequest()),
+                CancellationToken.None));
+
+        Assert.AreEqual(WorkerErrorCodes.UpstreamOperationFailed, exception.ErrorCode);
+        Assert.AreEqual("Provider discovery failed: Bearer [REDACTED]\nendpoint_[endpoint redacted]\nwebsocket=[endpoint redacted]\nunix=[endpoint redacted]\nrelative=[endpoint redacted]\nhost=[endpoint redacted]\nlocal=[endpoint redacted]\nipv6=[endpoint redacted]\ndiagnostics=file.txt v1.2.3 Node.js 0.169.0", exception.Message);
+        Assert.IsFalse(exception.Message.Contains(secret, StringComparison.Ordinal));
+        Assert.IsFalse(exception.Message.Contains("example.invalid", StringComparison.Ordinal));
+        StringAssert.Contains(exception.Message, "diagnostics=file.txt v1.2.3 Node.js 0.169.0");
+        Assert.IsNull(exception.ErrorData);
+    }
+
+    [TestMethod]
+    public async Task SetDefaultModelProvider_PreflightRemoteFailureIsGenericAndDoesNotWrite()
+    {
+        const string secret = "secret-preflight-response";
+        var connection = new StubConnection
+        {
+            Handler = method => method switch
+            {
+                "initialize" => JsonSerializer.SerializeToElement(new { userAgent = "codex-cli/0.169.0" }),
+                "modelProvider/list" => throw new JsonRpcRemoteException(-32000, $"Bearer {secret}"),
+                _ => JsonSerializer.SerializeToElement(new { }),
+            },
+        };
+        var redactor = new SecretRedactor();
+        using IDisposable registeredSecret = redactor.RegisterSecret(secret);
+        var session = new CodexSessionService(new ApprovalPolicyEngine(new PathAccessPolicy()), redactor);
+        await using var worker = new WorkerRpcService(redactor, new FakeProcessHost(connection), session);
+        await worker.ConnectAsync(Options(), CancellationToken.None);
+
+        LocalRpcException exception = await Assert.ThrowsExactlyAsync<LocalRpcException>(
+            () => worker.SetDefaultModelProviderAsync(
+                Scoped(worker, new SetDefaultModelProviderRequest { ProviderId = "azure" }),
+                CancellationToken.None));
+
+        Assert.AreEqual(WorkerErrorCodes.PreDispatchRejected, exception.ErrorCode);
+        Assert.AreEqual("The default model provider could not be changed because preflight validation failed.", exception.Message);
+        Assert.IsFalse(exception.Message.Contains(secret, StringComparison.Ordinal));
+        Assert.IsFalse(connection.Methods.Any(method => method is "config/value/write" or "modelProvider/default/set"));
+    }
+
+    [TestMethod]
     public async Task HistoryPagesAreOwnerStampedAndResumeRequiresExplicitConfirmation()
     {
         var connection = new StubConnection

@@ -13,18 +13,19 @@ public sealed class TransportPoliciesTests
         "thread/list",
         "thread/goal/get",
         "model/list",
+        "modelProvider/list",
         "permissionProfile/list",
         "mcpServerStatus/list",
     ];
 
     [TestMethod]
-    public void Allowlist_ContainsExactlyTheFourteenReviewedReadOnlyMethods()
+    public void Allowlist_ContainsExactlyTheFifteenReviewedReadOnlyMethods()
     {
         CollectionAssert.AreEquivalent(
             new[]
             {
                 "account/read", "account/rateLimits/read", "account/usage/read", "thread/list", "thread/goal/get",
-                "model/list", "permissionProfile/list", "mcpServerStatus/list", "skills/list",
+                "model/list", "modelProvider/list", "permissionProfile/list", "mcpServerStatus/list", "skills/list",
                 "thread/read", "thread/memory/read", "thread/turns/list", "thread/items/list", "thread/attachment/list",
             },
             ReadOnlyRequestAllowlist.Methods.ToArray());
@@ -113,6 +114,7 @@ public sealed class TransportPoliciesTests
             "turn/start", "turn/steer", "turn/interrupt", "thread/start", "thread/resume", "thread/fork",
             "thread/goal/set", "thread/goal/clear", "thread/compact/start", "review/start", "feedback/upload",
             "account/login/start", "account/logout", "initialize", "thread/read", "thread/turns/list",
+            "modelProvider/default/set", "config/value/write",
             "attachments/list", "unknown/method", "Account/Read",
         })
         {

@@ -15,12 +15,14 @@ string scenario = Environment.GetEnvironmentVariable("CODEX_FAKE_SCENARIO") ?? s
 var attachedThreadParents = new Dictionary<string, string>(StringComparer.Ordinal);
 var ephemeralThreads = new HashSet<string>(StringComparer.Ordinal);
 string selectedWorkspaceAccountId = "fake-personal-workspace";
+string defaultModelProviderId = "fake";
 bool workspaceLoginPending = false;
 int workspaceSwitchCount = 0;
 var savedAttachments = new List<Dictionary<string, object?>>();
 var interactionResponses = new ConcurrentQueue<object>();
 var interactionMethods = new ConcurrentDictionary<string, string>(StringComparer.Ordinal);
 var clientMethods = new ConcurrentQueue<string>();
+var providerRequests = new List<object>();
 var goals = new Dictionary<string, Dictionary<string, object?>>(StringComparer.Ordinal);
 var goalTurns = new Dictionary<string, string>(StringComparer.Ordinal);
 var goalRequests = new List<object>();
@@ -52,6 +54,11 @@ while (await Console.In.ReadLineAsync().ConfigureAwait(false) is { } line)
 
     string method = methodElement.GetString() ?? string.Empty;
     clientMethods.Enqueue(method);
+    if ((method is "model/list" or "modelProvider/list" or "modelProvider/default/set" or "config/value/write" or "thread/start" or "account/gatewayOAuth/read" or "account/gatewayOAuth/login")
+        && root.TryGetProperty("params", out JsonElement providerParameters))
+    {
+        providerRequests.Add(new { method, parameters = providerParameters.Clone() });
+    }
     if (method == "initialize" && root.TryGetProperty("params", out JsonElement initParams))
     {
         initializeParams = initParams.Clone();
@@ -63,6 +70,62 @@ while (await Console.In.ReadLineAsync().ConfigureAwait(false) is { } line)
     if (!root.TryGetProperty("id", out JsonElement id))
     {
         continue;
+    }
+
+    if (method is "modelProvider/default/set" or "config/value/write")
+    {
+        bool typedProviderMutation = method == "modelProvider/default/set";
+        if (!root.TryGetProperty("params", out JsonElement providerMutationParameters)
+            || providerMutationParameters.ValueKind != JsonValueKind.Object)
+        {
+            await WriteAsync(new
+            {
+                id = JsonSerializer.Deserialize<object>(id.GetRawText()),
+                error = new { code = -32602, message = "Model provider mutation parameters are required." },
+            }).ConfigureAwait(false);
+            continue;
+        }
+
+        bool isModelProviderConfigWrite = !typedProviderMutation
+            && GetOptionalString(providerMutationParameters, "keyPath") == "model_provider";
+        if (!typedProviderMutation && !isModelProviderConfigWrite)
+        {
+            await WriteAsync(new
+            {
+                id = JsonSerializer.Deserialize<object>(id.GetRawText()),
+                error = new { code = -32602, message = "The fake server only accepts the model_provider configuration key." },
+            }).ConfigureAwait(false);
+            continue;
+        }
+
+        if (typedProviderMutation || isModelProviderConfigWrite)
+        {
+            bool supportsTypedProviderMutation = IsScenario("Current01710");
+            if (typedProviderMutation != supportsTypedProviderMutation)
+            {
+                await WriteAsync(new
+                {
+                    id = JsonSerializer.Deserialize<object>(id.GetRawText()),
+                    error = new { code = -32601, message = "The model provider default method is unavailable for this CLI version." },
+                }).ConfigureAwait(false);
+                continue;
+            }
+
+            string? providerId = GetOptionalString(
+                providerMutationParameters,
+                typedProviderMutation ? "providerId" : "value");
+            bool validMutation = (providerId is "fake" or "alternate")
+                && (typedProviderMutation || GetOptionalString(providerMutationParameters, "mergeStrategy") == "replace");
+            if (!validMutation)
+            {
+                await WriteAsync(new
+                {
+                    id = JsonSerializer.Deserialize<object>(id.GetRawText()),
+                    error = new { code = -32602, message = "The model provider default mutation is invalid." },
+                }).ConfigureAwait(false);
+                continue;
+            }
+        }
     }
 
     bool isAttachedFork = method == "thread/fork"
@@ -179,6 +242,10 @@ while (await Console.In.ReadLineAsync().ConfigureAwait(false) is { } line)
         "thread/shellCommand" => new { },
         "windowsSandbox/readiness" => new { status = IsScenario("Issue155SandboxUnsupported") ? "updateRequired" : "notConfigured" },
         "windowsSandbox/setupStart" => new { started = !IsScenario("Issue155SandboxStartedFalse") },
+        "model/list" when !IsScenario("Issue244ProviderOnly")
+            && root.TryGetProperty("params", out JsonElement modelListParameters)
+            && GetOptionalString(modelListParameters, "modelProvider") == "alternate"
+            => CreateAlternateProviderModelList(),
         "model/list" => IsScenario("Issue244ProviderOnly")
             ? CreateProviderOnlyModelList()
             : new
@@ -245,6 +312,19 @@ while (await Console.In.ReadLineAsync().ConfigureAwait(false) is { } line)
             },
             nextCursor = (string?)null,
         },
+        "modelProvider/list" => new
+        {
+            defaultProviderId = defaultModelProviderId,
+            canChangeDefault = true,
+            data = new object[]
+            {
+                new { id = "fake", name = "Fake provider", baseUrl = "https://example.invalid/v1", settings = new { type = "openai" } },
+                new { id = "alternate", name = "Alternate provider", baseUrl = "https://alternate.example.invalid/v1", settings = new { type = "custom" } },
+            },
+        },
+        "modelProvider/default/set" => SetDefaultModelProvider(root.GetProperty("params")),
+        "config/value/write" => SetDefaultModelProvider(root.GetProperty("params")),
+        "fake/provider/state" => new { requests = providerRequests.ToArray(), defaultProviderId = defaultModelProviderId },
         "permissionProfile/list" => new
         {
             data = new[]
@@ -313,13 +393,7 @@ while (await Console.In.ReadLineAsync().ConfigureAwait(false) is { } line)
         "fake/goal/continue" => new { started = IsGoalActive(root.GetProperty("params").GetProperty("threadId").GetString() ?? string.Empty) },
         "account/read" => ReadAccount(),
         "fake/experimental/state" => FakeExperimentalState(),
-        "account/gatewayOAuth/read" => new
-        {
-            providerId = "fake",
-            providerName = "Fake provider",
-            required = scenario == "interaction",
-            status = scenario == "interaction" ? "notReady" : null,
-        },
+        "account/gatewayOAuth/read" => CreateGatewayOAuthRead(root),
         "account/gatewayOAuth/login" => new { },
         "account/gatewayOAuth/cancel" => new { },
         "mcpServer/oauth/login" when scenario == "interaction" => new { authorizationUrl = "https://example.com/mcp-auth?state=fake", loginId = "fake-login-1" },
@@ -569,6 +643,28 @@ object CreateProviderOnlyModelList()
                 {
                     new { reasoningEffort = "medium", description = "Balanced reasoning." },
                     new { reasoningEffort = "high", description = "Deeper reasoning." },
+                },
+                inputModalities = new[] { "text" },
+            },
+        },
+        nextCursor = (string?)null,
+    };
+
+object CreateAlternateProviderModelList()
+    => new
+    {
+        data = new object[]
+        {
+            new
+            {
+                model = "alternate-only-model",
+                displayName = "Alternate-only model",
+                isDefault = true,
+                hidden = false,
+                defaultReasoningEffort = "medium",
+                supportedReasoningEfforts = new[]
+                {
+                    new { reasoningEffort = "medium", description = "Balanced reasoning." },
                 },
                 inputModalities = new[] { "text" },
             },
@@ -934,7 +1030,8 @@ async Task EmitShellEventsAsync(JsonElement parameters)
 object CreateThread(JsonElement parameters)
 {
     string threadId = $"fake-thread-{nextThread++}";
-    object thread = new { id = threadId, preview = "Fake conversation", cwd = Environment.CurrentDirectory };
+    string providerId = GetOptionalString(parameters, "modelProvider") ?? defaultModelProviderId;
+    object thread = new { id = threadId, preview = "Fake conversation", cwd = Environment.CurrentDirectory, modelProvider = new { id = providerId, name = providerId == "alternate" ? "Alternate provider" : "Fake provider" } };
     if (parameters.TryGetProperty("ephemeral", out JsonElement ephemeral) && ephemeral.ValueKind == JsonValueKind.True)
     {
         ephemeralThreads.Add(threadId);
@@ -942,6 +1039,31 @@ object CreateThread(JsonElement parameters)
     threads.Add(thread);
     _ = SnapshotThreadReadState(threadId);
     return ThreadResponse(thread);
+}
+
+object SetDefaultModelProvider(JsonElement parameters)
+{
+    string? requestedProvider = GetOptionalString(parameters, "providerId") ?? GetOptionalString(parameters, "value");
+    if (requestedProvider is "fake" or "alternate")
+    {
+        defaultModelProviderId = requestedProvider;
+    }
+
+    return new { };
+}
+
+object CreateGatewayOAuthRead(JsonElement request)
+{
+    JsonElement parameters = request.TryGetProperty("params", out JsonElement value) ? value : default;
+    string? requestedProviderId = GetOptionalString(parameters, "modelProvider");
+    string providerId = requestedProviderId ?? defaultModelProviderId;
+    return new
+    {
+        providerId,
+        providerName = providerId == "alternate" ? "Alternate provider" : "Fake provider",
+        required = scenario == "interaction",
+        status = scenario == "interaction" ? "notReady" : null,
+    };
 }
 
 // Platform-native absolute paths (not hardcoded POSIX strings) so manual verification on

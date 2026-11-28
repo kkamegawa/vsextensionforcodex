@@ -23,7 +23,7 @@ public sealed partial class CodexSessionService
     {
         object target = CreateReviewTarget(request.Target);
         ConnectionContext context = RequireContext();
-        EnsureCredentialReady(context);
+        await EnsureCredentialReadyForProviderAsync(context, null, cancellationToken).ConfigureAwait(false);
         if (Interlocked.CompareExchange(ref reviewThreadStartInFlight, 1, 0) != 0)
         {
             return ReviewNotCreated("A review is already starting in a separate conversation.");

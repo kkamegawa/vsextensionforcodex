@@ -30,6 +30,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
 
     private IWorkerBridge bridge;
     private readonly Func<IWorkerBridge> bridgeFactory;
+    private readonly Func<Action, Task> trackedMutationUiAsync;
     private readonly OutputChannel? outputChannel;
     private readonly SafeMarkdownService markdown = new();
     private readonly CancellationTokenSource lifetime = new();
@@ -129,6 +130,8 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
     // A /model speed that is not a picker option ("default" for standard, or an off-catalog flex).
     private string? modelCommandServiceTier;
     private ListModelsResult modelCatalog = new();
+    private string? modelCatalogProviderId;
+    private bool hasLoadedModelCatalogForProvider;
     // The model selected from the previous owner's catalog, restored on the next catalog read.
     private string? modelBeforeOwnerChange;
     private RateLimitsResult? latestRateLimits;
@@ -202,10 +205,12 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         IExtensionSettingsStore? settingsStore = null,
         IExternalLinkOpener? externalLinkOpener = null,
         TimeProvider? timeProvider = null,
-        Func<IWorkerBridge>? bridgeFactory = null)
+        Func<IWorkerBridge>? bridgeFactory = null,
+        Func<Action, Task>? trackedMutationUiAsync = null)
     {
         this.bridge = bridge;
         this.bridgeFactory = bridgeFactory ?? (() => new WorkerBridge(outputChannel));
+        this.trackedMutationUiAsync = trackedMutationUiAsync ?? OnUiAsync;
         this.outputChannel = outputChannel;
         this.extensibility = extensibility;
         artifactFileActions = new ArtifactFileActions(extensibility);
@@ -295,6 +300,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         LoginGatewayOAuthCommand = new AsyncCommand(LoginGatewayOAuthAsync, CanLoginGatewayOAuth);
         CancelGatewayOAuthCommand = new AsyncCommand(CancelGatewayOAuthAsync, CanCancelGatewayOAuth);
         OpenGatewayAuthorizationCommand = new AsyncCommand(OpenGatewayAuthorizationAsync, CanOpenGatewayAuthorization);
+        InitializeModelProviderCommands();
         PendingInteractions.CollectionChanged += (_, _) => NotifyPendingInteractionProperties();
         remoteProfiles.PropertyChanged += (_, e) =>
         {
@@ -735,6 +741,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                 OnPropertyChanged(nameof(StatusVersionText));
                 OnPropertyChanged(nameof(StatusAutomationName));
                 OnPropertyChanged(nameof(StatusAutomationHelpText));
+                OnModelProviderStatusChanged();
                 OnPropertyChanged(nameof(EffectiveApprovalModeText));
                 OnPropertyChanged(nameof(IsUsageAvailable));
                 OnPropertyChanged(nameof(IsPlanModeAvailable));
@@ -1491,7 +1498,11 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         return Task.CompletedTask;
     }
 
-    private async Task<bool> RunTrackedMutationAsync(string operationName, OwnerSnapshot owner, Func<Task> dispatch)
+    private async Task<bool> RunTrackedMutationAsync(
+        string operationName,
+        OwnerSnapshot owner,
+        Func<Task> dispatch,
+        Func<Exception, bool>? isDefiniteFailure = null)
     {
         var operationRow = new ChatItemViewModel("Status", $"{operationName} request sent.", ConversationEventKind.ItemStarted)
         {
@@ -1501,7 +1512,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             ConnectionGeneration = owner.ConnectionGeneration,
         };
         Guid operationId = Guid.NewGuid();
-        await OnUiAsync(() =>
+        await trackedMutationUiAsync(() =>
         {
             if (IsCurrentOwner(owner))
             {
@@ -1522,18 +1533,38 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         }
         catch (Exception ex)
         {
+            bool definiteFailure = isDefiniteFailure?.Invoke(ex) == true;
             await OnUiAsync(() =>
             {
                 if (inFlightMutations.Remove(operationId))
                 {
-                    operationRow.MarkDeliveryUnknown();
+                    if (definiteFailure)
+                    {
+                        Items.Remove(operationRow);
+                    }
+                    else
+                    {
+                        operationRow.MarkDeliveryUnknown();
+                    }
+                }
+                else if (definiteFailure)
+                {
+                    Items.Remove(operationRow);
                 }
             }).ConfigureAwait(false);
-            if (IsCurrentOwner(owner))
+            if (IsCurrentOwner(owner) && !definiteFailure)
             {
                 RecoveryStatusText = $"{operationName} outcome is unknown. It was not retried; review the current state before trying again.";
             }
-            ExtensionDiagnostics.Write($"{operationName} outcome is unknown after dispatch", ex);
+            if (definiteFailure)
+            {
+                ExtensionDiagnostics.Write($"{operationName} was rejected ({ex.GetType().Name}).");
+            }
+            else
+            {
+                ExtensionDiagnostics.Write($"{operationName} outcome is unknown after dispatch", ex);
+            }
+
             return false;
         }
     }
@@ -1800,6 +1831,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
 
     private void ClearOwnerScopedState(bool preserveAgentDisplayDecisions = false)
     {
+        ClearModelProviderOwnerState();
         slashCommandCoordinator.CancelAll();
         CancelFileSuggestionRefresh();
         SlashCommands.ClearForOwnerChange();
@@ -1927,6 +1959,8 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         }
 
         modelCatalog = new ListModelsResult();
+        modelCatalogProviderId = null;
+        hasLoadedModelCatalogForProvider = false;
         Models.Clear();
         Models.Add("gpt-5-codex");
         Models.Add("gpt-5");
@@ -1949,6 +1983,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         get => selectedThread;
         set
         {
+            string? previousModelProviderId = CurrentModelProviderId;
             if (SetProperty(ref selectedThread, value))
             {
                 ResetTranscriptSearchForThreadChange();
@@ -1962,6 +1997,8 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                         GetOrCreateThreadRow(value);
                     }
                 }
+
+                OnSelectedThreadProviderChanged(previousModelProviderId);
 
                 OnPropertyChanged(nameof(PlanModeEnabled));
                 ThreadReadStateStatusText = string.Empty;
@@ -3351,14 +3388,39 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
 
     private async Task NewThreadAsync()
     {
+        string? modelProviderId = selectedModelProviderId;
         OwnerSnapshot owner = CaptureOwnerSnapshot();
         ThreadSummary? thread = null;
+        StreamJsonRpc.RemoteInvocationException? providerStartFailure = null;
         bool started = await RunTrackedMutationAsync("New conversation", owner, async () =>
         {
-            thread = await bridge.StartThreadAsync(StampOwner(new StartThreadRequest(), owner), lifetime.Token).ConfigureAwait(false);
-        }).ConfigureAwait(false);
+            try
+            {
+                thread = await bridge.StartThreadAsync(
+                    StampOwner(new StartThreadRequest { ModelProviderId = modelProviderId }, owner),
+                    lifetime.Token).ConfigureAwait(false);
+            }
+            catch (StreamJsonRpc.RemoteInvocationException exception) when (exception.ErrorCode == WorkerErrorCodes.UpstreamOperationFailed)
+            {
+                providerStartFailure = exception;
+                throw;
+            }
+        }, exception => exception is StreamJsonRpc.RemoteInvocationException { ErrorCode: WorkerErrorCodes.UpstreamOperationFailed }
+            && GetProviderErrorCode(exception) is not null)
+            .ConfigureAwait(false);
         if (!started || thread is null)
         {
+            if (providerStartFailure is not null)
+            {
+                await OnUiAsync(() =>
+                {
+                    if (IsCurrentOwner(owner))
+                    {
+                        SetModelProviderStatus(DescribeModelProviderFailure(providerStartFailure));
+                    }
+                }).ConfigureAwait(false);
+            }
+
             return;
         }
 
@@ -3419,7 +3481,12 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             try
             {
                 resumed = await bridge.ResumeThreadAsync(
-                    StampOwner(new ResumeThreadRequest { ThreadId = thread.Id, UserConfirmed = true }, owner),
+                    StampOwner(new ResumeThreadRequest
+                    {
+                        ThreadId = thread.Id,
+                        ModelProviderId = thread.ModelProviderId,
+                        UserConfirmed = true,
+                    }, owner),
                     lifetime.Token).ConfigureAwait(false);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
@@ -5035,10 +5102,20 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
     internal async Task PopulateModelsAsync()
     {
         OwnerSnapshot owner = CaptureOwnerSnapshot();
+        await EnsureModelProviderCatalogAsync(owner, callerWillPopulateModels: true).ConfigureAwait(false);
+        if (!IsCurrentOwner(owner))
+        {
+            return;
+        }
+
+        long providerSelectionGeneration = Interlocked.Read(ref modelProviderSelectionGeneration);
+        string? providerId = CurrentModelProviderId;
         ListModelsResult result;
         try
         {
-            result = await bridge.ListModelsAsync(StampOwner(new ListModelsRequest(), owner), lifetime.Token).ConfigureAwait(false);
+            result = await bridge.ListModelsAsync(
+                StampOwner(new ListModelsRequest { ModelProviderId = providerId }, owner),
+                lifetime.Token).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
         {
@@ -5046,21 +5123,30 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         }
         catch (Exception ex)
         {
-            ExtensionDiagnostics.Write("Model list refresh failed; keeping fallback models", ex);
+            ExtensionDiagnostics.Write("Model list refresh failed; keeping the last usable model list when available", ex);
+            await OnUiAsync(() =>
+            {
+                if (IsCurrentModelProviderRequest(owner, providerId, providerSelectionGeneration))
+                {
+                    if (!hasLoadedModelCatalogForProvider
+                        || !string.Equals(modelCatalogProviderId, providerId, StringComparison.Ordinal))
+                    {
+                        ResetModelCatalogToBuiltInFallback();
+                    }
+
+                    SetModelProviderStatus(
+                        DescribeModelProviderFailure(ex),
+                        isDefaultOutcome: false,
+                        clearAfterModelListSuccess: true);
+                }
+            }).ConfigureAwait(false);
             await ExtensionDiagnostics.WriteOutputAsync(
                 outputChannel,
-                "[CODEX MODELS] Failed to query the app-server model list; keeping the built-in fallback models.").ConfigureAwait(false);
+                "[CODEX MODELS] Failed to query the app-server model list; keeping the last usable model list when available.").ConfigureAwait(false);
             return;
         }
 
-        await OnUiAsync(() =>
-        {
-            if (IsCurrentOwner(owner))
-            {
-                modelCatalog = result;
-            }
-        }).ConfigureAwait(false);
-        if (!IsCurrentOwner(owner))
+        if (!IsCurrentModelProviderRequest(owner, providerId, providerSelectionGeneration))
         {
             return;
         }
@@ -5083,12 +5169,55 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
 
         if (modelIds.Count == 0)
         {
+            bool clearedStaleModelCatalog = false;
+            await OnUiAsync(() =>
+            {
+                if (!IsCurrentModelProviderRequest(owner, providerId, providerSelectionGeneration))
+                {
+                    return;
+                }
+
+                if (!hasLoadedModelCatalogForProvider
+                    || !string.Equals(modelCatalogProviderId, providerId, StringComparison.Ordinal))
+                {
+                    ResetModelCatalogToBuiltInFallback();
+                }
+                else
+                {
+                    modelCatalog = result;
+                    modelCatalogProviderId = providerId;
+                    hasLoadedModelCatalogForProvider = true;
+                    modelBeforeOwnerChange = null;
+
+                    // This is a successful, authoritative empty response. Remove the selected item
+                    // first so a delayed Remote UI null writeback cannot preserve a stale model.
+                    if (SelectedModel is { } selectedModel && Models.Contains(selectedModel))
+                    {
+                        Models.Remove(selectedModel);
+                    }
+
+                    SelectedModel = null;
+                    Models.Clear();
+                    RefreshServiceTiers();
+                    UpdateComposerSuggestions(ComposerText);
+                    RefreshReasoningEfforts();
+                    OnPropertyChanged(nameof(ComposerAdmissionReason));
+                    OnPropertyChanged(nameof(HasComposerAdmissionReason));
+                    clearedStaleModelCatalog = true;
+                }
+
+                if (modelProviderStatusClearsAfterModelListSuccess)
+                {
+                    SetModelProviderStatus(string.Empty);
+                }
+            }).ConfigureAwait(false);
             await ExtensionDiagnostics.WriteOutputAsync(
                 outputChannel,
-                "[CODEX MODELS] The app-server returned no models; keeping the built-in fallback models.").ConfigureAwait(false);
+                clearedStaleModelCatalog
+                    ? "[CODEX MODELS] The app-server returned no models; stale model choices were cleared."
+                    : "[CODEX MODELS] The app-server returned no models; built-in fallback choices are being kept.").ConfigureAwait(false);
             return;
         }
-
         string defaultModelLabel = string.IsNullOrWhiteSpace(result.DefaultModel)
             ? "(none reported)"
             : defaultInjected
@@ -5100,11 +5229,14 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
 
         await OnUiAsync(() =>
         {
-            if (!IsCurrentOwner(owner))
+            if (!IsCurrentModelProviderRequest(owner, providerId, providerSelectionGeneration))
             {
                 return;
             }
 
+            modelCatalog = result;
+            modelCatalogProviderId = providerId;
+            hasLoadedModelCatalogForProvider = true;
             string? previousSelection = SelectedModel;
             string? carriedModel = modelBeforeOwnerChange;
             modelBeforeOwnerChange = null;
@@ -5163,6 +5295,11 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             if (carriedModel is not null)
             {
                 AddCatalogChangeNotices(carriedModel);
+            }
+
+            if (modelProviderStatusClearsAfterModelListSuccess)
+            {
+                SetModelProviderStatus(string.Empty);
             }
         }).ConfigureAwait(false);
     }
@@ -5631,9 +5768,13 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             : null;
         TurnSettingResolution reasoning = ResolveReasoningSetting(threadId);
         TurnSettingResolution serviceTier = ResolveServiceTierSetting(threadId);
+        string? modelProviderId = string.Equals(SelectedThread?.Id, threadId, StringComparison.Ordinal)
+            ? SelectedThread?.ModelProviderId
+            : null;
         return StampOwner(new StartTurnRequest
         {
             ThreadId = threadId,
+            ModelProviderId = modelProviderId,
             Text = text,
             Model = model,
             ApprovalPolicy = GetTurnApprovalPolicy(),
@@ -9226,6 +9367,8 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         => CanReadGatewayOAuth()
             && !IsRemoteTarget
             && interactionAuthStatus is { IsLocal: true, IsSupported: true }
+            && (CurrentModelProviderId is not { } providerId
+                || string.Equals(interactionAuthStatus.ModelProviderId, providerId, StringComparison.Ordinal))
             // Ready means the effective provider does not use gateway OAuth; the Worker rejects login.
             && interactionAuthStatus.State is not (InteractionAuthState.Checking or InteractionAuthState.Ready);
 
@@ -9239,6 +9382,8 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
     private async Task ReadGatewayOAuthAsync()
     {
         OwnerSnapshot owner = CaptureOwnerSnapshot();
+        string? providerId = CurrentModelProviderId;
+        long providerSelectionGeneration = Interlocked.Read(ref modelProviderSelectionGeneration);
         string? selectedThreadId = null;
         await OnUiAsync(() =>
         {
@@ -9252,8 +9397,12 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         try
         {
             InteractionAuthStatus result = await bridge.ReadGatewayOAuthAsync(
-                StampOwner(new ReadGatewayOAuthRequest(), owner),
+                StampOwner(new ReadGatewayOAuthRequest { ProviderId = providerId }, owner),
                 lifetime.Token).ConfigureAwait(false);
+            if (!IsCurrentModelProviderRequest(owner, providerId, providerSelectionGeneration))
+            {
+                return;
+            }
             McpServerAuthStatus[] unresolvedServers = result.McpServers
                 .Where(server => result.McpEnvironmentIdentityEnabled
                     && !server.HasRegistrationIdentity
@@ -9265,11 +9414,11 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                 server.IsRegistrationAmbiguous = true;
             }
 
-            if (IsCurrentOwner(owner))
+            if (IsCurrentModelProviderRequest(owner, providerId, providerSelectionGeneration))
             {
                 await OnUiAsync(() =>
                 {
-                    if (IsCurrentOwner(owner))
+                    if (IsCurrentModelProviderRequest(owner, providerId, providerSelectionGeneration))
                     {
                         SetInteractionAuthStatus(result, owner);
                     }
@@ -9283,6 +9432,10 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                     try
                     {
                         inventory = await ReadMcpInventoryForHydrationAsync(threadGroup.Key, owner).ConfigureAwait(false);
+                        if (!IsCurrentModelProviderRequest(owner, providerId, providerSelectionGeneration))
+                        {
+                            return;
+                        }
                     }
                     catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
                     {
@@ -9335,11 +9488,11 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                         }
                     }
             }
-            if (unresolvedServers.Length > 0 && IsCurrentOwner(owner))
+            if (unresolvedServers.Length > 0 && IsCurrentModelProviderRequest(owner, providerId, providerSelectionGeneration))
             {
                 await OnUiAsync(() =>
                 {
-                    if (IsCurrentOwner(owner))
+                    if (IsCurrentModelProviderRequest(owner, providerId, providerSelectionGeneration))
                     {
                         ApplyMcpIdentityHydrationToCurrentPresentation(unresolvedServers);
                     }
@@ -9354,14 +9507,15 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         {
             await OnUiAsync(() =>
             {
-                if (IsCurrentOwner(owner))
+                if (IsCurrentModelProviderRequest(owner, providerId, providerSelectionGeneration))
                 {
                     SetInteractionAuthStatus(new InteractionAuthStatus
                     {
                         IsLocal = !IsRemoteTarget,
                         IsSupported = false,
+                        ModelProviderId = providerId,
                         State = InteractionAuthState.Failed,
-                        Message = "Gateway OAuth status could not be read.",
+                        Message = LocalizedStrings.Get("Provider.GatewayOAuthReadFailed"),
                     }, owner);
                 }
             }).ConfigureAwait(false);
@@ -9450,16 +9604,18 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
     }
 
     private Task LoginGatewayOAuthAsync()
-        => UpdateGatewayOAuthAsync(owner => bridge.LoginGatewayOAuthAsync(
-            StampOwner(new LoginGatewayOAuthRequest(), owner), lifetime.Token));
+        => UpdateGatewayOAuthAsync((owner, providerId) => bridge.LoginGatewayOAuthAsync(
+            StampOwner(new LoginGatewayOAuthRequest { ProviderId = providerId }, owner), lifetime.Token));
 
     private Task CancelGatewayOAuthAsync()
-        => UpdateGatewayOAuthAsync(owner => bridge.CancelGatewayOAuthAsync(
+        => UpdateGatewayOAuthAsync((owner, _) => bridge.CancelGatewayOAuthAsync(
             StampOwner(new CancelGatewayOAuthRequest(), owner), lifetime.Token));
 
-    private async Task UpdateGatewayOAuthAsync(Func<OwnerSnapshot, Task<InteractionAuthStatus>> operation)
+    private async Task UpdateGatewayOAuthAsync(Func<OwnerSnapshot, string?, Task<InteractionAuthStatus>> operation)
     {
         OwnerSnapshot owner = CaptureOwnerSnapshot();
+        string? providerId = CurrentModelProviderId;
+        long providerSelectionGeneration = Interlocked.Read(ref modelProviderSelectionGeneration);
         if (!CanLoginGatewayOAuth())
         {
             return;
@@ -9467,12 +9623,12 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
 
         try
         {
-            InteractionAuthStatus result = await operation(owner).ConfigureAwait(false);
-            if (IsCurrentOwner(owner))
+            InteractionAuthStatus result = await operation(owner, providerId).ConfigureAwait(false);
+            if (IsCurrentModelProviderRequest(owner, providerId, providerSelectionGeneration))
             {
                 await OnUiAsync(() =>
                 {
-                    if (IsCurrentOwner(owner))
+                    if (IsCurrentModelProviderRequest(owner, providerId, providerSelectionGeneration))
                     {
                         SetGatewayOAuthStatusPreservingMcpRows(result, owner);
                     }
@@ -9482,18 +9638,20 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
         {
         }
-        catch (Exception ex)
+        catch (Exception)
         {
             await OnUiAsync(() =>
             {
-                if (IsCurrentOwner(owner))
+                if (IsCurrentModelProviderRequest(owner, providerId, providerSelectionGeneration))
                 {
                     SetGatewayOAuthStatusPreservingMcpRows(new InteractionAuthStatus
                     {
                         IsLocal = true,
-                        IsSupported = false,
+                        IsSupported = interactionAuthStatus is { IsLocal: true, IsSupported: true },
+                        ModelProviderId = providerId,
+                        ModelProviderName = interactionAuthStatus?.ModelProviderName,
                         State = InteractionAuthState.Failed,
-                        Message = "Gateway OAuth operation failed (" + ex.GetType().Name + ").",
+                        Message = LocalizedStrings.Get("Provider.GatewayOAuthOperationFailed"),
                     }, owner);
                 }
             }).ConfigureAwait(false);
@@ -9508,6 +9666,8 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         {
             IsLocal = gatewayStatus.IsLocal,
             IsSupported = gatewayStatus.IsSupported,
+            ModelProviderId = gatewayStatus.ModelProviderId,
+            ModelProviderName = gatewayStatus.ModelProviderName,
             McpEnvironmentIdentityEnabled = interactionAuthStatus?.McpEnvironmentIdentityEnabled ?? gatewayStatus.McpEnvironmentIdentityEnabled,
             State = gatewayStatus.State,
             Message = gatewayStatus.Message,

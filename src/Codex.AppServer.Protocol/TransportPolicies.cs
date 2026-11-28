@@ -67,6 +67,7 @@ public static class ReadOnlyRequestAllowlist
         "thread/list",
         "thread/goal/get",
         "model/list",
+        "modelProvider/list",
         "permissionProfile/list",
         "mcpServerStatus/list",
     };

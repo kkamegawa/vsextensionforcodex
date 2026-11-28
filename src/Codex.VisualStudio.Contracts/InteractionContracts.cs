@@ -252,6 +252,10 @@ public sealed class InteractionAuthStatus
 
     public bool McpEnvironmentIdentityEnabled { get; set; }
 
+    public string? ModelProviderId { get; set; }
+
+    public string? ModelProviderName { get; set; }
+
 
 
     public InteractionAuthState State { get; set; }
@@ -292,10 +296,12 @@ public sealed class McpServerAuthStatus
 
 public sealed class ReadGatewayOAuthRequest : OwnerScopedRequest
 {
+    public string? ProviderId { get; set; }
 }
 
 public sealed class LoginGatewayOAuthRequest : OwnerScopedRequest
 {
+    public string? ProviderId { get; set; }
 }
 
 public sealed class CancelGatewayOAuthRequest : OwnerScopedRequest

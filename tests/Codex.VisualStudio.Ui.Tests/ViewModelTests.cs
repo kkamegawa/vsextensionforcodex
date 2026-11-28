@@ -367,7 +367,7 @@ public sealed partial class ViewModelTests
         var bridge = new FakeWorkerBridge { ExperimentalApi = true };
         using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
         await bridge.PublishStateAsync(OwnerStatus("owner-a", 1, 4));
-        var thread = new ThreadSummary { Id = "thread-a" };
+        var thread = new ThreadSummary { Id = "thread-a", ModelProviderId = "azure" };
         vm.Threads.Add(thread);
         vm.SelectedThread = thread;
         await WaitForHistoryLoadAsync(vm);
@@ -405,7 +405,7 @@ public sealed partial class ViewModelTests
 #pragma warning restore VSTHRD003
         using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
         await bridge.PublishStateAsync(OwnerStatus("owner-a", 1, 4));
-        var thread = new ThreadSummary { Id = "thread-a" };
+        var thread = new ThreadSummary { Id = "thread-a", ModelProviderId = "azure" };
         vm.Threads.Add(thread);
         vm.SelectedThread = thread;
         await WaitForHistoryLoadAsync(vm);
@@ -709,7 +709,7 @@ public sealed partial class ViewModelTests
         });
         using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
         await bridge.PublishStateAsync(OwnerStatus("owner-a", 1, 4));
-        var thread = new ThreadSummary { Id = "thread-a" };
+        var thread = new ThreadSummary { Id = "thread-a", ModelProviderId = "azure" };
         vm.Threads.Add(thread);
         vm.SelectedThread = thread;
         await WaitForHistoryLoadAsync(vm);
@@ -718,6 +718,7 @@ public sealed partial class ViewModelTests
         await RunCommandAsync(vm.JoinThreadCommand);
 
         Assert.IsTrue(vm.IsThreadJoined);
+        Assert.AreEqual("azure", bridge.LastResumeRequest?.ModelProviderId);
         Assert.AreEqual("revision-2", vm.SelectedThreadReadState!.Revision, "thread/resume returns no read state, so the row rereads it.");
     }
 
@@ -5948,6 +5949,18 @@ public sealed partial class ViewModelTests
         Assert.IsTrue(xaml.Contains("AutomationProperties.Name=\"Speed\"", StringComparison.Ordinal));
         Assert.IsTrue(xaml.Contains("ItemsSource=\"{Binding ReasoningEfforts}\"", StringComparison.Ordinal));
         Assert.IsTrue(xaml.Contains("SelectedValue=\"{Binding SelectedReasoningEffortId, Mode=TwoWay}\"", StringComparison.Ordinal));
+        Assert.IsTrue(Regex.IsMatch(
+            xaml,
+            @"<TextBlock(?:(?!</TextBlock>).)*MaxWidth=""166""(?:(?!</TextBlock>).)*Text=""\{Binding ModelProviderStatusText\}""",
+            RegexOptions.Singleline),
+            "The model-provider status text must wrap within the width of its adjacent selector.");
+        XDocument document = XDocument.Parse(xaml);
+        XElement? providerStatus = document.Descendants()
+            .SingleOrDefault(element => element.Name.LocalName == "TextBlock"
+                && (string?)element.Attribute("Text") == "{Binding ModelProviderStatusText}");
+        Assert.IsNotNull(providerStatus, "The model-provider status TextBlock must be present.");
+        Assert.AreEqual("166", (string?)providerStatus.Attribute("MaxWidth"));
+        Assert.AreEqual("Wrap", (string?)providerStatus.Attribute("TextWrapping"));
         Assert.IsFalse(xaml.Contains("{Binding Account.", StringComparison.Ordinal));
     }
 
@@ -6166,7 +6179,7 @@ public sealed partial class ViewModelTests
             typeof(SuggestionChip), typeof(SlashCommandPresentationViewModel),
             typeof(SlashCommandSuggestionViewModel), typeof(SlashCommandOptionViewModel),
             typeof(AttachmentChipViewModel), typeof(FileSuggestionPresentationViewModel),
-            typeof(FileSuggestionViewModel), typeof(ReasoningEffortOption), typeof(ServiceTierOption),
+            typeof(FileSuggestionViewModel), typeof(ReasoningEffortOption), typeof(ServiceTierOption), typeof(ModelProviderInfo),
             typeof(PendingSkillViewModel), typeof(UsagePresentation),
             typeof(WorkerStatus), typeof(ThreadSummary), typeof(ThreadAttachmentPresentationViewModel),
             typeof(ThreadHistoryRowViewModel),
@@ -6790,7 +6803,7 @@ public sealed partial class ViewModelTests
         var bridge = new FakeWorkerBridge();
         using var vm = new ChatViewModel(bridge, autoConnect: false)
         {
-            SelectedThread = new ThreadSummary { Id = "thread-1" },
+            SelectedThread = new ThreadSummary { Id = "thread-1", ModelProviderId = "azure" },
             SelectedModel = "gpt-5",
             SelectedMode = "Chat",
         };
@@ -6800,6 +6813,7 @@ public sealed partial class ViewModelTests
 
         Assert.IsNotNull(bridge.LastStartTurnRequest);
         Assert.AreEqual("thread-1", bridge.LastStartTurnRequest!.ThreadId);
+        Assert.AreEqual("azure", bridge.LastStartTurnRequest.ModelProviderId);
         Assert.AreEqual("hello", bridge.LastStartTurnRequest.Text);
         Assert.AreEqual("gpt-5", bridge.LastStartTurnRequest.Model);
         Assert.AreEqual("never", bridge.LastStartTurnRequest.ApprovalPolicy);
@@ -8529,90 +8543,103 @@ public sealed partial class ViewModelTests
     }
 
     [TestMethod]
-    public async Task ChatViewModel_ProviderResumeRejectionLoadsHistoryAndKeepsRecoveryControlsAvailable()
+    [DataRow(ProviderErrorCodes.ModelProviderNotConfigured, "Provider.ResumeError.NotConfigured")]
+    [DataRow(ProviderErrorCodes.ModelProviderMismatch, "Provider.ResumeError.Mismatch")]
+    public async Task ChatViewModel_ProviderResumeRejectionLoadsHistoryAndKeepsRecoveryControlsAvailable(
+        string providerError,
+        string expectedStatus)
     {
-        const string threadId = "thread-provider";
-        var bridge = new FakeWorkerBridge
+        System.Globalization.CultureInfo originalUiCulture = System.Globalization.CultureInfo.CurrentUICulture;
+        try
         {
-            ResumeThreadHandler = (_, _) => Task.FromException<ThreadSummary>(
-                new StreamJsonRpc.RemoteInvocationException(
-                    "provider rejected this conversation",
-                    WorkerErrorCodes.UpstreamOperationFailed,
-                    ProviderErrorCodes.ModelProviderNotConfigured)),
-            ListThreadItemsHandler = (_, _) => Task.FromResult(new ThreadItemsPage
+            System.Globalization.CultureInfo.CurrentUICulture = System.Globalization.CultureInfo.GetCultureInfo("en-US");
+            const string threadId = "thread-provider";
+            var bridge = new FakeWorkerBridge
             {
-                Items =
-                [
-                    new ThreadHistoryItem
-                    {
-                        Id = "resume-hidden-answer",
-                        TurnId = "turn-provider",
-                        Type = "agentMessage",
-                        Text = "private resumed history answer",
-                        AgentMessageDisplayDecision = new AgentMessageDisplayDecision
+                ResumeThreadHandler = (_, _) => Task.FromException<ThreadSummary>(
+                    new StreamJsonRpc.RemoteInvocationException(
+                        "provider rejected this conversation",
+                        WorkerErrorCodes.UpstreamOperationFailed,
+                        providerError)),
+                ListThreadItemsHandler = (_, _) => Task.FromResult(new ThreadItemsPage
+                {
+                    Items =
+                    [
+                        new ThreadHistoryItem
                         {
-                            Mode = AgentMessageDisplayMode.Block,
-                            DisplayText = "The answer was blocked by moderation.",
+                            Id = "resume-hidden-answer",
+                            TurnId = "turn-provider",
+                            Type = "agentMessage",
+                            Text = "private resumed history answer",
+                            AgentMessageDisplayDecision = new AgentMessageDisplayDecision
+                            {
+                                Mode = AgentMessageDisplayMode.Block,
+                                DisplayText = "The answer was blocked by moderation.",
+                            },
                         },
-                    },
-                ],
-            }),
-        };
-        using var vm = new ChatViewModel(bridge, autoConnect: false)
+                    ],
+                }),
+            };
+            using var vm = new ChatViewModel(bridge, autoConnect: false)
+            {
+                SelectedThread = new ThreadSummary { Id = threadId },
+            };
+            await bridge.PublishStateAsync(new WorkerStatus
+            {
+                State = WorkerConnectionState.Ready,
+                ThreadId = threadId,
+                FeatureTier = CodexFeatureTier.Tier170,
+            });
+            int historyReadsBeforeJoin = bridge.ReadThreadCallCount;
+
+            await RunCommandAsync(vm.JoinThreadCommand);
+
+            Assert.IsTrue(vm.IsHistoryOnly);
+            Assert.IsTrue(bridge.ReadThreadCallCount > historyReadsBeforeJoin, "Provider rejection should open the transcript through thread/read.");
+            await WaitForAsync(() => vm.Items.Any(item => item.ItemId == "resume-hidden-answer"));
+            ChatItemViewModel resumedHistory = vm.Items.Single(item => item.ItemId == "resume-hidden-answer");
+            Assert.IsTrue(resumedHistory.Text.Contains("blocked by moderation", StringComparison.Ordinal));
+            Assert.IsFalse(resumedHistory.Text.Contains("private resumed history answer", StringComparison.Ordinal));
+            StringAssert.Contains(vm.HistoryStatusText, LocalizedStrings.Get(expectedStatus));
+            StringAssert.Contains(vm.HistoryStatusText, "/goal pause");
+
+            await bridge.PublishStateAsync(new WorkerStatus
+            {
+                State = WorkerConnectionState.Busy,
+                ThreadId = threadId,
+                TurnId = "turn-provider",
+            });
+            await bridge.PublishConversationEventAsync(new ConversationEvent
+            {
+                Kind = ConversationEventKind.TurnStarted,
+                ThreadId = threadId,
+                TurnId = "turn-provider",
+            });
+            Assert.IsTrue(vm.InterruptCommand.CanExecute, "An active provider-rejected turn remains interruptible.");
+
+            bridge.CurrentThreadGoal = new ThreadGoalInfo
+            {
+                ThreadId = threadId,
+                Objective = "Recover provider configuration",
+                Status = ThreadGoalStatus.Active,
+            };
+            vm.ComposerText = "ordinary prompt";
+            Assert.IsFalse(vm.SendCommand.CanExecute, "Model input stays blocked in read-only history.");
+
+            vm.ComposerText = "/goal pause";
+            Assert.IsTrue(vm.SendCommand.CanExecute, "Goal pause stays reachable from the composer.");
+            await RunCommandAsync(vm.SendCommand);
+            Assert.AreEqual(ThreadGoalStatus.Paused, bridge.CurrentThreadGoal?.Status);
+
+            vm.ComposerText = "/goal clear";
+            Assert.IsTrue(vm.SendCommand.CanExecute, "Goal clear stays reachable from the composer.");
+            await RunCommandAsync(vm.SendCommand);
+            Assert.IsNull(bridge.CurrentThreadGoal);
+        }
+        finally
         {
-            SelectedThread = new ThreadSummary { Id = threadId },
-        };
-        await bridge.PublishStateAsync(new WorkerStatus
-        {
-            State = WorkerConnectionState.Ready,
-            ThreadId = threadId,
-            FeatureTier = CodexFeatureTier.Tier170,
-        });
-        int historyReadsBeforeJoin = bridge.ReadThreadCallCount;
-
-        await RunCommandAsync(vm.JoinThreadCommand);
-
-        Assert.IsTrue(vm.IsHistoryOnly);
-        Assert.IsTrue(bridge.ReadThreadCallCount > historyReadsBeforeJoin, "Provider rejection should open the transcript through thread/read.");
-        await WaitForAsync(() => vm.Items.Any(item => item.ItemId == "resume-hidden-answer"));
-        ChatItemViewModel resumedHistory = vm.Items.Single(item => item.ItemId == "resume-hidden-answer");
-        Assert.IsTrue(resumedHistory.Text.Contains("blocked by moderation", StringComparison.Ordinal));
-        Assert.IsFalse(resumedHistory.Text.Contains("private resumed history answer", StringComparison.Ordinal));
-        StringAssert.Contains(vm.HistoryStatusText, "not configured");
-        StringAssert.Contains(vm.HistoryStatusText, "/goal pause");
-
-        await bridge.PublishStateAsync(new WorkerStatus
-        {
-            State = WorkerConnectionState.Busy,
-            ThreadId = threadId,
-            TurnId = "turn-provider",
-        });
-        await bridge.PublishConversationEventAsync(new ConversationEvent
-        {
-            Kind = ConversationEventKind.TurnStarted,
-            ThreadId = threadId,
-            TurnId = "turn-provider",
-        });
-        Assert.IsTrue(vm.InterruptCommand.CanExecute, "An active provider-rejected turn remains interruptible.");
-
-        bridge.CurrentThreadGoal = new ThreadGoalInfo
-        {
-            ThreadId = threadId,
-            Objective = "Recover provider configuration",
-            Status = ThreadGoalStatus.Active,
-        };
-        vm.ComposerText = "ordinary prompt";
-        Assert.IsFalse(vm.SendCommand.CanExecute, "Model input stays blocked in read-only history.");
-
-        vm.ComposerText = "/goal pause";
-        Assert.IsTrue(vm.SendCommand.CanExecute, "Goal pause stays reachable from the composer.");
-        await RunCommandAsync(vm.SendCommand);
-        Assert.AreEqual(ThreadGoalStatus.Paused, bridge.CurrentThreadGoal?.Status);
-
-        vm.ComposerText = "/goal clear";
-        Assert.IsTrue(vm.SendCommand.CanExecute, "Goal clear stays reachable from the composer.");
-        await RunCommandAsync(vm.SendCommand);
-        Assert.IsNull(bridge.CurrentThreadGoal);
+            System.Globalization.CultureInfo.CurrentUICulture = originalUiCulture;
+        }
     }
 
     [TestMethod]
@@ -11587,6 +11614,20 @@ public sealed partial class ViewModelTests
 
     private sealed class FakeWorkerBridge : IWorkerBridge
     {
+        private int listModelProvidersCallCount;
+        private int setDefaultModelProviderCallCount;
+        private int modelListCallCount;
+        private int startTurnCallCount;
+        private int readGatewayOAuthCallCount;
+        private int startThreadCallCount;
+        private ListModelsRequest? lastListModelsRequest;
+        private ListModelProvidersRequest? lastListModelProvidersRequest;
+        private SetDefaultModelProviderRequest? lastSetDefaultModelProviderRequest;
+        private StartTurnRequest? lastStartTurnRequest;
+        private StartThreadRequest? lastStartThreadRequest;
+        private ReadGatewayOAuthRequest? lastReadGatewayOAuthRequest;
+        private LoginGatewayOAuthRequest? lastLoginGatewayOAuthRequest;
+
         public event Action<WorkerRecoveryFailureKind>? ConnectionLost { add { } remove { } }
 
         public event Func<WorkerNotification<WorkerStatus>, Task>? StateChanged;
@@ -11637,13 +11678,31 @@ public sealed partial class ViewModelTests
 
         public ListModelsResult ModelListResult { get; set; } = new();
 
+        public Func<ListModelsRequest, CancellationToken, Task<ListModelsResult>>? ListModelsHandler { get; set; }
+
+        public ListModelsRequest? LastListModelsRequest => Volatile.Read(ref lastListModelsRequest);
+
+        public ListModelProvidersResult ModelProvidersResult { get; set; } = new();
+
+        public Func<ListModelProvidersRequest, CancellationToken, Task<ListModelProvidersResult>>? ListModelProvidersHandler { get; set; }
+
+        public Func<SetDefaultModelProviderRequest, CancellationToken, Task<ListModelProvidersResult>>? SetDefaultModelProviderHandler { get; set; }
+
+        public int ListModelProvidersCallCount => Volatile.Read(ref listModelProvidersCallCount);
+
+        public int SetDefaultModelProviderCallCount => Volatile.Read(ref setDefaultModelProviderCallCount);
+
+        public ListModelProvidersRequest? LastListModelProvidersRequest => Volatile.Read(ref lastListModelProvidersRequest);
+
+        public SetDefaultModelProviderRequest? LastSetDefaultModelProviderRequest => Volatile.Read(ref lastSetDefaultModelProviderRequest);
+
         public ListPermissionProfilesResult PermissionProfilesResult { get; set; } = new();
 
-        public int ModelListCallCount { get; private set; }
+        public int ModelListCallCount => Volatile.Read(ref modelListCallCount);
 
-        public StartTurnRequest? LastStartTurnRequest { get; private set; }
+        public StartTurnRequest? LastStartTurnRequest => Volatile.Read(ref lastStartTurnRequest);
 
-        public int StartTurnCallCount { get; private set; }
+        public int StartTurnCallCount => Volatile.Read(ref startTurnCallCount);
 
         public ThreadGoalInfo? CurrentThreadGoal { get; set; }
 
@@ -11663,7 +11722,11 @@ public sealed partial class ViewModelTests
 
         public Func<ReadGatewayOAuthRequest, CancellationToken, Task<InteractionAuthStatus>>? ReadGatewayOAuthHandler { get; set; }
 
-        public int ReadGatewayOAuthCallCount { get; private set; }
+        public int ReadGatewayOAuthCallCount => Volatile.Read(ref readGatewayOAuthCallCount);
+
+        public ReadGatewayOAuthRequest? LastReadGatewayOAuthRequest => Volatile.Read(ref lastReadGatewayOAuthRequest);
+
+        public LoginGatewayOAuthRequest? LastLoginGatewayOAuthRequest => Volatile.Read(ref lastLoginGatewayOAuthRequest);
 
         public RateLimitsResult RateLimitsResult { get; set; } = new();
 
@@ -11761,7 +11824,7 @@ public sealed partial class ViewModelTests
 
         public Exception? StartThreadException { get; set; }
 
-        public int StartThreadCallCount { get; private set; }
+        public int StartThreadCallCount => Volatile.Read(ref startThreadCallCount);
 
         public Exception? ResolveApprovalException { get; set; }
 
@@ -12035,8 +12098,23 @@ public sealed partial class ViewModelTests
 
         public Task<ListModelsResult> ListModelsAsync(ListModelsRequest request, CancellationToken cancellationToken)
         {
-            ModelListCallCount++;
-            return Task.FromResult(ModelListResult);
+            Volatile.Write(ref lastListModelsRequest, request);
+            Interlocked.Increment(ref modelListCallCount);
+            return ListModelsHandler?.Invoke(request, cancellationToken) ?? Task.FromResult(ModelListResult);
+        }
+
+        public Task<ListModelProvidersResult> ListModelProvidersAsync(ListModelProvidersRequest request, CancellationToken cancellationToken)
+        {
+            Volatile.Write(ref lastListModelProvidersRequest, request);
+            Interlocked.Increment(ref listModelProvidersCallCount);
+            return ListModelProvidersHandler?.Invoke(request, cancellationToken) ?? Task.FromResult(ModelProvidersResult);
+        }
+
+        public Task<ListModelProvidersResult> SetDefaultModelProviderAsync(SetDefaultModelProviderRequest request, CancellationToken cancellationToken)
+        {
+            Volatile.Write(ref lastSetDefaultModelProviderRequest, request);
+            Interlocked.Increment(ref setDefaultModelProviderCallCount);
+            return SetDefaultModelProviderHandler?.Invoke(request, cancellationToken) ?? Task.FromResult(ModelProvidersResult);
         }
 
         public Task<ListPermissionProfilesResult> ListPermissionProfilesAsync(ListPermissionProfilesRequest request, CancellationToken cancellationToken)
@@ -12044,11 +12122,17 @@ public sealed partial class ViewModelTests
 
         public Task<ThreadSummary> StartThreadAsync(StartThreadRequest request, CancellationToken cancellationToken)
         {
-            StartThreadCallCount++;
-            return StartThreadException is null
-                ? Task.FromResult(new ThreadSummary { Id = "thread-1" })
-                : Task.FromException<ThreadSummary>(StartThreadException);
+            Volatile.Write(ref lastStartThreadRequest, request);
+            Interlocked.Increment(ref startThreadCallCount);
+            return StartThreadHandler?.Invoke(request, cancellationToken)
+                ?? (StartThreadException is null
+                    ? Task.FromResult(new ThreadSummary { Id = "thread-1", ModelProviderId = request.ModelProviderId })
+                    : Task.FromException<ThreadSummary>(StartThreadException));
         }
+
+        public Func<StartThreadRequest, CancellationToken, Task<ThreadSummary>>? StartThreadHandler { get; set; }
+
+        public StartThreadRequest? LastStartThreadRequest => Volatile.Read(ref lastStartThreadRequest);
 
         public string? LastResumedThreadId { get; private set; }
 
@@ -12079,8 +12163,8 @@ public sealed partial class ViewModelTests
 
         public Task<string> StartTurnAsync(StartTurnRequest request, CancellationToken cancellationToken)
         {
-            StartTurnCallCount++;
-            LastStartTurnRequest = request;
+            Volatile.Write(ref lastStartTurnRequest, request);
+            Interlocked.Increment(ref startTurnCallCount);
             if (StartTurnHandler is not null)
             {
                 return StartTurnHandler(request, cancellationToken);
@@ -12232,12 +12316,16 @@ public sealed partial class ViewModelTests
 
         public Task<InteractionAuthStatus> ReadGatewayOAuthAsync(ReadGatewayOAuthRequest request, CancellationToken cancellationToken)
         {
-            ReadGatewayOAuthCallCount++;
+            Volatile.Write(ref lastReadGatewayOAuthRequest, request);
+            Interlocked.Increment(ref readGatewayOAuthCallCount);
             return ReadGatewayOAuthHandler?.Invoke(request, cancellationToken) ?? Task.FromResult(new InteractionAuthStatus());
         }
 
         public Task<InteractionAuthStatus> LoginGatewayOAuthAsync(LoginGatewayOAuthRequest request, CancellationToken cancellationToken)
-            => LoginGatewayOAuthHandler?.Invoke(request, cancellationToken) ?? Task.FromResult(new InteractionAuthStatus());
+        {
+            Volatile.Write(ref lastLoginGatewayOAuthRequest, request);
+            return LoginGatewayOAuthHandler?.Invoke(request, cancellationToken) ?? Task.FromResult(new InteractionAuthStatus());
+        }
 
         public Func<LoginGatewayOAuthRequest, CancellationToken, Task<InteractionAuthStatus>>? LoginGatewayOAuthHandler { get; set; }
 

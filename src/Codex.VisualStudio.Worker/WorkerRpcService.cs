@@ -3,6 +3,7 @@ using Codex.AppServer.Protocol;
 using Codex.VisualStudio.Contracts;
 using StreamJsonRpc;
 using System.Diagnostics;
+using System.Text.RegularExpressions;
 
 namespace Codex.VisualStudio.Worker;
 
@@ -15,6 +16,10 @@ public sealed partial class WorkerRpcService : ICodexWorkerClient, IAsyncDisposa
     private readonly RemoteStartupLimits limits;
     private readonly RemoteWatchdogTiming watchdogTiming;
     private readonly TimeProvider timeProvider;
+    private static readonly Regex ProviderEndpointUrlRegex = new(
+        @"(?i)(?<![a-z0-9])(?:[a-z][a-z0-9+.-]*://|//)[^\s<>""'']+|(?<![a-z0-9])(?:localhost|(?:[a-z0-9-]+\.)+[a-z0-9-]+|(?:\d{1,3}\.){3}\d{1,3})(?::\d+(?:[/?#][^\s<>""'']*)?|[/?#][^\s<>""'']*)|\[(?:[0-9a-f:.%]+)\](?::\d+(?:[/?#][^\s<>""'']*)?|[/?#][^\s<>""'']*)",
+        RegexOptions.CultureInvariant | RegexOptions.Compiled,
+        TimeSpan.FromMilliseconds(100));
     private readonly string workerInstanceId = Guid.NewGuid().ToString("N");
     private readonly SemaphoreSlim connectionTransitionGate = new(1, 1);
 
@@ -963,7 +968,16 @@ public sealed partial class WorkerRpcService : ICodexWorkerClient, IAsyncDisposa
     public Task<ThreadSummary> StartThreadAsync(StartThreadRequest request, CancellationToken cancellationToken)
         => ExecuteOwnerScopedAsync(request, async () =>
         {
-            ThreadSummary thread = await session.StartThreadAsync(cancellationToken).ConfigureAwait(false);
+            ThreadSummary thread;
+            try
+            {
+                thread = await session.StartThreadAsync(request.ModelProviderId, cancellationToken).ConfigureAwait(false);
+            }
+            catch (JsonRpcRemoteException exception)
+            {
+                throw ProjectProviderFailure(exception, "The app-server rejected thread creation.");
+            }
+
             ValidateOwnerScope(request);
             UpdateSessionIds();
             return thread;
@@ -981,7 +995,7 @@ public sealed partial class WorkerRpcService : ICodexWorkerClient, IAsyncDisposa
             ThreadSummary thread;
             try
             {
-                thread = await session.ResumeThreadAsync(request.ThreadId, cancellationToken).ConfigureAwait(false);
+                thread = await session.ResumeThreadAsync(request.ThreadId, request.ModelProviderId, cancellationToken).ConfigureAwait(false);
             }
             catch (JsonRpcRemoteException exception)
             {
@@ -998,18 +1012,42 @@ public sealed partial class WorkerRpcService : ICodexWorkerClient, IAsyncDisposa
     {
         string? providerErrorCode = ReadProviderErrorCode(exception.ErrorData);
         string message = providerErrorCode is null
-            ? redactor.Redact(exception.Message)
+            ? SanitizeUpstreamProviderError(exception.Message)
             : "The app-server rejected the conversation resume.";
-        if (message.Length > 512)
-        {
-            message = string.Concat(message.AsSpan(0, 511), "…");
-        }
 
         return new LocalRpcException(message)
         {
             ErrorCode = WorkerErrorCodes.UpstreamOperationFailed,
             ErrorData = providerErrorCode,
         };
+    }
+
+    private LocalRpcException ProjectProviderFailure(JsonRpcRemoteException exception, string genericMessage)
+    {
+        string? providerErrorCode = ReadProviderErrorCode(exception.ErrorData);
+        string message = providerErrorCode is null
+            ? SanitizeUpstreamProviderError(exception.Message)
+            : genericMessage;
+        return new LocalRpcException(message)
+        {
+            ErrorCode = WorkerErrorCodes.UpstreamOperationFailed,
+            ErrorData = providerErrorCode,
+        };
+    }
+
+    private string SanitizeUpstreamProviderError(string message)
+    {
+        try
+        {
+            string sanitized = ProviderEndpointUrlRegex.Replace(redactor.Redact(message), "[endpoint redacted]");
+            return sanitized.Length > 512
+                ? string.Concat(sanitized.AsSpan(0, 511), "…")
+                : sanitized;
+        }
+        catch (RegexMatchTimeoutException)
+        {
+            return "The app-server returned an error whose details could not be safely processed.";
+        }
     }
 
     private static string? ReadProviderErrorCode(JsonElement? errorData)
@@ -1174,14 +1212,54 @@ public sealed partial class WorkerRpcService : ICodexWorkerClient, IAsyncDisposa
         }, cancellationToken);
 
     public Task<ListModelsResult> ListModelsAsync(ListModelsRequest request, CancellationToken cancellationToken)
-        => ExecuteOwnerScopedAsync(request, () => ListModelsCoreAsync(cancellationToken), cancellationToken);
+        => ExecuteOwnerScopedAsync(request, () => ListModelsCoreAsync(request.ModelProviderId, cancellationToken), cancellationToken);
 
-    private async Task<ListModelsResult> ListModelsCoreAsync(CancellationToken cancellationToken)
+    public Task<ListModelProvidersResult> ListModelProvidersAsync(
+        ListModelProvidersRequest request,
+        CancellationToken cancellationToken)
+        => ExecuteOwnerScopedAsync(request, async () =>
+        {
+            try
+            {
+                return await session.ListModelProvidersAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch (JsonRpcRemoteException exception)
+            {
+                throw ProjectProviderFailure(exception, "The app-server rejected model provider discovery.");
+            }
+        }, cancellationToken);
+
+    public Task<ListModelProvidersResult> SetDefaultModelProviderAsync(
+        SetDefaultModelProviderRequest request,
+        CancellationToken cancellationToken)
+        => ExecuteOwnerScopedAsync(request, async () =>
+        {
+            try
+            {
+                return await session.SetDefaultModelProviderAsync(request.ProviderId, cancellationToken).ConfigureAwait(false);
+            }
+            catch (ModelProviderMutationRejectedException)
+            {
+                throw new LocalRpcException("The app-server rejected the default model provider change.")
+                {
+                    ErrorCode = WorkerErrorCodes.UpstreamOperationRejected,
+                };
+            }
+            catch (ModelProviderPreDispatchException)
+            {
+                throw new LocalRpcException("The default model provider could not be changed because preflight validation failed.")
+                {
+                    ErrorCode = WorkerErrorCodes.PreDispatchRejected,
+                };
+            }
+        }, cancellationToken);
+
+    private async Task<ListModelsResult> ListModelsCoreAsync(string? modelProviderId, CancellationToken cancellationToken)
     {
         WorkerDiagnostics.Write("worker/models/list RPC received");
         try
         {
-            ListModelsResult result = await session.ListModelsAsync(cancellationToken).ConfigureAwait(false);
+            ListModelsResult result = await session.ListModelsAsync(modelProviderId, cancellationToken).ConfigureAwait(false);
             WorkerDiagnostics.Write($"worker/models/list RPC completed count={result.Models.Count}");
             return result;
         }
@@ -1189,6 +1267,11 @@ public sealed partial class WorkerRpcService : ICodexWorkerClient, IAsyncDisposa
         {
             WorkerDiagnostics.Write("worker/models/list RPC canceled", ex);
             throw;
+        }
+        catch (JsonRpcRemoteException exception)
+        {
+            WorkerDiagnostics.Write("worker/models/list upstream request rejected", exception);
+            throw ProjectProviderFailure(exception, "The app-server rejected model discovery for this provider.");
         }
         catch (Exception ex)
         {
@@ -1455,10 +1538,10 @@ public sealed partial class WorkerRpcService : ICodexWorkerClient, IAsyncDisposa
         => ExecuteOwnerScopedAsync(request, () => session.ResolveMcpElicitationAsync(request, cancellationToken), cancellationToken);
 
     public Task<InteractionAuthStatus> ReadGatewayOAuthAsync(ReadGatewayOAuthRequest request, CancellationToken cancellationToken)
-        => ExecuteOwnerScopedAsync(request, () => session.ReadGatewayOAuthAsync(cancellationToken), cancellationToken);
+        => ExecuteOwnerScopedAsync(request, () => session.ReadGatewayOAuthAsync(request.ProviderId, cancellationToken), cancellationToken);
 
     public Task<InteractionAuthStatus> LoginGatewayOAuthAsync(LoginGatewayOAuthRequest request, CancellationToken cancellationToken)
-        => ExecuteOwnerScopedAsync(request, () => session.LoginGatewayOAuthAsync(cancellationToken), cancellationToken);
+        => ExecuteOwnerScopedAsync(request, () => session.LoginGatewayOAuthAsync(request.ProviderId, cancellationToken), cancellationToken);
 
     public Task<InteractionAuthStatus> CancelGatewayOAuthAsync(CancelGatewayOAuthRequest request, CancellationToken cancellationToken)
         => ExecuteOwnerScopedAsync(request, () => session.CancelGatewayOAuthAsync(cancellationToken), cancellationToken);
