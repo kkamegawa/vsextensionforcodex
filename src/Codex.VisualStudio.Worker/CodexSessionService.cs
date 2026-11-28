@@ -350,6 +350,14 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
     private const int MaxPermissionProfilePages = 10;
     private const int MaxPermissionProfiles = 500;
     private const int MaxPermissionProfileIdLength = 256;
+    private const int MaxSecuritySetupReadAttemptsPerIdentity = 2;
+
+    private sealed record SecuritySetupReadRequest(
+        ConnectionContext Context,
+        AccountStatus Status,
+        string AccountId,
+        string UserId,
+        long Generation);
 
     // skills/list has no pagination cursor (unlike model/list and permissionProfile/list), so the
     // array is server-supplied and unbounded. Cap it instead of trusting the server to be small.
@@ -392,6 +400,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
     // Stop requests keyed by turn, used only to log how long a turn took to end after the request.
     private readonly Dictionary<TurnKey, long> interruptRequestedAt = new();
     private long connectionGeneration;
+    private readonly SemaphoreSlim accountStatusReadGate = new(1, 1);
     private readonly SemaphoreSlim skillsCacheGate = new(1, 1);
     private readonly TimeProvider timeProvider;
     private readonly ISkillCatalogStore skillCatalogStore;
@@ -1914,6 +1923,34 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
     {
         var checking = new AccountStatus { State = AccountState.Checking };
         await EmitAccountStatusAsync(checking, cancellationToken).ConfigureAwait(false);
+
+        await accountStatusReadGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        (AccountStatus Status, SecuritySetupReadRequest? PendingRead) result;
+        try
+        {
+            result = await GetAccountStatusCoreAsync(cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            accountStatusReadGate.Release();
+        }
+
+        await EmitAccountStatusAsync(result.Status, cancellationToken).ConfigureAwait(false);
+        if (result.PendingRead is { } pendingRead)
+        {
+            _ = CompleteAccountSecuritySetupNoticeReadAsync(
+                pendingRead.Context,
+                pendingRead.Status,
+                pendingRead.AccountId,
+                pendingRead.UserId,
+                pendingRead.Generation);
+        }
+
+        return result.Status;
+    }
+
+    private async Task<(AccountStatus Status, SecuritySetupReadRequest? PendingRead)> GetAccountStatusCoreAsync(CancellationToken cancellationToken)
+    {
         try
         {
             ConnectionContext context = RequireContext();
@@ -1927,6 +1964,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             if (context.ExperimentalApi)
             {
                 status = await PopulateWorkspaceNameAsync(context, status, cancellationToken).ConfigureAwait(false);
+                EnsureCurrent(context);
             }
             WorkerDiagnostics.Write($"account status read completed state={status.State} plan={status.PlanType ?? "none"}");
 
@@ -1956,12 +1994,66 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
                     State = AccountState.Unavailable,
                     Message = "The account changed. Reconnect to confirm the active account.",
                 };
-                await EmitAccountStatusAsync(changed, CancellationToken.None).ConfigureAwait(false);
-                return changed;
+                return (changed, null);
             }
 
-            await EmitAccountStatusAsync(status, cancellationToken).ConfigureAwait(false);
-            return status;
+            string? currentAccountId = ReadWorkspaceAccountId(result);
+            if (string.IsNullOrWhiteSpace(currentAccountId))
+            {
+                currentAccountId = null;
+            }
+
+            string? currentUserId = GetString(result, "userId");
+            if (string.IsNullOrWhiteSpace(currentUserId))
+            {
+                currentUserId = null;
+            }
+            bool startSecuritySetupRead;
+            long securitySetupReadGeneration = 0;
+            lock (context.SecuritySetupGate)
+            {
+                bool securityIdentityChanged = !string.Equals(context.SecuritySetupAccountId, currentAccountId, StringComparison.Ordinal)
+                    || !string.Equals(context.SecuritySetupUserId, currentUserId, StringComparison.Ordinal);
+                if (securityIdentityChanged)
+                {
+                    Interlocked.Increment(ref context.SecuritySetupReadGeneration);
+                    context.SecuritySetupAccountId = currentAccountId;
+                    context.SecuritySetupUserId = currentUserId;
+                    context.SecuritySetupNotice = null;
+                    context.SecuritySetupReadAttempted = false;
+                    context.SecuritySetupReadAttemptCount = 0;
+                    context.SecuritySetupReadInProgress = false;
+                }
+
+                startSecuritySetupRead = status.State == AccountState.SignedIn
+                    && context.FeatureTier >= CodexFeatureTier.Baseline
+                    && currentAccountId is not null
+                    && currentUserId is not null
+                    && !context.SecuritySetupReadAttempted
+                    && context.SecuritySetupReadAttemptCount < MaxSecuritySetupReadAttemptsPerIdentity;
+                if (startSecuritySetupRead)
+                {
+                    context.SecuritySetupReadAttempted = true;
+                    context.SecuritySetupReadAttemptCount++;
+                    context.SecuritySetupReadInProgress = true;
+                    securitySetupReadGeneration = Interlocked.Increment(ref context.SecuritySetupReadGeneration);
+                }
+
+                status.SecuritySetupNotice = context.SecuritySetupNotice;
+            }
+
+            SecuritySetupReadRequest? pendingRead = startSecuritySetupRead
+                && currentAccountId is { } expectedAccountId
+                && currentUserId is { } expectedUserId
+                    ? new SecuritySetupReadRequest(
+                        context,
+                        status,
+                        expectedAccountId,
+                        expectedUserId,
+                        securitySetupReadGeneration)
+                    : null;
+
+            return (status, pendingRead);
         }
         catch (JsonRpcConnectionClosedException)
         {
@@ -1976,8 +2068,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
                 State = AccountState.Unavailable,
                 Message = "Codex could not read the account status.",
             };
-            await EmitAccountStatusAsync(status, CancellationToken.None).ConfigureAwait(false);
-            return status;
+            return (status, null);
         }
     }
 
@@ -1985,10 +2076,22 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
     {
         WorkerDiagnostics.Write("app-server login request starting");
         var signingIn = new AccountStatus { State = AccountState.SigningIn };
-        await EmitAccountStatusAsync(signingIn, cancellationToken).ConfigureAwait(false);
         try
         {
-            ConnectionContext context = RequireContext();
+            ConnectionContext context;
+            await accountStatusReadGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                context = RequireContext();
+                InvalidatePendingSecuritySetupRead(context);
+            }
+            finally
+            {
+                accountStatusReadGate.Release();
+            }
+
+            await EmitAccountStatusAsync(signingIn, cancellationToken).ConfigureAwait(false);
+
             JsonElement result = await context.Connection.SendRequestAsync(
                 "account/login/start",
                 new { type = "chatgpt" },
@@ -2049,7 +2152,16 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
 
             // An account notification for this logout can be processed before the response. Marking
             // the request first lets that path retire the owner as the owner's own logout.
-            context.BeginLogoutRequest();
+            await accountStatusReadGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                InvalidatePendingSecuritySetupRead(context);
+                context.BeginLogoutRequest();
+            }
+            finally
+            {
+                accountStatusReadGate.Release();
+            }
             logoutRequestStarted = true;
             await context.Connection.SendRequestAsync(
                 "account/logout",
@@ -2364,7 +2476,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
                 continue;
             }
 
-            string? errorReason = ReadTurnErrorReason(turn);
+            string? errorReason = ReadTurnErrorReason(turn, FeatureTier);
             turns.Add(new ThreadTurnSummary
             {
                 Id = id,
@@ -2372,7 +2484,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
                 StartedAt = GetInt64(turn, "startedAt"),
                 CompletedAt = GetInt64(turn, "completedAt"),
                 ErrorReason = errorReason,
-                ErrorText = DescribeTurnErrorReason(errorReason),
+                ErrorText = BuildTurnErrorText(turn, errorReason),
             });
             if (turns.Count == boundedLimit)
             {
@@ -4913,6 +5025,8 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
 
         if (method is "account/login/completed" or "account/updated")
         {
+            InvalidatePendingSecuritySetupRead(context);
+
             // The pinned notification carries only auth mode and plan, so it cannot prove that
             // the authenticated owner is unchanged. Retire the old generation before accepting
             // any later account-scoped result, even when email and plan appear unchanged.
@@ -4932,6 +5046,21 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
                 invalidatedAccountState = AccountState.SignedOut;
                 invalidatedByOwnerAction = true;
                 await InvalidateOwnerPartitionAsync(context, cancellationToken).ConfigureAwait(false);
+                return;
+            }
+
+            if (method == "account/updated"
+                && context.FeatureTier >= CodexFeatureTier.Tier171
+                && string.Equals(GetString(parameters, "reason"), "workspaceRoutingReady", StringComparison.Ordinal))
+            {
+                EnsureCurrent(context);
+                if (context.AccountFingerprint is not null)
+                {
+                    // This 0.171 signal is only a refresh hint. The account is reread and this
+                    // owner is retired if the server now reports another one.
+                    await GetAccountStatusAsync(cancellationToken).ConfigureAwait(false);
+                }
+
                 return;
             }
 
@@ -5105,11 +5234,18 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
                 : redactor.Redact(parameters.GetRawText()),
             StartedAtMs = ReadItemTimestamp(parameters, "startedAtMs"),
             CompletedAtMs = ReadItemTimestamp(parameters, "completedAtMs"),
+            ContentTokenCount = method == "item/completed"
+                && parameters.TryGetProperty("item", out JsonElement completedTokenItem)
+                && string.Equals(GetString(completedTokenItem, "type"), "agentMessage", StringComparison.Ordinal)
+                && GetInt64(parameters, "contentTokenCount") is long tokenCount
+                && tokenCount >= 0
+                    ? tokenCount
+                    : null,
         };
         if (method == "error")
         {
-            output.ErrorReason = ReadTurnErrorReason(parameters);
-            output.Text = DescribeTurnErrorReason(output.ErrorReason);
+            output.ErrorReason = ReadTurnErrorReason(parameters, context.FeatureTier);
+            output.Text = BuildTurnErrorText(parameters, output.ErrorReason);
             output.PayloadJson = null;
         }
         else if (method == "thread/closed")
@@ -5117,10 +5253,11 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             output.Kind = ConversationEventKind.ThreadClosed;
             output.Text = "The conversation was closed by the app-server and can be joined again.";
         }
-        else if (method == "turn/completed" && ReadTurnErrorReason(parameters) is { } turnErrorReason)
+        else if (method == "turn/completed"
+            && ReadTurnErrorReason(parameters, context.FeatureTier) is { } turnErrorReason)
         {
             output.ErrorReason = turnErrorReason;
-            output.Text = DescribeTurnErrorReason(turnErrorReason);
+            output.Text = BuildTurnErrorText(parameters, turnErrorReason);
         }
         string? delta = GetString(parameters, "delta") ?? GetString(parameters, "text");
         if (delta is not null && streamingBuffer is not null)
@@ -5533,6 +5670,9 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
 
         string? failureReason = GetString(parameters, "failureReason");
         bool needsReauthentication = string.Equals(failureReason, "reauthenticationRequired", StringComparison.Ordinal);
+        string? serverError = wireStatus == "failed" && !needsReauthentication
+            ? RedactAndBoundDisplayText(redactor, GetString(parameters, "error"))
+            : null;
         InteractionAuthState state = needsReauthentication
             ? InteractionAuthState.ReauthenticationRequired
             : wireStatus switch
@@ -5542,13 +5682,15 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
                 _ => InteractionAuthState.Failed,
             };
         string? message = needsReauthentication
-            ? "MCP server authorization expired. Sign in again to continue."
+            ? LocalizedStrings.Get("Diagnostics.McpStartup.ReauthenticationRequired")
             : wireStatus switch
             {
                 "ready" => null,
-                "starting" => "MCP server is starting.",
-                "cancelled" => "MCP server startup was canceled.",
-                _ => "MCP server is unavailable. Check its status before retrying.",
+                "starting" => LocalizedStrings.Get("Diagnostics.McpStartup.Starting"),
+                "cancelled" => LocalizedStrings.Get("Diagnostics.McpStartup.Cancelled"),
+                _ => serverError is null
+                    ? LocalizedStrings.Get("Diagnostics.McpStartup.Failed")
+                    : $"{LocalizedStrings.Get("Diagnostics.McpStartup.Failed")}\n{LocalizedStrings.Format("Diagnostics.ServerMessage", serverError)}",
             };
         lock (context.McpOAuthCompletionLock)
         {
@@ -6543,6 +6685,197 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             WorkspaceName = GetString(account, "workspaceName"),
         };
     }
+
+    private async Task CompleteAccountSecuritySetupNoticeReadAsync(
+        ConnectionContext context,
+        AccountStatus accountStatus,
+        string expectedAccountId,
+        string expectedUserId,
+        long requestGeneration)
+    {
+        await Task.Yield();
+        try
+        {
+            lock (context.SecuritySetupGate)
+            {
+                if (!IsCurrentSecuritySetupRead(context, requestGeneration)
+                    || !string.Equals(context.SecuritySetupAccountId, expectedAccountId, StringComparison.Ordinal)
+                    || !string.Equals(context.SecuritySetupUserId, expectedUserId, StringComparison.Ordinal))
+                {
+                    return;
+                }
+            }
+
+            AccountSecuritySetupNotice? notice = await ReadAccountSecuritySetupNoticeAsync(
+                context,
+                expectedAccountId,
+                expectedUserId,
+                requestGeneration,
+                context.Lifetime.Token).ConfigureAwait(false);
+            await accountStatusReadGate.WaitAsync(context.Lifetime.Token).ConfigureAwait(false);
+            Task? publication = null;
+            try
+            {
+                lock (context.SecuritySetupGate)
+                {
+                    if (!IsCurrentSecuritySetupRead(context, requestGeneration)
+                        || !string.Equals(context.SecuritySetupAccountId, expectedAccountId, StringComparison.Ordinal)
+                        || !string.Equals(context.SecuritySetupUserId, expectedUserId, StringComparison.Ordinal))
+                    {
+                        return;
+                    }
+
+                    context.SecuritySetupNotice = notice;
+                }
+
+                if (notice is not null)
+                {
+                    publication = EmitAccountStatusAsync(new AccountStatus
+                    {
+                        State = accountStatus.State,
+                        PlanType = accountStatus.PlanType,
+                        Message = accountStatus.Message,
+                        WorkspaceId = accountStatus.WorkspaceId,
+                        WorkspaceName = accountStatus.WorkspaceName,
+                        SecuritySetupNotice = notice,
+                    }, context.Lifetime.Token);
+                }
+            }
+            finally
+            {
+                accountStatusReadGate.Release();
+            }
+
+            if (publication is not null)
+            {
+                await publication.ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException) when (context.Lifetime.IsCancellationRequested)
+        {
+        }
+        catch (Exception ex)
+        {
+            WorkerDiagnostics.Write($"account security reminder refresh failed error={ex.GetType().Name}");
+        }
+        finally
+        {
+            lock (context.SecuritySetupGate)
+            {
+                if (Interlocked.Read(ref context.SecuritySetupReadGeneration) == requestGeneration)
+                {
+                    context.SecuritySetupReadInProgress = false;
+                }
+            }
+        }
+    }
+
+    private bool IsCurrentSecuritySetupRead(ConnectionContext context, long requestGeneration)
+        => IsCurrent(context)
+            && Interlocked.Read(ref context.SecuritySetupReadGeneration) == requestGeneration;
+
+    private static void InvalidatePendingSecuritySetupRead(ConnectionContext context)
+    {
+        lock (context.SecuritySetupGate)
+        {
+            if (!context.SecuritySetupReadInProgress)
+            {
+                return;
+            }
+
+            Interlocked.Increment(ref context.SecuritySetupReadGeneration);
+            context.SecuritySetupReadInProgress = false;
+            context.SecuritySetupReadAttemptCount = Math.Max(0, context.SecuritySetupReadAttemptCount - 1);
+            context.SecuritySetupReadAttempted = false;
+        }
+    }
+
+    private async Task<AccountSecuritySetupNotice?> ReadAccountSecuritySetupNoticeAsync(
+        ConnectionContext context,
+        string expectedAccountId,
+        string expectedUserId,
+        long requestGeneration,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            JsonElement response = await context.Connection.SendReadOnlyRequestAsync(
+                "account/securitySetup/read",
+                new { },
+                TimeSpan.FromSeconds(15),
+                cancellationToken).ConfigureAwait(false);
+            EnsureCurrent(context);
+            lock (context.SecuritySetupGate)
+            {
+                if (!IsCurrentSecuritySetupRead(context, requestGeneration))
+                {
+                    return null;
+                }
+            }
+
+            if (!response.TryGetProperty("notice", out JsonElement notice)
+                || notice.ValueKind != JsonValueKind.Object
+                || !string.Equals(GetString(notice, "accountId"), expectedAccountId, StringComparison.Ordinal)
+                || !string.Equals(GetString(notice, "userId"), expectedUserId, StringComparison.Ordinal)
+                || !notice.TryGetProperty("action", out JsonElement action)
+                || action.ValueKind != JsonValueKind.Object)
+            {
+                return null;
+            }
+
+            string? title = ReadSafeNoticeText(notice, "title", 256);
+            string? description = ReadSafeNoticeText(notice, "description", 2_048);
+            string? actionLabel = ReadSafeNoticeText(action, "label", 128);
+            string? actionUrl = GetBoundedString(action, "url", 2_048);
+            if (title is null || description is null || actionLabel is null || !IsSecureAbsoluteUrl(actionUrl))
+            {
+                return null;
+            }
+
+            return new AccountSecuritySetupNotice
+            {
+                AccountId = expectedAccountId,
+                UserId = expectedUserId,
+                Title = title,
+                Description = description,
+                ActionLabel = actionLabel,
+                ActionUrl = actionUrl!,
+            };
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (JsonRpcConnectionClosedException) when (!IsCurrent(context))
+        {
+            throw;
+        }
+        catch (JsonRpcRemoteException ex)
+        {
+            WorkerDiagnostics.Write($"account security reminder rejected error={ex.GetType().Name}");
+            return null;
+        }
+        catch (Exception ex)
+        {
+            lock (context.SecuritySetupGate)
+            {
+                if (IsCurrentSecuritySetupRead(context, requestGeneration))
+                {
+                    context.SecuritySetupReadAttempted = context.SecuritySetupReadAttemptCount >= MaxSecuritySetupReadAttemptsPerIdentity;
+                }
+            }
+
+            WorkerDiagnostics.Write($"account security reminder unavailable error={ex.GetType().Name}");
+            return null;
+        }
+    }
+
+    private string? ReadSafeNoticeText(JsonElement value, string property, int maximumLength)
+    {
+        string? text = GetBoundedString(value, property, maximumLength);
+        return RedactAndBoundDisplayText(redactor, text, maximumLength);
+    }
+
     private static string? ReadWorkspaceAccountId(JsonElement account)
     {
         return account.TryGetProperty("workspaceRouting", out JsonElement workspaceRouting)
@@ -7313,7 +7646,13 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         => context.FeatureTier >= CodexFeatureTier.Tier171 && context.ExperimentalApi;
 
     private static McpRuntimeStatus ReadMcpRuntimeStatus(JsonElement server)
-        => GetString(server, "runtimeStatus") switch
+    {
+        if (!server.TryGetProperty("runtimeStatus", out _))
+        {
+            return McpRuntimeStatus.NotStarted;
+        }
+
+        return GetString(server, "runtimeStatus") switch
         {
             "notStarted" => McpRuntimeStatus.NotStarted,
             "starting" => McpRuntimeStatus.Starting,
@@ -7324,6 +7663,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             "disabled" => McpRuntimeStatus.Disabled,
             _ => McpRuntimeStatus.Unknown,
         };
+    }
 
     private string? ReadMcpToolsError(JsonElement server)
     {
@@ -8271,6 +8611,14 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             => Volatile.Write(ref workspaceOperationInProgress, 0);
 
         public string? AccountFingerprint { get; set; }
+        public bool SecuritySetupReadAttempted { get; set; }
+        public int SecuritySetupReadAttemptCount { get; set; }
+        public bool SecuritySetupReadInProgress { get; set; }
+        public long SecuritySetupReadGeneration;
+        public object SecuritySetupGate { get; } = new();
+        public string? SecuritySetupAccountId { get; set; }
+        public string? SecuritySetupUserId { get; set; }
+        public AccountSecuritySetupNotice? SecuritySetupNotice { get; set; }
         private int pendingLogoutRequests;
         private int logoutConfirmed;
 

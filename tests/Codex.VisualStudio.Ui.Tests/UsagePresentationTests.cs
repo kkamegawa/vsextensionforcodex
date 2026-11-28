@@ -162,6 +162,25 @@ public sealed class UsagePresentationTests
     }
 
     [TestMethod]
+    public async Task ExternalLinkOpener_UsesOnlyAbsoluteHttpsActionUris()
+    {
+        var starts = new List<ProcessStartInfo>();
+        var opener = new ExternalLinkOpener(starts.Add);
+
+        await opener.OpenSecureUriAsync("https://security.example.test/setup?source=codex", CancellationToken.None);
+
+        Assert.AreEqual(1, starts.Count);
+        Assert.IsTrue(starts[0].UseShellExecute);
+        Assert.AreEqual("https://security.example.test/setup?source=codex", starts[0].FileName);
+        await Assert.ThrowsExactlyAsync<InvalidOperationException>(
+            () => opener.OpenSecureUriAsync("http://security.example.test/setup", CancellationToken.None));
+        await Assert.ThrowsExactlyAsync<InvalidOperationException>(
+            () => opener.OpenSecureUriAsync("https://user:secret@security.example.test/setup", CancellationToken.None));
+        Assert.IsFalse(ExternalLinkOpener.IsSecureHttpsUri(new Uri("http://security.example.test/setup")));
+        Assert.IsFalse(ExternalLinkOpener.IsSecureHttpsUri(new Uri("https://user:secret@security.example.test/setup")));
+    }
+
+    [TestMethod]
     public void ChatToolWindowXaml_UsagePopup_HasKeyboardAutomationAndThemeContracts()
     {
         const string resourceName = "Codex.VisualStudio.Extension.ToolWindows.ChatToolWindowContent.xaml";

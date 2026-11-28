@@ -11,6 +11,9 @@ public enum ExternalLinkTarget
 public interface IExternalLinkOpener
 {
     Task OpenAsync(ExternalLinkTarget target, CancellationToken cancellationToken);
+
+    Task OpenSecureUriAsync(string value, CancellationToken cancellationToken)
+        => Task.FromException(new NotSupportedException("Secure external action links are not supported by this opener."));
 }
 
 public sealed class ExternalLinkOpener : IExternalLinkOpener
@@ -46,6 +49,24 @@ public sealed class ExternalLinkOpener : IExternalLinkOpener
         startProcess(new ProcessStartInfo(uri.AbsoluteUri) { UseShellExecute = true });
         return Task.CompletedTask;
     }
+
+    public Task OpenSecureUriAsync(string value, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (!Uri.TryCreate(value, UriKind.Absolute, out Uri? uri) || !IsSecureHttpsUri(uri))
+        {
+            throw new InvalidOperationException("The external action link is not an absolute HTTPS URI.");
+        }
+
+        startProcess(new ProcessStartInfo(uri.AbsoluteUri) { UseShellExecute = true });
+        return Task.CompletedTask;
+    }
+
+    internal static bool IsSecureHttpsUri(Uri uri)
+        => uri.IsAbsoluteUri
+            && string.Equals(uri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase)
+            && !string.IsNullOrWhiteSpace(uri.Host)
+            && string.IsNullOrEmpty(uri.UserInfo);
 
     internal static bool IsAllowed(Uri uri)
         => uri.Scheme == Uri.UriSchemeHttps

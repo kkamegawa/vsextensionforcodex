@@ -46,6 +46,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
     private readonly SlashCommandCoordinator slashCommandCoordinator = new();
     private readonly IExtensionSettingsStore settingsStore;
     private readonly IExternalLinkOpener externalLinkOpener;
+    private readonly string accountSecuritySetupAutomationName = LocalizedStrings.Get("Account.SecurityNotice.AutomationName");
     private readonly TimeProvider timeProvider;
     private readonly ReentrantSemaphore usageRefreshGate = ExtensionConcurrency.CreateSemaphore();
     private int reviewThreadStartInFlight;
@@ -266,6 +267,12 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         SendKeyCommand = new AsyncCommand(() => IsGoalPrimaryMode ? Task.CompletedTask : SendAsync(), () => !IsGoalPrimaryMode && CanSend());
         InterruptCommand = new AsyncCommand(InterruptAsync, CanInterruptSelectedThread);
         AccountCommand = new AsyncCommand(ExecuteAccountActionAsync, CanExecuteAccountAction);
+        DismissAccountSecuritySetupCommand = new AsyncCommand(
+            DismissAccountSecuritySetupAsync,
+            () => Account.HasSecuritySetupNotice);
+        OpenAccountSecuritySetupCommand = new AsyncCommand(
+            OpenAccountSecuritySetupAsync,
+            () => Account.HasSecuritySetupAction);
         InitializeWorkspaceCommands();
         ToggleHistoryCommand = new AsyncCommand(() =>
         {
@@ -651,6 +658,27 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
 
     [DataMember]
     public string AccountActionText => Account.ActionText;
+
+    [DataMember]
+    public bool HasAccountSecuritySetupNotice => Account.HasSecuritySetupNotice;
+
+    [DataMember]
+    public bool HasAccountSecuritySetupAction => Account.HasSecuritySetupAction;
+
+    [DataMember]
+    public string AccountSecuritySetupAutomationName => accountSecuritySetupAutomationName;
+
+    [DataMember]
+    public string AccountSecuritySetupTitle => Account.SecuritySetupTitle;
+
+    [DataMember]
+    public string AccountSecuritySetupDescription => Account.SecuritySetupDescription;
+
+    [DataMember]
+    public string AccountSecuritySetupActionLabel => Account.SecuritySetupActionLabel;
+
+    [DataMember]
+    public string DismissAccountSecuritySetupText => Account.SecuritySetupDismissText;
 
     [DataMember]
     public WorkerStatus Status
@@ -2678,6 +2706,12 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
 
     [DataMember]
     public AsyncCommand AccountCommand { get; }
+
+    [DataMember]
+    public AsyncCommand DismissAccountSecuritySetupCommand { get; }
+
+    [DataMember]
+    public AsyncCommand OpenAccountSecuritySetupCommand { get; }
 
     [DataMember]
     public AsyncCommand ToggleHistoryCommand { get; }
@@ -8995,6 +9029,10 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                     OverflowFile = value.OverflowFile,
                 };
                 item.ApplyTiming(value.StartedAtMs, value.CompletedAtMs);
+                if (value.IsAgentMessage && value.Kind == ConversationEventKind.ItemCompleted)
+                {
+                    item.ApplyContentTokenCount(value.ContentTokenCount);
+                }
                 if (renderFromAccumulatedText)
                 {
                     item.UpdateBlocks(renderedBlocks);
@@ -9020,6 +9058,10 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
 
                 existing.IsTruncated |= value.Truncated;
                 existing.OverflowFile = value.OverflowFile ?? existing.OverflowFile;
+                if (value.IsAgentMessage && value.Kind == ConversationEventKind.ItemCompleted)
+                {
+                    existing.ApplyContentTokenCount(value.ContentTokenCount);
+                }
                 TrimHistoryWindow();
             }
         }).ConfigureAwait(false);
@@ -10300,6 +10342,36 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         }
     }
 
+    private Task DismissAccountSecuritySetupAsync()
+    {
+        Account.DismissSecuritySetupNotice();
+        OnPropertyChanged(nameof(HasAccountSecuritySetupNotice));
+        OnPropertyChanged(nameof(HasAccountSecuritySetupAction));
+        DismissAccountSecuritySetupCommand.RaiseCanExecuteChanged();
+        OpenAccountSecuritySetupCommand.RaiseCanExecuteChanged();
+        return Task.CompletedTask;
+    }
+
+    private async Task OpenAccountSecuritySetupAsync()
+    {
+        if (!Account.HasSecuritySetupAction || Account.SecuritySetupActionUrl is not { } url)
+        {
+            return;
+        }
+
+        try
+        {
+            await externalLinkOpener.OpenSecureUriAsync(url, lifetime.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+        {
+        }
+        catch (Exception ex)
+        {
+            ExtensionDiagnostics.Write($"Opening the account security action failed ({ex.GetType().Name}).");
+        }
+    }
+
     // A failed read only clears the amounts, so stale values never stay beside a new conversation.
     private async Task RefreshThreadUsageAsync(long generation, OwnerSnapshot owner)
     {
@@ -10471,6 +10543,17 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             WorkspaceName = string.IsNullOrWhiteSpace(value.WorkspaceName)
                 ? value.WorkspaceName
                 : ToSafeHeaderText(value.WorkspaceName),
+            SecuritySetupNotice = value.SecuritySetupNotice is { } notice
+                ? new AccountSecuritySetupNotice
+                {
+                    AccountId = notice.AccountId,
+                    UserId = notice.UserId,
+                    Title = SafeMarkdownService.ToSafeLiteralText(notice.Title),
+                    Description = SafeMarkdownService.ToSafeLiteralText(notice.Description),
+                    ActionLabel = SafeMarkdownService.ToSafeLiteralText(notice.ActionLabel),
+                    ActionUrl = notice.ActionUrl,
+                }
+                : null,
         });
         OnPropertyChanged(nameof(CurrentWorkspaceText));
         OnPropertyChanged(nameof(ShowWorkspaceSwitcher));
@@ -10499,6 +10582,14 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         OnPropertyChanged(nameof(StatusDetailText));
         OnPropertyChanged(nameof(ShowAccountAction));
         OnPropertyChanged(nameof(AccountActionText));
+        OnPropertyChanged(nameof(HasAccountSecuritySetupNotice));
+        OnPropertyChanged(nameof(HasAccountSecuritySetupAction));
+        OnPropertyChanged(nameof(AccountSecuritySetupTitle));
+        OnPropertyChanged(nameof(AccountSecuritySetupDescription));
+        OnPropertyChanged(nameof(AccountSecuritySetupActionLabel));
+        OnPropertyChanged(nameof(DismissAccountSecuritySetupText));
+        DismissAccountSecuritySetupCommand.RaiseCanExecuteChanged();
+        OpenAccountSecuritySetupCommand.RaiseCanExecuteChanged();
         OnPropertyChanged(nameof(IsUsageAvailable));
         AccountCommand.RaiseCanExecuteChanged();
         OpenWorkspacePickerCommand?.RaiseCanExecuteChanged();
@@ -10610,6 +10701,8 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
 public sealed class AccountPanelViewModel : ObservableObject
 {
     private AccountStatus status = new();
+    private AccountSecuritySetupNotice? securitySetupNotice;
+    private AccountSecuritySetupNotice? dismissedSecuritySetupNotice;
 
     public AccountState State => status.State;
 
@@ -10639,8 +10732,34 @@ public sealed class AccountPanelViewModel : ObservableObject
 
     public string ActionText => IsSignedIn ? "Sign out" : "Sign in";
 
+    public bool HasSecuritySetupNotice
+        => IsSignedIn
+            && securitySetupNotice is not null
+            && (!string.IsNullOrWhiteSpace(securitySetupNotice.Title)
+                || !string.IsNullOrWhiteSpace(securitySetupNotice.Description))
+            && !SecurityNoticesMatch(dismissedSecuritySetupNotice, securitySetupNotice);
+
+    public bool HasSecuritySetupAction => GetSafeSecuritySetupActionUri() is not null;
+
+    public string SecuritySetupTitle => securitySetupNotice?.Title ?? string.Empty;
+
+    public string SecuritySetupDescription => securitySetupNotice?.Description ?? string.Empty;
+
+    public string SecuritySetupActionLabel => securitySetupNotice?.ActionLabel ?? string.Empty;
+
+    public string SecuritySetupDismissText => IsSignedIn
+        ? LocalizedStrings.Get("Account.SecurityNotice.Dismiss")
+        : string.Empty;
+
+    internal string? SecuritySetupActionUrl => GetSafeSecuritySetupActionUri()?.AbsoluteUri;
+
     public void Update(AccountStatus value)
     {
+        if (value.State != AccountState.Checking)
+        {
+            securitySetupNotice = value.SecuritySetupNotice;
+        }
+
         status = value;
         OnPropertyChanged(nameof(WorkspaceId));
         OnPropertyChanged(nameof(WorkspaceName));
@@ -10649,7 +10768,61 @@ public sealed class AccountPanelViewModel : ObservableObject
         OnPropertyChanged(nameof(IsSignedIn));
         OnPropertyChanged(nameof(ShowAction));
         OnPropertyChanged(nameof(ActionText));
+        OnPropertyChanged(nameof(HasSecuritySetupNotice));
+        OnPropertyChanged(nameof(HasSecuritySetupAction));
+        OnPropertyChanged(nameof(SecuritySetupTitle));
+        OnPropertyChanged(nameof(SecuritySetupDescription));
+        OnPropertyChanged(nameof(SecuritySetupActionLabel));
+        OnPropertyChanged(nameof(SecuritySetupDismissText));
+        OnPropertyChanged(nameof(SecuritySetupActionUrl));
     }
+
+    public void DismissSecuritySetupNotice()
+    {
+        if (!HasSecuritySetupNotice)
+        {
+            return;
+        }
+
+        dismissedSecuritySetupNotice = new AccountSecuritySetupNotice
+        {
+            AccountId = securitySetupNotice!.AccountId,
+            UserId = securitySetupNotice.UserId,
+            Title = securitySetupNotice.Title,
+            Description = securitySetupNotice.Description,
+            ActionLabel = securitySetupNotice.ActionLabel,
+            ActionUrl = securitySetupNotice.ActionUrl,
+        };
+        OnPropertyChanged(nameof(HasSecuritySetupNotice));
+        OnPropertyChanged(nameof(HasSecuritySetupAction));
+        OnPropertyChanged(nameof(SecuritySetupActionUrl));
+    }
+
+    private Uri? GetSafeSecuritySetupActionUri()
+    {
+        string? value = securitySetupNotice?.ActionUrl;
+        if (!HasSecuritySetupNotice
+            || string.IsNullOrWhiteSpace(value)
+            || !string.Equals(value, value.Trim(), StringComparison.Ordinal)
+            || !value.StartsWith("https://", StringComparison.OrdinalIgnoreCase)
+            || !Uri.IsWellFormedUriString(value, UriKind.Absolute)
+            || !Uri.TryCreate(value, UriKind.Absolute, out Uri? uri)
+            || !ExternalLinkOpener.IsSecureHttpsUri(uri))
+        {
+            return null;
+        }
+
+        return uri;
+    }
+
+    private static bool SecurityNoticesMatch(AccountSecuritySetupNotice? left, AccountSecuritySetupNotice? right)
+        => left is not null && right is not null
+            && string.Equals(left.AccountId, right.AccountId, StringComparison.Ordinal)
+            && string.Equals(left.UserId, right.UserId, StringComparison.Ordinal)
+            && string.Equals(left.Title, right.Title, StringComparison.Ordinal)
+            && string.Equals(left.Description, right.Description, StringComparison.Ordinal)
+            && string.Equals(left.ActionLabel, right.ActionLabel, StringComparison.Ordinal)
+            && string.Equals(left.ActionUrl, right.ActionUrl, StringComparison.Ordinal);
 }
 
 // A clickable suggestion shown in the empty/welcome state. Selecting it populates the
@@ -10688,6 +10861,7 @@ public sealed partial class ChatItemViewModel : ObservableObject
     private bool commandEndsWithLineBreak;
     private int planDeltaBytes;
     private bool isPlanComplete;
+    private long? contentTokenCount;
 
     public ChatItemViewModel(string role, string text, ConversationEventKind kind)
     {
@@ -10765,6 +10939,23 @@ public sealed partial class ChatItemViewModel : ObservableObject
 
     [DataMember]
     public bool HasTiming => TimingText.Length > 0;
+
+    [DataMember]
+    public string ContentTokenCountText => contentTokenCount is long count
+        ? LocalizedStrings.Format("Diagnostics.ContentTokenCount", count)
+        : string.Empty;
+
+    [DataMember]
+    public bool HasContentTokenCount => contentTokenCount.HasValue;
+
+    internal void ApplyContentTokenCount(long? value)
+    {
+        if (value is >= 0 && SetProperty(ref contentTokenCount, value))
+        {
+            OnPropertyChanged(nameof(ContentTokenCountText));
+            OnPropertyChanged(nameof(HasContentTokenCount));
+        }
+    }
 
     // Either time may be missing, and a later event never erases one already known.
     internal void ApplyTiming(long? started, long? completed)

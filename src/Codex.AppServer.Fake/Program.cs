@@ -30,6 +30,7 @@ var outputGate = new SemaphoreSlim(1, 1);
 JsonElement? initializeParams = null;
 bool signedIn = false;
 bool experimentalApiEnabled = false;
+string issue305WorkspaceName = "Fake diagnostics workspace";
 
 while (await Console.In.ReadLineAsync().ConfigureAwait(false) is { } line)
 {
@@ -392,6 +393,20 @@ while (await Console.In.ReadLineAsync().ConfigureAwait(false) is { } line)
         "fake/goal/state" => new { methods = clientMethods.ToArray(), requests = goalRequests.ToArray(), activeTurns = goalTurns.Count },
         "fake/goal/continue" => new { started = IsGoalActive(root.GetProperty("params").GetProperty("threadId").GetString() ?? string.Empty) },
         "account/read" => ReadAccount(),
+        "account/securitySetup/read" => IsScenario("Issue305Diagnostics")
+            ? new
+            {
+                notice = new
+                {
+                    accountId = "fake-diagnostics-account",
+                    userId = "fake-diagnostics-user",
+                    title = "Review account security",
+                    description = "The fake account has a security reminder.",
+                    action = new { label = "Open security settings", url = "https://example.test/security" },
+                },
+            }
+            : new { notice = (object?)null },
+        "fake/diagnostics/refresh" when IsScenario("Issue305Diagnostics") => RefreshDiagnosticsAccount(),
         "fake/experimental/state" => FakeExperimentalState(),
         "account/gatewayOAuth/read" => CreateGatewayOAuthRead(root),
         "account/gatewayOAuth/login" => new { },
@@ -482,6 +497,15 @@ while (await Console.In.ReadLineAsync().ConfigureAwait(false) is { } line)
     if (method == "fake/interactions/start" && scenario == "interaction")
     {
         _ = Task.Run(EmitInteractionScenarioAsync);
+    }
+
+    if (method == "fake/diagnostics/refresh" && IsScenario("Issue305Diagnostics"))
+    {
+        await WriteAsync(new
+        {
+            method = "account/updated",
+            @params = new { reason = "workspaceRoutingReady", authMode = "chatgpt", planType = "plus" },
+        }).ConfigureAwait(false);
     }
 }
 
@@ -739,13 +763,32 @@ object CancelAccountSessionLogin(JsonElement parameters)
 }
 
 object ReadAccount()
-    => new
+{
+    if (IsScenario("Issue305Diagnostics"))
+    {
+        return new
+        {
+            account = new { type = "chatgpt", email = "diagnostics@example.test", planType = "plus", workspaceName = issue305WorkspaceName },
+            userId = "fake-diagnostics-user",
+            workspaceRouting = new { chatgptAccountId = "fake-diagnostics-account" },
+            requiresOpenaiAuth = true,
+        };
+    }
+
+    return new
     {
         account = signedIn || IsScenario("Issue243WorkspaceSwitch") || IsScenario("Issue243SsoSwitch") || IsScenario("Issue243UnknownSwitch")
             ? new { type = "chatgpt", planType = "plus" }
             : null,
         requiresOpenaiAuth = true,
     };
+}
+
+object RefreshDiagnosticsAccount()
+{
+    issue305WorkspaceName = "Fake diagnostics workspace after routing";
+    return new { refreshed = true };
+}
 
 object FakeExperimentalState()
     => new { methods = clientMethods.ToArray(), workspaceSwitchCount, selectedWorkspaceAccountId };
@@ -818,6 +861,18 @@ object ReadThread(JsonElement parameters)
 object ListThreadTurns(JsonElement parameters)
 {
     _ = parameters.GetProperty("threadId").GetString();
+    if (IsScenario("Issue305Diagnostics"))
+    {
+        return new
+        {
+            data = new object[]
+            {
+                new { id = "too-many-denials-replay", status = "failed", error = new { codexErrorInfo = "tooManyDenials", message = "too_many_denials Authorization: Bearer fake-diagnostics-secret" } },
+            },
+            nextCursor = (string?)null,
+        };
+    }
+
     if (!IsScenario("Issue292"))
     {
         return new { data = Array.Empty<object>(), nextCursor = (string?)null };
@@ -1173,6 +1228,47 @@ object StartTurn(JsonElement request)
                         id = eventTurnId,
                         status = "failed",
                         error = new { codexErrorInfo = new { inferenceHookDenied = new { } }, message = "inference_hook_denied" },
+                    },
+                },
+            }).ConfigureAwait(false);
+            return;
+        }
+
+        if (IsScenario("Issue305Diagnostics"))
+        {
+            await WriteAsync(new
+            {
+                method = "error",
+                @params = new
+                {
+                    threadId,
+                    turnId = eventTurnId,
+                    error = new { codexErrorInfo = "tooManyDenials", message = "too_many_denials Authorization: Bearer fake-diagnostics-secret" },
+                },
+            }).ConfigureAwait(false);
+            await WriteAsync(new
+            {
+                method = "item/completed",
+                @params = new
+                {
+                    threadId,
+                    turnId = eventTurnId,
+                    contentTokenCount = 37,
+                    item = new { type = "agentMessage", id = "fake-diagnostics-answer", text = "Diagnostics fixture response." },
+                },
+            }).ConfigureAwait(false);
+            await WriteAsync(new
+            {
+                method = "turn/completed",
+                @params = new
+                {
+                    threadId,
+                    turnId = eventTurnId,
+                    turn = new
+                    {
+                        id = eventTurnId,
+                        status = "failed",
+                        error = new { codexErrorInfo = "bioPolicy", message = "biometric policy denied the request" },
                     },
                 },
             }).ConfigureAwait(false);

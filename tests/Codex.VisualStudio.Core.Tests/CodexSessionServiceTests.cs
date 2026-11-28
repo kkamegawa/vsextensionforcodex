@@ -1094,7 +1094,9 @@ public sealed partial class CodexSessionServiceTests
         ThreadTurnsPage page = await service.ListThreadTurnsAsync("thread-1", null, 10, CancellationToken.None);
 
         Assert.AreEqual("policyCapacityUnavailable", page.Turns.Single().ErrorReason);
-        StringAssert.Contains(page.Turns.Single().ErrorText, "capacity");
+        Assert.AreEqual(
+            $"{LocalizedStrings.Get("Diagnostics.TurnError.PolicyCapacityUnavailable")}\n{LocalizedStrings.Format("Diagnostics.ServerMessage", "raw")}",
+            page.Turns.Single().ErrorText);
     }
 
     [TestMethod]

@@ -335,6 +335,14 @@ public sealed partial class CodexSessionServiceTests
                             resources = Array.Empty<object>(),
                             resourceTemplates = Array.Empty<object>(),
                         },
+                        new
+                        {
+                            name = "deferred",
+                            authStatus = "oAuth",
+                            tools = new { },
+                            resources = Array.Empty<object>(),
+                            resourceTemplates = Array.Empty<object>(),
+                        },
                     },
                 }),
                 _ => JsonSerializer.SerializeToElement(new { }),
@@ -347,11 +355,13 @@ public sealed partial class CodexSessionServiceTests
 
         McpServerStatusInfo docs = result.Servers.Single(server => server.Name == "docs");
         McpServerStatusInfo future = result.Servers.Single(server => server.Name == "future");
+        McpServerStatusInfo deferred = result.Servers.Single(server => server.Name == "deferred");
         Assert.IsTrue(docs.HasRuntimeDetails);
         Assert.AreEqual(1, future.ToolCount);
         Assert.IsFalse(JsonSerializer.Serialize(result).Contains("do-not-forward", StringComparison.Ordinal));
         Assert.AreEqual(McpRuntimeStatus.AuthenticationRequired, docs.RuntimeStatus);
         Assert.AreEqual(McpRuntimeStatus.Unknown, future.RuntimeStatus);
+        Assert.AreEqual(McpRuntimeStatus.NotStarted, deferred.RuntimeStatus);
         Assert.IsNotNull(docs.ToolsError);
         Assert.IsFalse(docs.ToolsError.Any(char.IsControl));
     }

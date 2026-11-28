@@ -482,6 +482,40 @@ public sealed class InteractionAuthenticationTests
     }
 
     [TestMethod]
+    public async Task McpStartupFailureIncludesRedactedBoundedServerError()
+    {
+        const string secret = "startup-private-token";
+        var redactor = new SecretRedactor();
+        using IDisposable registeredSecret = redactor.RegisterSecret(secret);
+        var connection = EnvironmentIdentityConnection(new { name = "docs", environmentId = "env-a" });
+        var statuses = new ConcurrentQueue<InteractionAuthStatus>();
+        await using var service = CreateService(redactor: redactor);
+        service.InteractionAuthStatusChanged += (status, _) =>
+        {
+            statuses.Enqueue(status);
+            return Task.CompletedTask;
+        };
+        await service.InitializeAsync(connection, Options(experimentalApi: true), CancellationToken.None);
+        _ = await service.ListMcpServersAsync(new ListMcpServersRequest(), CancellationToken.None);
+
+        await connection.EmitNotificationAsync("mcpServer/startupStatus/updated", new
+        {
+            name = "docs",
+            environmentId = "env-a",
+            status = "failed",
+            error = $"startup failed: {secret} {new string('x', 2_100)}",
+        });
+
+        string message = statuses.Last().McpServers.Single().Message ?? string.Empty;
+        string unboundedServerMessage = $"startup failed: [REDACTED] {new string('x', 2_100)}";
+        string expectedServerMessage = unboundedServerMessage[..2_047] + "…";
+        string expectedMessage = $"{LocalizedStrings.Get("Diagnostics.McpStartup.Failed")}\n{LocalizedStrings.Format("Diagnostics.ServerMessage", expectedServerMessage)}";
+        Assert.AreEqual(expectedMessage, message);
+        Assert.AreEqual(2_048, expectedServerMessage.Length);
+        Assert.IsFalse(message.Contains(secret, StringComparison.Ordinal));
+    }
+
+    [TestMethod]
     public async Task McpStartupStatusWithoutEnvironmentIdDoesNotResolveToScopedOAuthRegistration()
     {
         var connection = EnvironmentIdentityConnection(new { name = "docs", environmentId = "env-a" });

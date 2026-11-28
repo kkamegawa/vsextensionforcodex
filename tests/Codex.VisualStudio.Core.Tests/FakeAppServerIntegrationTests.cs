@@ -208,6 +208,107 @@ public sealed class FakeAppServerIntegrationTests
         Assert.AreEqual(1, methods.Count(method => method == "turn/start"), "Terminal errors are not automatically retried.");
     }
 
+    [TestMethod]
+    public async Task FakeDiagnosticsScenarioCoversAccountNoticeTokenCountOwnerRefreshAndBioPolicy()
+    {
+        await using FakeAppServerProcess server = await FakeAppServerProcess.StartAsync("Current01710,Issue305Diagnostics");
+        await using JsonLineRpcConnection connection = await server.ConnectAsync();
+        var redactor = new SecretRedactor();
+        await using var service = new CodexSessionService(new ApprovalPolicyEngine(new PathAccessPolicy()), redactor);
+        var assistantMessage = new TaskCompletionSource<ConversationEvent>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var bioPolicyError = new TaskCompletionSource<ConversationEvent>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var tooManyDenialsError = new TaskCompletionSource<ConversationEvent>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var turnCompleted = new TaskCompletionSource<ConversationEvent>(TaskCreationOptions.RunContinuationsAsynchronously);
+        int bioPolicyErrorCount = 0;
+        int tooManyDenialsErrorCount = 0;
+        var refreshedAccount = new TaskCompletionSource<AccountStatus>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var securityNoticeReceived = new TaskCompletionSource<AccountStatus>(TaskCreationOptions.RunContinuationsAsynchronously);
+        service.ConversationEventReceived += (value, _) =>
+        {
+            if (value.IsAgentMessage && value.ContentTokenCount is not null)
+            {
+                assistantMessage.TrySetResult(value);
+            }
+
+            if (value.ErrorReason == "bioPolicy")
+            {
+                Interlocked.Increment(ref bioPolicyErrorCount);
+                bioPolicyError.TrySetResult(value);
+            }
+
+            if (value.ErrorReason == "tooManyDenials")
+            {
+                Interlocked.Increment(ref tooManyDenialsErrorCount);
+                tooManyDenialsError.TrySetResult(value);
+            }
+
+            if (value.Kind == ConversationEventKind.TurnCompleted)
+            {
+                turnCompleted.TrySetResult(value);
+            }
+
+            return Task.CompletedTask;
+        };
+        service.AccountStatusChanged += (value, _) =>
+        {
+            if (value.SecuritySetupNotice is not null)
+            {
+                securityNoticeReceived.TrySetResult(value);
+            }
+
+            if (value.WorkspaceName == "Fake diagnostics workspace after routing")
+            {
+                refreshedAccount.TrySetResult(value);
+            }
+
+            return Task.CompletedTask;
+        };
+
+        await service.InitializeAsync(connection, new WorkerOptions
+        {
+            ExperimentalApi = true,
+            WorkingDirectory = Environment.CurrentDirectory,
+            ExtensionVersion = "issue-305-integration-test",
+        }, CancellationToken.None);
+        AccountStatus initialAccount = await service.GetAccountStatusAsync(CancellationToken.None);
+        Assert.AreEqual(AccountState.SignedIn, initialAccount.State);
+        AccountStatus noticeAccount = await securityNoticeReceived.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.AreEqual("Review account security", noticeAccount.SecuritySetupNotice?.Title);
+        Assert.AreEqual("https://example.test/security", noticeAccount.SecuritySetupNotice?.ActionUrl);
+
+        ThreadSummary thread = await service.StartThreadAsync(CancellationToken.None);
+        _ = await service.StartTurnAsync(new StartTurnRequest
+        {
+            ThreadId = thread.Id,
+            Text = "exercise diagnostics",
+        }, CancellationToken.None);
+        ConversationEvent message = await assistantMessage.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        ConversationEvent terminalError = await bioPolicyError.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        ConversationEvent tooManyDenials = await tooManyDenialsError.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        _ = await turnCompleted.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.AreEqual(37, message.ContentTokenCount);
+        Assert.AreEqual(1, bioPolicyErrorCount);
+        Assert.AreEqual(1, tooManyDenialsErrorCount);
+        Assert.AreEqual("bioPolicy", terminalError.ErrorReason);
+        Assert.AreEqual("tooManyDenials", tooManyDenials.ErrorReason);
+        string denialText = tooManyDenials.Text ?? string.Empty;
+        StringAssert.Contains(denialText, LocalizedStrings.Get("Diagnostics.TurnError.TooManyDenials"));
+        StringAssert.Contains(denialText, LocalizedStrings.Format("Diagnostics.ServerMessage", "too_many_denials Authorization: Bearer [REDACTED]"));
+        Assert.IsFalse(denialText.Contains("fake-diagnostics-secret", StringComparison.Ordinal));
+        JsonElement fakeState = await connection.SendRequestAsync("fake/goal/state", new { }, TimeSpan.FromSeconds(10), CancellationToken.None);
+        string[] methods = fakeState.GetProperty("methods").EnumerateArray().Select(value => value.GetString()!).ToArray();
+        Assert.AreEqual(1, methods.Count(method => method == "turn/start"), "The terminal denial must not start a retry.");
+        ThreadTurnsPage replay = await service.ListThreadTurnsAsync(thread.Id, cursor: null, limit: 10, CancellationToken.None);
+        ThreadTurnSummary replayedDenial = replay.Turns.Single(turn => turn.Id == "too-many-denials-replay");
+        Assert.AreEqual("tooManyDenials", replayedDenial.ErrorReason);
+        StringAssert.Contains(replayedDenial.ErrorText, LocalizedStrings.Format("Diagnostics.ServerMessage", "too_many_denials Authorization: Bearer [REDACTED]"));
+        Assert.IsFalse(replayedDenial.ErrorText!.Contains("fake-diagnostics-secret", StringComparison.Ordinal));
+
+        _ = await connection.SendRequestAsync("fake/diagnostics/refresh", new { }, TimeSpan.FromSeconds(10), CancellationToken.None);
+        AccountStatus afterRouting = await refreshedAccount.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.AreEqual("Fake diagnostics workspace after routing", afterRouting.WorkspaceName);
+    }
+
     // Notifications may precede a response, so messages are read until the id matches.
     private static async Task<JsonDocument> ReadResponseAsync(FakeAppServerProcess server, int id)
     {

@@ -80,6 +80,7 @@ public sealed partial class ViewModelTests
 
     [TestMethod]
     [DataRow(McpRuntimeStatus.Connected, "oAuth", 0, null, "authentication oAuth; runtime connected; 0 tools")]
+    [DataRow(McpRuntimeStatus.NotStarted, "oAuth", 0, null, "authentication oAuth; runtime not started; 0 tools")]
     [DataRow(McpRuntimeStatus.AuthenticationRequired, "oAuth", 3, null, "authentication sign-in required; runtime authentication required; 3 tools")]
     [DataRow(McpRuntimeStatus.Unknown, "", 1, null, "authentication unknown; runtime unknown; 1 tool")]
     [DataRow(McpRuntimeStatus.Failed, "notLoggedIn", 0, "listing failed", "runtime failed; tool discovery failed: listing failed")]
@@ -104,6 +105,108 @@ public sealed partial class ViewModelTests
         string text = ChatViewModel.FormatMcpServerStatus(new McpServerStatusInfo { Name = "docs", AuthStatus = "oAuth", ToolNames = ["a", "b"] });
 
         Assert.AreEqual("- docs: oAuth; 2 tools, 0 resources, 0 templates", text);
+    }
+
+    [TestMethod]
+    public void AccountPanel_HidesSecurityNoticeWithoutTitleOrDescription()
+    {
+        var account = new AccountPanelViewModel();
+        account.Update(new AccountStatus
+        {
+            State = AccountState.SignedIn,
+            SecuritySetupNotice = new AccountSecuritySetupNotice
+            {
+                AccountId = "account-1",
+                UserId = "user-1",
+                Title = " ",
+                Description = string.Empty,
+                ActionLabel = string.Empty,
+                ActionUrl = "https://security.example.test/setup",
+            },
+        });
+
+        Assert.IsFalse(account.HasSecuritySetupNotice);
+        Assert.IsFalse(account.HasSecuritySetupAction);
+    }
+
+    [TestMethod]
+    public void ChatItem_ContentTokenCountShowsZeroAndHidesMissingOrNegativeValues()
+    {
+        var item = new ChatItemViewModel("Codex", "answer", ConversationEventKind.ItemCompleted);
+        var changedProperties = new List<string?>();
+        item.PropertyChanged += (_, args) => changedProperties.Add(args.PropertyName);
+
+        Assert.IsFalse(item.HasContentTokenCount);
+        Assert.AreEqual(string.Empty, item.ContentTokenCountText);
+
+        item.ApplyContentTokenCount(null);
+        item.ApplyContentTokenCount(-1);
+        Assert.IsFalse(item.HasContentTokenCount, "Missing and negative counts must stay hidden when no valid count has been received.");
+
+        item.ApplyContentTokenCount(0);
+
+        Assert.IsTrue(item.HasContentTokenCount);
+        Assert.IsFalse(string.IsNullOrWhiteSpace(item.ContentTokenCountText));
+        CollectionAssert.Contains(changedProperties, nameof(ChatItemViewModel.ContentTokenCountText));
+        CollectionAssert.Contains(changedProperties, nameof(ChatItemViewModel.HasContentTokenCount));
+
+        item.ApplyContentTokenCount(null);
+        item.ApplyContentTokenCount(-1);
+
+        Assert.IsTrue(item.HasContentTokenCount, "An incomplete or invalid later event must not erase a valid count.");
+        Assert.IsFalse(string.IsNullOrWhiteSpace(item.ContentTokenCountText));
+    }
+
+    [TestMethod]
+    public void ChatToolWindowXaml_ContentTokenCountIsBoundAndHiddenWhenMissing()
+    {
+        using Stream stream = typeof(ChatViewModel).Assembly.GetManifestResourceStream("Codex.VisualStudio.Extension.ToolWindows.ChatToolWindowContent.xaml")!;
+        System.Xml.Linq.XDocument doc = System.Xml.Linq.XDocument.Load(stream);
+        System.Xml.Linq.XNamespace presentation = "http://schemas.microsoft.com/winfx/2006/xaml/presentation";
+
+        System.Xml.Linq.XElement tokenCount = doc.Descendants(presentation + "TextBlock")
+            .Single(element => element.Attribute("Text")?.Value == "{Binding ContentTokenCountText}");
+
+        Assert.AreEqual("{Binding HasContentTokenCount, Converter={StaticResource BoolToVis}}", tokenCount.Attribute("Visibility")?.Value);
+    }
+
+    [TestMethod]
+    public async Task NotStartedMcpStatusDoesNotPreventComposerSend()
+    {
+        var bridge = new FakeWorkerBridge
+        {
+            ListMcpServersHandler = (_, _) => Task.FromResult(new McpServerListResult
+            {
+                Servers = [new McpServerStatusInfo
+                {
+                    Name = "docs",
+                    AuthStatus = "oAuth",
+                    HasRuntimeDetails = true,
+                    RuntimeStatus = McpRuntimeStatus.NotStarted,
+                }],
+            }),
+        };
+        using var vm = new ChatViewModel(bridge, autoConnect: false, settingsStore: new MemorySettingsStore(new ExtensionSettings()));
+        await vm.PopulateModelsAsync();
+        await bridge.PublishStateAsync(new WorkerStatus
+        {
+            State = WorkerConnectionState.Ready,
+            FeatureTier = CodexFeatureTier.Baseline,
+        });
+        await bridge.PublishInteractionAuthStatusAsync(new InteractionAuthStatus());
+
+        vm.ComposerText = "/mcp";
+        await RunCommandAsync(vm.SendCommand);
+
+        Assert.AreEqual(1, bridge.ListMcpServersCallCount);
+        StringAssert.Contains(vm.Items.Last().Text, "runtime not started");
+
+        vm.ComposerText = "send while the server has not reported a startup status";
+        Assert.IsTrue(vm.SendCommand.CanExecute, "The composer remains available after reporting the deferred server state.");
+        await RunCommandAsync(vm.SendCommand);
+
+        Assert.AreEqual(1, bridge.StartTurnCallCount);
+        Assert.AreEqual("send while the server has not reported a startup status", bridge.LastStartTurnRequest?.Text);
     }
 
     [TestMethod]
