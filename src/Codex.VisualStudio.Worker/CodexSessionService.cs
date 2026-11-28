@@ -146,7 +146,20 @@ public partial interface ICodexSessionService : IAsyncDisposable
 
     Task<ThreadSummary> StartThreadAsync(CancellationToken cancellationToken);
 
+    Task<ThreadSummary> StartThreadAsync(string? modelProviderId, CancellationToken cancellationToken)
+        => string.IsNullOrWhiteSpace(modelProviderId)
+            ? StartThreadAsync(cancellationToken)
+            : throw new NotSupportedException("Provider-scoped thread start is not supported by this session.");
+
+    Task<ListModelProvidersResult> ListModelProvidersAsync(CancellationToken cancellationToken)
+        => Task.FromResult(new ListModelProvidersResult());
+
+    Task<ListModelProvidersResult> SetDefaultModelProviderAsync(string providerId, CancellationToken cancellationToken)
+        => throw new NotSupportedException("Changing the default model provider is not supported by this session.");
+
     Task<ThreadSummary> ResumeThreadAsync(string threadId, CancellationToken cancellationToken);
+
+    Task<ThreadSummary> ResumeThreadAsync(string threadId, string? modelProviderId, CancellationToken cancellationToken);
 
     Task<ThreadPage> ListThreadsAsync(string? cursor, CancellationToken cancellationToken);
 
@@ -186,6 +199,11 @@ public partial interface ICodexSessionService : IAsyncDisposable
         => throw new NotSupportedException();
 
     Task<ListModelsResult> ListModelsAsync(CancellationToken cancellationToken);
+
+    Task<ListModelsResult> ListModelsAsync(string? modelProviderId, CancellationToken cancellationToken)
+        => string.IsNullOrWhiteSpace(modelProviderId)
+            ? ListModelsAsync(cancellationToken)
+            : throw new NotSupportedException("Provider-scoped model discovery is not supported by this session.");
 
     Task<ListPermissionProfilesResult> ListPermissionProfilesAsync(CancellationToken cancellationToken);
 
@@ -239,8 +257,18 @@ public partial interface ICodexSessionService : IAsyncDisposable
     Task<InteractionAuthStatus> ReadGatewayOAuthAsync(CancellationToken cancellationToken)
         => throw new NotSupportedException();
 
+    Task<InteractionAuthStatus> ReadGatewayOAuthAsync(string? providerId, CancellationToken cancellationToken)
+        => string.IsNullOrWhiteSpace(providerId)
+            ? ReadGatewayOAuthAsync(cancellationToken)
+            : throw new NotSupportedException("Provider-scoped gateway OAuth is not supported by this session.");
+
     Task<InteractionAuthStatus> LoginGatewayOAuthAsync(CancellationToken cancellationToken)
         => throw new NotSupportedException();
+
+    Task<InteractionAuthStatus> LoginGatewayOAuthAsync(string? providerId, CancellationToken cancellationToken)
+        => string.IsNullOrWhiteSpace(providerId)
+            ? LoginGatewayOAuthAsync(cancellationToken)
+            : throw new NotSupportedException("Provider-scoped gateway OAuth is not supported by this session.");
 
     Task<InteractionAuthStatus> CancelGatewayOAuthAsync(CancellationToken cancellationToken)
         => throw new NotSupportedException();
@@ -714,15 +742,23 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         return capabilities;
     }
 
-    public async Task<InteractionAuthStatus> ReadGatewayOAuthAsync(CancellationToken cancellationToken)
+    public Task<InteractionAuthStatus> ReadGatewayOAuthAsync(CancellationToken cancellationToken)
+        => ReadGatewayOAuthAsync(null, cancellationToken);
+
+    public async Task<InteractionAuthStatus> ReadGatewayOAuthAsync(string? providerId, CancellationToken cancellationToken)
     {
+        string? normalizedProviderId = NormalizeOptionalProviderId(providerId);
         ConnectionContext context = RequireContext();
-        await ReadGatewayOAuthCoreAsync(context, cancellationToken).ConfigureAwait(false);
+        await ReadGatewayOAuthCoreAsync(context, normalizedProviderId, cancellationToken).ConfigureAwait(false);
         return CreateInteractionAuthStatus(context);
     }
 
-    public async Task<InteractionAuthStatus> LoginGatewayOAuthAsync(CancellationToken cancellationToken)
+    public Task<InteractionAuthStatus> LoginGatewayOAuthAsync(CancellationToken cancellationToken)
+        => LoginGatewayOAuthAsync(null, cancellationToken);
+
+    public async Task<InteractionAuthStatus> LoginGatewayOAuthAsync(string? providerId, CancellationToken cancellationToken)
     {
+        string? normalizedProviderId = NormalizeOptionalProviderId(providerId);
         ConnectionContext context = RequireContext();
         EnsureCurrent(context);
         if (!context.IsLocal)
@@ -735,24 +771,29 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             throw new InvalidOperationException("Gateway OAuth status must be read successfully before login.");
         }
 
+        if (!string.Equals(normalizedProviderId, context.GatewayOAuthRequestProviderId, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("Gateway OAuth status must be checked for the selected model provider before login.");
+        }
+
         RevokeGatewayAuthorizationAction(context);
         context.GatewayOAuthReady = false;
         context.GatewayOAuthMessage = "Waiting for gateway authorization.";
         string attemptId = Guid.NewGuid().ToString("N");
         context.GatewayLoginAttemptId = attemptId;
         SetGatewayState(context, InteractionAuthState.LoginPending, context.GatewayOAuthMessage);
-        context.GatewayLoginTask = CompleteGatewayOAuthLoginAsync(context, attemptId);
+        context.GatewayLoginTask = CompleteGatewayOAuthLoginAsync(context, attemptId, normalizedProviderId);
         await EmitInteractionAuthStatusAsync(context, cancellationToken).ConfigureAwait(false);
         return CreateInteractionAuthStatus(context);
     }
 
-    private async Task CompleteGatewayOAuthLoginAsync(ConnectionContext context, string attemptId)
+    private async Task CompleteGatewayOAuthLoginAsync(ConnectionContext context, string attemptId, string? providerId)
     {
         try
         {
             JsonElement result = await context.Connection.SendRequestAsync(
                 "account/gatewayOAuth/login",
-                new { },
+                GatewayOAuthParameters(providerId),
                 TimeSpan.FromMinutes(10),
                 context.Lifetime.Token).ConfigureAwait(false);
             EnsureCurrent(context);
@@ -1458,45 +1499,92 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         }
     }
 
-    private async Task ReadGatewayOAuthCoreAsync(ConnectionContext context, CancellationToken cancellationToken)
+    private Task ReadGatewayOAuthCoreAsync(ConnectionContext context, CancellationToken cancellationToken)
+        => ReadGatewayOAuthCoreAsync(context, null, cancellationToken);
+
+    private bool IsCurrentGatewayOAuthRead(ConnectionContext context, long requestGeneration)
+        => IsCurrent(context)
+            && Interlocked.Read(ref context.GatewayOAuthReadGeneration) == requestGeneration;
+
+    private async Task ReadGatewayOAuthCoreAsync(ConnectionContext context, string? providerId, CancellationToken cancellationToken)
     {
         EnsureCurrent(context);
-        RevokeGatewayAuthorizationAction(context);
-        context.GatewayOAuthReadSucceeded = false;
-        context.GatewayOAuthReady = false;
-        context.GatewayOAuthRequired = true;
-        context.GatewayOAuthProviderId = null;
-        context.GatewayOAuthProviderName = null;
-        context.GatewayOAuthMessage = "Gateway authorization status is unavailable. Retry the status check before continuing.";
-        SetGatewayState(context, InteractionAuthState.Unavailable, context.GatewayOAuthMessage);
+        long requestGeneration = Interlocked.Increment(ref context.GatewayOAuthReadGeneration);
+        lock (context.GatewayOAuthReadLock)
+        {
+            if (!IsCurrentGatewayOAuthRead(context, requestGeneration))
+            {
+                return;
+            }
+
+            RevokeGatewayAuthorizationAction(context);
+            context.GatewayOAuthReadSucceeded = false;
+            context.GatewayOAuthReady = false;
+            context.GatewayOAuthRequired = true;
+            context.GatewayOAuthProviderId = null;
+            context.GatewayOAuthProviderName = null;
+            context.GatewayOAuthRequestProviderId = providerId;
+            context.GatewayOAuthMessage = "Gateway authorization status is unavailable. Retry the status check before continuing.";
+            SetGatewayState(context, InteractionAuthState.Unavailable, context.GatewayOAuthMessage);
+        }
 
         try
         {
             JsonElement result = await context.Connection.SendRequestAsync(
                 "account/gatewayOAuth/read",
-                new { },
+                GatewayOAuthParameters(providerId),
                 TimeSpan.FromSeconds(15),
                 cancellationToken).ConfigureAwait(false);
-            EnsureCurrent(context);
-            if (!TryReadGatewayOAuthResponse(result, out string? providerId, out string? providerName, out bool required, out string? wireStatus, out string? safeError))
+            if (!IsCurrentGatewayOAuthRead(context, requestGeneration))
             {
-                WorkerDiagnostics.Write("gateway OAuth status response rejected");
-                context.GatewayOAuthMessage = "Gateway authorization status is invalid. Retry the status check before continuing.";
-                SetGatewayState(context, InteractionAuthState.Unavailable, context.GatewayOAuthMessage);
-                await EmitInteractionAuthStatusAsync(context, CancellationToken.None).ConfigureAwait(false);
                 return;
             }
 
-            context.GatewayOAuthReadSucceeded = true;
-            context.GatewayOAuthProviderId = redactor.Redact(providerId);
-            context.GatewayOAuthProviderName = redactor.Redact(providerName);
-            context.GatewayOAuthRequired = required;
-            context.GatewayOAuthMessage = safeError is null ? null : "Gateway authorization needs attention.";
-            context.GatewayOAuthReady = safeError is null
-                && (!required || string.Equals(wireStatus, "succeeded", StringComparison.Ordinal));
-            SetGatewayState(context, MapGatewayOAuthState(required, wireStatus, safeError), context.GatewayOAuthMessage);
+            if (!TryReadGatewayOAuthResponse(result, out string? responseProviderId, out string? providerName, out bool required, out string? wireStatus, out string? safeError)
+                || (providerId is not null && !string.Equals(responseProviderId, providerId, StringComparison.Ordinal)))
+            {
+                lock (context.GatewayOAuthReadLock)
+                {
+                    if (!IsCurrentGatewayOAuthRead(context, requestGeneration))
+                    {
+                        return;
+                    }
+
+                    WorkerDiagnostics.Write("gateway OAuth status response rejected");
+                    context.GatewayOAuthMessage = "Gateway authorization status is invalid. Retry the status check before continuing.";
+                    SetGatewayState(context, InteractionAuthState.Unavailable, context.GatewayOAuthMessage);
+                }
+
+                if (IsCurrentGatewayOAuthRead(context, requestGeneration))
+                {
+                    await EmitInteractionAuthStatusAsync(context, CancellationToken.None).ConfigureAwait(false);
+                }
+
+                return;
+            }
+
+            lock (context.GatewayOAuthReadLock)
+            {
+                if (!IsCurrentGatewayOAuthRead(context, requestGeneration))
+                {
+                    return;
+                }
+
+                context.GatewayOAuthReadSucceeded = true;
+                context.GatewayOAuthProviderId = redactor.Redact(responseProviderId);
+                context.GatewayOAuthProviderName = redactor.Redact(providerName);
+                context.GatewayOAuthRequired = required;
+                context.GatewayOAuthMessage = safeError is null ? null : "Gateway authorization needs attention.";
+                context.GatewayOAuthReady = safeError is null
+                    && (!required || string.Equals(wireStatus, "succeeded", StringComparison.Ordinal));
+                SetGatewayState(context, MapGatewayOAuthState(required, wireStatus, safeError), context.GatewayOAuthMessage);
+            }
+
             WorkerDiagnostics.Write($"gateway OAuth status read completed required={required} state={wireStatus ?? "none"}");
-            await EmitInteractionAuthStatusAsync(context, CancellationToken.None).ConfigureAwait(false);
+            if (IsCurrentGatewayOAuthRead(context, requestGeneration))
+            {
+                await EmitInteractionAuthStatusAsync(context, CancellationToken.None).ConfigureAwait(false);
+            }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -1504,11 +1592,20 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         }
         catch (Exception)
         {
-            if (IsCurrent(context))
+            lock (context.GatewayOAuthReadLock)
             {
+                if (!IsCurrentGatewayOAuthRead(context, requestGeneration))
+                {
+                    return;
+                }
+
                 WorkerDiagnostics.Write("gateway OAuth status read failed");
                 context.GatewayOAuthMessage = "Gateway authorization status is unavailable. Retry the status check before continuing.";
                 SetGatewayState(context, InteractionAuthState.Unavailable, context.GatewayOAuthMessage);
+            }
+
+            if (IsCurrentGatewayOAuthRead(context, requestGeneration))
+            {
                 await EmitInteractionAuthStatusAsync(context, CancellationToken.None).ConfigureAwait(false);
             }
         }
@@ -1635,6 +1732,8 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             {
                 IsLocal = context.IsLocal,
                 IsSupported = context.GatewayOAuthReadSucceeded,
+                ModelProviderId = context.GatewayOAuthProviderId ?? context.GatewayOAuthRequestProviderId,
+                ModelProviderName = context.GatewayOAuthProviderName,
                 McpEnvironmentIdentityEnabled = IsMcpEnvironmentIdentityEnabled(context),
                 State = context.GatewayOAuthState,
                 Message = context.GatewayOAuthMessage,
@@ -1771,13 +1870,27 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         return true;
     }
 
-    public async Task<ThreadSummary> StartThreadAsync(CancellationToken cancellationToken)
+    public Task<ThreadSummary> StartThreadAsync(CancellationToken cancellationToken)
+        => StartThreadAsync(null, cancellationToken);
+
+    public async Task<ThreadSummary> StartThreadAsync(string? modelProviderId, CancellationToken cancellationToken)
     {
         ConnectionContext context = RequireContext();
-        object parameters = context.ExperimentalApi
-            ? new { cwd = MapLocalPathForServer(options.WorkingDirectory), historyMode = "paginated" }
-            : new { cwd = MapLocalPathForServer(options.WorkingDirectory) };
-        JsonElement result = await SendAsync("thread/start", parameters, cancellationToken).ConfigureAwait(false);
+        string? normalizedProviderId = NormalizeOptionalProviderId(modelProviderId);
+        await EnsureCredentialReadyForProviderAsync(context, normalizedProviderId, cancellationToken).ConfigureAwait(false);
+        var parameters = new Dictionary<string, object?>(StringComparer.Ordinal)
+        {
+            ["cwd"] = MapLocalPathForServer(options.WorkingDirectory),
+        };
+        if (context.ExperimentalApi)
+        {
+            parameters["historyMode"] = "paginated";
+        }
+        if (normalizedProviderId is not null)
+        {
+            parameters["modelProvider"] = normalizedProviderId;
+        }
+        JsonElement result = await SendAsync("thread/start", parameters, cancellationToken, credentialAlreadyChecked: true).ConfigureAwait(false);
         effectiveThreadPermissions = ReadEffectiveThreadPermissions(result);
         ReadEffectiveTurnSettings(result, out string? reasoningEffort, out string? serviceTier);
         EffectiveReasoningEffort = reasoningEffort;
@@ -1996,9 +2109,19 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         }
     }
 
-    public async Task<ThreadSummary> ResumeThreadAsync(string threadId, CancellationToken cancellationToken)
+    public Task<ThreadSummary> ResumeThreadAsync(string threadId, CancellationToken cancellationToken)
+        => ResumeThreadAsync(threadId, null, cancellationToken);
+
+    public async Task<ThreadSummary> ResumeThreadAsync(string threadId, string? modelProviderId, CancellationToken cancellationToken)
     {
-        JsonElement result = await SendAsync("thread/resume", new { threadId, excludeTurns = true }, cancellationToken).ConfigureAwait(false);
+        ConnectionContext context = RequireContext();
+        string? normalizedProviderId = NormalizeOptionalProviderId(modelProviderId);
+        await EnsureCredentialReadyForProviderAsync(context, normalizedProviderId, cancellationToken).ConfigureAwait(false);
+        JsonElement result = await SendAsync(
+            "thread/resume",
+            new { threadId, excludeTurns = true },
+            cancellationToken,
+            credentialAlreadyChecked: true).ConfigureAwait(false);
         effectiveThreadPermissions = ReadEffectiveThreadPermissions(result);
         ReadEffectiveTurnSettings(result, out string? reasoningEffort, out string? serviceTier);
         EffectiveReasoningEffort = reasoningEffort;
@@ -2425,18 +2548,25 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         };
     }
 
-    public async Task<ListModelsResult> ListModelsAsync(CancellationToken cancellationToken)
+    public Task<ListModelsResult> ListModelsAsync(CancellationToken cancellationToken)
+        => ListModelsAsync(null, cancellationToken);
+
+    public async Task<ListModelsResult> ListModelsAsync(string? modelProviderId, CancellationToken cancellationToken)
     {
         WorkerDiagnostics.Write("app-server model list request starting");
+        string? normalizedProviderId = NormalizeOptionalProviderId(modelProviderId);
         try
         {
             ConnectionContext context = RequireContext();
-            EnsureCredentialReady(context);
+            await EnsureCredentialReadyForProviderAsync(context, normalizedProviderId, cancellationToken).ConfigureAwait(false);
+            var parameters = new Dictionary<string, object?>(StringComparer.Ordinal) { ["includeHidden"] = true };
+            if (normalizedProviderId is not null)
+            {
+                parameters["modelProvider"] = normalizedProviderId;
+            }
             JsonElement result = await context.Connection.SendReadOnlyRequestAsync(
                 "model/list",
-                // Include hidden models so the catalog default (which may be a hidden preset and
-                // is otherwise filtered out server-side) can still be surfaced in the picker.
-                new { includeHidden = true },
+                parameters,
                 TimeSpan.FromSeconds(15),
                 cancellationToken).ConfigureAwait(false);
             EnsureCurrent(context);
@@ -2453,7 +2583,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         {
             throw;
         }
-        catch (Exception ex)
+        catch (Exception ex) when (normalizedProviderId is null)
         {
             WorkerDiagnostics.Write("app-server model list request failed; keeping fallback models", ex);
             return new ListModelsResult();
@@ -2526,7 +2656,8 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
     public async Task<string> StartTurnAsync(StartTurnRequest request, CancellationToken cancellationToken)
     {
         ConnectionContext context = RequireContext();
-        EnsureCredentialReady(context);
+        string? normalizedProviderId = NormalizeOptionalProviderId(request.ModelProviderId);
+        await EnsureCredentialReadyForProviderAsync(context, normalizedProviderId, cancellationToken).ConfigureAwait(false);
         ValidateTurnApprovalOverrides(request);
         if (request.Skill is not null)
         {
@@ -5815,12 +5946,16 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         }
     }
 
-    private async Task<JsonElement> SendAsync(string method, object parameters, CancellationToken cancellationToken)
+    private async Task<JsonElement> SendAsync(
+        string method,
+        object parameters,
+        CancellationToken cancellationToken,
+        bool credentialAlreadyChecked = false)
     {
         ConnectionContext context = RequireContext();
-        if (method is not ("account/read" or "account/login/start" or "account/logout"))
+        if (!credentialAlreadyChecked && method is not ("account/read" or "account/login/start" or "account/logout"))
         {
-            EnsureCredentialReady(context);
+            await EnsureCredentialReadyForProviderAsync(context, null, cancellationToken).ConfigureAwait(false);
         }
         JsonElement result = await context.Connection.SendRequestAsync(
             method,
@@ -5836,7 +5971,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         ConnectionContext context = RequireContext();
         if (method != "account/read")
         {
-            EnsureCredentialReady(context);
+            await EnsureCredentialReadyForProviderAsync(context, null, cancellationToken).ConfigureAwait(false);
         }
         JsonElement result = await context.Connection.SendReadOnlyRequestAsync(
             method,
@@ -5907,7 +6042,7 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         EnsureCurrent(context);
         if (method != "account/read" && !allowUncredentialed)
         {
-            EnsureCredentialReady(context);
+            await EnsureCredentialReadyForProviderAsync(context, null, cancellationToken).ConfigureAwait(false);
         }
         // SendReadOnlyRequestAsync owns retry eligibility through its exact method
         // allowlist; every other method (including all mutations) is sent once.
@@ -5929,7 +6064,9 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             return;
         }
 
-        if (!context.GatewayOAuthReadSucceeded || !context.GatewayOAuthReady)
+        if (context.GatewayOAuthRequestProviderId is not null
+            || !context.GatewayOAuthReadSucceeded
+            || !context.GatewayOAuthReady)
         {
             throw new InvalidOperationException(
                 context.GatewayOAuthReadSucceeded
@@ -6447,6 +6584,8 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
             EffectiveReasoningEffort = effectiveReasoningEffort,
             EffectiveServiceTier = effectiveServiceTier,
             EffectiveModelId = ReadEffectiveModelId(thread),
+            ModelProviderId = ReadModelProviderId(thread),
+            ModelProviderName = ReadModelProviderName(thread),
             DisabledPluginIds = ReadStringArray(thread, "disabledPluginIds", 128),
         };
     }
@@ -8153,6 +8292,9 @@ public sealed partial class CodexSessionService : ICodexSessionService, IAsyncDi
         public bool IsLocal { get; set; }
         public string? GatewayOAuthProviderId { get; set; }
         public string? GatewayOAuthProviderName { get; set; }
+        public string? GatewayOAuthRequestProviderId { get; set; }
+        public long GatewayOAuthReadGeneration;
+        public object GatewayOAuthReadLock { get; } = new();
         public string? GatewayOAuthMessage { get; set; }
         public string? GatewayOAuthActionId { get; set; }
         public string? GatewayOAuthOriginDisplay { get; set; }

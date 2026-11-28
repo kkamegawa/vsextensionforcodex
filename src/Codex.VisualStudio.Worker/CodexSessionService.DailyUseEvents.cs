@@ -192,9 +192,11 @@ public sealed partial class CodexSessionService
             throw new AttachmentRejectedException("This attachment type is display-only and cannot be sent to the selected model.");
         }
 
+        var parameters = new Dictionary<string, object?> { ["includeHidden"] = true };
+        AddOptional(parameters, "modelProvider", NormalizeOptionalProviderId(request.ModelProviderId));
         JsonElement result = await context.Connection.SendReadOnlyRequestAsync(
             "model/list",
-            new { includeHidden = true },
+            parameters,
             TimeSpan.FromSeconds(15),
             cancellationToken).ConfigureAwait(false);
         EnsureCurrent(context);

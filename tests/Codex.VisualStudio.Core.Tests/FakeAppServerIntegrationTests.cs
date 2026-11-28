@@ -28,11 +28,113 @@ public sealed class FakeAppServerIntegrationTests
     }
 
     [TestMethod]
+    [DataRow("Current01690", "config/value/write")]
+    [DataRow("Current01700", "config/value/write")]
+    [DataRow("Current01710", "modelProvider/default/set")]
+    public async Task ModelProviderRequestsAreScopedAndDefaultMutationIsVersionGated(string scenario, string expectedMutation)
+    {
+        await using FakeAppServerProcess server = await FakeAppServerProcess.StartAsync(scenario);
+        await using JsonLineRpcConnection connection = await server.ConnectAsync();
+        await using var service = new CodexSessionService(new ApprovalPolicyEngine(new PathAccessPolicy()), new SecretRedactor());
+        await service.InitializeAsync(connection, new WorkerOptions
+        {
+            ExperimentalApi = true,
+            WorkingDirectory = Environment.CurrentDirectory,
+            ExtensionVersion = "provider-integration-test",
+        }, CancellationToken.None);
+
+        ListModelProvidersResult catalog = await service.ListModelProvidersAsync(CancellationToken.None);
+        Assert.AreEqual(2, catalog.Providers.Count);
+        Assert.AreEqual("fake", catalog.DefaultProviderId);
+        ListModelsResult models = await service.ListModelsAsync("alternate", CancellationToken.None);
+        Assert.AreEqual(1, models.Models.Count);
+        Assert.AreEqual("alternate-only-model", models.Models[0].Id, "The alternate provider must return its own model catalog.");
+        ThreadSummary thread = await service.StartThreadAsync("alternate", CancellationToken.None);
+        Assert.AreEqual("alternate", thread.ModelProviderId);
+        ListModelProvidersResult updated = await service.SetDefaultModelProviderAsync("alternate", CancellationToken.None);
+        Assert.AreEqual("alternate", updated.DefaultProviderId);
+
+        JsonElement state = await connection.SendRequestAsync("fake/provider/state", new { }, TimeSpan.FromSeconds(5), CancellationToken.None);
+        JsonElement requests = state.GetProperty("requests");
+        JsonElement modelList = requests.EnumerateArray().First(item => item.GetProperty("method").GetString() == "model/list").GetProperty("parameters");
+        Assert.AreEqual("alternate", modelList.GetProperty("modelProvider").GetString());
+        JsonElement threadStart = requests.EnumerateArray().First(item => item.GetProperty("method").GetString() == "thread/start").GetProperty("parameters");
+        Assert.AreEqual("alternate", threadStart.GetProperty("modelProvider").GetString());
+        JsonElement mutations = requests.EnumerateArray()
+            .Where(item => item.GetProperty("method").GetString() is "config/value/write" or "modelProvider/default/set")
+            .ToArray()
+            .Single();
+        Assert.AreEqual(expectedMutation, mutations.GetProperty("method").GetString());
+        JsonElement mutationParameters = mutations.GetProperty("parameters");
+        if (expectedMutation == "config/value/write")
+        {
+            Assert.AreEqual("model_provider", mutationParameters.GetProperty("keyPath").GetString());
+            Assert.AreEqual("alternate", mutationParameters.GetProperty("value").GetString());
+            Assert.AreEqual("replace", mutationParameters.GetProperty("mergeStrategy").GetString());
+        }
+        else
+        {
+            Assert.AreEqual("alternate", mutationParameters.GetProperty("providerId").GetString());
+        }
+
+        string incompatibleMutation = expectedMutation == "config/value/write"
+            ? "modelProvider/default/set"
+            : "config/value/write";
+        object incompatibleParameters = incompatibleMutation == "config/value/write"
+            ? new { keyPath = "model_provider", value = "fake", mergeStrategy = "replace" }
+            : new { providerId = "fake" };
+        JsonRpcRemoteException incompatible = await Assert.ThrowsExactlyAsync<JsonRpcRemoteException>(
+            () => connection.SendRequestAsync(
+                incompatibleMutation,
+                incompatibleParameters,
+                TimeSpan.FromSeconds(5),
+                CancellationToken.None));
+        Assert.AreEqual("The model provider default method is unavailable for this CLI version.", incompatible.Message);
+
+        if (expectedMutation == "config/value/write")
+        {
+            JsonRpcRemoteException invalidKeyPath = await Assert.ThrowsExactlyAsync<JsonRpcRemoteException>(
+                () => connection.SendRequestAsync(
+                    "config/value/write",
+                    new { keyPath = "other", value = "fake", mergeStrategy = "replace" },
+                    TimeSpan.FromSeconds(5),
+                    CancellationToken.None));
+            Assert.AreEqual("The fake server only accepts the model_provider configuration key.", invalidKeyPath.Message);
+
+            JsonRpcRemoteException invalidMerge = await Assert.ThrowsExactlyAsync<JsonRpcRemoteException>(
+                () => connection.SendRequestAsync(
+                    "config/value/write",
+                    new { keyPath = "model_provider", value = "fake", mergeStrategy = "merge" },
+                    TimeSpan.FromSeconds(5),
+                    CancellationToken.None));
+            Assert.AreEqual("The model provider default mutation is invalid.", invalidMerge.Message);
+        }
+
+        JsonElement gatewayStatusWithoutParameters = await connection.SendRequestAsync(
+            "account/gatewayOAuth/read",
+            null,
+            TimeSpan.FromSeconds(5),
+            CancellationToken.None);
+        Assert.AreEqual("alternate", gatewayStatusWithoutParameters.GetProperty("providerId").GetString());
+        Assert.AreEqual("Alternate provider", gatewayStatusWithoutParameters.GetProperty("providerName").GetString());
+        JsonElement stateAfterRejectedWrites = await connection.SendRequestAsync(
+            "fake/provider/state",
+            new { },
+            TimeSpan.FromSeconds(5),
+            CancellationToken.None);
+        Assert.AreEqual("alternate", stateAfterRejectedWrites.GetProperty("defaultProviderId").GetString());
+    }
+
+    [TestMethod]
     public async Task FakeSeparateReviewAndUsageMatchTheStableSurface()
     {
         await using FakeAppServerProcess server = await FakeAppServerProcess.StartAsync("Current01690");
         await server.SendAsync(new { id = 1, method = "initialize", @params = new { } });
         (await server.ReadAsync()).Dispose();
+
+        await server.SendAsync(new { id = 5, method = "model/list" });
+        using JsonDocument models = await ReadResponseAsync(server, 5);
+        Assert.IsTrue(models.RootElement.GetProperty("result").GetProperty("data").GetArrayLength() > 0);
 
         await server.SendAsync(new { id = 2, method = "thread/start", @params = new { sandbox = "read-only" } });
         using JsonDocument started = await server.ReadAsync();

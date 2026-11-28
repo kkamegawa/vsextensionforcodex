@@ -5,6 +5,10 @@
     <RootNamespace>Codex.VisualStudio.Contracts</RootNamespace>
   </PropertyGroup>
   <ItemGroup>
+    <EmbeddedResource Include="Strings\*.json" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="StreamJsonRpc" />
   </ItemGroup>
 </Project>

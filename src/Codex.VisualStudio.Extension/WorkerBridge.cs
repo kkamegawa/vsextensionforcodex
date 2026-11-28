@@ -125,6 +125,12 @@ internal partial interface IWorkerBridge : IAsyncDisposable
 
     Task<ListModelsResult> ListModelsAsync(ListModelsRequest request, CancellationToken cancellationToken);
 
+    Task<ListModelProvidersResult> ListModelProvidersAsync(ListModelProvidersRequest request, CancellationToken cancellationToken)
+        => Task.FromResult(new ListModelProvidersResult());
+
+    Task<ListModelProvidersResult> SetDefaultModelProviderAsync(SetDefaultModelProviderRequest request, CancellationToken cancellationToken)
+        => Task.FromException<ListModelProvidersResult>(new NotSupportedException("Changing the default model provider is not supported by this bridge."));
+
     Task<ListPermissionProfilesResult> ListPermissionProfilesAsync(ListPermissionProfilesRequest request, CancellationToken cancellationToken)
         => Task.FromResult(new ListPermissionProfilesResult
         {
@@ -480,6 +486,18 @@ public sealed partial class WorkerBridge : IWorkerBridge, ICodexWorkerObserver
             throw;
         }
     }
+
+    public Task<ListModelProvidersResult> ListModelProvidersAsync(ListModelProvidersRequest request, CancellationToken cancellationToken)
+        => RequireRpc().InvokeWithCancellationAsync<ListModelProvidersResult>(
+            "worker/modelProviders/list",
+            new object[] { request },
+            cancellationToken);
+
+    public Task<ListModelProvidersResult> SetDefaultModelProviderAsync(SetDefaultModelProviderRequest request, CancellationToken cancellationToken)
+        => RequireRpc().InvokeWithCancellationAsync<ListModelProvidersResult>(
+            "worker/modelProviders/default/set",
+            new object[] { request },
+            cancellationToken);
 
     public Task<ListPermissionProfilesResult> ListPermissionProfilesAsync(ListPermissionProfilesRequest request, CancellationToken cancellationToken)
         => RequireRpc().InvokeWithCancellationAsync<ListPermissionProfilesResult>(

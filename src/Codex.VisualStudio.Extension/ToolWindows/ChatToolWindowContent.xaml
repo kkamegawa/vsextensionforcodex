@@ -2888,10 +2888,65 @@
                         IsEnabled="{Binding IsApprovalModeEnabled}"
                         AutomationProperties.Name="Permissions"
                         AutomationProperties.HelpText="{Binding ApprovalModeHelpText}" />
-              <ComboBox Margin="6,0,0,0" Width="124" VerticalAlignment="Center"
-                        ToolTip="Model"
-                        ItemsSource="{Binding Models}" SelectedItem="{Binding SelectedModel}"
-                        AutomationProperties.Name="Model" />
+              <StackPanel Margin="6,0,0,0" VerticalAlignment="Center">
+                <DockPanel LastChildFill="True">
+                  <Button DockPanel.Dock="Right"
+                          Margin="5,0,0,0"
+                          Content="{Binding SetDefaultModelProviderText}"
+                          ToolTip="{Binding SetDefaultModelProviderToolTip}"
+                          Command="{Binding SetDefaultModelProviderCommand}"
+                          IsEnabled="{Binding CanSetDefaultModelProvider}"
+                          Visibility="{Binding ShowSetDefaultModelProvider, Converter={StaticResource BoolToVis}}"
+                          Style="{StaticResource SmallRoundButtonStyle}"
+                          AutomationProperties.Name="{Binding SetDefaultModelProviderText}"
+                          AutomationProperties.HelpText="{Binding SetDefaultModelProviderToolTip}" />
+                  <ComboBox Width="166" VerticalAlignment="Center"
+                            ToolTip="{Binding ModelProviderSelectionHelpText}"
+                            ItemsSource="{Binding ModelProviders}"
+                            SelectedValuePath="Id"
+                            SelectedValue="{Binding SelectedModelProviderId, Mode=TwoWay}"
+                            IsEnabled="{Binding IsModelProviderSelectorEnabled}"
+                            Visibility="{Binding ShowModelProviderSelector, Converter={StaticResource BoolToVis}}"
+                            AutomationProperties.Name="{Binding ModelProviderSelectorAutomationName}"
+                            AutomationProperties.HelpText="{Binding ModelProviderSelectionHelpText}">
+                    <ComboBox.ItemTemplate>
+                      <DataTemplate>
+                        <StackPanel Margin="2">
+                          <TextBlock Text="{Binding DisplayName}" TextTrimming="CharacterEllipsis" />
+                          <TextBlock FontSize="10" Opacity="0.75" Text="{Binding DisplayType}"
+                                     Visibility="{Binding HasDisplayType, Converter={StaticResource BoolToVis}}" />
+                          <StackPanel Orientation="Horizontal" Visibility="{Binding HasBaseUrl, Converter={StaticResource BoolToVis}}">
+                            <TextBlock FontSize="10" Opacity="0.75" Text="{Binding BaseUrl}" TextTrimming="CharacterEllipsis" />
+                          </StackPanel>
+                        </StackPanel>
+                      </DataTemplate>
+                    </ComboBox.ItemTemplate>
+                  </ComboBox>
+                </DockPanel>
+                <TextBlock Margin="0,2,0,0" FontSize="10" Opacity="0.75"
+                           MaxWidth="166"
+                           Text="{Binding SelectedThreadProviderText}" TextWrapping="Wrap"
+                           Visibility="{Binding ShowSelectedThreadProvider, Converter={StaticResource BoolToVis}}"
+                           AutomationProperties.Name="{Binding SelectedThreadProviderText}" />
+                <TextBlock Margin="0,2,0,0" FontSize="10" Opacity="0.75"
+                           MaxWidth="166"
+                           Text="{Binding ModelProviderSelectionHelpText}" TextWrapping="Wrap"
+                           Visibility="{Binding ShowModelProviderSelector, Converter={StaticResource BoolToVis}}" />
+                <TextBlock Margin="0,2,0,0" FontSize="10" Opacity="0.75"
+                           MaxWidth="166"
+                           Text="{Binding ModelProviderStatusText}" TextWrapping="Wrap"
+                           Visibility="{Binding ShowModelProviderStatus, Converter={StaticResource BoolToVis}}"
+                           AutomationProperties.Name="{Binding ModelProviderStatusText}"
+                           AutomationProperties.LiveSetting="Polite" />
+                <TextBlock Margin="0,2,0,0" FontSize="10" Opacity="0.75"
+                           MaxWidth="166"
+                           Text="{Binding ModelProviderFixedDefaultText}" TextWrapping="Wrap"
+                           Visibility="{Binding ShowFixedModelProviderDefaultNotice, Converter={StaticResource BoolToVis}}" />
+                <ComboBox Margin="0,2,0,0" Width="124" VerticalAlignment="Center"
+                          ToolTip="{Binding ModelSelectorToolTip}"
+                          ItemsSource="{Binding Models}" SelectedItem="{Binding SelectedModel}"
+                          AutomationProperties.Name="{Binding ModelSelectorAutomationName}" />
+              </StackPanel>
               <ComboBox Margin="6,0,0,0" Width="112" VerticalAlignment="Center"
                         ToolTip="{Binding ReasoningEffortHelpText}"
                         ItemsSource="{Binding ReasoningEfforts}"

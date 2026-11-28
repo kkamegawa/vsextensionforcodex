@@ -125,12 +125,13 @@ public sealed partial class ChatViewModel
         {
             string providerMessage = providerErrorCode switch
             {
-                ProviderErrorCodes.ModelProviderMismatch => "The conversation's saved model uses a provider that does not match the current configuration.",
-                ProviderErrorCodes.ModelProviderNotConfigured => "The provider required by this conversation is not configured.",
-                _ => "The conversation's provider conflicts with the current policy.",
+                ProviderErrorCodes.ModelProviderMismatch => LocalizedStrings.Get("Provider.ResumeError.Mismatch"),
+                ProviderErrorCodes.ModelProviderNotConfigured => LocalizedStrings.Get("Provider.ResumeError.NotConfigured"),
+                _ => LocalizedStrings.Get("Provider.ResumeError.PolicyConflict"),
             };
-            return markdown.ToSafeText(
-                $"{providerMessage} The transcript is opening read-only. You can still interrupt an active turn and use /goal pause or /goal clear.");
+            return markdown.ToSafeText(LocalizedStrings.Format(
+                "Provider.ResumeError.ReadOnlyGuidance",
+                providerMessage));
         }
 
         string message = markdown.ToSafeText(error.Message).Trim();

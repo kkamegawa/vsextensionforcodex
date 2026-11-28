@@ -3093,6 +3093,44 @@ public sealed partial class CodexSessionServiceTests
     }
 
     [TestMethod]
+    public async Task StartReviewNewThreadRefreshesDefaultOAuthAfterAProviderScopedRead()
+    {
+        var connection = new RecordingConnection
+        {
+            Handler = (method, _) => method == "review/start"
+                ? JsonSerializer.SerializeToElement(new { reviewThreadId = "thread-review", turn = new { id = "turn-review" } })
+                : JsonSerializer.SerializeToElement(new { }),
+        };
+        connection.GatewayOAuthReadHandler = (parameters, _) =>
+        {
+            JsonElement request = JsonSerializer.SerializeToElement(parameters);
+            bool isAzure = request.ValueKind == JsonValueKind.Object
+                && request.TryGetProperty("modelProvider", out JsonElement provider)
+                && provider.GetString() == "azure";
+            return Task.FromResult(JsonSerializer.SerializeToElement(new
+            {
+                providerId = isAzure ? "azure" : "openai",
+                providerName = isAzure ? "Azure" : "OpenAI",
+                required = false,
+                status = (string?)null,
+            }));
+        };
+        await using CodexSessionService service = await StartSourceThreadForReviewAsync(
+            connection,
+            ReviewThreadResponse("thread-review"));
+        _ = await service.ReadGatewayOAuthAsync("azure", CancellationToken.None);
+
+        StartReviewResult result = await service.StartReviewAsync(NewThreadReview(), CancellationToken.None);
+
+        Assert.AreEqual(ReviewStartOutcome.Started, result.Outcome);
+        JsonElement lastOAuthParameters = JsonSerializer.SerializeToElement(
+            connection.Requests.Last(request => request.Method == "account/gatewayOAuth/read").Parameters,
+            WireJsonOptions);
+        Assert.IsFalse(lastOAuthParameters.TryGetProperty("modelProvider", out _), "The review thread uses the default provider's authorization state.");
+        Assert.AreEqual(2, connection.Requests.Count(request => request.Method == "thread/start"));
+    }
+
+    [TestMethod]
     public async Task StartReviewNewThread_InheritsSettingsAndMovesActiveThreadOnlyAfterStart()
     {
         string? activeDuringReviewStart = null;
@@ -6313,6 +6351,8 @@ public sealed partial class CodexSessionServiceTests
             status = (string?)null,
         });
 
+        public Func<object?, CancellationToken, Task<JsonElement>>? GatewayOAuthReadHandler { get; set; }
+
         public Func<string, object?, CancellationToken, Task<JsonElement>>? AsyncHandler { get; set; }
 
         public List<RecordedRequest> Requests { get; } = new();
@@ -6327,7 +6367,8 @@ public sealed partial class CodexSessionServiceTests
             Requests.Add(new RecordedRequest(method, parameters, timeout));
             if (method == "account/gatewayOAuth/read")
             {
-                return Task.FromResult(GatewayOAuthReadResponse.Clone());
+                return GatewayOAuthReadHandler?.Invoke(parameters, cancellationToken)
+                    ?? Task.FromResult(GatewayOAuthReadResponse.Clone());
             }
 
             return ApplyUnconfiguredFixture(method, parameters,

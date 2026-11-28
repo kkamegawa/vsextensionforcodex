@@ -1,4 +1,6 @@
-﻿using System.Runtime.Serialization;
+﻿using System.ComponentModel;
+using System.Runtime.CompilerServices;
+using System.Runtime.Serialization;
 using StreamJsonRpc;
 
 namespace Codex.VisualStudio.Contracts;
@@ -85,6 +87,9 @@ public static class WorkerErrorCodes
 
     // Local or preflight validation rejected a turn before the Worker sent turn/start.
     public const int PreDispatchRejected = -32054;
+
+    // The app-server returned a JSON-RPC error for the default-provider mutation; the write failed.
+    public const int UpstreamOperationRejected = -32055;
 }
 
 public enum WorkerConnectionState
@@ -309,6 +314,12 @@ public sealed class WorkerStatus
     [DataMember]
     public string? EffectiveModelId { get; set; }
 
+    [DataMember]
+    public string? ModelProviderId { get; set; }
+
+    [DataMember]
+    public string? ModelProviderName { get; set; }
+
     // The local or remote target this status describes. ProcessId is set only for a Worker-owned
     // local process; a remote target never has one.
     [DataMember]
@@ -340,11 +351,14 @@ public sealed class WorkerNotification<T>
 
 public sealed class StartThreadRequest : OwnerScopedRequest
 {
+    public string? ModelProviderId { get; set; }
 }
 
 public sealed class ResumeThreadRequest : OwnerScopedRequest
 {
     public string ThreadId { get; set; } = string.Empty;
+
+    public string? ModelProviderId { get; set; }
 
     public bool UserConfirmed { get; set; }
 }
@@ -434,6 +448,7 @@ public sealed class ListThreadAttachmentsRequest : OwnerScopedRequest
 
 public sealed class ListModelsRequest : OwnerScopedRequest
 {
+    public string? ModelProviderId { get; set; }
 }
 
 public sealed class ListPermissionProfilesRequest : OwnerScopedRequest
@@ -591,6 +606,12 @@ public sealed class ThreadSummary
 
     [DataMember]
     public string? EffectiveModelId { get; set; }
+
+    [DataMember]
+    public string? ModelProviderId { get; set; }
+
+    [DataMember]
+    public string? ModelProviderName { get; set; }
 
     [DataMember]
     public string? LinkedParentThreadId { get; set; }
@@ -898,6 +919,159 @@ public sealed class ListModelsResult
     public ModelInfo? DefaultModelInfo { get; set; }
 }
 
+
+[DataContract]
+public sealed class ModelProviderInfo : INotifyPropertyChanged
+{
+    private string id = string.Empty;
+    private string name = string.Empty;
+    private string? baseUrl;
+    private string? type;
+    private bool canChangeDefault;
+    private bool isDefault;
+
+    [DataMember]
+    public string Id
+    {
+        get => id;
+        set => SetProperty(ref id, value ?? string.Empty);
+    }
+
+    [DataMember]
+    public string Name
+    {
+        get => name;
+        set
+        {
+            if (SetProperty(ref name, value ?? string.Empty))
+            {
+                OnPropertyChanged(nameof(DisplayName));
+            }
+        }
+    }
+
+    [DataMember]
+    public string? BaseUrl
+    {
+        get => baseUrl;
+        set
+        {
+            if (SetProperty(ref baseUrl, value))
+            {
+                OnPropertyChanged(nameof(HasBaseUrl));
+            }
+        }
+    }
+
+    // Remote UI data contracts require a setter even for values derived from other members.
+    // Ignore the incoming copy so this stays derived from the local, current-culture values.
+    [DataMember]
+    public bool HasBaseUrl
+    {
+        get => !string.IsNullOrWhiteSpace(BaseUrl);
+        private set { }
+    }
+
+    [DataMember]
+    public string? Type
+    {
+        get => type;
+        set
+        {
+            if (SetProperty(ref type, value))
+            {
+                OnPropertyChanged(nameof(DisplayType));
+                OnPropertyChanged(nameof(HasDisplayType));
+            }
+        }
+    }
+
+    [DataMember]
+    public bool CanChangeDefault
+    {
+        get => canChangeDefault;
+        set => SetProperty(ref canChangeDefault, value);
+    }
+
+    [DataMember]
+    public bool IsDefault
+    {
+        get => isDefault;
+        set
+        {
+            if (SetProperty(ref isDefault, value))
+            {
+                OnPropertyChanged(nameof(DisplayName));
+            }
+        }
+    }
+
+    [DataMember]
+    public string DisplayName
+    {
+        get => IsDefault
+            ? LocalizedStrings.Format("Provider.DisplayNameDefault", Name)
+            : Name;
+        private set { }
+    }
+
+    [DataMember]
+    public string DisplayType
+    {
+        get => Type?.ToLowerInvariant() switch
+        {
+            "openai" => LocalizedStrings.Get("Provider.Type.OpenAI"),
+            "custom" or "gateway" => LocalizedStrings.Get("Provider.Type.CustomGateway"),
+            "bedrock" => LocalizedStrings.Get("Provider.Type.Bedrock"),
+            "google" or "googlecloud" or "google_cloud" => LocalizedStrings.Get("Provider.Type.GoogleCloud"),
+            _ => string.Empty,
+        };
+        private set { }
+    }
+
+    [DataMember]
+    public bool HasDisplayType
+    {
+        get => !string.IsNullOrWhiteSpace(DisplayType);
+        private set { }
+    }
+
+    public event PropertyChangedEventHandler? PropertyChanged;
+
+    private void OnPropertyChanged([CallerMemberName] string? propertyName = null)
+        => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
+
+    private bool SetProperty<T>(ref T field, T value, [CallerMemberName] string? propertyName = null)
+    {
+        if (EqualityComparer<T>.Default.Equals(field, value))
+        {
+            return false;
+        }
+
+        field = value;
+        OnPropertyChanged(propertyName);
+        return true;
+    }
+}
+
+public sealed class ListModelProvidersRequest : OwnerScopedRequest
+{
+}
+
+public sealed class SetDefaultModelProviderRequest : OwnerScopedRequest
+{
+    public string ProviderId { get; set; } = string.Empty;
+}
+
+public sealed class ListModelProvidersResult
+{
+    public IReadOnlyList<ModelProviderInfo> Providers { get; set; } = Array.Empty<ModelProviderInfo>();
+    public string? DefaultProviderId { get; set; }
+    public bool CanChangeDefault { get; set; }
+    public bool DefaultWriteOutcomeUnknown { get; set; }
+    public bool DefaultCatalogRefreshFailed { get; set; }
+}
+
 public sealed class PermissionProfileInfo
 {
     public string Id { get; set; } = string.Empty;
@@ -934,6 +1108,8 @@ public sealed class StartTurnRequest
     : OwnerScopedRequest
 {
     public string ThreadId { get; set; } = string.Empty;
+
+    public string? ModelProviderId { get; set; }
 
     public string Text { get; set; } = string.Empty;
 
@@ -1750,6 +1926,12 @@ public interface ICodexWorkerClient
 
     [JsonRpcMethod("worker/models/list")]
     Task<ListModelsResult> ListModelsAsync(ListModelsRequest request, CancellationToken cancellationToken);
+
+    [JsonRpcMethod("worker/modelProviders/list")]
+    Task<ListModelProvidersResult> ListModelProvidersAsync(ListModelProvidersRequest request, CancellationToken cancellationToken);
+
+    [JsonRpcMethod("worker/modelProviders/default/set")]
+    Task<ListModelProvidersResult> SetDefaultModelProviderAsync(SetDefaultModelProviderRequest request, CancellationToken cancellationToken);
 
     [JsonRpcMethod("worker/permissionProfiles/list")]
     Task<ListPermissionProfilesResult> ListPermissionProfilesAsync(ListPermissionProfilesRequest request, CancellationToken cancellationToken);

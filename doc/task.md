@@ -1089,3 +1089,14 @@ Tracking: [Issue #300](https://github.com/kkamegawa/vsextensionforcodex/issues/3
 - [x] Add a local WebSocket peer test that accepts the handshake, observes a PING, withholds PONG, and verifies connection closure. Update the English and Japanese remote-connection design records.
 
 Validation: Release solution build passed with 0 warnings and 0 errors. `WebSocketJsonRpcConnectionTests` passed 14/14, including the missing-PONG timeout case. `git diff --check` passed.
+
+### 2026-11-28: Phase 4 — model provider switching (#302)
+
+Tracking: Issue #302 under Issue #272. Approved plan: plan/2026-11-15/vs2026-dotnet10-codex-cli-0-169; feature requirements: doc/app-server-0-169-design.md section 4.1.
+
+- [x] Added provider discovery and selection for new conversations while preserving the provider attached to saved conversations.
+- [x] Added version-selected default-provider mutation, provider-scoped model discovery and Gateway OAuth, and explicit UI outcomes for policy/configuration/write failures.
+- [x] Serialized default-provider writes, preserved unknown outcomes without replay, and captured the provider at the start of a new-conversation operation.
+- [x] Displayed unknown provider errors after Worker-side secret and endpoint redaction plus UI SafeMarkdown sanitization; recognized provider errors and Gateway OAuth failures use localized guidance.
+- [x] #302 Release validation: solution build 0 warnings/0 errors; Core 759 passed with 5 filesystem-link skips (764 total); UI 702 passed with 1 filesystem-link skip (703 total). `git diff --check` and UTF-8 BOM/CRLF checks passed.
+- [ ] Visual Studio 2026 Experimental Instance acceptance on real CLI 0.169.0 remains pending; see the PR checklist.
