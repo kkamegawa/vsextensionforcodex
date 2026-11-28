@@ -10,6 +10,7 @@ public sealed class TransportPoliciesTests
     [
         "account/rateLimits/read",
         "account/usage/read",
+        "account/securitySetup/read",
         "thread/list",
         "thread/goal/get",
         "model/list",
@@ -19,12 +20,12 @@ public sealed class TransportPoliciesTests
     ];
 
     [TestMethod]
-    public void Allowlist_ContainsExactlyTheFifteenReviewedReadOnlyMethods()
+    public void Allowlist_ContainsExactlyTheSixteenReviewedReadOnlyMethods()
     {
         CollectionAssert.AreEquivalent(
             new[]
             {
-                "account/read", "account/rateLimits/read", "account/usage/read", "thread/list", "thread/goal/get",
+                "account/read", "account/rateLimits/read", "account/usage/read", "account/securitySetup/read", "thread/list", "thread/goal/get",
                 "model/list", "modelProvider/list", "permissionProfile/list", "mcpServerStatus/list", "skills/list",
                 "thread/read", "thread/memory/read", "thread/turns/list", "thread/items/list", "thread/attachment/list",
             },

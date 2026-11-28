@@ -511,6 +511,23 @@ public sealed class AccountStatus
     public string? WorkspaceId { get; set; }
 
     public string? WorkspaceName { get; set; }
+
+    public AccountSecuritySetupNotice? SecuritySetupNotice { get; set; }
+}
+
+public sealed class AccountSecuritySetupNotice
+{
+    public string AccountId { get; set; } = string.Empty;
+
+    public string UserId { get; set; } = string.Empty;
+
+    public string Title { get; set; } = string.Empty;
+
+    public string Description { get; set; } = string.Empty;
+
+    public string ActionLabel { get; set; } = string.Empty;
+
+    public string ActionUrl { get; set; } = string.Empty;
 }
 
 public sealed class ListWorkspacesRequest : OwnerScopedRequest
@@ -1661,6 +1678,8 @@ public sealed class ConversationEvent
     public long? StartedAtMs { get; set; }
 
     public long? CompletedAtMs { get; set; }
+
+    public long? ContentTokenCount { get; set; }
 
     public TurnPlanSnapshot? Plan { get; set; }
 

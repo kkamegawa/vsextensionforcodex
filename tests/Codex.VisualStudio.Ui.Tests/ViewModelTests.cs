@@ -5933,6 +5933,265 @@ public sealed partial class ViewModelTests
     }
 
     [TestMethod]
+    public void AccountPanelViewModel_DismissesReminderForTheSessionAndClearsItOnAccountChange()
+    {
+        var notice = new AccountSecuritySetupNotice
+        {
+            AccountId = "account-1",
+            UserId = "user-1",
+            Title = "Secure the account",
+            Description = "Review the account settings.",
+            ActionLabel = "Review",
+            ActionUrl = "https://security.example.test/setup",
+        };
+        var viewModel = new AccountPanelViewModel();
+
+        viewModel.Update(new AccountStatus { State = AccountState.SignedIn, SecuritySetupNotice = notice });
+        Assert.IsTrue(viewModel.HasSecuritySetupNotice);
+        Assert.IsTrue(viewModel.HasSecuritySetupAction);
+        Assert.AreEqual(notice.Title, viewModel.SecuritySetupTitle);
+        viewModel.DismissSecuritySetupNotice();
+        Assert.IsFalse(viewModel.HasSecuritySetupNotice);
+
+        viewModel.Update(new AccountStatus { State = AccountState.Checking });
+        Assert.IsFalse(viewModel.HasSecuritySetupNotice);
+        viewModel.Update(new AccountStatus { State = AccountState.SignedIn, SecuritySetupNotice = new AccountSecuritySetupNotice
+        {
+            AccountId = notice.AccountId,
+            UserId = notice.UserId,
+            Title = notice.Title,
+            Description = notice.Description,
+            ActionLabel = notice.ActionLabel,
+            ActionUrl = notice.ActionUrl,
+        } });
+        Assert.IsFalse(viewModel.HasSecuritySetupNotice, "A routine account reread must preserve this session's dismissal.");
+
+        viewModel.Update(new AccountStatus { State = AccountState.SignedIn, SecuritySetupNotice = new AccountSecuritySetupNotice
+        {
+            AccountId = "account-2",
+            UserId = notice.UserId,
+            Title = notice.Title,
+            Description = notice.Description,
+            ActionLabel = notice.ActionLabel,
+            ActionUrl = notice.ActionUrl,
+        } });
+        Assert.IsTrue(viewModel.HasSecuritySetupNotice, "A different account must not inherit the previous account's dismissal, even when the notice text is unchanged.");
+    }
+
+    [TestMethod]
+    [DataRow("javascript:alert(1)")]
+    [DataRow("http://security.example.test/setup")]
+    [DataRow("/relative/path")]
+    [DataRow("")]
+    [DataRow("file:///C:/private/setup.html")]
+    [DataRow(" https://security.example.test/setup")]
+    [DataRow("https:/security.example.test/setup")]
+    [DataRow("https://user:secret@security.example.test/setup")]
+    public void AccountPanelViewModel_HidesUnsafeSecurityAction(string actionUrl)
+    {
+        var viewModel = new AccountPanelViewModel();
+        viewModel.Update(new AccountStatus
+        {
+            State = AccountState.SignedIn,
+            SecuritySetupNotice = new AccountSecuritySetupNotice
+            {
+                AccountId = "account-1",
+                UserId = "user-1",
+                Title = "Secure the account",
+                Description = "Review the account settings.",
+                ActionLabel = "Review",
+                ActionUrl = actionUrl,
+            },
+        });
+
+        Assert.IsTrue(viewModel.HasSecuritySetupNotice);
+        Assert.IsFalse(viewModel.HasSecuritySetupAction);
+        Assert.IsNull(viewModel.SecuritySetupActionUrl);
+    }
+
+    [TestMethod]
+    [DataRow("https://security.example.test/setup", "https://security.example.test/setup")]
+    [DataRow("HTTPS://security.example.test/setup#section", "https://security.example.test/setup#section")]
+    public void AccountPanelViewModel_ShowsSecureHttpsActions(string actionUrl, string canonicalActionUrl)
+    {
+        var viewModel = new AccountPanelViewModel();
+        viewModel.Update(new AccountStatus
+        {
+            State = AccountState.SignedIn,
+            SecuritySetupNotice = new AccountSecuritySetupNotice
+            {
+                AccountId = "account-1",
+                UserId = "user-1",
+                Title = "Secure the account",
+                Description = "Review the account settings.",
+                ActionLabel = "Review",
+                ActionUrl = actionUrl,
+            },
+        });
+
+        Assert.IsTrue(viewModel.HasSecuritySetupNotice);
+        Assert.IsTrue(viewModel.HasSecuritySetupAction);
+        Assert.AreEqual(canonicalActionUrl, viewModel.SecuritySetupActionUrl);
+    }
+
+    [TestMethod]
+    public async Task ChatViewModel_SecurityNoticeDismissalRetainsWorkerIdentity()
+    {
+        var bridge = new FakeWorkerBridge();
+        using var viewModel = new ChatViewModel(bridge, autoConnect: false);
+        var notice = new AccountSecuritySetupNotice
+        {
+            AccountId = "account-1",
+            UserId = "user-1",
+            Title = "Secure \u001b[31maccount\u0000",
+            Description = "Review \u0000the account settings.",
+            ActionLabel = "Review\u001b[0m",
+            ActionUrl = "https://security.example.test/setup",
+        };
+
+        await bridge.PublishAccountAsync(new AccountStatus
+        {
+            State = AccountState.SignedIn,
+            SecuritySetupNotice = notice,
+        });
+        Assert.IsTrue(viewModel.HasAccountSecuritySetupNotice);
+        Assert.IsTrue(viewModel.HasAccountSecuritySetupAction);
+        Assert.AreEqual("Secure account", viewModel.AccountSecuritySetupTitle);
+        Assert.AreEqual("Review the account settings.", viewModel.AccountSecuritySetupDescription);
+        Assert.AreEqual("Review", viewModel.AccountSecuritySetupActionLabel);
+
+        var propertyChanges = new List<string?>();
+        viewModel.PropertyChanged += (_, eventArgs) => propertyChanges.Add(eventArgs.PropertyName);
+        await RunCommandAsync(viewModel.DismissAccountSecuritySetupCommand);
+        Assert.IsFalse(viewModel.HasAccountSecuritySetupNotice);
+        CollectionAssert.Contains(propertyChanges, nameof(ChatViewModel.HasAccountSecuritySetupNotice));
+        CollectionAssert.Contains(propertyChanges, nameof(ChatViewModel.HasAccountSecuritySetupAction));
+
+        await bridge.PublishAccountAsync(new AccountStatus
+        {
+            State = AccountState.SignedIn,
+            SecuritySetupNotice = new AccountSecuritySetupNotice
+            {
+                AccountId = "account-2",
+                UserId = "user-2",
+                Title = notice.Title,
+                Description = notice.Description,
+                ActionLabel = notice.ActionLabel,
+                ActionUrl = notice.ActionUrl,
+            },
+        });
+
+        Assert.IsTrue(viewModel.HasAccountSecuritySetupNotice, "A different Worker account and user must not inherit a dismissed notice.");
+
+        await RunCommandAsync(viewModel.DismissAccountSecuritySetupCommand);
+        Assert.IsFalse(viewModel.HasAccountSecuritySetupNotice, "The second identity must be dismissed before changing only the user.");
+        await bridge.PublishAccountAsync(new AccountStatus
+        {
+            State = AccountState.SignedIn,
+            SecuritySetupNotice = new AccountSecuritySetupNotice
+            {
+                AccountId = "account-2",
+                UserId = "user-3",
+                Title = notice.Title,
+                Description = notice.Description,
+                ActionLabel = notice.ActionLabel,
+                ActionUrl = notice.ActionUrl,
+            },
+        });
+
+        Assert.IsTrue(viewModel.HasAccountSecuritySetupNotice, "A different Worker user in the same account must not inherit a dismissed notice.");
+
+        await RunCommandAsync(viewModel.DismissAccountSecuritySetupCommand);
+        Assert.IsFalse(viewModel.HasAccountSecuritySetupNotice, "The third identity must be dismissed before changing only the account.");
+        await bridge.PublishAccountAsync(new AccountStatus
+        {
+            State = AccountState.SignedIn,
+            SecuritySetupNotice = new AccountSecuritySetupNotice
+            {
+                AccountId = "account-3",
+                UserId = "user-3",
+                Title = notice.Title,
+                Description = notice.Description,
+                ActionLabel = notice.ActionLabel,
+                ActionUrl = notice.ActionUrl,
+            },
+        });
+
+        Assert.IsTrue(viewModel.HasAccountSecuritySetupNotice, "A different Worker account with the same user must not inherit a dismissed notice.");
+    }
+
+    [TestMethod]
+    [DataRow("en-US", "Account security reminder", "Model", "Model selector", "The transcript is opening read-only.")]
+    [DataRow("ja-JP", "アカウントのセキュリティに関する通知", "モデル", "モデル選択", "会話履歴は読み取り専用で開いています。")]
+    public void LocalizedStrings_IncludeAccountAndProviderGuidance(string cultureName, string accountNoticeName, string modelTooltip, string modelAutomationName, string readOnlyGuidance)
+    {
+        CultureInfo previousCulture = CultureInfo.CurrentUICulture;
+        try
+        {
+            CultureInfo.CurrentUICulture = CultureInfo.GetCultureInfo(cultureName);
+            Assert.AreEqual(accountNoticeName, LocalizedStrings.Get("Account.SecurityNotice.AutomationName"));
+            Assert.AreEqual(modelTooltip, LocalizedStrings.Get("Model.SelectorToolTip"));
+            Assert.AreEqual(modelAutomationName, LocalizedStrings.Get("Model.SelectorAutomationName"));
+            string guidance = LocalizedStrings.Format("Provider.ResumeError.ReadOnlyGuidance", "Provider error.");
+            Assert.IsTrue(guidance.StartsWith("Provider error.", StringComparison.Ordinal));
+            StringAssert.Contains(guidance, readOnlyGuidance);
+        }
+        finally
+        {
+            CultureInfo.CurrentUICulture = previousCulture;
+        }
+    }
+
+    [TestMethod]
+    public void LocalizedStrings_IncludeDiagnosticsForEnglishAndJapanese()
+    {
+        CultureInfo previousCulture = CultureInfo.CurrentCulture;
+        CultureInfo previousUiCulture = CultureInfo.CurrentUICulture;
+        string[] diagnosticKeys =
+        [
+            "Account.SecurityNotice.Dismiss",
+            "Diagnostics.ServerMessage",
+            "Diagnostics.McpStartup.ReauthenticationRequired",
+            "Diagnostics.McpStartup.Starting",
+            "Diagnostics.McpStartup.Cancelled",
+            "Diagnostics.McpStartup.Failed",
+            "Diagnostics.TurnError.FlexUnavailable",
+            "Diagnostics.TurnError.TooManyDenials",
+            "Diagnostics.TurnError.PolicyCapacityUnavailable",
+            "Diagnostics.TurnError.SessionBudgetExceeded",
+            "Diagnostics.TurnError.InferenceHookDenied",
+            "Diagnostics.TurnError.BioPolicy",
+        ];
+
+        try
+        {
+            CultureInfo.CurrentCulture = CultureInfo.GetCultureInfo("en-US");
+            CultureInfo.CurrentUICulture = CultureInfo.GetCultureInfo("en-US");
+            string[] english = diagnosticKeys.Select(LocalizedStrings.Get).ToArray();
+            Assert.AreEqual("Content tokens: 0", LocalizedStrings.Format("Diagnostics.ContentTokenCount", 0));
+            Assert.AreEqual("Server message: details", LocalizedStrings.Format("Diagnostics.ServerMessage", "details"));
+
+            CultureInfo.CurrentCulture = CultureInfo.GetCultureInfo("ja-JP");
+            CultureInfo.CurrentUICulture = CultureInfo.GetCultureInfo("ja-JP");
+            string[] japanese = diagnosticKeys.Select(LocalizedStrings.Get).ToArray();
+            Assert.AreEqual("コンテンツトークン数: 0", LocalizedStrings.Format("Diagnostics.ContentTokenCount", 0));
+            Assert.AreEqual("サーバーからのメッセージ: 詳細", LocalizedStrings.Format("Diagnostics.ServerMessage", "詳細"));
+
+            for (int index = 0; index < diagnosticKeys.Length; index++)
+            {
+                Assert.AreNotEqual(diagnosticKeys[index], english[index], $"Missing English localization for {diagnosticKeys[index]}.");
+                Assert.AreNotEqual(diagnosticKeys[index], japanese[index], $"Missing Japanese localization for {diagnosticKeys[index]}.");
+                Assert.AreNotEqual(english[index], japanese[index], $"English and Japanese values should differ for {diagnosticKeys[index]}.");
+            }
+        }
+        finally
+        {
+            CultureInfo.CurrentCulture = previousCulture;
+            CultureInfo.CurrentUICulture = previousUiCulture;
+        }
+    }
+
+    [TestMethod]
     public void ChatToolWindowXaml_UsesTopLevelAccountBindings()
     {
         const string resourceName = "Codex.VisualStudio.Extension.ToolWindows.ChatToolWindowContent.xaml";
@@ -5942,11 +6201,28 @@ public sealed partial class ViewModelTests
         string xaml = reader.ReadToEnd();
 
         Assert.IsTrue(xaml.Contains("{Binding AccountActionText}", StringComparison.Ordinal));
+        Assert.IsTrue(xaml.Contains("{Binding HasAccountSecuritySetupNotice,", StringComparison.Ordinal));
+        Assert.IsTrue(xaml.Contains("{Binding HasAccountSecuritySetupAction, Converter={StaticResource BoolToVis}}", StringComparison.Ordinal));
+        Assert.IsTrue(xaml.Contains("{Binding AccountSecuritySetupAutomationName}", StringComparison.Ordinal));
+        Assert.IsNotNull(typeof(ChatViewModel).GetProperty(nameof(ChatViewModel.AccountSecuritySetupAutomationName))?.GetCustomAttribute<DataMemberAttribute>());
+        Assert.IsNotNull(typeof(ChatViewModel).GetProperty(nameof(ChatViewModel.ModelSelectorAutomationName))?.GetCustomAttribute<DataMemberAttribute>());
+        Assert.IsTrue(xaml.Contains("<GroupBox AutomationProperties.Name=\"{Binding AccountSecuritySetupAutomationName}\"", StringComparison.Ordinal));
+        Assert.IsTrue(xaml.Contains("AutomationProperties.HelpText=\"{Binding AccountSecuritySetupDescription}\"", StringComparison.Ordinal));
+        Assert.IsTrue(xaml.Contains("AutomationProperties.LiveSetting=\"Polite\"", StringComparison.Ordinal));
+        Assert.IsTrue(xaml.Contains("<WrapPanel Margin=\"0,6,0,0\" HorizontalAlignment=\"Right\">", StringComparison.Ordinal));
+        Assert.IsTrue(xaml.Contains("{Binding AccountSecuritySetupDescription}", StringComparison.Ordinal));
+        Assert.IsTrue(xaml.Contains("{Binding OpenAccountSecuritySetupCommand}", StringComparison.Ordinal));
+        Assert.IsTrue(xaml.Contains("{Binding DismissAccountSecuritySetupCommand}", StringComparison.Ordinal));
         Assert.IsTrue(xaml.Contains("{Binding ShowAccountAction,", StringComparison.Ordinal));
         Assert.IsTrue(xaml.Contains("{Binding StatusDetailText}", StringComparison.Ordinal));
         Assert.IsTrue(xaml.Contains("ItemsSource=\"{Binding ServiceTiers}\"", StringComparison.Ordinal));
         Assert.IsTrue(xaml.Contains("SelectedValue=\"{Binding SelectedServiceTierId, Mode=TwoWay}\"", StringComparison.Ordinal));
         Assert.IsTrue(xaml.Contains("AutomationProperties.Name=\"Speed\"", StringComparison.Ordinal));
+        Assert.IsTrue(xaml.Contains("ToolTip=\"{Binding ModelSelectorToolTip}\"", StringComparison.Ordinal));
+        Assert.IsTrue(xaml.Contains("AutomationProperties.Name=\"{Binding ModelSelectorAutomationName}\"", StringComparison.Ordinal));
+        Assert.IsFalse(xaml.Contains("AutomationProperties.Name=\"Account security reminder\"", StringComparison.Ordinal));
+        Assert.IsFalse(xaml.Contains("AutomationProperties.Name=\"Model\"", StringComparison.Ordinal));
+        Assert.IsFalse(xaml.Contains("ToolTip=\"Model\"", StringComparison.Ordinal));
         Assert.IsTrue(xaml.Contains("ItemsSource=\"{Binding ReasoningEfforts}\"", StringComparison.Ordinal));
         Assert.IsTrue(xaml.Contains("SelectedValue=\"{Binding SelectedReasoningEffortId, Mode=TwoWay}\"", StringComparison.Ordinal));
         Assert.IsTrue(Regex.IsMatch(
@@ -9908,7 +10184,9 @@ public sealed partial class ViewModelTests
         vm.ComposerText = "typed before the Worker started";
 
         Assert.IsFalse(await ConnectDirectlyAsync(vm, Path.GetTempPath()));
-        await WaitForAsync(() => vm.Status.State == WorkerConnectionState.Ready && !vm.IsRecovering);
+        await WaitForAsync(() => vm.Status.State == WorkerConnectionState.Ready
+            && !vm.IsRecovering
+            && string.IsNullOrEmpty(vm.RecoveryStatusText));
 
         Assert.AreEqual(1, replacement.ConnectCallCount, "The first recovery attempt runs without a delay.");
         Assert.AreEqual("thread-first", vm.Threads.Single().Id);

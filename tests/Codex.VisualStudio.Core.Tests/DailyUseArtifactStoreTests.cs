@@ -80,15 +80,30 @@ public sealed class DailyUseArtifactStoreTests
             "{\"id\":\"turn-1\",\"error\":{\"codexErrorInfo\":\"policyCapacityUnavailable\"}}");
         Assert.AreEqual("policyCapacityUnavailable", CodexSessionService.ReadTurnErrorReason(historyTurn.RootElement));
 
+        using var tooManyDenials = System.Text.Json.JsonDocument.Parse("{\"error\":{\"codexErrorInfo\":\"tooManyDenials\"}}");
+        Assert.AreEqual("tooManyDenials", CodexSessionService.ReadTurnErrorReason(tooManyDenials.RootElement));
+        AssertLocalizedTurnError("Diagnostics.TurnError.TooManyDenials", "tooManyDenials");
+
         using var sessionBudget = System.Text.Json.JsonDocument.Parse(
             "{\"error\":{\"codexErrorInfo\":\"sessionBudgetExceeded\"}}");
         Assert.AreEqual("sessionBudgetExceeded", CodexSessionService.ReadTurnErrorReason(sessionBudget.RootElement));
-        StringAssert.Contains(CodexSessionService.DescribeTurnErrorReason("sessionBudgetExceeded"), "No retry");
+        AssertLocalizedTurnError("Diagnostics.TurnError.SessionBudgetExceeded", "sessionBudgetExceeded");
 
         using var inferenceHook = System.Text.Json.JsonDocument.Parse(
             "{\"turn\":{\"error\":{\"codexErrorInfo\":{\"inferenceHookDenied\":{}}}}}");
         Assert.AreEqual("inferenceHookDenied", CodexSessionService.ReadTurnErrorReason(inferenceHook.RootElement));
-        StringAssert.Contains(CodexSessionService.DescribeTurnErrorReason("inferenceHookDenied"), "No retry");
+        AssertLocalizedTurnError("Diagnostics.TurnError.InferenceHookDenied", "inferenceHookDenied");
+    }
+
+    private static void AssertLocalizedTurnError(string resourceKey, string reason)
+    {
+        string message = LocalizedStrings.Get(resourceKey);
+        Assert.IsFalse(string.Equals(resourceKey, message, StringComparison.Ordinal), $"Missing localized resource: {resourceKey}");
+        Assert.AreEqual(message, CodexSessionService.DescribeTurnErrorReason(reason));
+        Assert.IsTrue(
+            message.Contains("No retry was started.", StringComparison.Ordinal)
+                || message.Contains("再試行は開始されていません。", StringComparison.Ordinal),
+            $"Terminal error guidance must not invite a retry: {resourceKey}");
     }
 
     [TestMethod]
@@ -106,6 +121,17 @@ public sealed class DailyUseArtifactStoreTests
             using var document = System.Text.Json.JsonDocument.Parse(json);
             Assert.IsNull(CodexSessionService.ReadTurnErrorReason(document.RootElement), json);
         }
+    }
+
+    [TestMethod]
+    public void BioPolicyErrorIsRecognizedOnlyOnTier171AndHasNoRetryGuidance()
+    {
+        using var document = System.Text.Json.JsonDocument.Parse(
+            "{\"error\":{\"codexErrorInfo\":\"bioPolicy\"}}");
+
+        Assert.IsNull(CodexSessionService.ReadTurnErrorReason(document.RootElement, CodexFeatureTier.Baseline));
+        Assert.AreEqual("bioPolicy", CodexSessionService.ReadTurnErrorReason(document.RootElement, CodexFeatureTier.Tier171));
+        AssertLocalizedTurnError("Diagnostics.TurnError.BioPolicy", "bioPolicy");
     }
 
     [TestMethod]

@@ -28,5 +28,19 @@
   "Provider.GatewayOAuthReadFailed": "Gateway OAuth の状態を読み取れませんでした。",
   "Provider.GatewayOAuthOperationFailed": "Gateway OAuth 操作に失敗しました。",
   "Model.SelectorToolTip": "モデル",
-  "Model.SelectorAutomationName": "モデル選択"
+  "Model.SelectorAutomationName": "モデル選択",
+  "Account.SecurityNotice.AutomationName": "アカウントのセキュリティに関する通知",
+  "Account.SecurityNotice.Dismiss": "通知を閉じる",
+  "Diagnostics.ContentTokenCount": "コンテンツトークン数: {0}",
+  "Diagnostics.ServerMessage": "サーバーからのメッセージ: {0}",
+  "Diagnostics.McpStartup.ReauthenticationRequired": "MCP サーバーの認証期限が切れました。続行するにはサインインしてください。",
+  "Diagnostics.McpStartup.Starting": "MCP サーバーを起動しています。",
+  "Diagnostics.McpStartup.Cancelled": "MCP サーバーの起動がキャンセルされました。",
+  "Diagnostics.McpStartup.Failed": "MCP サーバーを利用できません。状態を確認してから再試行してください。",
+  "Diagnostics.TurnError.FlexUnavailable": "選択したモデルのFlexサービスは現在利用できません。再試行は開始されていません。",
+  "Diagnostics.TurnError.TooManyDenials": "拒否が多すぎるためリクエストを停止しました。再試行は開始されていません。",
+  "Diagnostics.TurnError.PolicyCapacityUnavailable": "ポリシーで制限されたモデルの容量を現在利用できません。後でもう一度お試しください。",
+  "Diagnostics.TurnError.SessionBudgetExceeded": "セッションの予算上限に達しました。新しい会話を開始するか、予算を増やしてください。再試行は開始されていません。",
+  "Diagnostics.TurnError.InferenceHookDenied": "組織の推論フックによってリクエストが拒否されました。再試行は開始されていません。",
+  "Diagnostics.TurnError.BioPolicy": "ポリシーによってこのリクエストは拒否されました。再試行は開始されていません。"
 }

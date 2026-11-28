@@ -664,6 +664,7 @@
         <Grid.RowDefinitions>
           <RowDefinition Height="Auto" />
           <RowDefinition Height="Auto" />
+          <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
         <WrapPanel Grid.Row="1" Margin="0,4,0,0" HorizontalAlignment="Right" VerticalAlignment="Center">
           <Button Content="{Binding AccountActionText}" Command="{Binding AccountCommand}"
@@ -1238,6 +1239,38 @@
                   Style="{StaticResource IconButtonStyle}" />
         </WrapPanel>
 
+        <Border Grid.Row="2" Margin="0,6,0,0" Padding="8,6"
+                BorderThickness="1"
+                BorderBrush="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBorderBrushKey}}"
+                Background="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowBackgroundBrushKey}}"
+                Visibility="{Binding HasAccountSecuritySetupNotice, Converter={StaticResource BoolToVis}}">
+          <GroupBox AutomationProperties.Name="{Binding AccountSecuritySetupAutomationName}"
+                    AutomationProperties.HelpText="{Binding AccountSecuritySetupDescription}">
+            <GroupBox.Template>
+              <ControlTemplate TargetType="{x:Type GroupBox}">
+                <ContentPresenter ContentSource="Content" />
+              </ControlTemplate>
+            </GroupBox.Template>
+            <StackPanel>
+              <TextBlock FontWeight="SemiBold"
+                         Text="{Binding AccountSecuritySetupTitle}"
+                         TextWrapping="Wrap"
+                         AutomationProperties.LiveSetting="Polite" />
+              <TextBlock Margin="0,3,0,0" Text="{Binding AccountSecuritySetupDescription}" TextWrapping="Wrap" />
+              <WrapPanel Margin="0,6,0,0" HorizontalAlignment="Right">
+                <Button Command="{Binding OpenAccountSecuritySetupCommand}"
+                        Visibility="{Binding HasAccountSecuritySetupAction, Converter={StaticResource BoolToVis}}"
+                        Style="{StaticResource SmallRoundButtonStyle}" Margin="0,0,6,0">
+                  <TextBlock Text="{Binding AccountSecuritySetupActionLabel}" TextWrapping="Wrap" MaxWidth="240" />
+                </Button>
+                <Button Content="{Binding DismissAccountSecuritySetupText}"
+                        Command="{Binding DismissAccountSecuritySetupCommand}"
+                        Style="{StaticResource SmallRoundButtonStyle}" />
+              </WrapPanel>
+            </StackPanel>
+          </GroupBox>
+        </Border>
+
         <StackPanel Grid.Row="0" VerticalAlignment="Center">
           <!-- Keep the state in the non-trimming column and constrain only the version. The
                state TextBlock owns the combined accessible name and live-region notification;
@@ -1383,6 +1416,10 @@
                              Foreground="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowTextBrushKey}}"
                              Text="{Binding TimingText}"
                              Visibility="{Binding HasTiming, Converter={StaticResource BoolToVis}}" />
+                  <TextBlock FontSize="10" TextWrapping="Wrap"
+                             Foreground="{DynamicResource {x:Static colors:EnvironmentColors.ToolWindowTextBrushKey}}"
+                             Text="{Binding ContentTokenCountText}"
+                             Visibility="{Binding HasContentTokenCount, Converter={StaticResource BoolToVis}}" />
 
                   <Border Margin="0,6,0,0"
                           Padding="6,4"
@@ -2979,7 +3016,8 @@
                         ToolTipService.ShowOnDisabled="True"
                         AutomationProperties.Name="Plan mode"
                         AutomationProperties.HelpText="{Binding PlanModeHelpText}" />
-            </WrapPanel>
+              </WrapPanel>
+
 
             <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
               <Button Margin="0,0,6,0" Content="&#xE71A;" ToolTip="Interrupt"

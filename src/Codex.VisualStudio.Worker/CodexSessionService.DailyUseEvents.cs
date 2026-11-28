@@ -1170,7 +1170,9 @@ public sealed partial class CodexSessionService
         => string.Equals(kind, "mention", StringComparison.OrdinalIgnoreCase)
             || string.Equals(kind, "file", StringComparison.OrdinalIgnoreCase);
 
-    internal static string? ReadTurnErrorReason(JsonElement parameters)
+    internal static string? ReadTurnErrorReason(
+        JsonElement parameters,
+        CodexFeatureTier featureTier = CodexFeatureTier.Unsupported)
     {
         if (parameters.ValueKind != JsonValueKind.Object)
         {
@@ -1202,19 +1204,91 @@ public sealed partial class CodexSessionService
             "policycapacityunavailable" => "policyCapacityUnavailable",
             "sessionbudgetexceeded" => "sessionBudgetExceeded",
             "inferencehookdenied" => "inferenceHookDenied",
+            "biopolicy" when featureTier >= CodexFeatureTier.Tier171 => "bioPolicy",
             _ => null,
         };
     }
 
     internal static string? DescribeTurnErrorReason(string? reason) => reason switch
     {
-        "flexUnavailable" => "The selected model's Flex service is currently unavailable. No retry was started.",
-        "tooManyDenials" => "The request was stopped after too many denials. No retry was started.",
-        "policyCapacityUnavailable" => "Policy-restricted model capacity is temporarily unavailable. Try again later.",
-        "sessionBudgetExceeded" => "The session budget was reached. Start a new conversation or increase its budget. No retry was started.",
-        "inferenceHookDenied" => "The organization's inference hook denied the request. No retry was started.",
+        "flexUnavailable" => LocalizedStrings.Get("Diagnostics.TurnError.FlexUnavailable"),
+        "tooManyDenials" => LocalizedStrings.Get("Diagnostics.TurnError.TooManyDenials"),
+        "policyCapacityUnavailable" => LocalizedStrings.Get("Diagnostics.TurnError.PolicyCapacityUnavailable"),
+        "sessionBudgetExceeded" => LocalizedStrings.Get("Diagnostics.TurnError.SessionBudgetExceeded"),
+        "inferenceHookDenied" => LocalizedStrings.Get("Diagnostics.TurnError.InferenceHookDenied"),
+        "bioPolicy" => LocalizedStrings.Get("Diagnostics.TurnError.BioPolicy"),
         _ => null,
     };
+
+    private string? BuildTurnErrorText(JsonElement parameters, string? reason)
+    {
+        string? guidance = DescribeTurnErrorReason(reason);
+        if (guidance is null)
+        {
+            return null;
+        }
+
+        string? serverMessage = ReadTurnErrorServerMessage(parameters);
+        return string.IsNullOrWhiteSpace(serverMessage)
+            ? guidance
+            : $"{guidance}\n{LocalizedStrings.Format("Diagnostics.ServerMessage", serverMessage)}";
+    }
+
+    private string? ReadTurnErrorServerMessage(JsonElement parameters)
+    {
+        if (parameters.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+
+        JsonElement container = parameters.TryGetProperty("turn", out JsonElement turn) && turn.ValueKind == JsonValueKind.Object
+            ? turn
+            : parameters;
+        if (!container.TryGetProperty("error", out JsonElement error)
+            || error.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+
+        string? message = GetString(error, "message");
+        if (string.IsNullOrWhiteSpace(message))
+        {
+            return null;
+        }
+
+        return RedactAndBoundDisplayText(redactor, message);
+    }
+
+    internal static string? RedactAndBoundDisplayText(ISecretRedactor redactor, string? message, int maximumLength = 2_048)
+    {
+        ArgumentNullException.ThrowIfNull(redactor);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumLength);
+        if (string.IsNullOrWhiteSpace(message))
+        {
+            return null;
+        }
+
+        string redacted = redactor.Redact(message);
+        redacted = new string(redacted
+            .Select(character => char.IsControl(character)
+                || char.GetUnicodeCategory(character) == System.Globalization.UnicodeCategory.Format
+                    ? ' '
+                    : character)
+            .ToArray())
+            .Trim();
+        if (redacted.Length <= maximumLength)
+        {
+            return redacted;
+        }
+
+        int clippedLength = maximumLength - 1;
+        if (clippedLength > 0 && char.IsHighSurrogate(redacted[clippedLength - 1]) && char.IsLowSurrogate(redacted[clippedLength]))
+        {
+            clippedLength--;
+        }
+
+        return string.Concat(redacted.AsSpan(0, clippedLength), "…");
+    }
 
     private static string PlanDeltaBufferKey(string threadId, string turnId, string itemId)
         => $"plan-delta:{threadId}:{turnId}:{itemId}";

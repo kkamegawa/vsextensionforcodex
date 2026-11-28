@@ -1100,3 +1100,15 @@ Tracking: Issue #302 under Issue #272. Approved plan: plan/2026-11-15/vs2026-dot
 - [x] Displayed unknown provider errors after Worker-side secret and endpoint redaction plus UI SafeMarkdown sanitization; recognized provider errors and Gateway OAuth failures use localized guidance.
 - [x] #302 Release validation: solution build 0 warnings/0 errors; Core 759 passed with 5 filesystem-link skips (764 total); UI 702 passed with 1 filesystem-link skip (703 total). `git diff --check` and UTF-8 BOM/CRLF checks passed.
 - [ ] Visual Studio 2026 Experimental Instance acceptance on real CLI 0.169.0 remains pending; see the PR checklist.
+
+### 2026-11-28: Phase 4 — diagnostics and status display (#305)
+
+Tracking: Issue #305 under Issue #272. Approved plan: `plan/2026-11-15/vs2026-dotnet10-codex-cli-0-169`; feature requirements: `doc/app-server-0-169-design.md` section 4.4. Later 0.171 behavior follows the accepted version-specific addenda in #326–#331.
+
+- [x] Confirmed deferred MCP servers show Not started, startup failures remain redacted, reauthentication remains available, and the composer stays usable.
+- [x] Added assistant `contentTokenCount` to completed assistant message details only when a nonnegative value is present; omitted and null values remain absent.
+- [x] Added account security reminders with account-plus-user identity matching, stale-response rejection, session dismissal, safe text, and HTTPS-only actions.
+- [x] Added known terminal-error guidance with bounded secret-redacted server messages; unknown error details remain hidden, and terminal errors never trigger a retry. Fake/Core coverage includes `tooManyDenials`, token counts, security notices, 0.171 owner refresh, and `bioPolicy`.
+- [x] Regression coverage: FakeDiagnosticsScenarioCoversAccountNoticeTokenCountOwnerRefreshAndBioPolicy verifies terminal error events are emitted once and do not start a retry; AccountNotificationInvalidatesPendingNoticeBeforeRoutingRefresh discards stale account notices; `McpRuntimeDetailsAreReadOnlyForSupportedVersions`, `McpStartupFailureIncludesRedactedBoundedServerError`, `McpStartupReauthenticationObservedBeforeLoginResponseSurvivesEarlySuccessCompletion`, `PendingMcpStartupDoesNotBlockComposerSend`, `ChatItem_ContentTokenCountShowsZeroAndHidesMissingOrNegativeValues`, and `AccountSecuritySetupReadDoesNotBlockRefreshAndDiscardsStaleIdentityResponse`.
+- [x] Release solution validation with .NET SDK 10.0.404 completed with 0 warnings and 0 errors. Core: 777 passed / 5 filesystem-link skips (782 total). UI: 723 passed / 1 filesystem-link skip (724 total).
+- [ ] Visual Studio 2026 Experimental Instance acceptance on real CLI 0.169.0, including Light and Dark screenshots, remains pending.
